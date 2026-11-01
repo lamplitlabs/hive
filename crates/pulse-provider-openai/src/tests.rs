@@ -380,6 +380,49 @@ fn chat_stream_shows_text_as_it_arrives_and_folds_the_reply() {
 }
 
 #[test]
+fn chat_stream_asks_again_when_the_body_ends_before_the_reply_is_whole() {
+    // The server closes the first body between two chunks of a tool call,
+    // before any finish reason and [DONE]; the second body is whole. Nothing
+    // of the partial message reaches the caller: the retry loop asks again
+    // (the error is retryable before any text was shown) and the whole
+    // reply comes back from the second request.
+    let calls = Arc::new(AtomicI32::new(0));
+    let calls_log = calls.clone();
+    let srv = Server::new(move |_| {
+        let n = calls_log.fetch_add(1, Ordering::SeqCst);
+        let mut body = format!(
+            "data: {}\n\n",
+            json!({"id":"chatcmpl-cut","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"edit","arguments":"{\"path\": \"AGENTS.md\", \"replace\": \"  with the GitHub"}}]},"finish_reason":null}]})
+        );
+        if n > 0 {
+            body.push_str(&format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" noreply address.\", \"with\": \"new\"}"}}]},"finish_reason":"tool_calls"}]})
+            ));
+        }
+        TestResponse::new(200)
+            .header("Content-Type", "text/event-stream")
+            .body(body.into_bytes())
+    });
+    let env = BTreeMap::from([("OPENAI_API_KEY".to_string(), FAKE_KEY.to_string())]);
+    let p = new_test_provider(&srv.url(), Some(env), None);
+    let mut shown = String::new();
+    let resp = p
+        .chat_stream(&CancelToken::new(), user_request("hi"), &mut |t| {
+            shown.push_str(t)
+        })
+        .unwrap();
+    assert!(shown.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(resp.finish_reason, "tool_calls");
+    let msg = resp.message.unwrap();
+    assert_eq!(
+        msg.tool_calls[0].arguments,
+        r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.", "with": "new"}"#
+    );
+}
+
+#[test]
 fn chat_stream_falls_back_to_whole_replies_when_the_endpoint_refuses_streaming() {
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let bodies_log = bodies.clone();

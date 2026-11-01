@@ -9,7 +9,9 @@
 //! share.
 
 use crate::http::{decode_error, network_error};
-use crate::{CancelToken, Choice, Message, ProviderError, Response, Role, ToolCall, Usage};
+use crate::{
+    CancelToken, Choice, EMPTY_ARGUMENTS, Message, ProviderError, Response, Role, ToolCall, Usage,
+};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -24,13 +26,15 @@ const DONE: &str = "[DONE]";
 /// other fields (`event:`, `id:`, `retry:`) are skipped. More than
 /// `max_bytes` fails with `body_too_large`; a transport error mid-stream
 /// is a (retryable) network error; cancellation is checked between lines.
+/// Ok(true) when `[DONE]` ended the stream, Ok(false) when the body ended
+/// first (the caller decides whether what arrived is whole).
 pub fn read_event_stream(
     provider: &str,
     cancel: &CancelToken,
     body: impl Read,
     max_bytes: usize,
     on_data: &mut dyn FnMut(&str) -> Result<()>,
-) -> Result<()> {
+) -> Result<bool> {
     let mut reader = BufReader::new(body);
     let mut line = String::new();
     let mut data = String::new();
@@ -61,12 +65,12 @@ pub fn read_event_stream(
             if !data.is_empty() {
                 let payload = std::mem::take(&mut data);
                 if payload.trim() == DONE {
-                    return Ok(());
+                    return Ok(true);
                 }
                 on_data(&payload)?;
             }
             if eof {
-                return Ok(());
+                return Ok(false);
             }
             continue;
         }
@@ -216,8 +220,40 @@ impl ChatChunks {
         Ok(text)
     }
 
+    /// What is missing when the stream ended before the reply was whole,
+    /// None when it is complete. The body ending with neither a
+    /// `finish_reason` on any choice nor `[DONE]` is a connection the
+    /// gateway closed between chunks; a tool call whose accumulated
+    /// `arguments` do not parse as JSON lost its last chunks (the harness
+    /// could neither run it nor send it back, and a vendor that validates
+    /// its input refuses every later request carrying it). A choice the
+    /// model's token limit cut (`finish_reason: length`) is whole as far as
+    /// the stream goes: the harness shows the model what arrived. Empty
+    /// arguments are a tool called with none, not a cut.
+    pub fn incomplete(&self, done: bool) -> Option<String> {
+        if !done && self.choices.values().all(|c| c.finish_reason.is_empty()) {
+            return Some("no finish reason arrived".to_string());
+        }
+        for choice in self.choices.values() {
+            if choice.finish_reason == "length" {
+                continue;
+            }
+            for tc in choice.tool_calls.values() {
+                if let Some(e) = crate::invalid_arguments(&tc.arguments) {
+                    return Some(format!(
+                        "the arguments of tool call {} ({}) are not JSON: {e}",
+                        tc.name, tc.id
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// The whole reply; `request_id` is the stream's `id` for the caller
-    /// to replace with the response header when there is one.
+    /// to replace with the response header when there is one. A tool call
+    /// that came with no arguments carries `{}`, which every vendor takes
+    /// back; some send nothing at all for a tool without parameters.
     pub fn into_response(self) -> Response {
         let choices: Vec<Choice> = self
             .choices
@@ -231,7 +267,11 @@ impl ChatChunks {
                     .map(|tc| ToolCall {
                         id: tc.id,
                         name: tc.name,
-                        arguments: tc.arguments,
+                        arguments: if tc.arguments.trim().is_empty() {
+                            EMPTY_ARGUMENTS.to_string()
+                        } else {
+                            tc.arguments
+                        },
                     })
                     .collect();
                 Choice {
@@ -254,9 +294,13 @@ impl ChatChunks {
 }
 
 /// Reads a streamed chat-completion body to the end: every text piece goes
-/// to `on_text` as it arrives and the folded reply comes back. A transport
-/// failure after text has been shown is not retryable (the caller would
-/// show the text twice), and comes back as `stream_interrupted`.
+/// to `on_text` as it arrives and the folded reply comes back. A stream
+/// that ends before the reply is whole ([`ChatChunks::incomplete`]) is
+/// not a reply: before any text was shown it is `stream_incomplete`,
+/// retryable, so the provider's retry loop asks again and the caller never
+/// sees the partial message; after text was shown it is
+/// `stream_interrupted`, not retryable (the caller would show the text
+/// twice), the same as a transport failure at that point.
 pub fn stream_chat_completion(
     provider: &str,
     cancel: &CancelToken,
@@ -275,8 +319,8 @@ pub fn stream_chat_completion(
         }
         Ok(())
     });
-    match read {
-        Ok(()) => {}
+    let done = match read {
+        Ok(done) => done,
         Err(err) if shown && crate::is_retryable(&err) => {
             return Err(ProviderError::new(
                 provider,
@@ -288,6 +332,26 @@ pub fn stream_chat_completion(
             .into());
         }
         Err(err) => return Err(err),
+    };
+    if let Some(missing) = chunks.incomplete(done) {
+        return Err(if shown {
+            ProviderError::new(
+                provider,
+                0,
+                "stream_interrupted",
+                format!("the reply stopped part way: {missing}"),
+                false,
+            )
+        } else {
+            ProviderError::new(
+                provider,
+                0,
+                "stream_incomplete",
+                format!("the reply ended before it was whole: {missing}"),
+                true,
+            )
+        }
+        .into());
     }
     if chunks.chunks == 0 {
         return Err(decode_error(provider, "the event stream carried no chunks").into());
@@ -525,6 +589,180 @@ mod tests {
         )
         .unwrap_err();
         assert!(crate::is_retryable(&err));
+    }
+
+    /// The user's case: the Copilot gateway closed the body between two
+    /// chunks of a tool call, before any `finish_reason` and `[DONE]`.
+    const CUT_ARGUMENTS: &str = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
+
+    fn cut_tool_call_chunks() -> Vec<String> {
+        vec![
+            json!({"id":"chatcmpl-cut","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"toolu_01D9XWUQtuVBTWixzvum3zYd","type":"function","function":{"name":"edit","arguments":""}}]},"finish_reason":null}]}).to_string(),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":CUT_ARGUMENTS}}]},"finish_reason":null}]}).to_string(),
+        ]
+    }
+
+    fn stream_of(chunks: &[String], done: bool) -> std::io::Cursor<String> {
+        let mut text = String::new();
+        for c in chunks {
+            text.push_str(&format!("data: {c}\n\n"));
+        }
+        if done {
+            text.push_str("data: [DONE]\n\n");
+        }
+        std::io::Cursor::new(text)
+    }
+
+    #[test]
+    fn a_stream_that_ends_before_its_finish_reason_is_asked_for_again() {
+        // Nothing was shown (a tool-call-only reply), so the partial
+        // message is not a reply at all: a retryable error, named, that
+        // the provider's retry loop turns into a second request.
+        let mut shown = String::new();
+        let err = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&cut_tool_call_chunks(), false),
+            1 << 20,
+            &mut |t| shown.push_str(t),
+        )
+        .unwrap_err();
+        assert!(shown.is_empty());
+        let perr = crate::provider_error(&err).unwrap();
+        assert_eq!(perr.code, "stream_incomplete");
+        assert!(perr.retryable);
+        assert!(crate::is_retryable(&err));
+        assert_eq!(
+            perr.message,
+            "the reply ended before it was whole: no finish reason arrived"
+        );
+        // An empty body is the same failure, one chunk earlier.
+        let err = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&[], false),
+            1 << 20,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(
+            crate::provider_error(&err).unwrap().code,
+            "stream_incomplete"
+        );
+
+        // After text was shown the same cut is `stream_interrupted`, not
+        // retryable here: the caller decides, as for a transport failure.
+        let mut chunks = vec![
+            json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"Editing AGENTS.md"}}]}).to_string(),
+        ];
+        chunks.extend(cut_tool_call_chunks());
+        let mut shown = String::new();
+        let err = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&chunks, false),
+            1 << 20,
+            &mut |t| shown.push_str(t),
+        )
+        .unwrap_err();
+        assert_eq!(shown, "Editing AGENTS.md");
+        let perr = crate::provider_error(&err).unwrap();
+        assert_eq!(perr.code, "stream_interrupted");
+        assert!(!perr.retryable);
+        assert!(perr.message.contains("no finish reason arrived"), "{perr}");
+    }
+
+    #[test]
+    fn a_tool_call_whose_arguments_are_not_json_is_an_incomplete_reply() {
+        // A finish reason and [DONE] arrived, yet the arguments do not
+        // parse: the chunks that held their end never came. The error
+        // names the call and serde's reason.
+        let mut chunks = cut_tool_call_chunks();
+        chunks.push(
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
+        );
+        let err = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&chunks, true),
+            1 << 20,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let perr = crate::provider_error(&err).unwrap();
+        assert_eq!(perr.code, "stream_incomplete");
+        assert!(perr.retryable);
+        assert_eq!(
+            perr.message,
+            "the reply ended before it was whole: the arguments of tool call edit (toolu_01D9XWUQtuVBTWixzvum3zYd) are not JSON: EOF while parsing an object at line 1 column 93"
+        );
+
+        // The model's own token limit cutting the arguments is not a
+        // broken stream: the reply goes through as it is and the harness
+        // tells the model what arrived.
+        let mut chunks = cut_tool_call_chunks();
+        chunks
+            .push(json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}).to_string());
+        let resp = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&chunks, true),
+            1 << 20,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(resp.finish_reason, "length");
+        assert_eq!(resp.message.unwrap().tool_calls[0].arguments, CUT_ARGUMENTS);
+
+        // A finish reason without [DONE] is a whole reply (as the
+        // split-choices case above), and so is [DONE] without a finish
+        // reason when the arguments parse.
+        let chunks = [
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":null}]}).to_string(),
+        ];
+        let resp = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&chunks, true),
+            1 << 20,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            resp.message.unwrap().tool_calls[0].arguments,
+            "{\"command\":\"true\"}"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_with_no_arguments_folds_to_an_empty_object() {
+        let chunks = [
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"list"}}]},"finish_reason":null}]}).to_string(),
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":"tool_calls"}]}).to_string(),
+        ];
+        let resp = stream_chat_completion(
+            "v",
+            &CancelToken::new(),
+            stream_of(&chunks, true),
+            1 << 20,
+            &mut |_| {},
+        )
+        .unwrap();
+        let msg = resp.message.unwrap();
+        assert_eq!(msg.tool_calls[0].name, "list");
+        assert_eq!(msg.tool_calls[0].arguments, EMPTY_ARGUMENTS);
+    }
+
+    #[test]
+    fn event_stream_says_whether_done_ended_it() {
+        let body = events(&["data: {}", "", "data: [DONE]", ""]);
+        assert!(
+            read_event_stream("v", &CancelToken::new(), body, 1 << 20, &mut |_| Ok(())).unwrap()
+        );
+        let body = events(&["data: {}", ""]);
+        assert!(
+            !read_event_stream("v", &CancelToken::new(), body, 1 << 20, &mut |_| Ok(())).unwrap()
+        );
     }
 
     #[test]

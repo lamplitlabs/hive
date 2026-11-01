@@ -196,6 +196,26 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// The arguments of a tool call made with none: the JSON object every
+/// vendor takes back in a history (OpenAI's `arguments` string, Anthropic's
+/// `input`, Gemini's `args`), where an empty string is not JSON.
+pub const EMPTY_ARGUMENTS: &str = "{}";
+
+/// Why a tool call's `arguments` cannot go back to a vendor as they are:
+/// serde's reason when the text does not parse as JSON, which is what a
+/// reply cut mid-stream leaves behind (`{"path": "AGENTS.md", "replace":
+/// "..."` with no closing brace). None for JSON of any shape (the tool
+/// judges it) and for empty text (a tool called with no arguments, which
+/// the harness reads as `{}`).
+pub fn invalid_arguments(arguments: &str) -> Option<String> {
+    if arguments.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str::<serde::de::IgnoredAny>(arguments)
+        .err()
+        .map(|e| e.to_string())
+}
+
 /// Choice is one `choices[i]` of a chat-completion reply, lifted into the shared shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Choice {
@@ -641,6 +661,51 @@ pub fn is_request_too_large(err: &anyhow::Error) -> bool {
     let text = text.to_ascii_lowercase();
     REQUEST_TOO_LARGE_PHRASES.iter().any(|p| text.contains(p))
         || (text.contains("input token count") && text.contains("exceed"))
+}
+
+/// Word sets, lower-cased, by which the vendors refuse a request because a
+/// tool call in its history carries arguments that are not JSON (every
+/// word of a set must appear): Copilot's `Invalid JSON format in tool call
+/// arguments`; OpenAI's `Invalid 'messages[N].tool_calls[M].function.arguments'`
+/// and `... tool_calls ... arguments ... is not valid JSON`; Anthropic's
+/// `messages.N.content.M.tool_use.input: Input should be a valid
+/// dictionary` and `tool_use.input must be an object`; Gemini's
+/// `contents[N].parts[M].function_call.args: Invalid value` and `Invalid
+/// JSON payload received ... "args"`.
+const INVALID_TOOL_ARGUMENTS_WORDS: &[&[&str]] = &[
+    &["invalid json format in tool call arguments"],
+    &["invalid", "tool_calls", "function.arguments"],
+    &["tool_calls", "arguments", "valid json"],
+    &["tool_call", "arguments", "valid json"],
+    &["tool_use", "input", "valid dictionary"],
+    &["tool_use", "input", "must be an object"],
+    &["function_call", "args", "invalid"],
+    &["invalid json payload", "args"],
+];
+
+/// Reports whether an error says the vendor refused the request because a
+/// tool call in its history carries arguments that are not JSON - what a
+/// reply cut mid-stream leaves behind - so the same history sent again
+/// fails the same way, whatever the model, until the arguments are
+/// repaired. Only an HTTP 400 in the vendors' words for it counts
+/// ([`INVALID_TOOL_ARGUMENTS_WORDS`]); a bare error (no [`ProviderError`]
+/// in the chain) is read by its text, `(HTTP 400)` included. The harness
+/// repairs the history and asks again on it.
+pub fn is_invalid_tool_arguments(err: &anyhow::Error) -> bool {
+    let (bad_request, text) = match provider_error(err) {
+        Some(e) => (e.status == 400, format!("{} {}", e.code, e.message)),
+        None => {
+            let text = err.to_string();
+            (text.contains("(HTTP 400)"), text)
+        }
+    };
+    if !bad_request {
+        return false;
+    }
+    let text = text.to_ascii_lowercase();
+    INVALID_TOOL_ARGUMENTS_WORDS
+        .iter()
+        .any(|words| words.iter().all(|w| text.contains(w)))
 }
 
 pub const DEFAULT_RETRY_AFTER_CAP_S: u64 = 60;
@@ -1131,6 +1196,108 @@ mod tests {
         ] {
             assert!(!is_request_too_large(&err), "{err}");
         }
+    }
+
+    #[test]
+    fn a_history_refused_for_tool_arguments_that_are_not_json_reads_as_such() {
+        let perr = |status: i32, code: &str, message: &str| {
+            anyhow!(ProviderError::new("unit", status, code, message, false))
+        };
+        // The Copilot gateway, word for word: the user's case.
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "",
+            "Invalid JSON format in tool call arguments"
+        )));
+        // The other vendors' words for the same refusal.
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "invalid_request_error",
+            "Invalid 'messages[12].tool_calls[0].function.arguments': string is not valid JSON."
+        )));
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "invalid_request_error",
+            "The 'arguments' of tool_calls[0] must be valid JSON."
+        )));
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "invalid_request_error",
+            "messages.12.content.0.tool_use.input: Input should be a valid dictionary"
+        )));
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "invalid_request_error",
+            "messages.12.content.0.tool_use.input must be an object"
+        )));
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "INVALID_ARGUMENT",
+            "Invalid value at 'contents[12].parts[0].function_call.args' (type.googleapis.com/google.protobuf.Struct)"
+        )));
+        assert!(is_invalid_tool_arguments(&perr(
+            400,
+            "INVALID_ARGUMENT",
+            "Invalid JSON payload received. Unknown name \"args\" at 'contents[12].parts[0].function_call': Proto field is not repeating, cannot start list."
+        )));
+        // A bare error is read by its text, status included.
+        assert!(is_invalid_tool_arguments(&anyhow!(
+            "copilot: Invalid JSON format in tool call arguments (HTTP 400)"
+        )));
+        // Only a 400 in those words: other statuses, other 400s, and the
+        // harness's own tool error are not this classifier's business.
+        for err in [
+            perr(500, "", "Invalid JSON format in tool call arguments"),
+            perr(400, "", "model not found"),
+            perr(
+                400,
+                "invalid_request_error",
+                "messages[2].content must not be empty",
+            ),
+            perr(
+                400,
+                "invalid_request_error",
+                "Invalid 'messages[2].tool_calls[0].id': string too long.",
+            ),
+            perr(400, "", "Unrecognized request argument: stream_options"),
+            perr(
+                408,
+                "",
+                "Timed out reading request body. Try again, or use a smaller request size.",
+            ),
+            anyhow!(
+                "edit: arguments are not JSON: EOF while parsing an object at line 1 column 93"
+            ),
+            anyhow!("copilot: Invalid JSON format in tool call arguments"),
+            anyhow!(err_not_logged_in()),
+        ] {
+            assert!(!is_invalid_tool_arguments(&err), "{err}");
+        }
+    }
+
+    #[test]
+    fn arguments_that_do_not_parse_are_named_empty_ones_and_json_are_not() {
+        assert_eq!(
+            invalid_arguments(
+                r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#
+            )
+            .as_deref(),
+            Some("EOF while parsing an object at line 1 column 93")
+        );
+        assert!(invalid_arguments("{\"a\":").is_some());
+        assert!(invalid_arguments("not json").is_some());
+        for ok in [
+            "",
+            "  \n",
+            "{}",
+            "{\"command\":\"true\"}",
+            "[]",
+            "null",
+            "\"x\"",
+        ] {
+            assert_eq!(invalid_arguments(ok), None, "{ok:?}");
+        }
+        assert_eq!(EMPTY_ARGUMENTS, "{}");
     }
 
     #[test]
