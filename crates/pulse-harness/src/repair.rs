@@ -124,6 +124,11 @@ mod tests {
     const CUT_ARGUMENTS: &str = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
     const CUT_ID: &str = "toolu_01D9XWUQtuVBTWixzvum3zYd";
 
+    /// The second conversation stuck the same day: a `bash` call cut one
+    /// byte short, the closing brace alone missing.
+    const CUT_SHORT_ARGUMENTS: &str = r#"{"command": "pulse manifest sync --project leben-in-deutschland 2>&1 | tail -6; echo ---; pulse skill list --project leben-in-deutschland 2>&1 | grep -i \"scraper\"""#;
+    const CUT_SHORT_ID: &str = "toolu_01PToC5gLgbC4XyNrtnHnH13";
+
     fn assistant(calls: Vec<(&str, &str, &str)>) -> Message {
         Message {
             tool_calls: calls
@@ -192,6 +197,37 @@ mod tests {
         }
         // A second pass finds nothing.
         assert!(repair_tool_arguments(&mut msgs).is_empty());
+    }
+
+    #[test]
+    fn the_other_conversations_cut_bash_call_is_rewritten_too() {
+        // One byte short, with the result the old harness gave it (a
+        // bash call whose arguments did not parse reads as having no
+        // command).
+        let mut msgs = vec![
+            user("sync the manifest"),
+            assistant(vec![(CUT_SHORT_ID, "bash", CUT_SHORT_ARGUMENTS)]),
+            tool(
+                CUT_SHORT_ID,
+                "bash",
+                "tool arguments must be a JSON object with a string command",
+            ),
+            user("try again"),
+        ];
+        let repaired = repair_tool_arguments(&mut msgs);
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].id, CUT_SHORT_ID);
+        assert_eq!(repaired[0].arguments, CUT_SHORT_ARGUMENTS);
+        assert_eq!(
+            repaired[0].reason,
+            "EOF while parsing an object at line 1 column 165"
+        );
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[1].tool_calls[0].arguments, EMPTY_ARGUMENTS);
+        assert_eq!(
+            msgs[2].content,
+            "tool arguments must be a JSON object with a string command"
+        );
     }
 
     #[test]
