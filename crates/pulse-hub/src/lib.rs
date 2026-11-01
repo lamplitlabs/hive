@@ -68,6 +68,7 @@ pub mod store_views;
 pub mod suggestions_api;
 pub mod toolkit_api;
 pub mod view_cache;
+pub mod voice;
 
 pub use additions::*;
 pub use board::*;

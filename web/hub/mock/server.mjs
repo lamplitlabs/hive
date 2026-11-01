@@ -63,6 +63,9 @@ const state = {
   harnessDetails: {},
   harnessPolls: {},
   serviceInstalled: false,
+  // The microphone's speech model: a pretend download that advances while
+  // polled, so the composer's setup dialog can be exercised offline.
+  voice: null,
   cred: {
     reference: "",
     fingerprint: "",
@@ -1282,6 +1285,8 @@ async function handle(req, res) {
     });
     return;
   }
+
+  if (segs[0] === "voice") return voiceRoute(req, res, segs, q);
 
   if (
     (req.method === "POST" || req.method === "PATCH") &&
@@ -3611,7 +3616,7 @@ async function handle(req, res) {
       405,
       "no such write",
       req.method + " " + url.pathname + " is not an owner action",
-      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run",
+      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, voice/setup|transcribe|unload, voice/model (DELETE)",
     );
   }
 
@@ -5065,6 +5070,169 @@ function skillValidate(row, except) {
       "Name where the secret lives (a reference, an env var) instead of pasting it.",
     ];
   return null;
+}
+
+// ----- voice (the composer's microphone) ----------------------------------
+//
+// GET voice answers the fixture, with a setup that advances about 400 MB a
+// second once POST voice/setup started it (the real hub fetches 2.5 GB, here
+// it takes a few seconds). POST voice/transcribe answers canned words after
+// a short pause, so the whole button can be tried without a model.
+async function voiceState() {
+  if (!state.voice) {
+    const d = await fixture("voice");
+    state.voice = { ...d, started: 0, stopped: false };
+  }
+  return state.voice;
+}
+
+function voiceTick(v) {
+  if (!v.setting_up) return;
+  const elapsed = (Date.now() - v.started) / 1000;
+  const done = Math.min(v.setup.total, Math.floor(elapsed * 400e6));
+  v.setup.done = done;
+  const rt = v.runtime.size;
+  if (done < rt) {
+    v.setup.phase = "runtime";
+    v.setup.file = "libonnxruntime.1.31.1.dylib";
+  } else {
+    v.setup.phase = "model";
+    const m = v.models.find((x) => x.id === v.setup.model);
+    let at = rt;
+    v.setup.file = "";
+    for (const f of m.files) {
+      f.have = Math.max(0, Math.min(f.size, done - at));
+      f.ready = f.have === f.size;
+      if (!f.ready && !v.setup.file) v.setup.file = f.name;
+      at += f.size;
+    }
+    m.have = m.files.reduce((a, f) => a + f.have, 0);
+    m.ready = m.files.every((f) => f.ready);
+    v.runtime.have = rt;
+    v.runtime.ready = true;
+  }
+  if (done >= v.setup.total) {
+    v.setting_up = false;
+    v.setup.phase = "done";
+    v.setup.file = "";
+    v.setup.finished_at = new Date().toISOString();
+    v.model = v.models.find((x) => x.id === v.setup.model);
+    v.ready = true;
+    emit("hub", "voice.ready", v.setup.model, { bytes: v.setup.total });
+  }
+}
+
+function voiceView(v) {
+  voiceTick(v);
+  const { started, stopped, ...rest } = v;
+  void started;
+  void stopped;
+  return rest;
+}
+
+async function voiceRoute(req, res, segs, q) {
+  const v = await voiceState();
+  if (segs.length === 1) {
+    if (req.method !== "GET")
+      return fail(res, 405, "Method not allowed", "This route does not support " + req.method + ".", "Use GET.");
+    return send(res, 200, voiceView(v));
+  }
+  const action = segs[1];
+  if (action === "setup" && req.method === "POST") {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return fail(res, 400, "bad request", String(e.message), "send a JSON object");
+    }
+    if (body.stop === true) {
+      if (v.setting_up) {
+        voiceTick(v);
+        v.setting_up = false;
+        v.setup.phase = "stopped";
+        v.setup.finished_at = new Date().toISOString();
+      }
+      return send(res, 202, voiceView(v));
+    }
+    const id = String(body.model ?? v.model.id);
+    const m = v.models.find((x) => x.id === id);
+    if (!m)
+      return fail(res, 400, "Unknown model " + JSON.stringify(id), "The models are " + v.models.map((x) => x.id).join(", ") + ".", "Pick one of them, or leave model out for the voice.model setting.");
+    if (v.setting_up)
+      return fail(res, 409, "A setup is already running", "This hub is fetching " + v.setup.model + ".", 'Wait for it, or send {"stop": true} first.');
+    v.model = m;
+    const have = (v.runtime.ready ? v.runtime.size : 0) + m.have;
+    v.started = Date.now() - (have / 400e6) * 1000;
+    v.setting_up = true;
+    v.setup = {
+      phase: "runtime",
+      model: id,
+      file: "",
+      done: have,
+      total: v.runtime.size + m.size,
+      error: "",
+      started_at: new Date().toISOString(),
+      finished_at: "",
+    };
+    emit("human", "voice.setup", id, { via: "console" });
+    return send(res, 202, voiceView(v));
+  }
+  if (action === "transcribe" && req.method === "POST") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const bytes = Buffer.concat(chunks).length;
+    if (!bytes)
+      return fail(res, 400, "No audio", "The request body is empty.", "Send the recording as the body: audio/pcm (16 kHz, 16-bit, mono) or audio/wav.");
+    voiceTick(v);
+    if (!v.ready)
+      return fail(res, 409, "The speech model is not set up", v.model.id + " is not on this machine.", "Start the setup from the microphone button, or run `pulse voice setup`.");
+    const seconds = bytes / 32000;
+    await new Promise((r) => setTimeout(r, Math.min(1500, 200 + seconds * 60)));
+    v.loaded = v.model.id;
+    const text =
+      seconds < 1.5
+        ? "Yes."
+        : "Add a microphone button to the composer that transcribes on this machine, and make sure the recording never leaves it.";
+    return send(res, 200, {
+      transcript: {
+        text,
+        model: v.model.id,
+        language: v.model.id.includes("-en-") ? "" : "auto",
+        seconds,
+        took_ms: Math.round(200 + seconds * 60),
+      },
+    });
+  }
+  if (action === "unload" && req.method === "POST") {
+    v.loaded = null;
+    return send(res, 200, voiceView(v));
+  }
+  if (action === "model" && req.method === "DELETE") {
+    const all = ["1", "true", "yes"].includes(q.get("all") ?? "");
+    const id = q.get("id") || v.model.id;
+    const targets = all ? v.models : v.models.filter((x) => x.id === id);
+    if (!targets.length)
+      return fail(res, 400, "Unknown model " + JSON.stringify(id), "No such model is in the catalogue.", "Name a model from GET /api/v1/voice, or pass all=1.");
+    let freed = 0;
+    for (const m of targets) {
+      freed += m.have;
+      m.have = 0;
+      m.ready = false;
+      for (const f of m.files) {
+        f.have = 0;
+        f.ready = false;
+      }
+    }
+    if (all) {
+      freed += v.runtime.have;
+      v.runtime.have = 0;
+      v.runtime.ready = false;
+    }
+    v.loaded = null;
+    v.ready = v.runtime.ready && v.model.ready;
+    return send(res, 200, { ...voiceView(v), freed });
+  }
+  return fail(res, 404, "Unknown API route", "That owner-console route does not exist.", "Use an /api/v1 route.");
 }
 
 function skillWrite(req, res, segs, q, body) {

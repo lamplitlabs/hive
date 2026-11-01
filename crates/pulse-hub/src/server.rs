@@ -43,6 +43,8 @@ pub struct Handler {
     pub(crate) pairings: crate::machines::Pairings,
     /// How a pairing runs; tests replace the ssh-bound real one.
     pub(crate) pairer: crate::machines::Pairer,
+    /// The microphone's speech model in memory and the setup fetching it.
+    pub(crate) voice: crate::voice::Voice,
 }
 
 /// Where the console's files are served from: the embedded static export, or
@@ -327,6 +329,7 @@ pub fn new_handler(
         chats: crate::chat::Chats::default(),
         pairings: crate::machines::Pairings::default(),
         pairer: crate::machines::real_pairer(),
+        voice: crate::voice::Voice::default(),
     }
 }
 
@@ -589,6 +592,7 @@ impl Handler {
             chats: self.chats.clone(),
             pairings: self.pairings.clone(),
             pairer: self.pairer.clone(),
+            voice: self.voice.clone(),
         }
     }
 }

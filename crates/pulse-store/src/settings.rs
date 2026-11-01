@@ -50,7 +50,7 @@ pub const HARNESS_RUNNER: &str = "pulse";
 
 pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.idle_release_minutes"=>"15","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","worker_model"=>"","workers"=>"1",
+    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.idle_release_minutes"=>"15","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","voice.language"=>"auto","voice.model"=>"nemotron-3.5-asr-streaming-0.6b","worker_model"=>"","workers"=>"1",
     }
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
@@ -60,6 +60,8 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "chat.resume_after_provider_error_secs"=>("count",Some(0),[],None,"seconds a conversation waits before it resumes a turn a transport provider_error (a failed send or a broken reply body) cut short, once per failure; 0 leaves the conversation idle for the next message as before"),
         "chat.sub_depth"=>("count",Some(0),[],None,"levels deep a conversation may start sub-conversations: at 2 a conversation's sub-conversations may start their own and those may not; 0 sets no depth limit (each level is a session of its own, and a brief that tells its sub-conversation to delegate the same way runs on until a step or cost budget stops it)"),
         "chat.sub_open"=>("count",Some(0),[],None,"sub-conversations one conversation may have open (not finished or archived) at a time, each a live session sharing the parent's worktree; 0 sets no limit"),
+        "voice.model"=>("choice",None,["nemotron-3.5-asr-streaming-0.6b","nemotron-speech-streaming-en-0.6b"],None,"the speech model the hub's microphone transcribes with, run on this machine through ONNX Runtime (no audio leaves it): nemotron-3.5-asr-streaming-0.6b understands 25+ languages and picks the one spoken (or takes voice.language); nemotron-speech-streaming-en-0.6b is English only and a little lighter. Either is about 2.5 GB, fetched once into PULSE_HOME/voice by the microphone's first use or `pulse voice setup`"),
+        "voice.language"=>("text",None,[],None,"the language the multilingual speech model is told to expect: auto lets it pick from the audio; a tag such as en-US, de-DE, ja-JP or zh-CN fixes it, which is more accurate when you always speak one language. The English model ignores this"),
         "inbox.retire_days"=>("count",Some(0),[],None,"days before daemon maintenance may close an open owner question only when it is an older duplicate of a newer open question or its job was cancelled; 0 turns the owner-inbox retire sweep off"),
         "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
         "landing.parallel"=>("count",Some(1),[],None,"projects whose finished branches the daemon may land in parallel; 1 keeps the serial maintenance-pass behaviour"),
@@ -563,6 +565,31 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
         return Err(input_err(msg));
     };
     let text = value.trim();
+    if name == "voice.language" {
+        // `auto` or a BCP 47-shaped tag (de, de-DE, haw-US); whether the
+        // model has a prompt for it is the voice engine's check, which
+        // names the tags it knows.
+        let shape = Regex::new(r"^(?i)[a-z]{2,3}(-[a-z]{2})?$").unwrap();
+        if text.eq_ignore_ascii_case("auto") {
+            return Ok("auto".into());
+        }
+        if !shape.is_match(text) {
+            return Err(input_err(format!(
+                "voice.language takes auto or a language tag such as en-US, de-DE or ja-JP, not {}",
+                py_repr(text)
+            )));
+        }
+        let (lang, region) = text.split_once('-').unwrap_or((text, ""));
+        return Ok(if region.is_empty() {
+            lang.to_ascii_lowercase()
+        } else {
+            format!(
+                "{}-{}",
+                lang.to_ascii_lowercase(),
+                region.to_ascii_uppercase()
+            )
+        });
+    }
     if name == "harness.system_prompt" && text.contains("{{if}}") {
         return Err(input_err(
             "harness.system_prompt is not a valid Go text/template: template: prompt:1: missing value for if",
@@ -920,6 +947,39 @@ mod tests {
         assert!(!s.owner_away());
         assert_eq!(compute_size_setting("moon"), "compute.azure.vm_size");
         assert!(secret_shaped("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn voice_settings_take_a_model_id_and_a_language_tag() {
+        assert_eq!(
+            default_setting("voice.model"),
+            "nemotron-3.5-asr-streaming-0.6b"
+        );
+        assert_eq!(default_setting("voice.language"), "auto");
+        assert_eq!(
+            validate_setting("voice.model", " nemotron-speech-streaming-en-0.6b ").unwrap(),
+            "nemotron-speech-streaming-en-0.6b"
+        );
+        let err = validate_setting("voice.model", "whisper")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("voice.model takes one of nemotron-3.5-asr-streaming-0.6b, nemotron-speech-streaming-en-0.6b"), "{err}");
+        assert_eq!(validate_setting("voice.language", "AUTO").unwrap(), "auto");
+        assert_eq!(
+            validate_setting("voice.language", "de-de").unwrap(),
+            "de-DE"
+        );
+        assert_eq!(validate_setting("voice.language", "EN").unwrap(), "en");
+        assert_eq!(
+            validate_setting("voice.language", "haw-US").unwrap(),
+            "haw-US"
+        );
+        for bad in ["", "english", "en_US", "en-USA", "en-US-x"] {
+            let err = validate_setting("voice.language", bad)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("takes auto or a language tag"), "{bad}: {err}");
+        }
     }
 
     #[test]

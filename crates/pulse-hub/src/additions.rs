@@ -71,6 +71,7 @@ impl Handler {
             "mcp" => self.addition_mcp(w, r, parts),
             "skills" => self.addition_skills(w, r, parts),
             "service" => self.addition_service(w, r, parts),
+            "voice" => self.addition_voice(w, r, parts),
             _ => return false,
         }
         true

@@ -108,6 +108,7 @@ pub fn register_all() {
         pulse_runner::register();
         pulse_tally::register();
         pulse_tasks::register();
+        pulse_voice::register();
         pulse_evolve::init();
     });
 }

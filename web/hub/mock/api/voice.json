@@ -1,0 +1,153 @@
+{
+  "supported": true,
+  "platform": "osx-arm64",
+  "runtime": {
+    "version": "1.31.1",
+    "platform": "osx-arm64",
+    "library": "/home/owner/.pulse/voice/runtime/1.31.1/libonnxruntime.1.31.1.dylib",
+    "size": 44797256,
+    "have": 0,
+    "ready": false
+  },
+  "model": {
+    "id": "nemotron-3.5-asr-streaming-0.6b",
+    "title": "Nemotron 3.5 ASR streaming 0.6B (multilingual)",
+    "languages": "25+ languages, picks the language itself or takes voice.language",
+    "size": 2599375762,
+    "have": 0,
+    "ready": false,
+    "files": [
+      {
+        "name": "config.json",
+        "size": 2995,
+        "have": 0,
+        "ready": false
+      },
+      {
+        "name": "decoder_joint.onnx",
+        "size": 97653235,
+        "have": 0,
+        "ready": false
+      },
+      {
+        "name": "encoder.onnx",
+        "size": 4161952,
+        "have": 0,
+        "ready": false
+      },
+      {
+        "name": "encoder.onnx.data",
+        "size": 2495361024,
+        "have": 0,
+        "ready": false
+      },
+      {
+        "name": "tokenizer.model",
+        "size": 406554,
+        "have": 0,
+        "ready": false
+      }
+    ]
+  },
+  "language": "auto",
+  "models": [
+    {
+      "id": "nemotron-3.5-asr-streaming-0.6b",
+      "title": "Nemotron 3.5 ASR streaming 0.6B (multilingual)",
+      "languages": "25+ languages, picks the language itself or takes voice.language",
+      "size": 2599375762,
+      "have": 0,
+      "ready": false,
+      "files": [
+        {
+          "name": "config.json",
+          "size": 2995,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "decoder_joint.onnx",
+          "size": 97653235,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "encoder.onnx",
+          "size": 4161952,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "encoder.onnx.data",
+          "size": 2495361024,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "tokenizer.model",
+          "size": 406554,
+          "have": 0,
+          "ready": false
+        }
+      ]
+    },
+    {
+      "id": "nemotron-speech-streaming-en-0.6b",
+      "title": "Nemotron Speech streaming 0.6B (English)",
+      "languages": "English only",
+      "size": 2517642460,
+      "have": 0,
+      "ready": false,
+      "files": [
+        {
+          "name": "config.json",
+          "size": 980,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "decoder_joint.onnx",
+          "size": 35842420,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "encoder.onnx",
+          "size": 4026060,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "encoder.onnx.data",
+          "size": 2477522944,
+          "have": 0,
+          "ready": false
+        },
+        {
+          "name": "tokenizer.model",
+          "size": 251056,
+          "have": 0,
+          "ready": false
+        }
+      ]
+    }
+  ],
+  "ready": false,
+  "loaded": null,
+  "free_bytes": 66000000000,
+  "setup": null,
+  "root": "/home/owner/.pulse/voice",
+  "setting_up": false,
+  "idle_release_minutes": 10,
+  "languages": [
+    "auto",
+    "de-DE",
+    "en-GB",
+    "en-US",
+    "es-ES",
+    "fr-FR",
+    "ja-JP",
+    "zh-CN"
+  ],
+  "max_seconds": 300
+}

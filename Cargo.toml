@@ -41,6 +41,7 @@ pulse-mcp = { path = "crates/pulse-mcp" }
 pulse-runner = { path = "crates/pulse-runner" }
 pulse-inspect = { path = "crates/pulse-inspect" }
 pulse-hub = { path = "crates/pulse-hub" }
+pulse-voice = { path = "crates/pulse-voice" }
 
 # errors
 anyhow = "1.0"
@@ -102,6 +103,14 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "blo
 # worker clone and `server::tests::embedded_export` fails spuriously.
 rust-embed = { version = "8.12", features = ["debug-embed"] }
 mime_guess = "2.0"
+# speech to text for the hub's microphone button: NVIDIA Nemotron ASR
+# through ONNX Runtime, which `pulse-voice` downloads at run time and loads
+# dynamically (no native library at build time). Pinned to the release that
+# the runtime version in crates/pulse-voice/src/catalogue.rs was tested with.
+parakeet-rs = { version = "=0.4.3", default-features = false, features = ["load-dynamic"] }
+# WAV decoding for the voice routes and `pulse voice transcribe` (already in
+# parakeet-rs's tree).
+hound = "3.5"
 # test
 tempfile = "3.27"
 

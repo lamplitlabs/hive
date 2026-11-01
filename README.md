@@ -271,7 +271,7 @@ part of this file that explains them.
 | --- | --- | --- |
 | Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `lead`, `mcp`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `skill`, `task`, `thread`, `toolkit`, `vote`, `watch` | [The agents' path](#the-board-for-the-agents) |
 | Records | `export`, `guide`, `import`, `migrate`, `record`, `seed` | [Records in SQLite](#records-in-sqlite) |
-| Human - the maintainer's calls | `ask`, `chat`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop` | [The owner's path](#the-console-for-the-owner) |
+| Human - the maintainer's calls | `ask`, `chat`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop`, `voice` | [The owner's path](#the-console-for-the-owner) |
 | Runner | `bulk`, `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `service`, `sweep`, `work` | [The runner](#the-runner-how-the-machine-works) |
 | Hub | `hub`, `serve` | [The owner's path](#the-console-for-the-owner) |
 | Inspect | `agents`, `events`, `jobs`, `projects`, `schema`, `signers`, `status`, `tally`, `usage`, `verify`, `version` | [The owner's path](#the-console-for-the-owner) / [Development](#development) |
@@ -686,6 +686,36 @@ the agent reads them; a message with files and no words asks it to look at
 them. When a provider breaks off mid-reply (the connection drops, the body
 stops decoding) the harness asks for the reply again, twice, before the turn
 reports the error.
+
+**Dictate** with the microphone next to the paper clip, the way the GitHub
+Copilot CLI's `/voice` works: press to record, press again (or wait for the
+five-minute limit; Escape drops the take) and the words land where the caret
+is, with the spaces a sentence needs, so you can speak a sentence into the
+middle of what you typed. The speech runs on this machine - NVIDIA's Nemotron
+streaming ASR, the open model Copilot ships for dictation, through ONNX
+Runtime inside the hub process - so no audio leaves the computer and no
+provider is involved. The first press opens a dialog that fetches what the
+model needs into `~/.pulse/voice` (ONNX Runtime 1.31.1 for this platform and
+the model, about 2.5 GB, every file checked against a pinned SHA-256, resumed
+if interrupted, **Stop** keeps the parts) and shows the progress bar; a
+terminal does the same with `pulse voice setup`, and `pulse voice status`,
+`pulse voice transcribe FILE.wav` and `pulse voice remove [--all]` read,
+test and free it. Two models to choose from, in the dialog or with the
+`voice.model` setting: `nemotron-3.5-asr-streaming-0.6b` (default) hears
+25+ languages and picks the one spoken, or is told with `voice.language`
+(`auto`, or a tag such as `de-DE` or `ja-JP`); `nemotron-speech-streaming-en-0.6b`
+is English only and a little lighter. The model loads on the first press
+(about two seconds), stays in memory for ten minutes of silence and is let
+go after, so an idle hub holds no 2.5 GB. Apple-silicon Macs and x86-64 or
+arm64 Linux have a runtime build; elsewhere the button says so. The console
+sends 16 kHz 16-bit mono PCM as the body of `POST /api/v1/voice/transcribe`
+(`audio/pcm`, or `audio/wav` for a file, up to 300 seconds) and gets
+`{transcript: {text, model, language, seconds, took_ms}}`; `GET
+/api/v1/voice` is the status the button shows, `POST /voice/setup`
+(`{model?}` or `{stop: true}`) runs the download, `POST /voice/unload` frees
+the memory, `DELETE /voice/model?id=…` (or `all=1`) the disk. The microphone
+needs the hub on `127.0.0.1`, `localhost` or https - browsers give no
+microphone to a plain http page on another host.
 
 Pick a project and the agent works in its own worktree on a `pulse/chat-<id>`
 branch of that project's default branch, so your checkout stays clean. A Cargo

@@ -35,6 +35,7 @@ pulse-records.workspace = true
 pulse-runner.workspace = true
 pulse-tally.workspace = true
 pulse-tasks.workspace = true
+pulse-voice.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 

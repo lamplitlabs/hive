@@ -89,6 +89,7 @@ import {
 } from "@/components/pulse/panel";
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
 import { BackButton, Split } from "@/components/chat/split";
+import { MicButton } from "@/components/chat/mic";
 import { TaskView } from "@/components/chat/task-view";
 import type {
   ChatArtifact,
@@ -152,6 +153,7 @@ import {
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { insertSpoken, type Transcript } from "@/lib/voice";
 
 // ----- words ----------------------------------------------------------------
 
@@ -3259,9 +3261,9 @@ function PendingCard({
 
 // ----- composer -------------------------------------------------------------
 
-// Composer: the text on top, the tools underneath - attach, the model, the
-// auto switch and Stop on the left, send on the right - as the Copilot app
-// lays it out.
+// Composer: the text on top, the tools underneath - attach, dictate, the
+// model, the auto switch and Stop on the left, send on the right - as the
+// Copilot app lays it out.
 function Composer({
   conversation,
   live,
@@ -3282,8 +3284,25 @@ function Composer({
   const [busy, setBusy] = useState("");
   const [over, setOver] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const textarea = useRef<HTMLTextAreaElement | null>(null);
   const running = live.status === "running" || live.status === "waiting";
   const canSend = (!!text.trim() || picked.length > 0) && !busy && !disabled;
+
+  // Dictated words go where the caret is (or over the selection), and the
+  // caret moves past them so the next take follows on.
+  const insertSpokenText = (t: Transcript) => {
+    const el = textarea.current;
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    const next = insertSpoken(text, start, end, t.text);
+    setText(next.text);
+    requestAnimationFrame(() => {
+      const node = textarea.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(next.caret, next.caret);
+    });
+  };
 
   const addFiles = (files: FileList | File[] | null | undefined) => {
     if (disabled) return;
@@ -3385,6 +3404,7 @@ function Composer({
           </ul>
         ) : null}
         <Textarea
+          ref={textarea}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -3444,6 +3464,7 @@ function Composer({
           >
             <PaperclipIcon />
           </Button>
+          <MicButton disabled={disabled || !!busy} onText={insertSpokenText} />
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
             {tools}
           </div>
@@ -3472,7 +3493,7 @@ function Composer({
         ) : (
           <span>
             Enter sends, Shift+Enter for a new line. Drop or paste files to
-            attach them.
+            attach them, or press the microphone to dictate.
             {running ? " The agent is busy: your message waits in line." : ""}
           </span>
         )}

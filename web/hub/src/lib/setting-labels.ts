@@ -197,9 +197,11 @@ const LABELS: Record<string, string> = {
   "harness.step_timeout": "Time limit per command (seconds)",
   "harness.commit_timeout": "Time limit per verified git commit (seconds)",
   "harness.output_limit": "Output kept per command (characters)",
+  "voice.model": "Speech model the microphone transcribes with",
+  "voice.language": "Language spoken into the microphone (auto = detect)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|voice)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -355,6 +357,10 @@ const HELP: Record<string, string> = {
   "harness.commit_timeout":
     "How long a git commit that runs the pre-commit verify gate may take before it is stopped; never below the per-command limit.",
   "harness.output_limit": "How much of one command's output the model sees.",
+  "voice.model":
+    "The speech model behind the microphone button in chat. It runs on this machine through ONNX Runtime, so no audio leaves it. The multilingual model understands 25+ languages and picks the one spoken; the English one is a little lighter. Either is about 2.5 GB, fetched once on the microphone's first use.",
+  "voice.language":
+    "What the multilingual model should expect to hear: auto detects it, or a tag like en-US, de-DE or ja-JP pins it. The English-only model ignores this.",
 };
 
 export function settingLabel(name: string): string {

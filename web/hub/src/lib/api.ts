@@ -4,6 +4,7 @@
 // dashboard returned; the new routes
 // (tasks, messages, compute, records, constitution, events) follow the
 // "API v1 additions" contract - the pulse hub is checked against these types.
+import type { Transcript, VoiceStatus } from "@/lib/voice";
 
 export class ApiError extends Error {
   status: number;
@@ -1819,6 +1820,27 @@ export async function chatUpload(
   return data.attachment;
 }
 
+// The microphone (lib/voice.ts has the shapes): the recording goes up as
+// raw 16 kHz 16-bit mono PCM and the hub answers with the words. The
+// model runs inside the hub, so the audio stays on this machine.
+export async function voiceTranscribe(
+  pcm: Uint8Array,
+  language = "",
+): Promise<Transcript> {
+  const r = await fetch(
+    apiHref("voice/transcribe" + (language ? query({ language }) : "")),
+    {
+      method: "POST",
+      headers: { "Content-Type": "audio/pcm" },
+      body: pcm as BodyInit,
+      cache: "no-store",
+      credentials: "same-origin",
+    },
+  );
+  const data = await readJson<{ transcript: Transcript }>(r);
+  return data.transcript;
+}
+
 export interface HarnessSessionsResponse {
   sessions: HarnessSession[];
   counts: {
@@ -3299,6 +3321,18 @@ export const writes = {
     post<{ login: HarnessLogin }>("harness/login/token", { token }),
   harnessLogout: () =>
     post<{ ok: boolean; login: HarnessLogin }>("harness/logout", {}),
+  // The speech model's setup: starts the download (202 with the status the
+  // console then polls on GET voice), or stops the one running.
+  voiceSetup: (model?: string) =>
+    post<VoiceStatus>("voice/setup", model ? { model } : {}),
+  voiceSetupStop: () => post<VoiceStatus>("voice/setup", { stop: true }),
+  voiceUnload: () => post<VoiceStatus>("voice/unload", {}),
+  // Removes a model's files (the chosen one by default); `freed` is bytes.
+  voiceRemove: (model: string) =>
+    api<VoiceStatus & { freed: number }>(
+      "voice/model" + query({ id: model }),
+      { method: "DELETE", credentials: "same-origin" },
+    ),
   harnessCancel: (id: string) =>
     post<{ cancelled: boolean; session: HarnessSession }>(
       "harness/sessions/" + enc(id) + "/cancel",

@@ -1298,6 +1298,33 @@
       "updated_at": "2026-10-20T07:00:00Z",
       "updated_by": "init",
       "value": "8"
+    },
+    {
+      "choices": [
+        "nemotron-3.5-asr-streaming-0.6b",
+        "nemotron-speech-streaming-en-0.6b"
+      ],
+      "default": "nemotron-3.5-asr-streaming-0.6b",
+      "description": "the speech model the hub's microphone transcribes with, run on this machine through ONNX Runtime (no audio leaves it): nemotron-3.5-asr-streaming-0.6b understands 25+ languages and picks the one spoken (or takes voice.language); nemotron-speech-streaming-en-0.6b is English only and a little lighter. Either is about 2.5 GB, fetched once into PULSE_HOME/voice by the microphone's first use or `pulse voice setup`",
+      "kind": "choice",
+      "min": null,
+      "name": "voice.model",
+      "secret": false,
+      "updated_at": "2026-10-20T07:00:00Z",
+      "updated_by": "init",
+      "value": "nemotron-3.5-asr-streaming-0.6b"
+    },
+    {
+      "choices": null,
+      "default": "auto",
+      "description": "the language the multilingual speech model is told to expect: auto lets it pick from the audio; a tag such as en-US, de-DE, ja-JP or zh-CN fixes it, which is more accurate when you always speak one language. The English model ignores this",
+      "kind": "text",
+      "min": null,
+      "name": "voice.language",
+      "secret": false,
+      "updated_at": "2026-10-20T07:00:00Z",
+      "updated_by": "init",
+      "value": "auto"
     }
   ]
 }
