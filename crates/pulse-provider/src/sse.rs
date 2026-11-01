@@ -595,6 +595,12 @@ mod tests {
     /// chunks of a tool call, before any `finish_reason` and `[DONE]`.
     const CUT_ARGUMENTS: &str = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
 
+    /// The second case the same day, in another conversation: a `bash`
+    /// call cut one byte short, the closing brace alone missing. A scan of
+    /// the 847 trajectories since Oct 29 found exactly these two: a rare
+    /// gateway cut, not a parser quirk.
+    const CUT_SHORT_ARGUMENTS: &str = r#"{"command": "pulse manifest sync --project leben-in-deutschland 2>&1 | tail -6; echo ---; pulse skill list --project leben-in-deutschland 2>&1 | grep -i \"scraper\"""#;
+
     fn cut_tool_call_chunks() -> Vec<String> {
         vec![
             json!({"id":"chatcmpl-cut","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"toolu_01D9XWUQtuVBTWixzvum3zYd","type":"function","function":{"name":"edit","arguments":""}}]},"finish_reason":null}]}).to_string(),
@@ -648,6 +654,27 @@ mod tests {
         assert_eq!(
             crate::provider_error(&err).unwrap().code,
             "stream_incomplete"
+        );
+        // The other conversation's cut: the whole call but its last byte,
+        // in one chunk, then the body ends.
+        let short = [
+            json!({"id":"chatcmpl-short","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"toolu_01PToC5gLgbC4XyNrtnHnH13","type":"function","function":{"name":"bash","arguments":CUT_SHORT_ARGUMENTS}}]},"finish_reason":null}]}).to_string(),
+        ];
+        let err = stream_chat_completion(
+            "copilot",
+            &CancelToken::new(),
+            stream_of(&short, false),
+            1 << 20,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let perr = crate::provider_error(&err).unwrap();
+        assert_eq!(perr.code, "stream_incomplete");
+        assert!(perr.retryable);
+        assert_eq!(CUT_SHORT_ARGUMENTS.len(), 165);
+        assert_eq!(
+            crate::invalid_arguments(CUT_SHORT_ARGUMENTS).as_deref(),
+            Some("EOF while parsing an object at line 1 column 165")
         );
 
         // After text was shown the same cut is `stream_interrupted`, not
