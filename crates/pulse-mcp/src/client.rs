@@ -98,12 +98,17 @@ impl std::error::Error for CredentialError {}
 /// Everything the transport needs that came from a secret: headers and a
 /// query parameter for HTTP, environment for a child process, and the raw
 /// values so they can be scrubbed from every string that leaves the client.
+/// A stdio server also gets the working directory the caller works in and
+/// what pulse sets for a browser server (see [`crate::browser`]).
 #[derive(Default, Clone)]
 pub struct Wire {
     pub headers: Vec<(String, String)>,
     pub query: Option<(String, String)>,
     pub env: BTreeMap<String, String>,
     pub secrets: Vec<String>,
+    /// The working directory of a stdio server's process; the parent's
+    /// when none.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 fn is_reference(value: &str) -> bool {
@@ -132,9 +137,25 @@ pub(crate) fn read_secret(resolver: &pulse_cred::Resolver, reference: &str) -> R
 
 /// Resolves the server's secret and env references. Nothing here spawns a
 /// process; only an `oauth` server whose token is about to expire goes to
-/// the network, to refresh it.
+/// the network, to refresh it. The workspace is the caller's: what
+/// `PULSE_ARTIFACTS` names in its environment, for `pulse mcp call`.
 pub fn prepare(server: &McpServer, resolver: &pulse_cred::Resolver) -> Result<Wire> {
-    let mut wire = Wire::default();
+    prepare_in(server, resolver, &crate::browser::Workspace::from_env())
+}
+
+/// [`prepare`] for a caller that knows where the agent works: a stdio
+/// server runs in `ws.cwd`, and a browser server writes its screenshots
+/// to `ws.output_dir`.
+pub fn prepare_in(
+    server: &McpServer,
+    resolver: &pulse_cred::Resolver,
+    ws: &crate::browser::Workspace,
+) -> Result<Wire> {
+    let mut wire = Wire {
+        cwd: ws.cwd.clone(),
+        env: crate::browser::launch_env(server, ws),
+        ..Wire::default()
+    };
     for (k, v) in &server.env {
         if is_reference(v) {
             let value = read_secret(resolver, v)?;
@@ -622,11 +643,18 @@ fn split_hint(server: &McpServer, e: anyhow::Error) -> anyhow::Error {
 
 struct StdioTransport {
     child: Child,
-    stdin: std::process::ChildStdin,
+    /// Taken on drop: closing it is how a stdio server learns the client
+    /// is gone.
+    stdin: Option<std::process::ChildStdin>,
     lines: Receiver<std::io::Result<String>>,
     stderr: Arc<Mutex<String>>,
     command: String,
 }
+
+/// How long a stdio server gets to leave on its own after its stdin
+/// closes before it is killed. Playwright shuts its browser down in that
+/// time (a kill leaves the browser and its profile behind).
+const STDIO_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 impl StdioTransport {
     fn spawn(server: &McpServer, wire: &Wire) -> Result<Self> {
@@ -635,6 +663,9 @@ impl StdioTransport {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(dir) = wire.cwd.as_deref().filter(|d| d.is_dir()) {
+            cmd.current_dir(dir);
+        }
         for (k, v) in &wire.env {
             cmd.env(k, v);
         }
@@ -689,7 +720,7 @@ impl StdioTransport {
         });
         Ok(StdioTransport {
             child,
-            stdin,
+            stdin: Some(stdin),
             lines: rx,
             stderr,
             command: server.command.clone(),
@@ -699,9 +730,12 @@ impl StdioTransport {
     fn write(&mut self, body: &Value) -> Result<()> {
         let mut line = serde_json::to_string(body)?;
         line.push('\n');
-        self.stdin
+        let Some(stdin) = self.stdin.as_mut() else {
+            bail!("{} is closed", self.command);
+        };
+        stdin
             .write_all(line.as_bytes())
-            .and_then(|()| self.stdin.flush())
+            .and_then(|()| stdin.flush())
             .map_err(|e| anyhow!("{} closed its stdin: {e}", self.command))
     }
 
@@ -779,7 +813,19 @@ impl Transport for StdioTransport {
 }
 
 impl Drop for StdioTransport {
+    /// Closes the server's stdin, which tells it the client is gone, and
+    /// gives it [`STDIO_EXIT_GRACE`] to leave with whatever it runs (a
+    /// browser, its profile folder) before it is killed.
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        let deadline = Instant::now() + STDIO_EXIT_GRACE;
+        while Instant::now() < deadline {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(20)),
+                Err(_) => break,
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -1189,6 +1235,79 @@ impl Transport for SseTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropping a stdio client closes the server's stdin and lets it leave
+    /// on its own, so what it runs (a browser) shuts down with it; a server
+    /// that ignores the close is killed after the grace.
+    #[test]
+    fn dropping_a_stdio_client_lets_the_server_exit_on_its_own_then_kills_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("left-politely");
+        // Answers initialize, then exits when stdin closes, leaving a marker
+        // behind: a killed server never reaches that line.
+        let script = dir.path().join("polite.sh");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"polite","version":"1"}}}}}}' ;;
+  esac
+done
+: > {}
+"#,
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let server = McpServer {
+            name: "polite".into(),
+            transport: "stdio".into(),
+            command: script.display().to_string(),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        let client =
+            Client::connect_with(&server, Wire::default(), Duration::from_secs(10)).unwrap();
+        assert_eq!(client.server.name, "polite");
+        drop(client);
+        assert!(marker.exists(), "the server did not get to exit on its own");
+        assert!(
+            started.elapsed() < STDIO_EXIT_GRACE,
+            "{:?}",
+            started.elapsed()
+        );
+
+        // A server that ignores its closed stdin is killed once the grace is up.
+        let stubborn = dir.path().join("stubborn.sh");
+        std::fs::write(
+            &stubborn,
+            r#"#!/bin/sh
+IFS= read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stubborn","version":"1"}}}'
+exec sleep 300
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&stubborn, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let server = McpServer {
+            command: stubborn.display().to_string(),
+            ..server
+        };
+        let client =
+            Client::connect_with(&server, Wire::default(), Duration::from_secs(10)).unwrap();
+        let started = Instant::now();
+        drop(client);
+        let took = started.elapsed();
+        assert!(
+            took >= STDIO_EXIT_GRACE && took < STDIO_EXIT_GRACE + Duration::from_secs(5),
+            "{took:?}"
+        );
+    }
 
     #[test]
     fn a_stdio_command_line_given_as_one_argument_gets_the_split_named() {

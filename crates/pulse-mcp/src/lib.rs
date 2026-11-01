@@ -3,10 +3,12 @@
 //! older HTTP+SSE transport, OAuth 2.1 sign-in for http and sse servers
 //! (`pulse mcp login`), and the shared skills (`pulse skill`).
 
+pub mod browser;
 pub mod client;
 pub mod commands;
 pub mod oauth;
 
+pub use browser::Workspace;
 pub use client::*;
 pub use commands::{
     Checked, RESOLVER_TIMEOUT, connect_and_record, connect_error, register, resolver,
