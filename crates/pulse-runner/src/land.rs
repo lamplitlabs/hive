@@ -284,6 +284,144 @@ pub(crate) fn save_branch_patch(
     path.display().to_string()
 }
 
+/// The most commits `replay_from_fork` copies; an experiment branch carries a handful.
+const REPLAY_FORK_MAX_COMMITS: usize = 200;
+
+/// Copies the commits of `branch` after `fork` (its run's base) onto the commit checked
+/// out in `worktree`, one three-way `merge-tree` per commit along the branch's
+/// first-parent line, each copy keeping its author, date and message plus a
+/// `(cherry picked from commit ...)` line. Used when the default branch was squashed to
+/// a new root after the branch forked: the two share no commit, so a merge would
+/// conflict on every file, while the branch's own changes still apply. Only objects are
+/// written; the caller merges the returned tip. Returns the tip and how many commits
+/// were copied, or why the copy failed (a conflict, too many commits, a git error).
+pub(crate) fn replay_from_fork(
+    worktree: &str,
+    fork: &str,
+    branch: &str,
+) -> std::result::Result<(String, usize), String> {
+    let git = |timeout: u64, args: &[&str]| {
+        crate::util::git_timeout(worktree, Duration::from_secs(timeout), args)
+    };
+    let head = git(10, &["rev-parse", "--verify", "HEAD"]);
+    if !head.ok() {
+        return Err(format!(
+            "no commit to replay onto: {}",
+            crate::util::trunc(head.stderr.trim(), 160)
+        ));
+    }
+    let listed = git(
+        60,
+        &[
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            &format!("{fork}..{branch}"),
+        ],
+    );
+    if !listed.ok() {
+        return Err(crate::util::trunc(listed.stderr.trim(), 200));
+    }
+    let shas = listed
+        .stdout
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if shas.len() > REPLAY_FORK_MAX_COMMITS {
+        return Err(format!(
+            "{} commits to replay, more than {REPLAY_FORK_MAX_COMMITS}",
+            shas.len()
+        ));
+    }
+    let mut tip = head.stdout.trim().to_string();
+    for sha in &shas {
+        let short = crate::recipe::short(sha, 12);
+        // The commit's own change is its diff against its first parent (the run base
+        // for the first one): that is the merge base of the three-way merge.
+        let tree = git(
+            120,
+            &[
+                "merge-tree",
+                "--write-tree",
+                &format!("--merge-base={sha}^1"),
+                &tip,
+                sha,
+            ],
+        );
+        let tree_id = tree.stdout.lines().next().unwrap_or("").trim().to_string();
+        if !tree.ok() || tree_id.len() < 40 {
+            let conflicted = tree
+                .stdout
+                .lines()
+                .skip(1)
+                .take_while(|l| !l.trim().is_empty())
+                .filter_map(|l| l.split('\t').nth(1))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let why = if conflicted.is_empty() {
+                crate::util::trunc(tree.stderr.trim(), 160)
+            } else {
+                format!("conflicts in {conflicted}")
+            };
+            return Err(format!("replaying {short} from the run base: {why}"));
+        }
+        let shown = git(10, &["log", "-1", "--format=%an%n%ae%n%aI", sha]);
+        let mut fields = shown.stdout.lines();
+        let (Some(name), Some(email), Some(date)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(format!(
+                "could not read {short}: {}",
+                crate::util::trunc(shown.stderr.trim(), 160)
+            ));
+        };
+        let message = git(10, &["log", "-1", "--format=%B", sha]).stdout;
+        let message = message.trim_end();
+        let message = format!(
+            "{}\n\n(cherry picked from commit {sha})",
+            if message.is_empty() {
+                "(no message)"
+            } else {
+                message
+            }
+        );
+        let made = crate::util::git_timeout_env(
+            worktree,
+            Duration::from_secs(30),
+            &[
+                format!("GIT_AUTHOR_NAME={name}"),
+                format!("GIT_AUTHOR_EMAIL={email}"),
+                format!("GIT_AUTHOR_DATE={date}"),
+            ],
+            &[
+                "-c",
+                "user.name=pulse",
+                "-c",
+                "user.email=pulse@pulse.local",
+                "-c",
+                "commit.gpgsign=false",
+                "commit-tree",
+                &tree_id,
+                "-p",
+                &tip,
+                "-m",
+                &message,
+            ],
+        );
+        let copy = made.stdout.trim().to_string();
+        if !made.ok() || copy.len() < 40 {
+            return Err(format!(
+                "copying {short} failed: {}",
+                crate::util::trunc(made.stderr.trim(), 200)
+            ));
+        }
+        tip = copy;
+    }
+    Ok((tip, shas.len()))
+}
+
 pub(crate) fn requeue_job(
     s: &pulse_store::Store,
     now: String,
@@ -1060,7 +1198,7 @@ pub(crate) fn land_branch_with_registry(
             format!("{branch} was already contained in {def}; branch removed"),
         ));
     }
-    let base = crate::util::git_timeout(
+    let mut base = crate::util::git_timeout(
         &root,
         Duration::from_secs(30),
         &["merge-base", &def, &branch],
@@ -1068,6 +1206,20 @@ pub(crate) fn land_branch_with_registry(
     .stdout
     .trim()
     .to_string();
+    // A branch that forked before {def} was squashed to a new root commit shares no
+    // commit with it: `merge-base` is empty, every file reads as changed and a merge
+    // conflicts on all of them. The commit the job's run was cloned from (`runs.base`)
+    // is where the branch really forked; while it still exists and is on the branch it
+    // stands in as the base, and the branch's own commits are copied onto {def} below.
+    let mut replay_from = String::new();
+    if base.is_empty() && !o.run_id.is_empty() {
+        replay_from = crate::experiment::run_base_fork(
+            &root,
+            &branch,
+            &crate::experiment::run_base(s, &o.run_id),
+        );
+        base = replay_from.clone();
+    }
     let files = branch_files(root.clone(), base.clone(), branch.clone());
     let slug = project.str("slug");
     let refused = if o.sync {
@@ -1290,12 +1442,30 @@ pub(crate) fn land_branch_with_registry(
         )
         .into());
     }
+    // The branch's commits after its run base, copied onto {def} in the worktree: the
+    // merge below then lands the copies, and the history {def} squashed away stays out.
+    let mut merge_target = branch.clone();
+    let mut replay_note = String::new();
+    let mut replay_failed = String::new();
+    if !replay_from.is_empty() {
+        match replay_from_fork(&worktree, &replay_from, &branch) {
+            Ok((tip, copied)) => {
+                replay_note = format!(
+                    "{copied} {} replayed from its run base {} ({def} shares no history with it)",
+                    crate::util::plural(copied as i32, "commit"),
+                    crate::recipe::short(&replay_from, 12)
+                );
+                merge_target = tip;
+            }
+            Err(why) => replay_failed = why,
+        }
+    }
     let mut merged = crate::util::git_timeout(
         &worktree,
         Duration::from_secs(120),
-        &["merge", "--ff-only", &branch],
+        &["merge", "--ff-only", &merge_target],
     );
-    if !merged.ok() {
+    if !merged.ok() && replay_failed.is_empty() {
         let job_line = if job.0.is_empty() {
             String::new()
         } else {
@@ -1320,7 +1490,7 @@ pub(crate) fn land_branch_with_registry(
                 "--no-edit",
                 "-m",
                 &msg,
-                &branch,
+                &merge_target,
             ],
         );
     }
@@ -1333,13 +1503,18 @@ pub(crate) fn land_branch_with_registry(
     if !merged.ok() {
         crate::util::git_timeout(&worktree, Duration::from_secs(60), &["merge", "--abort"]);
         let patch = save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
+        let conflict = if replay_failed.is_empty() {
+            format!("{branch} conflicts with {def}")
+        } else {
+            format!("{branch} conflicts with {def} ({replay_failed})")
+        };
         if !job.0.is_empty() {
             requeue_job(
                 s,
                 now.clone(),
                 job.clone(),
                 actor.clone(),
-                format!("{branch} conflicts with {def}"),
+                conflict.clone(),
                 patch.clone(),
             );
         }
@@ -1351,7 +1526,7 @@ pub(crate) fn land_branch_with_registry(
                 &actor,
                 "land.conflict",
                 &branch,
-                serde_json::json!({"project": slug, "patch": patch, "job": job_id_of(job.clone())}),
+                serde_json::json!({"project": slug, "patch": patch, "job": job_id_of(job.clone()), "replay": replay_failed}),
             );
         }
         let what = if job.0.is_empty() {
@@ -1361,7 +1536,7 @@ pub(crate) fn land_branch_with_registry(
         };
         return Ok((
             "conflict".into(),
-            format!("{branch} conflicts with {def}; {what}; patch at {patch}"),
+            format!("{conflict}; {what}; patch at {patch}"),
         ));
     }
     if crate::util::git_timeout(
@@ -1974,6 +2149,9 @@ pub(crate) fn land_branch_with_registry(
     if let Some(note) = stash_note.as_ref() {
         detail.insert("auto_stash".into(), serde_json::json!(note));
     }
+    if !replay_note.is_empty() {
+        detail.insert("replayed".into(), serde_json::json!(replay_note));
+    }
     if let Some(secs) = verify_seconds {
         detail.insert("verify_seconds".into(), serde_json::json!(secs));
     }
@@ -2030,6 +2208,11 @@ pub(crate) fn land_branch_with_registry(
         project.str("verify_cmd")
     };
     let def_copy = def.clone();
+    let replayed = if replay_note.is_empty() {
+        String::new()
+    } else {
+        format!(", {replay_note}")
+    };
     // The landing already happened; a result post that fails must not undo it, but
     // it must not vanish either: owners read the board for "what landed", so the
     // miss goes to stderr, which the daemon log captures.
@@ -2049,7 +2232,7 @@ pub(crate) fn land_branch_with_registry(
                 230,
             ),
             body: format!(
-                "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing): merged in a throwaway worktree, `{vc_shown}` on the merged result ({verify_note}), then {landed_how}. The branch is removed; the commits are on {def}.\n"
+                "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing): merged in a throwaway worktree{replayed}, `{vc_shown}` on the merged result ({verify_note}), then {landed_how}. The branch is removed; the commits are on {def}.\n"
             ),
             agent: crate::board::actor_agent(s, actor),
             branch: Some(Box::new(def_copy)),
@@ -2063,7 +2246,7 @@ pub(crate) fn land_branch_with_registry(
     Ok((
         "landed".into(),
         format!(
-            "{branch} landed on {def} as {} ({verify_note}, {commits} commit(s))",
+            "{branch} landed on {def} as {} ({verify_note}, {commits} commit(s){replayed})",
             crate::recipe::short(&sha, 12)
         ),
     ))
