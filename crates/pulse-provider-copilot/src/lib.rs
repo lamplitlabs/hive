@@ -2376,6 +2376,94 @@ mod tests {
     }
 
     #[test]
+    fn a_streamed_reply_cut_before_its_finish_reason_is_asked_for_again() {
+        let _serial = test_serial();
+        let restore = shorten_chat_retry_backoffs(vec![Duration::ZERO, Duration::ZERO]);
+        // The gateway closes the first body between two chunks of a tool
+        // call: no finish reason, no [DONE], arguments cut mid-object (the
+        // shape of a real conversation's last message). The second body is
+        // whole. The caller sees one request fail and nothing of the
+        // partial message; the whole reply comes back.
+        let calls = Arc::new(AtomicI32::new(0));
+        let calls2 = calls.clone();
+        let logs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let srv = copilot_test_server(move |req| {
+            assert_eq!(req.header("Accept"), Some("text/event-stream"));
+            let n = calls2.fetch_add(1, Ordering::SeqCst);
+            let head = json!({"id":"c1","model":"claude-fable-5.1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"toolu_01D9XWUQtuVBTWixzvum3zYd","type":"function","function":{"name":"edit","arguments":""}}]},"finish_reason":null}]});
+            let mut text = format!("data: {head}\n\n");
+            if n == 0 {
+                let cut = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\": \"AGENTS.md\", \"replace\": \"  with the GitHub noreply address.\\n\\n## Rollback Planning\""}}]},"finish_reason":null}]});
+                text.push_str(&format!("data: {cut}\n\n"));
+            } else {
+                let whole = json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\": \"AGENTS.md\", \"replace\": \"old\", \"with\": \"new\"}"}}]},"finish_reason":"tool_calls"}]});
+                text.push_str(&format!("data: {whole}\n\ndata: [DONE]\n\n"));
+            }
+            HttpResponse::new(200)
+                .header("Content-Type", "text/event-stream")
+                .body(text.into_bytes())
+        });
+        let logs2 = logs.clone();
+        let env = Arc::new(env_token());
+        let p = Copilot::new(Options {
+            home: tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .into_owned(),
+            http: Some(
+                reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap(),
+            ),
+            env: Some(Arc::new(move |key| {
+                env.get(key).cloned().unwrap_or_default()
+            })),
+            log: Some(Arc::new(move |line| {
+                logs2.lock().unwrap().push(line.to_string())
+            })),
+            ..Options::default()
+        })
+        .unwrap();
+        let mut shown = String::new();
+        let resp = p
+            .chat_stream(
+                &cancel(),
+                Request {
+                    model: "claude-fable-5.1".to_string(),
+                    messages: vec![msg(Role::User, "fix AGENTS.md")],
+                    ..Request::default()
+                },
+                &mut |t| shown.push_str(t),
+            )
+            .unwrap();
+        assert!(shown.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(resp.finish_reason, "tool_calls");
+        let msg = resp.message.unwrap();
+        assert_eq!(msg.tool_calls.len(), 1);
+        assert_eq!(msg.tool_calls[0].name, "edit");
+        assert_eq!(
+            msg.tool_calls[0].arguments,
+            "{\"path\": \"AGENTS.md\", \"replace\": \"old\", \"with\": \"new\"}"
+        );
+        assert_eq!(
+            p.inner.lock().unwrap().stream_mode,
+            StreamMode::WithUsage,
+            "a cut stream is not a refusal to stream"
+        );
+        let logs = logs.lock().unwrap();
+        assert!(
+            logs.iter().any(|l| l.contains("copilot chat retry in")
+                && l.contains("the reply ended before it was whole: no finish reason arrived")),
+            "{logs:?}"
+        );
+        drop(srv);
+        restore();
+    }
+
+    #[test]
     fn chat_retries_session_token_network_error_then_succeeds() {
         let _serial = test_serial();
         let restore = shorten_chat_retry_backoffs(vec![Duration::ZERO, Duration::ZERO]);

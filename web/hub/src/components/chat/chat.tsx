@@ -40,6 +40,7 @@ import {
   PaperclipIcon,
   PencilIcon,
   RefreshCwIcon,
+  RotateCcwIcon,
   ShieldCheckIcon,
   ShieldQuestionIcon,
   SparklesIcon,
@@ -216,6 +217,13 @@ const GROUP_TITLES: Record<ListGroup, string> = {
 };
 
 const LET_AGENT_DECIDE = "__decide__";
+
+// The way out of a session whose memory holds something the provider
+// refuses (a reply cut mid-stream that left a broken tool call behind),
+// without restarting the hub: the session ends, the next message loads
+// the conversation back from its saved transcript and repairs it.
+const RESTART_SESSION_HINT =
+  "Start the agent's session over from the saved transcript. Keeps the transcript and the workspace; the next message reloads the conversation from the transcript, repairing anything the provider refused.";
 
 function stepRange(
   m: ConversationMessage,
@@ -2564,6 +2572,30 @@ function ConversationBody({
             >
               <CircleCheckIcon />
               <span className="sr-only sm:not-sr-only">Finish</span>
+            </Button>
+          ) : null}
+          {!archived ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 shrink-0 rounded-full"
+              onClick={() =>
+                void act(
+                  "restart",
+                  () => writes.chatRestart(c.id),
+                  "Session restarted. Your next message reloads the conversation from the saved transcript.",
+                )
+              }
+              disabled={!!busy || running || waiting}
+              title={
+                running || waiting
+                  ? "Stop the turn first; then the session can be restarted from the saved transcript"
+                  : RESTART_SESSION_HINT
+              }
+            >
+              <RotateCcwIcon />
+              <span className="sr-only sm:not-sr-only">Restart session</span>
             </Button>
           ) : null}
           {!archived ? (

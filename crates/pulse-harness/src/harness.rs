@@ -17,6 +17,7 @@ use crate::hooks::{
 };
 use crate::memory::{MEMORY_TOOL, Memory, MemoryAction, memory_paragraph, memory_tool};
 use crate::permissions::{self, Rule, Rules};
+use crate::repair::{RepairedCall, invalid_arguments_result, repair_call, repair_tool_arguments};
 use crate::rewind::{self, Rewind};
 use crate::search::{SEARCH_TIMEOUT, WEB_SEARCH_TOOL, WebSearch, web_search_tool};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
@@ -1859,12 +1860,28 @@ impl Agent {
 
     /// Adds the whole conversation of an earlier session before the first
     /// turn: everything after its system prompt, which is rendered anew.
-    /// A second call appends.
+    /// A second call appends. A tool call whose arguments are not JSON (a
+    /// reply the gateway cut mid-stream, saved as it came) is repaired on
+    /// the way in, so a conversation a vendor refused for it heals when its
+    /// session starts again.
     pub fn resume_messages(&mut self, msgs: Vec<Message>) -> anyhow::Result<()> {
         if self.ran {
             return Err(anyhow!("resume_messages must come before the first turn"));
         }
-        let msgs = trim_dangling_tool_calls(msgs);
+        let mut msgs = trim_dangling_tool_calls(msgs);
+        let repaired = repair_tool_arguments(&mut msgs);
+        if !repaired.is_empty() {
+            self.note_at_start(format!(
+                "repaired {} carried-over tool call{} whose arguments were not JSON ({}): a reply cut mid-stream had left them behind, and the provider refuses a request that carries them",
+                repaired.len(),
+                if repaired.len() == 1 { "" } else { "s" },
+                repaired
+                    .iter()
+                    .map(RepairedCall::label)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         let first_user = msgs
             .iter()
             .find(|m| matches!(m.role, Role::User))
@@ -2141,6 +2158,10 @@ impl Agent {
         // Requests the provider refused as too large in a row; a reply
         // that arrives clears it.
         let mut oversize_refusals = 0u32;
+        // Whether the history was already searched for tool calls whose
+        // arguments are not JSON after the provider refused it for one:
+        // the repair is tried once a turn.
+        let mut repaired_arguments = false;
         loop {
             if let Some(status) = self.limit_status(cancel) {
                 let msg = self.limit_error(status);
@@ -2316,6 +2337,35 @@ impl Agent {
                         msg = format!(
                             "{msg}; the request stayed too large after the conversation was compacted and its older observations collapsed - start a new conversation (it carries this one over, compacted), or in pulse harness chat /compact and say continue"
                         );
+                    }
+                    if status == EXIT_PROVIDER_ERROR
+                        && !repaired_arguments
+                        && pulse_provider::is_invalid_tool_arguments(&err)
+                    {
+                        // The history carries a tool call whose arguments
+                        // are not JSON - a reply cut mid-stream that an
+                        // earlier build kept - and the same request fails
+                        // the same way until it is repaired; nothing found
+                        // means the refusal is about something else.
+                        repaired_arguments = true;
+                        let repaired = repair_tool_arguments(&mut self.msgs);
+                        if !repaired.is_empty() {
+                            self.emit(Step {
+                                kind: StepKind::Note,
+                                content: format!(
+                                    "the provider refused the request over a tool call whose arguments are not JSON ({msg}); repaired {} such call{} in the conversation ({}) and asking again",
+                                    repaired.len(),
+                                    if repaired.len() == 1 { "" } else { "s" },
+                                    repaired
+                                        .iter()
+                                        .map(RepairedCall::label)
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                                ..Step::default()
+                            });
+                            continue;
+                        }
                     }
                     self.emit(Step {
                         kind: StepKind::Error,
@@ -2645,8 +2695,17 @@ impl Agent {
         cancel: &CancelToken,
         calls: Vec<ToolCall>,
     ) -> (bool, bool, String, bool) {
-        let mut batch: Vec<Option<ParallelCall>> =
-            calls.iter().map(|c| self.parallel_call(c)).collect();
+        let mut invalid = self.repair_reply_arguments(&calls);
+        let mut batch: Vec<Option<ParallelCall>> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                invalid[i]
+                    .is_none()
+                    .then(|| self.parallel_call(c))
+                    .flatten()
+            })
+            .collect();
         if batch.iter().flatten().count() < 2 {
             batch.iter_mut().for_each(|b| *b = None);
         }
@@ -2701,9 +2760,10 @@ impl Agent {
         }
         let mut all_clean = true;
         for (i, call) in calls.iter().enumerate() {
-            let outcome = match outcomes[i].take() {
-                Some(o) => o,
-                None => self.dispatch_tool_call(cancel, call),
+            let outcome = match (outcomes[i].take(), invalid[i].take()) {
+                (Some(o), _) => o,
+                (None, Some(text)) => self.tool_error(text),
+                (None, None) => self.dispatch_tool_call(cancel, call),
             };
             self.msgs.push(tool_message(call, &outcome.text));
             if !outcome.clean {
@@ -2717,6 +2777,39 @@ impl Agent {
             }
         }
         (all_clean, false, String::new(), false)
+    }
+
+    /// The reply whose calls are about to run is the last assistant
+    /// message, already in the history. A call whose arguments are not
+    /// JSON (a reply the model's own token limit cut, or a vendor that
+    /// sent them broken) cannot run, and cannot stay as it came: a vendor
+    /// that validates its input refuses every later request carrying it.
+    /// The stored call gets `{}`, and the model gets what arrived as the
+    /// call's result (at the call's index here, None for a call that
+    /// runs). Empty arguments become `{}` quietly: the tools read them so.
+    fn repair_reply_arguments(&mut self, calls: &[ToolCall]) -> Vec<Option<String>> {
+        let mut invalid: Vec<Option<String>> = vec![None; calls.len()];
+        let Some(reply) = self
+            .msgs
+            .iter_mut()
+            .rev()
+            .find(|m| matches!(m.role, Role::Assistant))
+            .filter(|m| m.tool_calls.len() == calls.len())
+        else {
+            return invalid;
+        };
+        for (i, stored) in reply.tool_calls.iter_mut().enumerate() {
+            if let Some(fixed) = repair_call(stored)
+                && !fixed.reason.is_empty()
+            {
+                invalid[i] = Some(invalid_arguments_result(
+                    &fixed.name,
+                    &fixed.arguments,
+                    &fixed.reason,
+                ));
+            }
+        }
+        invalid
     }
 
     /// The call as something that can run beside the other calls of its
@@ -11476,6 +11569,382 @@ mod tests {
                 .any(|n| n.starts_with("the provider refused the request as too large")),
             "{notes:?}"
         );
+    }
+
+    /// The last message of the user's stuck conversation: an `edit` whose
+    /// arguments the Copilot gateway cut at column 93.
+    const CUT_ARGUMENTS: &str = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
+    const CUT_ID: &str = "toolu_01D9XWUQtuVBTWixzvum3zYd";
+
+    fn cut_edit_call() -> Message {
+        Message {
+            role: Role::Assistant,
+            tool_calls: vec![ToolCall {
+                id: CUT_ID.into(),
+                name: "edit".into(),
+                arguments: CUT_ARGUMENTS.into(),
+            }],
+            ..Message::new(Role::Assistant)
+        }
+    }
+
+    /// The user's conversation as its trajectory file holds it: the task,
+    /// the cut call with the result the old harness gave it, and the turn
+    /// that could never be sent.
+    fn poisoned_history() -> Vec<Message> {
+        vec![
+            Message {
+                content: "update AGENTS.md".into(),
+                ..Message::new(Role::User)
+            },
+            cut_edit_call(),
+            Message {
+                role: Role::Tool,
+                content:
+                    "edit: arguments are not JSON: EOF while parsing an object at line 1 column 93"
+                        .into(),
+                tool_call_id: CUT_ID.into(),
+                name: "edit".into(),
+                ..Message::new(Role::Tool)
+            },
+            Message {
+                content: "Please land this branch now".into(),
+                ..Message::new(Role::User)
+            },
+        ]
+    }
+
+    fn copilot_invalid_arguments_error() -> anyhow::Error {
+        pulse_provider::ProviderError::new(
+            "copilot",
+            400,
+            "",
+            "Invalid JSON format in tool call arguments",
+            false,
+        )
+        .into()
+    }
+
+    #[test]
+    fn a_reply_whose_tool_call_arguments_are_not_json_is_kept_repaired() {
+        let _serial = crate::test_helpers::serial();
+        // The model's reply carries the cut call (its token limit cut it;
+        // a cut stream no longer gets this far). The call does not run,
+        // the model is told what arrived, and the history keeps `{}` for
+        // it, so the next request is one every vendor takes.
+        let p = Arc::new(FakeProvider::new(vec![
+            pulse_provider::Response {
+                message: Some(cut_edit_call()),
+                finish_reason: "length".into(),
+                ..pulse_provider::Response::default()
+            },
+            resp(msg("SUMMARY: done")),
+        ]));
+        let (h, got) = run_agent(
+            p.clone(),
+            Arc::new(Mutex::new(FakeEnv::default())),
+            base_config(),
+        )
+        .unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(
+            got.format_errors, 1,
+            "a call that cannot run is a format error"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        let sent = &reqs[1].messages;
+        let call = sent
+            .iter()
+            .find(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+            .expect("the reply is in the history");
+        assert_eq!(call.tool_calls[0].id, CUT_ID);
+        assert_eq!(call.tool_calls[0].arguments, "{}");
+        let result = sent
+            .iter()
+            .find(|m| m.role == Role::Tool && m.tool_call_id == CUT_ID)
+            .expect("the call has a result");
+        assert_eq!(
+            result.content,
+            format!(
+                "edit: arguments are not JSON (EOF while parsing an object at line 1 column 93). What arrived: {CUT_ARGUMENTS}. Call the tool again with complete JSON arguments."
+            )
+        );
+        for m in sent {
+            for call in &m.tool_calls {
+                assert!(
+                    pulse_provider::invalid_arguments(&call.arguments).is_none(),
+                    "{call:?}"
+                );
+            }
+        }
+        let errors: Vec<&Step> = h
+            .steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Error)
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0]
+                .content
+                .starts_with("edit: arguments are not JSON ("),
+            "{}",
+            errors[0].content
+        );
+        assert!(
+            !h.steps.iter().any(|s| s.kind == StepKind::Edit),
+            "the cut call did not run"
+        );
+    }
+
+    /// A provider behind a gateway that validates its input the way the
+    /// Copilot one does: a request carrying a tool call whose arguments
+    /// are not JSON is refused with HTTP 400; the rest answers from the
+    /// script.
+    struct StrictGatewayProvider {
+        responses: Mutex<Vec<pulse_provider::Response>>,
+        requests: Mutex<Vec<Request>>,
+    }
+
+    struct SharedStrictGateway(Arc<StrictGatewayProvider>);
+
+    impl Provider for SharedStrictGateway {
+        fn name(&self) -> &str {
+            "copilot"
+        }
+        fn label(&self) -> &str {
+            "Strict gateway"
+        }
+        fn chat(
+            &self,
+            _cancel: &CancelToken,
+            req: Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            self.0.requests.lock().unwrap().push(req.clone());
+            let broken = req.messages.iter().any(|m| {
+                m.tool_calls
+                    .iter()
+                    .any(|c| pulse_provider::invalid_arguments(&c.arguments).is_some())
+            });
+            if broken {
+                return Err(copilot_invalid_arguments_error());
+            }
+            let mut responses = self.0.responses.lock().unwrap();
+            if responses.is_empty() {
+                return Err(anyhow!("no response"));
+            }
+            Ok(responses.remove(0))
+        }
+        fn models(&self, _cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+            Ok(Vec::new())
+        }
+        fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
+            Ok(Login::default())
+        }
+    }
+
+    #[test]
+    fn a_history_the_provider_refuses_over_a_cut_tool_call_is_repaired_and_sent_again() {
+        let _serial = crate::test_helpers::serial();
+        // The user's case, in memory: the session already holds the cut
+        // call when the turn starts (an older build kept it). The gateway
+        // refuses the request; the harness repairs the call, says so, and
+        // the second request goes through.
+        let p = Arc::new(StrictGatewayProvider {
+            responses: Mutex::new(vec![resp(msg("SUMMARY: landed"))]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut h = new(
+            Box::new(SharedStrictGateway(p.clone())),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            base_config(),
+            Vec::new(),
+        );
+        h.msgs = poisoned_history();
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(got.calls, 2, "the refused call counts");
+        let reqs = p.requests.lock().unwrap().clone();
+        assert_eq!(reqs.len(), 2);
+        let refused = &reqs[0].messages;
+        assert!(
+            refused
+                .iter()
+                .any(|m| m.tool_calls.iter().any(|c| c.arguments == CUT_ARGUMENTS)),
+            "the first request carried the cut call as it was"
+        );
+        let retried = &reqs[1].messages;
+        let call = retried
+            .iter()
+            .find(|m| m.tool_calls.iter().any(|c| c.id == CUT_ID))
+            .expect("the call is still there");
+        assert_eq!(call.tool_calls[0].arguments, "{}");
+        assert_eq!(
+            retried.iter().filter(|m| m.tool_call_id == CUT_ID).count(),
+            1,
+            "the result it had stays, none is added"
+        );
+        assert_eq!(
+            retried.len(),
+            refused.len(),
+            "nothing else about the history changed"
+        );
+        let notes = note_texts(&h);
+        assert!(
+            notes.iter().any(|n| n
+                == &format!(
+                    "the provider refused the request over a tool call whose arguments are not JSON (copilot: Invalid JSON format in tool call arguments (HTTP 400)); repaired 1 such call in the conversation (edit {CUT_ID}) and asking again"
+                )),
+            "{notes:?}"
+        );
+        assert!(
+            !h.steps.iter().any(|s| s.kind == StepKind::Error),
+            "no error step: the turn went on"
+        );
+    }
+
+    #[test]
+    fn a_refusal_over_tool_arguments_with_nothing_to_repair_stops_as_before() {
+        let _serial = crate::test_helpers::serial();
+        // The scripted provider refuses the first call in the gateway's
+        // words although the history is sound: nothing is repaired, the
+        // turn stops with the provider's error, and the second scripted
+        // reply is never asked for.
+        pulse_provider_fake::register();
+        let fake = Arc::new(pulse_provider_fake::new(pulse_provider_fake::Script {
+            replies: vec![
+                pulse_provider_fake::Reply {
+                    err: Some(pulse_provider::ProviderError::new(
+                        "copilot",
+                        400,
+                        "",
+                        "Invalid JSON format in tool call arguments",
+                        false,
+                    )),
+                    ..pulse_provider_fake::Reply::default()
+                },
+                pulse_provider_fake::Reply {
+                    report: "SUMMARY: never reached".into(),
+                    ..pulse_provider_fake::Reply::default()
+                },
+            ],
+            ..pulse_provider_fake::Script::default()
+        }));
+        struct Shared(Arc<pulse_provider_fake::FakeProvider>);
+        impl Provider for Shared {
+            fn name(&self) -> &str {
+                self.0.name()
+            }
+            fn label(&self) -> &str {
+                self.0.label()
+            }
+            fn chat(
+                &self,
+                cancel: &CancelToken,
+                req: Request,
+            ) -> anyhow::Result<pulse_provider::Response> {
+                self.0.chat(cancel, req)
+            }
+            fn models(&self, cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+                self.0.models(cancel)
+            }
+            fn status(&self, cancel: &CancelToken) -> anyhow::Result<Login> {
+                self.0.status(cancel)
+            }
+        }
+        let mut h = new(
+            Box::new(Shared(fake.clone())),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            base_config(),
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_PROVIDER_ERROR);
+        assert_eq!(
+            got.error,
+            "copilot: Invalid JSON format in tool call arguments (HTTP 400)"
+        );
+        assert_eq!(fake.requests().len(), 1);
+        assert!(
+            note_texts(&h).iter().all(|n| !n.contains("repaired")),
+            "{:?}",
+            note_texts(&h)
+        );
+    }
+
+    #[test]
+    fn a_carried_over_conversation_with_a_cut_tool_call_is_repaired_on_the_way_in() {
+        let _serial = crate::test_helpers::serial();
+        // The user's trajectory file, loaded when the session starts
+        // again: the cut call is repaired before anything is sent, a
+        // start note says so, and the first request is one the gateway
+        // takes.
+        let dir = chat_dir();
+        let p = Arc::new(StrictGatewayProvider {
+            responses: Mutex::new(vec![resp(msg("Landing it now."))]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut cfg = base_config();
+        cfg.task = String::new();
+        cfg.system_prompt = String::new();
+        cfg.cwd = dir.path().display().to_string();
+        cfg.interactive = true;
+        let sink_steps = steps.clone();
+        let mut h = new(
+            Box::new(SharedStrictGateway(p.clone())),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            vec![Box::new(SinkFunc(move |s| {
+                sink_steps.lock().unwrap().push(s);
+            }))],
+        );
+        h.resume_messages(poisoned_history()).unwrap();
+        let cut = h
+            .msgs
+            .iter()
+            .find(|m| m.tool_calls.iter().any(|c| c.id == CUT_ID))
+            .expect("the call is carried over");
+        assert_eq!(cut.tool_calls[0].arguments, "{}");
+        assert_eq!(h.msgs.len(), 4, "the result it had stays, none is added");
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "go on").unwrap();
+        assert!(
+            matches!(turn, Turn::Reply(ref r) if r == "Landing it now."),
+            "{turn:?}"
+        );
+        let reqs = p.requests.lock().unwrap().clone();
+        assert_eq!(reqs.len(), 1, "the first request went through");
+        let sent = &reqs[0].messages;
+        assert!(sent.iter().any(|m| {
+            m.tool_calls
+                .iter()
+                .any(|c| c.id == CUT_ID && c.arguments == "{}")
+        }));
+        let notes: Vec<String> = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == StepKind::Note)
+            .map(|s| s.content.clone())
+            .collect();
+        let repaired = notes
+            .iter()
+            .position(|n| {
+                n == &format!(
+                    "repaired 1 carried-over tool call whose arguments were not JSON (edit {CUT_ID}): a reply cut mid-stream had left them behind, and the provider refuses a request that carries them"
+                )
+            })
+            .expect("the repair note");
+        let resumed = notes
+            .iter()
+            .position(|n| n.starts_with("resumed an earlier session: 4 messages carried over"))
+            .expect("the resume note");
+        assert!(repaired < resumed, "{notes:?}");
+        assert_eq!(h.end(EXIT_ENDED).exit_status, EXIT_ENDED);
     }
 
     #[test]

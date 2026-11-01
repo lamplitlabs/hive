@@ -19,6 +19,7 @@ pub mod lockdown;
 pub mod memory;
 pub mod permissions;
 pub mod readonly;
+pub mod repair;
 pub mod retitle;
 pub mod rewind;
 pub mod search;
@@ -33,6 +34,7 @@ pub use harness::*;
 pub use hooks::*;
 pub use localenv::*;
 pub use readonly::{TreeSnapshot, read_only_refusal};
+pub use repair::*;
 pub use skills::*;
 
 pub fn register() {

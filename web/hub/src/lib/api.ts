@@ -3511,6 +3511,8 @@ export const writes = {
     post<{ conversation: Conversation }>("chat/" + enc(id) + "/cancel", {}),
   chatClose: (id: string) =>
     post<{ conversation: Conversation }>("chat/" + enc(id) + "/close", {}),
+  chatRestart: (id: string) =>
+    post<{ conversation: Conversation }>("chat/" + enc(id) + "/restart", {}),
   chatArchive: (id: string) =>
     post<{ conversation: Conversation }>("chat/" + enc(id) + "/archive", {}),
   chatAuto: (id: string, on: boolean) =>

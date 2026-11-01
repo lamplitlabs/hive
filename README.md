@@ -736,9 +736,19 @@ rendered, text as text, HTML and PDF in a frame, anything else as a download
 Each conversation is one harness session at a time (the **Harness** page shows
 it too, with cost); when a session ends (a limit, a provider error) the
 conversation says so and the next message starts a new session with the whole
-transcript carried over. **Archive** puts a conversation away for good (no
-message reopens it) and leaves its branch and folder where they are; `pulse
-remove project <slug> --forget` drops its rows with the project's.
+transcript carried over. **Restart session** does the same on your say-so,
+without a hub restart: the session ends where it stands (a turn in flight has
+to be stopped first), the transcript and the workspace stay, and the next
+message reloads the conversation from the saved transcript - the way out of a
+session whose memory holds something the provider refuses. A reply the
+provider cut mid-stream is asked for again rather than kept; a transcript
+that already carries a tool call whose arguments are not JSON from one (the
+provider then refuses every request with it: *Invalid JSON format in tool call
+arguments*) is repaired as it loads, and a running session repairs its own
+history on that refusal and sends the request again, saying so in a note.
+**Archive** puts a conversation away for good (no message reopens it) and
+leaves its branch and folder where they are; `pulse remove project <slug>
+--forget` drops its rows with the project's.
 
 Everything is yours to script: `pulse chat list [--all]` and `pulse chat show
 <id>` print what the page shows, and `/api/v1/chat` (`GET` for the
@@ -756,13 +766,14 @@ shows back as thumbnails - this one write takes a body sized for twelve inline
 pictures, where every other JSON write stops at 1 MB and says so (*The request
 body holds N bytes; this write takes up to 1 MB*) - `/upload?name=` with the
 raw bytes, `/attachments/<name>`, `/image/<message>/<n>`, `/model`,
-`/reasoning`, `/answer`, `/approve`, `/cancel`, `/close`, `/auto`, `/attach`,
+`/reasoning`, `/answer`, `/approve`, `/cancel`, `/close`, `/restart` (the
+session, from the transcript; 409 while a turn runs), `/auto`, `/attach`,
 `/title`, `/archive`, `/diff`, `/artifacts/<name>`) serves other tools. Every
 `POST` is same-origin only - 403 when `Origin` names another host or
 `Sec-Fetch-Site` is `cross-site` (`curl` sends neither) - and every one but
 `/upload` takes `Content-Type: application/json` (415 otherwise) and a JSON
-object body (400 when empty; send `{}` to `/archive`, `/close`, `/cancel` and
-`/api/v1/running/restart`). The agents run inside the hub process: restarting
+object body (400 when empty; send `{}` to `/archive`, `/close`, `/restart`,
+`/cancel` and `/api/v1/running/restart`). The agents run inside the hub process: restarting
 the hub ends their turns, and the conversation picks up from its transcript on
 the next message. A conversation needs a signed-in model (**Settings →
 Harness**); without one the first turn says so instead of working.
