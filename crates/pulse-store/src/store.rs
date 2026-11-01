@@ -9,7 +9,9 @@ use crate::pyjson::py_json_value;
 use crate::records_ddl::{RECORDS_DDL, RECORDS_VERSION};
 use crate::runner_ddl::{RUNNER_COLUMNS, RUNNER_DDL};
 use crate::settings::{default_settings, setting_names};
-use crate::tasks_ddl::{COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASKS_DDL};
+use crate::tasks_ddl::{
+    COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASK_COLUMNS, TASKS_DDL,
+};
 use anyhow::{Context, Result, anyhow};
 use chrono::{SecondsFormat, Utc};
 use regex::Regex;
@@ -1014,6 +1016,7 @@ pub fn additive_columns() -> Vec<Column> {
         .chain(HARNESS_COLUMNS.iter())
         .chain(crate::evolve_ddl::EVOLVE_COLUMNS.iter())
         .chain(SCHEDULE_COLUMNS.iter())
+        .chain(TASK_COLUMNS.iter())
         .chain(MESSAGE_COLUMNS.iter())
         .chain(COMPUTE_COLUMNS.iter())
         .chain(crate::chat_ddl::CHAT_COLUMNS.iter())

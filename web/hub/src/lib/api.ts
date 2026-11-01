@@ -1536,6 +1536,7 @@ export type HarnessStepKind =
   | "memory"
   | "search"
   | "subagent"
+  | "task"
   | "hook"
   | "observation"
   | "note"

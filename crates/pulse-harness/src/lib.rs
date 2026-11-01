@@ -24,6 +24,7 @@ pub mod retitle;
 pub mod rewind;
 pub mod search;
 pub mod skills;
+pub mod tasks_tool;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 

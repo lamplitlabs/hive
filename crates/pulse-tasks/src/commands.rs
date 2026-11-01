@@ -326,6 +326,9 @@ fn print_task(c: &mut Context, t: &Task) -> Result<()> {
             t.project, t.priority, t.current_rev, t.created_by, t.created_at, t.updated_at
         ),
     )?;
+    if !t.origin.is_empty() {
+        printf(c, format_args!("  origin {}\n", t.origin))?;
+    }
     if !t.lead.is_empty() || !t.job_id.is_empty() {
         printf(c, format_args!("  lead {}  job {}\n", t.lead, t.job_id))?;
     }
@@ -1198,13 +1201,22 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     match sub.as_str() {
         "new" => {
             let brief = read_body(&fs.get_string("brief"), &fs.get_string("brief-file"))?;
-            let t = new(
+            let author = actor(c);
+            // An agent's run names where it works (PULSE_CONVERSATION,
+            // PULSE_JOB); the task remembers that as its origin.
+            let origin = if author == pulse_store::HUMAN_AGENT {
+                Origin::Owner
+            } else {
+                Origin::from_env()
+            };
+            let t = file(
                 store(c)?,
                 &c.project,
                 &fs.get_string("title"),
                 &brief,
                 fs.get_int("priority"),
-                &actor(c),
+                &author,
+                &origin,
             )?;
             if c.json {
                 return pulse_cli::write_json(&mut c.out, &TaskOut { task: &t });

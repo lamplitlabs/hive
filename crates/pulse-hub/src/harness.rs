@@ -1012,6 +1012,7 @@ impl Handler {
                 "harness.hooks",
                 "harness.subagents",
                 "harness.memory",
+                "harness.tasks",
                 "harness.web_search",
                 "harness.fetch_allow",
                 "harness.allow_tools",

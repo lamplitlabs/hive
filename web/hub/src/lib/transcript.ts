@@ -13,7 +13,7 @@ import type { HarnessStep } from "@/lib/api";
 // words, in the order they happened. An observation is the result of the
 // action before it and rides along with that row.
 
-const ACTION_KINDS = new Set(["command", "read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "process", "memory", "search", "subagent", "hook"]);
+const ACTION_KINDS = new Set(["command", "read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "process", "memory", "search", "subagent", "task", "hook"]);
 
 interface ActionItem {
   step: HarnessStep;

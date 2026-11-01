@@ -1378,6 +1378,11 @@ impl Runtime {
                 },
                 env,
                 lockdown,
+                // The agent files tasks in the conversation's name, from
+                // the conversation: the owner is the one it talks to, not
+                // the one filing.
+                actor: row.id.clone(),
+                origin: Some(pulse_tasks::tasks::Origin::Conversation(row.id.clone())),
             },
         )?;
         let agent = prepared.shared.clone();
@@ -3355,7 +3360,8 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
              The chat tool with action start, a title and a full brief starts a sub-conversation: a whole conversation in your workspace with its own page in the hub, for a part that should keep going while you work on another, or that the owner may want to watch or steer; several may run at once. \
              Its replies reach you as messages from it between your turns; action read shows its state and last replies, action send steers it or answers its question. Reply or end your turn while it works - you are not blocked on it. \
              Both work in your worktree on your branch: give each part its own files and a brief with everything it needs (it sees nothing of this conversation), and do the join yourself. \
-             Only a request small enough for a few tool calls is done here by you alone.\n",
+             Only a request small enough for a few tool calls is done here by you alone. \
+             Work that is not this conversation's to do - a feature or a fix bigger than this request, a follow-up for later, work in another project - is a task: the task tool (action create, a title and a brief that says what, why and how it is proved) files it on PULSE's board under this conversation's name, and the project's lead plans it into jobs on its next pass, as it does the owner's; tell the owner which tasks you filed. File a task for work the fleet should carry, not for what you can do here now.\n",
         );
     } else {
         b.push_str(
@@ -3418,7 +3424,7 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         }
         b.push_str(
             "- Work inside one project's code: run `pulse chat attach SLUG`, then end your reply; the conversation moves into your own worktree of that project (its own branch) and carries on there in the next turn by itself.\n\
-             - Work for the fleet rather than for you now, or work across several projects: queue it with `pulse task new --project SLUG --title \"...\" --brief \"what and why\"`, one task per project, and say which tasks you made.\n\
+             - Work for the fleet rather than for you now, or work across several projects: file it with the task tool (action create, project SLUG, a title and a brief saying what and why), one task per project, and say which tasks you made.\n\
              - A question about a project or about PULSE: answer it from the shared board and the store - `pulse ask --all \"...\"`, `pulse status`, `pulse task list --project SLUG`, `pulse goal show --project SLUG`, `pulse ask --project SLUG \"...\"` - and the checkouts (read them where they are; do not edit them).\n\
              - Ask with the question tool only when the project really cannot be told from the request and the board does not say.\n",
         );
@@ -4565,7 +4571,8 @@ mod tests {
         assert!(text.contains("not attached to a project yet"));
         assert!(text.contains("- demo: Demo, /srv/demo"));
         assert!(text.contains("pulse chat attach SLUG"));
-        assert!(text.contains("pulse task new --project SLUG"));
+        assert!(text.contains("file it with the task tool (action create, project SLUG"));
+        assert!(!text.contains("pulse task new"));
         assert!(text.contains("$PULSE_ARTIFACTS (/tmp/art)"));
         // The owner's words are looked up on the shared board before the
         // agent asks what they mean.
@@ -4601,6 +4608,10 @@ mod tests {
         assert!(text.contains(
             "Only a request small enough for a few tool calls is done here by you alone"
         ));
+        // Work beyond the conversation goes to the board as a task under
+        // the conversation's name, for the lead to plan.
+        assert!(text.contains("is a task: the task tool (action create"));
+        assert!(text.contains("files it on PULSE's board under this conversation's name"));
         assert!(!text.contains("Do your part yourself"));
         // A sub-conversation does its part itself: it may run a helper, but
         // another level of sub-conversations is the exception.

@@ -189,6 +189,7 @@ const LABELS: Record<string, string> = {
   "harness.teach": "Teacher mode: explain the why of each design and coding choice for a junior reading along",
   "harness.web_search": "Where the model may search the web",
   "harness.subagents": "Let a run start a bounded helper on a sub-task",
+  "harness.tasks": "Let an agent file tasks on the board for the lead to plan",
   "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
   "harness.deny_tools": "Tool calls a run refuses outright",
   "harness.allow_tools": "Tool calls a chat session runs without asking",
@@ -343,6 +344,8 @@ const HELP: Record<string, string> = {
     "Chat: conversations offer the web_search tool (DuckDuckGo without a key, Brave Search when BRAVE_SEARCH_API_KEY is set on the machine) and jobs do not. On: jobs too. Off: nowhere. The query goes to the engine; result pages are read with fetch where its hosts allow.",
   "harness.subagents":
     "On: a run can hand a self-contained sub-task to a helper that works in the same clone with the same budget and returns a report; its steps show indented in the session. Off: the tool is not offered.",
+  "harness.tasks":
+    "On: a conversation's agent, a job's worker or an RSI run can file a task on the board under its own name, the way you do - with the conversation or job it came from as its origin - and the project's lead plans it on its next pass. An agent's task needs a brief, cannot repeat an open title, and each agent may have 10 open per project; a read-only run can list and read tasks but files none. Off: the tool is not offered.",
   "harness.fetch_allow":
     "The hosts a run may read web pages from, comma-separated - docs.rs, *.rust-lang.org, or * for any. Pages come back as text (2 MB, 30 s). Empty turns the fetch tool off.",
   "harness.deny_tools":

@@ -528,6 +528,20 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "     (`pulse task suggestions --project {}`). Nobody reviews their own.",
         o.project.str("slug")
     );
+    if !o.remote
+        && store.setting("harness", "native") == "native"
+        && store.setting("harness.tasks", "on") != "off"
+    {
+        w!(
+            "     Your `task` tool (action create) files a task straight on the board under your name, with this job as"
+        );
+        w!(
+            "     its origin, and the lead plans it on its next pass: use it for follow-up work this run uncovers and"
+        );
+        w!(
+            "     cannot finish (a brief is required; an open title is not filed twice). Say in your report which you filed."
+        );
+    }
     w!(
         "   - `VOTE: <post-id> up|down <one line of reason>` for items of the ballot below (one line each; the"
     );

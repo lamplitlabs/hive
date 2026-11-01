@@ -26,6 +26,11 @@ pub struct Task {
     pub updated_at: String,
     pub current_rev: i32,
     pub brief: String,
+    /// Where the task came from when an agent's work filed it: `chat:<id>`
+    /// for a hub conversation, `job:<id>` for a job's run, `suggestion:<id>`
+    /// for an accepted suggestion. Empty when the owner filed it by hand.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -63,7 +68,7 @@ impl std::fmt::Display for ErrNotFound {
 
 impl std::error::Error for ErrNotFound {}
 
-pub(crate) const TASK_COLS: &str = "t.id, t.project, t.title, t.status, t.priority, t.lead, t.job_id, t.created_by, t.created_at, t.updated_at, t.current_rev, COALESCE(r.brief, '')";
+pub(crate) const TASK_COLS: &str = "t.id, t.project, t.title, t.status, t.priority, t.lead, t.job_id, t.created_by, t.created_at, t.updated_at, t.current_rev, COALESCE(r.brief, ''), t.origin";
 pub(crate) const TASK_FROM: &str =
     "FROM tasks t LEFT JOIN task_revisions r ON r.task_id = t.id AND r.rev = t.current_rev";
 
@@ -81,6 +86,7 @@ pub(crate) fn scan_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         updated_at: row.get(9)?,
         current_rev: row.get(10)?,
         brief: row.get(11)?,
+        origin: row.get(12)?,
     })
 }
 
@@ -129,6 +135,63 @@ pub(crate) fn clean(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// How many tasks an agent (anyone but the owner) may have open at once
+/// in one project through [`file`]: a lead plans each one, so a flood of
+/// agent-filed tasks is a flood of lead sittings. The owner has no cap.
+pub const AGENT_OPEN_CAP: i64 = 10;
+
+/// Where a filed task came from, recorded on the row as `origin`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// The owner filed it by hand (`pulse task new`, the hub form).
+    #[default]
+    Owner,
+    /// The agent of a hub conversation filed it (`chat:<id>`).
+    Conversation(String),
+    /// A job's run filed it (`job:<id>`).
+    Job(String),
+    /// An accepted suggestion became it (`suggestion:<id>`).
+    Suggestion(String),
+}
+
+impl Origin {
+    /// The stored form: empty for the owner, `kind:<id>` otherwise.
+    pub fn as_stored(&self) -> String {
+        match self {
+            Origin::Owner => String::new(),
+            Origin::Conversation(id) => format!("chat:{id}"),
+            Origin::Job(id) => format!("job:{id}"),
+            Origin::Suggestion(id) => format!("suggestion:{id}"),
+        }
+    }
+
+    /// The origin a run's environment names: `PULSE_CONVERSATION` for a
+    /// hub conversation's agent, else `PULSE_JOB` for a job's worker; the
+    /// owner otherwise.
+    pub fn from_env() -> Origin {
+        let var = |name: &str| std::env::var(name).unwrap_or_default().trim().to_string();
+        let chat = var("PULSE_CONVERSATION");
+        if !chat.is_empty() {
+            return Origin::Conversation(chat);
+        }
+        let job = var("PULSE_JOB");
+        if !job.is_empty() {
+            return Origin::Job(job);
+        }
+        Origin::Owner
+    }
+}
+
+/// Whether a stored `origin` names an agent's work rather than the owner's
+/// hand: the lead words such a task differently (nobody is waiting to be
+/// asked whether what landed is what they wanted).
+pub fn agent_origin(origin: &str) -> bool {
+    !origin.is_empty()
+}
+
+/// Files a task the owner's way: `pulse task new` and the hub's form come
+/// here, with no origin to record. The guard rails of [`file`] still hold
+/// for an agent author.
 pub fn new(
     s: &pulse_store::Store,
     project: &str,
@@ -136,6 +199,25 @@ pub fn new(
     brief: &str,
     priority: i32,
     author: &str,
+) -> Result<Task> {
+    file(s, project, title, brief, priority, author, &Origin::Owner)
+}
+
+/// Files a task and records where it came from. An agent's task (any
+/// author but the owner) needs a brief that says why, may not repeat the
+/// title of a task still open in the project, and counts against
+/// [`AGENT_OPEN_CAP`] open tasks per author and project: the lead plans
+/// each one, and an agent that files in a loop would fill its queue. An
+/// accepted suggestion skips the cap: another agent's review stood in
+/// for it.
+pub fn file(
+    s: &pulse_store::Store,
+    project: &str,
+    title: &str,
+    brief: &str,
+    priority: i32,
+    author: &str,
+    origin: &Origin,
 ) -> Result<Task> {
     let title = clean(title);
     if title.is_empty() {
@@ -165,12 +247,58 @@ pub fn new(
             ),
         ));
     }
+    let agent = author != pulse_store::HUMAN_AGENT;
+    if agent && brief.trim().is_empty() {
+        return Err(input(
+            2,
+            "A task an agent files needs a brief",
+            "the lead plans from the brief: what to do, why, and how the work is proved",
+            "say what and why in the brief, or leave the task to the owner",
+        ));
+    }
     check_project(s, project)?;
     let now = s.now();
     let tx = s.begin()?;
+    if agent {
+        let same: Option<String> = tx
+            .query_row(
+                "SELECT id FROM tasks WHERE project = ? AND lower(title) = lower(?) AND status NOT IN ('done', 'cancelled') LIMIT 1",
+                params![project, title],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = same {
+            return Err(input(
+                2,
+                format!("Already a task: {id}"),
+                "an open task in this project has the same title",
+                format!(
+                    "pulse task show {id}; add to its thread with pulse task reply, or file a different slice"
+                ),
+            ));
+        }
+        let open: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE project = ? AND created_by = ? AND status NOT IN ('done', 'cancelled')",
+            params![project, author],
+            |r| r.get(0),
+        )?;
+        if open >= AGENT_OPEN_CAP && !matches!(origin, Origin::Suggestion(_)) {
+            return Err(input(
+                2,
+                format!("{author} has {open} tasks open in {project}"),
+                format!(
+                    "an agent may have {AGENT_OPEN_CAP} open per project; each one is a lead's sitting"
+                ),
+                format!(
+                    "wait for one to finish, or cancel one of yours: pulse task list --project {project} --status open"
+                ),
+            ));
+        }
+    }
+    let origin_text = origin.as_stored();
     let id = next_id(&tx, "tasks", "TASK-")?;
-    tx.execute("INSERT INTO tasks (id, project, title, status, priority, created_by, created_at, updated_at, current_rev) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, 1)",
-        params![id, project, title, priority, author, now, now])?;
+    tx.execute("INSERT INTO tasks (id, project, title, status, priority, created_by, created_at, updated_at, current_rev, origin) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, 1, ?)",
+        params![id, project, title, priority, author, now, now, origin_text])?;
     tx.execute(
         "INSERT INTO task_revisions (task_id, rev, title, brief, note, author, at) VALUES (?, 1, ?, ?, '', ?, ?)",
         params![id, title, brief, author, now],
@@ -180,7 +308,7 @@ pub fn new(
         "task.created",
         &id,
         pulse_store::Detail::json(
-            json!({"project": project, "title": title, "priority": priority}),
+            json!({"project": project, "title": title, "priority": priority, "origin": origin_text}),
         )?,
     )?;
     tx.commit()?;

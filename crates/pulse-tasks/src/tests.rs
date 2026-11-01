@@ -80,7 +80,15 @@ fn new_get_list_and_ids() {
         "human",
     )
     .unwrap();
-    let b = new(&s, pulse_store::COMMONS_SLUG, "Second", "", 0, "demo-lead").unwrap();
+    let b = new(
+        &s,
+        pulse_store::COMMONS_SLUG,
+        "Second",
+        "why it matters",
+        0,
+        "demo-lead",
+    )
+    .unwrap();
     assert_eq!((a.id.as_str(), b.id.as_str()), ("TASK-001", "TASK-002"));
     assert_eq!(a.title, "Ship the thing");
     assert_eq!(a.brief, "do it well\n");
@@ -88,6 +96,7 @@ fn new_get_list_and_ids() {
     assert_eq!(a.priority, 3);
     assert_eq!(a.current_rev, 1);
     assert_eq!(a.created_by, "human");
+    assert_eq!(a.origin, "");
     let (got, revs) = get(&s, "TASK-001").unwrap();
     assert_eq!(got.id, a.id);
     assert_eq!(revs.len(), 1);
@@ -104,6 +113,128 @@ fn new_get_list_and_ids() {
     assert_eq!(evs[0].subject, "TASK-001");
     assert!(evs[0].detail.contains(r#""project": "demo""#));
     assert!(get(&s, "TASK-999").is_err());
+}
+
+#[test]
+fn an_agent_files_with_an_origin_and_inside_the_guard_rails() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let chat = Origin::Conversation("chat-1".into());
+    // An agent's task says why; the owner's may be a title alone.
+    let err = file(&s, "demo", "Fix the footer", "  ", 0, "demo-lead", &chat).unwrap_err();
+    assert!(err.to_string().contains("needs a brief"), "{err}");
+    assert!(new(&s, "demo", "Owner's bare title", "", 0, "human").is_ok());
+    let t = file(
+        &s,
+        "demo",
+        "Fix the footer",
+        "it overlaps",
+        2,
+        "demo-lead",
+        &chat,
+    )
+    .unwrap();
+    assert_eq!(t.origin, "chat:chat-1");
+    assert_eq!(t.created_by, "demo-lead");
+    assert!(agent_origin(&t.origin));
+    assert!(!agent_origin(""));
+    assert_eq!(get(&s, &t.id).unwrap().0.origin, "chat:chat-1");
+    let ev = events(&s, "task.created").pop().unwrap();
+    assert!(
+        ev.detail.contains(r#""origin": "chat:chat-1""#),
+        "{}",
+        ev.detail
+    );
+    // The same open title is refused and named; the owner's own is not.
+    let err = file(
+        &s,
+        "demo",
+        "fix the FOOTER",
+        "again",
+        0,
+        "other-agent",
+        &chat,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains(&format!("Already a task: {}", t.id)),
+        "{err}"
+    );
+    let owners = new(&s, "demo", "Fix the footer", "", 0, "human").unwrap();
+    // Cancelled ones free the title.
+    cancel(&s, &t.id, "dup", "demo-lead").unwrap();
+    cancel(&s, &owners.id, "dup", "human").unwrap();
+    assert!(
+        file(
+            &s,
+            "demo",
+            "Fix the footer",
+            "again",
+            0,
+            "other-agent",
+            &chat
+        )
+        .is_ok()
+    );
+    // The cap counts the author's open tasks in the project.
+    let job = Origin::Job(String::from("job-9"));
+    for i in 0..AGENT_OPEN_CAP {
+        file(&s, "demo", &format!("Slice {i}"), "why", 0, "busy", &job).unwrap();
+    }
+    let err = file(&s, "demo", "One more", "why", 0, "busy", &job).unwrap_err();
+    assert!(err.to_string().contains("tasks open in demo"), "{err}");
+    // Another project, another author, and an accepted suggestion still go through.
+    assert!(
+        file(
+            &s,
+            pulse_store::COMMONS_SLUG,
+            "One more",
+            "why",
+            0,
+            "busy",
+            &job
+        )
+        .is_ok()
+    );
+    assert!(file(&s, "demo", "One more", "why", 0, "idle", &job).is_ok());
+    let sug = Origin::Suggestion("SUG-001".into());
+    let accepted = file(&s, "demo", "Reviewed slice", "why", 0, "busy", &sug).unwrap();
+    assert_eq!(accepted.origin, "suggestion:SUG-001");
+    // Finishing makes room: the accepted suggestion counted too, so two
+    // must close before a plain filing fits again.
+    let busy: Vec<Task> = list(&s, "demo", "open")
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.created_by == "busy")
+        .collect();
+    assert_eq!(busy.len() as i64, AGENT_OPEN_CAP + 1);
+    set_status(&s, &busy[0].id, "done", "demo-lead").unwrap();
+    assert!(file(&s, "demo", "Room again", "why", 0, "busy", &job).is_err());
+    set_status(&s, &busy[1].id, "done", "demo-lead").unwrap();
+    assert!(file(&s, "demo", "Room again", "why", 0, "busy", &job).is_ok());
+}
+
+#[test]
+fn origin_reads_the_run_environment() {
+    let _serial = crate::test_helpers::serial();
+    let _chat = pulse_testutil::unsetenv("PULSE_CONVERSATION");
+    let _job = pulse_testutil::unsetenv("PULSE_JOB");
+    assert_eq!(Origin::from_env(), Origin::Owner);
+    assert_eq!(Origin::Owner.as_stored(), "");
+    {
+        let _job = pulse_testutil::setenv("PULSE_JOB", "job-20261101T000000Z-abc");
+        assert_eq!(
+            Origin::from_env().as_stored(),
+            "job:job-20261101T000000Z-abc"
+        );
+        let _chat = pulse_testutil::setenv("PULSE_CONVERSATION", "chat-20261101T112251-f04f7b");
+        assert_eq!(
+            Origin::from_env().as_stored(),
+            "chat:chat-20261101T112251-f04f7b"
+        );
+    }
+    assert_eq!(Origin::from_env(), Origin::Owner);
 }
 
 #[test]

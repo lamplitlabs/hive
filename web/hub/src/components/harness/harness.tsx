@@ -17,6 +17,7 @@ import {
   CircleIcon,
   CircleXIcon,
   ClipboardIcon,
+  ClipboardListIcon,
   CopyIcon,
   DownloadIcon,
   FileCodeIcon,
@@ -409,6 +410,7 @@ const STEP_DOT: Record<string, string> = {
   skill: "bg-muted text-foreground",
   fetch: "bg-muted text-foreground",
   subagent: "bg-primary/10 text-primary",
+  task: "bg-primary/10 text-primary",
   hook: "bg-muted text-muted-foreground",
   observation: "bg-muted text-muted-foreground",
   note: "bg-muted text-muted-foreground",
@@ -429,6 +431,7 @@ export const STEP_LABEL: Record<string, string> = {
   skill: "Loaded a skill",
   fetch: "Read a web page",
   subagent: "Handed a sub-task to a helper",
+  task: "Worked the task board",
   hook: "Ran one of your hooks",
   observation: "What came back",
   note: "Note from PULSE",
@@ -437,9 +440,9 @@ export const STEP_LABEL: Record<string, string> = {
 };
 
 // The typed tools of the harness (read, grep, glob, edit, write, mcp, skill,
-// fetch, search, process, memory, hook) show their request the way a command
+// fetch, search, process, memory, task, hook) show their request the way a command
 // shows its line; the reply follows as an observation like any command's output.
-const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "search", "process", "memory", "hook"];
+const TOOL_STEP_KINDS: string[] = ["read", "grep", "glob", "edit", "write", "mcp", "skill", "fetch", "search", "process", "memory", "task", "hook"];
 
 export const STEP_ICON: Record<string, typeof InfoIcon> = {
   assistant: BotIcon,
@@ -458,6 +461,7 @@ export const STEP_ICON: Record<string, typeof InfoIcon> = {
   memory: BrainIcon,
   search: TelescopeIcon,
   subagent: GitForkIcon,
+  task: ClipboardListIcon,
   hook: WebhookIcon,
   error: TriangleAlertIcon,
 };

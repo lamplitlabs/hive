@@ -948,6 +948,7 @@ pub fn known_tool(name: &str) -> bool {
         "web_search",
         "question",
         "memory",
+        "task",
         "process",
         "mcp_search",
     ];
@@ -1260,8 +1261,10 @@ pub fn tool_names(given: &str) -> Vec<String> {
         "webfetch" | "fetch" | "web_fetch" | "fetch_webpage" => one("fetch"),
         "websearch" | "web_search" => one("web_search"),
         "web" => vec!["fetch".to_string(), "web_search".to_string()],
-        "task" | "subagent" | "agent" | "delegate" | "runsubagent" | "custom-agent"
-        | "custom_agent" | "customagent" => one("subagent"),
+        "task" => vec!["subagent".to_string(), "task".to_string()],
+        "subagent" | "agent" | "delegate" | "runsubagent" | "custom-agent" | "custom_agent"
+        | "customagent" => one("subagent"),
+        "tasks" | "board" | "file_task" => one("task"),
         "skill" | "skills" => one("skill"),
         "todowrite" | "todo" | "todos" | "plan" | "manage_todo_list" => one("plan"),
         "askuserquestion" | "ask_user" | "question" | "ask" => one("question"),
@@ -1861,7 +1864,8 @@ mod tests {
         assert_eq!(tool_names("WebFetch"), ["fetch"]);
         assert_eq!(tool_names("shell"), ["bash"]);
         assert_eq!(tool_names("Bash(npm test)"), ["bash"]);
-        assert_eq!(tool_names("Task"), ["subagent"]);
+        assert_eq!(tool_names("Task"), ["subagent", "task"]);
+        assert_eq!(tool_names("tasks"), ["task"]);
         assert_eq!(tool_names("web"), ["fetch", "web_search"]);
         assert_eq!(tool_names("mcp__github__*"), ["mcp__github__*"]);
         assert!(tool_names("  ").is_empty());

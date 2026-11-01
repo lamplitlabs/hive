@@ -12,7 +12,8 @@ pub const TASKS_DDL: &[&str] = &[
   updated_at TEXT NOT NULL,
   current_rev INTEGER NOT NULL DEFAULT 1,
   lead TEXT NOT NULL DEFAULT '',      -- the project's lead agent that took it
-  job_id TEXT NOT NULL DEFAULT ''     -- the job the lead queued for it
+  job_id TEXT NOT NULL DEFAULT '',    -- the job the lead queued for it
+  origin TEXT NOT NULL DEFAULT ''     -- '' when the owner filed it by hand; chat:<id>, job:<id> or suggestion:<id> when an agent's work did
 );"####,
     r####"CREATE INDEX IF NOT EXISTS tasks_project_status ON tasks (project, status);"####,
     r####"CREATE TABLE IF NOT EXISTS task_revisions (
@@ -190,6 +191,15 @@ pub const SCHEDULE_COLUMNS: &[Column] = &[
         ddl: r####"TEXT NOT NULL DEFAULT ''"####,
     },
 ];
+
+/// Columns added after the tasks table shipped: where an agent-filed task
+/// came from. `ensure_records` adds each one that is missing, so an older
+/// store gains them on first open.
+pub const TASK_COLUMNS: &[Column] = &[Column {
+    table: r####"tasks"####,
+    name: r####"origin"####,
+    ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+}];
 
 /// Columns added after the messages table shipped: the answers a message
 /// offers the owner to pick from instead of writing. `ensure_records` adds

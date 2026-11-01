@@ -1214,6 +1214,7 @@ pub(crate) fn worker_command_as(
         ("harness.hooks", "--no-hooks"),
         ("harness.subagents", "--no-subagents"),
         ("harness.memory", "--no-memory"),
+        ("harness.tasks", "--no-tasks"),
     ] {
         if s.setting(setting, "on") == "off" {
             cmd.push(flag.into());
@@ -2244,6 +2245,7 @@ mod tests {
             "--no-hooks",
             "--no-subagents",
             "--no-memory",
+            "--no-tasks",
             "--web-search",
             "--fetch-allow",
             "--compact-at",
@@ -2261,6 +2263,7 @@ mod tests {
         set_setting(&s, "harness.hooks", "off");
         set_setting(&s, "harness.subagents", "off");
         set_setting(&s, "harness.memory", "off");
+        set_setting(&s, "harness.tasks", "off");
         set_setting(&s, "harness.web_search", "on");
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
@@ -2300,6 +2303,7 @@ mod tests {
             "--no-hooks",
             "--no-subagents",
             "--no-memory",
+            "--no-tasks",
             "--web-search",
             "--teach",
         ] {
@@ -2327,6 +2331,7 @@ mod tests {
             "harness.hooks",
             "harness.subagents",
             "harness.memory",
+            "harness.tasks",
         ] {
             set_setting(&s, key, "on");
         }

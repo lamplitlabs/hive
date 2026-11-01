@@ -221,6 +221,7 @@ one to read.
   - [The project's own files: `.pulse/`](#the-projects-own-files-pulse)
   - [Role leads: `pulse lead`](#role-leads-pulse-lead)
   - [Suggested work: `pulse task suggest`](#suggested-work-pulse-task-suggest)
+  - [Tasks an agent files: the `task` tool](#tasks-an-agent-files-the-task-tool)
   - [The toolkit: `pulse toolkit`](#the-toolkit-pulse-toolkit)
   - [Connecting the outside world: `pulse mcp`](#connecting-the-outside-world-pulse-mcp)
   - [Shared skills: `pulse skill`](#shared-skills-pulse-skill)
@@ -1810,6 +1811,41 @@ priority?}`, in the owner's name) and `POST
 /api/v1/tasks/suggested/<id>/accept|decline|withdraw` (`{reason?, title?,
 brief?, priority?}`).
 
+### Tasks an agent files: the `task` tool
+
+A suggestion waits for a second reader; some work should not. The agent in
+a hub conversation works out, with the owner, what the fleet should carry
+next; a job's worker uncovers a follow-up it cannot finish in its run; an
+RSI run finds the next step of a goal. Each of them files a **task**
+itself, the way it starts a helper or a sub-conversation, through the
+native harness's `task` tool:
+
+- `create` (`project`, `title`, `brief`, `priority?`) files the task on the
+  board. A conversation's run files it on its own project (the tool says
+  which); a run without one names it. The task is created under the
+  **agent's name**, never the owner's, with where it was working as its
+  **origin**: `chat:<conversation>`, `job:<job>` (an accepted suggestion
+  carries `suggestion:SUG-NNN`; the owner's own tasks have none). `pulse
+  task show` prints the origin, the `task.created` event carries it, and the
+  project's lead plans the task on its next pass with a brief that says
+  *agent X from conversation Y filed it (not the owner)* - so the lead
+  knows whose words it reads and never asks the owner to accept what the
+  owner did not ask for (an agent's task closes when its work lands, where
+  the owner's waits for the owner's word).
+- `list` (`project?`, `status?`) and `show` (`id`) read the board, so an
+  agent checks for a twin before filing and follows what it filed.
+
+The guard rails are the suggestion's, in the tool: an agent's task needs a
+brief (the *why*), a title at most 200 characters, a title that is no open
+task already (the twin is named: add to it), and at most `AGENT_OPEN_CAP`
+(10) open tasks per agent per project; the owner's `pulse task new` and
+the hub form have no cap. A read-only run (`pulse harness run --read-only`)
+lists and shows but files nothing; a helper (`subagent`) is not offered the
+tool - its parent files. The conversation brief tells the agent when to
+file rather than do: work that is not the conversation's to do now, named
+in its reply so the owner sees what was filed. `harness.tasks` (`on`)
+turns the tool off, `--no-tasks` for one run.
+
 ### The toolkit: `pulse toolkit`
 
 A project's checkout says what its agents could use. `pulse toolkit` reads
@@ -2858,6 +2894,7 @@ record, read with `pulse record show WF-evolve`.
 | `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
 | `harness.subagents` | `on` | A top-level native-harness run may hand a sub-task to a bounded helper run through the `subagent` tool. |
 | `harness.memory` | `on` | A native-harness run reads `~/.pulse/memory/<project>.md` and `~/.pulse/memory/user.md` into its system prompt and offers the `memory` tool (**Memory** under [The harness](#the-harness-how-an-agent-runs)). `--no-memory` for one run. |
+| `harness.tasks` | `on` | A top-level native-harness run with a store offers the `task` tool: an agent files tasks on the board under its own name, with the conversation or job it came from as the origin ([Tasks an agent files](#tasks-an-agent-files-the-task-tool)). `--no-tasks` for one run. |
 | `harness.teach` | `off` | Teacher mode (**Teacher mode** under [The harness](#the-harness-how-an-agent-runs)): the agent still does the work, but explains the why of each design or coding choice as it goes, for a junior reading along; a job reports `LESSON:` lines that become `lesson` posts on the board. `--teach` / `--teach-off` for one run. |
 | `harness.web_search` | `chat` | Where the model may search the web with the `web_search` tool (**Web search** under [The harness](#the-harness-how-an-agent-runs)): `chat` offers it in `pulse harness chat` and not to jobs, `on` to jobs too, `off` nowhere. `--web-search` / `--no-web-search` for one run. |
 | `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |

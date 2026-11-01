@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 // cap one run, and - folded away - the system prompt, the tool switches and
 // the transcript sizes. These controls save as soon as they change.
 
-export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.task_max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.teach", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "measure_model", "ask.model", "worker_reasoning", "light_reasoning", "measure_reasoning"];
+export const HARNESS_SETTING_KEYS = ["provider", "harness.max_steps", "harness.task_max_steps", "harness.step_timeout", "harness.output_limit", "harness.max_cost", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.reasoning", "harness.system_prompt", "harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.tasks", "harness.teach", "harness.web_search", "harness.fetch_allow", "harness.allow_tools", "harness.deny_tools", "worker_model", "light_model", "measure_model", "ask.model", "worker_reasoning", "light_reasoning", "measure_reasoning"];
 const SAME_MODEL = "__same__";
 
 // How the chosen provider signs in: who stands behind its device code
@@ -674,7 +674,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "harness.task_max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window", "harness.compact_at"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
-  const toggles = ["harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.teach"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
+  const toggles = ["harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.tasks", "harness.teach"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const fetchAllow = setting(rows, "harness.fetch_allow");
   const webSearch = setting(rows, "harness.web_search");
   const allowTools = setting(rows, "harness.allow_tools");

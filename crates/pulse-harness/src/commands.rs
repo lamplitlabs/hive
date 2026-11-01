@@ -10,10 +10,12 @@ use crate::memory::{self, Memory};
 use crate::permissions::{Rule, Rules};
 use crate::search::WebSearch;
 use crate::skills::{Skill, load_skills};
+use crate::tasks_tool::TaskDesk;
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, table, write_json};
 use pulse_provider::{CancelToken, Login, Options as ProviderOptions, Provider};
 use pulse_store::{HarnessSession, HarnessSessionFilter, HarnessStep, STORE_NAME, Store};
+use pulse_tasks::tasks::Origin;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -181,6 +183,11 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         "do not read ~/.pulse/memory into the prompt or offer the memory tool",
     );
     fs.bool_var(
+        "no-tasks",
+        false,
+        "do not offer the task tool (file work on PULSE's board for the project's lead to plan)",
+    );
+    fs.bool_var(
         "teach",
         false,
         "teacher mode: do the work and explain the why of each design or coding choice as you go, for a junior reading along; a run reports LESSON: lines (overrides harness.teach)",
@@ -337,6 +344,26 @@ pub(crate) struct PrepareOpts {
     /// under the OS sandbox, the tools that leave the machine are not
     /// offered, and no MCP server is attached.
     pub(crate) lockdown: Option<crate::lockdown::Lockdown>,
+    /// Who the run files tasks as (`task` tool); empty means the command's
+    /// `--agent`, else `PULSE_AGENT`, else the owner.
+    pub(crate) actor: String,
+    /// Where the run's tasks come from; None reads the environment
+    /// (`PULSE_CONVERSATION`, then `PULSE_JOB`, else the owner).
+    pub(crate) origin: Option<Origin>,
+}
+
+/// Who a run files tasks as: the caller's word, else the command's.
+fn task_actor(c: &Context, opts: &PrepareOpts) -> String {
+    if opts.actor.is_empty() {
+        actor_of(c)
+    } else {
+        opts.actor.clone()
+    }
+}
+
+/// Where a run's tasks come from: the caller's word, else the environment.
+fn task_origin(opts: &PrepareOpts) -> Origin {
+    opts.origin.clone().unwrap_or_else(Origin::from_env)
 }
 
 /// The key the session's memory file is named by: the project's slug when
@@ -899,6 +926,18 @@ pub(crate) fn prepare_agent_with(
             ));
         }
         agent.set_memory(m);
+    }
+    // The board: an agent's run files tasks for the fleet the way the
+    // owner does, under its own name and with where it ran as the origin.
+    let tasks_on = !bare
+        && !fs.get_bool("no-tasks")
+        && st
+            .as_ref()
+            .is_some_and(|s| s.setting("harness.tasks", "on") != "off");
+    if tasks_on && let Some(s) = &st {
+        let actor = task_actor(c, &opts);
+        let origin = task_origin(&opts);
+        agent.set_tasks(TaskDesk::new(s.clone(), actor, origin, project.clone()));
     }
     let mcp_on = !bare
         && !locked_down
@@ -2543,6 +2582,7 @@ impl Sink for ProgressSink {
             | StepKind::Fetch
             | StepKind::Process
             | StepKind::Memory
+            | StepKind::Task
             | StepKind::Search
             | StepKind::Hook => {
                 let _ = writeln!(

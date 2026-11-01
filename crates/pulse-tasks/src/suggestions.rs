@@ -377,13 +377,14 @@ pub fn review(
             "{body}\n\n---\nSuggested by {} as {id}; accepted by {actor}{why}.\n",
             cur.suggested_by
         );
-        Some(crate::tasks::new(
+        Some(crate::tasks::file(
             s,
             &cur.project,
             &title,
             &brief,
             v.priority.unwrap_or(cur.priority),
             &cur.suggested_by,
+            &crate::tasks::Origin::Suggestion(id.to_string()),
         )?)
     } else {
         None

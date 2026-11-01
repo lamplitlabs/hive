@@ -592,7 +592,11 @@ pub(crate) fn lead_due(
         let job = crate::jobs::job_row(&conn, t.job_id.clone());
         if t.job_id.is_empty() || job.0.is_empty() {
             due.push(DueTask {
-                detail: format!("new: the owner filed it {}; plan it now.", t.created_at),
+                detail: format!(
+                    "new: {} filed it {}; plan it now.",
+                    filed_by(&t),
+                    t.created_at
+                ),
                 why: "new".into(),
                 task: t,
             });
@@ -1993,6 +1997,27 @@ fn owner_task(t: &pulse_tasks::Task) -> bool {
     t.created_by == crate::util::HUMAN_AGENT
 }
 
+/// Who filed a task, for the lead's brief: the owner, or the agent that
+/// filed it and where it was working (`chat:<id>`, `job:<id>`,
+/// `suggestion:<id>`), so the lead knows whose words the brief carries and
+/// that acceptance is not the owner's to give.
+fn filed_by(t: &pulse_tasks::Task) -> String {
+    if owner_task(t) {
+        return "the owner".into();
+    }
+    let who = format!("agent {}", t.created_by);
+    match t.origin.split_once(':') {
+        // A conversation's agent files in the conversation's name.
+        Some(("chat", id)) if id == t.created_by => {
+            format!("the agent of conversation {id} (not the owner)")
+        }
+        Some(("chat", id)) => format!("{who} from conversation {id} (not the owner)"),
+        Some(("job", id)) => format!("{who} from job {id} (not the owner)"),
+        Some(("suggestion", id)) => format!("{who} by accepted suggestion {id} (not the owner)"),
+        _ => format!("{who} (not the owner)"),
+    }
+}
+
 /// Whether the landed ask was already written on the task at or after
 /// `since`: the one message in the lead's name whose first answer closes it.
 fn asked_landed_since(
@@ -2227,6 +2252,60 @@ mod tests {
             "SELECT * FROM jobs WHERE source = ? ORDER BY created_at",
             &[&accept_source(task_id)],
         )
+    }
+
+    #[test]
+    fn a_new_task_tells_the_lead_who_filed_it() {
+        let _serial = serial();
+        let s = new_store();
+        new_repo(&s);
+        ensure_lead(&s, "proj".into()).unwrap();
+        let owner =
+            pulse_tasks::new(&s, "proj", "Owner's ask", "", 50, crate::util::HUMAN_AGENT).unwrap();
+        let chat = pulse_tasks::file(
+            &s,
+            "proj",
+            "A conversation's follow-up",
+            "the composer needs a route; the hub tests prove it",
+            50,
+            "chat-7",
+            &pulse_tasks::Origin::Conversation("chat-7".into()),
+        )
+        .unwrap();
+        let job = pulse_tasks::file(
+            &s,
+            "proj",
+            "A worker's follow-up",
+            "the check it found failing",
+            50,
+            "scout",
+            &pulse_tasks::Origin::Job("job-1".into()),
+        )
+        .unwrap();
+        let (_, due, _) = lead_due(&s, "proj".into(), "proj-lead".into(), TEST_NOW.into()).unwrap();
+        let detail = |id: &str| -> String {
+            due.iter()
+                .find(|d| d.task.id == id)
+                .map(|d| d.detail.clone())
+                .unwrap_or_else(|| panic!("{id} not due: {due:?}"))
+        };
+        assert!(
+            detail(&owner.id).starts_with("new: the owner filed it"),
+            "{}",
+            detail(&owner.id)
+        );
+        assert!(
+            detail(&chat.id)
+                .starts_with("new: the agent of conversation chat-7 (not the owner) filed it"),
+            "{}",
+            detail(&chat.id)
+        );
+        assert!(
+            detail(&job.id).starts_with("new: agent scout from job job-1 (not the owner) filed it"),
+            "{}",
+            detail(&job.id)
+        );
+        assert!(owner_task(&owner) && !owner_task(&chat) && !owner_task(&job));
     }
 
     #[test]

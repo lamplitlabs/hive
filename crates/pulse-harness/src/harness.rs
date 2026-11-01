@@ -21,6 +21,7 @@ use crate::repair::{RepairedCall, invalid_arguments_result, repair_call, repair_
 use crate::rewind::{self, Rewind};
 use crate::search::{SEARCH_TIMEOUT, WEB_SEARCH_TOOL, WebSearch, web_search_tool};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
+use crate::tasks_tool::{TASK_TOOL, TaskAction, TaskDesk, task_tool};
 use anyhow::anyhow;
 use pulse_provider::{
     CancelToken, ImageContent, Message, Provider, Request, Role, Tool, ToolCall, Usage,
@@ -428,6 +429,8 @@ pub enum StepKind {
     Process,
     /// A `memory` tool call (remember, forget, list).
     Memory,
+    /// A `task` tool call (create, list, show): work filed on the board.
+    Task,
     /// A `web_search` tool call.
     Search,
     Observation,
@@ -485,6 +488,7 @@ impl std::fmt::Display for StepKind {
             Self::Hook => "hook",
             Self::Process => "process",
             Self::Memory => "memory",
+            Self::Task => "task",
             Self::Search => "search",
             Self::Observation => "observation",
             Self::Note => "note",
@@ -717,6 +721,9 @@ pub struct Agent {
     hooks: HookSet,
     /// Memory across runs, when the owner keeps it on (`memory` tool).
     memory: Option<Memory>,
+    /// The board the `task` tool files on, when the run has a store and
+    /// the owner lets agents file tasks.
+    tasks: Option<TaskDesk>,
     /// What each turn of a session changed, for `/rewind`.
     rewind: Rewind,
     /// Instruction files that wait for the paths they speak of; None
@@ -1201,6 +1208,7 @@ pub fn new_shared(
         skills: Vec::new(),
         hooks: HookSet::default(),
         memory: None,
+        tasks: None,
         rewind,
         path_rules: None,
         agents: Vec::new(),
@@ -1267,6 +1275,25 @@ impl Agent {
     /// leave something behind (a read-only run may not).
     pub fn offers_memory(&self) -> bool {
         self.memory.is_some() && !self.cfg.read_only
+    }
+
+    /// Gives the run a board to file tasks on: the `task` tool is offered
+    /// to the run itself (not to its helpers, whose work is the run's).
+    pub fn set_tasks(&mut self, desk: TaskDesk) {
+        self.tasks = Some(desk);
+    }
+
+    /// The board the run files on, if it has one.
+    pub fn tasks(&self) -> Option<&TaskDesk> {
+        self.tasks.as_ref()
+    }
+
+    /// Whether the `task` tool is offered: the run has a board and is the
+    /// top-level run (a helper reports to the run that started it, which
+    /// decides what to file; a read-only run may still read the board, so
+    /// create is refused there instead of the tool withheld).
+    pub fn offers_tasks(&self) -> bool {
+        self.tasks.is_some() && self.cfg.depth == 0
     }
 
     /// Hands the model the instruction files that name paths (see
@@ -1660,6 +1687,9 @@ impl Agent {
         if self.offers_memory() {
             out.push(memory_tool());
         }
+        if self.offers_tasks() {
+            out.push(task_tool(self.tasks.as_ref().map_or("", TaskDesk::project)));
+        }
         if !self.skills.is_empty() {
             out.push(skill_tool(&self.skills));
         }
@@ -1706,6 +1736,9 @@ impl Agent {
         }
         if self.offers_memory() {
             out.push(MEMORY_TOOL.to_string());
+        }
+        if self.offers_tasks() {
+            out.push(TASK_TOOL.to_string());
         }
         if !self.skills.is_empty() {
             out.push(SKILL_TOOL.to_string());
@@ -2953,6 +2986,7 @@ impl Agent {
                 }
             }
             MEMORY_TOOL if self.offers_memory() => self.run_memory_tool(&call.arguments),
+            TASK_TOOL if self.offers_tasks() => self.run_task_tool(&call.arguments),
             SKILL_TOOL if !self.skills.is_empty() => self.run_skill_tool(&call.arguments),
             FETCH_TOOL | WEB_SEARCH_TOOL | MCP_SEARCH_TOOL if self.locked_down() => {
                 self.tool_error(format!(
@@ -3319,6 +3353,75 @@ impl Agent {
             Err(text) => action_error(text, start, 1),
         };
         self.emit_observation("memory tool", &obs);
+        ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
+    }
+
+    /// The `task` tool: file work on PULSE's board, list a project's tasks
+    /// or read one. A `create` changes the board, so an interactive
+    /// session shows it to the person at the keyboard first, and a
+    /// read-only run refuses it (list and show stay).
+    fn run_task_tool(&mut self, arguments: &str) -> ToolOutcome {
+        let action = match TaskAction::parse(arguments) {
+            Ok(a) => a,
+            Err(e) => return self.tool_error(format!("task: {e}")),
+        };
+        let Some(desk) = self.tasks.clone() else {
+            return self.tool_error("task: this run has no board to file on".to_string());
+        };
+        self.result.steps += 1;
+        let spec = action.spec();
+        self.emit(Step {
+            kind: StepKind::Task,
+            content: spec.clone(),
+            command: spec.clone(),
+            ..Step::default()
+        });
+        let start = Instant::now();
+        if action.changes() {
+            if self.cfg.read_only {
+                let obs = action_error(
+                    "task: a read-only run files nothing; list and show still work".to_string(),
+                    start,
+                    1,
+                );
+                self.emit_observation("task tool", &obs);
+                return ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit));
+            }
+            let detail = match &action {
+                TaskAction::Create {
+                    project,
+                    title,
+                    brief,
+                    priority,
+                } => format!(
+                    "project: {}\npriority: {priority}\ntitle: {title}\n\n{brief}",
+                    if project.is_empty() {
+                        desk.project()
+                    } else {
+                        project
+                    }
+                ),
+                _ => String::new(),
+            };
+            if let Some(declined) = self.approval(
+                TASK_TOOL,
+                &spec,
+                &detail,
+                "files a task on the board for the project's lead to plan",
+            ) {
+                self.emit_observation("task tool", &declined);
+                return ToolOutcome::clean(format_observation(&declined, self.cfg.output_limit));
+            }
+        }
+        let obs = match desk.run(&action) {
+            Ok(text) => Observation {
+                output: text,
+                duration: start.elapsed(),
+                ..Observation::default()
+            },
+            Err(text) => action_error(format!("task: {text}"), start, 1),
+        };
+        self.emit_observation("task tool", &obs);
         ToolOutcome::clean(format_observation(&obs, self.cfg.output_limit))
     }
 
@@ -6577,6 +6680,11 @@ fn subjects_of(tool: &str, arguments: &str, cwd: &str) -> Vec<String> {
         SKILL_TOOL => vec![str_of("name")],
         MEMORY_TOOL => vec![
             MemoryAction::parse(arguments)
+                .map(|a| a.subject())
+                .unwrap_or_default(),
+        ],
+        TASK_TOOL => vec![
+            TaskAction::parse(arguments)
                 .map(|a| a.subject())
                 .unwrap_or_default(),
         ],
@@ -13529,6 +13637,162 @@ mod tests {
         h.run().unwrap();
         let reply = tool_replies(&h).remove(0).1;
         assert!(reply.contains("unknown tool memory"), "{reply}");
+    }
+
+    /// The board the task tool's tests file on: a store in a temp home
+    /// with one project, `demo`.
+    fn task_store() -> (tempfile::TempDir, pulse_store::Store) {
+        pulse_testutil::neutralize_runner_environment();
+        let home = tempfile::tempdir().unwrap();
+        let s = pulse_store::Store::open(pulse_store::Options {
+            home: home.path().display().to_string(),
+            create: true,
+            now: "2026-11-01T12:00:00Z".into(),
+            ..pulse_store::Options::default()
+        })
+        .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, added_at) VALUES ('demo', 'Demo', ?, ?)",
+                rusqlite::params![home.path().join("demo").display().to_string(), s.now()],
+            )
+            .unwrap();
+        (home, s)
+    }
+
+    #[test]
+    fn task_tool_files_on_the_board_under_the_runs_name_and_origin() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let (_home, s) = task_store();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "task",
+                json!({"action": "create", "title": "Ship the composer", "brief": "A composer with a route; the hub tests prove it."}),
+            )])),
+            // The same title again is the twin, not a second task.
+            resp(calls(&[(
+                "c2",
+                "task",
+                json!({"action": "create", "title": "ship the composer", "brief": "again"}),
+            )])),
+            // No brief: an agent's task says why.
+            resp(calls(&[(
+                "c3",
+                "task",
+                json!({"action": "create", "title": "Something else"}),
+            )])),
+            resp(calls(&[("c4", "task", json!({"action": "list"}))])),
+            resp(calls(&[(
+                "c5",
+                "task",
+                json!({"action": "show", "id": "TASK-001"}),
+            )])),
+            resp(calls(&[("c6", "task", json!({"action": "dance"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_tasks(TaskDesk::new(
+            s.clone(),
+            "scout",
+            pulse_tasks::Origin::Conversation("chat-9".into()),
+            "demo",
+        ));
+        assert!(h.offers_tasks());
+        assert!(h.tools().iter().any(|t| t.name == TASK_TOOL));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        let replies = tool_replies(&h);
+        let by_id = |id: &str| -> String {
+            replies
+                .iter()
+                .find(|(i, _)| i == id)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| panic!("no reply {id}: {replies:?}"))
+        };
+        assert!(by_id("c1").contains("TASK-001"), "{}", by_id("c1"));
+        assert!(
+            by_id("c2").contains("Already a task: TASK-001"),
+            "{}",
+            by_id("c2")
+        );
+        assert!(by_id("c3").contains("needs a brief"), "{}", by_id("c3"));
+        assert!(
+            by_id("c4").contains("TASK-001") && by_id("c4").contains("Ship the composer"),
+            "{}",
+            by_id("c4")
+        );
+        assert!(
+            by_id("c5").contains("scout") && by_id("c5").contains("chat:chat-9"),
+            "{}",
+            by_id("c5")
+        );
+        assert!(by_id("c6").contains("unknown action"), "{}", by_id("c6"));
+        let tasks = pulse_tasks::list(&s, "demo", "").unwrap();
+        assert_eq!(tasks.len(), 1, "{tasks:?}");
+        assert_eq!(tasks[0].created_by, "scout");
+        assert_eq!(tasks[0].origin, "chat:chat-9");
+        let steps = h.trajectory().steps;
+        assert_eq!(
+            steps.iter().filter(|s| s.kind == StepKind::Task).count(),
+            5,
+            "a task step per well-formed call; the malformed one leaves none"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.kind == StepKind::Task && s.command == "create: Ship the composer")
+        );
+    }
+
+    #[test]
+    fn task_tool_is_withheld_from_helpers_and_files_nothing_read_only() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let (_home, s) = task_store();
+        let desk = TaskDesk::new(
+            s.clone(),
+            "scout",
+            pulse_tasks::Origin::Job("job-1".into()),
+            "demo",
+        );
+        let create = json!({"action": "create", "title": "Ship it", "brief": "why"});
+        // Read-only: list and show answer, create is refused before the board.
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("c1", "task", create.clone())])),
+            resp(calls(&[("c2", "task", json!({"action": "list"}))])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_tasks(desk.clone());
+        h.cfg.read_only = true;
+        assert!(h.offers_tasks());
+        h.run().unwrap();
+        let replies = tool_replies(&h);
+        assert!(
+            replies[0].1.contains("read-only run files nothing"),
+            "{}",
+            replies[0].1
+        );
+        assert!(replies[1].1.contains("No tasks in"), "{}", replies[1].1);
+        assert!(pulse_tasks::list(&s, "demo", "").unwrap().is_empty());
+
+        // A helper has no desk: its parent files.
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("c1", "task", create)])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        h.set_tasks(desk);
+        h.cfg.depth = 1;
+        assert!(!h.offers_tasks());
+        assert!(!h.tools().iter().any(|t| t.name == TASK_TOOL));
+        h.run().unwrap();
+        let reply = tool_replies(&h).remove(0).1;
+        assert!(reply.contains("unknown tool task"), "{reply}");
+        assert!(pulse_tasks::list(&s, "demo", "").unwrap().is_empty());
     }
 
     #[test]

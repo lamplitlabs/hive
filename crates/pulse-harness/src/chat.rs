@@ -1220,6 +1220,7 @@ impl Sink for ChatSink {
             | StepKind::Fetch
             | StepKind::Process
             | StepKind::Memory
+            | StepKind::Task
             | StepKind::Search
             | StepKind::Hook => {
                 format!("{indent}{}: {}", step.kind, one_line(&step.command, 160))
