@@ -1,7 +1,7 @@
 use crate::agents::{
     AgentDef, load_agent_specs, model_allowed, standing_instructions, withheld_tools,
 };
-use crate::compact::DEFAULT_COMPACT_AT;
+use crate::compact::{DEFAULT_COMPACT_AT, DEFAULT_MAX_REQUEST_MB, request_budget_bytes};
 use crate::fetch::FetchPolicy;
 use crate::harness::*;
 use crate::hooks::load_hooks;
@@ -218,6 +218,16 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         "compact-at",
         -1,
         "percent of the context window at which the conversation is summarised and compacted; 0 turns it off; overrides harness.compact_at",
+    );
+    fs.float64_var(
+        "max-request-mb",
+        -1.0,
+        "MiB one request may run to before the conversation is compacted, whatever the token count says; 0 leaves it to the tokens; overrides provider.max_request_mb",
+    );
+    fs.string_var(
+        "compact-model",
+        "",
+        "model that writes the compaction summaries; empty means the run's own; overrides harness.compact_model",
     );
     fs.bool_var(
         "read-only",
@@ -749,6 +759,24 @@ pub(crate) fn prepare_agent_with(
             s.setting_int("harness.compact_at") as i32
         }),
     };
+    // The flag, then the setting; a run without a store takes the default,
+    // so a remote hand compacts by size the way the hub does.
+    let max_request_bytes = request_budget_bytes(match fs.get_f64("max-request-mb") {
+        mb if mb >= 0.0 => mb,
+        _ => st.as_ref().map_or(DEFAULT_MAX_REQUEST_MB, |s| {
+            s.setting_float("provider.max_request_mb")
+        }),
+    });
+    let compact_model = {
+        let flag = fs.get_string("compact-model").trim().to_string();
+        if flag.is_empty() {
+            st.as_ref()
+                .map(|s| s.setting("harness.compact_model", "").trim().to_string())
+                .unwrap_or_default()
+        } else {
+            flag
+        }
+    };
     let read_only = fs.get_bool("read-only") || agent_spec.as_ref().is_some_and(|a| a.read_only);
     let reasoning = {
         let flag = fs.get_string("reasoning").trim().to_lowercase();
@@ -801,6 +829,8 @@ pub(crate) fn prepare_agent_with(
         memory: memory_text,
         subagents,
         compact_at,
+        max_request_bytes,
+        compact_model,
         read_only,
         reasoning,
         interactive,

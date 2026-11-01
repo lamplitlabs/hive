@@ -599,6 +599,50 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
     provider_error(err).is_some_and(|e| e.retryable)
 }
 
+/// Phrases, lower-cased, by which the vendors say a request was too big
+/// for them: Copilot's `Timed out reading request body. Try again, or use
+/// a smaller request size.` (an HTTP 408 whose body the gateway gave up
+/// reading); OpenAI's `context_length_exceeded` / `This model's maximum
+/// context length is N tokens` / `Your input exceeds the context window`
+/// and its tokens-per-minute `Request too large for <model>`; Anthropic's
+/// `prompt is too long: N tokens > M maximum`; a plain `413 Payload Too
+/// Large` or `Request Entity Too Large`. Gemini's `The input token count
+/// (N) exceeds the maximum number of tokens allowed (M)` is matched by its
+/// two halves below.
+const REQUEST_TOO_LARGE_PHRASES: &[&str] = &[
+    "smaller request size",
+    "timed out reading request body",
+    "context_length_exceeded",
+    "maximum context length",
+    "exceeds the context window",
+    "request too large",
+    "prompt is too long",
+    "payload too large",
+    "request entity too large",
+];
+
+/// Reports whether an error says the request itself was too large for the
+/// vendor to take - the body too big for the gateway to read in time, or
+/// the prompt past the model's context - so the same body sent again
+/// fails the same way but a smaller one may go through. An HTTP 408 or
+/// 413 counts, so does a code or message in the vendors' words for it
+/// ([`REQUEST_TOO_LARGE_PHRASES`]); a bare error (no [`ProviderError`] in
+/// the chain) is read by its text. The harness compacts the conversation
+/// and asks again on it; a plain retry is not offered (the error stays
+/// non-retryable).
+pub fn is_request_too_large(err: &anyhow::Error) -> bool {
+    let (status, text) = match provider_error(err) {
+        Some(e) => (e.status, format!("{} {}", e.code, e.message)),
+        None => (0, err.to_string()),
+    };
+    if matches!(status, 408 | 413) {
+        return true;
+    }
+    let text = text.to_ascii_lowercase();
+    REQUEST_TOO_LARGE_PHRASES.iter().any(|p| text.contains(p))
+        || (text.contains("input token count") && text.contains("exceed"))
+}
+
 pub const DEFAULT_RETRY_AFTER_CAP_S: u64 = 60;
 pub const DEFAULT_MAX_BODY_MB: usize = 8;
 pub const ERROR_BODY_LIMIT_BYTES: usize = 64 * 1024;
@@ -1017,6 +1061,76 @@ mod tests {
         assert!(refused_reasoning(&copilot, "high").is_none());
         assert!(refused_reasoning(&copilot, "").is_none());
         assert!(nearest_reasoning("xhigh", &["warp".to_string()]).is_none());
+    }
+
+    #[test]
+    fn a_request_the_vendor_could_not_take_whole_reads_as_too_large() {
+        let perr = |status: i32, code: &str, message: &str| {
+            anyhow!(ProviderError::new("unit", status, code, message, false))
+        };
+        // Copilot's gateway gives up reading a big body: the user's case.
+        assert!(is_request_too_large(&perr(
+            408,
+            "",
+            "Timed out reading request body. Try again, or use a smaller request size."
+        )));
+        // Any 408 or 413, whatever the words.
+        assert!(is_request_too_large(&perr(408, "", "Request Timeout")));
+        assert!(is_request_too_large(&perr(413, "", "")));
+        // The vendors' own words for a prompt past the model's window.
+        assert!(is_request_too_large(&perr(
+            400,
+            "context_length_exceeded",
+            "This model's maximum context length is 128000 tokens. However, your messages resulted in 131072 tokens."
+        )));
+        assert!(is_request_too_large(&perr(
+            400,
+            "invalid_request_error",
+            "Your input exceeds the context window of this model."
+        )));
+        assert!(is_request_too_large(&perr(
+            429,
+            "rate_limit_exceeded",
+            "Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 40000."
+        )));
+        assert!(is_request_too_large(&perr(
+            400,
+            "invalid_request_error",
+            "prompt is too long: 213462 tokens > 200000 maximum"
+        )));
+        assert!(is_request_too_large(&perr(
+            400,
+            "INVALID_ARGUMENT",
+            "The input token count (1234567) exceeds the maximum number of tokens allowed (1048576)."
+        )));
+        assert!(is_request_too_large(&perr(
+            413,
+            "",
+            "Request Entity Too Large"
+        )));
+        // A bare error is read by its text.
+        assert!(is_request_too_large(&anyhow!(
+            "copilot: Timed out reading request body (HTTP 408)"
+        )));
+        // Other failures are not this classifier's business.
+        for err in [
+            perr(429, "rate_limit_exceeded", "slow down"),
+            perr(500, "server_error", "boom"),
+            perr(
+                400,
+                "invalid_request_error",
+                "messages[2].content must not be empty",
+            ),
+            perr(
+                0,
+                "stream_interrupted",
+                "the reply stopped part way: error decoding response body",
+            ),
+            anyhow!("error sending request for url"),
+            anyhow!(err_not_logged_in()),
+        ] {
+            assert!(!is_request_too_large(&err), "{err}");
+        }
     }
 
     #[test]

@@ -5,7 +5,8 @@ use crate::background::{
 };
 use crate::compact::{
     COMPACT_KEEP_RECENT, COMPACT_MARKER, COMPACT_MIN_GAP_CALLS, DEFAULT_COMPACT_AT,
-    apply_compaction, compaction_cut, render_transcript, should_compact, summary_request,
+    apply_compaction, compaction_cut, estimate_request_bytes, over_request_budget,
+    render_transcript, should_compact, summary_request,
 };
 use crate::fetch::{
     FETCH_BYTE_LIMIT, FETCH_TIMEOUT, FETCH_TOOL, FetchPolicy, fetch, fetch_tool, url_host,
@@ -350,6 +351,16 @@ pub struct Config {
     /// Percent of the context window the prompt may use before the older
     /// part of the conversation is compacted into a summary; 0 is off.
     pub compact_at: i32,
+    /// Bytes one request may run to before the older part of the
+    /// conversation is compacted whatever the token count says (the
+    /// `provider.max_request_mb` setting, see
+    /// [`crate::compact::request_budget_bytes`]): a gateway refuses or
+    /// times out on a body long before a 1M-token window is full. 0
+    /// leaves the decision to the tokens alone.
+    pub max_request_bytes: usize,
+    /// The model that writes the compaction summaries (the
+    /// `harness.compact_model` setting); empty means the run's own.
+    pub compact_model: String,
     /// A run that may look but not touch: `edit` and `write` are not
     /// offered, commands that would change the clone are refused, and a
     /// command that changes it anyway is reverted. Set for `answer` and
@@ -752,6 +763,9 @@ struct LoopState {
     used_format_retries: i32,
     keep_observations: usize,
     last_prompt_tokens: i32,
+    /// How many messages the request `last_prompt_tokens` counted had;
+    /// the ones after them are estimated on top of it.
+    measured_through: usize,
     last_prune_level: i32,
     budget_notice_sent: bool,
     emitted_prune_notes: BTreeSet<String>,
@@ -1447,14 +1461,24 @@ impl Agent {
         let mut out = vec![
             format!("model: {} ({})", cfg.model, cfg.provider),
             format!(
-                "context window: {}; compact at {}%; keep {} observations",
+                "context window: {}; compact at {}%{}; keep {} observations{}",
                 if cfg.context_window > 0 {
                     cfg.context_window.to_string()
                 } else {
                     format!("{DEFAULT_CONTEXT_WINDOW} assumed (the model lists none)")
                 },
                 cfg.compact_at,
-                cfg.keep_observations
+                if cfg.max_request_bytes > 0 {
+                    format!(" or past {} KiB per request", cfg.max_request_bytes / 1024)
+                } else {
+                    String::new()
+                },
+                cfg.keep_observations,
+                if cfg.compact_model.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("; summaries by {}", cfg.compact_model.trim())
+                }
             ),
             format!(
                 "budgets: {} model calls and {} min per turn, {} s per step, cost cap {}",
@@ -1907,8 +1931,13 @@ impl Agent {
 
     /// Compacts the conversation now (`/compact` in a session): Some(true)
     /// when it was summarised, Some(false) when the model gave no summary,
-    /// None when it is too short to compact.
+    /// None when it is too short to compact - or when the session has not
+    /// started: the system prompt is not rendered yet and the first turn
+    /// compacts a carried-over history itself when it is too big.
     pub fn compact_now(&mut self, cancel: &CancelToken) -> Option<bool> {
+        if !self.ran {
+            return None;
+        }
         let out = self.compact(cancel, "manual");
         if out == Some(true) {
             self.state.calls_at_compaction = self.result.calls;
@@ -1958,23 +1987,51 @@ impl Agent {
     }
 
     /// Tokens the next request takes, as well as the harness can tell:
-    /// the provider's count for the last request, or an estimate from the
-    /// history's size when there is none - a provider that reports no
-    /// usage must not switch context discipline off, and right after a
-    /// compaction the estimate is all there is.
+    /// the provider's count for the last request plus an estimate of what
+    /// the history gained since - the reply and the round of tool results
+    /// that count does not cover - or an estimate of the whole history
+    /// when there is no count: a provider that reports no usage must not
+    /// switch context discipline off, and right after a compaction or a
+    /// carry-over, no call made yet, the estimate is all there is.
     fn prompt_tokens_used(&self) -> i32 {
         if self.state.last_prompt_tokens > 0 {
-            self.state.last_prompt_tokens
+            let since = self.state.measured_through.min(self.msgs.len());
+            self.state
+                .last_prompt_tokens
+                .saturating_add(estimate_tokens(&self.msgs[since..]))
         } else {
             estimate_tokens(&self.msgs)
         }
     }
 
+    /// About how many bytes the next request takes on the wire
+    /// ([`estimate_request_bytes`]), given the tools it will offer.
+    fn request_bytes(&self, tools: &[Tool]) -> usize {
+        estimate_request_bytes(&self.msgs, tools)
+    }
+
+    /// Whether the next request is past the byte budget
+    /// (`Config::max_request_bytes`; 0 is off).
+    fn request_over_budget(&self, tools: &[Tool]) -> bool {
+        over_request_budget(self.request_bytes(tools), self.cfg.max_request_bytes)
+    }
+
+    /// Whether compaction may run now: not twice within
+    /// [`COMPACT_MIN_GAP_CALLS`] model calls, so a summary that did not
+    /// make enough room is not asked for again at once. The first call of
+    /// a session is always free to compact: a carried-over history that is
+    /// too big is cut down before it is sent anywhere.
+    fn compaction_due(&self) -> bool {
+        self.result.calls == 0
+            || self.result.calls - self.state.calls_at_compaction >= COMPACT_MIN_GAP_CALLS
+    }
+
     /// How hard to collapse older observations before the next call: not
-    /// at all while the prompt is under the compaction threshold, level 1
-    /// past it - compaction is off, waiting out its gap, or did not make
-    /// enough room - and level 2 past [`HARD_PRUNE_AT_PERCENT`].
-    fn prune_level(&self, used: i32) -> i32 {
+    /// at all while the prompt is under the compaction threshold and the
+    /// request under its byte budget, level 1 past either - compaction is
+    /// off, waiting out its gap, or did not make enough room - and level 2
+    /// past [`HARD_PRUNE_AT_PERCENT`].
+    fn prune_level(&self, used: i32, over_budget: bool) -> i32 {
         let window = f64::from(self.context_window());
         let used = f64::from(used);
         if used > window * f64::from(HARD_PRUNE_AT_PERCENT) / 100.0 {
@@ -1985,7 +2042,7 @@ impl Agent {
         } else {
             DEFAULT_COMPACT_AT
         };
-        if used > window * f64::from(compact_at) / 100.0 {
+        if over_budget || used > window * f64::from(compact_at) / 100.0 {
             1
         } else {
             0
@@ -2081,23 +2138,35 @@ impl Agent {
 
     /// The loop: model call, tool calls, until an answer or a stop.
     fn drive(&mut self, cancel: &CancelToken) -> Drive {
+        // Requests the provider refused as too large in a row; a reply
+        // that arrives clears it.
+        let mut oversize_refusals = 0u32;
         loop {
             if let Some(status) = self.limit_status(cancel) {
                 let msg = self.limit_error(status);
                 return Drive::Stopped { status, error: msg };
             }
-            if self.result.calls > 0 {
+            let tools = self.tools();
+            {
                 // Compaction first: it keeps the facts in a summary the
                 // model writes and runs again each time the prompt grows
-                // back to the threshold. Collapsing observations loses
+                // back to the threshold - a share of the context window,
+                // or the bytes the provider will take in one request,
+                // whichever comes first. Collapsing observations loses
                 // them, so it waits until the prompt is past that
-                // threshold and compaction has not made room.
-                if should_compact(
-                    self.cfg.compact_at,
-                    self.context_window(),
-                    self.prompt_tokens_used(),
-                ) && self.result.calls - self.state.calls_at_compaction >= COMPACT_MIN_GAP_CALLS
-                    && let Some(changed) = self.compact(cancel, "auto")
+                // threshold and compaction has not made room. The first
+                // call of a session is in here too: a carried-over
+                // history is compacted before it is sent anywhere.
+                let over_budget = self.request_over_budget(&tools);
+                if (over_budget
+                    || should_compact(
+                        self.cfg.compact_at,
+                        self.context_window(),
+                        self.prompt_tokens_used(),
+                    ))
+                    && self.compaction_due()
+                    && let Some(changed) =
+                        self.compact(cancel, if over_budget { "size" } else { "auto" })
                 {
                     self.state.calls_at_compaction = self.result.calls;
                     if changed {
@@ -2105,7 +2174,8 @@ impl Agent {
                     }
                 }
                 let used = self.prompt_tokens_used();
-                let level = self.prune_level(used);
+                let over_budget = self.request_over_budget(&tools);
+                let level = self.prune_level(used, over_budget);
                 if level == 0 {
                     self.state.keep_observations = self.cfg.keep_observations.max(1);
                 } else {
@@ -2120,12 +2190,23 @@ impl Agent {
                     self.msgs = next;
                     let key = format!("{level}/{}", self.state.keep_observations);
                     if changed > 0 && !self.state.emitted_prune_notes.contains(&key) {
+                        let why = if over_budget {
+                            format!(
+                                "the request was about {} KiB, over its {} KiB budget",
+                                self.request_bytes(&tools) / 1024,
+                                self.cfg.max_request_bytes / 1024
+                            )
+                        } else {
+                            format!(
+                                "the prompt was about {used} of {} tokens",
+                                self.context_window()
+                            )
+                        };
                         self.emit(Step {
                             kind: StepKind::Note,
                             content: format!(
-                                "collapsed {changed} older observations to make room in the context window (level {level}, keep {}; the prompt was about {used} of {} tokens)",
+                                "collapsed {changed} older observations to make room in the context window (level {level}, keep {}; {why})",
                                 self.state.keep_observations,
-                                self.context_window()
                             ),
                             ..Step::default()
                         });
@@ -2145,10 +2226,11 @@ impl Agent {
                 });
                 self.state.budget_notice_sent = true;
             }
+            let sent_messages = self.msgs.len();
             let req = Request {
                 model: self.cfg.model.clone(),
                 messages: clone_messages(&self.msgs),
-                tools: self.tools(),
+                tools,
                 initiator: self.state.initiator.clone(),
                 reasoning: self.cfg.reasoning.clone(),
                 ..Request::default()
@@ -2222,7 +2304,19 @@ impl Agent {
                     } else {
                         EXIT_PROVIDER_ERROR
                     };
-                    let msg = one_line(&err.to_string(), 400);
+                    let mut msg = one_line(&err.to_string(), 400);
+                    if status == EXIT_PROVIDER_ERROR && pulse_provider::is_request_too_large(&err) {
+                        // The body was too big for the provider, not the
+                        // network too slow: the same request again fails
+                        // the same way, a smaller one may not.
+                        oversize_refusals += 1;
+                        if self.shrink_for_retry(cancel, oversize_refusals, &msg) {
+                            continue;
+                        }
+                        msg = format!(
+                            "{msg}; the request stayed too large after the conversation was compacted and its older observations collapsed - start a new conversation (it carries this one over, compacted), or in pulse harness chat /compact and say continue"
+                        );
+                    }
                     self.emit(Step {
                         kind: StepKind::Error,
                         content: msg.clone(),
@@ -2231,9 +2325,11 @@ impl Agent {
                     return Drive::Stopped { status, error: msg };
                 }
             };
+            oversize_refusals = 0;
             self.state.initiator = "agent".to_string();
             self.result.usage.add(resp.usage);
             self.state.last_prompt_tokens = resp.usage.prompt_tokens;
+            self.state.measured_through = sent_messages;
             let mut msg = resp
                 .message
                 .unwrap_or_else(|| Message::new(Role::Assistant));
@@ -3875,6 +3971,71 @@ impl Agent {
         obs
     }
 
+    /// Makes the next request smaller after the provider refused this one
+    /// as too large ([`pulse_provider::is_request_too_large`]), `refusals`
+    /// in a row so far: the first time by compacting the conversation,
+    /// whatever the gap since the last compaction; when there was nothing
+    /// to compact or the summary failed, and the second time, by
+    /// collapsing every older observation but one to its elided form.
+    /// False when nothing changed or both were tried: the request cannot
+    /// be made smaller here.
+    fn shrink_for_retry(&mut self, cancel: &CancelToken, refusals: u32, why: &str) -> bool {
+        if refusals > 2 {
+            return false;
+        }
+        if refusals == 1 {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!(
+                    "the provider refused the request as too large ({why}); compacting the conversation and asking again"
+                ),
+                ..Step::default()
+            });
+            if let Some(changed) = self.compact(cancel, "oversize") {
+                self.state.calls_at_compaction = self.result.calls;
+                if changed {
+                    self.state.last_prompt_tokens = 0;
+                    return true;
+                }
+            }
+        } else {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!(
+                    "the request was still too large after compaction ({why}); collapsing older observations and asking again"
+                ),
+                ..Step::default()
+            });
+        }
+        self.state.keep_observations = 1;
+        let (next, changed) = prune_history(&self.msgs, 1, 2);
+        if changed == 0 {
+            return false;
+        }
+        self.msgs = next;
+        self.state.last_prune_level = 2;
+        self.state.last_prompt_tokens = 0;
+        self.emit(Step {
+            kind: StepKind::Note,
+            content: format!(
+                "collapsed {changed} older observations to make the request smaller (level 2, keep 1); asking again"
+            ),
+            ..Step::default()
+        });
+        true
+    }
+
+    /// The model that writes compaction summaries: `compact_model` when
+    /// set, else the run's own.
+    fn summary_model(&self) -> String {
+        let m = self.cfg.compact_model.trim();
+        if m.is_empty() {
+            self.cfg.model.clone()
+        } else {
+            m.to_string()
+        }
+    }
+
     /// Replaces the older part of the conversation with a summary the
     /// model writes. None when the conversation is too short to compact;
     /// Some(true) when it changed.
@@ -3892,7 +4053,7 @@ impl Agent {
             }
         };
         let transcript = render_transcript(&self.msgs, cut);
-        let req = summary_request(&self.cfg.model, &self.cfg.task, &transcript, &asks);
+        let req = summary_request(&self.summary_model(), &self.cfg.task, &transcript, &asks);
         let start = Instant::now();
         let resp = match self.p.chat(cancel, req) {
             Ok(r) => r,
@@ -3926,10 +4087,18 @@ impl Agent {
         self.msgs = apply_compaction(&self.msgs, cut, &summary);
         self.rewind.on_compaction(cut);
         self.result.compactions += 1;
+        let why = match trigger {
+            "size" => format!(
+                "; the request was about to pass its {} KiB budget",
+                self.cfg.max_request_bytes / 1024
+            ),
+            "oversize" => "; the provider had refused the request as too large".to_string(),
+            _ => String::new(),
+        };
         self.emit(Step {
             kind: StepKind::Note,
             content: format!(
-                "compacted {replaced} older messages into a {}-character summary ({before} messages became {}); the system prompt, the task and the last {} messages are unchanged",
+                "compacted {replaced} older messages into a {}-character summary ({before} messages became {}); the system prompt, the task and the last {} messages are unchanged{why}",
                 summary.len(),
                 self.msgs.len(),
                 before - cut
@@ -10931,6 +11100,548 @@ mod tests {
         let (_, got) = run_agent(p.clone(), env, off).unwrap();
         assert_eq!(got.compactions, 0, "compact_at 0 is off");
         assert_eq!(p.requests().len(), 5);
+    }
+
+    /// The notes of a run, in order.
+    fn note_texts(h: &Agent) -> Vec<String> {
+        h.steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Note)
+            .map(|s| s.content.clone())
+            .collect()
+    }
+
+    /// A tool reply whose command prints `chars` characters.
+    fn long_output(n: usize, chars: usize) -> pulse_provider::Response {
+        resp(tool(&format!("yes | head -c {chars} # {n}")))
+    }
+
+    #[test]
+    fn compaction_runs_when_the_request_would_pass_its_byte_budget() {
+        let _serial = crate::test_helpers::serial();
+        // Four 100,000-character observations put the request past a 350
+        // KiB budget (the tool schemas ride along, well under the gap
+        // between three observations and four) while the 1M-token window
+        // is nowhere near 50% full: the size trigger compacts where the
+        // token trigger would not.
+        let budget = 350 * 1024;
+        let p = Arc::new(FakeProvider::new(vec![
+            long_output(1, 100_000),
+            long_output(2, 100_000),
+            long_output(3, 100_000),
+            long_output(4, 100_000),
+            resp(msg("Earlier: ran four commands, saw x's.")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            default_output: "x".repeat(100_000),
+            ..FakeEnv::default()
+        }));
+        let mut cfg = base_config();
+        cfg.max_steps = 20;
+        cfg.output_limit = 120_000;
+        cfg.context_window = 1_000_000;
+        cfg.compact_at = 50;
+        cfg.max_request_bytes = budget;
+        let (h, got) = run_agent(p.clone(), env, cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(got.compactions, 1);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 6);
+        // Nothing the provider took was over the budget...
+        for (i, req) in reqs.iter().enumerate() {
+            assert!(
+                estimate_request_bytes(&req.messages, &req.tools) <= budget,
+                "request {i} is {} bytes",
+                estimate_request_bytes(&req.messages, &req.tools)
+            );
+        }
+        // ...because the fifth request compacted first: the summary call,
+        // then the run's own request with the summary in place.
+        assert!(reqs[4].tools.is_empty(), "the summary request");
+        assert!(
+            reqs[5].messages[2].content.starts_with(COMPACT_MARKER),
+            "{}",
+            reqs[5].messages[2].content
+        );
+        let notes = note_texts(&h);
+        let note = notes
+            .iter()
+            .find(|n| n.starts_with("compacted "))
+            .expect("a compaction note");
+        assert!(
+            note.ends_with("; the request was about to pass its 350 KiB budget"),
+            "{note}"
+        );
+
+        // Budget 0 leaves the size trigger off: the same run never compacts.
+        let p = Arc::new(FakeProvider::new(vec![
+            long_output(1, 100_000),
+            long_output(2, 100_000),
+            long_output(3, 100_000),
+            long_output(4, 100_000),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            default_output: "x".repeat(100_000),
+            ..FakeEnv::default()
+        }));
+        let mut off = base_config();
+        off.max_steps = 20;
+        off.output_limit = 120_000;
+        off.context_window = 1_000_000;
+        off.compact_at = 50;
+        let (_, got) = run_agent(p.clone(), env, off).unwrap();
+        assert_eq!(got.compactions, 0);
+        assert_eq!(p.requests().len(), 5);
+    }
+
+    /// A provider behind a gateway that gives up reading a body over
+    /// `limit` characters - the Copilot 408 - and answers from the script
+    /// otherwise. Summary requests (no tools) always go through.
+    struct GatewayProvider {
+        limit: usize,
+        responses: Mutex<Vec<pulse_provider::Response>>,
+        requests: Mutex<Vec<Request>>,
+    }
+
+    impl GatewayProvider {
+        fn new(limit: usize, responses: Vec<pulse_provider::Response>) -> Arc<Self> {
+            Arc::new(Self {
+                limit,
+                responses: Mutex::new(responses),
+                requests: Mutex::new(Vec::new()),
+            })
+        }
+        fn requests(&self) -> Vec<Request> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    struct SharedGatewayProvider(Arc<GatewayProvider>);
+
+    impl Provider for SharedGatewayProvider {
+        fn name(&self) -> &str {
+            "copilot"
+        }
+        fn label(&self) -> &str {
+            "Gateway"
+        }
+        fn chat(
+            &self,
+            _cancel: &CancelToken,
+            req: Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            self.0.requests.lock().unwrap().push(req.clone());
+            if !req.tools.is_empty() && request_chars_for_test(&req) > self.0.limit {
+                return Err(pulse_provider::ProviderError::new(
+                    "copilot",
+                    408,
+                    "",
+                    "Timed out reading request body. Try again, or use a smaller request size.",
+                    false,
+                )
+                .into());
+            }
+            let mut responses = self.0.responses.lock().unwrap();
+            if responses.is_empty() {
+                return Err(anyhow!("no response"));
+            }
+            Ok(responses.remove(0))
+        }
+        fn models(&self, _cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+            Ok(Vec::new())
+        }
+        fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
+            Ok(Login::default())
+        }
+    }
+
+    /// A run against a [`GatewayProvider`] with both compaction triggers
+    /// off, so only the gateway's refusals shrink the conversation.
+    fn run_behind_gateway(p: Arc<GatewayProvider>, output_chars: usize) -> (Agent, ResultSummary) {
+        let mut cfg = base_config();
+        cfg.max_steps = 20;
+        cfg.context_window = 1_000_000;
+        let env = Arc::new(Mutex::new(FakeEnv {
+            default_output: "x".repeat(output_chars),
+            ..FakeEnv::default()
+        }));
+        let mut h = new(
+            Box::new(SharedGatewayProvider(p)),
+            Box::new(env),
+            cfg,
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        (h, got)
+    }
+
+    #[test]
+    fn a_request_the_gateway_refuses_as_too_large_is_compacted_and_sent_again() {
+        let _serial = crate::test_helpers::serial();
+        // Three 5,000-character observations pass an 18,000-character
+        // gateway, four do not: the fifth request comes back 408, the
+        // conversation is compacted whatever the gap since the last
+        // compaction, and the retry goes through with the summary in
+        // place. The turn goes on instead of stopping.
+        let p = GatewayProvider::new(
+            18_000,
+            vec![
+                long_output(1, 5000),
+                long_output(2, 5000),
+                long_output(3, 5000),
+                long_output(4, 5000),
+                resp(msg("Earlier: ran four commands, saw x's.")),
+                resp(msg("SUMMARY: done")),
+            ],
+        );
+        let (h, got) = run_behind_gateway(p.clone(), 5000);
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(got.compactions, 1);
+        assert_eq!(
+            got.calls, 6,
+            "the refused call counts, the summary does not"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 7);
+        assert!(request_chars_for_test(&reqs[4]) > 18_000, "the refused one");
+        assert!(reqs[5].tools.is_empty(), "the summary request follows");
+        assert!(
+            reqs[6].messages[2].content.starts_with(COMPACT_MARKER),
+            "the retry carries the summary: {}",
+            reqs[6].messages[2].content
+        );
+        assert!(request_chars_for_test(&reqs[6]) <= 18_000);
+        let notes = note_texts(&h);
+        assert!(
+            notes.iter().any(|n| n.starts_with(
+                "the provider refused the request as too large (copilot: Timed out reading request body"
+            ) && n.ends_with("; compacting the conversation and asking again")),
+            "{notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.starts_with("compacted 2 older messages")
+                    && n.ends_with("; the provider had refused the request as too large")),
+            "{notes:?}"
+        );
+        assert!(
+            !h.steps.iter().any(|s| s.kind == StepKind::Error),
+            "no error step: the turn went on"
+        );
+    }
+
+    #[test]
+    fn a_refused_request_too_short_to_compact_has_its_observations_collapsed() {
+        let _serial = crate::test_helpers::serial();
+        // Eight messages are too few to compact (the last six stay), so
+        // the refusal collapses every older observation but one and the
+        // retry fits.
+        let p = GatewayProvider::new(
+            12_000,
+            vec![
+                long_output(1, 5000),
+                long_output(2, 5000),
+                long_output(3, 5000),
+                resp(msg("SUMMARY: done")),
+            ],
+        );
+        let (h, got) = run_behind_gateway(p.clone(), 5000);
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(got.compactions, 0);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 5);
+        let retry = &reqs[4].messages;
+        let elided = retry
+            .iter()
+            .filter(|m| m.role == Role::Tool && m.content.contains(OUTPUT_ELIDED_LINE))
+            .count();
+        assert_eq!(elided, 2, "{retry:#?}");
+        assert!(
+            retry.last().unwrap().content.contains(&"x".repeat(5000)),
+            "the latest observation stays whole"
+        );
+        let notes = note_texts(&h);
+        assert!(
+            notes.iter().any(|n| n
+                == "collapsed 2 older observations to make the request smaller (level 2, keep 1); asking again"),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_request_still_too_large_after_compaction_is_collapsed_then_given_up() {
+        let _serial = crate::test_helpers::serial();
+        // The summary itself is long, so the compacted retry is refused
+        // too: the older observations collapse and the third attempt goes
+        // through.
+        let p = GatewayProvider::new(
+            18_000,
+            vec![
+                long_output(1, 5000),
+                long_output(2, 5000),
+                long_output(3, 5000),
+                long_output(4, 5000),
+                resp(msg(&format!("Earlier: {}", "f".repeat(6000)))),
+                resp(msg("SUMMARY: done")),
+            ],
+        );
+        let (h, got) = run_behind_gateway(p.clone(), 5000);
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(got.compactions, 1);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 8, "4 good, 408, summary, 408, good");
+        assert!(request_chars_for_test(&reqs[7]) <= 18_000);
+        let notes = note_texts(&h);
+        let order: Vec<&str> = notes
+            .iter()
+            .filter_map(|n| {
+                [
+                    "the provider refused the request as too large",
+                    "compacted ",
+                    "the request was still too large after compaction",
+                    "collapsed 2 older observations to make the request smaller",
+                ]
+                .into_iter()
+                .find(|p| n.starts_with(p))
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "the provider refused the request as too large",
+                "compacted ",
+                "the request was still too large after compaction",
+                "collapsed 2 older observations to make the request smaller",
+            ],
+            "{notes:?}"
+        );
+
+        // When even that leaves the request too large, the turn stops on
+        // the provider error and says what helps.
+        let p = GatewayProvider::new(
+            18_000,
+            vec![
+                long_output(1, 5000),
+                long_output(2, 5000),
+                long_output(3, 5000),
+                long_output(4, 5000),
+                resp(msg(&format!("Earlier: {}", "f".repeat(20_000)))),
+                resp(msg("SUMMARY: never reached")),
+            ],
+        );
+        let (h, got) = run_behind_gateway(p.clone(), 5000);
+        assert_eq!(got.exit_status, EXIT_PROVIDER_ERROR);
+        assert!(
+            got.error
+                .starts_with("copilot: Timed out reading request body"),
+            "{}",
+            got.error
+        );
+        assert!(
+            got.error.contains(
+                "the request stayed too large after the conversation was compacted and its older observations collapsed - start a new conversation"
+            ),
+            "{}",
+            got.error
+        );
+        assert_eq!(p.requests().len(), 8, "4 good, 408, summary, 408, 408");
+        assert_eq!(
+            h.steps.iter().filter(|s| s.kind == StepKind::Error).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_refusal_nothing_can_shrink_stops_at_once() {
+        let _serial = crate::test_helpers::serial();
+        // A gateway that takes nothing: the first request is refused, the
+        // two-message conversation can neither compact nor collapse, and
+        // the run stops without sending the same body again.
+        let p = GatewayProvider::new(1, vec![resp(msg("SUMMARY: never reached"))]);
+        let (h, got) = run_behind_gateway(p.clone(), 10);
+        assert_eq!(got.exit_status, EXIT_PROVIDER_ERROR);
+        assert!(
+            got.error.contains("start a new conversation"),
+            "{}",
+            got.error
+        );
+        assert_eq!(p.requests().len(), 1);
+        let notes = note_texts(&h);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.starts_with("the provider refused the request as too large")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_carried_over_conversation_past_the_budget_is_compacted_before_its_first_call() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        // An earlier session's transcript: the task and four tool rounds
+        // with 100,000-character results, past a 350 KiB budget together.
+        let mut carried = vec![Message {
+            role: Role::User,
+            content: "look around".into(),
+            ..Message::new(Role::User)
+        }];
+        for n in 1..=4 {
+            let mut call = tool(&format!("yes | head -c 100000 # {n}"));
+            call.tool_calls[0].id = format!("call-{n}");
+            carried.push(call);
+            carried.push(Message {
+                role: Role::Tool,
+                content: format!(
+                    "<returncode>0</returncode>\n<output>\n{}\n</output>",
+                    "x".repeat(100_000)
+                ),
+                tool_call_id: format!("call-{n}"),
+                name: "bash".into(),
+                ..Message::new(Role::Tool)
+            });
+        }
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(msg("Earlier: looked around, saw x's.")),
+            resp(msg("Still here.")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), None, steps.clone());
+        h.cfg.max_request_bytes = 350 * 1024;
+        h.resume_messages(carried).unwrap();
+        let cancel = CancelToken::new();
+        assert_eq!(
+            h.compact_now(&cancel),
+            None,
+            "before the first turn there is nothing to compact yet"
+        );
+        let turn = h.turn(&cancel, "go on").unwrap();
+        assert!(
+            matches!(turn, Turn::Reply(ref r) if r == "Still here."),
+            "{turn:?}"
+        );
+        assert_eq!(h.result().compactions, 1);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2, "the summary call, then the turn's");
+        assert!(reqs[0].tools.is_empty());
+        assert!(
+            reqs[0].messages[1].content.contains("look around"),
+            "the carried task is what the summary is written against"
+        );
+        let first = &reqs[1].messages;
+        assert_eq!(first[0].role, Role::System);
+        assert_eq!(first[1].content, "look around");
+        assert!(
+            first[2].content.starts_with(COMPACT_MARKER)
+                && first[2]
+                    .content
+                    .contains("The 4 messages before this point"),
+            "{}",
+            first[2].content
+        );
+        assert!(
+            first
+                .iter()
+                .any(|m| m.content.starts_with("Note: resumed an earlier session")),
+            "the resume note is in the kept tail"
+        );
+        assert_eq!(first.last().unwrap().content, "go on");
+        assert!(estimate_request_bytes(first, &reqs[1].tools) <= 350 * 1024);
+        let notes: Vec<String> = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == StepKind::Note)
+            .map(|s| s.content.clone())
+            .collect();
+        let resumed = notes
+            .iter()
+            .position(|n| n.starts_with("resumed an earlier session: 9 messages carried over"))
+            .expect("the resume note");
+        let compacted = notes
+            .iter()
+            .position(|n| n.starts_with("compacted 4 older messages"))
+            .expect("the compaction note");
+        assert!(resumed < compacted, "{notes:?}");
+        assert_eq!(h.end(EXIT_ENDED).exit_status, EXIT_ENDED);
+    }
+
+    #[test]
+    fn the_compaction_summary_can_come_from_another_model() {
+        let _serial = crate::test_helpers::serial();
+        let with_usage = |mut r: pulse_provider::Response, prompt: i32| {
+            r.usage.prompt_tokens = prompt;
+            r
+        };
+        let p = Arc::new(FakeProvider::new(vec![
+            with_usage(resp(tool("echo 1")), 800),
+            with_usage(resp(tool("echo 2")), 800),
+            with_usage(resp(tool("echo 3")), 800),
+            with_usage(resp(tool("echo 4")), 800),
+            with_usage(resp(msg("Earlier: ran echo 1.")), 50),
+            with_usage(resp(msg("SUMMARY: done")), 300),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let mut cfg = base_config();
+        cfg.max_steps = 20;
+        cfg.context_window = 1000;
+        cfg.compact_at = 70;
+        cfg.compact_model = " cheap-1 ".into();
+        let (_, got) = run_agent(p.clone(), env, cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(got.compactions, 1);
+        let reqs = p.requests();
+        assert_eq!(reqs[4].model, "cheap-1", "the summary request");
+        assert!(
+            reqs.iter()
+                .enumerate()
+                .all(|(i, r)| i == 4 || r.model == "m"),
+            "the run's own calls keep its model"
+        );
+    }
+
+    #[test]
+    fn the_results_a_round_added_count_before_the_provider_has_counted_them() {
+        let _serial = crate::test_helpers::serial();
+        // The provider's count covers the request it saw; the reply and the
+        // 2,000-character result after it are estimated on top of it, so
+        // the next call already sees the 1,000-token window as full and
+        // collapses the older observation instead of waiting for the next
+        // count to say so.
+        let counted = |mut r: pulse_provider::Response| {
+            r.usage.prompt_tokens = 600;
+            r
+        };
+        let p = Arc::new(FakeProvider::new(vec![
+            counted(resp(tool("cat big"))),
+            counted(resp(tool("cat big"))),
+            counted(resp(msg("SUMMARY: done"))),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            default_output: "y\n".repeat(1000),
+            ..FakeEnv::default()
+        }));
+        let mut cfg = base_config();
+        cfg.context_window = 1000;
+        cfg.keep_observations = 1;
+        let (h, got) = run_agent(p, env, cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        let notes = note_texts(&h);
+        let note = notes
+            .iter()
+            .find(|n| n.starts_with("collapsed 1 older observations"))
+            .unwrap_or_else(|| panic!("a collapse note in {notes:?}"));
+        let about: i32 = note
+            .split("the prompt was about ")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{note}"));
+        assert!(note.contains("(level 2, keep 1;"), "{note}");
+        assert!(about > 1000, "{note}: 600 counted plus the round since");
     }
 
     /// A temp directory that is a git repo with one commit, for the
