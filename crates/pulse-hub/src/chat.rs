@@ -426,6 +426,7 @@ impl Handler {
             "cancel" => chats.cancel(id),
             "archive" => chats.archive(id),
             "close" => chats.close(id),
+            "restart" => chats.restart_session(id),
             "auto" => {
                 let Some(on) = payload_bool(w, &payload, "on", true) else {
                     return;
@@ -1438,6 +1439,157 @@ mod tests {
             Value::Null,
         );
         assert_eq!(code, 200);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// `POST /chat/ID/restart` ends the session in memory and the next
+    /// message reloads the conversation from its saved transcript, which
+    /// the harness repairs on the way in: a transcript carrying a tool
+    /// call whose arguments the gateway cut mid-stream (what used to stick
+    /// a conversation on `Invalid JSON format in tool call arguments`)
+    /// goes back to the provider with `{}` for it, and the turn succeeds.
+    #[test]
+    fn restart_reloads_a_conversation_from_its_transcript_repaired() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(&ts, json!([{"content": "ok"}, {"content": "again"}]));
+        let (code, body, raw) = call(&h, "POST", "/api/v1/chat", json!({"text": "hi"}));
+        assert_eq!(code, 201, "{raw}");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        let shown = wait_status(&h, &id, &["idle"]);
+        let session = shown["session_id"].as_str().unwrap().to_string();
+        assert!(!session.is_empty());
+        // Let the worker stand down before the restart.
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/restart"),
+            Value::Null,
+        );
+        assert_eq!(code, 200, "{raw}");
+        assert_eq!(body["conversation"]["status"], "idle");
+        assert_eq!(body["conversation"]["live"]["status"], "idle");
+        assert_eq!(
+            body["conversation"]["session_id"], session,
+            "the row keeps the session whose transcript the next message loads"
+        );
+        let shown = wait_status(&h, &id, &["idle"]);
+        let msgs = shown["messages"].as_array().unwrap();
+        let note = msgs.last().unwrap();
+        assert_eq!(note["role"], "note");
+        assert_eq!(note["extra"]["restarted"], "owner");
+        assert_eq!(note["extra"]["repaired"], 0);
+        assert!(
+            note["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("The session was restarted from the transcript."),
+            "{note}"
+        );
+        // The session's memory is what its trajectory holds; the stuck
+        // conversation's last message was a cut `edit` call with the
+        // result the old harness gave it.
+        let path = std::path::Path::new(&ts.home)
+            .join("harness")
+            .join(format!("{session}.json"));
+        let mut traj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let cut = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
+        let messages = traj["messages"].as_array_mut().unwrap();
+        messages.push(json!({"role": "assistant", "tool_calls": [{"id": "toolu_01D9XWUQtuVBTWixzvum3zYd", "name": "edit", "arguments": cut}]}));
+        messages.push(json!({"role": "tool", "content": "edit: arguments are not JSON: EOF while parsing an object at line 1 column 93", "tool_call_id": "toolu_01D9XWUQtuVBTWixzvum3zYd", "name": "edit"}));
+        std::fs::write(&path, serde_json::to_vec(&traj).unwrap()).unwrap();
+        // Restarting with nothing open in memory counts what the load
+        // will repair.
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/restart"),
+            Value::Null,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        let note = shown["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(note["extra"]["repaired"], 1);
+        assert!(
+            note["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("; it repairs 1 tool call whose arguments are not JSON."),
+            "{note}"
+        );
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/message"),
+            json!({"text": "land it"}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        let new_session = shown["session_id"].as_str().unwrap().to_string();
+        assert_ne!(new_session, session, "a new session was opened");
+        let msgs = shown["messages"].as_array().unwrap();
+        assert_eq!(msgs.last().unwrap()["role"], "assistant");
+        assert_eq!(
+            msgs.last().unwrap()["content"],
+            "ok",
+            "the turn succeeded (the fake's script starts over in the new session)"
+        );
+        let steps = shown["steps"].as_array().unwrap();
+        assert!(
+            steps.iter().any(|st| st["kind"] == "note"
+                && st["content"].as_str().unwrap_or("").starts_with(
+                    "repaired 1 carried-over tool call whose arguments were not JSON (edit toolu_01D9XWUQtuVBTWixzvum3zYd)"
+                )),
+            "{steps:?}"
+        );
+        // What the provider got is what the new session's trajectory holds:
+        // the cut call with `{}`, nothing that is not JSON.
+        let traj: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::path::Path::new(&ts.home)
+                    .join("harness")
+                    .join(format!("{new_session}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut seen_cut = false;
+        for m in traj["messages"].as_array().unwrap() {
+            for c in m["tool_calls"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let args = c["arguments"].as_str().unwrap_or("");
+                assert!(
+                    serde_json::from_str::<Value>(args).is_ok(),
+                    "arguments sent back are JSON: {c}"
+                );
+                if c["id"] == "toolu_01D9XWUQtuVBTWixzvum3zYd" {
+                    seen_cut = true;
+                    assert_eq!(args, "{}");
+                }
+            }
+        }
+        assert!(seen_cut, "the cut call was carried over");
+        let (code, _, _) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/archive"),
+            Value::Null,
+        );
+        assert_eq!(code, 200);
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/restart"),
+            Value::Null,
+        );
+        assert_eq!(
+            code, 409,
+            "an archived conversation has nothing to restart: {raw}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 
