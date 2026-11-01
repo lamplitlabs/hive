@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { entryGroup, entryId, listEntries, sessionWords, stepWords, taskFinished, taskGroup, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
+import { entryGroup, entryId, foldedEntries, listEntries, sessionWords, stepWords, taskFinished, taskGroup, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
 
 const session = (over = {}) => ({ job: "job-1", kind: "feature", title: "Build it", job_status: "queued", agent: "", session: "", status: "", started_at: "", updated_at: "", ended_at: "", cost: 0, steps: 0, ...over });
 const task = (over = {}) => ({ id: "TASK-001", project: "one", title: "Ship it", status: "in_progress", priority: 10, lead: "one-lead", created_by: "owner", created_at: "", updated_at: "", last_at: "", messages: 0, last_message_at: "", last_author: "", needs_you: false, sessions: [], ...over });
@@ -125,6 +125,22 @@ test("a family sits in its most pressing member's section", () => {
   assert.equal(familyGroup(quiet), "finished");
   const [alone] = families([conv("p", { status: "archived" })]);
   assert.equal(familyGroup(alone), "archived");
+});
+
+test("a folded finished section keeps only the open entry, other sections stay whole", () => {
+  const rows = [
+    conv("c-1", { status: "closed" }),
+    conv("c-2", { status: "closed" }),
+    conv("c-3", { parent: "c-2", status: "closed" }),
+  ];
+  const entries = listEntries(rows, [task({ id: "t-1", status: "done", created_at: "2026-10-18T09:00:00Z" })]);
+  assert.deepEqual(entries.map(entryId), ["c-1", "c-2", "t-1"]);
+  assert.deepEqual(foldedEntries(entries, "finished", true, "").map(entryId), []);
+  assert.deepEqual(foldedEntries(entries, "finished", true, "c-1").map(entryId), ["c-1"]);
+  assert.deepEqual(foldedEntries(entries, "finished", true, "c-3").map(entryId), ["c-2"]);
+  assert.deepEqual(foldedEntries(entries, "finished", true, "t-1").map(entryId), ["t-1"]);
+  assert.equal(foldedEntries(entries, "finished", false, ""), entries);
+  assert.equal(foldedEntries(entries, "open", true, ""), entries);
 });
 
 test("a report note says what the sub-conversation did", () => {

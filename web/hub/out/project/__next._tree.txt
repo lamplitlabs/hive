@@ -2,4 +2,8 @@
 :HL["/fonts/atkinson-next-latin.woff2","font",{"crossOrigin":"anonymous","type":"font/woff2"}]
 2:[["children",{"s":"__PAGE__","h":160}]]
 1:[["children",{"s":"project","h":64,"c":"$Q2"}]]
+<<<<<<< HEAD
 0:{"b":"P006Jh6SAfU7m4M-UXXLv","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
+=======
+0:{"b":"zs5qutKeQbGABJQhOw5TI","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
+>>>>>>> origin/main

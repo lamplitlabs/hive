@@ -213,6 +213,16 @@ export function entryId<T extends Grouped>(e: ListEntry<T>): string {
   return e.kind === "task" ? e.task.id : e.family.c.id;
 }
 
+// The finished section starts folded: finished conversations pile up fast
+// and crowd out the ones still moving. Folded, the section shows only its
+// header with the count - and the entry the owner has open, so the page
+// never hides the conversation it is showing. `openId` is the open
+// conversation or task; a sub-conversation keeps its family visible.
+export function foldedEntries<T extends Grouped>(entries: ListEntry<T>[], group: ListGroup, folded: boolean, openId: string): ListEntry<T>[] {
+  if (group !== "finished" || !folded) return entries;
+  return entries.filter((e) => entryId(e) === openId || (e.kind === "conversation" && e.family.children.some((c) => c.id === openId)));
+}
+
 // What a report note from a sub-conversation says it did, as the verb that
 // follows its title: "Docs check · finished".
 export function reportVerb(kind: string): string {
