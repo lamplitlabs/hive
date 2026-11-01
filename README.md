@@ -610,7 +610,14 @@ any other - that its agent starts with the `chat` tool (`start` with a title
 and a brief) for a part of the work worth a page of its own - a long check, a
 second opinion, a piece that should keep going while it answers you - or that
 you start from the **Sub-conversations** panel on its page (**Start one**: a
-title and the brief). A sub-conversation inherits the parent's project,
+title and the brief). The agent's brief tells it to fan work out rather than do
+all of it in one thread: a request with several parts, or with one part that
+takes a while, is split - the agent keeps the decision, the join and the answer
+to you, and hands the rest to a helper inside its turn (the `subagent` tool,
+for a bounded lookup or a long check summarised) or to sub-conversations, one
+per independent part, running at the same time on their own files; only a
+request small enough for a few tool calls is done alone. A sub-conversation
+inherits the parent's project,
 worktree and branch (it works in the same folder, so it attaches nothing of its
 own), model, effort and **Auto**; what it does comes back to the parent as a
 framed note in the parent's transcript with a link to it - *replied*,
@@ -3131,10 +3138,13 @@ delegation: a **sub-conversation** is not bounded by the parent's turn - it is
 a conversation of its own with its own session, page and budget, in the
 parent's worktree, that the owner can open and steer, and it reports back to
 the parent as notes that wake it (**Chat** in [The owner's
-path](#the-console-for-the-owner)). The brief tells the agent which to pick: a
-helper for a quick self-contained lookup whose answer it needs now, a
-sub-conversation for work that should keep going and be watched on its own
-while it answers the owner.
+path](#the-console-for-the-owner)). A conversation's brief tells the agent to
+split a request with several parts, or with one part that takes a while, and
+which to pick for each: a helper for a bounded self-contained sub-task whose
+answer it needs now (a survey of the code, a suite run summarised), a
+sub-conversation for a part that should keep going and be watched on its own
+while it answers the owner, one per independent part when there are several; a
+sub-conversation's own brief says to do its part itself.
 
 #### Web pages
 
