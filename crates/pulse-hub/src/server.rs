@@ -691,9 +691,7 @@ mod tests {
     // it falls back to being at most a minute older than its commit.
     #[test]
     fn embedded_bundle_is_built_from_the_committed_src() {
-        use std::path::Path;
-
-        let hub = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/hub");
+        let hub = pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../web/hub");
         let git = |args: &[&str]| -> String {
             let out = Command::new("git")
                 .args(args)

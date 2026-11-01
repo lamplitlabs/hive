@@ -61,6 +61,23 @@ impl Drop for SetenvGuard {
     }
 }
 
+/// The directory of the package under test, read when the test runs.
+///
+/// Pass `env!("CARGO_MANIFEST_DIR")`; it is only the fallback. That value is
+/// baked in when the test binary is compiled, and Cargo serves a test binary
+/// from a shared `CARGO_TARGET_DIR` as fresh to another checkout of the same
+/// sources (its freshness key is mtimes and a workspace-relative path, not
+/// the checkout's location). A test that reads the source tree through the
+/// baked value then reads a different checkout, or one that was removed
+/// since. `cargo test` sets `CARGO_MANIFEST_DIR` in the test process too,
+/// naming the checkout actually under test, so that value wins.
+pub fn manifest_dir(compiled: &str) -> std::path::PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(compiled))
+}
+
 /// Environment for test git invocations: hook vars stripped and host config disabled.
 pub fn git_env() -> Vec<String> {
     let mut env =

@@ -3278,7 +3278,8 @@ fn activity_clip_cuts_on_character_boundaries() {
 /// names no kind the daemon never runs.
 #[test]
 fn every_kind_in_the_kinds_table_is_exercised_in_the_tree() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let manifest = pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let crates = manifest
         .parent()
         .and_then(Path::parent)
         .expect("the workspace root holds crates/");

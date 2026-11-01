@@ -753,7 +753,7 @@ mod tests {
     }
 
     fn source_repo() -> Option<PathBuf> {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let repo = pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .ok()?;

@@ -885,7 +885,14 @@ mod tests {
             "UPDATE meta SET value = '{\"queued\":3,\"slots\":2,\"inflight\":2,\"starved_since\":\"2026-09-06T18:29:01Z\"}' WHERE key = 'capacity'",
         );
         assert_eq!(capacity_disk(&s).unwrap(), "");
-        assert!(report.harness.contains("native · GitHub Copilot ·"));
+        // temporary_store() hides this machine's GitHub logins, so the
+        // harness line is decided without the network and is the same on
+        // every machine; a probe that reaches api.github.com again fails
+        // here instead of flaking snapshot_json_stable.
+        assert_eq!(
+            report.harness,
+            "native · GitHub Copilot · not signed in - Sign in with GitHub (Settings -> Harness) or run pulse harness login"
+        );
         assert!(
             report
                 .text()
