@@ -46,6 +46,11 @@ pub struct Conversation {
     /// stays as written, and the agent's retitling after a reply leaves it.
     #[serde(default)]
     pub title_owner: bool,
+    /// True when the conversation runs in lockdown (sandbox) mode: the agent
+    /// works with the network off and writes confined to its worktree,
+    /// without web, MCP or credential access; only work inside the sandbox.
+    #[serde(default)]
+    pub lockdown: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -58,12 +63,13 @@ pub struct ConversationMessage {
     pub extra: Value,
 }
 
-const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning, parent, title_owner";
+const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning, parent, title_owner, lockdown";
 const MESSAGE_COLS: &str = "conversation_id, n, at, role, content, extra";
 
 fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     let auto: i64 = r.get(9)?;
     let title_owner: i64 = r.get(19)?;
+    let lockdown: i64 = r.get(20)?;
     Ok(Conversation {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -85,6 +91,7 @@ fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
         reasoning: r.get(17)?,
         parent: r.get(18)?,
         title_owner: title_owner != 0,
+        lockdown: lockdown != 0,
     })
 }
 
@@ -183,7 +190,7 @@ impl Store {
         let now = self.now();
         let tx = self.begin()?;
         tx.execute(
-            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
             params![
                 c.id,
                 c.title,
@@ -204,7 +211,8 @@ impl Store {
                 c.note,
                 c.reasoning,
                 c.parent,
-                c.title_owner as i64
+                c.title_owner as i64,
+                c.lockdown as i64
             ],
         )?;
         tx.commit()?;
@@ -327,6 +335,13 @@ impl Store {
 
     pub fn chat_set_auto_approve(&self, id: &str, on: bool) -> Result<()> {
         self.chat_update(id, "auto_approve = ?1", params![on as i64])
+    }
+
+    /// Lockdown (sandbox) mode for the next turn: on, the agent runs with the
+    /// network off and writes confined to its worktree; the runtime restarts
+    /// its session like for a model change.
+    pub fn chat_set_lockdown(&self, id: &str, on: bool) -> Result<()> {
+        self.chat_update(id, "lockdown = ?1", params![on as i64])
     }
 
     /// The owner names the conversation: the title is kept as written and
@@ -553,6 +568,18 @@ mod tests {
         assert!(!got.auto_approve);
         assert_eq!(got.title, "a title");
         assert!(got.title_owner, "a hand-given title is marked the owner's");
+        assert!(!got.lockdown, "a conversation starts outside lockdown");
+        s.chat_set_lockdown("chat-1", true).expect("lockdown");
+        assert!(s.chat_get("chat-1").unwrap().unwrap().lockdown);
+        s.chat_set_lockdown("chat-1", false).expect("lockdown off");
+        assert!(!s.chat_get("chat-1").unwrap().unwrap().lockdown);
+        let locked = s
+            .chat_create(&Conversation {
+                lockdown: true,
+                ..chat("chat-locked")
+            })
+            .expect("create locked");
+        assert!(locked.lockdown, "lockdown set at creation is kept");
     }
 
     #[test]
@@ -725,8 +752,8 @@ mod tests {
         s.chat_add_message("chat-old", "assistant", "hi", &Value::Null)
             .expect("message");
         // Give the table the shape a store made before `closed` has: no
-        // `closed` in the CHECK, no `reasoning`, `parent` or `title_owner`
-        // column.
+        // `closed` in the CHECK, no `reasoning`, `parent`, `title_owner` or
+        // `lockdown` column.
         let narrow = crate::chat_ddl::CHAT_DDL[0]
             .replace("'closed',", "")
             .replace(
@@ -734,7 +761,7 @@ mod tests {
                 "",
             )
             .replace(
-                "  note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line\n  parent TEXT NOT NULL DEFAULT '',     -- the conversation this one is a sub-conversation of; '' = top level\n  title_owner INTEGER NOT NULL DEFAULT 0 -- 1 once the owner named it by hand; the agent then leaves the title\n",
+                "  note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line\n  parent TEXT NOT NULL DEFAULT '',     -- the conversation this one is a sub-conversation of; '' = top level\n  title_owner INTEGER NOT NULL DEFAULT 0, -- 1 once the owner named it by hand; the agent then leaves the title\n  lockdown INTEGER NOT NULL DEFAULT 0  -- 1 = sandbox: the agent works offline, confined to its worktree\n",
                 "  note TEXT NOT NULL DEFAULT ''\n",
             )
             .replacen(
@@ -745,6 +772,7 @@ mod tests {
         assert!(!narrow.contains("reasoning"), "{narrow}");
         assert!(!narrow.contains("parent"), "{narrow}");
         assert!(!narrow.contains("title_owner"), "{narrow}");
+        assert!(!narrow.contains("lockdown"), "{narrow}");
         {
             let conn = s.conn().unwrap();
             conn.pragma_update(None, "foreign_keys", 0).unwrap();
@@ -760,6 +788,7 @@ mod tests {
             assert!(!crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
             assert!(!crate::store::has_column(&conn, "conversations", "parent").unwrap());
             assert!(!crate::store::has_column(&conn, "conversations", "title_owner").unwrap());
+            assert!(!crate::store::has_column(&conn, "conversations", "lockdown").unwrap());
         }
         s.close().unwrap();
         let s = open();
@@ -769,6 +798,7 @@ mod tests {
             assert!(crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
             assert!(crate::store::has_column(&conn, "conversations", "parent").unwrap());
             assert!(crate::store::has_column(&conn, "conversations", "title_owner").unwrap());
+            assert!(crate::store::has_column(&conn, "conversations", "lockdown").unwrap());
             assert!(!crate::store::table_present(&conn, "conversations_widened").unwrap());
             let fk: i64 = conn
                 .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
@@ -788,6 +818,7 @@ mod tests {
         let got = s.chat_get("chat-old").expect("get").expect("row");
         assert_eq!(got.title, "fix the login");
         assert_eq!(got.reasoning, "");
+        assert!(!got.lockdown);
         assert_eq!(s.chat_messages("chat-old", 0).expect("messages").len(), 2);
         s.chat_set_status("chat-old", "closed", "done")
             .expect("closed");

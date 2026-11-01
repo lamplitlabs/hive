@@ -386,6 +386,13 @@ pub struct Config {
     /// (`pulse.max_subagents`); None leaves it to the step and time
     /// reserves, zero takes the `subagent` tool away.
     pub max_subagents: Option<u32>,
+    /// Lockdown (sandbox) mode: every outside thing is blocked. The tools
+    /// that leave the machine (`fetch`, `web_search`, MCP) are not offered,
+    /// commands that reach a remote are refused, and on macOS every
+    /// command runs under the OS sandbox the [`crate::lockdown::Lockdown`]
+    /// describes (network off, writes confined to the worktree and the
+    /// temp and build folders, credentials unreadable).
+    pub lockdown: Option<crate::lockdown::Lockdown>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1368,7 +1375,12 @@ impl Agent {
     }
 
     pub fn offers_web_search(&self) -> bool {
-        !self.web_search.is_off()
+        !self.web_search.is_off() && !self.locked_down()
+    }
+
+    /// Whether the session runs in lockdown (sandbox) mode.
+    pub fn locked_down(&self) -> bool {
+        self.cfg.lockdown.is_some()
     }
 
     /// Sets the permission rules from the flags and settings; call before
@@ -1457,7 +1469,7 @@ impl Agent {
             ),
             format!("working directory: {}", cfg.cwd),
             format!(
-                "mode: {}{}",
+                "mode: {}{}{}",
                 if cfg.read_only {
                     "read-only (plan)"
                 } else {
@@ -1467,10 +1479,18 @@ impl Agent {
                     String::new()
                 } else {
                     format!("; reasoning {}", cfg.reasoning)
+                },
+                if cfg.lockdown.is_some() {
+                    "; lockdown (sandbox)"
+                } else {
+                    ""
                 }
             ),
             format!("tools: {}", self.tool_names().join(", ")),
         ];
+        if let Some(l) = &cfg.lockdown {
+            out.push(l.describe());
+        }
         out.push(if cfg.instructions.trim().is_empty() {
             "instructions: none loaded".to_string()
         } else {
@@ -1616,7 +1636,7 @@ impl Agent {
         if !self.skills.is_empty() {
             out.push(skill_tool(&self.skills));
         }
-        if !self.fetch.is_empty() {
+        if !self.fetch.is_empty() && !self.locked_down() {
             out.push(fetch_tool(&self.fetch));
         }
         if self.offers_web_search() {
@@ -1634,7 +1654,9 @@ impl Agent {
         if self.offers_chat() {
             out.push(chat_tool());
         }
-        out.extend(self.mcp.advertised());
+        if !self.locked_down() {
+            out.extend(self.mcp.advertised());
+        }
         out.retain(|t| !self.permissions.withdraws(&t.name));
         out
     }
@@ -1661,7 +1683,7 @@ impl Agent {
         if !self.skills.is_empty() {
             out.push(SKILL_TOOL.to_string());
         }
-        if !self.fetch.is_empty() {
+        if !self.fetch.is_empty() && !self.locked_down() {
             out.push(FETCH_TOOL.to_string());
         }
         if self.offers_web_search() {
@@ -1679,7 +1701,10 @@ impl Agent {
         if self.offers_chat() {
             out.push(CHAT_TOOL.to_string());
         }
-        if self.mcp.deferred() {
+        if self.locked_down() {
+            // No MCP in a lockdown: the servers are processes and sockets
+            // outside the sandbox.
+        } else if self.mcp.deferred() {
             out.push(MCP_SEARCH_TOOL.to_string());
         } else {
             out.extend(self.mcp.table.keys().cloned());
@@ -2729,6 +2754,17 @@ impl Agent {
             }
             MEMORY_TOOL if self.offers_memory() => self.run_memory_tool(&call.arguments),
             SKILL_TOOL if !self.skills.is_empty() => self.run_skill_tool(&call.arguments),
+            FETCH_TOOL | WEB_SEARCH_TOOL | MCP_SEARCH_TOOL if self.locked_down() => {
+                self.tool_error(format!(
+                    "{}: not offered in a lockdown (sandbox) session; nothing reaches outside this machine. Work from what is in the worktree and on this machine.",
+                    call.name
+                ))
+            }
+            name if self.locked_down() && name.starts_with(MCP_TOOL_PREFIX) => {
+                self.tool_error(format!(
+                    "{name}: MCP servers are not offered in a lockdown (sandbox) session; nothing reaches outside this machine."
+                ))
+            }
             FETCH_TOOL if !self.fetch.is_empty() => self.run_fetch_tool(&call.arguments),
             WEB_SEARCH_TOOL if self.offers_web_search() => {
                 self.run_web_search_tool(&call.arguments)
@@ -4000,11 +4036,17 @@ impl Agent {
         });
         if let Some(rule) = self.denied(command) {
             let description = rule.description.clone();
-            if self.ui.is_none() {
+            if self.ui.is_none() || self.locked_down() {
                 let obs = Observation {
-                    output: format!(
-                        "refused by policy: {description}. Never push, never add remotes, never call gh, never touch credentials (job rule 3)."
-                    ),
+                    output: if self.locked_down() {
+                        format!(
+                            "refused: this is a lockdown (sandbox) session and {description}; nothing reaches outside this machine, and the line is not the owner's to cross from here."
+                        )
+                    } else {
+                        format!(
+                            "refused by policy: {description}. Never push, never add remotes, never call gh, never touch credentials (job rule 3)."
+                        )
+                    },
                     exit_code: 126,
                     ..Observation::default()
                 };
@@ -4063,6 +4105,28 @@ impl Agent {
                 output: format!(
                     "refused: this is a read-only run and {reason}. {READ_ONLY_REMINDER}"
                 ),
+                exit_code: 126,
+                ..Observation::default()
+            };
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: obs.output.clone(),
+                command: command.to_string(),
+                ..Step::default()
+            });
+            self.emit_observation(command, &obs);
+            return (
+                format_observation(&obs, self.cfg.output_limit),
+                obs,
+                false,
+                String::new(),
+            );
+        }
+        if self.locked_down()
+            && let Some(reason) = crate::lockdown::outside_refusal(command)
+        {
+            let obs = Observation {
+                output: format!("refused: {reason}."),
                 exit_code: 126,
                 ..Observation::default()
             };
@@ -10983,6 +11047,101 @@ mod tests {
             errors, 4,
             "edit, write, git commit, slipped change: {steps:?}"
         );
+    }
+
+    /// A lockdown run: the outside tools are not offered and refuse when
+    /// called anyway, a command that reaches out is refused in words even
+    /// with a person at the keyboard who could approve it elsewhere, the
+    /// local ones run with `PULSE_LOCKDOWN=1`, and on macOS the OS sandbox
+    /// stops a write outside the worktree that no word caught.
+    #[test]
+    fn lockdown_withholds_the_outside_and_the_sandbox_binds_the_rest() {
+        let _serial = crate::test_helpers::serial();
+        let dir = git_repo();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let probe = Path::new(&home).join(".pulse-lockdown-harness-probe");
+        let _ = fs::remove_file(&probe);
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[
+                ("b1", "bash", json!({"command":"git push origin main"})),
+                (
+                    "b2",
+                    "bash",
+                    json!({"command":"curl -s https://example.invalid/"}),
+                ),
+                (
+                    "b3",
+                    "bash",
+                    json!({"command":"echo made > made.txt && cat made.txt && echo lockdown=$PULSE_LOCKDOWN"}),
+                ),
+                (
+                    "b4",
+                    "bash",
+                    json!({"command": format!("echo leak > '{}' && echo wrote", probe.display())}),
+                ),
+                ("f1", FETCH_TOOL, json!({"url":"https://docs.rs/"})),
+                ("s1", WEB_SEARCH_TOOL, json!({"query":"anything"})),
+                ("m1", "mcp__github__get_me", json!({})),
+            ])),
+            resp(msg("SUMMARY: stayed inside")),
+        ]));
+        let mut h = local_agent(dir.path(), p.clone());
+        let lockdown = crate::lockdown::Lockdown::new(dir.path(), &home, "");
+        h.cfg.lockdown = Some(lockdown.clone());
+        h.env = Box::new(
+            crate::localenv::new_local_env(dir.path().display().to_string(), None)
+                .with_lockdown(Some(lockdown)),
+        );
+        h.set_fetch_policy(FetchPolicy::parse("*"));
+        h.set_web_search(WebSearch::from_env(""));
+        // A person at the keyboard: elsewhere they could approve a push.
+        h.set_ui(Arc::new(Mutex::new(Arc::new(Mutex::new(
+            ScriptUi::default(),
+        )))));
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{got:?}");
+        let requests = p.requests();
+        let offered: Vec<&str> = requests[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !offered.contains(&FETCH_TOOL) && !offered.contains(&WEB_SEARCH_TOOL),
+            "{offered:?}"
+        );
+        assert!(
+            h.environment()
+                .iter()
+                .any(|l| l.contains("lockdown (sandbox)")),
+            "{:?}",
+            h.environment()
+        );
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["b1"].contains("lockdown") && replies["b1"].contains("git push is disabled"),
+            "{}",
+            replies["b1"]
+        );
+        assert!(
+            replies["b2"].contains("reaches a host outside this machine"),
+            "{}",
+            replies["b2"]
+        );
+        assert!(
+            replies["b3"].contains("made") && replies["b3"].contains("lockdown=1"),
+            "{}",
+            replies["b3"]
+        );
+        for id in ["f1", "s1", "m1"] {
+            assert!(replies[id].contains("lockdown"), "{id}: {}", replies[id]);
+        }
+        let existed = probe.exists();
+        let _ = fs::remove_file(&probe);
+        if crate::lockdown::os_enforced() && !home.is_empty() {
+            assert!(!existed, "the OS sandbox let a write to the home through");
+            assert!(
+                replies["b4"].contains("Operation not permitted"),
+                "{}",
+                replies["b4"]
+            );
+        }
     }
 
     #[test]

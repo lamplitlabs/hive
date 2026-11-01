@@ -173,6 +173,9 @@ pub struct Live {
     pub turn_from: i64,
     pub turn_started_at: String,
     pub auto_approve: bool,
+    /// Lockdown (sandbox) mode: the agent works offline, confined to its
+    /// worktree.
+    pub lockdown: bool,
     /// Moves on every change; the hub skips a re-render when it stands.
     pub version: u64,
     /// The harness session the live steps belong to.
@@ -358,6 +361,9 @@ struct LiveState {
     finish: Option<Finished>,
     cancel: Option<CancelToken>,
     auto: bool,
+    /// Lockdown (sandbox) mode as the hub shows it; the session itself
+    /// picks the flag up from the row at its next start.
+    lockdown: bool,
     version: u64,
     worker: bool,
     /// When the worker last stood down (or the conversation was opened):
@@ -380,7 +386,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn new(auto: bool) -> Self {
+    fn new(auto: bool, lockdown: bool) -> Self {
         Self {
             state: Mutex::new(LiveState {
                 status: Status::Idle,
@@ -393,6 +399,7 @@ impl Shared {
                 finish: None,
                 cancel: None,
                 auto,
+                lockdown,
                 version: 1,
                 worker: false,
                 idle_since: Instant::now(),
@@ -437,6 +444,7 @@ impl Shared {
             turn_from: st.turn_from,
             turn_started_at: st.turn_started_at.clone(),
             auto_approve: st.auto,
+            lockdown: st.lockdown,
             version: st.version,
             session_id: st.session_id.clone(),
         }
@@ -679,6 +687,9 @@ struct Started {
     /// The reasoning effort the session runs on (empty: the provider's
     /// default), compared like the model.
     reasoning: String,
+    /// Whether the session runs in lockdown; a row that flips it restarts
+    /// the session on the next turn, like a model change.
+    lockdown: bool,
     last_cost: f64,
     ended: bool,
 }
@@ -804,7 +815,7 @@ impl Runtime {
         row: &Row,
         manager: Weak<ManagerInner>,
     ) -> Arc<Self> {
-        let shared = Arc::new(Shared::new(row.auto_approve));
+        let shared = Arc::new(Shared::new(row.auto_approve, row.lockdown));
         shared.lock().session_id = row.session_id.clone();
         Arc::new(Self {
             id: row.id.clone(),
@@ -1283,6 +1294,7 @@ impl Runtime {
             && s.cwd == row.cwd
             && same_model(s)
             && s.reasoning == row.reasoning
+            && s.lockdown == row.lockdown
         {
             return Ok((s.agent.clone(), s.session_id.clone(), s.cwd.clone(), false));
         }
@@ -1343,6 +1355,11 @@ impl Runtime {
             env.push(format!("PATH={path}"));
         }
         env.extend(self.build_env(&row));
+        let lockdown = row.lockdown.then(|| self.lockdown_for(&row));
+        if lockdown.is_some() {
+            env.retain(|kv| !kv.starts_with(&format!("{}=", crate::lockdown::LOCKDOWN_ENV)));
+            env.extend(crate::lockdown::env_lines());
+        }
         let prepared = prepare_agent_with(
             &mut ctx,
             &fs,
@@ -1359,6 +1376,7 @@ impl Runtime {
                     String::new()
                 },
                 env,
+                lockdown,
             },
         )?;
         let agent = prepared.shared.clone();
@@ -1403,10 +1421,40 @@ impl Runtime {
             cwd: row.cwd.clone(),
             model,
             reasoning: row.reasoning.clone(),
+            lockdown: row.lockdown,
             last_cost: 0.0,
             ended: false,
         });
         Ok((agent, session_id, row.cwd, true))
+    }
+
+    /// The sandbox a lockdown conversation's commands run under: writes go
+    /// to the worktree, the conversation's own folder (artifacts, scratch,
+    /// attachments), the shared Cargo target the build hygiene points at,
+    /// the git dir of the worktree (a worktree's `.git` is a file naming a
+    /// folder under the owner's checkout's `.git`, where the objects and
+    /// refs live) and the store's SQLite files (`pulse` commands write the
+    /// WAL); the credential paths of the user's home and the pulse home
+    /// cannot be read.
+    fn lockdown_for(&self, row: &Row) -> crate::lockdown::Lockdown {
+        let user_home = std::env::var("HOME").unwrap_or_default();
+        let mut l = crate::lockdown::Lockdown::new(&row.cwd, &user_home, &self.home);
+        l.allow_write(chat_dir(&self.home, &row.id));
+        let cwd = Path::new(&row.cwd);
+        let owned = chat_dir(&self.home, &row.id);
+        if let Some(target) = crate::buildenv::shared_target(&self.home, &row.project, cwd, &owned)
+        {
+            l.allow_write(target);
+        }
+        for key in ["--git-dir", "--git-common-dir"] {
+            let dir = git(&row.cwd, &["rev-parse", "--path-format=absolute", key]);
+            let dir = dir.trim();
+            if !dir.is_empty() {
+                l.allow_write(PathBuf::from(dir));
+            }
+        }
+        l.allow_write(PathBuf::from(self.store.db_path()));
+        l
     }
 
     /// The build hygiene the conversation's commands run with
@@ -1493,6 +1541,14 @@ impl Runtime {
             st.answer = Some((id, Answer::Approval(Approval::Allow)));
             st.pending = None;
         }
+        self.shared.bump(&mut st);
+    }
+
+    /// Shows the new lockdown state to the hub at once; the session picks
+    /// it up (restarting inside or outside the sandbox) at its next turn.
+    fn set_lockdown(&self, on: bool) {
+        let mut st = self.shared.lock();
+        st.lockdown = on;
         self.shared.bump(&mut st);
     }
 
@@ -1818,6 +1874,34 @@ impl Manager {
         text: &str,
         by: &str,
     ) -> Result<Row> {
+        self.create_with_lockdown(
+            title,
+            project,
+            model,
+            reasoning,
+            auto_approve,
+            false,
+            text,
+            by,
+        )
+    }
+
+    /// [`Manager::create_with`] that may start the conversation in lockdown
+    /// (sandbox) mode ([`crate::lockdown`]): its agent then works with the
+    /// network off and its writes confined to its worktree from the first
+    /// turn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_lockdown(
+        &self,
+        title: &str,
+        project: &str,
+        model: &str,
+        reasoning: &str,
+        auto_approve: bool,
+        lockdown: bool,
+        text: &str,
+        by: &str,
+    ) -> Result<Row> {
         let text = text.trim();
         if text.is_empty() {
             bail!("the first message is empty");
@@ -1846,6 +1930,7 @@ impl Manager {
             reasoning,
             status: "idle".into(),
             auto_approve,
+            lockdown,
             created_by: by.to_string(),
             ..Row::default()
         })?;
@@ -1902,6 +1987,7 @@ impl Manager {
             reasoning: p.reasoning.clone(),
             status: "idle".into(),
             auto_approve: p.auto_approve,
+            lockdown: p.lockdown,
             created_by: p.id.clone(),
             parent: p.id.clone(),
             ..Row::default()
@@ -2347,6 +2433,31 @@ impl Manager {
         Ok(())
     }
 
+    /// Lockdown (sandbox) mode for the conversation's next turn
+    /// ([`crate::lockdown`]): on, the agent works with the network off,
+    /// its writes confined to its worktree, no fetch, web search, MCP or
+    /// credentials. Like [`Manager::set_model`], a turn in flight finishes
+    /// as it started; the session then restarts inside (or outside) the
+    /// sandbox with the conversation carried over. The flag is written to
+    /// the sub-conversations too, so a locked-down conversation cannot
+    /// reach outside through one of them.
+    pub fn set_lockdown(&self, id: &str, on: bool) -> Result<()> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        self.store.chat_set_lockdown(id, on)?;
+        if let Some(rt) = self.running(id) {
+            rt.set_lockdown(on);
+        }
+        for child in self.store.chat_children(id, false)? {
+            if child.lockdown != on {
+                let _ = self.set_lockdown(&child.id, on);
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
         if title.trim().is_empty() {
             bail!("the title is empty");
@@ -2419,6 +2530,7 @@ impl Manager {
                 },
                 note: row.note.clone(),
                 auto_approve: row.auto_approve,
+                lockdown: row.lockdown,
                 session_id: row.session_id.clone(),
                 version: 1,
                 ..Live::default()
@@ -3144,6 +3256,14 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         artifacts.display()
     ));
     b.push_str("The `pulse` command is on PATH.\n");
+    if row.lockdown {
+        b.push_str(
+            "LOCKDOWN (sandbox) MODE. This conversation runs inside a sandbox and nothing reaches outside this machine: the network is off (only localhost answers), writes land only in your worktree and the temp and build folders, credentials and private keys cannot be read, and there is no fetch, web_search or MCP tool. \
+             Commands that would reach a remote (git push/fetch/pull/clone, curl or ssh to a host, pulse land, publishing, sign-in) are refused, and the sandbox refuses an attempt that slips past the words. \
+             Do the work from what is in the worktree and on this machine; commit here, and leave landing to the owner after they take the conversation out of lockdown. \
+             When something cannot be done without the outside, say so plainly instead of working around the sandbox.\n",
+        );
+    }
     b.push_str(
         "The owner's words are PULSE's own - RSI, lead, board, ballot, evolve, experiment, land, brain, goal - and the fleet has already written about them. \
          Before asking what a word or a thing means, look it up: `pulse ask --all \"...\"` answers from the shared board of every project (add --no-model for the matching posts alone), \
@@ -4286,6 +4406,17 @@ mod tests {
         assert!(text.contains("only when that part is itself big enough to need a page"));
         assert!(!text.contains("Fan the work out"));
         assert!(text.contains("Do not run `pulse chat attach`"));
+        // A lockdown conversation is told what the sandbox holds back.
+        assert!(!text.contains("LOCKDOWN (sandbox) MODE"));
+        let locked = Row {
+            lockdown: true,
+            ..attached.clone()
+        };
+        let text = brief_text(&locked, &projects, art);
+        assert!(text.contains("LOCKDOWN (sandbox) MODE"));
+        assert!(text.contains("the network is off (only localhost answers)"));
+        assert!(text.contains("no fetch, web_search or MCP tool"));
+        assert!(text.contains("leave landing to the owner"));
         assert_eq!(
             title_from("  Fix the login page\nmore"),
             "Fix the login page"
@@ -4744,6 +4875,122 @@ mod tests {
 
     /// The agent's finish tool closes the conversation after its closing
     /// reply; the owner's next message reopens it.
+    /// A lockdown (sandbox) conversation: the agent's outside-reaching
+    /// commands are refused in words, a local command runs with
+    /// `PULSE_LOCKDOWN=1` set, the outside tools are not offered, the
+    /// environment summary says so, and switching lockdown off restarts
+    /// the session outside the sandbox with the conversation carried over.
+    #[test]
+    fn a_lockdown_conversation_refuses_the_outside_and_works_inside() {
+        let _env = pulse_testutil::env_lock();
+        let _plain = PlainGit::set();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"command": "git push origin main"},
+                {"command": "curl -s https://example.invalid/"},
+                {"command": "echo inside > inside.txt && cat inside.txt"},
+                {"command": "echo lockdown=${PULSE_LOCKDOWN:-unset}"},
+                {"content": "Done."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create_with_lockdown("", "", "", "", true, true, "work offline please", "owner")
+            .expect("create");
+        assert!(row.lockdown);
+        assert!(m.live(&row).lockdown);
+        let id = row.id.clone();
+        let row = wait_idle(&m, &id);
+        let first_session = row.session_id.clone();
+        let steps = s.harness_steps(&first_session, -1).unwrap();
+        let errors: Vec<&str> = steps
+            .iter()
+            .filter(|st| st.kind == "error")
+            .map(|st| st.content.as_str())
+            .collect();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("lockdown") && e.contains("git push is disabled")),
+            "git push is refused outright, not offered for approval: {errors:#?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("reaches a host outside this machine")),
+            "curl to a host is refused in words: {errors:#?}"
+        );
+        let observations: Vec<&str> = steps
+            .iter()
+            .filter(|st| st.kind == "observation")
+            .map(|st| st.content.as_str())
+            .collect();
+        assert!(
+            observations.iter().any(|o| o.contains("inside")),
+            "a local command runs: {observations:#?}"
+        );
+        assert!(
+            observations.iter().any(|o| o.contains("lockdown=1")),
+            "PULSE_LOCKDOWN=1 is in the environment: {observations:#?}"
+        );
+        {
+            let rt = m.running(&id).unwrap();
+            let guard = rt.started.lock().unwrap();
+            let a = guard.as_ref().unwrap().agent.lock().unwrap();
+            let env = a.environment();
+            assert!(
+                env.iter().any(|l| l.contains("lockdown (sandbox)")),
+                "{env:#?}"
+            );
+            assert!(
+                env.iter().any(|l| l.starts_with("lockdown: network off")),
+                "{env:#?}"
+            );
+            let tools = a.offered_tool_names();
+            assert!(
+                !tools.iter().any(|t| t == "web_search" || t == "fetch"),
+                "{tools:?}"
+            );
+            assert!(a.locked_down());
+        }
+        // Off again: the next turn runs outside the sandbox in a new session
+        // (the fake provider replays its script there: the same commands,
+        // now unrefused, and the probe line reads unset).
+        m.set_lockdown(&id, false).expect("off");
+        let row = m.row(&id).unwrap();
+        assert!(!row.lockdown);
+        assert!(!m.live(&row).lockdown);
+        m.send(&id, "and now outside").expect("send");
+        let row = wait_idle(&m, &id);
+        assert_ne!(row.session_id, first_session, "the session restarted");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|st| st.kind == "observation" && st.content.contains("lockdown=unset")),
+            "PULSE_LOCKDOWN is gone outside the sandbox: {steps:#?}"
+        );
+        assert!(
+            !steps
+                .iter()
+                .any(|st| st.kind == "error" && st.content.contains("reaches a host outside")),
+            "outside the sandbox curl is not refused in words: {steps:#?}"
+        );
+        {
+            let rt = m.running(&id).unwrap();
+            let guard = rt.started.lock().unwrap();
+            assert!(!guard.as_ref().unwrap().agent.lock().unwrap().locked_down());
+        }
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
     #[test]
     fn the_finish_tool_closes_the_conversation_and_a_message_reopens_it() {
         let _env = pulse_testutil::env_lock();

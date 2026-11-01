@@ -323,6 +323,10 @@ pub(crate) struct PrepareOpts {
     pub(crate) memory: String,
     /// Variables added to the agent's environment (`NAME=value`).
     pub(crate) env: Vec<String>,
+    /// Lockdown (sandbox) mode ([`crate::lockdown`]): the commands run
+    /// under the OS sandbox, the tools that leave the machine are not
+    /// offered, and no MCP server is attached.
+    pub(crate) lockdown: Option<crate::lockdown::Lockdown>,
 }
 
 /// The key the session's memory file is named by: the project's slug when
@@ -807,18 +811,18 @@ pub(crate) fn prepare_agent_with(
             .unwrap_or_default(),
         models_allowed,
         max_subagents: agent_spec.as_ref().and_then(|a| a.max_subagents),
+        lockdown: opts.lockdown.clone(),
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {
         cfg.wall_time = Duration::from_secs(fs.get_int("minutes") as u64 * 60);
     }
+    let local_env =
+        LocalEnv::new(abs_cwd.clone(), Some(env.clone())).with_lockdown(opts.lockdown.clone());
     if !cfg.system_prompt_template.is_empty() {
         cfg.system_prompt = render_prompt(
             &cfg.system_prompt_template,
-            prompt_data(
-                &LocalEnv::new(abs_cwd.clone(), Some(env.clone())).info(),
-                &cfg,
-            ),
+            prompt_data(&local_env.info(), &cfg),
         )
         .map_err(|e| {
             errorf(
@@ -831,12 +835,11 @@ pub(crate) fn prepare_agent_with(
     }
     let trajectory_sink =
         (!trajectory_path.is_empty()).then(|| TrajectorySink::new(c, &trajectory_path));
-    let mut agent = new_shared(
-        p.clone(),
-        Box::new(LocalEnv::new(abs_cwd.clone(), Some(env))),
-        cfg,
-        sinks,
-    );
+    let mut agent = new_shared(p.clone(), Box::new(local_env), cfg, sinks);
+    let locked_down = opts.lockdown.is_some();
+    if let Some(l) = &opts.lockdown {
+        agent.note_at_start(l.describe());
+    }
     for note in agent_notes {
         agent.note_at_start(note);
     }
@@ -868,6 +871,7 @@ pub(crate) fn prepare_agent_with(
         agent.set_memory(m);
     }
     let mcp_on = !bare
+        && !locked_down
         && !fs.get_bool("no-mcp")
         && st
             .as_ref()
@@ -910,13 +914,14 @@ pub(crate) fn prepare_agent_with(
             .map_or_else(String::new, |s| s.setting("harness.fetch_allow", "")),
     };
     let fetch_policy = FetchPolicy::parse(&fetch_allow);
-    if !fetch_policy.is_empty() {
+    if !fetch_policy.is_empty() && !locked_down {
         agent.note_at_start(format!("fetch tool on for {}", fetch_policy.describe()));
         agent.set_fetch_policy(fetch_policy);
     }
     // Conversations search the web by default, since the owner sits by
     // them; jobs do so when the setting says `on`.
-    let web_search_on = !fs.get_bool("no-web-search")
+    let web_search_on = !locked_down
+        && !fs.get_bool("no-web-search")
         && (fs.get_bool("web-search")
             || match st
                 .as_ref()

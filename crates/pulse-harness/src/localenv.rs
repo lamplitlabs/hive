@@ -38,6 +38,9 @@ pub struct LocalEnv {
     /// leaves them be. Shared with the forks a subagent gets, whose sweeps
     /// must not take the parent's processes either.
     spared: Arc<Mutex<HashSet<i32>>>,
+    /// The sandbox every command runs under in a lockdown session
+    /// ([`crate::lockdown`]); None runs them as they are.
+    lockdown: Option<crate::lockdown::Lockdown>,
 }
 
 pub fn new_local_env(cwd: impl Into<String>, env: Option<Vec<String>>) -> LocalEnv {
@@ -50,6 +53,7 @@ pub fn new_local_env(cwd: impl Into<String>, env: Option<Vec<String>>) -> LocalE
         kill_grace: DEFAULT_KILL_GRACE,
         sweep_dir,
         spared: Arc::new(Mutex::new(HashSet::new())),
+        lockdown: None,
     }
 }
 
@@ -102,6 +106,27 @@ impl LocalEnv {
         &self.cwd
     }
 
+    /// Runs every command (foreground, background and hook lines alike)
+    /// under the lockdown sandbox, and marks the environment with
+    /// [`crate::lockdown::env_lines`].
+    pub fn with_lockdown(mut self, lockdown: Option<crate::lockdown::Lockdown>) -> Self {
+        if lockdown.is_some() {
+            for line in crate::lockdown::env_lines() {
+                let key = line.split_once('=').map(|(k, _)| k).unwrap_or(&line);
+                self.env
+                    .retain(|kv| kv.split_once('=').map(|(k, _)| k) != Some(key));
+                self.env.push(line);
+            }
+        }
+        self.lockdown = lockdown;
+        self
+    }
+
+    /// The lockdown the commands run under, if any.
+    pub fn lockdown(&self) -> Option<&crate::lockdown::Lockdown> {
+        self.lockdown.as_ref()
+    }
+
     pub fn sweep_dir(&self) -> Option<&Path> {
         self.sweep_dir.as_deref()
     }
@@ -125,6 +150,10 @@ impl LocalEnv {
     /// group, stdin closed, stdout and stderr piped.
     fn command(&self, command: &str) -> Command {
         let mut cmd = Command::new("/bin/sh");
+        let command = match &self.lockdown {
+            Some(l) => crate::lockdown::wrap_command(l, command),
+            None => command.to_string(),
+        };
         cmd.arg("-c")
             .arg(command)
             .current_dir(&self.cwd)
@@ -493,11 +522,15 @@ impl Environment for LocalEnv {
     }
 
     fn info(&self) -> BTreeMap<String, String> {
-        BTreeMap::from([
+        let mut info = BTreeMap::from([
             ("cwd".to_string(), self.cwd.clone()),
             ("os".to_string(), pulse_gitenv::GOOS.to_string()),
             ("shell".to_string(), "/bin/sh".to_string()),
-        ])
+        ]);
+        if let Some(l) = &self.lockdown {
+            info.insert("lockdown".to_string(), l.describe());
+        }
+        info
     }
 }
 

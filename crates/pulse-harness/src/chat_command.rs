@@ -119,6 +119,12 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             if !row.cwd.is_empty() {
                 writeln!(c.out, "cwd {}", row.cwd)?;
             }
+            if row.lockdown {
+                writeln!(
+                    c.out,
+                    "lockdown (sandbox): network off, writes confined to the worktree, no fetch/web_search/MCP, credentials unreadable"
+                )?;
+            }
             for m in messages {
                 writeln!(c.out)?;
                 writeln!(c.out, "[{}] {}", m.role, m.at)?;

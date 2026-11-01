@@ -26,7 +26,8 @@ pub const CHAT_DDL: &[&str] = &[
   cost REAL NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line
   parent TEXT NOT NULL DEFAULT '',     -- the conversation this one is a sub-conversation of; '' = top level
-  title_owner INTEGER NOT NULL DEFAULT 0 -- 1 once the owner named it by hand; the agent then leaves the title
+  title_owner INTEGER NOT NULL DEFAULT 0, -- 1 once the owner named it by hand; the agent then leaves the title
+  lockdown INTEGER NOT NULL DEFAULT 0  -- 1 = sandbox: the agent works offline, confined to its worktree
 );"####,
     r####"CREATE TABLE IF NOT EXISTS conversation_messages (
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -57,6 +58,11 @@ pub const CHAT_COLUMNS: &[Column] = &[
     Column {
         table: r####"conversations"####,
         name: r####"title_owner"####,
+        ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
+    },
+    Column {
+        table: r####"conversations"####,
+        name: r####"lockdown"####,
         ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
     },
 ];
