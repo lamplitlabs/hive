@@ -123,6 +123,11 @@ pub(crate) fn provider_test_lock() -> MutexGuard<'static, ()> {
     PROVIDER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The login placements the compute harness's fake `PLACE_LOGIN` saw so far.
+pub(crate) fn place_login_calls() -> Vec<PlaceLoginCall> {
+    PLACE_LOGIN_CALLS.lock().unwrap().clone()
+}
+
 #[derive(Default)]
 pub(crate) struct FakeCli {
     pub calls: Vec<Vec<String>>,
