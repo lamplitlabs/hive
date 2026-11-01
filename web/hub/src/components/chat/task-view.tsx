@@ -10,7 +10,7 @@
 // task reads like a conversation that shows its work.
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpIcon,
   BanIcon,
@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Canvas, useCanvas } from "@/components/chat/canvas";
 import { useSeen } from "@/components/chat/chat-pane";
-import { BackButton, Split } from "@/components/chat/split";
+import { BackButton, Pane } from "@/components/chat/split";
 import {
   TONE_TEXT,
   relShort,
@@ -87,12 +87,10 @@ const GONE = /^No task\b|\bnot found\b|HTTP 404/i;
 
 export function TaskView({
   id,
-  list,
   onBack,
   onGone,
 }: {
   id: string;
-  list: ReactNode;
   onBack: () => void;
   onGone: () => void;
 }) {
@@ -125,8 +123,7 @@ export function TaskView({
 
   if (detail.error && !detail.data) {
     return (
-      <Split
-        list={list}
+      <Pane
         main={
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
@@ -143,8 +140,7 @@ export function TaskView({
   }
   if (!detail.data) {
     return (
-      <Split
-        list={list}
+      <Pane
         main={
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
@@ -157,7 +153,6 @@ export function TaskView({
   return (
     <TaskBody
       d={detail.data}
-      list={list}
       onBack={onBack}
       error={detail.error}
       reload={detail.reload}
@@ -178,13 +173,11 @@ const refreshTask = () =>
 
 function TaskBody({
   d,
-  list,
   onBack,
   error,
   reload,
 }: {
   d: TaskDetail;
-  list: ReactNode;
   onBack: () => void;
   error: string;
   reload: () => Promise<void>;
@@ -554,9 +547,7 @@ function TaskBody({
     />
   );
 
-  return (
-    <Split list={list} main={section} fill wide={ctl.wide} panel={canvas} />
-  );
+  return <Pane main={section} wide={ctl.wide} panel={canvas} />;
 }
 
 // The job that ran last among those with a run: by when it finished or

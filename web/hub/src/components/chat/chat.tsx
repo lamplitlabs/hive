@@ -88,7 +88,7 @@ import {
   SkeletonRows,
 } from "@/components/pulse/panel";
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
-import { BackButton, Split } from "@/components/chat/split";
+import { BackButton, Pane, Split } from "@/components/chat/split";
 import { TaskView } from "@/components/chat/task-view";
 import type {
   ChatArtifact,
@@ -1052,6 +1052,9 @@ export function ChatPageClient() {
   );
   const opened = !!(id || task);
 
+  // One Split for the page, whatever is open: the list inside it stays
+  // mounted across conversations, so opening one leaves the list where it
+  // was - scrolled, folded, unmoved - instead of drawing it anew.
   return (
     <div
       className={cn(
@@ -1097,41 +1100,39 @@ export function ChatPageClient() {
           The conversation list did not load.
         </ErrorNotice>
       ) : null}
-      {task ? (
-        <TaskView
-          key={task}
-          id={task}
-          list={listNode}
-          onBack={() => openTask(null)}
-          onGone={() => openTask(null)}
-        />
-      ) : id ? (
-        <ConversationView
-          key={id}
-          id={id}
-          seed={current}
-          projects={projects.data}
-          list={listNode}
-          onBack={() => open(null)}
-          onGone={() => open(null)}
-        />
-      ) : (
-        <Split
-          list={listNode}
-          listOnMobile
-          main={
-            <NewConversation
-              projects={projects.data}
-              onCreated={(c) => open(c.id)}
-              onTaskCreated={(t) => openTask(t)}
-              busyElsewhere={
-                rows.filter((c) => (c.live?.status || c.status) === "running")
-                  .length
-              }
-            />
-          }
-        />
-      )}
+      <Split list={listNode} listOnMobile={!opened} fill={opened}>
+        {task ? (
+          <TaskView
+            key={task}
+            id={task}
+            onBack={() => openTask(null)}
+            onGone={() => openTask(null)}
+          />
+        ) : id ? (
+          <ConversationView
+            key={id}
+            id={id}
+            seed={current}
+            projects={projects.data}
+            onBack={() => open(null)}
+            onGone={() => open(null)}
+          />
+        ) : (
+          <Pane
+            main={
+              <NewConversation
+                projects={projects.data}
+                onCreated={(c) => open(c.id)}
+                onTaskCreated={(t) => openTask(t)}
+                busyElsewhere={
+                  rows.filter((c) => (c.live?.status || c.status) === "running")
+                    .length
+                }
+              />
+            }
+          />
+        )}
+      </Split>
     </div>
   );
 }
@@ -1893,14 +1894,12 @@ function ConversationView({
   id,
   seed,
   projects,
-  list,
   onBack,
   onGone,
 }: {
   id: string;
   seed?: Conversation;
   projects?: ProjectsPayload;
-  list: ReactNode;
   onBack: () => void;
   onGone: () => void;
 }) {
@@ -2037,8 +2036,7 @@ function ConversationView({
 
   if (error && !d) {
     return (
-      <Split
-        list={list}
+      <Pane
         main={
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
@@ -2052,8 +2050,7 @@ function ConversationView({
   }
   if (!d) {
     return (
-      <Split
-        list={list}
+      <Pane
         main={
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
@@ -2067,7 +2064,6 @@ function ConversationView({
     <ConversationBody
       d={d}
       projects={projects}
-      list={list}
       onBack={onBack}
       apply={apply}
       pull={pull}
@@ -2091,7 +2087,6 @@ function mergeMessages(
 function ConversationBody({
   d,
   projects,
-  list,
   onBack,
   apply,
   pull,
@@ -2100,7 +2095,6 @@ function ConversationBody({
 }: {
   d: Loaded;
   projects?: ProjectsPayload;
-  list: ReactNode;
   onBack: () => void;
   apply: (r: { conversation: Conversation }) => void;
   pull: () => Promise<void>;
@@ -2125,7 +2119,6 @@ function ConversationBody({
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
-  const endRef = useRef<HTMLDivElement | null>(null);
   const [stick, setStick] = useState(true);
   const scroller = useRef<HTMLDivElement | null>(null);
   const models = useApi<HarnessModelsResponse>("harness/models", {
@@ -2173,8 +2166,10 @@ function ConversationBody({
     ":" +
     (d.steps[d.sessionId]?.length ?? 0);
   useEffect(() => {
-    if (stick)
-      endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // The transcript's own box scrolls, not the page: scrollIntoView on
+    // an end marker would also pull every overflowing ancestor along.
+    const el = scroller.current;
+    if (stick && el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [lastKey, stick]);
 
   const act = async (
@@ -2541,7 +2536,6 @@ function ConversationBody({
               ))}
             </ul>
           ) : null}
-          <div ref={endRef} />
         </div>
         {!stick ? (
           <button
@@ -2620,9 +2614,7 @@ function ConversationBody({
     />
   );
 
-  return (
-    <Split list={list} main={section} fill wide={ctl.wide} panel={canvas} />
-  );
+  return <Pane main={section} wide={ctl.wide} panel={canvas} />;
 }
 
 function TurnClock({ since }: { since: string }) {

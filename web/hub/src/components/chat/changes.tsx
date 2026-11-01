@@ -42,6 +42,7 @@ import {
   splitDiff,
 } from "@/lib/diff";
 import { num, plural } from "@/lib/format";
+import { revealIn } from "@/lib/scroll";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -417,9 +418,9 @@ export function ChangesBody({
   const loaded = !!files;
   useEffect(() => {
     if (file === undefined || !loaded) return;
-    scroller.current
-      ?.querySelector<HTMLElement>('[data-file="' + file + '"]')
-      ?.scrollIntoView({ block: "start" });
+    const el = scroller.current;
+    const row = el?.querySelector<HTMLElement>('[data-file="' + file + '"]');
+    if (el && row) revealIn(el, row, "start");
   }, [file, loaded]);
   return (
     <div
