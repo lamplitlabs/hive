@@ -15,6 +15,8 @@ pub(crate) const COMPUTE_RELEASE_BUDGET: Duration = Duration::from_secs(20 * 60)
 pub(crate) const COMPUTE_SWEEP_MINUTES: i64 = 30;
 pub(crate) const COMPUTE_AREA: &str = "runner";
 pub(crate) const COMPUTE_THREAD: &str = "compute";
+/// Where a provisioning's lines go: the compute worker's daemon-log line and the request's note.
+pub type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct ProvisionRequest {
     pub id: String,
@@ -26,7 +28,7 @@ pub struct ProvisionRequest {
     pub store: Option<pulse_store::Store>,
     pub actor: String,
     pub hub_home: String,
-    pub log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub log: Option<LogSink>,
 }
 impl std::fmt::Debug for ProvisionRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -258,7 +260,9 @@ pub(crate) fn new_compute_worker(
         o.actor = "daemon".into();
     }
     let (wake_tx, wake_rx) = crossbeam_channel::bounded(1);
-    let (lines_tx, lines_rx) = crossbeam_channel::bounded(64);
+    // Room for the lines a provisioning writes between two ticks (a pair report alone is
+    // twenty-odd) with more than one in flight; a full channel drops lines, never blocks.
+    let (lines_tx, lines_rx) = crossbeam_channel::bounded(512);
     let w = ComputeWorker {
         s: s.clone(),
         o,
@@ -439,6 +443,8 @@ impl ComputeWorker {
                 crate::run::err_message(&e)
             ));
         }
+        // the reason, where the Machines page shows it
+        let _ = pulse_tasks::note_compute(&self.s, &req.id, &why);
         self.finding(
             req.clone(),
             &format!("compute {} failed: {}", req.id, why),
@@ -580,7 +586,7 @@ impl ComputeWorker {
             store: Some(self.s.clone()),
             actor: self.o.actor.clone(),
             hub_home: self.o.hub_home.clone(),
-            log: None,
+            log: Some(self.provision_log(&req.id)),
         };
         let mut m = match p.provision(&pctx, req_for_provider) {
             Ok(m) => m,
@@ -590,6 +596,9 @@ impl ComputeWorker {
                     why = format!("gave up after {:?}: {why}", COMPUTE_PROVISION_BUDGET);
                 }
                 why.push_str(&self.release_leftover(&req.id).clause());
+                for line in self.forget_hands(&req.id) {
+                    self.say_line(format!("compute {}: {line}", req.id));
+                }
                 self.fail(req, &why);
                 return;
             }
@@ -609,6 +618,8 @@ impl ComputeWorker {
             ));
             return;
         }
+        // a ready machine has nothing to explain; the steps stay in the daemon log
+        let _ = pulse_tasks::note_compute(&self.s, &req.id, "");
         self.finding(
             req.clone(),
             &format!(
@@ -669,7 +680,7 @@ impl ComputeWorker {
         req: pulse_tasks::ComputeRequest,
         why: &str,
     ) {
-        release_compute(&self.s, &self.o.actor, req, why, |line| {
+        release_compute(&self.s, &self.o.actor, &self.o.hub_home, req, why, |line| {
             self.say_line(line.to_string())
         });
     }
@@ -685,7 +696,96 @@ impl ComputeWorker {
             )),
             left => why.push_str(&left.clause()),
         }
+        for line in self.forget_hands(&req.id) {
+            self.say_line(format!("compute {}: {line}", req.id));
+        }
         self.fail(req, &why);
+    }
+    /// The provider's log sink for one request: each step goes to the daemon log as
+    /// `compute CR-N: ...` and, as the latest word on the request, to its note, so the Machines
+    /// page shows where a provisioning stands and the daemon log says how it went.
+    fn provision_log(&self, request_id: &str) -> LogSink {
+        let worker = self.clone();
+        let id = request_id.to_string();
+        Arc::new(move |line: &str| {
+            worker.say_line(format!("compute {id}: {line}"));
+            let _ = pulse_tasks::note_compute(&worker.s, &id, line);
+        })
+    }
+    /// What a provisioning that did not end in a ready machine leaves on the hub: the executor
+    /// row the pairing registered (every probe of it afterwards would time out against an
+    /// address that is gone), and the ssh aliases and host key lines written for the machine.
+    /// Both go, as `pulse remove executor` and a released request do; the lines say what went.
+    pub(crate) fn forget_hands(&self, request_id: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        let executor = compute_executor_name(request_id);
+        if !crate::executor::executor_row(&self.s, &executor)
+            .0
+            .is_empty()
+        {
+            match pulse_board::remove_executor(&self.s, &executor, &self.o.actor, false) {
+                Ok(_) => lines.push(format!("removed executor {executor}")),
+                Err(e) => lines.push(format!(
+                    "executor {executor} not removed: {}",
+                    crate::run::err_message(&e)
+                )),
+            }
+        }
+        let (m, _) = load_machine(&self.s, request_id);
+        let m = m.unwrap_or_else(|| Machine {
+            name: crate::provider::machine_name(request_id.to_string()),
+            executor,
+            ..Default::default()
+        });
+        lines.extend(forget_machine_ssh(&self.o.hub_home, &m));
+        lines
+    }
+    /// Executor rows of machines PULSE bought that are gone: a `hands-cr-N` row whose compute
+    /// machine is released while no live request names it. A failed provisioning now removes its
+    /// row at once; the rows older daemons left behind (every probe of them timing out, dozens a
+    /// cycle) go with the first sweep, with the ssh files written for their machines.
+    pub(crate) fn forget_stale_hands(&self) -> Vec<String> {
+        let conn = self.s.conn().unwrap();
+        let rows = crate::util::must_rows(
+            &conn,
+            "SELECT e.name AS name, m.request_id AS request_id FROM executors e \
+             JOIN compute_machines m ON m.executor = e.name \
+             LEFT JOIN compute_requests r ON r.id = m.request_id \
+             WHERE e.status != 'removed' AND e.name LIKE 'hands-cr-%' AND m.released_at != '' \
+             AND COALESCE(r.status, '') NOT IN ('approved', 'provisioning', 'ready') \
+             ORDER BY e.name, m.created_at DESC",
+            &[],
+        );
+        drop(conn);
+        let mut lines = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for r in rows {
+            let name = r.str("name");
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let request_id = r.str("request_id");
+            match pulse_board::remove_executor(&self.s, &name, &self.o.actor, false) {
+                Ok(_) => lines.push(format!(
+                    "compute {request_id}: removed executor {name}; its machine was released"
+                )),
+                Err(e) => {
+                    lines.push(format!(
+                        "compute {request_id}: executor {name} not removed: {}",
+                        crate::run::err_message(&e)
+                    ));
+                    continue;
+                }
+            }
+            if let (Some(m), _) = load_machine(&self.s, &request_id) {
+                lines.extend(
+                    forget_machine_ssh(&self.o.hub_home, &m)
+                        .into_iter()
+                        .map(|l| format!("compute {request_id}: {l}")),
+                );
+            }
+        }
+        lines
     }
     /// Releases the machine a provisioning left behind: the provider remembers a machine the
     /// moment it exists (machine_created), so a failure after that point still ends with nothing
@@ -743,6 +843,9 @@ impl ComputeWorker {
     /// reported. Machines under another store's request, or in the retire list, are left alone.
     pub(crate) fn sweep(&self, cancel: &pulse_bus::CancellationToken) {
         let now = self.s.now();
+        for line in self.forget_stale_hands() {
+            self.say_line(line);
+        }
         let conn = self.s.conn().unwrap();
         let rows = crate::util::must_rows(
             &conn,
@@ -970,9 +1073,52 @@ pub(crate) fn caps_allow(
     }
     String::new()
 }
+/// The local ssh files a provisioning writes for one machine, removed: the `Host hands-cr-N`
+/// block the pairing makes for the pulse user, the `Host pulse-cr-N-admin` block for the admin
+/// account, and the machine's host key lines in known_hosts (a provider hands the same address
+/// to a later machine, whose key differs; a line kept from the old one would refuse the new one
+/// as a changed host). An empty `hub_home` is the daemon's own home. The lines say what went.
+pub(crate) fn forget_machine_ssh(hub_home: &str, m: &Machine) -> Vec<String> {
+    let hub_home = if hub_home.is_empty() {
+        crate::util::home_dir()
+    } else {
+        hub_home.to_string()
+    };
+    let mut lines = Vec::new();
+    let mut aliases = Vec::new();
+    if !m.executor.is_empty() {
+        aliases.push(m.executor.clone());
+    }
+    if !m.name.is_empty() {
+        aliases.push(format!("{}-admin", m.name));
+    }
+    for alias in aliases {
+        if crate::pair::pair_remove_alias(&hub_home, &alias) {
+            lines.push(format!("removed the {alias} block from ~/.ssh/config"));
+        }
+    }
+    let ip = m
+        .detail
+        .get("public_ip")
+        .cloned()
+        .filter(|ip| !ip.is_empty())
+        .or_else(|| {
+            m.address
+                .rsplit('@')
+                .next()
+                .map(|h| h.split(':').next().unwrap_or("").to_string())
+        })
+        .unwrap_or_default();
+    let n = crate::pair::pair_remove_known_hosts(&hub_home, &ip, 22);
+    if n > 0 {
+        lines.push(format!("removed {n} known_hosts line(s) for {ip}"));
+    }
+    lines
+}
 pub(crate) fn release_compute(
     s: &pulse_store::Store,
     actor: &str,
+    hub_home: &str,
     req: pulse_tasks::ComputeRequest,
     why: &str,
     say: impl Fn(&str),
@@ -1029,22 +1175,8 @@ pub(crate) fn release_compute(
             crate::run::err_message(&e)
         ));
     }
-    // Remove the ssh aliases the pair/provision wrote so a released machine leaves
-    // no dead alias in ~/.ssh/config and a reused name pairs again.
-    if !m.executor.is_empty() {
-        let hub_home = crate::util::home_dir();
-        if crate::pair::pair_remove_alias(&hub_home, &m.executor) {
-            say(&format!(
-                "compute {}: removed the {} block from ~/.ssh/config",
-                req.id, m.executor
-            ));
-        }
-        if crate::pair::pair_remove_alias(&hub_home, &format!("{}-admin", m.executor)) {
-            say(&format!(
-                "compute {}: removed the {}-admin block from ~/.ssh/config",
-                req.id, m.executor
-            ));
-        }
+    for line in forget_machine_ssh(hub_home, &m) {
+        say(&format!("compute {}: {line}", req.id));
     }
     let now = s.now();
     machine_released(s, &req.id, &now);
@@ -1056,6 +1188,7 @@ pub(crate) fn release_compute(
         ));
         return false;
     }
+    let _ = pulse_tasks::note_compute(s, &req.id, why);
     if let Err(e) = compute_finding(
         s,
         actor,
