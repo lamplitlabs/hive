@@ -3150,11 +3150,20 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
          `pulse guide` explains how PULSE works, `pulse lead list` names the standing leads and their roles, `pulse status` shows the fleet, `pulse board --project SLUG` reads one project's board. \
          Ask the owner only for what none of these can tell.\n",
     );
-    b.push_str(
-        "A part of the work that can run on its own for a while (a review, a check, a second thing to build) can go to a sub-conversation: the chat tool with action start, a title and a full brief, starts one in your workspace, with its own page in the hub. \
-         Its replies reach you as messages from it between your turns; action read shows its state and last replies, action send steers it or answers its question. \
-         Reply or end your turn while it works - you are not blocked on it. A sub-conversation is for work the owner may want to watch or steer; a quick helper is the subagent tool.\n",
-    );
+    if row.parent.is_empty() {
+        b.push_str(
+            "Fan the work out rather than doing all of it in this one thread. A request with several parts, or with one part that takes a while (a survey of the code, a long check, a review, a second thing to build), is split: keep what needs you - the decision, the join, the answer to the owner - and hand the rest out, in parallel where the parts are independent. \
+             Two ways. The subagent tool runs a helper inside this turn on one bounded, self-contained sub-task and returns its report: use it whenever you would otherwise read many files or sit through a long command yourself (find every caller of X, run the suite and summarise the failures, survey a crate). \
+             The chat tool with action start, a title and a full brief starts a sub-conversation: a whole conversation in your workspace with its own page in the hub, for a part that should keep going while you work on another, or that the owner may want to watch or steer; several may run at once. \
+             Its replies reach you as messages from it between your turns; action read shows its state and last replies, action send steers it or answers its question. Reply or end your turn while it works - you are not blocked on it. \
+             Both work in your worktree on your branch: give each part its own files and a brief with everything it needs (it sees nothing of this conversation), and do the join yourself. \
+             Only a request small enough for a few tool calls is done here by you alone.\n",
+        );
+    } else {
+        b.push_str(
+            "Do your part yourself. The subagent tool runs a helper inside this turn for a bounded lookup or a long check summarised; the chat tool (action start) hands a part of your brief to a sub-conversation of your own only when that part is itself big enough to need a page, and most are not.\n",
+        );
+    }
     if !row.parent.is_empty() {
         b.push_str(&format!(
             "Workspace: you work in {}, the same folder{} as the conversation that started you, on its branch{}: commit on that branch and leave landing to it. \
@@ -4248,6 +4257,35 @@ mod tests {
         assert!(text.contains("pulse land --project demo --branch pulse/chat-chat-1"));
         assert!(text.contains("The owner's checkout at /srv/demo is not yours to edit"));
         assert!(text.contains("`pulse ask --all \"...\"` answers from the shared board"));
+        // A top-level conversation is told to fan its work out: helpers
+        // inside the turn, sub-conversations for the parts that keep
+        // going, and only a small request done alone.
+        assert!(text.contains("Fan the work out rather than doing all of it in this one thread"));
+        assert!(text.contains("The subagent tool runs a helper inside this turn"));
+        assert!(text.contains(
+            "The chat tool with action start, a title and a full brief starts a sub-conversation"
+        ));
+        assert!(text.contains("in parallel where the parts are independent"));
+        assert!(text.contains(
+            "Only a request small enough for a few tool calls is done here by you alone"
+        ));
+        assert!(!text.contains("Do your part yourself"));
+        // A sub-conversation does its part itself: it may run a helper, but
+        // another level of sub-conversations is the exception.
+        let child = Row {
+            id: "chat-2".into(),
+            parent: "chat-1".into(),
+            project: "demo".into(),
+            cwd: "/w/demo".into(),
+            branch: "pulse/chat-chat-1".into(),
+            ..Row::default()
+        };
+        let text = brief_text(&child, &projects, art);
+        assert!(text.contains("You are working in sub-conversation chat-2 of conversation chat-1"));
+        assert!(text.contains("Do your part yourself"));
+        assert!(text.contains("only when that part is itself big enough to need a page"));
+        assert!(!text.contains("Fan the work out"));
+        assert!(text.contains("Do not run `pulse chat attach`"));
         assert_eq!(
             title_from("  Fix the login page\nmore"),
             "Fix the login page"

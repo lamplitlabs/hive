@@ -268,7 +268,7 @@ pub fn subagent_tool(agents: &[AgentDef]) -> Tool {
     Tool {
         name: SUBAGENT_TOOL.to_string(),
         description: format!(
-            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this conversation. Use it for parallel-free, bounded work such as surveying part of the code or running and summarising a long check. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls.{}",
+            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own, inside this turn, and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this conversation. Reach for it before reading many files or sitting through a long command yourself: surveying part of the code, finding every caller of something, running a suite and summarising the failures. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls.{}",
             describe_for_tool(agents)
         ),
         parameters: json!({"type":"object","properties":properties,"required":["task"]}),
@@ -902,7 +902,7 @@ pub fn finish_tool() -> Tool {
 pub fn chat_tool() -> Tool {
     Tool {
         name: CHAT_TOOL.into(),
-        description: "Sub-conversations: a separate agent in a conversation of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this conversation) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it for a part of the request that runs on its own for a while - a long check, a second opinion, a piece in another area - not for a quick lookup (the subagent tool) or for work you can do yourself now.".into(),
+        description: "Sub-conversations: a separate agent in a conversation of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this conversation) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it to split a request with several parts - one sub-conversation per independent part, running at the same time, each on its own files - and for a part that keeps going while you answer the owner: a long check, a review, a second thing to build. A quick lookup whose answer you need now is the subagent tool instead.".into(),
         parameters: json!({
             "type": "object",
             "properties": {
