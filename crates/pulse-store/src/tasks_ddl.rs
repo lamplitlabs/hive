@@ -54,6 +54,7 @@ pub const TASKS_DDL: &[&str] = &[
   executor TEXT NOT NULL DEFAULT '',
   words TEXT NOT NULL DEFAULT '',     -- the owner's words on approve/deny
   proposal_post TEXT NOT NULL DEFAULT '',  -- the board proposal when the request waited for the owner
+  note TEXT NOT NULL DEFAULT '',      -- the daemon's last word on it: the step in progress, why it failed or was released
   at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );"####,
@@ -205,3 +206,13 @@ pub const MESSAGE_COLUMNS: &[Column] = &[
         ddl: r####"TEXT NOT NULL DEFAULT ''"####,
     },
 ];
+
+/// Columns added after the compute_requests table shipped: the daemon's last
+/// word on a request (the provisioning step in progress, the reason it failed
+/// or was released), which the Machines page shows. `ensure_records` adds
+/// each one that is missing, so an older store gains them on first open.
+pub const COMPUTE_COLUMNS: &[Column] = &[Column {
+    table: r####"compute_requests"####,
+    name: r####"note"####,
+    ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+}];

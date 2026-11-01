@@ -2695,6 +2695,10 @@ export interface ComputeRequest {
   status: ComputeStatus;
   decided_by: string;
   executor: string;
+  // The daemon's last word on the request: the provisioning step in progress,
+  // why it failed, why its machine was released. Empty until something happened
+  // and once the machine is ready (older hubs omit it).
+  note?: string;
   at: string;
   updated_at: string;
 }

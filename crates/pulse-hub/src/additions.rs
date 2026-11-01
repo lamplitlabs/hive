@@ -562,7 +562,7 @@ impl Handler {
             self.addition_compute_write(w, r, &parts[1], &parts[2]);
             return;
         }
-        let mut query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,at,updated_at FROM compute_requests".to_string();
+        let mut query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,note,at,updated_at FROM compute_requests".to_string();
         let mut args = Vec::new();
         let project = self.addition_project(r);
         if !project.is_empty() {
@@ -965,7 +965,7 @@ impl Handler {
         if !ok {
             return;
         }
-        let query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,at,updated_at FROM compute_requests WHERE id=?";
+        let query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,note,at,updated_at FROM compute_requests WHERE id=?";
         let mut requests = match self.addition_rows(r, query, vec![SqlValue::Text(id.to_string())])
         {
             Ok(v) => v,
