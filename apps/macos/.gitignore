@@ -1,0 +1,8 @@
+# SwiftPM and Xcode state; PULSE.app and the disk image land in build/.
+.build/
+.swiftpm/
+build/
+DerivedData/
+xcuserdata/
+*.app
+*.dmg

@@ -1,0 +1,42 @@
+"use client";
+
+// The Settings row that picks the theme: system, light or dark, each with
+// the icon from the mockup. The choice is saved and applied before the
+// first paint by lib/theme's script.
+
+import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
+import { useTheme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+
+const OPTIONS = [
+  { id: "system", label: "System", icon: MonitorIcon },
+  { id: "light", label: "Light", icon: SunIcon },
+  { id: "dark", label: "Dark", icon: MoonIcon },
+] as const;
+
+export function ThemeRow() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <div className="flex items-center justify-between gap-4 py-3">
+      <div className="grid gap-0.5">
+        <span className="text-sm font-medium">Theme</span>
+        <span className="text-xs text-muted-foreground">Follows the system unless you pick one.</span>
+      </div>
+      <div className="flex rounded-lg border p-0.5" role="radiogroup" aria-label="Theme">
+        {OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={theme === o.id}
+            onClick={() => setTheme(o.id)}
+            className={cn("flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors", theme === o.id ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+          >
+            <o.icon className="size-3.5" aria-hidden />
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,35 @@
+// A fetch that retries: transient failures and 429s are tried again with a
+// growing wait, honouring Retry-After when the server names one.
+
+const TRANSIENT = new Set([502, 503, 504]);
+
+export interface RetryOptions {
+  attempts?: number;
+  baseMs?: number;
+}
+
+export async function retryingFetch(req: Request, opts: RetryOptions = {}): Promise<Response> {
+  const attempts = opts.attempts ?? 4;
+  const baseMs = opts.baseMs ?? 250;
+  let last: Response | null = null;
+  for (let i = 0; i < attempts; i++) {
+    const res = await fetch(req.clone());
+    if (res.ok || (!TRANSIENT.has(res.status) && res.status !== 429)) return res;
+    last = res;
+    const wait = res.status === 429 ? retryAfterMs(res) ?? baseMs * 2 ** i : baseMs * 2 ** i;
+    await sleep(wait);
+  }
+  return last as Response;
+}
+
+// Retry-After is seconds or an HTTP date; anything else means "no idea".
+export function retryAfterMs(res: Response): number | null {
+  const h = res.headers.get("retry-after");
+  if (!h) return null;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
