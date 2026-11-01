@@ -195,6 +195,9 @@ impl Handler {
         let Some(auto) = payload_bool(w, &payload, "auto_approve", true) else {
             return;
         };
+        let Some(lockdown) = payload_bool(w, &payload, "lockdown", false) else {
+            return;
+        };
         let (parent, ok) = addition_string(w, &payload, "parent", false);
         if !ok {
             return;
@@ -204,12 +207,13 @@ impl Handler {
         // parent's page) takes the parent's workspace and settings; the
         // other fields are the parent's.
         let created = if parent.is_empty() {
-            chats.create_with(
+            chats.create_with_lockdown(
                 &title,
                 &project,
                 &model,
                 &reasoning,
                 auto,
+                lockdown,
                 &text,
                 pulse_store::HUMAN_AGENT,
             )
@@ -427,6 +431,12 @@ impl Handler {
                     return;
                 };
                 chats.set_auto_approve(id, on)
+            }
+            "lockdown" => {
+                let Some(on) = payload_bool(w, &payload, "on", true) else {
+                    return;
+                };
+                chats.set_lockdown(id, on)
             }
             "attach" => {
                 let (project, ok) = addition_string(w, &payload, "project", true);
@@ -1336,6 +1346,32 @@ mod tests {
         );
         assert_eq!(code, 200, "{raw}");
         assert_eq!(body["conversation"]["reasoning"], "high");
+        // Lockdown (sandbox) mode flips the same way and shows live.
+        assert_eq!(body["conversation"]["lockdown"], false);
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/lockdown"),
+            json!({"on": true}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        assert_eq!(body["conversation"]["lockdown"], true);
+        assert_eq!(body["conversation"]["live"]["lockdown"], true);
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/lockdown"),
+            json!({"on": false}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        assert_eq!(body["conversation"]["lockdown"], false);
+        let (code, _, _) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/lockdown"),
+            json!({"on": "maybe"}),
+        );
+        assert_eq!(code, 400);
         let (code, _, _) = call(
             &h,
             "POST",
@@ -1358,10 +1394,15 @@ mod tests {
             &h,
             "POST",
             "/api/v1/chat",
-            json!({"text": "hi", "reasoning": "low"}),
+            json!({"text": "hi", "reasoning": "low", "lockdown": true}),
         );
         assert_eq!(code, 201, "{raw}");
         assert_eq!(body["conversation"]["reasoning"], "low");
+        assert_eq!(
+            body["conversation"]["lockdown"], true,
+            "the first message may start the conversation in lockdown"
+        );
+        assert_eq!(body["conversation"]["live"]["lockdown"], true);
         let id = body["conversation"]["id"].as_str().unwrap().to_string();
         wait_status(&h, &id, &["idle"]);
         let (code, body, raw) = call(&h, "POST", &format!("/api/v1/chat/{id}/close"), Value::Null);

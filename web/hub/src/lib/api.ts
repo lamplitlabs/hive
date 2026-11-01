@@ -1593,6 +1593,10 @@ export interface ConversationLive {
   turn_from: number;
   turn_started_at: string;
   auto_approve: boolean;
+  // Lockdown (sandbox) mode: the agent's session runs with every outside
+  // thing blocked (no network, writes confined to its worktree, no
+  // fetch/web_search/MCP, no credentials); only work inside the sandbox.
+  lockdown: boolean;
   version: number;
   session_id: string;
 }
@@ -1610,6 +1614,9 @@ export interface Conversation {
   // A reasoning effort from `REASONING_EFFORTS`; empty for the harness setting.
   reasoning: string;
   auto_approve: boolean;
+  // Lockdown (sandbox) mode, see `ConversationLive.lockdown`; flipping it
+  // restarts the agent's session inside (or outside) the sandbox.
+  lockdown: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1760,6 +1767,9 @@ export interface ChatCreateInput {
   title?: string;
   project?: string;
   auto_approve?: boolean;
+  // Start in lockdown (sandbox) mode: the agent works with every outside
+  // thing blocked.
+  lockdown?: boolean;
   // A model id from `harness/models`; empty for the provider's default.
   model?: string;
   // A reasoning effort; empty for the harness setting.
@@ -3505,6 +3515,10 @@ export const writes = {
     post<{ conversation: Conversation }>("chat/" + enc(id) + "/archive", {}),
   chatAuto: (id: string, on: boolean) =>
     post<{ conversation: Conversation }>("chat/" + enc(id) + "/auto", { on }),
+  chatLockdown: (id: string, on: boolean) =>
+    post<{ conversation: Conversation }>("chat/" + enc(id) + "/lockdown", {
+      on,
+    }),
   chatAttach: (id: string, project: string) =>
     post<{
       conversation: Conversation;

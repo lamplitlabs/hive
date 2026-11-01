@@ -15,6 +15,7 @@ pub mod history;
 pub mod hooks;
 pub mod instructions;
 pub mod localenv;
+pub mod lockdown;
 pub mod memory;
 pub mod permissions;
 pub mod readonly;

@@ -62,6 +62,10 @@ const state = {
   harnessSessions: null,
   harnessDetails: {},
   harnessPolls: {},
+  // Conversation switches flipped from the Chat page (POST chat/<id>/auto
+  // and /lockdown), laid over the fixtures when they are served: the hub
+  // keeps these on the row; here they live only until the mock restarts.
+  chatFlips: {},
   serviceInstalled: false,
   cred: {
     reference: "",
@@ -1316,6 +1320,36 @@ async function handle(req, res) {
         String(e.message),
         "send a JSON object",
       );
+    }
+    // The Chat page's two switches on a conversation: Auto (approve tools
+    // without asking) and Lockdown (sandbox). The hub flips the row and the
+    // live session; the mock remembers the flip and answers the way GET
+    // chat/<id> would, with the live state carrying the new word.
+    if (
+      segs[0] === "chat" &&
+      segs.length === 3 &&
+      (segs[2] === "auto" || segs[2] === "lockdown")
+    ) {
+      if (typeof body.on !== "boolean")
+        return fail(
+          res,
+          400,
+          "Invalid on",
+          "on must be true or false.",
+          "Send on:true or on:false.",
+        );
+      const d = await fixture("chat/" + encodeURIComponent(segs[1]));
+      if (d === null)
+        return fail(
+          res,
+          404,
+          "No such conversation",
+          "nothing under " + segs[1] + ".",
+          "Pick a conversation from the list.",
+        );
+      const flips = (state.chatFlips[segs[1]] ??= {});
+      flips[segs[2] === "auto" ? "auto_approve" : "lockdown"] = body.on;
+      return send(res, 200, { conversation: chatWithFlips(d.conversation) });
     }
     // Automations (`pulse schedule`, `.pulse/pulse.yaml`): check a draft,
     // write it into the file or the store, remove an entry, act on a row.
@@ -3611,7 +3645,7 @@ async function handle(req, res) {
       405,
       "no such write",
       req.method + " " + url.pathname + " is not an owner action",
-      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run",
+      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat/<id>/auto|lockdown",
     );
   }
 
@@ -4343,7 +4377,37 @@ async function handle(req, res) {
       "no fixture for " + url.pathname,
       "add mock/api/" + segs.join("/") + ".json",
     );
+  if (segs[0] === "chat" && segs.length === 1 && Array.isArray(d.conversations))
+    return send(res, 200, {
+      ...d,
+      conversations: d.conversations.map(chatWithFlips),
+    });
+  if (segs[0] === "chat" && segs.length === 2 && d.conversation) {
+    const flips = state.chatFlips[d.conversation.id];
+    return send(res, 200, {
+      ...d,
+      conversation: chatWithFlips(d.conversation),
+      live: flips && d.live ? { ...d.live, ...flips } : d.live,
+      children: Array.isArray(d.children)
+        ? d.children.map(chatWithFlips)
+        : d.children,
+    });
+  }
   return send(res, 200, d);
+}
+
+// A conversation row with the switches the owner flipped in this mock run
+// laid over it, on the row and on its live state.
+function chatWithFlips(c) {
+  const f = c && state.chatFlips[c.id];
+  if (!f) return c;
+  return {
+    ...c,
+    ...f,
+    live: c.live
+      ? { ...c.live, ...f, version: (c.live.version || 0) + 1 }
+      : c.live,
+  };
 }
 
 const strip = (t) =>
