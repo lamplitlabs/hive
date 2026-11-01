@@ -2769,6 +2769,7 @@ record, read with `pulse record show WF-evolve`.
 | `provider.azure-openai.tenant` | `organizations` | The Microsoft Entra tenant the `azure-openai` *Sign in with Microsoft* device code uses: `organizations` (any work or school account), `common`, `consumers`, or a tenant id or domain; `AZURE_OPENAI_TENANT_ID` or `AZURE_TENANT_ID` stands in while it keeps its default. |
 | `provider.retry_after_cap_s` | `60` seconds | Maximum provider rate-limit header wait before jitter; the retry backoff still floors the wait. |
 | `provider.max_body_mb` | `8` MiB | Successful provider response body cap; exceeding it fails the call as non-retryable. |
+| `provider.max_request_mb` | `1` MiB (`0` off) | How big one request - the conversation with its tool results and images, plus the tool schemas, as the harness estimates them - may grow before a run or chat turn compacts the older conversation whatever the token count says, so a long conversation stays under what the gateway takes: Copilot times out reading a body of about 1.5 MiB (`Timed out reading request body`, HTTP 408) long before a 1M-token window is full. A request the provider still refuses as too large is compacted and sent again, then its older observations collapsed and sent once more, before the turn stops (**Compaction** under [The harness](#the-harness-how-an-agent-runs)). `--max-request-mb N` for one run. |
 | `harness.max_steps` | `60` | Model calls one worker run (or one chat turn) may make before the harness stops it; `none`, `off` or `unlimited` lifts the cap and leaves the run to the wall clock, the cost cap and compaction. |
 | `harness.task_max_steps` | - | Model calls a `task`, `improve` or `experiment` run may make before the harness stops it. Empty keeps these kinds on `harness.max_steps`, so a task can get a larger budget without the short kinds (answer, ballot, reflect, onboard) getting the same. |
 | `harness.step_timeout` | `300` seconds | Wall-clock cap on one command the model runs. |
@@ -2776,7 +2777,8 @@ record, read with `pulse record show WF-evolve`.
 | `harness.output_limit` | `20000` characters | Command output kept per step; longer output is cut in the middle. |
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
 | `harness.context_window` | `0` tokens (= the model list) | The context window the harness measures `harness.compact_at` against and collapses observations harder past 80% of; `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none is taken as 128,000. `pulse harness run --context-window N` overrides it for one run. |
-| `harness.compact_at` | `70` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](#the-harness-how-an-agent-runs)). `--compact-at N` for one run. |
+| `harness.compact_at` | `50` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](#the-harness-how-an-agent-runs)); a request past `provider.max_request_mb` compacts whatever the percent. `--compact-at N` for one run. |
+| `harness.compact_model` | empty (= the run's model) | The model that writes the compaction summaries. A cheaper one saves money on the providers that bill per token - each summary reads up to about 30,000 tokens of transcript - while Copilot bills per request, so there it saves time rather than credits. `--compact-model M` for one run. |
 | `harness.reasoning` | `default` (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) | The reasoning effort a native-harness run asks of the model, sent as `reasoning_effort` to the OpenAI-compatible providers and to Copilot for the models that take it; `default` sends nothing (**Reasoning effort and prompt caching** under [The harness](#the-harness-how-an-agent-runs)). `--reasoning LEVEL` for one run. |
 | `harness.instructions` | `on` | A native-harness run reads the owner's `~/.pulse/AGENTS.md`, the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and its rules (`.pulse/rules`, `.claude/rules`, `.github/instructions`) into its system prompt; path-scoped rules and nested `AGENTS.md` files arrive with the files they cover. |
 | `harness.mcp_tools` | `on` | A native-harness run offers the project's enabled MCP servers' tools to the model as `mcp__<server>__<tool>`. |
@@ -3162,7 +3164,9 @@ prints travels with the message under ``--- user_prompt hook `cmd` ---``
 `2` **keeps the message back**: the reply is the hook's words, nothing is
 sent and the turn does not count; a `pre_compact` hook runs before the
 conversation is summarised, by `/compact` or on its own (payload `trigger`
-`manual`/`auto`, `compacting`, `prompt_tokens`, `context_window`) - its
+`manual`/`auto`/`size`/`oversize` - by hand, past the token threshold,
+past the request-size budget, after the provider refused a request as too
+large - `compacting`, `prompt_tokens`, `context_window`) - its
 output is handed to the summariser as the owner's asks ("keep the list of
 files touched"), and exit `2` declines the compaction, which `/compact`
 reports and an automatic one retries later. Hooks run as the owner within
@@ -3311,27 +3315,60 @@ call instead of being billed and processed anew.
 #### Compaction
 
 When a long run's prompt passes `harness.compact_at`
-percent of the model's context window (`70`; Settings → Harness
+percent of the model's context window (`50`; Settings → Harness
 **Transcript limits**, `--compact-at N` for one run, `0` turns it off, 95
-at most), the harness asks the model itself for a summary of the older
-part of the conversation - what was asked, what was learned, what changed,
-what remains - and replaces those messages with it, keeping the system
-prompt, the task and the last six messages verbatim; a `note` step
+at most), or the request it is about to send passes
+`provider.max_request_mb` (`1` MiB; `--max-request-mb N`, `0` turns the
+size trigger off), the harness asks the model itself for a summary of the
+older part of the conversation - what was asked, what was learned, what
+changed, what remains - and replaces those messages with it, keeping the
+system prompt, the task and the last six messages verbatim; a `note` step
 (`compacted 12 older messages into a 1480-character summary (31 messages
-became 20)`) marks the moment. It is the first thing the harness does
-about a full window, not the last: it happens again each time the prompt
-grows back to the threshold, and each summary is written with the
-earlier one in front of it, so a run of any length carries its facts
-forward in a summary the model wrote rather than losing them to the
-collapsing of old outputs described under **Context discipline**, which
-now waits until compaction has not made enough room. The summary call
-costs usage but not a model call, a run compacts again only after three
-more calls, and a conversation too short to cut is left alone. The prompt
-size the threshold is measured against is the provider's own count for
-the last call, or an estimate from the conversation's size when the
-provider reports none; the window is the one the model lists, or 128,000
-tokens when it lists none, unless `harness.context_window` says
-otherwise. The trajectory JSON keeps the compacted messages.
+became 20)`) marks the moment, and says so when the request size was the
+reason. It is the first thing the harness does about a full window, not
+the last: it happens again each time the prompt grows back to the
+threshold, and each summary is written with the earlier one in front of
+it, so a run of any length carries its facts forward in a summary the
+model wrote rather than losing them to the collapsing of old outputs
+described under **Context discipline**, which now waits until compaction
+has not made enough room. The summary call costs usage but not a model
+call, reads at most about 30,000 tokens of transcript (the oldest part is
+cut first, the earlier summary always travels whole), and may go to a
+cheaper model than the run's (`harness.compact_model`; on the providers
+that bill per token - openai, anthropic, gemini and the OpenAI-compatible
+vendors - that saves directly, on Copilot, which bills per request, it
+saves time); a run compacts again only after three more calls, and a
+conversation too short to cut is left alone. The prompt size the token
+threshold is measured against is the provider's own count for the last
+call plus an estimate of what the history gained since, or an estimate
+from the conversation's size when the provider reports none; the window
+is the one the model lists, or 128,000 tokens when it lists none, unless
+`harness.context_window` says otherwise. The request size is the harness's
+own estimate of the body - the messages, their tool calls and images, the
+tool schemas - and exists because a gateway gives up on a body long before
+a 1M-token window is full: with the token threshold alone a Copilot
+conversation grew until the gateway answered `Timed out reading request
+body. Try again, or use a smaller request size.` (HTTP 408) and every retry
+of the same body failed the same way. The trajectory JSON keeps the
+compacted messages.
+
+Two more moments compact. A request the provider refuses as too large all
+the same - HTTP 408 or 413, or its words for it: OpenAI's
+`context_length_exceeded` and `maximum context length`, Anthropic's
+`prompt is too long`, Gemini's `input token count ... exceeds` - is not
+sent again as it was: the harness compacts the conversation whatever the
+three-call gap, asks again, and if that is still refused (or there was
+nothing left to compact) collapses every older observation but one and asks
+once more, each step a `note` in the transcript; only then does the turn
+stop with the provider's error and a line on what helps (a new
+conversation, which carries this one over compacted, or `/compact` in
+`pulse harness chat`). The
+provider itself does not retry such a call - the body is the problem - so
+the shrinking lives in the harness. And a session that resumes an earlier
+one (a conversation whose agent was let go and comes back, `pulse harness
+chat --resume`, a held run carried on) compacts the carried-over history
+before its first call when it is past either threshold, so a resumed
+conversation starts lean instead of sending everything it ever saw.
 
 The first-turn contract says that exactly one fenced block per reply is
 executed, prose-only replies are not executed, and a command block can use
@@ -3400,9 +3437,9 @@ remote executor is judged as it stands.
 #### Context discipline
 
 Command output is what fills a context window. While the prompt is under
-the compaction threshold nothing is touched; once it is past the
-threshold and **Compaction** (above) is off, waiting out its three-call
-gap or has not made enough room, the harness keeps only the last
+the compaction threshold and the request under its byte budget nothing is
+touched; once it is past either and **Compaction** (above) is off, waiting
+out its three-call gap or has not made enough room, the harness keeps only the last
 `harness.keep_observations` (5; Settings → Harness **Transcript limits**,
 next to `step_timeout` and `output_limit`) outputs verbatim and older
 ones collapse to their first and last lines around a marker

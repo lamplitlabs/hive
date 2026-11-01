@@ -166,6 +166,7 @@ const LABELS: Record<string, string> = {
   "provider.custom.api_key_header": "Header the custom server reads the key from",
   "provider.retry_after_cap_s": "Longest wait when the provider asks to retry (seconds)",
   "provider.max_body_mb": "Largest provider reply to read (MiB)",
+  "provider.max_request_mb": "Summarise the conversation before a request passes this size (MiB, 0 = off)",
   provider: "Model provider",
   "harness.max_steps": "Steps per run",
   "harness.task_max_steps": "Steps per task run",
@@ -193,6 +194,7 @@ const LABELS: Record<string, string> = {
   "harness.allow_tools": "Tool calls a chat session runs without asking",
   "models.allowed": "Models a custom agent file may ask for",
   "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
+  "harness.compact_model": "Model that writes the conversation summaries (empty = the run's own)",
   "harness.reasoning": "Reasoning effort asked of the model",
   "harness.step_timeout": "Time limit per command (seconds)",
   "harness.commit_timeout": "Time limit per verified git commit (seconds)",
@@ -348,7 +350,11 @@ const HELP: Record<string, string> = {
   "models.allowed":
     "The models an agent file (.pulse/agents/<name>.md, .claude/agents, .github/agents, an agent record) may choose with its model key, comma-separated, * for a run of characters - kimi-k3, claude-*. Empty lets any model the provider accepts through. A model outside the list is ignored with a note and the run keeps its routing.",
   "harness.compact_at":
-    "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. It happens again each time the conversation grows back to the threshold, carrying the earlier summary forward. The summary call is free of the step cap. 0 turns compaction off.",
+    "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. It happens again each time the conversation grows back to the threshold, carrying the earlier summary forward, and whatever the share when a request would pass its size budget. The summary call is free of the step cap. 0 leaves compaction to the size budget alone.",
+  "harness.compact_model":
+    "The model that writes the summaries. A cheaper one saves money where the provider bills per token (OpenAI, Anthropic, Gemini and the OpenAI-compatible vendors); Copilot bills per request, so there it only saves time. Empty uses the conversation's own model.",
+  "provider.max_request_mb":
+    "How big one request may grow - the conversation, its tool results and images, the tool schemas - before the older conversation is summarised, whatever the token count. Copilot's gateway gives up reading a body of about 1.5 MiB long before a 1M-token window is full; a request it still refuses is summarised and sent again before the turn stops. 0 leaves compaction to the context-window share alone.",
   "harness.reasoning":
     "How hard the model thinks before it answers, sent as reasoning_effort to the OpenAI-compatible providers and to Copilot for the models that take it. Model default sends nothing. A model that does not take the field rejects the call, so choose with your model in mind.",
   "harness.step_timeout": "How long one command may run before it is stopped.",
