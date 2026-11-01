@@ -89,16 +89,21 @@ function sourceWord(s: AskSource): string {
 }
 
 // The trigger: `sidebar` is the full-width button under Search in the desktop
-// sidebar; `icon` is the speech bubble in the phone header.
-export function AskTrigger({ variant = "sidebar" }: { variant?: "sidebar" | "icon" }) {
+// sidebar; `icon` is the speech bubble in the phone header. Extra props reach
+// the button, so a tooltip (the sidebar's rail) can wrap it.
+export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<React.ComponentProps<typeof Button>, "variant" | "size"> & { variant?: "sidebar" | "icon" }) {
   const open = useAskOpen();
   return (
     <Button
+      {...props}
       data-ask-trigger=""
       variant={variant === "icon" ? "ghost" : "outline"}
       size={variant === "icon" ? "icon" : "default"}
-      className={cn(variant === "icon" ? "size-10 text-muted-foreground" : "h-9 w-full justify-start gap-2 px-2.5 font-normal text-muted-foreground")}
-      onClick={(event) => openAsk("", event.currentTarget)}
+      className={cn(variant === "icon" ? "size-10 text-muted-foreground" : "h-9 w-full justify-start gap-2 px-2.5 font-normal text-muted-foreground collapsed:justify-center collapsed:px-0", className)}
+      onClick={(event) => {
+        props.onClick?.(event);
+        openAsk("", event.currentTarget);
+      }}
       aria-label="Ask about your projects (Control or Command J)"
       aria-haspopup="dialog"
       aria-expanded={open}
@@ -107,8 +112,8 @@ export function AskTrigger({ variant = "sidebar" }: { variant?: "sidebar" | "ico
       <BotMessageSquareIcon aria-hidden="true" className="size-4" />
       {variant === "sidebar" ? (
         <>
-          <span>Ask</span>
-          <kbd aria-hidden="true" className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground">⌘J</kbd>
+          <span className="collapsed:sr-only">Ask</span>
+          <kbd aria-hidden="true" className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground collapsed:hidden">⌘J</kbd>
         </>
       ) : null}
     </Button>

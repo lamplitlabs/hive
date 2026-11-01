@@ -101,24 +101,32 @@ const usePaletteOpen = () =>
   );
 
 // The trigger: `sidebar` is the full-width search field in the desktop
-// sidebar; `icon` is the magnifier in the phone header.
+// sidebar; `icon` is the magnifier in the phone header. Extra props reach the
+// button, so a tooltip (the sidebar's rail) can wrap it.
 export function CommandPalette({
   variant = "sidebar",
-}: {
+  className,
+  ...props
+}: Omit<React.ComponentProps<typeof Button>, "variant" | "size"> & {
   variant?: "sidebar" | "icon";
 }) {
   const open = usePaletteOpen();
   return (
     <Button
+      {...props}
       data-palette-trigger=""
       variant={variant === "icon" ? "ghost" : "outline"}
       size={variant === "icon" ? "icon" : "default"}
       className={cn(
         variant === "icon"
           ? "size-10 text-muted-foreground"
-          : "h-9 w-full justify-start gap-2 px-2.5 font-normal text-muted-foreground",
+          : "h-9 w-full justify-start gap-2 px-2.5 font-normal text-muted-foreground collapsed:justify-center collapsed:px-0",
+        className,
       )}
-      onClick={(event) => setPaletteOpen(true, event.currentTarget)}
+      onClick={(event) => {
+        props.onClick?.(event);
+        setPaletteOpen(true, event.currentTarget);
+      }}
       aria-label="Search (Control or Command K)"
       aria-haspopup="dialog"
       aria-expanded={open}
@@ -127,10 +135,10 @@ export function CommandPalette({
       <SearchIcon aria-hidden="true" className="size-4" />
       {variant === "sidebar" ? (
         <>
-          <span>Search</span>
+          <span className="collapsed:sr-only">Search</span>
           <kbd
             aria-hidden="true"
-            className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground"
+            className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground collapsed:hidden"
           >
             ⌘K
           </kbd>

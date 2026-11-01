@@ -3,6 +3,9 @@
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
+/* The desktop sidebar folded to a rail of icons: <html> carries the class
+   (set before paint by the boot script in layout.tsx, kept by use-sidebar.ts). */
+@custom-variant collapsed (&:is(.sidebar-collapsed *));
 
 /*
   PULSE hub design tokens - "the daily briefing".

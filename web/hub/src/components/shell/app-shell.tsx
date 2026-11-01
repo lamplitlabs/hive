@@ -13,6 +13,8 @@ import {
   ListTodoIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   PlugIcon,
   ScrollTextIcon,
   ServerIcon,
@@ -45,6 +47,9 @@ import { CommandPalette, CommandPaletteHost } from "./command-palette";
 import { PulseMark } from "./pulse-mark";
 import { ThemeToggle } from "./theme-toggle";
 import { AwakeStatus, AwakeTheme } from "./awake";
+import { useSidebarCollapsed } from "./use-sidebar";
+import { sidebarToggleLabel } from "./sidebar-state";
+import { RailTip } from "./rail-tip";
 
 type NavItem = {
   href: string;
@@ -142,6 +147,46 @@ const SYSTEM: NavItem[] = [
 const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 
+// The desktop sidebar folds to a rail of icons (the `collapsed:` variant in
+// globals.css; the choice lives in use-sidebar.ts). On the rail a count sits
+// in the item's corner instead of at its end, and a row's name moves off
+// screen for sighted users while screen readers still get it.
+const railCount =
+  "collapsed:absolute collapsed:top-0.5 collapsed:right-0.5 collapsed:h-4 collapsed:min-w-4 collapsed:px-1 collapsed:text-[10px]";
+const railName = "collapsed:sr-only";
+
+// The one button that folds the sidebar to its rail and back. It sits at the
+// end of the brand row; on the rail it drops under the mark.
+function SidebarToggle() {
+  const [collapsed, setCollapsed] = useSidebarCollapsed();
+  const label = sidebarToggleLabel(collapsed);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-foreground"
+          aria-label={label}
+          aria-expanded={!collapsed}
+          aria-controls="sidebar"
+          onClick={() => setCollapsed(!collapsed)}
+        >
+          {/* Both icons render and CSS picks one, so a collapsed reload shows the right arrow before React hydrates. */}
+          <PanelLeftCloseIcon aria-hidden className="size-4 collapsed:hidden" />
+          <PanelLeftOpenIcon
+            aria-hidden
+            className="hidden size-4 collapsed:block"
+          />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side={collapsed ? "right" : "bottom"} sideOffset={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 // The number of things waiting for the owner, in the one warm colour. With
 // `attn` a soft marigold ring breathes around it (the Home item only, so the
 // sidebar does not blink all over).
@@ -183,30 +228,35 @@ function NavLink({
   active: boolean;
   count?: number;
 }) {
+  const [collapsed] = useSidebarCollapsed();
   return (
-    <Link
-      href={item.href}
-      aria-current={active ? "page" : undefined}
-      title={item.hint}
-      className={cn(
-        "group nav-item flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none",
-        focusRing,
-        active &&
-          "bg-card text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.06)] ring-1 ring-border hover:bg-card",
-      )}
-    >
-      <item.icon
-        aria-hidden
+    <RailTip label={item.label} hint={item.hint}>
+      <Link
+        href={item.href}
+        aria-current={active ? "page" : undefined}
+        title={collapsed ? undefined : item.hint}
         className={cn(
-          "nav-icon size-[18px] shrink-0",
-          active
-            ? "text-primary"
-            : "text-muted-foreground group-hover:text-foreground",
+          "group nav-item relative flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none collapsed:justify-center collapsed:px-0",
+          focusRing,
+          active &&
+            "bg-card text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.06)] ring-1 ring-border hover:bg-card",
         )}
-      />
-      <span className="min-w-0 flex-1 truncate">{item.label}</span>
-      {count ? <YouCount n={count} attn /> : null}
-    </Link>
+      >
+        <item.icon
+          aria-hidden
+          className={cn(
+            "nav-icon size-[18px] shrink-0",
+            active
+              ? "text-primary"
+              : "text-muted-foreground group-hover:text-foreground",
+          )}
+        />
+        <span className={cn("min-w-0 flex-1 truncate", railName)}>
+          {item.label}
+        </span>
+        {count ? <YouCount n={count} attn className={railCount} /> : null}
+      </Link>
+    </RailTip>
   );
 }
 
@@ -229,7 +279,7 @@ function LiveStatus() {
           aria-atomic="true"
           aria-label={label}
           className={cn(
-            "inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[13px] text-muted-foreground outline-none",
+            "inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[13px] text-muted-foreground outline-none collapsed:size-8 collapsed:justify-center collapsed:px-0",
             focusRing,
           )}
         >
@@ -245,7 +295,7 @@ function LiveStatus() {
                   : "bg-muted-foreground/50",
             )}
           />
-          <span>
+          <span className={railName}>
             {live
               ? "Live"
               : state === "polling"
@@ -268,23 +318,29 @@ function SidebarProjects() {
     : "";
   const { data, error } = useApi<Org>("org");
   const inbox = useInbox();
+  const [collapsed] = useSidebarCollapsed();
   const projects = data?.projects ?? [];
   const commons = data?.commons;
   const row =
-    "group flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none";
+    "group relative flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none collapsed:justify-center collapsed:px-0";
   const on = "bg-card text-foreground ring-1 ring-border hover:bg-card";
   return (
     <div>
-      <p className="mb-1 px-2.5 text-xs font-medium text-muted-foreground">
+      <p className="mb-1 px-2.5 text-xs font-medium text-muted-foreground collapsed:sr-only">
         Projects
       </p>
+      {/* The rail has no room for words: a rule stands in for the heading. */}
+      <div
+        aria-hidden
+        className="mx-2 mb-2 hidden border-t collapsed:block"
+      />
       {error && !data ? (
-        <p className="px-2.5 py-1 text-xs text-muted-foreground">
+        <p className="px-2.5 py-1 text-xs text-muted-foreground collapsed:sr-only">
           Projects didn&apos;t load.
         </p>
       ) : null}
       {data && !projects.length ? (
-        <p className="px-2.5 py-1 text-xs leading-relaxed text-muted-foreground">
+        <p className="px-2.5 py-1 text-xs leading-relaxed text-muted-foreground collapsed:sr-only">
           No projects yet. Add one from Home.
         </p>
       ) : null}
@@ -292,49 +348,66 @@ function SidebarProjects() {
         {projects.map((p) => {
           const forYou = inbox.forProject(p.slug).total;
           const active = current === p.slug;
+          const missing = p.present ? "" : p.slug + " is missing on disk";
           return (
             <li key={p.slug}>
-              <Link
-                href={hrefs.project(p.slug)}
-                aria-current={active ? "page" : undefined}
-                className={cn(row, focusRing, active && on)}
-                title={p.present ? p.slug : p.slug + " is missing on disk"}
+              <RailTip
+                label={p.slug}
+                hint={missing || undefined}
               >
-                <ProjectDot slug={p.slug} />
-                <span className="min-w-0 flex-1 truncate">{p.slug}</span>
-                {!p.present ? (
-                  <span
-                    className="size-2 shrink-0 rounded-full bg-bad"
-                    aria-label="missing on disk"
-                    role="img"
-                  />
-                ) : null}
-                <YouCount n={forYou} />
-              </Link>
+                <Link
+                  href={hrefs.project(p.slug)}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(row, focusRing, active && on)}
+                  title={collapsed ? undefined : missing || p.slug}
+                >
+                  <ProjectDot slug={p.slug} />
+                  <span className={cn("min-w-0 flex-1 truncate", railName)}>
+                    {p.slug}
+                  </span>
+                  {!p.present ? (
+                    <span
+                      className="size-2 shrink-0 rounded-full bg-bad collapsed:absolute collapsed:top-1 collapsed:right-1"
+                      aria-label="missing on disk"
+                      role="img"
+                    />
+                  ) : null}
+                  <YouCount n={forYou} className={railCount} />
+                </Link>
+              </RailTip>
             </li>
           );
         })}
         {commons ? (
           <li>
-            <Link
-              href={hrefs.project(commons.slug)}
-              aria-current={current === commons.slug ? "page" : undefined}
-              title={COMMONS_HINT}
-              className={cn(row, focusRing, current === commons.slug && on)}
-            >
-              <span
-                aria-hidden
-                className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
+            <RailTip label="Shared board" hint={COMMONS_HINT}>
+              <Link
+                href={hrefs.project(commons.slug)}
+                aria-current={current === commons.slug ? "page" : undefined}
+                title={collapsed ? undefined : COMMONS_HINT}
+                className={cn(row, focusRing, current === commons.slug && on)}
               >
-                <UsersIcon className="size-3" />
-              </span>
-              <span className="min-w-0 flex-1 truncate">Shared board</span>
-              {commons.questions_open ? (
-                <span className="tnum text-xs text-muted-foreground">
-                  {commons.questions_open}
+                <span
+                  aria-hidden
+                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
+                >
+                  <UsersIcon className="size-3" />
                 </span>
-              ) : null}
-            </Link>
+                <span className={cn("min-w-0 flex-1 truncate", railName)}>
+                  Shared board
+                </span>
+                {commons.questions_open ? (
+                  <span
+                    className={cn(
+                      "tnum text-xs text-muted-foreground",
+                      railName,
+                    )}
+                  >
+                    {commons.questions_open}
+                  </span>
+                ) : null}
+              </Link>
+            </RailTip>
           </li>
         ) : null}
       </ul>
@@ -530,7 +603,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const activeSystem = SYSTEM.find((n) => n.match(pathname));
   return (
-    <div className="flex min-h-dvh min-w-0 flex-1 flex-col pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pr-0 lg:pl-64">
+    <div className="flex min-h-dvh min-w-0 flex-1 flex-col pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pr-0 lg:pl-64 lg:transition-[padding-left] lg:duration-200 lg:ease-out-soft motion-reduce:transition-none collapsed:lg:pl-16">
       <Suspense fallback={null}>
         <CommandPaletteHost />
         <AskHost />
@@ -545,31 +618,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </a>
 
       <aside
+        id="sidebar"
         aria-label="Sidebar"
-        className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r bg-sidebar pt-[env(safe-area-inset-top)] lg:flex"
+        className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r bg-sidebar pt-[env(safe-area-inset-top)] transition-[width] duration-200 ease-out-soft motion-reduce:transition-none lg:flex collapsed:w-16"
       >
-        <Link
-          href="/"
-          className={cn(
-            "brand-link mx-3 mt-4 mb-3 flex h-10 shrink-0 items-center gap-2.5 rounded-lg px-1.5",
-            focusRing,
-          )}
-          aria-label="PULSE home"
-        >
-          <PulseMark />
-          <span className="text-[17px] font-semibold tracking-tight">
-            PULSE
-          </span>
-        </Link>
-        <div className="grid gap-2 px-3 pb-3">
+        {/* The brand row: the mark, the name and the fold button. On the rail the name goes and the button drops under the mark. */}
+        <div className="mx-3 mt-4 mb-3 flex shrink-0 items-center gap-1 collapsed:mx-2 collapsed:flex-col collapsed:items-stretch collapsed:gap-2">
+          <Link
+            href="/"
+            className={cn(
+              "brand-link flex h-10 min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 collapsed:justify-center collapsed:px-0",
+              focusRing,
+            )}
+            aria-label="PULSE home"
+          >
+            <PulseMark />
+            <span
+              className={cn(
+                "text-[17px] font-semibold tracking-tight",
+                railName,
+              )}
+            >
+              PULSE
+            </span>
+          </Link>
+          <div className="flex shrink-0 justify-center">
+            <SidebarToggle />
+          </div>
+        </div>
+        <div className="grid gap-2 px-3 pb-3 collapsed:px-2">
           <Suspense
             fallback={<div className="h-9 rounded-lg border bg-card" />}
           >
-            <CommandPalette variant="sidebar" />
+            <RailTip label="Search" hint="⌘K">
+              <CommandPalette variant="sidebar" />
+            </RailTip>
           </Suspense>
-          <AskTrigger variant="sidebar" />
+          <RailTip label="Ask" hint="⌘J">
+            <AskTrigger variant="sidebar" />
+          </RailTip>
         </div>
-        <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-3 pt-1 pb-4">
+        <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-3 pt-1 pb-4 collapsed:gap-4 collapsed:px-2">
           <nav aria-label="Your work">
             <ul className="grid gap-0.5">
               <li>
@@ -586,9 +675,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <SidebarProjects />
           </Suspense>
           <nav aria-label="Behind the scenes">
-            <p className="mb-1 px-2.5 text-xs font-medium text-muted-foreground">
+            <p className="mb-1 px-2.5 text-xs font-medium text-muted-foreground collapsed:sr-only">
               Behind the scenes
             </p>
+            <div
+              aria-hidden
+              className="mx-2 mb-2 hidden border-t collapsed:block"
+            />
             <ul className="grid gap-0.5">
               {SYSTEM.map((n) => (
                 <li key={n.href}>
@@ -598,9 +691,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </ul>
           </nav>
         </div>
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2.5">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2.5 collapsed:flex-col collapsed:items-center collapsed:gap-1 collapsed:px-2">
           <LiveStatus />
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 collapsed:flex-col">
             <AwakeStatus />
             <ThemeToggle />
           </div>
