@@ -456,6 +456,9 @@ fn print_server(c: &mut Context, m: &McpServer) -> Result<()> {
                 .join(" ");
             printf(c, format_args!("  env:        {env}\n"))?;
         }
+        if let Some(line) = crate::browser::describe(m, &crate::browser::Workspace::from_env()) {
+            printf(c, format_args!("  browser:    {line}\n"))?;
+        }
     } else {
         printf(c, format_args!("  url:        {}\n", m.url))?;
     }
@@ -1641,6 +1644,94 @@ mod tests {
         assert_eq!(v["info"]["name"], "fake-mcp");
         assert_eq!(v["tools"].as_array().unwrap().len(), 3);
         assert_eq!(v["server"]["last_check_ok"], true);
+    }
+
+    /// A Playwright registration starts with pulse's browser defaults in
+    /// its environment and in the caller's working directory, and `pulse
+    /// mcp show` says so; the fake reports what it got.
+    #[test]
+    fn a_playwright_server_starts_headless_in_the_workspace_with_the_artifacts_folder() {
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FAKE_SERVER.replace(
+            r#"\"text\":\"token=$FAKE_TOKEN other=$OTHER\""#,
+            r#"\"text\":\"cwd=$(pwd) headless=$PLAYWRIGHT_MCP_HEADLESS isolated=$PLAYWRIGHT_MCP_ISOLATED out=$PLAYWRIGHT_MCP_OUTPUT_DIR paths=$PLAYWRIGHT_MCP_FILE_PATHS\""#,
+        );
+        assert_ne!(fake, FAKE_SERVER);
+        // Named like the global binary so pulse treats it as Playwright.
+        let script = write_script(dir.path(), "playwright-mcp", &fake);
+        let (mut c, out) = ctx_for(&s, false);
+        run_cmd(
+            &mut c,
+            "mcp",
+            &[
+                "add",
+                "--name",
+                "playwright",
+                "--transport",
+                "stdio",
+                "--command",
+                script.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        out.clear();
+
+        // The command line: the artifacts folder of the environment.
+        let art = dir.path().join("artifacts");
+        std::fs::create_dir_all(&art).unwrap();
+        let before = std::env::var_os(crate::browser::ARTIFACTS_ENV);
+        unsafe { std::env::set_var(crate::browser::ARTIFACTS_ENV, &art) };
+        let r = run_cmd(&mut c, "mcp", &["call", "playwright", "whoami"]);
+        let shown = run_cmd(&mut c, "mcp", &["show", "playwright"]);
+        match before {
+            Some(v) => unsafe { std::env::set_var(crate::browser::ARTIFACTS_ENV, v) },
+            None => unsafe { std::env::remove_var(crate::browser::ARTIFACTS_ENV) },
+        }
+        r.unwrap();
+        shown.unwrap();
+        let text = out.string();
+        assert!(text.contains("headless=1 isolated=1"), "{text}");
+        assert!(
+            text.contains(&format!("out={} paths=absolute", art.display())),
+            "{text}"
+        );
+        assert!(
+            text.contains("pulse starts it headless, a fresh profile each start"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("screenshots and snapshots in {}", art.display())),
+            "{text}"
+        );
+        out.clear();
+
+        // A caller that knows the workspace (the harness): the server runs
+        // in that directory and writes to its output folder.
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let server = s.mcp_server_by_id("MCP-001").unwrap();
+        let ws = crate::browser::Workspace {
+            cwd: Some(work.clone()),
+            output_dir: Some(dir.path().join("shots")),
+        };
+        let wire = crate::prepare_in(&server, &crate::resolver(&s.home), &ws).unwrap();
+        assert_eq!(wire.cwd.as_deref(), Some(work.as_path()));
+        let mut cl =
+            crate::Client::connect_with(&server, wire, std::time::Duration::from_secs(20)).unwrap();
+        let got = cl.call_tool("whoami", serde_json::json!({})).unwrap();
+        let text = crate::content_text(&got.content);
+        let want_cwd = std::fs::canonicalize(&work).unwrap();
+        assert!(
+            text.contains(&format!("cwd={}", want_cwd.display()))
+                || text.contains(&format!("cwd={}", work.display())),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("out={}", dir.path().join("shots").display())),
+            "{text}"
+        );
     }
 
     #[test]

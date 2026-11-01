@@ -33,6 +33,8 @@ import {
   InfoIcon,
   ListChecksIcon,
   LoaderCircleIcon,
+  LockIcon,
+  LockOpenIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   PaperclipIcon,
@@ -88,9 +90,16 @@ import {
   SkeletonRows,
 } from "@/components/pulse/panel";
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
-import { BackButton, Split } from "@/components/chat/split";
+import { BackButton, Pane, Split } from "@/components/chat/split";
 import { MicButton } from "@/components/chat/mic";
 import { TaskView } from "@/components/chat/task-view";
+import {
+  LOCKDOWN_BADGE,
+  LOCKDOWN_BAR,
+  lockdownFlipMessage,
+  lockdownHint,
+  lockdownOf,
+} from "@/components/chat/lockdown-state";
 import type {
   ChatArtifact,
   ChatAttachment,
@@ -1054,6 +1063,9 @@ export function ChatPageClient() {
   );
   const opened = !!(id || task);
 
+  // One Split for the page, whatever is open: the list inside it stays
+  // mounted across conversations, so opening one leaves the list where it
+  // was - scrolled, folded, unmoved - instead of drawing it anew.
   return (
     <div
       className={cn(
@@ -1099,41 +1111,39 @@ export function ChatPageClient() {
           The conversation list did not load.
         </ErrorNotice>
       ) : null}
-      {task ? (
-        <TaskView
-          key={task}
-          id={task}
-          list={listNode}
-          onBack={() => openTask(null)}
-          onGone={() => openTask(null)}
-        />
-      ) : id ? (
-        <ConversationView
-          key={id}
-          id={id}
-          seed={current}
-          projects={projects.data}
-          list={listNode}
-          onBack={() => open(null)}
-          onGone={() => open(null)}
-        />
-      ) : (
-        <Split
-          list={listNode}
-          listOnMobile
-          main={
-            <NewConversation
-              projects={projects.data}
-              onCreated={(c) => open(c.id)}
-              onTaskCreated={(t) => openTask(t)}
-              busyElsewhere={
-                rows.filter((c) => (c.live?.status || c.status) === "running")
-                  .length
-              }
-            />
-          }
-        />
-      )}
+      <Split list={listNode} listOnMobile={!opened} fill={opened}>
+        {task ? (
+          <TaskView
+            key={task}
+            id={task}
+            onBack={() => openTask(null)}
+            onGone={() => openTask(null)}
+          />
+        ) : id ? (
+          <ConversationView
+            key={id}
+            id={id}
+            seed={current}
+            projects={projects.data}
+            onBack={() => open(null)}
+            onGone={() => open(null)}
+          />
+        ) : (
+          <Pane
+            main={
+              <NewConversation
+                projects={projects.data}
+                onCreated={(c) => open(c.id)}
+                onTaskCreated={(t) => openTask(t)}
+                busyElsewhere={
+                  rows.filter((c) => (c.live?.status || c.status) === "running")
+                    .length
+                }
+              />
+            }
+          />
+        )}
+      </Split>
     </div>
   );
 }
@@ -1446,6 +1456,7 @@ function ConversationItem({
 }) {
   const m = moodOf(c);
   const live = (c.live?.status || c.status) === "running";
+  const sealed = lockdownOf(c, c.live);
   const childActive = subs.some((k) => k.id === current);
   const framed = active || childActive;
   return (
@@ -1458,7 +1469,10 @@ function ConversationItem({
           "grid min-w-0 gap-0 overflow-hidden rounded-xl border bg-card transition-colors",
           framed ? "border-primary/50 shadow-card" : "",
           m.tone === "wait" && !framed && "border-warn/50",
+          sealed && "lockdown-surface",
+          sealed && framed && "border-lock",
         )}
+        data-lockdown={sealed || undefined}
       >
         <button
           type="button"
@@ -1478,6 +1492,13 @@ function ConversationItem({
             <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
               {c.title || "Untitled"}
             </span>
+            {sealed ? (
+              <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
+                <LockIcon className="size-3" aria-hidden />
+                <span className="sr-only">{LOCKDOWN_BADGE}</span>
+                <span aria-hidden>Lockdown</span>
+              </span>
+            ) : null}
             {m.tone === "wait" ? (
               <ShieldQuestionIcon
                 className="size-3.5 shrink-0 text-warn attn rounded-full"
@@ -1536,6 +1557,12 @@ function ConversationItem({
                     <span className="min-w-0 flex-1 truncate text-foreground">
                       {k.title || "Untitled"}
                     </span>
+                    {lockdownOf(k, k.live) ? (
+                      <LockIcon
+                        className="lockdown-mark size-3.5 shrink-0 text-lock"
+                        aria-label={LOCKDOWN_BADGE}
+                      />
+                    ) : null}
                     {km.tone === "wait" ? (
                       <ShieldQuestionIcon
                         className="size-3.5 shrink-0 text-warn attn rounded-full"
@@ -1592,6 +1619,7 @@ function NewConversation({
   const [model, setModel] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [auto, setAuto] = useState(true);
+  const [lockdown, setLockdown] = useState(false);
   const [busy, setBusy] = useState(false);
   const list = (projects?.projects ?? []).filter(
     (p) => p.status !== "inactive",
@@ -1642,6 +1670,7 @@ function NewConversation({
         text: t,
         project: project === LET_AGENT_DECIDE ? "" : project,
         auto_approve: auto,
+        lockdown,
         model,
         reasoning,
       });
@@ -1817,6 +1846,38 @@ function NewConversation({
                       </span>
                     </span>
                   </label>
+                  <label
+                    className={cn(
+                      "flex items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-sm text-foreground transition-colors",
+                      lockdown && "lockdown-surface border-lock",
+                    )}
+                    data-testid="new-lockdown"
+                  >
+                    <Switch
+                      checked={lockdown}
+                      onCheckedChange={setLockdown}
+                      aria-label="Lockdown (sandbox) mode"
+                    />
+                    <span className="grid">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        {lockdown ? (
+                          <LockIcon
+                            className="lockdown-mark size-3.5 text-lock"
+                            aria-hidden
+                          />
+                        ) : (
+                          <LockOpenIcon
+                            className="size-3.5 text-muted-foreground"
+                            aria-hidden
+                          />
+                        )}
+                        Lockdown (sandbox)
+                      </span>
+                      <span className="max-w-xs text-xs text-muted-foreground">
+                        {lockdownHint(lockdown)}
+                      </span>
+                    </span>
+                  </label>
                 </>
               )}
               <Button
@@ -1895,14 +1956,12 @@ function ConversationView({
   id,
   seed,
   projects,
-  list,
   onBack,
   onGone,
 }: {
   id: string;
   seed?: Conversation;
   projects?: ProjectsPayload;
-  list: ReactNode;
   onBack: () => void;
   onGone: () => void;
 }) {
@@ -2039,8 +2098,7 @@ function ConversationView({
 
   if (error && !d) {
     return (
-      <Split
-        list={list}
+      <Pane
         main={
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
@@ -2054,8 +2112,7 @@ function ConversationView({
   }
   if (!d) {
     return (
-      <Split
-        list={list}
+      <Pane
         main={
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
@@ -2069,7 +2126,6 @@ function ConversationView({
     <ConversationBody
       d={d}
       projects={projects}
-      list={list}
       onBack={onBack}
       apply={apply}
       pull={pull}
@@ -2093,7 +2149,6 @@ function mergeMessages(
 function ConversationBody({
   d,
   projects,
-  list,
   onBack,
   apply,
   pull,
@@ -2102,7 +2157,6 @@ function ConversationBody({
 }: {
   d: Loaded;
   projects?: ProjectsPayload;
-  list: ReactNode;
   onBack: () => void;
   apply: (r: { conversation: Conversation }) => void;
   pull: () => Promise<void>;
@@ -2115,6 +2169,8 @@ function ConversationBody({
   const running = live.status === "running";
   const waiting = live.status === "waiting" && !!live.pending;
   const archived = c.status === "archived";
+  // Lockdown (sandbox) mode: the live word follows a flip at once.
+  const sealed = lockdownOf(c, live);
   // Finished by the agent or the owner; the composer stays open since a
   // message reopens it.
   const closed = live.status === "closed";
@@ -2127,7 +2183,6 @@ function ConversationBody({
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
-  const endRef = useRef<HTMLDivElement | null>(null);
   const [stick, setStick] = useState(true);
   const scroller = useRef<HTMLDivElement | null>(null);
   const models = useApi<HarnessModelsResponse>("harness/models", {
@@ -2175,8 +2230,10 @@ function ConversationBody({
     ":" +
     (d.steps[d.sessionId]?.length ?? 0);
   useEffect(() => {
-    if (stick)
-      endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // The transcript's own box scrolls, not the page: scrollIntoView on
+    // an end marker would also pull every overflowing ancestor along.
+    const el = scroller.current;
+    if (stick && el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [lastKey, stick]);
 
   const act = async (
@@ -2291,6 +2348,40 @@ function ConversationBody({
         />
         Auto
       </label>
+      <label
+        className={cn(
+          "flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors",
+          sealed
+            ? "border-lock bg-lock/10 text-lock"
+            : "border-border/70 bg-background/60 text-muted-foreground",
+        )}
+        title={
+          sealed
+            ? "Lockdown (sandbox) is on: " + lockdownHint(true)
+            : "Lockdown (sandbox) is off: " + lockdownHint(false)
+        }
+        data-testid="lockdown-toggle"
+      >
+        <Switch
+          size="sm"
+          checked={sealed}
+          disabled={archived || !!busy}
+          onCheckedChange={(on) =>
+            void act(
+              "lockdown",
+              () => writes.chatLockdown(c.id, on),
+              lockdownFlipMessage(on, running || waiting),
+            )
+          }
+          aria-label="Lockdown (sandbox) mode"
+        />
+        {sealed ? (
+          <LockIcon className="lockdown-mark size-3" aria-hidden />
+        ) : (
+          <LockOpenIcon className="size-3" aria-hidden />
+        )}
+        Lockdown
+      </label>
       {running || waiting ? (
         <Button
           type="button"
@@ -2314,15 +2405,28 @@ function ConversationBody({
           "enter grid min-w-0 gap-2 rounded-2xl border bg-card px-4 py-3 shadow-card transition-colors",
           mood.tone === "wait" && "surface-you",
           running && "border-primary/40",
+          sealed && "lockdown-surface lockdown-scan",
         )}
+        data-lockdown={sealed || undefined}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-          <PulseMascot
-            mood={mood.pip}
-            size={44}
-            className={cn("shrink-0", running && "float")}
-            title={mood.word}
-          />
+          {sealed ? (
+            <span className="lockdown-ring shrink-0" aria-hidden>
+              <PulseMascot
+                mood={mood.pip}
+                size={44}
+                className={cn("shrink-0", running && "float")}
+                title={mood.word}
+              />
+            </span>
+          ) : (
+            <PulseMascot
+              mood={mood.pip}
+              size={44}
+              className={cn("shrink-0", running && "float")}
+              title={mood.word}
+            />
+          )}
           <div className="grid min-w-[14rem] flex-1 gap-0.5">
             {editing ? (
               <form
@@ -2363,6 +2467,13 @@ function ConversationBody({
                 >
                   {c.title || "Untitled"}
                 </span>
+                {sealed ? (
+                  <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
+                    <LockIcon className="size-3" aria-hidden />
+                    <span className="sr-only">{LOCKDOWN_BADGE}</span>
+                    <span aria-hidden>Lockdown</span>
+                  </span>
+                ) : null}
                 <PencilIcon
                   className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
                   aria-hidden
@@ -2478,6 +2589,19 @@ function ConversationBody({
             </Button>
           ) : null}
         </div>
+        {sealed ? (
+          <p
+            className="flex min-w-0 items-start gap-2 rounded-lg border border-lock bg-lock/[0.07] px-3 py-1.5 text-xs text-foreground"
+            role="status"
+            data-testid="lockdown-bar"
+          >
+            <LockIcon
+              className="lockdown-mark mt-px size-3.5 shrink-0 text-lock"
+              aria-hidden
+            />
+            <span className="min-w-0">{LOCKDOWN_BAR}</span>
+          </p>
+        ) : null}
       </header>
       {error ? (
         <Notice tone="warn">{"Live updates paused: " + error}</Notice>
@@ -2498,7 +2622,12 @@ function ConversationBody({
         </Notice>
       ) : null}
 
-      <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1">
+      <div
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1",
+          sealed && "border-lock",
+        )}
+      >
         <div
           aria-hidden
           className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-card to-transparent"
@@ -2509,7 +2638,10 @@ function ConversationBody({
             const el = e.currentTarget;
             setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
           }}
-          className="relative max-h-[calc(100dvh-24rem)] min-h-[20rem] min-w-0 flex-1 overflow-y-auto px-3 py-5 sm:px-6 sm:py-6 lg:max-h-none lg:min-h-0"
+          className={cn(
+            "relative max-h-[calc(100dvh-24rem)] min-h-[20rem] min-w-0 flex-1 overflow-y-auto px-3 py-5 sm:px-6 sm:py-6 lg:max-h-none lg:min-h-0",
+            sealed && "lockdown-field",
+          )}
           role="log"
           aria-live="polite"
           aria-label="Transcript"
@@ -2543,7 +2675,6 @@ function ConversationBody({
               ))}
             </ul>
           ) : null}
-          <div ref={endRef} />
         </div>
         {!stick ? (
           <button
@@ -2622,9 +2753,7 @@ function ConversationBody({
     />
   );
 
-  return (
-    <Split list={list} main={section} fill wide={ctl.wide} panel={canvas} />
-  );
+  return <Pane main={section} wide={ctl.wide} panel={canvas} />;
 }
 
 function TurnClock({ since }: { since: string }) {
@@ -3286,6 +3415,7 @@ function Composer({
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const running = live.status === "running" || live.status === "waiting";
+  const sealed = lockdownOf(conversation, live);
   const canSend = (!!text.trim() || picked.length > 0) && !busy && !disabled;
 
   // Dictated words go where the caret is (or over the selection), and the
@@ -3360,6 +3490,8 @@ function Composer({
         className={cn(
           "grid min-w-0 gap-2 rounded-2xl border bg-card p-2 shadow-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25",
           over && "border-primary ring-3 ring-primary/25",
+          sealed &&
+            "border-lock focus-within:border-lock focus-within:ring-lock/20",
         )}
       >
         {picked.length ? (
@@ -3500,6 +3632,12 @@ function Composer({
         {conversation.cwd ? (
           <span className="min-w-0 truncate" title={conversation.cwd}>
             Working in <code className="font-mono">{conversation.cwd}</code>.
+          </span>
+        ) : null}
+        {sealed ? (
+          <span className="inline-flex items-center gap-1 text-lock">
+            <LockIcon className="size-3" aria-hidden /> In lockdown: only work
+            inside the sandbox.
           </span>
         ) : null}
       </p>

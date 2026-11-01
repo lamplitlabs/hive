@@ -1,14 +1,25 @@
 //! Context compaction: when a run's prompt grows past a share of the
-//! model's context window, the older part of the conversation is replaced
-//! by a summary the same model writes, and the run goes on with the
+//! model's context window, or the request it is about to send past the
+//! bytes the provider will take, the older part of the conversation is
+//! replaced by a summary the model writes, and the run goes on with the
 //! summary plus the most recent messages. The system prompt and the task
 //! always stay.
 
-use pulse_provider::{Message, Request, Role};
+use pulse_provider::{Message, Request, Role, Tool};
 
 /// Percent of the context window a prompt may use before compaction
-/// (the `harness.compact_at` setting; 0 turns compaction off).
-pub const DEFAULT_COMPACT_AT: i32 = 70;
+/// (the `harness.compact_at` setting; 0 turns compaction off). Half the
+/// window: past it every call re-reads a long history for little gain,
+/// and the providers that bill per token charge for all of it each time.
+pub const DEFAULT_COMPACT_AT: i32 = 50;
+
+/// MiB one request may run to before the conversation is compacted,
+/// whatever the token count says (the `provider.max_request_mb` setting;
+/// 0 turns the size trigger off). The Copilot gateway times out reading
+/// a body of about 1.5 MiB and more (`Timed out reading request body. Try
+/// again, or use a smaller request size.`, HTTP 408), far under the 70%
+/// of a 1M-token window the token trigger alone would wait for.
+pub const DEFAULT_MAX_REQUEST_MB: f64 = 1.0;
 
 /// The most recent messages compaction never touches.
 pub const COMPACT_KEEP_RECENT: usize = 6;
@@ -22,8 +33,12 @@ pub const COMPACT_MARKER: &str = "[Earlier conversation compacted]";
 /// Characters of one message kept in the transcript the summarizer reads.
 pub const COMPACT_MESSAGE_LIMIT: usize = 3000;
 
-/// Characters of the whole transcript the summarizer reads.
-pub const COMPACT_TRANSCRIPT_LIMIT: usize = 400_000;
+/// Characters of the whole transcript the summarizer reads: about 30,000
+/// tokens, forty messages at their limit. The oldest part is cut first
+/// and the earlier summary, which carries it, always travels whole, so a
+/// cut loses little; the summary call stays cheap and quick instead of
+/// re-reading up to 100,000 tokens of history each time.
+pub const COMPACT_TRANSCRIPT_LIMIT: usize = 120_000;
 
 /// Tokens the summary may run to.
 pub const COMPACT_SUMMARY_TOKENS: i32 = 4000;
@@ -38,6 +53,57 @@ pub fn should_compact(compact_at: i32, context_window: i32, last_prompt_tokens: 
     }
     let threshold = (f64::from(context_window) * f64::from(compact_at.min(100)) / 100.0) as i32;
     last_prompt_tokens > threshold
+}
+
+/// The byte budget of one request for a `provider.max_request_mb` value:
+/// 0 (or less, or not a number) turns the size trigger off.
+pub fn request_budget_bytes(max_request_mb: f64) -> usize {
+    if !max_request_mb.is_finite() || max_request_mb <= 0.0 {
+        return 0;
+    }
+    (max_request_mb * 1024.0 * 1024.0) as usize
+}
+
+/// About how many bytes a request of `msgs` and `tools` takes on the wire:
+/// every message's text, tool-call arguments and images, the tool schemas,
+/// and a little per field for the JSON around them. The vendors' shapes
+/// differ from this by a few percent, not more; the estimate is there to
+/// compact before a gateway refuses the body, not to bill by it.
+pub fn estimate_request_bytes(msgs: &[Message], tools: &[Tool]) -> usize {
+    const MESSAGE_OVERHEAD: usize = 48;
+    const TOOL_CALL_OVERHEAD: usize = 80;
+    const IMAGE_OVERHEAD: usize = 64;
+    const TOOL_OVERHEAD: usize = 64;
+    let messages: usize = msgs
+        .iter()
+        .map(|m| {
+            MESSAGE_OVERHEAD
+                + m.content.len()
+                + m.name.len()
+                + m.tool_call_id.len()
+                + m.tool_calls
+                    .iter()
+                    .map(|c| TOOL_CALL_OVERHEAD + c.id.len() + c.name.len() + c.arguments.len())
+                    .sum::<usize>()
+                + m.images
+                    .iter()
+                    .map(|i| IMAGE_OVERHEAD + i.media_type.len() + i.data.len())
+                    .sum::<usize>()
+        })
+        .sum();
+    let tools: usize = tools
+        .iter()
+        .map(|t| {
+            TOOL_OVERHEAD + t.name.len() + t.description.len() + t.parameters.to_string().len()
+        })
+        .sum();
+    messages + tools
+}
+
+/// True when a request of `bytes` is past `budget` ([`request_budget_bytes`];
+/// 0 is off): the run should compact before sending it.
+pub fn over_request_budget(bytes: usize, budget: usize) -> bool {
+    budget > 0 && bytes > budget
 }
 
 /// Where the kept tail starts: the latest assistant turn that leaves at
@@ -285,6 +351,65 @@ mod tests {
         assert!(!should_compact(70, 0, 999), "no window known");
         assert!(!should_compact(70, 1000, 0), "no measurement yet");
         assert!(should_compact(150, 1000, 1001), "capped at 100 percent");
+        assert_eq!(DEFAULT_COMPACT_AT, 50);
+    }
+
+    #[test]
+    fn the_request_budget_is_mebibytes_and_zero_is_off() {
+        assert_eq!(request_budget_bytes(1.0), 1024 * 1024);
+        assert_eq!(request_budget_bytes(0.5), 512 * 1024);
+        assert_eq!(request_budget_bytes(DEFAULT_MAX_REQUEST_MB), 1024 * 1024);
+        assert_eq!(request_budget_bytes(0.0), 0);
+        assert_eq!(request_budget_bytes(-2.0), 0);
+        assert_eq!(request_budget_bytes(f64::NAN), 0);
+        assert!(over_request_budget(1024 * 1024 + 1, 1024 * 1024));
+        assert!(!over_request_budget(1024 * 1024, 1024 * 1024));
+        assert!(!over_request_budget(usize::MAX, 0), "0 is off");
+    }
+
+    #[test]
+    fn the_size_estimate_counts_text_calls_images_and_tools() {
+        let msgs = conversation();
+        let text: usize = msgs
+            .iter()
+            .map(|m| {
+                m.content.len()
+                    + m.tool_calls
+                        .iter()
+                        .map(|c| c.arguments.len())
+                        .sum::<usize>()
+            })
+            .sum();
+        let plain = estimate_request_bytes(&msgs, &[]);
+        assert!(plain > text, "{plain} covers the JSON around {text} chars");
+        assert!(plain < text + 200 * msgs.len(), "{plain} is not far over");
+        // A big observation moves the estimate by about its size.
+        let mut big = msgs.clone();
+        big[3].content.push_str(&"x".repeat(100_000));
+        let grown = estimate_request_bytes(&big, &[]);
+        assert!(
+            (100_000..100_010).contains(&(grown - plain)),
+            "{}",
+            grown - plain
+        );
+        // So does an image: its base64 travels in the body.
+        let mut shot = msgs.clone();
+        shot[1].images.push(pulse_provider::ImageContent {
+            media_type: "image/png".into(),
+            data: "A".repeat(50_000),
+        });
+        let with_image = estimate_request_bytes(&shot, &[]);
+        assert!(with_image - plain >= 50_000, "{}", with_image - plain);
+        // And the tool schemas, which ride every request.
+        let tool = Tool {
+            name: "bash".into(),
+            description: "Runs a command.".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"the command"}}}),
+        };
+        let with_tool = estimate_request_bytes(&msgs, std::slice::from_ref(&tool));
+        let schema = tool.parameters.to_string().len() + tool.name.len() + tool.description.len();
+        assert!(with_tool - plain >= schema, "{}", with_tool - plain);
+        assert_eq!(estimate_request_bytes(&[], &[]), 0);
     }
 
     #[test]

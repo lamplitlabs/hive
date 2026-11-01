@@ -1238,9 +1238,22 @@ pub(crate) fn worker_command_as(
             cmd.extend([flag.into(), rules.replace('\n', ",")]);
         }
     }
-    let compact_at = s.setting("harness.compact_at", "70");
-    if compact_at != "70" {
-        cmd.extend(["--compact-at".into(), compact_at]);
+    // The compaction knobs travel only when they depart from the defaults
+    // the harness has anyway, so a remote hand without the store compacts
+    // the way the hub does.
+    for (setting, flag) in [
+        ("harness.compact_at", "--compact-at"),
+        ("provider.max_request_mb", "--max-request-mb"),
+        ("harness.compact_model", "--compact-model"),
+    ] {
+        let default = pulse_store::HARNESS_SETTINGS
+            .get(setting)
+            .cloned()
+            .unwrap_or_default();
+        let value = s.setting(setting, "");
+        if value.trim() != default.trim() {
+            cmd.extend([flag.into(), value]);
+        }
     }
     let reasoning = s.run_reasoning_class(kind, model_class);
     if !reasoning.is_empty() && reasoning != "default" {
@@ -2234,6 +2247,8 @@ mod tests {
             "--web-search",
             "--fetch-allow",
             "--compact-at",
+            "--max-request-mb",
+            "--compact-model",
             "--reasoning",
             "--allow-tool",
             "--deny-tool",
@@ -2249,6 +2264,8 @@ mod tests {
         set_setting(&s, "harness.web_search", "on");
         set_setting(&s, "harness.fetch_allow", "docs.rs, *.rust-lang.org");
         set_setting(&s, "harness.compact_at", "0");
+        set_setting(&s, "provider.max_request_mb", "0.5");
+        set_setting(&s, "harness.compact_model", "cheap-1");
         set_setting(&s, "harness.reasoning", "high");
         set_setting(&s, "harness.deny_tools", "bash(rm *)\nwrite(*.lock)");
         let (cmd, _) = worker_command(&s, "task", "brief text", "/tmp/clone", "", true);
@@ -2297,6 +2314,14 @@ mod tests {
             cmd.windows(2).any(|w| w == ["--compact-at", "0"]),
             "{cmd:?}"
         );
+        assert!(
+            cmd.windows(2).any(|w| w == ["--max-request-mb", "0.5"]),
+            "{cmd:?}"
+        );
+        assert!(
+            cmd.windows(2).any(|w| w == ["--compact-model", "cheap-1"]),
+            "{cmd:?}"
+        );
         for key in [
             "harness.skills",
             "harness.hooks",
@@ -2308,7 +2333,11 @@ mod tests {
         set_setting(&s, "harness.web_search", "chat");
         set_setting(&s, "harness.teach", "off");
         set_setting(&s, "harness.fetch_allow", "");
-        set_setting(&s, "harness.compact_at", "70");
+        // The registry's own defaults, set explicitly, travel no more than
+        // an unset row does.
+        set_setting(&s, "harness.compact_at", "50");
+        set_setting(&s, "provider.max_request_mb", "1");
+        set_setting(&s, "harness.compact_model", "");
         set_setting(&s, "harness.reasoning", "default");
         set_setting(&s, "harness.deny_tools", "");
         // Back at the defaults a remote hand gets the same argv behind `pulse`.

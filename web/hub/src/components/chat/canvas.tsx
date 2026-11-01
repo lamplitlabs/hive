@@ -90,6 +90,7 @@ import {
 } from "@/lib/canvas";
 import { useApi } from "@/lib/use-api";
 import { num, plural, span } from "@/lib/format";
+import { revealIn } from "@/lib/scroll";
 import { cn } from "@/lib/utils";
 
 // ----- the state --------------------------------------------------------------
@@ -267,11 +268,14 @@ export function Canvas({
   // only their icons; the one in front always has its name.
   const stripWidth = useWidth(strip);
   const compact = stripWidth > 0 && stripWidth < ctl.tabs.length * 104;
-  // The tab in front stays in view when the strip overflows.
+  // The tab in front stays in view when the strip overflows. Scrolled on
+  // the strip alone: scrollIntoView would also scroll every ancestor that
+  // overflows, and on a desktop the canvas sits in a column that shares
+  // its scroller with the conversations list, which must not move.
   useEffect(() => {
-    strip.current
-      ?.querySelector<HTMLElement>('[data-active="true"]')
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const el = strip.current;
+    const tab = el?.querySelector<HTMLElement>('[data-active="true"]');
+    if (el && tab) revealIn(el, tab, "nearest", "auto", "x");
   }, [ctl.active]);
 
   return (
@@ -707,9 +711,9 @@ function FileTab({
   const loaded = !!file.data;
   useEffect(() => {
     if (!loaded || mode !== "file" || !target) return;
-    box.current
-      ?.querySelector<HTMLElement>('[data-line="' + target + '"]')
-      ?.scrollIntoView({ block: "center" });
+    const el = box.current;
+    const line = el?.querySelector<HTMLElement>('[data-line="' + target + '"]');
+    if (el && line) revealIn(el, line, "center");
   }, [loaded, mode, target, edits]);
   const gone = !!file.error && !file.data;
   const showDiff = mode === "diff" || (gone && !!df);

@@ -112,7 +112,7 @@ export function AwakeStatus({ compact }: { compact?: boolean }) {
           data-holding={v.holding}
           className={cn(
             "awake-cup inline-flex items-center gap-1.5 rounded-lg text-[13px] text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
-            compact ? "size-10 justify-center" : "h-8 px-2",
+            compact ? "size-10 justify-center" : "h-8 px-2 collapsed:size-8 collapsed:justify-center collapsed:px-0",
           )}
         >
           <span className="relative inline-flex size-[18px] items-center justify-center" aria-hidden>
@@ -125,7 +125,7 @@ export function AwakeStatus({ compact }: { compact?: boolean }) {
               </span>
             ) : null}
           </span>
-          {compact ? null : <span>{v.holding ? "Awake" : v.waiting ? "Awake: battery" : "Awake: off"}</span>}
+          {compact ? null : <span className="collapsed:sr-only">{v.holding ? "Awake" : v.waiting ? "Awake: battery" : "Awake: off"}</span>}
         </Link>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">

@@ -260,7 +260,7 @@ fn ui_check(s: &Shape) -> String {
         _ => "the project's dev server (see dev-setup)",
     };
     let screenshot = if s.tools.contains("playwright") {
-        "Open the page with the playwright tool: `pulse mcp call playwright browser_navigate --args '{\"url\":\"http://127.0.0.1:PORT/\"}'`, then `pulse mcp call playwright browser_take_screenshot --args '{\"filename\":\"check.png\"}'` and read `browser_console_messages`.".to_string()
+        "Open the page with the playwright tool: `pulse mcp call playwright browser_navigate --args '{\"url\":\"http://127.0.0.1:PORT/\"}'`, then `pulse mcp call playwright browser_take_screenshot --args '{\"filename\":\"check.png\"}'` and read `browser_console_messages`. PULSE starts the browser headless (Chrome, Edge or Chromium, whichever this machine has); a screenshot taken without a filename lands in the conversation's artifacts folder (`$PULSE_ARTIFACTS`), where the owner sees it in the hub.".to_string()
     } else {
         "Screenshot it headless: `npx -y playwright screenshot --viewport-size 1280,900 --wait-for-timeout 2000 http://127.0.0.1:PORT/ check.png` (a playwright tool connection makes this a tool call; `pulse toolkit` suggests it).".to_string()
     };

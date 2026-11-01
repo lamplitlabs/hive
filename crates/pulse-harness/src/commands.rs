@@ -1,7 +1,7 @@
 use crate::agents::{
     AgentDef, load_agent_specs, model_allowed, standing_instructions, withheld_tools,
 };
-use crate::compact::DEFAULT_COMPACT_AT;
+use crate::compact::{DEFAULT_COMPACT_AT, DEFAULT_MAX_REQUEST_MB, request_budget_bytes};
 use crate::fetch::FetchPolicy;
 use crate::harness::*;
 use crate::hooks::load_hooks;
@@ -219,6 +219,16 @@ pub(crate) fn add_agent_flags(fs: &mut FlagSet) {
         -1,
         "percent of the context window at which the conversation is summarised and compacted; 0 turns it off; overrides harness.compact_at",
     );
+    fs.float64_var(
+        "max-request-mb",
+        -1.0,
+        "MiB one request may run to before the conversation is compacted, whatever the token count says; 0 leaves it to the tokens; overrides provider.max_request_mb",
+    );
+    fs.string_var(
+        "compact-model",
+        "",
+        "model that writes the compaction summaries; empty means the run's own; overrides harness.compact_model",
+    );
     fs.bool_var(
         "read-only",
         false,
@@ -323,6 +333,10 @@ pub(crate) struct PrepareOpts {
     pub(crate) memory: String,
     /// Variables added to the agent's environment (`NAME=value`).
     pub(crate) env: Vec<String>,
+    /// Lockdown (sandbox) mode ([`crate::lockdown`]): the commands run
+    /// under the OS sandbox, the tools that leave the machine are not
+    /// offered, and no MCP server is attached.
+    pub(crate) lockdown: Option<crate::lockdown::Lockdown>,
 }
 
 /// The key the session's memory file is named by: the project's slug when
@@ -745,6 +759,24 @@ pub(crate) fn prepare_agent_with(
             s.setting_int("harness.compact_at") as i32
         }),
     };
+    // The flag, then the setting; a run without a store takes the default,
+    // so a remote hand compacts by size the way the hub does.
+    let max_request_bytes = request_budget_bytes(match fs.get_f64("max-request-mb") {
+        mb if mb >= 0.0 => mb,
+        _ => st.as_ref().map_or(DEFAULT_MAX_REQUEST_MB, |s| {
+            s.setting_float("provider.max_request_mb")
+        }),
+    });
+    let compact_model = {
+        let flag = fs.get_string("compact-model").trim().to_string();
+        if flag.is_empty() {
+            st.as_ref()
+                .map(|s| s.setting("harness.compact_model", "").trim().to_string())
+                .unwrap_or_default()
+        } else {
+            flag
+        }
+    };
     let read_only = fs.get_bool("read-only") || agent_spec.as_ref().is_some_and(|a| a.read_only);
     let reasoning = {
         let flag = fs.get_string("reasoning").trim().to_lowercase();
@@ -797,6 +829,8 @@ pub(crate) fn prepare_agent_with(
         memory: memory_text,
         subagents,
         compact_at,
+        max_request_bytes,
+        compact_model,
         read_only,
         reasoning,
         interactive,
@@ -807,18 +841,18 @@ pub(crate) fn prepare_agent_with(
             .unwrap_or_default(),
         models_allowed,
         max_subagents: agent_spec.as_ref().and_then(|a| a.max_subagents),
+        lockdown: opts.lockdown.clone(),
         ..Config::default()
     };
     if fs.get_int("minutes") > 0 {
         cfg.wall_time = Duration::from_secs(fs.get_int("minutes") as u64 * 60);
     }
+    let local_env =
+        LocalEnv::new(abs_cwd.clone(), Some(env.clone())).with_lockdown(opts.lockdown.clone());
     if !cfg.system_prompt_template.is_empty() {
         cfg.system_prompt = render_prompt(
             &cfg.system_prompt_template,
-            prompt_data(
-                &LocalEnv::new(abs_cwd.clone(), Some(env.clone())).info(),
-                &cfg,
-            ),
+            prompt_data(&local_env.info(), &cfg),
         )
         .map_err(|e| {
             errorf(
@@ -831,12 +865,11 @@ pub(crate) fn prepare_agent_with(
     }
     let trajectory_sink =
         (!trajectory_path.is_empty()).then(|| TrajectorySink::new(c, &trajectory_path));
-    let mut agent = new_shared(
-        p.clone(),
-        Box::new(LocalEnv::new(abs_cwd.clone(), Some(env))),
-        cfg,
-        sinks,
-    );
+    let mut agent = new_shared(p.clone(), Box::new(local_env), cfg, sinks);
+    let locked_down = opts.lockdown.is_some();
+    if let Some(l) = &opts.lockdown {
+        agent.note_at_start(l.describe());
+    }
     for note in agent_notes {
         agent.note_at_start(note);
     }
@@ -868,6 +901,7 @@ pub(crate) fn prepare_agent_with(
         agent.set_memory(m);
     }
     let mcp_on = !bare
+        && !locked_down
         && !fs.get_bool("no-mcp")
         && st
             .as_ref()
@@ -910,13 +944,14 @@ pub(crate) fn prepare_agent_with(
             .map_or_else(String::new, |s| s.setting("harness.fetch_allow", "")),
     };
     let fetch_policy = FetchPolicy::parse(&fetch_allow);
-    if !fetch_policy.is_empty() {
+    if !fetch_policy.is_empty() && !locked_down {
         agent.note_at_start(format!("fetch tool on for {}", fetch_policy.describe()));
         agent.set_fetch_policy(fetch_policy);
     }
     // Conversations search the web by default, since the owner sits by
     // them; jobs do so when the setting says `on`.
-    let web_search_on = !fs.get_bool("no-web-search")
+    let web_search_on = !locked_down
+        && !fs.get_bool("no-web-search")
         && (fs.get_bool("web-search")
             || match st
                 .as_ref()
@@ -1839,8 +1874,46 @@ pub const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Connects the enabled MCP servers of `project` and offers their tools to
 /// the agent. Returns the notes to emit: one per connected server, one per
-/// server that did not answer (the run goes on without it).
+/// server that did not answer (the run goes on without it). A stdio server
+/// runs in the agent's working directory; a browser server (Playwright)
+/// runs headless and writes its screenshots to the agent's artifacts
+/// folder when the environment names one (`PULSE_ARTIFACTS`), so they
+/// reach the owner through the hub instead of landing in the clone.
 pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &str) -> Vec<String> {
+    let ws = mcp_workspace(&agent.cfg.cwd, &agent.cfg.env);
+    attach_mcp_servers_in(agent, s, project, home, &ws)
+}
+
+/// The value of `name` in an agent's `NAME=value` environment lines, the
+/// last one when it is set twice.
+fn env_value(env: &[String], name: &str) -> Option<String> {
+    env.iter()
+        .rev()
+        .find_map(|kv| kv.strip_prefix(&format!("{name}=")))
+        .map(ToOwned::to_owned)
+}
+
+/// Where the MCP servers of a run work: what the agent's environment says
+/// (see `pulse_mcp::Workspace::from_vars`: a conversation's artifacts
+/// folder, a job's own `TMPDIR` - never the clone, whose stragglers the
+/// harness ends after each command), else the agent's own directory.
+pub(crate) fn mcp_workspace(cwd: &str, env: &[String]) -> pulse_mcp::Workspace {
+    let ws = pulse_mcp::Workspace::from_vars(|k| env_value(env, k));
+    pulse_mcp::Workspace {
+        cwd: ws
+            .cwd
+            .or_else(|| (!cwd.is_empty()).then(|| PathBuf::from(cwd))),
+        ..ws
+    }
+}
+
+fn attach_mcp_servers_in(
+    agent: &mut Agent,
+    s: &Store,
+    project: &str,
+    home: &str,
+    ws: &pulse_mcp::Workspace,
+) -> Vec<String> {
     let mut notes = Vec::new();
     let servers = match s.mcp_servers_for(project) {
         Ok(v) => v,
@@ -1851,7 +1924,7 @@ pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &st
     }
     let resolver = pulse_mcp::resolver(home);
     for server in servers {
-        let connected = pulse_mcp::prepare(&server, &resolver)
+        let connected = pulse_mcp::prepare_in(&server, &resolver, ws)
             .and_then(|wire| pulse_mcp::Client::connect_with(&server, wire, MCP_CONNECT_TIMEOUT))
             .and_then(|mut cl| {
                 let tools = cl.tools()?;
@@ -1859,8 +1932,11 @@ pub fn attach_mcp_servers(agent: &mut Agent, s: &Store, project: &str, home: &st
             });
         match connected {
             Ok((cl, tools)) => {
+                let browser = pulse_mcp::browser::describe(&server, ws)
+                    .map(|d| format!("; {d}"))
+                    .unwrap_or_default();
                 notes.push(format!(
-                    "MCP server {} connected: {} tool{} offered as mcp__{}__<tool>",
+                    "MCP server {} connected: {} tool{} offered as mcp__{}__<tool>{browser}",
                     server.name,
                     tools.len(),
                     if tools.len() == 1 { "" } else { "s" },
@@ -3640,6 +3716,123 @@ mod tests {
         assert!(traj.steps.last().is_some_and(|s| s.kind == StepKind::Exit));
     }
 
+    /// A job's MCP servers run outside the clone: the sweep that ends what a
+    /// command leaves running under the clone must not take them, so a
+    /// tool call after a bash command still reaches the server.
+    #[test]
+    fn harness_run_mcp_servers_survive_the_sweep_after_a_command() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        let work = tempfile::tempdir().unwrap();
+        let clone = work.path().join("job-1");
+        let tmp = work.path().join("job-1.tmp");
+        fs::create_dir_all(&clone).unwrap();
+        fs::create_dir_all(&tmp).unwrap();
+        // A stdio server in POSIX sh that answers initialize, tools/list
+        // and tools/call with where it runs.
+        let script = work.path().join("fake-mcp.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fake-mcp\",\"version\":\"0.1.0\"}}}" ;;
+    *'"method":"notifications/'*) ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"tools\":[{\"name\":\"where\",\"description\":\"Where the server runs\",\"inputSchema\":{\"type\":\"object\"}}]}}" ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"server cwd=$(pwd)\"}]}}" ;;
+    *)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}" ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        s.add_mcp_server(
+            "tester",
+            pulse_store::McpServerInput {
+                name: "fake".into(),
+                transport: "stdio".into(),
+                command: script.display().to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let p = CommandFakeProvider::scripted(vec![
+            call("bash", json!({"command": "echo ran"})),
+            call("mcp__fake__where", json!({})),
+            say("SUMMARY: done\nFINDING: ok"),
+        ]);
+        set_fake_provider(p.clone());
+        let clone_s = clone.canonicalize().unwrap().display().to_string();
+        let _clone = pulse_testutil::setenv("PULSE_CLONE", clone_s.clone());
+        let _job = pulse_testutil::setenv("PULSE_JOB", "job-1");
+        let _tmp = pulse_testutil::setenv("TMPDIR", tmp.display().to_string());
+        // A job has no artifacts folder (this test may run inside a chat).
+        let _art = pulse_testutil::unsetenv("PULSE_ARTIFACTS");
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &[
+                "run",
+                "-p",
+                "do it",
+                "-C",
+                &clone_s,
+                "--provider",
+                FAKE_PROVIDER_NAME,
+                "--session",
+                "hs-mcp-sweep",
+                "--no-skills",
+                "--no-hooks",
+                "--no-instructions",
+                "--quiet",
+            ],
+        );
+        assert!(
+            code == 0 && out.contains("SUMMARY: done"),
+            "run = code {code} stdout {out:?} stderr {stderr:?}"
+        );
+        let (_, steps) = s.harness_session("hs-mcp-sweep").unwrap();
+        let notes: Vec<&str> = steps
+            .iter()
+            .filter(|st| st.kind == StepKind::Note.to_string())
+            .map(|st| st.content.as_str())
+            .collect();
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.starts_with("MCP server fake connected: 1 tool")),
+            "{notes:?}"
+        );
+        let observations: Vec<&str> = steps
+            .iter()
+            .filter(|st| st.kind == StepKind::Observation.to_string())
+            .map(|st| st.content.as_str())
+            .collect();
+        let bash = observations
+            .iter()
+            .find(|o| o.starts_with("ran"))
+            .expect("the bash observation");
+        assert!(
+            !bash.contains("[harness] killed"),
+            "the sweep took the MCP server: {bash}"
+        );
+        let tmp_s = tmp.canonicalize().unwrap().display().to_string();
+        assert!(
+            observations.iter().any(|o| o.contains("server cwd=")
+                && (o.contains(&tmp_s) || o.contains(&tmp.display().to_string()))),
+            "the server runs in the job's TMPDIR and answered after the command: {observations:?}"
+        );
+    }
+
     #[test]
     fn harness_run_uses_stored_prompt_template() {
         let _serial = crate::test_helpers::serial();
@@ -4670,6 +4863,51 @@ mod tests {
         );
         assert_eq!(code, 2);
         assert!(err.contains("no earlier session"), "{err}");
+    }
+
+    #[test]
+    fn the_mcp_workspace_is_the_agents_directory_and_its_output_folder() {
+        let env = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}={v}")).collect()
+        };
+        // A conversation: the servers run in the artifacts folder the hub
+        // shows and write there, not in the worktree.
+        let ws = mcp_workspace(
+            "/w/chat/c1/proj",
+            &env(&[
+                ("TMPDIR", "/var/t"),
+                ("PULSE_ARTIFACTS", "/w/chat/c1/artifacts"),
+            ]),
+        );
+        assert_eq!(ws.cwd, Some(PathBuf::from("/w/chat/c1/artifacts")));
+        assert_eq!(ws.output_dir, Some(PathBuf::from("/w/chat/c1/artifacts")));
+        // The last value wins when a variable is set twice.
+        let ws = mcp_workspace(
+            "/w",
+            &env(&[("PULSE_ARTIFACTS", "/a"), ("PULSE_ARTIFACTS", "/b")]),
+        );
+        assert_eq!(ws.output_dir, Some(PathBuf::from("/b")));
+        // A job: no artifacts folder; the run's own TMPDIR beside the clone,
+        // outside the straggler sweep that ends what lives under the clone.
+        let ws = mcp_workspace(
+            "/w/job-1",
+            &env(&[
+                ("PULSE_JOB", "job-1"),
+                ("PULSE_CLONE", "/w/job-1"),
+                ("TMPDIR", "/w/job-1.tmp"),
+            ]),
+        );
+        assert_eq!(ws.cwd, Some(PathBuf::from("/w/job-1.tmp")));
+        assert_eq!(ws.output_dir, Some(PathBuf::from("/w/job-1.tmp")));
+        // Neither (`pulse harness run` in the owner's own checkout): the
+        // agent's directory, Playwright's default output under it.
+        let ws = mcp_workspace("/home/u/proj", &env(&[("PATH", "/bin")]));
+        assert_eq!(ws.cwd, Some(PathBuf::from("/home/u/proj")));
+        assert_eq!(ws.output_dir, None);
+        assert_eq!(
+            mcp_workspace("", &env(&[])),
+            pulse_mcp::Workspace::default()
+        );
     }
 
     #[test]
