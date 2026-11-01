@@ -3087,6 +3087,23 @@ seconds is noted in the transcript and skipped; the run goes on without it.
 an `mcp` step in the transcript with the arguments it sent and the text the
 server returned.
 
+A stdio server of a run does not start in the clone: a conversation's
+run in its artifacts folder (`$PULSE_ARTIFACTS`, the one the hub shows
+beside the conversation), a job's in the run's own `TMPDIR` beside the
+clone, and `pulse mcp call` from either shell does the same - so what a
+server writes never lands in the checkout, and the sweep that ends what a
+command leaves running under a job's clone leaves the servers alone. A
+Playwright server (`@playwright/mcp`, `playwright-mcp`) also gets, unless
+its registration says otherwise, `--headless`, `--isolated` (a fresh
+profile each start), absolute file paths, that folder as its output
+directory, and the browser this machine has - Chrome, Edge, a Chromium
+such as Brave, or Playwright's own download - instead of Playwright's
+assumption of Chrome; `pulse mcp show playwright` prints the line. So an
+agent's `browser_take_screenshot` lands in the conversation's artifacts
+folder where the owner sees it, and a run on a machine with only Edge
+works out of the box. When the run ends, a stdio server gets its stdin
+closed and a few seconds to shut its browser down before it is killed.
+
 #### Skills as tools
 
 A run finds the clone's skill folders - `.pulse/skills`,
