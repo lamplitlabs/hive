@@ -66,6 +66,7 @@ import {
   type AutomationEntry,
   type AutomationPlace,
   type AutomationProject,
+  type AutomationRepoFile,
   type AutomationSchedule,
   type AutomationsPayload,
 } from "@/lib/api";
@@ -75,10 +76,15 @@ import {
   KIND_WORDS,
   cadenceWords,
   cleanEntry,
+  daemonProblems,
+  entryFromFile,
   entryFromSchedule,
   entryHints,
   everyMinutes,
   fileEntryOf,
+  fileProblems,
+  fileState,
+  inFolder,
   isScriptKind,
   isSlug,
   keptWords,
@@ -93,11 +99,13 @@ import { cn } from "@/lib/utils";
 
 // Automations: the standing jobs of each project - a task, an improvement,
 // a check or a watch that runs on a cadence. The place to keep one is the
-// project's `.pulse/pulse.yaml`, so it travels with the code and a review
-// sees it; this page writes that file (one commit on the default branch,
-// never a push) through the same checks the daemon applies it with. A
-// schedule can also live in the store alone, the way `pulse schedule add`
-// makes one; the page shows both and can move the second kind into the file.
+// project's repository, one file per automation under
+// `.pulse/automations/` (older projects also have a `schedules:` list in
+// `.pulse/pulse.yaml`), so it travels with the code and a review sees it;
+// this page writes those files (one commit on the default branch, never a
+// push) through the same checks the daemon applies them with. A schedule
+// can also live in the store alone, the way `pulse schedule add` makes one;
+// the page shows both and can move the second kind into the repository.
 
 export const refreshAutomations = () =>
   invalidate(
@@ -115,10 +123,14 @@ const CUSTOM = "__custom__";
 type EditTarget = {
   project: AutomationProject;
   entry: AutomationEntry;
-  // repo: the file entry `replace` names; store: the schedule `id` names;
-  // move: a hand-set schedule going into the file.
+  // repo: the repository automation `replace` names (its own file or a list
+  // item); store: the schedule's id names it; move: a hand-set schedule
+  // going into the repository.
   mode: "repo" | "store" | "move";
-  schedule: AutomationSchedule;
+  replace?: string;
+  // The live row, when there is one (a held file has none).
+  schedule: AutomationSchedule | null;
+  title: string;
 };
 
 export function AutomationsPageClient() {
@@ -150,7 +162,7 @@ export function AutomationsPageClient() {
     <div className="min-w-0">
       <PageTitle
         icon={CalendarClockIcon}
-        sub="Standing jobs: a task, a check or a watch that runs on a schedule. Each is kept in the project's PULSE file, so it travels with the code, or set by hand here."
+        sub="Standing jobs: a task, a check or a watch that runs on a schedule. Each is a file in the project's .pulse/automations folder, so it travels with the code, or set by hand here."
         actions={
           <Button onClick={() => setAdding(project || "")}>
             <PlusIcon /> New automation
@@ -212,7 +224,7 @@ export function AutomationsPageClient() {
             >
               {project
                 ? "This project has no standing jobs and no checkout on this machine to keep them in. Register a checkout, or add one that lives in the store."
-                : "A standing job runs on a cadence without anyone asking: a nightly audit, a weekly dependency check, a watch on a page that must stay up. Add one and it is written into the project's PULSE file."}
+                : "A standing job runs on a cadence without anyone asking: a nightly audit, a weekly dependency check, a watch on a page that must stay up. Add one and it is written into the project's repository as .pulse/automations/<name>.yaml."}
             </EmptyState>
             <Terminal />
           </>
@@ -224,13 +236,13 @@ export function AutomationsPageClient() {
                 : plural(total, "live automation") +
                   (inFile === total
                     ? total === 1
-                      ? ", kept in the project's PULSE file."
-                      : ", all kept in the projects' PULSE files."
+                      ? ", kept in the project's repository."
+                      : ", all kept in the projects' repositories."
                     : inFile === 0
                       ? ", all set by hand."
                       : ", " +
                         num(inFile) +
-                        " kept in a PULSE file and " +
+                        " kept in a repository and " +
                         num(total - inFile) +
                         " set by hand.")}{" "}
               The daemon starts each job when its time comes and shows it under
@@ -271,18 +283,21 @@ export function AutomationsPageClient() {
   );
 }
 
-// The terminal side of it, and where the file sits.
+// The terminal side of it, and where the files sit.
 function Terminal() {
   return (
     <Disclosure
-      summary="Prefer the terminal, or the file itself?"
+      summary="Prefer the terminal, or the files themselves?"
       contentClassName="grid max-w-3xl gap-2 text-sm leading-relaxed text-muted-foreground anywhere"
     >
       <p>
-        Every automation is an entry under <Mono>schedules:</Mono> in{" "}
-        <Mono>.pulse/pulse.yaml</Mono> on the project&apos;s default branch.
-        Edit the file and commit; the daemon applies it on its next pass, and{" "}
-        <Mono>pulse manifest check</Mono> says what it would refuse.
+        Every automation is a file{" "}
+        <Mono>.pulse/automations/&lt;name&gt;.yaml</Mono> on the project&apos;s
+        default branch, its fields at the top level; the file&apos;s name is the
+        automation&apos;s. Older projects may also keep a{" "}
+        <Mono>schedules:</Mono> list in <Mono>.pulse/pulse.yaml</Mono>, which
+        still works. Edit a file and commit; the daemon applies it on its next
+        pass, and <Mono>pulse manifest check</Mono> says what it would refuse.
       </p>
       <p>
         From a shell on this machine, a schedule that lives in the store alone:{" "}
@@ -312,8 +327,10 @@ function ProjectGroup({
   const live = rows.filter((s) => s.status !== "ended");
   const ended = rows.filter((s) => s.status === "ended");
   const [showEnded, setShowEnded] = useState(false);
-  const fileProblems = p.file?.problems ?? [];
-  const appliedProblems = p.applied?.problems ?? [];
+  const listProblems = p.file?.problems ?? [];
+  const otherProblems = daemonProblems(p);
+  const files = p.automations?.files ?? [];
+  const dir = p.automations?.dir ?? ".pulse/automations";
   return (
     <section className="grid min-w-0 gap-3" aria-label={p.name || p.slug}>
       <SectionHeading
@@ -331,27 +348,14 @@ function ProjectGroup({
           {p.name || p.slug}
         </Link>
       </SectionHeading>
-      {fileProblems.length ? (
+      {listProblems.length ? (
         <Notice tone="warn">
           <p className="font-medium">
             {p.file?.path ?? ".pulse/pulse.yaml"} has problems the daemon will
             not apply:
           </p>
           <ul className="mt-1 list-disc pl-4">
-            {fileProblems.map((x) => (
-              <li key={x} className="anywhere">
-                {x}
-              </li>
-            ))}
-          </ul>
-        </Notice>
-      ) : appliedProblems.length && !p.file ? (
-        <Notice tone="warn">
-          <p className="font-medium">
-            The daemon&apos;s last pass over the repository found problems:
-          </p>
-          <ul className="mt-1 list-disc pl-4">
-            {appliedProblems.map((x) => (
+            {listProblems.map((x) => (
               <li key={x} className="anywhere">
                 {x}
               </li>
@@ -359,12 +363,29 @@ function ProjectGroup({
           </ul>
         </Notice>
       ) : null}
+      {otherProblems.length ? (
+        <Notice tone="warn">
+          <p className="font-medium">
+            The daemon&apos;s last pass over the repository found problems:
+          </p>
+          <ul className="mt-1 list-disc pl-4">
+            {otherProblems.map((x) => (
+              <li key={x} className="anywhere">
+                {x}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
+      {files.length ? (
+        <RepoFiles p={p} dir={dir} files={files} onEdit={onEdit} />
+      ) : null}
       {live.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {p.repo
             ? "Nothing live. Add one and it goes into " +
-              (p.file?.path ?? ".pulse/pulse.yaml") +
-              " on " +
+              dir +
+              "/ on " +
               p.repo.branch +
               "."
             : "Nothing live, and no checkout on this machine to keep a file in."}
@@ -394,28 +415,40 @@ function ProjectGroup({
   );
 }
 
-// Where the file stands, in a line: the path, the branch, how many entries,
-// when the daemon last applied it.
+// Where the repository stands, in a line: the folder and how many files,
+// the list file if there is one, when the daemon last applied them.
 function FileLine({ p }: { p: AutomationProject }) {
   if (!p.repo) return <span>No checkout on this machine</span>;
-  if (!p.file)
+  const files = p.automations?.files ?? [];
+  const dir = p.automations?.dir ?? ".pulse/automations";
+  if (!files.length && !p.file)
     return (
       <span>
-        No <Mono>.pulse/pulse.yaml</Mono> on {p.repo.branch} yet
+        No <Mono>{dir}/</Mono> on {p.repo.branch} yet
       </span>
     );
-  const n = p.file.entries?.length ?? 0;
+  const n = p.file?.entries?.length ?? 0;
   return (
     <span className="inline-flex flex-wrap items-center gap-x-1.5">
       <FileCode2Icon className="size-3.5" aria-hidden />
-      <Mono>{p.file.path}</Mono>
+      {files.length ? (
+        <>
+          <Mono>{dir}/</Mono>
+          <span>{plural(files.length, "file")}</span>
+        </>
+      ) : null}
+      {p.file ? (
+        <>
+          {files.length ? <span aria-hidden>·</span> : null}
+          <Mono>{p.file.path}</Mono>
+          <span>
+            {p.file.entries
+              ? plural(n, "entry").replace("entrys", "entries")
+              : "unreadable"}
+          </span>
+        </>
+      ) : null}
       <span>on {p.repo.branch}</span>
-      <span aria-hidden>·</span>
-      <span>
-        {p.file.entries
-          ? plural(n, "entry").replace("entrys", "entries")
-          : "unreadable"}
-      </span>
       {p.applied?.at ? (
         <>
           <span aria-hidden>·</span>
@@ -425,6 +458,120 @@ function FileLine({ p }: { p: AutomationProject }) {
         </>
       ) : null}
     </span>
+  );
+}
+
+// The project's automation files, one line each: what the file says, where
+// it stands, and a way into the form. A held file (one the daemon leaves
+// alone) has no card below, so this is where its problems show.
+function RepoFiles({
+  p,
+  dir,
+  files,
+  onEdit,
+}: {
+  p: AutomationProject;
+  dir: string;
+  files: AutomationRepoFile[];
+  onEdit: (t: EditTarget) => void;
+}) {
+  return (
+    <div className="rounded-xl border bg-muted/20 text-sm">
+      <p className="flex items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
+        <FolderGit2Icon className="size-3.5" aria-hidden />
+        <Mono>{dir}/</Mono>
+        <span>
+          on {p.repo?.branch ?? "the default branch"} · one file per automation
+        </span>
+      </p>
+      <ul className="divide-y">
+        {files.map((f) => {
+          const st = fileState(p, f);
+          const problems = fileProblems(p, f);
+          const e = f.entry;
+          const tone =
+            st.state === "live"
+              ? "ok"
+              : st.state === "held"
+                ? "bad"
+                : st.state === "paused"
+                  ? "warn"
+                  : "neutral";
+          return (
+            <li
+              key={f.path}
+              className="grid gap-1 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+            >
+              <div className="min-w-0">
+                <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                  <span title={f.path}>
+                    <Mono className="text-[13px]">{f.name}.yaml</Mono>
+                  </span>
+                  <ToneBadge
+                    tone={tone}
+                    dot
+                    title={"The daemon's view of " + f.path}
+                  >
+                    {st.words}
+                  </ToneBadge>
+                  {e ? (
+                    <span className="text-xs text-muted-foreground">
+                      {cadenceWords(e.every, e.at)}
+                      {" · " + (KIND_WORDS[e.kind || "task"]?.label ?? e.kind)}
+                      {e.skill ? (
+                        <>
+                          {" · skill "}
+                          <Mono className="text-[11px]">{e.skill}</Mono>
+                        </>
+                      ) : e.script ? (
+                        <>
+                          {" · runs "}
+                          <Mono className="text-[11px]">{e.script}</Mono>
+                        </>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </p>
+                {e?.title && e.title !== f.name ? (
+                  <p className="truncate text-xs text-muted-foreground">
+                    {e.title}
+                  </p>
+                ) : null}
+                {problems.length ? (
+                  <ul className="mt-1 list-disc pl-4 text-xs text-warn">
+                    {problems.map((x) => (
+                      <li key={x} className="anywhere">
+                        {x}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+              {e ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="justify-self-end"
+                  onClick={() =>
+                    onEdit({
+                      project: p,
+                      entry: entryFromFile(e),
+                      mode: "repo",
+                      replace: f.name,
+                      schedule: st.row,
+                      title: e.title || f.name,
+                    })
+                  }
+                  title={"Edit " + f.path}
+                >
+                  <PencilIcon /> Edit
+                </Button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -491,13 +638,21 @@ function ScheduleCard({
   };
   const edit = () => {
     if (fromFile && fileEntry)
-      onEdit({ project: p, entry: fileEntry, mode: "repo", schedule: s });
+      onEdit({
+        project: p,
+        entry: fileEntry,
+        mode: "repo",
+        replace: s.origin_name,
+        schedule: s,
+        title: s.title,
+      });
     else
       onEdit({
         project: p,
         entry: entryFromSchedule(s),
         mode: "store",
         schedule: s,
+        title: s.title,
       });
   };
   const move = () =>
@@ -506,6 +661,7 @@ function ScheduleCard({
       entry: entryFromSchedule(s),
       mode: "move",
       schedule: s,
+      title: s.title,
     });
   return (
     <ItemCard className={cn(!live && "opacity-70")} ariaLabel={s.title}>
@@ -580,7 +736,7 @@ function ScheduleCard({
             <PencilIcon className="size-3.5" aria-hidden />
           )}
           {keptWords(s)}
-          {fromFile && s.origin_name ? (
+          {fromFile && s.origin_name && !inFolder(s.origin_path) ? (
             <Mono className="text-[11px]">#{s.origin_name}</Mono>
           ) : null}
         </span>
@@ -666,9 +822,9 @@ function ScheduleCard({
               variant="ghost"
               onClick={move}
               disabled={!!busy}
-              title="Write it into the project's PULSE file, so it travels with the code"
+              title="Write it into the project's repository as its own file, so it travels with the code"
             >
-              <FileCode2Icon /> Into the file
+              <FileCode2Icon /> Into the repository
             </Button>
           ) : null}
           <Button
@@ -688,8 +844,9 @@ function ScheduleCard({
         title={"End " + s.title + "?"}
         description={
           fromFile && fileEntry
-            ? "Its entry is removed from " +
-              s.origin_path +
+            ? (inFolder(s.origin_path)
+                ? "Its file " + s.origin_path + " is removed"
+                : "Its entry is removed from " + s.origin_path) +
               " on " +
               (p.repo?.branch ?? "the default branch") +
               " in one commit (nothing is pushed), and the schedule ends. Jobs it already started finish."
@@ -755,6 +912,7 @@ type CheckState = {
   warning: string;
   path: string;
   branch: string;
+  form: "file" | "list";
 } | null;
 
 function AutomationForm({
@@ -827,10 +985,9 @@ function AutomationForm({
       project,
       entry: clean,
       where: where ?? ("repo" as const),
-      replace:
-        mode === "repo" ? target?.schedule.origin_name || undefined : undefined,
-      id: mode === "store" ? target?.schedule.id : undefined,
-      move: mode === "move" ? target?.schedule.id : undefined,
+      replace: mode === "repo" ? target?.replace || undefined : undefined,
+      id: mode === "store" ? target?.schedule?.id : undefined,
+      move: mode === "move" ? target?.schedule?.id : undefined,
     }),
     [project, clean, where, mode, target],
   );
@@ -899,7 +1056,7 @@ function AutomationForm({
           (mode === "new"
             ? " added."
             : mode === "move"
-              ? " is in the file."
+              ? " is in the repository."
               : " saved."),
         { id: tid, description, duration: 8000 },
       );
@@ -931,7 +1088,11 @@ function AutomationForm({
     try {
       await navigator.clipboard.writeText(text);
       toast.success("YAML copied.", {
-        description: "Paste it under schedules: in .pulse/pulse.yaml.",
+        description: check?.path
+          ? check.form === "list"
+            ? "Paste it under schedules: in " + check.path + "."
+            : "Save it as " + check.path + "."
+          : "Save it as .pulse/automations/<name>.yaml.",
       });
     } catch {
       toast.error("Couldn't copy. Select the text and copy it by hand.");
@@ -942,8 +1103,8 @@ function AutomationForm({
     mode === "new"
       ? "New automation"
       : mode === "move"
-        ? "Move " + target?.schedule.title + " into the file"
-        : "Edit " + target?.schedule.title;
+        ? "Move " + target?.title + " into the repository"
+        : "Edit " + target?.title;
   const skills = p?.options.skills ?? [];
   const agents = p?.options.agents ?? [];
   const everyValue = customEvery
@@ -958,13 +1119,13 @@ function AutomationForm({
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>
           {mode === "new"
-            ? "A job that runs on a cadence. Written into the project's PULSE file with one commit on its default branch (nothing is pushed), or kept in the store on this machine."
+            ? "A job that runs on a cadence. Written into the project's repository as .pulse/automations/<name>.yaml with one commit on its default branch (nothing is pushed), or kept in the store on this machine."
             : mode === "move"
-              ? "The schedule becomes an entry of the project's PULSE file, committed on its default branch (nothing is pushed); the hand-set copy ends."
+              ? "The schedule becomes a file of the project's .pulse/automations folder, committed on its default branch (nothing is pushed); the hand-set copy ends."
               : where === "repo"
                 ? "Saved as a new commit on " +
                   (p?.repo?.branch ?? "the default branch") +
-                  " (nothing is pushed); the daemon applies it on its next pass."
+                  " (nothing is pushed); the daemon applies it at once."
                 : "Saved in the store on this machine, the way pulse schedule would."}
         </DialogDescription>
       </DialogHeader>
@@ -992,9 +1153,9 @@ function AutomationForm({
               </Select>
               <p className="text-xs text-muted-foreground">
                 {p?.repo
-                  ? "Its file: " +
-                    (p.file?.path ?? ".pulse/pulse.yaml") +
-                    " on " +
+                  ? "Its automations: " +
+                    (p.automations?.dir ?? ".pulse/automations") +
+                    "/ on " +
                     p.repo.branch +
                     "."
                   : p
@@ -1046,7 +1207,7 @@ function AutomationForm({
               </p>
             </div>
             <div className="grid content-start gap-1.5">
-              <Label htmlFor="auto-name">Name in the file</Label>
+              <Label htmlFor="auto-name">Name</Label>
               <Input
                 id="auto-name"
                 value={e.name}
@@ -1063,7 +1224,8 @@ function AutomationForm({
                 )}
               />
               <p className="text-xs text-muted-foreground">
-                Lowercase, digits and dashes. Unique in the file.
+                Lowercase, digits and dashes; the file is named after it. Unique
+                in the project.
               </p>
             </div>
           </div>
@@ -1329,8 +1491,10 @@ function AutomationForm({
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-medium">
               {where === "store"
-                ? "As the file would say it"
-                : "What goes into the file"}
+                ? "As a file would say it"
+                : check?.form === "list"
+                  ? "What goes into the list"
+                  : "What goes into the file"}
             </p>
             <Button
               size="sm"
@@ -1356,8 +1520,17 @@ function AutomationForm({
           </pre>
           {check?.path ? (
             <p className="text-xs text-muted-foreground">
-              Under <Mono>schedules:</Mono> in <Mono>{check.path}</Mono> on{" "}
-              {check.branch || "the default branch"}.
+              {check.form === "list" ? (
+                <>
+                  Under <Mono>schedules:</Mono> in <Mono>{check.path}</Mono> on{" "}
+                  {check.branch || "the default branch"}.
+                </>
+              ) : (
+                <>
+                  As <Mono>{check.path}</Mono> on{" "}
+                  {check.branch || "the default branch"}.
+                </>
+              )}
             </p>
           ) : null}
           {problems.length &&
@@ -1421,7 +1594,7 @@ function AutomationForm({
                 ) : (
                   <FileCode2Icon />
                 )}{" "}
-                Add to the file
+                Add to the repository
               </Button>
             </>
           ) : (
@@ -1439,7 +1612,7 @@ function AutomationForm({
                 <CheckIcon />
               )}
               {mode === "move"
-                ? "Move into the file"
+                ? "Move into the repository"
                 : where === "repo"
                   ? "Commit the change"
                   : "Save"}

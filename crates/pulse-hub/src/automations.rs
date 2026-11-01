@@ -1,9 +1,10 @@
 //! `/api/v1/automations`: the standing jobs of every project in one place -
-//! the ones its `.pulse/pulse.yaml` keeps and the ones set by hand - and
-//! the form that writes a new one. The console composes a YAML entry; this
-//! module checks it with the code the daemon applies the file with
-//! (`pulse_tasks::manifest`, `pulse_tasks::schedules`), commits it to the
-//! project's default branch without touching any work in progress, and
+//! the ones its repository keeps, one file each under `.pulse/automations/`
+//! (or an item of the older `.pulse/pulse.yaml` list), and the ones set by
+//! hand - and the form that writes a new one. The console composes a YAML
+//! entry; this module checks it with the code the daemon applies the files
+//! with (`pulse_tasks::manifest`, `pulse_tasks::schedules`), commits it to
+//! the project's default branch without touching any work in progress, and
 //! applies it at once with `manifest::sync`. Nothing is pushed: the commit
 //! travels with the owner's next push like any other.
 
@@ -23,9 +24,6 @@ use pulse_tasks::schedules::{self, Schedule, ScheduleInput};
 use serde_json::{Value, json};
 
 const ACTIONS: &[&str] = &["pause", "resume", "end", "run"];
-
-/// The file a project without one gets.
-const DEFAULT_PATH: &str = ".pulse/pulse.yaml";
 
 /// The identity a commit carries when the repository names none.
 const FALLBACK_IDENTITY: (&str, &str) = ("PULSE", "pulse@localhost");
@@ -310,20 +308,19 @@ impl Handler {
     }
 }
 
-/// Whether the project's file on its default branch still names `name`.
+/// Whether the project's repository, on its default branch, still holds
+/// an automation named `name` - its own file or an item of the list.
 fn file_holds(store: &pulse_store::Store, project: &str, name: &str) -> bool {
     match manifest::repo_of(store, project) {
-        Ok(Some((repo, branch, _))) => read_file(&repo, &branch)
-            .map(|f| f.entry(name).is_some())
-            .unwrap_or(false),
+        Ok(Some((repo, branch, _))) => RepoView::read(&repo, &branch).holder(name).is_some(),
         _ => false,
     }
 }
 
 /// One project's automations as the console lists them: its schedules
-/// (with the cadence in words), the file on its default branch as it is
-/// now, what the daemon last applied, and the names the form can offer.
-/// `None` for a project with neither schedules nor a checkout here.
+/// (with the cadence in words), the files on its default branch as they
+/// are now, what the daemon last applied, and the names the form can
+/// offer. `None` for a project with neither schedules nor a checkout here.
 fn project_view(
     store: &pulse_store::Store,
     p: &pulse_store::Project,
@@ -333,13 +330,13 @@ fn project_view(
     if rows.is_empty() && repo.is_none() {
         return Ok(None);
     }
-    let file = match &repo {
-        Some((path, branch, _)) => read_file(path, branch).map(|f| f.json()),
-        None => None,
-    };
+    let view = repo
+        .as_ref()
+        .map(|(path, branch, _)| RepoView::read(path, branch));
     let applied = manifest::status(store, &p.slug)?.map(|st| {
         json!({
             "path": st.path,
+            "files": st.files,
             "commit": st.commit,
             "at": st.at,
             "problems": st.problems,
@@ -371,7 +368,8 @@ fn project_view(
             "branch": branch,
             "commit": commit.chars().take(12).collect::<String>(),
         })),
-        "file": file,
+        "file": view.as_ref().and_then(|v| v.list.as_ref()).map(RepoFile::json),
+        "automations": view.as_ref().map(RepoView::files_json),
         "applied": applied,
         "schedules": rows.iter().map(schedule_json).collect::<Vec<_>>(),
         "options": {"skills": skills, "agents": agents},
@@ -403,10 +401,7 @@ fn schedule_json(s: &Schedule) -> Value {
 
 /// The file path in a schedule's `origin` (`repo:<path>#<name>`).
 fn origin_path(origin: &str) -> Option<&str> {
-    origin
-        .strip_prefix(pulse_store::REPO_ORIGIN)?
-        .split_once('#')
-        .map(|(path, _)| path)
+    manifest::origin_parts(origin).map(|(path, _)| path)
 }
 
 /// The cadence as the console says it: "every day at 02:00 UTC", "every
@@ -435,7 +430,8 @@ pub(crate) fn every_words(minutes: i64, at: &str) -> String {
     words
 }
 
-/// The file of the default branch, read the way the daemon reads it.
+/// The list file of the default branch (`.pulse/pulse.yaml`), read the way
+/// the daemon reads it.
 struct RepoFile {
     path: String,
     text: String,
@@ -476,8 +472,8 @@ impl RepoFile {
     }
 }
 
-/// `None` when the branch has no PULSE file.
-fn read_file(repo: &str, branch: &str) -> Option<RepoFile> {
+/// `None` when the branch has no list file.
+fn read_list(repo: &str, branch: &str) -> Option<RepoFile> {
     let path = manifest::MANIFEST_PATHS.iter().copied().find(|p| {
         git(
             repo,
@@ -526,6 +522,94 @@ fn read_file(repo: &str, branch: &str) -> Option<RepoFile> {
     })
 }
 
+/// Where an automation lives on the branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holder {
+    /// An item of the list file.
+    List,
+    /// Its own file, by index in `RepoView::files`.
+    File(usize),
+}
+
+/// What the default branch keeps: the list file, when there is one, and
+/// the per-automation files of `.pulse/automations/`, each with the
+/// problems the daemon would report on it.
+struct RepoView {
+    list: Option<RepoFile>,
+    files: Vec<manifest::AutomationFile>,
+}
+
+impl RepoView {
+    fn read(repo: &str, branch: &str) -> RepoView {
+        let list = read_list(repo, branch);
+        let mut files = manifest::read_automations(repo, branch);
+        for f in &mut files {
+            let Some(e) = &f.entry else {
+                continue;
+            };
+            if let Some(l) = &list
+                && l.entry(&f.name).is_some()
+            {
+                f.problems.push(format!(
+                    "named in both {} and {}; keep one of them",
+                    l.path, f.path
+                ));
+            }
+            f.problems.extend(
+                manifest::static_problems(&Manifest {
+                    needs: None,
+                    schedules: vec![e.clone()],
+                })
+                .iter()
+                .map(|p| strip_label(p)),
+            );
+        }
+        RepoView { list, files }
+    }
+
+    /// Where `name` lives, if anywhere: its own file first (a name in both
+    /// is a problem the daemon holds), else the list.
+    fn holder(&self, name: &str) -> Option<Holder> {
+        if let Some(i) = self.files.iter().position(|f| f.name == name) {
+            return Some(Holder::File(i));
+        }
+        self.list.as_ref()?.entry(name).map(|_| Holder::List)
+    }
+
+    /// The path that holds `name`.
+    fn path_of(&self, name: &str) -> Option<&str> {
+        match self.holder(name)? {
+            Holder::List => self.list.as_ref().map(|l| l.path.as_str()),
+            Holder::File(i) => Some(self.files[i].path.as_str()),
+        }
+    }
+
+    /// Every name the branch holds: the list's, then the files'.
+    fn names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.list.as_ref().map(RepoFile::names).unwrap_or_default();
+        for f in &self.files {
+            if !out.contains(&f.name) {
+                out.push(f.name.clone());
+            }
+        }
+        out
+    }
+
+    /// The `automations` key of a project: the folder and its files.
+    fn files_json(&self) -> Value {
+        json!({
+            "dir": manifest::AUTOMATIONS_DIR,
+            "files": self.files.iter().map(|f| json!({
+                "path": f.path,
+                "name": f.name,
+                "text": f.text,
+                "entry": f.entry,
+                "problems": f.problems,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// What the console sends: the entry, where it goes, and what it replaces.
 struct Draft {
     entry: Entry,
@@ -556,7 +640,7 @@ impl Draft {
             (
                 "entry is not a schedule".to_string(),
                 e.to_string(),
-                "The entry takes the fields of a .pulse/pulse.yaml schedule: name, title, every, at, kind, brief, skill, script, job_kind, tier, priority, run_as, times, paused.".to_string(),
+                "The entry takes the fields of an automation: name, title, every, at, kind, brief, skill, script, job_kind, tier, priority, run_as, times, paused.".to_string(),
             )
         })?;
         for field in [
@@ -587,7 +671,7 @@ impl Draft {
             Some(other) => {
                 return Err((
                     format!("where {other:?} is not a place"),
-                    "An automation is kept in the repository's .pulse/pulse.yaml or in the store."
+                    "An automation is kept in the repository (.pulse/automations/<name>.yaml) or in the store."
                         .to_string(),
                     "Send where: \"repo\" or where: \"store\".".to_string(),
                 ));
@@ -608,8 +692,14 @@ struct Checked {
     yaml: String,
     problems: Vec<String>,
     warning: String,
-    /// The file as it is on the branch, when the draft goes there.
-    file: Option<RepoFile>,
+    /// Where the entry goes on the branch: its own file under
+    /// `.pulse/automations/`, or the list file when it replaces an item
+    /// there. The file form's path for a store-kept draft, as a preview.
+    path: String,
+    /// `yaml` is an item of the list file at `path`, not a whole file.
+    in_list: bool,
+    /// The branch as it is, when the draft goes there.
+    view: Option<RepoView>,
     repo: Option<(String, String, String)>,
 }
 
@@ -619,7 +709,8 @@ impl Checked {
             "yaml": self.yaml,
             "problems": self.problems,
             "warning": self.warning,
-            "path": self.file.as_ref().map(|f| f.path.as_str()).unwrap_or(DEFAULT_PATH),
+            "path": self.path,
+            "form": if self.in_list { "list" } else { "file" },
             "branch": self.repo.as_ref().map(|(_, b, _)| b.as_str()).unwrap_or(""),
         })
     }
@@ -639,28 +730,23 @@ fn check_draft(
             "No project {project:?}\n  why: it is not registered in this store\n  fix: pick a project of the list"
         );
     };
-    let yaml = yaml_item(&draft.entry, 2);
+    let name = draft.entry.name.as_str();
     let mut problems = Vec::new();
     let mut warning = String::new();
-    let parsed = match manifest::parse(&format!("schedules:\n{yaml}")) {
-        Ok(m) => Some(m),
-        Err(e) => {
-            problems.push(format!("the entry does not read back as YAML: {e}"));
-            None
-        }
-    };
-    let (repo, file) = if draft.in_repo {
+    let mut path = manifest::automation_path(name);
+    let mut in_list = false;
+    let (repo, view) = if draft.in_repo {
         let repo = manifest::repo_of(store, &p.slug)?;
         match &repo {
             None => {
                 problems.push(if p.path.trim().is_empty() || !Path::new(&p.path).is_dir() {
                     format!(
-                        "{} has no checkout on this machine, so its file cannot be written here; keep the automation in the store instead",
+                        "{} has no checkout on this machine, so its files cannot be written here; keep the automation in the store instead",
                         p.slug
                     )
                 } else {
                     format!(
-                        "{} has no {} branch in {}, so its file cannot be written here; keep the automation in the store instead",
+                        "{} has no {} branch in {}, so its files cannot be written here; keep the automation in the store instead",
                         p.slug,
                         default_branch(&p),
                         p.path
@@ -668,41 +754,60 @@ fn check_draft(
                 });
                 (None, None)
             }
-            Some((path, branch, _)) => {
-                let file = read_file(path, branch);
-                if let Some(f) = &file {
-                    if f.manifest.is_none() {
-                        problems.extend(f.problems.iter().cloned());
-                        problems.push(format!(
-                            "fix {} by hand before the console writes to it",
-                            f.path
-                        ));
-                    }
-                    let names = f.names();
-                    let name = draft.entry.name.as_str();
-                    match &draft.replace {
-                        Some(old) if !names.iter().any(|n| n == old) => problems.push(format!(
-                            "{} has no entry named `{old}` to replace",
-                            f.path
-                        )),
-                        Some(old) if old != name && names.iter().any(|n| n == name) => problems
-                            .push(format!(
-                                "{} already has an entry named `{name}`; pick another name",
-                                f.path
-                            )),
-                        None if names.iter().any(|n| n == name) => problems.push(format!(
-                            "{} already has an entry named `{name}`; edit that one or pick another name",
-                            f.path
-                        )),
-                        _ => {}
-                    }
-                } else if draft.replace.is_some() {
+            Some((dir, branch, _)) => {
+                let view = RepoView::read(dir, branch);
+                // A list file that does not read may hold any name: nothing
+                // is written beside it until it does.
+                if let Some(l) = &view.list
+                    && l.manifest.is_none()
+                {
+                    problems.extend(l.problems.iter().cloned());
                     problems.push(format!(
-                        "{} has no PULSE file on {branch}, so there is nothing to replace",
-                        p.slug
+                        "fix {} by hand before the console writes to the repository",
+                        l.path
                     ));
                 }
-                (repo, file)
+                let taken = |problems: &mut Vec<String>| {
+                    if let Some(held) = view.path_of(name) {
+                        problems.push(format!(
+                            "`{name}` is already an automation ({held}); pick another name"
+                        ));
+                    }
+                };
+                match &draft.replace {
+                    Some(old) => match view.holder(old) {
+                        None => problems.push(format!(
+                            "{} on {branch} has no automation named `{old}` to replace",
+                            p.slug
+                        )),
+                        Some(Holder::List) => {
+                            in_list = true;
+                            path = view
+                                .list
+                                .as_ref()
+                                .map(|l| l.path.clone())
+                                .unwrap_or_default();
+                            if old != name {
+                                taken(&mut problems);
+                            }
+                        }
+                        Some(Holder::File(i)) => {
+                            if old == name {
+                                path = view.files[i].path.clone();
+                            } else {
+                                taken(&mut problems);
+                            }
+                        }
+                    },
+                    None => {
+                        if let Some(held) = view.path_of(name) {
+                            problems.push(format!(
+                                "{held} already holds an automation named `{name}`; edit that one or pick another name"
+                            ));
+                        }
+                    }
+                }
+                (repo, Some(view))
             }
         }
     } else {
@@ -712,8 +817,8 @@ fn check_draft(
                     problems.push(format!("{id} belongs to {}, not {}", s.project, p.slug));
                 }
                 Ok(s) if s.from_repo() => problems.push(format!(
-                    "{id} is kept by {}; edit the file entry instead",
-                    origin_path(&s.origin).unwrap_or("the project's PULSE file")
+                    "{id} is kept by {}; edit it there",
+                    origin_path(&s.origin).unwrap_or("the repository")
                 )),
                 Ok(s) if s.status == "ended" => {
                     problems.push(format!("{id} has ended; add a new automation instead"));
@@ -736,16 +841,38 @@ fn check_draft(
         }
         (None, None)
     };
-    if let Some(m) = parsed {
-        let statics = manifest::static_problems(&m);
+    // The YAML as it will be written, read back the way the daemon reads it.
+    let yaml = if in_list {
+        yaml_item(&draft.entry, 2)
+    } else {
+        yaml_file(&draft.entry)
+    };
+    let parsed = if in_list {
+        match manifest::parse(&format!("schedules:\n{yaml}")) {
+            Ok(m) => m.schedules.into_iter().next(),
+            Err(e) => {
+                problems.push(format!("the entry does not read back as YAML: {e}"));
+                None
+            }
+        }
+    } else {
+        match manifest::parse_automation(name, &yaml) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                problems.push(format!("the file does not read back as YAML: {e}"));
+                None
+            }
+        }
+    };
+    if let Some(e) = parsed {
+        let statics = manifest::static_problems(&Manifest {
+            needs: None,
+            schedules: vec![e.clone()],
+        });
         let held = !statics.is_empty();
-        problems.extend(statics.into_iter().map(|p| strip_label(&p)));
-        if !held && let Some(e) = m.schedules.first() {
-            let path = file
-                .as_ref()
-                .map(|f| f.path.as_str())
-                .unwrap_or(DEFAULT_PATH);
-            let mut input = e.input(&p.slug, path, pulse_store::HUMAN_AGENT);
+        problems.extend(statics.iter().map(|p| strip_label(p)));
+        if !held {
+            let mut input = e.input(&p.slug, &path, pulse_store::HUMAN_AGENT);
             if !draft.in_repo {
                 input.origin = String::new();
             }
@@ -759,7 +886,9 @@ fn check_draft(
         yaml,
         problems,
         warning,
-        file,
+        path,
+        in_list,
+        view,
         repo,
     })
 }
@@ -795,7 +924,7 @@ fn write_store(
     draft: &Draft,
     who: &str,
 ) -> anyhow::Result<Schedule> {
-    let mut input: ScheduleInput = draft.entry.input(project, DEFAULT_PATH, who);
+    let mut input: ScheduleInput = draft.entry.input(project, "", who);
     input.origin = String::new();
     let sched = match &draft.id {
         Some(id) => schedules::update(store, id, &input, who)?.0,
@@ -811,8 +940,10 @@ fn write_store(
     Ok(sched)
 }
 
-/// Writes the draft into the file on the default branch - appended, or in
-/// place of the entry it replaces - commits it and applies the file.
+/// Writes the draft to the default branch - its own file under
+/// `.pulse/automations/`, or in place of the list item it replaces -
+/// commits it and applies the files. A rename moves the file in the same
+/// commit.
 fn write_repo(
     store: &pulse_store::Store,
     project: &str,
@@ -820,41 +951,70 @@ fn write_repo(
     checked: &Checked,
     who: &str,
 ) -> anyhow::Result<Value> {
-    let Some((repo, branch, _)) = &checked.repo else {
+    let (Some((repo, branch, _)), Some(view)) = (&checked.repo, &checked.view) else {
         anyhow::bail!(
-            "No checkout of {project} here\n  why: the file lives in the repository, which this machine has no checkout of\n  fix: keep the automation in the store instead"
+            "No checkout of {project} here\n  why: the files live in the repository, which this machine has no checkout of\n  fix: keep the automation in the store instead"
         );
     };
-    let (path, old_text) = match &checked.file {
-        Some(f) => (f.path.clone(), f.text.clone()),
-        None => (DEFAULT_PATH.to_string(), String::new()),
-    };
-    let indent = list_span(&old_text).map(|s| s.item_indent).unwrap_or(2);
-    let item = yaml_item(&draft.entry, indent);
-    let new_text = match &draft.replace {
-        Some(old) => replace_item(&old_text, old, &item)?,
-        None => append_item(&old_text, &item)?,
-    };
-    let mut expect: BTreeSet<String> = checked
-        .file
-        .as_ref()
-        .map(|f| f.names().into_iter().collect())
-        .unwrap_or_default();
-    if let Some(old) = &draft.replace {
-        expect.remove(old);
-    }
-    expect.insert(draft.entry.name.clone());
-    verify_names(&path, &new_text, &expect)?;
     let name = &draft.entry.name;
-    let message = match &draft.replace {
-        Some(old) if old == name => format!("pulse: update schedule {name} in {path}"),
-        Some(old) => format!("pulse: replace schedule {old} with {name} in {path}"),
-        None => format!("pulse: add schedule {name} to {path}"),
+    let path = checked.path.clone();
+    // What the commit changes: a text to write, or `None` to remove.
+    let mut changes: Vec<(String, Option<String>)> = Vec::new();
+    let (yaml, message) = if checked.in_list {
+        let Some(list) = &view.list else {
+            anyhow::bail!(
+                "No list file in {project}\n  why: {branch} has no {path} any more\n  fix: refresh the list"
+            );
+        };
+        let old = draft.replace.as_deref().unwrap_or(name);
+        let indent = list_span(&list.text).map(|s| s.item_indent).unwrap_or(2);
+        let item = yaml_item(&draft.entry, indent);
+        let new_text = replace_item(&list.text, old, &item)?;
+        let mut expect: BTreeSet<String> = list.names().into_iter().collect();
+        expect.remove(old);
+        expect.insert(name.clone());
+        verify_names(&path, &new_text, &expect)?;
+        if new_text != list.text {
+            changes.push((path.clone(), Some(new_text)));
+        }
+        let message = if old == name {
+            format!("pulse: update automation {name} in {path}")
+        } else {
+            format!("pulse: replace automation {old} with {name} in {path}")
+        };
+        (item, message)
+    } else {
+        let text = yaml_file(&draft.entry);
+        verify_file(&path, name, &text)?;
+        let old_path = draft
+            .replace
+            .as_deref()
+            .and_then(|old| view.path_of(old))
+            .map(str::to_string);
+        if let Some(old) = &old_path
+            && old != &path
+        {
+            changes.push((old.clone(), None));
+        }
+        let as_is = view
+            .files
+            .iter()
+            .find(|f| f.path == path)
+            .map(|f| f.text.as_str());
+        if as_is != Some(text.as_str()) {
+            changes.push((path.clone(), Some(text.clone())));
+        }
+        let message = match &draft.replace {
+            Some(old) if old == name => format!("pulse: update automation {name} ({path})"),
+            Some(old) => format!("pulse: rename automation {old} to {name} ({path})"),
+            None => format!("pulse: add automation {name} ({path})"),
+        };
+        (text, message)
     };
-    let commit = if new_text == old_text {
+    let commit = if changes.is_empty() {
         None
     } else {
-        Some(commit_file(repo, branch, &path, Some(&new_text), &message)?)
+        Some(commit_files(repo, branch, &changes, &message)?)
     };
     let synced = manifest::sync(store, project, who, true)?;
     if let Some(id) = &draft.moved
@@ -872,15 +1032,16 @@ fn write_repo(
         "path": path,
         "branch": branch,
         "commit": commit,
-        "yaml": item,
+        "yaml": yaml,
         "warning": checked.warning,
         "synced": synced.map(|s| json!({"line": s.line(), "problems": s.problems})),
         "schedule": schedule.map(|s| schedule_json(&s)),
     }))
 }
 
-/// Takes an entry out of the file, commits and applies: the schedule ends
-/// with the file's "removed" note.
+/// Takes an automation out of the repository - its file removed, or its
+/// item taken out of the list - commits and applies: the schedule ends
+/// with the daemon's "removed" note.
 fn remove_from_repo(
     store: &pulse_store::Store,
     project: &str,
@@ -889,42 +1050,55 @@ fn remove_from_repo(
 ) -> anyhow::Result<Value> {
     let Some((repo, branch, _)) = manifest::repo_of(store, project)? else {
         anyhow::bail!(
-            "No checkout of {project} here\n  why: the file lives in the repository, which this machine has no checkout of\n  fix: remove the entry where the repository is checked out"
+            "No checkout of {project} here\n  why: the files live in the repository, which this machine has no checkout of\n  fix: remove the automation where the repository is checked out"
         );
     };
-    let Some(file) = read_file(&repo, &branch) else {
-        anyhow::bail!(
-            "No PULSE file in {project}\n  why: {branch} has no .pulse/pulse.yaml\n  fix: nothing to remove"
-        );
-    };
-    if file.manifest.is_none() {
-        anyhow::bail!(
-            "{} could not be read\n  why: {}\n  fix: fix the file by hand first",
-            file.path,
-            file.problems.join("; ")
-        );
-    }
-    if file.entry(name).is_none() {
-        anyhow::bail!(
-            "No entry {name} in {}\n  why: the file on {branch} names {}\n  fix: refresh the list",
-            file.path,
-            if file.names().is_empty() {
-                "no schedule".to_string()
-            } else {
-                file.names().join(", ")
+    let view = RepoView::read(&repo, &branch);
+    let (path, changes, message) = match view.holder(name) {
+        None => {
+            let names = view.names();
+            anyhow::bail!(
+                "No automation {name} in {project}\n  why: {branch} holds {}\n  fix: refresh the list",
+                if names.is_empty() {
+                    "no automation".to_string()
+                } else {
+                    names.join(", ")
+                }
+            );
+        }
+        Some(Holder::File(i)) => {
+            let path = view.files[i].path.clone();
+            let message = format!("pulse: remove automation {name} ({path})");
+            (path.clone(), vec![(path, None)], message)
+        }
+        Some(Holder::List) => {
+            let Some(list) = &view.list else {
+                unreachable!("a list holder has a list")
+            };
+            if list.manifest.is_none() {
+                anyhow::bail!(
+                    "{} could not be read\n  why: {}\n  fix: fix the file by hand first",
+                    list.path,
+                    list.problems.join("; ")
+                );
             }
-        );
-    }
-    let new_text = remove_item(&file.text, name)?;
-    let mut expect: BTreeSet<String> = file.names().into_iter().collect();
-    expect.remove(name);
-    verify_names(&file.path, &new_text, &expect)?;
-    let message = format!("pulse: remove schedule {name} from {}", file.path);
-    let commit = commit_file(&repo, &branch, &file.path, Some(&new_text), &message)?;
+            let new_text = remove_item(&list.text, name)?;
+            let mut expect: BTreeSet<String> = list.names().into_iter().collect();
+            expect.remove(name);
+            verify_names(&list.path, &new_text, &expect)?;
+            let message = format!("pulse: remove automation {name} from {}", list.path);
+            (
+                list.path.clone(),
+                vec![(list.path.clone(), Some(new_text))],
+                message,
+            )
+        }
+    };
+    let commit = commit_files(&repo, &branch, &changes, &message)?;
     let synced = manifest::sync(store, project, who, true)?;
     Ok(json!({
         "where": "repo",
-        "path": file.path,
+        "path": path,
         "branch": branch,
         "commit": commit,
         "removed": name,
@@ -932,7 +1106,7 @@ fn remove_from_repo(
     }))
 }
 
-/// The merged file must read back with exactly the names expected; the
+/// The merged list must read back with exactly the names expected; the
 /// console never commits a file the daemon could not apply.
 fn verify_names(path: &str, text: &str, expect: &BTreeSet<String>) -> anyhow::Result<()> {
     let m = manifest::parse(text).map_err(|e| {
@@ -958,6 +1132,31 @@ fn verify_names(path: &str, text: &str, expect: &BTreeSet<String>) -> anyhow::Re
             } else {
                 expect.iter().cloned().collect::<Vec<_>>().join(", ")
             }
+        );
+    }
+    Ok(())
+}
+
+/// A per-automation file must read back as the automation it is meant to
+/// hold and pass the daemon's static checks.
+fn verify_file(path: &str, name: &str, text: &str) -> anyhow::Result<()> {
+    let e = manifest::parse_automation(name, text).map_err(|e| {
+        anyhow::anyhow!(
+            "The file would not read back\n  why: {path}: {e}\n  fix: edit the file by hand; the console did not write it"
+        )
+    })?;
+    let problems = manifest::static_problems(&Manifest {
+        needs: None,
+        schedules: vec![e],
+    });
+    if !problems.is_empty() {
+        anyhow::bail!(
+            "The file would not pass the daemon's checks\n  why: {path}: {}\n  fix: fix what the problems name; the console did not write it",
+            problems
+                .iter()
+                .map(|p| strip_label(p))
+                .collect::<Vec<_>>()
+                .join("; ")
         );
     }
     Ok(())
@@ -1004,13 +1203,28 @@ fn looks_numeric(s: &str) -> bool {
         || matches!(lower.as_str(), ".inf" | "-.inf" | "+.inf" | ".nan")
 }
 
-/// One `- name: ...` item of `schedules:`, its dash at `indent` spaces,
-/// the defaults left out so the file stays as short as a hand would write
-/// it. Fields come in the order the README's example uses.
+/// One `- name: ...` item of `schedules:`, its dash at `indent` spaces.
 pub(crate) fn yaml_item(e: &Entry, indent: usize) -> String {
-    let pad = " ".repeat(indent);
-    let field = " ".repeat(indent + 2);
-    let mut out = format!("{pad}- name: {}\n", yaml_scalar(&e.name));
+    format!(
+        "{}- name: {}\n{}",
+        " ".repeat(indent),
+        yaml_scalar(&e.name),
+        yaml_fields(e, indent + 2)
+    )
+}
+
+/// A per-automation file, `.pulse/automations/<name>.yaml`: the fields at
+/// the top level; the file's name is the automation's.
+pub(crate) fn yaml_file(e: &Entry) -> String {
+    yaml_fields(e, 0)
+}
+
+/// The fields of an entry after its name, one `key: value` line each at
+/// `indent` spaces, the defaults left out so the file stays as short as a
+/// hand would write it. Fields come in the order the README's example uses.
+fn yaml_fields(e: &Entry, indent: usize) -> String {
+    let field = " ".repeat(indent);
+    let mut out = String::new();
     let mut line = |key: &str, value: String| {
         out.push_str(&format!("{field}{key}: {value}\n"));
     };
@@ -1031,7 +1245,7 @@ pub(crate) fn yaml_item(e: &Entry, indent: usize) -> String {
     }
     if !e.brief.is_empty() {
         if e.brief.contains('\n') && !e.brief.starts_with(' ') && !e.brief.starts_with('\t') {
-            let block = " ".repeat(indent + 4);
+            let block = " ".repeat(indent + 2);
             let mut text = String::from("|-\n");
             for l in e.brief.lines() {
                 if l.trim().is_empty() {
@@ -1077,15 +1291,10 @@ pub(crate) fn yaml_item(e: &Entry, indent: usize) -> String {
 struct ListSpan {
     /// The `schedules:` line.
     key: usize,
-    /// `schedules: []` or `schedules:` with nothing under it.
-    empty: bool,
     /// Indent of the `- ` items (2 when there are none yet).
     item_indent: usize,
     /// Each item: its first line, the line after its last, its name.
     items: Vec<(usize, usize, String)>,
-    /// The line after the last item's last content line: where a new one
-    /// goes.
-    end: usize,
 }
 
 fn indent_of(line: &str) -> usize {
@@ -1142,10 +1351,8 @@ fn list_span_checked(text: &str) -> Result<Option<ListSpan>, String> {
         if after == "[]" {
             return Ok(Some(ListSpan {
                 key,
-                empty: true,
                 item_indent: 2,
                 items: Vec::new(),
-                end: key + 1,
             }));
         }
         return Err(format!(
@@ -1159,10 +1366,8 @@ fn list_span_checked(text: &str) -> Result<Option<ListSpan>, String> {
     if i >= lines.len() || indent_of(lines[i]) == 0 && !lines[i].starts_with('-') {
         return Ok(Some(ListSpan {
             key,
-            empty: true,
             item_indent: 2,
             items: Vec::new(),
-            end: key + 1,
         }));
     }
     let item_indent = indent_of(lines[i]);
@@ -1175,7 +1380,6 @@ fn list_span_checked(text: &str) -> Result<Option<ListSpan>, String> {
     let starts_item = |l: &str| indent_of(l) == item_indent && l.trim_start().starts_with('-');
     let in_list = |l: &str| is_blank_or_comment(l) || indent_of(l) > item_indent || starts_item(l);
     let mut items = Vec::new();
-    let mut end = i;
     let mut j = i;
     while j < lines.len() && in_list(lines[j]) {
         if starts_item(lines[j]) {
@@ -1195,17 +1399,14 @@ fn list_span_checked(text: &str) -> Result<Option<ListSpan>, String> {
                 stop -= 1;
             }
             items.push((start, stop, name.unwrap_or_default()));
-            end = stop;
         } else {
             j += 1;
         }
     }
     Ok(Some(ListSpan {
         key,
-        empty: items.is_empty(),
         item_indent,
         items,
-        end,
     }))
 }
 
@@ -1219,40 +1420,6 @@ fn join_lines(lines: &[String]) -> String {
 
 fn item_lines(item: &str) -> Vec<String> {
     item.lines().map(str::to_string).collect()
-}
-
-/// The file with `item` added at the end of its `schedules:` list; a file
-/// without the key gets one at its end, an empty file becomes the list.
-pub(crate) fn append_item(text: &str, item: &str) -> anyhow::Result<String> {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    match list_span_checked(text).map_err(|e| anyhow::anyhow!("{e}"))? {
-        None => {
-            if !lines.is_empty() && !lines.last().is_some_and(|l| l.trim().is_empty()) {
-                lines.push(String::new());
-            }
-            lines.push("schedules:".to_string());
-            lines.extend(item_lines(item));
-        }
-        Some(span) if span.empty => {
-            lines[span.key] = format!(
-                "schedules:{}",
-                lines[span.key]["schedules:".len()..]
-                    .split_once('#')
-                    .map(|(_, c)| format!(" #{c}"))
-                    .unwrap_or_default()
-            );
-            let at = span.key + 1;
-            for (k, l) in item_lines(item).into_iter().enumerate() {
-                lines.insert(at + k, l);
-            }
-        }
-        Some(span) => {
-            for (k, l) in item_lines(item).into_iter().enumerate() {
-                lines.insert(span.end + k, l);
-            }
-        }
-    }
-    Ok(join_lines(&lines))
 }
 
 /// The file with the entry named `old` replaced by `item`, in its place.
@@ -1411,31 +1578,28 @@ fn identity(repo: &str) -> (String, String) {
     }
 }
 
-/// Commits `text` at `path` on `branch` of `repo` (a removal when `None`)
-/// without touching any work in progress: through the checkout that has
-/// the branch out when the file is clean there, else straight into the
-/// branch with a temporary index. Never pushes. Returns the new commit.
-pub(crate) fn commit_file(
+/// Commits `changes` - a text to write at each path, or `None` to remove
+/// it - on `branch` of `repo` in one commit, without touching any work in
+/// progress: through the checkout that has the branch out when the paths
+/// are clean there, else straight into the branch with a temporary index.
+/// Never pushes. Returns the new commit.
+pub(crate) fn commit_files(
     repo: &str,
     branch: &str,
-    path: &str,
-    text: Option<&str>,
+    changes: &[(String, Option<String>)],
     message: &str,
 ) -> anyhow::Result<String> {
     let (name, email) = identity(repo);
     let user_name = format!("user.name={name}");
     let user_email = format!("user.email={email}");
+    let paths: Vec<&str> = changes.iter().map(|(p, _)| p.as_str()).collect();
     let refuse = |what: String, why: String, fix: &str| {
         anyhow::anyhow!("{what}\n  why: {why}\n  fix: {fix}")
     };
     if let Some(wt) = checkout_of(repo, branch) {
-        let dirty = git(
-            &wt,
-            &["status", "--porcelain", "--untracked-files=all", "--", path],
-            &[],
-            None,
-        )
-        .map_err(|e| {
+        let mut args = vec!["status", "--porcelain", "--untracked-files=all", "--"];
+        args.extend(paths.iter().copied());
+        let dirty = git(&wt, &args, &[], None).map_err(|e| {
             refuse(
                 "The checkout could not be read".into(),
                 e,
@@ -1443,54 +1607,73 @@ pub(crate) fn commit_file(
             )
         })?;
         if !dirty.trim().is_empty() {
+            let mut named: Vec<&str> = paths
+                .iter()
+                .copied()
+                .filter(|p| {
+                    dirty
+                        .lines()
+                        .any(|l| l.get(3..).is_some_and(|rest| rest.ends_with(p)))
+                })
+                .collect();
+            if named.is_empty() {
+                named = paths.clone();
+            }
             return Err(refuse(
-                format!("{path} has uncommitted changes"),
+                format!(
+                    "{} {} uncommitted changes",
+                    named.join(", "),
+                    if named.len() == 1 { "has" } else { "have" }
+                ),
                 format!(
                     "the checkout of {branch} at {wt} has edits to the file the console would write"
                 ),
                 "commit or discard those edits first, then try again",
             ));
         }
-        let full = Path::new(&wt).join(path);
-        match text {
-            Some(t) => {
-                if let Some(parent) = full.parent() {
-                    std::fs::create_dir_all(parent)?;
+        for (path, text) in changes {
+            let full = Path::new(&wt).join(path);
+            match text {
+                Some(t) => {
+                    if let Some(parent) = full.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&full, t)?;
                 }
-                std::fs::write(&full, t)?;
-            }
-            None => {
-                let _ = std::fs::remove_file(&full);
+                None => {
+                    let _ = std::fs::remove_file(&full);
+                    // A folder the removal empties goes too: git keeps none.
+                    if let Some(parent) = full.parent() {
+                        let _ = std::fs::remove_dir(parent);
+                    }
+                }
             }
         }
-        git(&wt, &["add", "-A", "--", path], &[], None).map_err(|e| {
+        let mut args = vec!["add", "-A", "--"];
+        args.extend(paths.iter().copied());
+        git(&wt, &args, &[], None).map_err(|e| {
             refuse(
                 "The file could not be staged".into(),
                 e,
                 "check the checkout",
             )
         })?;
-        git(
-            &wt,
-            &[
-                "-c",
-                &user_name,
-                "-c",
-                &user_email,
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-q",
-                "--no-verify",
-                "-m",
-                message,
-                "--",
-                path,
-            ],
-            &[],
-            None,
-        )
-        .map_err(|e| {
+        let mut args = vec![
+            "-c",
+            user_name.as_str(),
+            "-c",
+            user_email.as_str(),
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            message,
+            "--",
+        ];
+        args.extend(paths.iter().copied());
+        git(&wt, &args, &[], None).map_err(|e| {
             refuse(
                 "The file could not be committed".into(),
                 e,
@@ -1519,33 +1702,35 @@ pub(crate) fn commit_file(
     let env = [("GIT_INDEX_FILE", index_str.as_str())];
     let result = (|| -> Result<String, String> {
         git(repo, &["read-tree", &old], &env, None)?;
-        match text {
-            Some(t) => {
-                let blob = git(
-                    repo,
-                    &["hash-object", "-w", "--stdin"],
-                    &[],
-                    Some(t.as_bytes()),
-                )?;
-                git(
-                    repo,
-                    &[
-                        "update-index",
-                        "--add",
-                        "--cacheinfo",
-                        &format!("100644,{blob},{path}"),
-                    ],
-                    &env,
-                    None,
-                )?;
-            }
-            None => {
-                git(
-                    repo,
-                    &["update-index", "--force-remove", "--", path],
-                    &env,
-                    None,
-                )?;
+        for (path, text) in changes {
+            match text {
+                Some(t) => {
+                    let blob = git(
+                        repo,
+                        &["hash-object", "-w", "--stdin"],
+                        &[],
+                        Some(t.as_bytes()),
+                    )?;
+                    git(
+                        repo,
+                        &[
+                            "update-index",
+                            "--add",
+                            "--cacheinfo",
+                            &format!("100644,{blob},{path}"),
+                        ],
+                        &env,
+                        None,
+                    )?;
+                }
+                None => {
+                    git(
+                        repo,
+                        &["update-index", "--force-remove", "--", path],
+                        &env,
+                        None,
+                    )?;
+                }
             }
         }
         let tree = git(repo, &["write-tree"], &env, None)?;
@@ -1648,28 +1833,16 @@ mod tests {
     const FILE: &str = "# the project's file\nneeds: [macos]\nschedules:\n  - name: deps-audit    # first\n    every: 1d\n    brief: Audit.\n\n  - name: release-notes\n    skill: release\n    every: weekly\n\n# trailing words\n";
 
     #[test]
-    fn append_replace_and_remove_keep_the_rest_of_the_file_as_written() {
+    fn replace_and_remove_keep_the_rest_of_the_list_file_as_written() {
         let item = yaml_item(&entry("sweep"), 2);
-        let appended = append_item(FILE, &item).unwrap();
-        assert_eq!(
-            appended,
-            "# the project's file\nneeds: [macos]\nschedules:\n  - name: deps-audit    # first\n    every: 1d\n    brief: Audit.\n\n  - name: release-notes\n    skill: release\n    every: weekly\n  - name: sweep\n    title: Audit the dependencies\n    every: 1d\n    at: \"02:00\"\n    brief: Run the audit and fix what it names.\n\n# trailing words\n"
-        );
-        let m = manifest::parse(&appended).unwrap();
-        assert_eq!(
-            m.schedules
-                .iter()
-                .map(|e| e.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["deps-audit", "release-notes", "sweep"]
-        );
-
         let replaced = replace_item(FILE, "deps-audit", &item).unwrap();
         assert_eq!(
             replaced,
             "# the project's file\nneeds: [macos]\nschedules:\n  - name: sweep\n    title: Audit the dependencies\n    every: 1d\n    at: \"02:00\"\n    brief: Run the audit and fix what it names.\n\n  - name: release-notes\n    skill: release\n    every: weekly\n\n# trailing words\n"
         );
         assert!(replace_item(FILE, "nope", &item).is_err());
+        assert!(replace_item("schedules: [a, b]\n", "a", &item).is_err());
+        assert!(replace_item("schedules:\n  key: value\n", "a", &item).is_err());
 
         let removed = remove_item(FILE, "deps-audit").unwrap();
         assert_eq!(
@@ -1682,36 +1855,40 @@ mod tests {
             "# the project's file\nneeds: [macos]\nschedules: []\n\n# trailing words\n"
         );
         assert!(manifest::parse(&last).unwrap().schedules.is_empty());
+        let margin = "schedules:\n- name: one\n  every: 1d\n  brief: A.\n- name: two\n  every: 1d\n  brief: B.\n";
+        assert_eq!(
+            remove_item(margin, "one").unwrap(),
+            "schedules:\n- name: two\n  every: 1d\n  brief: B.\n"
+        );
     }
 
     #[test]
-    fn append_handles_files_without_a_list_and_items_at_the_margin() {
-        let item = yaml_item(&entry("sweep"), 2);
+    fn yaml_file_puts_the_fields_at_the_top_level_and_reads_back_by_its_name() {
+        let e = Entry {
+            skill: "release".to_string(),
+            brief: "Cut it.\nThen tell.".to_string(),
+            ..entry("release-notes")
+        };
+        let text = yaml_file(&e);
         assert_eq!(
-            append_item("", &item).unwrap(),
-            format!("schedules:\n{item}")
+            text,
+            "title: Audit the dependencies\nevery: 1d\nat: \"02:00\"\nbrief: |-\n  Cut it.\n  Then tell.\nskill: release\n"
         );
+        assert!(!text.contains("name:"), "the file's name is the name");
         assert_eq!(
-            append_item("needs: [macos]\n", &item).unwrap(),
-            format!("needs: [macos]\n\nschedules:\n{item}")
+            manifest::parse_automation("release-notes", &text).unwrap(),
+            e
         );
+        // The file's stem wins; a different `name:` inside is refused.
         assert_eq!(
-            append_item("schedules: []   # none yet\n", &item).unwrap(),
-            format!("schedules: # none yet\n{item}")
+            manifest::parse_automation("other", &text).unwrap().name,
+            "other"
         );
-        assert_eq!(
-            append_item("schedules:\nneeds: [macos]\n", &item).unwrap(),
-            format!("schedules:\n{item}needs: [macos]\n")
-        );
-        let margin = "schedules:\n- name: one\n  every: 1d\n  brief: A.\n";
-        let got = append_item(margin, &yaml_item(&entry("two"), 0)).unwrap();
-        assert_eq!(
-            got,
-            "schedules:\n- name: one\n  every: 1d\n  brief: A.\n- name: two\n  title: Audit the dependencies\n  every: 1d\n  at: \"02:00\"\n  brief: Run the audit and fix what it names.\n"
-        );
-        assert_eq!(manifest::parse(&got).unwrap().schedules.len(), 2);
-        assert!(append_item("schedules: [a, b]\n", &item).is_err());
-        assert!(append_item("schedules:\n  key: value\n", &item).is_err());
+        let err =
+            manifest::parse_automation("other", "name: release-notes\nevery: 1d\n").unwrap_err();
+        assert!(err.contains("does not match the file name other"), "{err}");
+        let err = manifest::parse_automation("x", "schedules:\n  - name: x\n").unwrap_err();
+        assert!(err.contains("one automation per file"), "{err}");
     }
 
     #[test]
@@ -1781,10 +1958,11 @@ mod tests {
         assert_eq!(code, 200, "{body}");
         assert_eq!(
             body["yaml"],
-            "  - name: deps-audit\n    title: Audit\n    every: 1d\n    at: \"02:00\"\n    brief: Audit.\n"
+            "title: Audit\nevery: 1d\nat: \"02:00\"\nbrief: Audit.\n"
         );
         assert_eq!(body["problems"], json!([]));
-        assert_eq!(body["path"], ".pulse/pulse.yaml");
+        assert_eq!(body["path"], ".pulse/automations/deps-audit.yaml");
+        assert_eq!(body["form"], "file");
         assert_eq!(body["branch"], "main");
 
         let (code, body) = post(
@@ -1842,8 +2020,12 @@ mod tests {
         assert_eq!(code, 400);
     }
 
+    fn read(dir: &str, path: &str) -> String {
+        std::fs::read_to_string(Path::new(dir).join(path)).unwrap()
+    }
+
     #[test]
-    fn adding_to_the_repository_commits_the_file_and_applies_it_at_once() {
+    fn adding_to_the_repository_commits_one_file_per_automation_and_applies_it_at_once() {
         let _serial = crate::test_helpers::serial();
         let t = http::additions_store(false);
         let s = &t.store;
@@ -1855,18 +2037,21 @@ mod tests {
         );
         assert_eq!(code, 201, "{body}");
         assert_eq!(body["where"], "repo");
-        assert_eq!(body["path"], ".pulse/pulse.yaml");
+        assert_eq!(body["path"], ".pulse/automations/deps-audit.yaml");
         let commit = body["commit"].as_str().unwrap().to_string();
         assert_eq!(git_in(&dir, &["rev-parse", "HEAD"]).trim(), commit);
         let subject = git_in(&dir, &["log", "-1", "--format=%s"]);
         assert_eq!(
             subject.trim(),
-            "pulse: add schedule deps-audit to .pulse/pulse.yaml"
+            "pulse: add automation deps-audit (.pulse/automations/deps-audit.yaml)"
         );
-        let text = std::fs::read_to_string(Path::new(&dir).join(".pulse/pulse.yaml")).unwrap();
         assert_eq!(
-            text,
-            "schedules:\n  - name: deps-audit\n    title: Audit the dependencies\n    every: 1d\n    at: \"02:00\"\n    brief: Audit.\n"
+            read(&dir, ".pulse/automations/deps-audit.yaml"),
+            "title: Audit the dependencies\nevery: 1d\nat: \"02:00\"\nbrief: Audit.\n"
+        );
+        assert!(
+            !Path::new(&dir).join(".pulse/pulse.yaml").exists(),
+            "no list file is written"
         );
         assert_eq!(
             git_in(&dir, &["status", "--porcelain"]).trim(),
@@ -1875,14 +2060,18 @@ mod tests {
         );
         // Applied at once: the schedule is in the store, kept by the file.
         let sched = &body["schedule"];
-        assert_eq!(sched["origin"], "repo:.pulse/pulse.yaml#deps-audit");
+        assert_eq!(
+            sched["origin"],
+            "repo:.pulse/automations/deps-audit.yaml#deps-audit"
+        );
         assert_eq!(sched["origin_name"], "deps-audit");
+        assert_eq!(sched["origin_path"], ".pulse/automations/deps-audit.yaml");
         assert_eq!(sched["every"], "1d");
         assert_eq!(sched["every_words"], "every day at 02:00 UTC");
         let id = sched["id"].as_str().unwrap().to_string();
 
-        // A second entry appends; the same name again is refused before
-        // anything is written.
+        // A second automation is a second file; the same name again is
+        // refused before anything is written.
         let (code, body) = post(
             s,
             "/api/v1/automations",
@@ -1890,10 +2079,9 @@ mod tests {
         );
         assert_eq!(code, 400, "{body}");
         assert!(
-            body["why"]
-                .as_str()
-                .unwrap()
-                .contains("already has an entry named `deps-audit`"),
+            body["why"].as_str().unwrap().contains(
+                ".pulse/automations/deps-audit.yaml already holds an automation named `deps-audit`"
+            ),
             "{body}"
         );
         let (code, body) = post(
@@ -1902,16 +2090,13 @@ mod tests {
             json!({"project": "demo", "entry": {"name": "nightly", "kind": "check", "script": "scripts/check.sh", "every": "daily", "job_kind": "improve", "paused": true}}),
         );
         assert_eq!(code, 201, "{body}");
-        let text = std::fs::read_to_string(Path::new(&dir).join(".pulse/pulse.yaml")).unwrap();
-        assert!(
-            text.ends_with(
-                "  - name: nightly\n    every: daily\n    kind: check\n    script: scripts/check.sh\n    job_kind: improve\n    paused: true\n"
-            ),
-            "{text}"
+        assert_eq!(
+            read(&dir, ".pulse/automations/nightly.yaml"),
+            "every: daily\nkind: check\nscript: scripts/check.sh\njob_kind: improve\npaused: true\n"
         );
         assert_eq!(body["schedule"]["status"], "paused");
 
-        // An edit replaces the entry in place and keeps the row.
+        // An edit rewrites the file and keeps the row.
         let (code, body) = post(
             s,
             "/api/v1/automations",
@@ -1921,12 +2106,13 @@ mod tests {
         assert_eq!(body["schedule"]["id"], id);
         assert_eq!(body["schedule"]["every"], "2d");
         assert_eq!(body["schedule"]["at_time"], "03:00");
-        let text = std::fs::read_to_string(Path::new(&dir).join(".pulse/pulse.yaml")).unwrap();
-        assert!(
-            text.starts_with(
-                "schedules:\n  - name: deps-audit\n    title: Audit the dependencies\n    every: 2d\n    at: \"03:00\"\n    brief: Audit, then fix.\n  - name: nightly\n"
-            ),
-            "{text}"
+        assert_eq!(
+            read(&dir, ".pulse/automations/deps-audit.yaml"),
+            "title: Audit the dependencies\nevery: 2d\nat: \"03:00\"\nbrief: Audit, then fix.\n"
+        );
+        assert_eq!(
+            git_in(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "pulse: update automation deps-audit (.pulse/automations/deps-audit.yaml)"
         );
         // Nothing to change writes no commit.
         let head = git_in(&dir, &["rev-parse", "HEAD"]);
@@ -1939,50 +2125,296 @@ mod tests {
         assert_eq!(body["commit"], Value::Null);
         assert_eq!(git_in(&dir, &["rev-parse", "HEAD"]), head);
 
-        // The list shows the file, what was applied and the rows.
+        // A rename moves the file in one commit: the old row ends, a new
+        // one starts.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "replace": "deps-audit", "entry": {"name": "audit", "title": "Audit the dependencies", "every": "2d", "at": "03:00", "brief": "Audit, then fix."}}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["path"], ".pulse/automations/audit.yaml");
+        assert!(
+            !Path::new(&dir)
+                .join(".pulse/automations/deps-audit.yaml")
+                .exists()
+        );
+        assert!(
+            Path::new(&dir)
+                .join(".pulse/automations/audit.yaml")
+                .exists()
+        );
+        assert_eq!(
+            git_in(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "pulse: rename automation deps-audit to audit (.pulse/automations/audit.yaml)"
+        );
+        assert_eq!(
+            git_in(&dir, &["log", "--format=%s"]).lines().count(),
+            5,
+            "scripts, add, add, update, rename"
+        );
+        assert_eq!(schedules::get(s, &id).unwrap().status, "ended");
+        assert_ne!(body["schedule"]["id"], id);
+        assert_eq!(
+            body["schedule"]["origin"],
+            "repo:.pulse/automations/audit.yaml#audit"
+        );
+        let id = body["schedule"]["id"].as_str().unwrap().to_string();
+
+        // The list shows the folder's files, what was applied and the rows.
         let (code, body) = get(s, "/api/v1/automations?project=demo");
         assert_eq!(code, 200, "{body}");
         let p = &body["projects"][0];
         assert_eq!(p["slug"], "demo");
         assert_eq!(p["repo"]["branch"], "main");
-        assert_eq!(p["file"]["path"], ".pulse/pulse.yaml");
-        assert_eq!(p["file"]["entries"].as_array().unwrap().len(), 2);
-        assert_eq!(p["file"]["problems"], json!([]));
-        assert_eq!(p["applied"]["schedules"], json!(["deps-audit", "nightly"]));
-        assert_eq!(p["schedules"].as_array().unwrap().len(), 2);
+        assert_eq!(p["file"], Value::Null);
+        assert_eq!(p["automations"]["dir"], ".pulse/automations");
+        let files = p["automations"]["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["name"], "audit");
+        assert_eq!(files[0]["path"], ".pulse/automations/audit.yaml");
+        assert_eq!(files[0]["entry"]["every"], "2d");
+        assert_eq!(files[0]["problems"], json!([]));
+        assert_eq!(files[1]["name"], "nightly");
+        assert_eq!(p["applied"]["schedules"], json!(["audit", "nightly"]));
+        assert_eq!(
+            p["applied"]["files"],
+            json!([
+                ".pulse/automations/audit.yaml",
+                ".pulse/automations/nightly.yaml"
+            ])
+        );
+        assert_eq!(p["schedules"].as_array().unwrap().len(), 3);
         assert_eq!(body["limits"]["max_per_project"], 10);
 
-        // Ending a file-kept schedule takes it out of the file.
+        // Ending a file-kept schedule removes its file.
         let (code, body) = post(s, &format!("/api/v1/automations/{id}/end"), json!({}));
         assert_eq!(code, 200, "{body}");
-        assert_eq!(body["removed"], "deps-audit");
+        assert_eq!(body["removed"], "audit");
+        assert_eq!(body["path"], ".pulse/automations/audit.yaml");
         assert_eq!(body["schedule"]["status"], "ended");
         assert_eq!(body["schedule"]["note"], manifest::ENDED_NOTE);
-        let text = std::fs::read_to_string(Path::new(&dir).join(".pulse/pulse.yaml")).unwrap();
         assert!(
-            text.starts_with("schedules:\n  - name: nightly\n"),
-            "{text}"
+            !Path::new(&dir)
+                .join(".pulse/automations/audit.yaml")
+                .exists()
         );
-        let subject = git_in(&dir, &["log", "-1", "--format=%s"]);
         assert_eq!(
-            subject.trim(),
-            "pulse: remove schedule deps-audit from .pulse/pulse.yaml"
+            git_in(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "pulse: remove automation audit (.pulse/automations/audit.yaml)"
         );
-        // And the last one leaves an empty list.
+        // And the last one leaves no folder behind.
         let (code, body) = post(
             s,
             "/api/v1/automations/remove",
             json!({"project": "demo", "name": "nightly"}),
         );
         assert_eq!(code, 200, "{body}");
-        let text = std::fs::read_to_string(Path::new(&dir).join(".pulse/pulse.yaml")).unwrap();
-        assert_eq!(text, "schedules: []\n");
+        assert!(!Path::new(&dir).join(".pulse/automations").exists());
+        assert_eq!(git_in(&dir, &["status", "--porcelain"]).trim(), "");
         let (code, body) = post(
             s,
             "/api/v1/automations/remove",
             json!({"project": "demo", "name": "nightly"}),
         );
         assert_eq!(code, 400, "{body}");
+        assert_eq!(body["error"], "No automation nightly in demo");
+    }
+
+    #[test]
+    fn a_list_file_is_edited_in_place_and_new_automations_go_beside_it() {
+        let _serial = crate::test_helpers::serial();
+        let t = http::additions_store(false);
+        let s = &t.store;
+        let dir = project_with_repo(s, "demo");
+        std::fs::create_dir_all(Path::new(&dir).join(".pulse/automations")).unwrap();
+        std::fs::write(Path::new(&dir).join(".pulse/pulse.yaml"), FILE).unwrap();
+        // A file that doubles a list item, and one that does not read.
+        std::fs::write(
+            Path::new(&dir).join(".pulse/automations/release-notes.yaml"),
+            "skill: release\nevery: weekly\n",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&dir).join(".pulse/automations/broken.yaml"),
+            "every: [\n",
+        )
+        .unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "pulse files"]);
+
+        let (code, body) = get(s, "/api/v1/automations?project=demo");
+        assert_eq!(code, 200, "{body}");
+        let p = &body["projects"][0];
+        assert_eq!(p["file"]["path"], ".pulse/pulse.yaml");
+        assert_eq!(p["file"]["entries"].as_array().unwrap().len(), 2);
+        let files = p["automations"]["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["name"], "broken");
+        assert_eq!(files[0]["entry"], Value::Null);
+        assert!(
+            files[0]["problems"][0]
+                .as_str()
+                .unwrap()
+                .starts_with(".pulse/automations/broken.yaml could not be read"),
+            "{files:?}"
+        );
+        assert_eq!(files[1]["name"], "release-notes");
+        assert_eq!(
+            files[1]["problems"],
+            json!([
+                "named in both .pulse/pulse.yaml and .pulse/automations/release-notes.yaml; keep one of them"
+            ])
+        );
+
+        // Editing a list item keeps it in the list, in place.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations/check",
+            json!({"project": "demo", "replace": "deps-audit", "entry": {"name": "deps-audit", "every": "2d", "brief": "Audit twice."}}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["form"], "list");
+        assert_eq!(body["path"], ".pulse/pulse.yaml");
+        assert_eq!(
+            body["yaml"],
+            "  - name: deps-audit\n    every: 2d\n    brief: Audit twice.\n"
+        );
+        assert_eq!(body["problems"], json!([]));
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "replace": "deps-audit", "entry": {"name": "deps-audit", "every": "2d", "brief": "Audit twice."}}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["path"], ".pulse/pulse.yaml");
+        assert!(
+            read(&dir, ".pulse/pulse.yaml").starts_with(
+                "# the project's file\nneeds: [macos]\nschedules:\n  - name: deps-audit\n    every: 2d\n    brief: Audit twice.\n\n  - name: release-notes\n"
+            ),
+            "{}",
+            read(&dir, ".pulse/pulse.yaml")
+        );
+        assert_eq!(
+            git_in(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "pulse: update automation deps-audit in .pulse/pulse.yaml"
+        );
+        assert_eq!(
+            body["schedule"]["origin"],
+            "repo:.pulse/pulse.yaml#deps-audit"
+        );
+
+        // A new automation goes to its own file; a name the list holds is
+        // taken, and so is one a file holds.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "entry": {"name": "deps-audit", "every": "1d", "brief": "x"}}),
+        );
+        assert_eq!(code, 400, "{body}");
+        assert!(
+            body["why"]
+                .as_str()
+                .unwrap()
+                .contains(".pulse/pulse.yaml already holds an automation named `deps-audit`"),
+            "{body}"
+        );
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "replace": "deps-audit", "entry": {"name": "broken", "every": "1d", "brief": "x"}}),
+        );
+        assert_eq!(code, 400, "{body}");
+        assert!(
+            body["why"]
+                .as_str()
+                .unwrap()
+                .contains("`broken` is already an automation (.pulse/automations/broken.yaml)"),
+            "{body}"
+        );
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "entry": {"name": "sweep", "every": "1w", "brief": "Sweep."}}),
+        );
+        assert_eq!(code, 201, "{body}");
+        assert_eq!(body["path"], ".pulse/automations/sweep.yaml");
+        assert_eq!(
+            read(&dir, ".pulse/automations/sweep.yaml"),
+            "every: 1w\nbrief: Sweep.\n"
+        );
+        assert!(read(&dir, ".pulse/pulse.yaml").contains("- name: deps-audit\n"));
+
+        // Rewriting the broken file fixes it; the daemon then applies it.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "replace": "broken", "entry": {"name": "broken", "every": "1d", "brief": "Fixed."}}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(
+            body["schedule"]["origin"],
+            "repo:.pulse/automations/broken.yaml#broken"
+        );
+
+        // Removing a list item edits the list; the doubled name is held by
+        // the daemon until one of its two places goes, and removing takes
+        // the file first.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations/remove",
+            json!({"project": "demo", "name": "deps-audit"}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["path"], ".pulse/pulse.yaml");
+        assert_eq!(
+            git_in(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "pulse: remove automation deps-audit from .pulse/pulse.yaml"
+        );
+        assert!(!read(&dir, ".pulse/pulse.yaml").contains("deps-audit"));
+        let (code, body) = post(
+            s,
+            "/api/v1/automations/remove",
+            json!({"project": "demo", "name": "release-notes"}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["path"], ".pulse/automations/release-notes.yaml");
+        assert!(
+            !Path::new(&dir)
+                .join(".pulse/automations/release-notes.yaml")
+                .exists()
+        );
+        assert!(read(&dir, ".pulse/pulse.yaml").contains("- name: release-notes\n"));
+        let (code, body) = get(s, "/api/v1/automations?project=demo");
+        assert_eq!(code, 200, "{body}");
+        let p = &body["projects"][0];
+        assert_eq!(
+            p["automations"]["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["broken", "sweep"]
+        );
+        assert_eq!(
+            p["applied"]["schedules"],
+            json!(["release-notes", "broken", "sweep"])
+        );
+        // The list's own entry still names a skill the project lacks; the
+        // daemon holds it and says so, the way it would for any file.
+        assert_eq!(
+            p["applied"]["problems"],
+            json!(["schedule `release-notes`: No enabled skill \"release\" for demo"])
+        );
+        assert!(
+            p["schedules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["origin_name"] != "release-notes" || r["status"] == "ended"),
+            "a held entry has no live row"
+        );
     }
 
     #[test]
@@ -1991,10 +2423,10 @@ mod tests {
         let t = http::additions_store(false);
         let s = &t.store;
         let dir = project_with_repo(s, "demo");
-        std::fs::create_dir_all(Path::new(&dir).join(".pulse")).unwrap();
+        std::fs::create_dir_all(Path::new(&dir).join(".pulse/automations")).unwrap();
         std::fs::write(
-            Path::new(&dir).join(".pulse/pulse.yaml"),
-            "schedules:\n  - name: draft\n    every: 1d\n    brief: Not committed yet.\n",
+            Path::new(&dir).join(".pulse/automations/deps-audit.yaml"),
+            "every: 1d\nbrief: Not committed yet.\n",
         )
         .unwrap();
         let (code, body) = post(
@@ -2003,8 +2435,11 @@ mod tests {
             json!({"project": "demo", "entry": {"name": "deps-audit", "every": "1d", "brief": "Audit."}}),
         );
         assert_eq!(code, 400, "{body}");
-        assert_eq!(body["error"], ".pulse/pulse.yaml has uncommitted changes");
-        let text = std::fs::read_to_string(Path::new(&dir).join(".pulse/pulse.yaml")).unwrap();
+        assert_eq!(
+            body["error"],
+            ".pulse/automations/deps-audit.yaml has uncommitted changes"
+        );
+        let text = read(&dir, ".pulse/automations/deps-audit.yaml");
         assert!(text.contains("Not committed yet."), "{text}");
         assert_eq!(git_in(&dir, &["log", "--format=%s"]).trim(), "scripts");
     }
@@ -2027,22 +2462,22 @@ mod tests {
         let commit = body["commit"].as_str().unwrap().to_string();
         assert_eq!(git_in(&dir, &["rev-parse", "main"]).trim(), commit);
         assert_eq!(
-            git_in(&dir, &["show", "main:.pulse/pulse.yaml"]),
-            "schedules:\n  - name: deps-audit\n    every: 1d\n    brief: Audit.\n"
+            git_in(&dir, &["show", "main:.pulse/automations/deps-audit.yaml"]),
+            "every: 1d\nbrief: Audit.\n"
         );
         // The working tree and the feature branch are as they were.
         assert_eq!(
             git_in(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
             "feature"
         );
-        assert!(!Path::new(&dir).join(".pulse/pulse.yaml").exists());
+        assert!(!Path::new(&dir).join(".pulse").exists());
         assert_eq!(
             git_in(&dir, &["status", "--porcelain"]).trim(),
             "?? wip.txt"
         );
         assert_eq!(
             body["schedule"]["origin"],
-            "repo:.pulse/pulse.yaml#deps-audit"
+            "repo:.pulse/automations/deps-audit.yaml#deps-audit"
         );
     }
 
@@ -2099,10 +2534,13 @@ mod tests {
             json!({"project": "demo", "where": "repo", "move": id, "entry": {"name": "sweep", "title": "Sweep the findings", "every": "2w", "brief": "Walk the open findings."}}),
         );
         assert_eq!(code, 201, "{body}");
-        assert_eq!(body["schedule"]["origin"], "repo:.pulse/pulse.yaml#sweep");
+        assert_eq!(
+            body["schedule"]["origin"],
+            "repo:.pulse/automations/sweep.yaml#sweep"
+        );
         let old = schedules::get(s, &id).unwrap();
         assert_eq!(old.status, "ended");
-        assert_eq!(old.note, "moved to .pulse/pulse.yaml as sweep");
+        assert_eq!(old.note, "moved to .pulse/automations/sweep.yaml as sweep");
         let (code, body) = get(s, "/api/v1/automations");
         assert_eq!(code, 200);
         let rows = body["projects"][0]["schedules"].as_array().unwrap();

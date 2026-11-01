@@ -1,6 +1,7 @@
 import type {
   AutomationEntry,
   AutomationProject,
+  AutomationRepoFile,
   AutomationSchedule,
 } from "./api";
 
@@ -221,14 +222,83 @@ export function cleanEntry(e: AutomationEntry): AutomationEntry {
   };
 }
 
-// The file entry a schedule row came from, when the file still has it.
+// The repository entry a schedule row came from, when the repository still
+// has it: its own file under .pulse/automations/ first, else the item of the
+// `schedules:` list.
 export function fileEntryOf(
   p: AutomationProject,
   s: AutomationSchedule,
 ): AutomationEntry | null {
-  if (!s.origin_name || !p.file?.entries) return null;
-  const e = p.file.entries.find((x) => x.name === s.origin_name);
+  if (!s.origin_name) return null;
+  const f = p.automations?.files.find((x) => x.name === s.origin_name);
+  if (f?.entry) return entryFromFile(f.entry);
+  const e = p.file?.entries?.find((x) => x.name === s.origin_name);
   return e ? entryFromFile(e) : null;
+}
+
+// True for a path under the automations folder.
+export const inFolder = (path: string): boolean =>
+  path.startsWith(".pulse/automations/");
+
+// The label the daemon puts before a problem of one automation.
+const LABEL = /^schedule `([^`]*)`: /;
+
+// Everything wrong with one automation file: what the file itself shows and
+// what the daemon said about it on its last pass, without the label.
+export function fileProblems(
+  p: AutomationProject,
+  f: AutomationRepoFile,
+): string[] {
+  const out = [...f.problems];
+  for (const x of p.applied?.problems ?? []) {
+    const m = LABEL.exec(x);
+    if (m && m[1] === f.name) {
+      const text = x.slice(m[0].length);
+      if (!out.includes(text)) out.push(text);
+    }
+  }
+  return out;
+}
+
+// Where one automation file stands: live (a schedule runs from it), paused,
+// held (something is wrong with it, so the daemon leaves it), or pending
+// (the daemon has not applied it yet).
+export function fileState(
+  p: AutomationProject,
+  f: AutomationRepoFile,
+): {
+  state: "live" | "paused" | "held" | "pending";
+  words: string;
+  row: AutomationSchedule | null;
+} {
+  const row =
+    p.schedules.find((s) => s.status !== "ended" && s.origin_path === f.path) ??
+    null;
+  if (!f.entry || fileProblems(p, f).length)
+    return { state: "held", words: "held", row };
+  if (row)
+    return row.status === "paused"
+      ? { state: "paused", words: "paused", row }
+      : { state: "live", words: "live", row };
+  return { state: "pending", words: "not applied yet", row: null };
+}
+
+// The daemon's problems that no file of the page already shows: what it
+// said about the list file and about each automation file sits beside
+// them, so only the rest (a file it could not read, a name it found twice
+// in the list) needs its own notice.
+export function daemonProblems(p: AutomationProject): string[] {
+  const shown = new Set<string>(p.file?.problems ?? []);
+  const names = new Set<string>();
+  for (const f of p.automations?.files ?? []) {
+    names.add(f.name);
+    for (const x of f.problems) shown.add(x);
+  }
+  return (p.applied?.problems ?? []).filter((x) => {
+    if (shown.has(x) || shown.has(x.replace(LABEL, ""))) return false;
+    const m = LABEL.exec(x);
+    return !(m && names.has(m[1]));
+  });
 }
 
 // Where a schedule is kept, in the owner's words.

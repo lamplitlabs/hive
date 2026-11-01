@@ -78,6 +78,7 @@ struct ComputeListOut<'a> {
 #[derive(Serialize)]
 struct ManifestCheckOut<'a> {
     path: &'a str,
+    files: &'a [String],
     schedules: Vec<&'a str>,
     problems: &'a [String],
 }
@@ -105,7 +106,7 @@ pub fn register() {
         pulse_cli::register(Command { name:"msg".into(), group:"agents".into(), summary:"the conversation between the owner and a project's lead: send, list, read".into(), usage:"pulse msg send --project P [--task TASK-NNN] <text> | --file F [--choice LABEL[=reply|done|amend]]...\npulse msg list [--project P] [--task TASK-NNN] [--since MSG-ID] [--unread] [--json]\npulse msg read MSG-ID... (mark read for --agent)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_msg, flags:Some(msg_flags) });
         pulse_cli::register(Command { name:"compute".into(), group:"agents".into(), summary:"more machines for agents: request (agents), list, approve|deny (the owner)".into(), usage:"pulse compute request --project P [--size S] --hours N --reason WHY\npulse compute list [--project P] [--status S] [--json]\npulse compute approve CR-NNN [--words WHY]   (owner)\npulse compute deny CR-NNN [--words WHY]      (owner)\npulse compute providers [--json]             (the providers this binary can provision with)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_compute, flags:Some(compute_flags) });
         pulse_cli::register(Command { name:"schedule".into(), group:"agents".into(), summary:"a standing job for a project - queued again every cadence - or a check/watch script the daemon runs without an LLM: add, list, show, log, pause, resume, end, run".into(), usage:"pulse schedule add --project P --title T --every 30m|6h|1d|2w [--at HH:MM] [--kind task|improve|clean|reflect] [--brief TEXT | --brief-file F | stdin] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT] [--skill NAME]\npulse schedule add --project P --title T --every ... [--at HH:MM] --kind check|watch --script REL_PATH [--job-kind task|improve] [--brief TEXT | --brief-file F] [--tier 0|1] [--priority N] [--times N] [--run-as AGENT]\n    check: the script (committed on the default branch) exits 0 = green; anything else = red, one job to make it pass\n    watch: exit 0 and print nothing = nothing to do; print something = one job to handle it; non-zero = the watcher is broken\npulse schedule list [--project P] [--status active|paused|ended] [--json]\npulse schedule show SCHED-NNN [--json]\npulse schedule log SCHED-NNN                (the last output of a check or watch script)\npulse schedule pause SCHED-NNN [--note WHY]\npulse schedule resume SCHED-NNN\npulse schedule end SCHED-NNN [--note WHY]\npulse schedule run SCHED-NNN               (due now; the daemon queues its job, or runs its script, on the next tick)\n    --skill NAME: every job loads that pulse skill first and follows it; with no --brief the skill is the brief\n    a project's own .pulse/pulse.yaml keeps schedules too (pulse manifest); those show their origin and the file, not this command, changes them".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_schedule, flags:Some(schedule_flags) });
-        pulse_cli::register(Command { name:"manifest".into(), group:"agents".into(), summary:"the project's own PULSE file, .pulse/pulse.yaml: the schedules it keeps and the SKILL.md folders the daemon loads from the default branch: check, show, sync".into(), usage:"pulse manifest check [PATH] [--project P] [--json]   (a working copy's file; PATH defaults to .pulse/pulse.yaml here; --project adds the store's checks: skills, agents, scripts)\npulse manifest show --project P [--json]            (what the daemon last applied: the commit, its problems, the schedules and skills the repository keeps)\npulse manifest sync --project P [--json]            (apply the default branch now instead of waiting for the daemon's next pass)\n    the file: schedules: [{name, title, every, at, kind, brief, skill, script, job_kind, tier, priority, run_as, times, paused}]\n    skills: every <dir>/<name>/SKILL.md under .pulse/skills, .claude/skills, .github/skills or .agents/skills on the default branch\n    exit 1 when check finds a problem; check without --project needs no store, so it runs on any machine".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:run_manifest, flags:None });
+        pulse_cli::register(Command { name:"manifest".into(), group:"agents".into(), summary:"the project's own PULSE files, .pulse/automations/<name>.yaml and .pulse/pulse.yaml: the schedules they keep and the SKILL.md folders the daemon loads from the default branch: check, show, sync".into(), usage:"pulse manifest check [PATH] [--project P] [--json]   (a working copy's files; without PATH every .pulse/automations/*.yaml and .pulse/pulse.yaml here; --project adds the store's checks: skills, agents, scripts)\npulse manifest show --project P [--json]            (what the daemon last applied: the commit, its problems, the schedules and skills the repository keeps)\npulse manifest sync --project P [--json]            (apply the default branch now instead of waiting for the daemon's next pass)\n    one automation per file, .pulse/automations/<name>.yaml: {title, every, at, kind, brief, skill, script, job_kind, tier, priority, run_as, times, paused}; the file name is the automation's name\n    the list file, .pulse/pulse.yaml: schedules: [{name, ...the same fields}] and needs: [words]\n    skills: every <dir>/<name>/SKILL.md under .pulse/skills, .claude/skills, .github/skills or .agents/skills on the default branch\n    exit 1 when check finds a problem; check without --project needs no store, so it runs on any machine".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:run_manifest, flags:None });
         pulse_cli::register(Command { name:"watch".into(), group:"agents".into(), summary:"stream store events as they happen (Ctrl-C exits 0)".into(), usage:"pulse watch [--project P] [--area A] [--thread T] [--action GLOB] [--since ID] [--detail] [--interval 1s] [--json]".into(), aliases:vec![], no_store:false, read_only:true, raw:false, run:run_watch, flags:Some(watch_flags) });
     });
 }
@@ -535,9 +536,9 @@ pub fn run_manifest(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<(
             }
             print_manifest_status(c, &slug, status.as_ref())?;
             if schedules.is_empty() {
-                c.println("Schedules the file keeps: none.")?;
+                c.println("Schedules the files keep: none.")?;
             } else {
-                c.println("Schedules the file keeps:")?;
+                c.println("Schedules the files keep:")?;
                 for sc in &schedules {
                     let name = manifest::origin_name(&sc.origin).unwrap_or(&sc.title);
                     let mut line =
@@ -592,7 +593,7 @@ pub fn run_manifest(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<(
             c.println(synced.line())?;
             if !synced.problems.is_empty() {
                 c.println(format!(
-                    "Fix the file on {} and commit; the daemon applies the next commit by itself.",
+                    "Fix the files on {} and commit; the daemon applies the next commit by itself.",
                     synced.branch
                 ))?;
             }
@@ -642,11 +643,13 @@ fn manifest_store(c: &Context, writable: bool) -> Result<pulse_store::Store> {
     })
 }
 
-/// Reads a working copy's file and lists what the daemon would refuse:
-/// the YAML, every entry's fields, and with `--project` the store's checks
-/// too (the skill, the agent, the script on the default branch).
+/// Reads a working copy's PULSE files and lists what the daemon would
+/// refuse: the YAML, every entry's fields, and with `--project` the store's
+/// checks too (the skill, the agent, the script on the default branch).
+/// Without a path it reads `.pulse/pulse.yaml` and every file under
+/// `.pulse/automations/`; with one, that file alone.
 fn manifest_check(c: &mut Context, s: Option<&pulse_store::Store>, arg: &str) -> Result<()> {
-    let path = if arg.is_empty() {
+    let paths: Vec<String> = if arg.is_empty() {
         let found: Vec<&str> = manifest::MANIFEST_PATHS
             .iter()
             .copied()
@@ -658,86 +661,156 @@ fn manifest_check(c: &mut Context, s: Option<&pulse_store::Store>, arg: &str) ->
                 found[0], found[1], found[0]
             ))?;
         }
-        match found.first() {
-            Some(p) => (*p).to_string(),
-            None => {
-                return Err(pulse_cli::errorf(
-                    2,
-                    "No PULSE file here",
-                    &format!(
-                        "none of {} exists under the current directory",
-                        manifest::MANIFEST_PATHS.join(", ")
-                    ),
-                    "run it from the repository root, or name the file: pulse manifest check PATH",
-                )
-                .into());
-            }
-        }
-    } else {
-        arg.to_string()
-    };
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        pulse_cli::errorf(
-            2,
-            &format!("Cannot read {path}"),
-            &e.to_string(),
-            "check the path",
-        )
-    })?;
-    let mut problems = Vec::new();
-    let mut names = Vec::new();
-    let mut parsed = None;
-    if text.len() > manifest::FILE_LIMIT {
-        problems.push(format!(
-            "{path} is {} bytes; the daemon reads at most {}",
-            text.len(),
-            manifest::FILE_LIMIT
-        ));
-    }
-    match manifest::parse(&text) {
-        Ok(m) => {
-            problems.extend(manifest::static_problems(&m));
-            parsed = Some(m);
-        }
-        Err(e) => problems.push(format!("{path} could not be read: {e}")),
-    }
-    if let Some(m) = &parsed {
-        let held: std::collections::BTreeSet<String> = problems
-            .iter()
-            .filter_map(|p| p.strip_prefix("schedule `"))
-            .filter_map(|p| p.split('`').next())
-            .map(str::to_string)
+        let mut paths: Vec<String> = found
+            .first()
+            .map(|p| (*p).to_string())
+            .into_iter()
             .collect();
-        let slug = c.project.trim().to_string();
-        if let Some(s) = s {
-            crate::tasks::check_project(s, &slug)?;
+        let mut files: Vec<String> = std::fs::read_dir(manifest::AUTOMATIONS_DIR)
+            .map(|dir| {
+                dir.filter_map(Result::ok)
+                    .filter(|e| e.path().is_file())
+                    .map(|e| {
+                        format!(
+                            "{}/{}",
+                            manifest::AUTOMATIONS_DIR,
+                            e.file_name().to_string_lossy()
+                        )
+                    })
+                    .filter(|p| manifest::automation_stem(p).is_some())
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        paths.extend(files);
+        if paths.is_empty() {
+            return Err(pulse_cli::errorf(
+                2,
+                "No PULSE file here",
+                &format!(
+                    "neither {} nor a {}/<name>.yaml exists under the current directory",
+                    manifest::MANIFEST_PATHS.join(" or "),
+                    manifest::AUTOMATIONS_DIR
+                ),
+                "run it from the repository root, or name the file: pulse manifest check PATH",
+            )
+            .into());
         }
-        for e in &m.schedules {
-            let name = e.name.trim();
-            names.push(name);
-            let Some(s) = s else {
-                continue;
-            };
-            if held.contains(name) {
-                continue;
-            }
-            match schedules::check(s, &e.input(&slug, &path, &actor(c))) {
-                Ok(warning) if !warning.is_empty() => {
-                    problems.push(format!("schedule `{name}`: {warning}"));
+        paths
+    } else {
+        vec![arg.to_string()]
+    };
+    let mut problems = Vec::new();
+    // Every entry with the path that names it.
+    let mut entries: Vec<(manifest::Entry, String)> = Vec::new();
+    let mut needs = None;
+    for path in &paths {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            pulse_cli::errorf(
+                2,
+                &format!("Cannot read {path}"),
+                &e.to_string(),
+                "check the path",
+            )
+        })?;
+        if text.len() > manifest::FILE_LIMIT {
+            problems.push(format!(
+                "{path} is {} bytes; the daemon reads at most {}",
+                text.len(),
+                manifest::FILE_LIMIT
+            ));
+        }
+        // A file in an `automations` folder holds one automation, named by
+        // the file; any other is the list form.
+        let stem = std::path::Path::new(path)
+            .parent()
+            .and_then(|d| d.file_name())
+            .filter(|d| *d == "automations")
+            .and_then(|_| std::path::Path::new(path).file_stem())
+            .map(|s| s.to_string_lossy().to_string());
+        match stem {
+            Some(stem) => {
+                if !pulse_store::is_slug(&stem) {
+                    problems.push(format!(
+                        "{path}: the file name is the automation's name and must be a slug (lowercase letters, digits and dashes)"
+                    ));
+                    continue;
                 }
-                Ok(_) => {}
-                Err(err) => problems.push(format!(
-                    "schedule `{name}`: {}",
-                    manifest::first_line(&err.to_string())
-                )),
+                match manifest::parse_automation(&stem, &text) {
+                    Ok(e) => {
+                        if let Some((_, other)) =
+                            entries.iter().find(|(x, _)| x.name.trim() == stem)
+                        {
+                            problems.push(format!(
+                                "schedule `{stem}`: named in both {other} and {path}; keep one of them"
+                            ));
+                        } else {
+                            entries.push((e, path.clone()));
+                        }
+                    }
+                    Err(e) => problems.push(format!("{path} could not be read: {e}")),
+                }
             }
+            None => match manifest::parse(&text) {
+                Ok(m) => {
+                    needs = m.needs.clone();
+                    entries.extend(m.schedules.into_iter().map(|e| (e, path.clone())));
+                }
+                Err(e) => problems.push(format!("{path} could not be read: {e}")),
+            },
         }
     }
+    problems.extend(manifest::static_problems(&manifest::Manifest {
+        needs,
+        schedules: entries.iter().map(|(e, _)| e.clone()).collect(),
+    }));
+    let held: std::collections::BTreeSet<String> = problems
+        .iter()
+        .filter_map(|p| p.strip_prefix("schedule `"))
+        .filter_map(|p| p.split('`').next())
+        .map(str::to_string)
+        .collect();
+    let slug = c.project.trim().to_string();
+    if let Some(s) = s {
+        crate::tasks::check_project(s, &slug)?;
+    }
+    let mut names = Vec::new();
+    for (e, path) in &entries {
+        let name = e.name.trim();
+        names.push(name);
+        let Some(s) = s else {
+            continue;
+        };
+        if held.contains(name) {
+            continue;
+        }
+        match schedules::check(s, &e.input(&slug, path, &actor(c))) {
+            Ok(warning) if !warning.is_empty() => {
+                problems.push(format!("schedule `{name}`: {warning}"));
+            }
+            Ok(_) => {}
+            Err(err) => problems.push(format!(
+                "schedule `{name}`: {}",
+                manifest::first_line(&err.to_string())
+            )),
+        }
+    }
+    let heading = if paths.len() == 1 {
+        paths[0].clone()
+    } else {
+        format!(
+            "{} file{}: {}",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" },
+            paths.join(", ")
+        )
+    };
     if c.json {
         pulse_cli::write_json(
             &mut c.out,
             &ManifestCheckOut {
-                path: &path,
+                path: &paths[0],
+                files: &paths,
                 schedules: names,
                 problems: &problems,
             },
@@ -745,7 +818,7 @@ fn manifest_check(c: &mut Context, s: Option<&pulse_store::Store>, arg: &str) ->
     } else if problems.is_empty() {
         let n = names.len();
         let mut line = format!(
-            "{path}: sound; {n} schedule{}",
+            "{heading}: sound; {n} schedule{}",
             if n == 1 { "" } else { "s" }
         );
         if c.project.trim().is_empty() {
@@ -756,7 +829,7 @@ fn manifest_check(c: &mut Context, s: Option<&pulse_store::Store>, arg: &str) ->
         c.println(line)?;
     } else {
         c.println(format!(
-            "{path}: {} problem{}",
+            "{heading}: {} problem{}",
             problems.len(),
             if problems.len() == 1 { "" } else { "s" }
         ))?;
@@ -770,9 +843,14 @@ fn manifest_check(c: &mut Context, s: Option<&pulse_store::Store>, arg: &str) ->
         Err(pulse_cli::errorf(
             1,
             &format!(
-                "{} problem{} in {path}",
+                "{} problem{} in {}",
                 problems.len(),
-                if problems.len() == 1 { "" } else { "s" }
+                if problems.len() == 1 { "" } else { "s" },
+                if paths.len() == 1 {
+                    paths[0].clone()
+                } else {
+                    format!("{} files", paths.len())
+                }
             ),
             "the daemon would hold or refuse these entries",
             "fix the file; pulse help manifest lists the fields",
@@ -793,18 +871,34 @@ fn print_manifest_status(
             ))
             .map_err(Into::into);
     };
-    if st.path.is_empty() {
+    let files = match st.files.len() {
+        0 => String::new(),
+        1 => format!("1 file in {}/", manifest::AUTOMATIONS_DIR),
+        n => format!("{n} files in {}/", manifest::AUTOMATIONS_DIR),
+    };
+    if st.path.is_empty() && files.is_empty() {
         c.println(format!(
-            "{slug}: no {} on the default branch at {} (read {})",
+            "{slug}: no {} and no {}/ on the default branch at {} (read {})",
             manifest::MANIFEST_PATHS[0],
+            manifest::AUTOMATIONS_DIR,
             st.commit,
             st.at
         ))?;
-    } else {
+    } else if st.path.is_empty() {
+        c.println(format!("{slug}: {files} at {} (read {})", st.commit, st.at))?;
+    } else if files.is_empty() {
         c.println(format!(
             "{slug}: {} at {} (read {})",
             st.path, st.commit, st.at
         ))?;
+    } else {
+        c.println(format!(
+            "{slug}: {} and {files} at {} (read {})",
+            st.path, st.commit, st.at
+        ))?;
+    }
+    for f in &st.files {
+        c.println(format!("  {f}"))?;
     }
     if st.problems.is_empty() {
         c.println("Problems: none.")?;

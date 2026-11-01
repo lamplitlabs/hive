@@ -1,8 +1,8 @@
-//! The daemon's side of the project's own PULSE file (`pulse manifest`):
-//! once per pass, every project whose `.pulse/pulse.yaml` or skill folders
-//! changed on the default branch has them applied to the store, and the
-//! file's problems reach the project board when they appear, when they
-//! change and when they clear.
+//! The daemon's side of the project's own PULSE files (`pulse manifest`):
+//! once per pass, every project whose `.pulse/automations/`,
+//! `.pulse/pulse.yaml` or skill folders changed on the default branch has
+//! them applied to the store, and the files' problems reach the project
+//! board when they appear, when they change and when they clear.
 
 use pulse_tasks::manifest;
 use serde_json::json;
@@ -83,15 +83,11 @@ pub(crate) fn tend_manifest(
 /// The board post of a change in the problem set: what the file gets wrong,
 /// or that it is sound again.
 fn finding(synced: &manifest::Synced) -> (String, String) {
-    let file = if synced.path.is_empty() {
-        manifest::MANIFEST_PATHS[0].to_string()
-    } else {
-        synced.path.clone()
-    };
+    let file = synced.source();
     if synced.problems.is_empty() {
         let summary = format!("{file} is sound again at {}", synced.commit);
         let body = format!(
-            "The project's PULSE file and skill folders on {} ({}) applied with no problem.\n\nSchedules: {}.\nSkills: {}.\n\n`pulse manifest show --project {}` lists what the file keeps.",
+            "The project's PULSE files and skill folders on {} ({}) applied with no problem.\n\nSchedules: {}.\nSkills: {}.\n\n`pulse manifest show --project {}` lists what the files keep.",
             synced.branch,
             synced.commit,
             or_none(&synced.schedules.summary("ended")),
@@ -107,7 +103,7 @@ fn finding(synced: &manifest::Synced) -> (String, String) {
         if n == 1 { "" } else { "s" }
     );
     let mut body = format!(
-        "The daemon read the project's PULSE file and skill folders on {} ({}) and could not apply everything. A schedule with a problem stays as it was; the rest applied (schedules: {}; skills: {}).\n\n",
+        "The daemon read the project's PULSE files and skill folders on {} ({}) and could not apply everything. A schedule with a problem stays as it was; the rest applied (schedules: {}; skills: {}).\n\n",
         synced.branch,
         synced.commit,
         or_none(&synced.schedules.summary("ended")),
@@ -117,7 +113,7 @@ fn finding(synced: &manifest::Synced) -> (String, String) {
         body.push_str(&format!("- {p}\n"));
     }
     body.push_str(&format!(
-        "\nFix the file on {} and commit; the daemon applies the next commit by itself. `pulse manifest check` runs these checks on a working copy before the commit; `pulse manifest show --project {}` shows what is kept now.",
+        "\nFix the files on {} and commit; the daemon applies the next commit by itself. `pulse manifest check` runs these checks on a working copy before the commit; `pulse manifest show --project {}` shows what is kept now.",
         synced.branch, synced.project
     ));
     (summary, body)

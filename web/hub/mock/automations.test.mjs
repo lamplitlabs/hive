@@ -7,6 +7,7 @@ import {
   createAutomationsMock,
   everyMinutes,
   everyWords,
+  yamlFile,
   yamlItem,
 } from "./automations.mjs";
 
@@ -24,7 +25,7 @@ const LIST_KEYS = [
   "script_job_kinds",
   "script_kinds",
 ];
-const CHECK_KEYS = ["branch", "path", "problems", "warning", "yaml"];
+const CHECK_KEYS = ["branch", "form", "path", "problems", "warning", "yaml"];
 const WRITE_KEYS = [
   "branch",
   "commit",
@@ -98,12 +99,33 @@ test("yamlItem writes the hub's field order and leaves defaults out", () => {
   );
 });
 
-test("list carries every project and the limits", () => {
+test("yamlFile puts the fields at the top level, without the name", () => {
+  assert.equal(
+    yamlFile(entry()),
+    'title: Dependency audit\nevery: 1d\nat: "03:00"\nbrief: Audit the dependencies.\n',
+  );
+  assert.match(
+    yamlFile(entry({ brief: "one\ntwo", paused: true })),
+    /^title: Dependency audit\nevery: 1d\nat: "03:00"\nbrief: \|-\n  one\n  two\npaused: true\n$/,
+  );
+});
+
+test("list carries every project, the folder of each and the limits", () => {
   const { mock } = setup();
   const r = mock.list(new URLSearchParams());
   assert.equal(r.status, 200);
   assert.deepEqual(keys(r.body), LIST_KEYS);
   assert.equal(r.body.projects.length, 2);
+  const app = r.body.projects[0];
+  assert.equal(app.automations.dir, ".pulse/automations");
+  assert.deepEqual(
+    app.automations.files.map((f) => f.name),
+    ["docs-sweep", "nightly-audit", "site-check"],
+  );
+  assert.deepEqual(
+    app.applied.files,
+    app.automations.files.map((f) => f.path),
+  );
   assert.equal(
     mock.list(new URLSearchParams("project=demo-lib")).body.projects.length,
     1,
@@ -117,46 +139,101 @@ test("check names the problems and composes the YAML without writing", () => {
   assert.equal(ok.status, 200);
   assert.deepEqual(keys(ok.body), CHECK_KEYS);
   assert.deepEqual(ok.body.problems, []);
-  assert.equal(ok.body.path, ".pulse/pulse.yaml");
+  assert.equal(ok.body.path, ".pulse/automations/deps-audit.yaml");
+  assert.equal(ok.body.form, "file");
   assert.equal(ok.body.branch, "main");
+  assert.equal(ok.body.yaml, yamlFile(entry()));
   const bad = mock.check({
     project: "demo-app",
     entry: entry({ name: "nightly-audit", every: "5m", skill: "nope" }),
     where: "repo",
   });
   assert.ok(
-    bad.body.problems.some((p) =>
-      p.includes("already has an entry named nightly-audit"),
+    bad.body.problems.some(
+      (p) =>
+        p ===
+        ".pulse/automations/nightly-audit.yaml already holds an automation named `nightly-audit`; edit that one or pick another name",
     ),
+    bad.body.problems.join("; "),
   );
   assert.ok(bad.body.problems.some((p) => p.includes("under the floor")));
   assert.ok(bad.body.problems.some((p) => p.includes("skill: nope")));
-  assert.equal(
+  // A list item is edited where it is, so the YAML is an item of the list.
+  const item = mock.check({
+    project: "demo-app",
+    entry: entry({ name: "weekly-tidy", title: "Weekly tidy", every: "1w" }),
+    where: "repo",
+    replace: "weekly-tidy",
+  });
+  assert.equal(item.body.form, "list");
+  assert.equal(item.body.path, ".pulse/pulse.yaml");
+  assert.match(item.body.yaml, /^  - name: weekly-tidy\n/);
+  // Renaming it onto a name a file holds is refused.
+  const clash = mock.check({
+    project: "demo-app",
+    entry: entry({ name: "site-check" }),
+    where: "repo",
+    replace: "weekly-tidy",
+  });
+  assert.ok(
+    clash.body.problems.includes(
+      "`site-check` is already an automation (.pulse/automations/site-check.yaml); pick another name",
+    ),
+    clash.body.problems.join("; "),
+  );
+  assert.ok(
     mock
-      .check({ project: "demo-lib", entry: entry(), where: "repo" })
-      .body.warning.startsWith("There is no .pulse/pulse.yaml"),
-    true,
+      .check({
+        project: "demo-app",
+        entry: entry(),
+        where: "repo",
+        replace: "gone",
+      })
+      .body.problems.includes(
+        "demo-app on main has no automation named `gone` to replace",
+      ),
+  );
+  assert.equal(
+    mock.check({ project: "demo-lib", entry: entry(), where: "repo" }).body
+      .warning,
+    "",
   );
   assert.equal(mock.check({ project: "nope", entry: entry() }).status, 404);
   assert.equal(JSON.stringify(data), before, "a check writes nothing");
 });
 
-test("a repo write appends to the file, commits and gives the live row; an edit replaces", () => {
+test("a repo write adds a file of its own, commits and gives the live row; an edit rewrites it", () => {
   const { data, events, mock } = setup();
   const r = mock.write({ project: "demo-app", entry: entry(), where: "repo" });
   assert.equal(r.status, 201);
   assert.deepEqual(keys(r.body), WRITE_KEYS);
   assert.equal(r.body.where, "repo");
+  assert.equal(r.body.path, ".pulse/automations/deps-audit.yaml");
   assert.ok(r.body.commit);
   assert.equal(r.body.schedule.origin_name, "deps-audit");
+  assert.equal(
+    r.body.schedule.origin,
+    "repo:.pulse/automations/deps-audit.yaml#deps-audit",
+  );
   assert.equal(r.body.schedule.every_words, "every day at 03:00 UTC");
   const p = data.projects[0];
   assert.deepEqual(
-    p.file.entries.map((e) => e.name),
-    ["nightly-audit", "site-check", "weekly-tidy", "deps-audit"],
+    p.automations.files.map((f) => f.name),
+    ["deps-audit", "docs-sweep", "nightly-audit", "site-check"],
   );
-  assert.match(p.file.text, /- name: deps-audit\n/);
+  assert.deepEqual(
+    p.file.entries.map((e) => e.name),
+    ["weekly-tidy"],
+    "the list file is left alone",
+  );
+  const f = p.automations.files.find((x) => x.name === "deps-audit");
+  assert.equal(f.text, yamlFile(entry()));
   assert.equal(p.applied.commit, r.body.commit);
+  assert.ok(p.applied.files.includes(f.path));
+  assert.ok(
+    p.applied.problems.some((x) => x.startsWith("schedule `docs-sweep`:")),
+    "the held file stays reported",
+  );
   const e = mock.write({
     project: "demo-app",
     entry: entry({ title: "Dependency audit, weekly", every: "1w" }),
@@ -177,6 +254,47 @@ test("a repo write appends to the file, commits and gives the live row; an edit 
     null,
     "nothing to commit when the file already says it",
   );
+  // A rename moves the file in one commit: the old row ends, a new one
+  // starts, as in the hub.
+  const renamed = mock.write({
+    project: "demo-app",
+    entry: entry({ name: "deps-weekly", every: "1w" }),
+    where: "repo",
+    replace: "deps-audit",
+  });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.path, ".pulse/automations/deps-weekly.yaml");
+  assert.ok(!p.automations.files.some((x) => x.name === "deps-audit"));
+  assert.notEqual(renamed.body.schedule.id, r.body.schedule.id);
+  assert.equal(
+    p.schedules.find((s) => s.id === r.body.schedule.id).status,
+    "ended",
+  );
+  assert.equal(
+    renamed.body.schedule.origin,
+    "repo:.pulse/automations/deps-weekly.yaml#deps-weekly",
+  );
+  // A list item is edited in place and stays in the list.
+  const tidy = mock.write({
+    project: "demo-app",
+    entry: entry({
+      name: "weekly-tidy",
+      title: "Weekly tidy",
+      every: "2w",
+      kind: "clean",
+      brief: "Tidy.",
+    }),
+    where: "repo",
+    replace: "weekly-tidy",
+  });
+  assert.equal(tidy.status, 200);
+  assert.equal(tidy.body.path, ".pulse/pulse.yaml");
+  assert.equal(p.file.entries[0].every, "2w");
+  assert.match(
+    p.file.text,
+    /- name: weekly-tidy\n    title: Weekly tidy\n    every: 2w\n/,
+  );
+  assert.ok(!p.automations.files.some((x) => x.name === "weekly-tidy"));
   assert.ok(events.includes("schedule.add " + r.body.schedule.id));
 });
 
@@ -215,28 +333,46 @@ test("a store write adds a hand-set row; move puts it into the file and ends the
   });
   assert.equal(m.status, 201);
   const lib = data.projects[1];
-  assert.ok(lib.file, "the file is created");
-  assert.equal(lib.file.entries.length, 1);
+  assert.equal(lib.file, null, "no list file is created");
+  assert.equal(lib.automations.files.length, 1);
+  assert.equal(
+    lib.automations.files[0].path,
+    ".pulse/automations/deps-audit.yaml",
+  );
   const old = lib.schedules.find((s) => s.id === r.body.schedule.id);
   assert.equal(old.status, "ended");
-  assert.match(old.note, /^moved to \.pulse\/pulse\.yaml as deps-audit/);
-  assert.equal(m.body.schedule.origin_path, ".pulse/pulse.yaml");
+  assert.match(
+    old.note,
+    /^moved to \.pulse\/automations\/deps-audit\.yaml as deps-audit/,
+  );
+  assert.equal(
+    m.body.schedule.origin_path,
+    ".pulse/automations/deps-audit.yaml",
+  );
+  assert.ok(lib.applied, "the folder was applied");
+  assert.deepEqual(lib.applied.files, [".pulse/automations/deps-audit.yaml"]);
 });
 
-test("ending a file-kept schedule removes its entry; remove does the same by name", () => {
+test("ending a repo-kept schedule removes its file or list entry; remove does the same by name", () => {
   const { data, mock } = setup();
   const r = mock.action("SCHED-002", "end", { note: "the site moved" });
   assert.equal(r.status, 200);
   assert.equal(r.body.removed, "site-check");
   const p = data.projects[0];
-  assert.ok(!p.file.entries.some((e) => e.name === "site-check"));
+  assert.ok(!p.automations.files.some((f) => f.name === "site-check"));
   assert.equal(p.schedules.find((s) => s.id === "SCHED-002").status, "ended");
-  assert.doesNotMatch(p.file.text, /site-check/);
+  assert.ok(!p.applied.files.includes(".pulse/automations/site-check.yaml"));
   const x = mock.remove({ project: "demo-app", name: "weekly-tidy" });
   assert.equal(x.status, 200);
   assert.equal(p.schedules.find((s) => s.id === "SCHED-003").status, "ended");
+  assert.equal(p.file.entries.length, 0);
+  assert.doesNotMatch(p.file.text, /weekly-tidy/);
   assert.equal(
     mock.remove({ project: "demo-app", name: "weekly-tidy" }).status,
+    400,
+  );
+  assert.equal(
+    mock.remove({ project: "nope", name: "weekly-tidy" }).status,
     404,
   );
   assert.equal(mock.action("SCHED-999", "pause", {}).status, 404);

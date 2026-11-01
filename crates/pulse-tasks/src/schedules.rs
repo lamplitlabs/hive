@@ -540,15 +540,26 @@ fn update_as(
             "end it and add one for the other project",
         ));
     }
+    // The file that keeps a row may move it to another path (the list file
+    // to its own file); by hand the origin never changes.
+    let origin = if !check_owner
+        && sched.from_repo()
+        && input.origin.starts_with(pulse_store::REPO_ORIGIN)
+    {
+        input.origin.trim().to_string()
+    } else {
+        sched.origin.clone()
+    };
     let own = ScheduleInput {
         project: sched.project.clone(),
         author: author.to_string(),
-        origin: sched.origin.clone(),
+        origin,
         ..input.clone()
     };
     let v = validate(s, &own)?;
     let mut changed = Vec::new();
-    let differs: [(&str, bool); 12] = [
+    let differs: [(&str, bool); 13] = [
+        ("origin", v.origin != sched.origin),
         ("title", v.title != sched.title),
         ("kind", v.kind != sched.kind),
         ("brief", v.brief != sched.brief),
@@ -579,8 +590,9 @@ fn update_as(
     };
     let tx = s.begin()?;
     tx.execute(
-        "UPDATE schedules SET title = ?, kind = ?, brief = ?, tier = ?, priority = ?, every_minutes = ?, at_time = ?, max_runs = ?, script = ?, job_kind = ?, agent = ?, skill = ?, next_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE schedules SET origin = ?, title = ?, kind = ?, brief = ?, tier = ?, priority = ?, every_minutes = ?, at_time = ?, max_runs = ?, script = ?, job_kind = ?, agent = ?, skill = ?, next_at = ?, updated_at = ? WHERE id = ?",
         params![
+            v.origin,
             v.title,
             v.kind,
             v.brief,
@@ -615,7 +627,7 @@ fn update_as(
             "kind": v.kind,
             "every": format_every(v.every),
             "next_at": next_at,
-            "origin": sched.origin,
+            "origin": v.origin,
         }))?,
     )?;
     tx.commit()?;

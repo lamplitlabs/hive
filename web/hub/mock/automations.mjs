@@ -1,20 +1,23 @@
 // Automations mock for `automations` (crates/pulse-hub/src/automations.rs):
-// the standing jobs of each project, kept in `.pulse/pulse.yaml` or in the
-// store, with the checks the hub runs on a draft and the writes the console
-// makes. Pure functions over in-memory state, so the shape is testable
-// without a server: createAutomationsMock({...}) mirrors
-// mock/api/automations.json plus the deps server.mjs injects.
+// the standing jobs of each project, kept in the repository (one file per
+// automation under `.pulse/automations/`, or an item of the older
+// `schedules:` list in `.pulse/pulse.yaml`) or in the store, with the checks
+// the hub runs on a draft and the writes the console makes. Pure functions
+// over in-memory state, so the shape is testable without a server:
+// createAutomationsMock({...}) mirrors mock/api/automations.json plus the
+// deps server.mjs injects.
 //
 // The list body is { projects, limits, kinds, script_kinds, script_job_kinds };
-// check answers { yaml, problems, warning, path, branch }; a write answers
-// { where, schedule, yaml, warning, path?, branch?, commit?, synced? } (201 for
-// a new one, 200 for an edit, 400 with `problems` when a check fails); remove
-// and the actions answer the same shape plus `removed` where an entry left
-// the file. Those keys are the contract the owner console reads - freeze them
-// here.
+// check answers { yaml, problems, warning, path, branch, form }; a write
+// answers { where, schedule, yaml, warning, path?, branch?, commit?, synced? }
+// (201 for a new one, 200 for an edit, 400 with `problems` when a check
+// fails); remove and the actions answer the same shape plus `removed` where
+// an automation left the repository. Those keys are the contract the owner
+// console reads - freeze them here.
 const pad = (n, w) => String(n).padStart(w, "0");
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const SCRIPT_KINDS = ["check", "watch"];
+const DIR = ".pulse/automations";
 
 export const KINDS = ["task", "improve", "clean", "reflect"];
 export const SCRIPT_JOB_KINDS = ["task", "improve"];
@@ -65,31 +68,43 @@ function scalar(s) {
   return JSON.stringify(t);
 }
 
+// The fields after the name, one `key: value` line each at `indent`, in the
+// hub's order, defaults left out.
+function yamlFields(e, indent) {
+  const out = [];
+  const line = (k, v) => out.push(indent + k + ": " + v);
+  if (e.title) line("title", scalar(e.title));
+  if (e.every) line("every", scalar(e.every));
+  if (e.at) line("at", JSON.stringify(e.at));
+  if (e.kind && e.kind !== "task") line("kind", e.kind);
+  if (e.brief) {
+    if (e.brief.includes("\n")) {
+      line("brief", "|-");
+      for (const l of e.brief.split("\n")) out.push(l ? indent + "  " + l : "");
+    } else line("brief", scalar(e.brief));
+  }
+  if (e.skill) line("skill", scalar(e.skill));
+  if (e.script) line("script", scalar(e.script));
+  if (SCRIPT_KINDS.includes(e.kind) && e.job_kind && e.job_kind !== "task")
+    line("job_kind", e.job_kind);
+  if (e.tier !== undefined && e.tier !== 1) line("tier", String(e.tier));
+  if (e.priority) line("priority", String(e.priority));
+  if (e.run_as) line("run_as", scalar(e.run_as));
+  if (e.times) line("times", String(e.times));
+  if (e.paused) line("paused", "true");
+  return out.join("\n");
+}
+
 // One list item of `schedules:`, in the hub's field order, defaults left out.
 export function yamlItem(e, indent = "  ") {
-  const lines = ["- name: " + scalar(e.name)];
-  if (e.title) lines.push("  title: " + scalar(e.title));
-  lines.push("  every: " + scalar(e.every));
-  if (e.at) lines.push("  at: " + JSON.stringify(e.at));
-  if (e.kind && e.kind !== "task") lines.push("  kind: " + e.kind);
-  if (e.brief) {
-    if (e.brief.includes("\n"))
-      lines.push(
-        "  brief: |-",
-        ...e.brief.split("\n").map((l) => (l ? "    " + l : "")),
-      );
-    else lines.push("  brief: " + scalar(e.brief));
-  }
-  if (e.skill) lines.push("  skill: " + scalar(e.skill));
-  if (e.script) lines.push("  script: " + scalar(e.script));
-  if (SCRIPT_KINDS.includes(e.kind) && e.job_kind && e.job_kind !== "task")
-    lines.push("  job_kind: " + e.job_kind);
-  if (e.tier !== undefined && e.tier !== 1) lines.push("  tier: " + e.tier);
-  if (e.priority) lines.push("  priority: " + e.priority);
-  if (e.run_as) lines.push("  run_as: " + scalar(e.run_as));
-  if (e.times) lines.push("  times: " + e.times);
-  if (e.paused) lines.push("  paused: true");
-  return lines.map((l) => (l ? indent + l : l)).join("\n") + "\n";
+  const fields = yamlFields(e, indent + "  ");
+  return indent + "- name: " + scalar(e.name) + "\n" + fields + "\n";
+}
+
+// One file of `.pulse/automations/`: the fields at the top level; the
+// file's name is the automation's.
+export function yamlFile(e) {
+  return yamlFields(e, "") + "\n";
 }
 
 // deps: { data, now, emit } - data is the fixture (mutated in place), now()
@@ -120,7 +135,23 @@ export function createAutomationsMock({
       { length: 40 },
       () => "0123456789abcdef"[Math.floor(Math.random() * 16)],
     ).join("");
-  const liveNames = (p) => (p.file?.entries || []).map((e) => e.name);
+  const filesOf = (p) => p.automations?.files || [];
+  const fileOf = (p, name) => filesOf(p).find((f) => f.name === name);
+  const listEntryOf = (p, name) =>
+    (p.file?.entries || []).find((e) => e.name === name);
+  // Where a name lives: its own file first, else the list.
+  const holder = (p, name) => {
+    const f = fileOf(p, name);
+    if (f) return { form: "file", path: f.path, file: f };
+    const e = listEntryOf(p, name);
+    return e ? { form: "list", path: p.file.path, entry: e } : null;
+  };
+  const liveNames = (p) => {
+    const names = (p.file?.entries || []).map((e) => e.name);
+    for (const f of filesOf(p)) if (!names.includes(f.name)) names.push(f.name);
+    return names;
+  };
+  const pathOf = (name) => DIR + "/" + name + ".yaml";
 
   function list(query) {
     const slug = query.get("project") || "";
@@ -163,18 +194,9 @@ export function createAutomationsMock({
     };
   }
 
-  function check(body) {
-    const slug = String(body.project || "").trim();
-    const p = projectOf(slug);
-    if (!p)
-      return failure(
-        404,
-        "No such project",
-        "no project named " + slug + ".",
-        "Pick a project from the list.",
-      );
-    const where = body.where === "store" ? "store" : "repo";
-    const e = draft(body);
+  // What is wrong with an entry's own fields, the way the hub's static and
+  // store checks word it.
+  function fieldProblems(p, e) {
     const problems = [];
     if (!e.name) problems.push("name: a lowercase name is required");
     else if (!SLUG.test(e.name))
@@ -185,7 +207,9 @@ export function createAutomationsMock({
       );
     const minutes = everyMinutes(e.every);
     if (!e.every)
-      problems.push("every: how often it runs is required (30m, 6h, 1d, 2w)");
+      problems.push(
+        "needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)",
+      );
     else if (minutes === null)
       problems.push(
         "every: " +
@@ -211,7 +235,11 @@ export function createAutomationsMock({
       );
     if (SCRIPT_KINDS.includes(e.kind)) {
       if (!e.script)
-        problems.push("script: a " + e.kind + " needs the script to run");
+        problems.push(
+          "a " +
+            e.kind +
+            " needs `script`, the path of the script in the repository",
+        );
       else if (e.script.startsWith("/") || e.script.split("/").includes(".."))
         problems.push(
           "script: " + e.script + " must be a path inside the repository",
@@ -231,49 +259,93 @@ export function createAutomationsMock({
             data.script_job_kinds.join(", "),
         );
     } else if (!e.brief && !e.skill)
-      problems.push("brief: say what each job does, or name a skill");
+      problems.push(
+        "needs a `brief` (what each job does) or a `skill` to follow",
+      );
     if (e.skill && !p.options.skills.includes(e.skill))
-      problems.push("skill: " + e.skill + " is not on for " + slug);
+      problems.push("skill: " + e.skill + " is not on for " + p.slug);
     if (e.run_as && !p.options.agents.includes(e.run_as))
       problems.push(
-        "run_as: " + e.run_as + " is not a custom agent of " + slug,
+        "run_as: " + e.run_as + " is not a custom agent of " + p.slug,
       );
     if (e.tier !== 0 && e.tier !== 1)
       problems.push("tier: " + e.tier + " is not 0 or 1");
     if (e.times < 0) problems.push("times: must be 0 or more");
-    let path = "";
+    return problems;
+  }
+
+  function check(body) {
+    const slug = String(body.project || "").trim();
+    const p = projectOf(slug);
+    if (!p)
+      return failure(
+        404,
+        "No such project",
+        "no project named " + slug + ".",
+        "Pick a project from the list.",
+      );
+    const where = body.where === "store" ? "store" : "repo";
+    const e = draft(body);
+    const problems = fieldProblems(p, e);
+    let path = pathOf(e.name);
+    let form = "file";
     let branch = "";
-    let warning = "";
+    const warning = "";
     if (where === "repo") {
       if (!p.repo)
         problems.push(
           slug +
-            " has no checkout on this machine, so there is no file to write",
+            " has no checkout on this machine, so its files cannot be written here; keep the automation in the store instead",
         );
       else {
-        path = p.file?.path || ".pulse/pulse.yaml";
         branch = p.repo.branch;
-        const names = liveNames(p);
-        const replace = body.replace ? String(body.replace) : "";
-        if (replace && !names.includes(replace))
-          problems.push(path + " has no entry named " + replace);
-        else if (replace && replace !== e.name && names.includes(e.name))
-          problems.push(path + " already has an entry named " + e.name);
-        else if (!replace && names.includes(e.name))
+        if (p.file && !p.file.entries) {
+          problems.push(...p.file.problems);
           problems.push(
-            path +
-              " already has an entry named " +
-              e.name +
-              "; edit that one or pick another name",
+            "fix " +
+              p.file.path +
+              " by hand before the console writes to the repository",
           );
-        if (p.file?.problems?.length) problems.push(...p.file.problems);
-        if (!p.file)
-          warning =
-            "There is no " +
-            path +
-            " on " +
-            branch +
-            " yet; it is created with this entry.";
+        }
+        const taken = () => {
+          const h = holder(p, e.name);
+          if (h)
+            problems.push(
+              "`" +
+                e.name +
+                "` is already an automation (" +
+                h.path +
+                "); pick another name",
+            );
+        };
+        const replace = body.replace ? String(body.replace) : "";
+        if (replace) {
+          const old = holder(p, replace);
+          if (!old)
+            problems.push(
+              slug +
+                " on " +
+                branch +
+                " has no automation named `" +
+                replace +
+                "` to replace",
+            );
+          else if (old.form === "list") {
+            form = "list";
+            path = old.path;
+            if (replace !== e.name) taken();
+          } else if (replace === e.name) path = old.path;
+          else taken();
+        } else {
+          const h = holder(p, e.name);
+          if (h)
+            problems.push(
+              h.path +
+                " already holds an automation named `" +
+                e.name +
+                "`; edit that one or pick another name",
+            );
+        }
       }
     } else {
       const id = body.id ? String(body.id) : "";
@@ -301,11 +373,12 @@ export function createAutomationsMock({
         );
     }
     return ok(200, {
-      yaml: yamlItem(e),
+      yaml: form === "list" ? yamlItem(e) : yamlFile(e),
       problems,
       warning,
       path,
       branch,
+      form,
       _draft: e,
       _project: p,
       _where: where,
@@ -353,7 +426,8 @@ export function createAutomationsMock({
     };
   }
 
-  // The file's entry, from the draft, defaults dropped the way the file keeps them.
+  // The repository's entry, from the draft, defaults dropped the way a hand
+  // would leave them out.
   function fileEntry(e) {
     const out = { name: e.name, title: e.title, every: e.every };
     if (e.at) out.at = e.at;
@@ -370,46 +444,101 @@ export function createAutomationsMock({
     return out;
   }
 
-  function rewriteFile(p) {
+  const withDefaults = (e) => ({
+    kind: "task",
+    tier: 1,
+    priority: 0,
+    times: 0,
+    ...e,
+  });
+
+  function rewriteList(p) {
     const head = p.file.text.split("\nschedules:")[0];
-    const items = p.file.entries
-      .map((e) =>
-        yamlItem({ kind: "task", tier: 1, priority: 0, times: 0, ...e }),
-      )
-      .join("");
+    const items = p.file.entries.map((e) => yamlItem(withDefaults(e))).join("");
     p.file.text =
       (head.startsWith("schedules:") ? "" : head + "\n") +
       (p.file.entries.length ? "schedules:\n" + items : "schedules: []\n");
   }
 
-  // Apply the file to the rows the way the daemon's sync does: a live row per
-  // entry, ended rows for entries that left.
+  // A file of the folder from an entry, as the hub writes it.
+  function makeFile(e) {
+    return {
+      path: pathOf(e.name),
+      name: e.name,
+      text: yamlFile(withDefaults(e)),
+      entry: e,
+      problems: [],
+    };
+  }
+
+  function ensureFolder(p) {
+    if (!p.automations) p.automations = { dir: DIR, files: [] };
+    return p.automations;
+  }
+
+  // Apply the repository to the rows the way the daemon's sync does: a live
+  // row per automation that passes, ended rows for ones that left, held
+  // ones reported and left as they were.
   function sync(p, note) {
     const t = now();
-    const path = p.file.path;
-    const names = new Set(liveNames(p));
+    const sources = [];
+    for (const e of p.file?.entries || [])
+      sources.push({ entry: e, path: p.file.path });
+    for (const f of filesOf(p)) {
+      if (!f.entry) continue;
+      if (listEntryOf(p, f.name)) continue; // the daemon holds a name in both
+      sources.push({ entry: f.entry, path: f.path });
+    }
+    const problems = [];
+    const held = new Set();
+    for (const f of filesOf(p)) {
+      if (!f.entry) {
+        problems.push(...f.problems);
+        held.add(f.name);
+        continue;
+      }
+      if (listEntryOf(p, f.name)) {
+        problems.push(
+          "schedule `" +
+            f.name +
+            "`: named in both " +
+            p.file.path +
+            " and " +
+            f.path +
+            "; keep one of them",
+        );
+        held.add(f.name);
+        continue;
+      }
+      const d = draft({ entry: f.entry });
+      for (const x of fieldProblems(p, d)) {
+        problems.push("schedule `" + f.name + "`: " + x);
+        held.add(f.name);
+      }
+    }
+    const applied = [];
+    const present = new Set(sources.map((s) => s.entry.name));
     for (const s of p.schedules) {
       if (
-        s.origin_path === path &&
+        s.origin_path &&
         s.status !== "ended" &&
-        !names.has(s.origin_name)
+        !present.has(s.origin_name) &&
+        !held.has(s.origin_name)
       ) {
         Object.assign(s, {
           status: "ended",
-          note: note || "removed from " + path,
+          note: note || "removed from the project's PULSE file",
           next_at: "",
           updated_at: t,
         });
       }
     }
-    for (const e of p.file.entries) {
+    for (const { entry: e, path } of sources) {
+      if (held.has(e.name)) continue;
       const d = draft({ entry: e });
       const minutes = everyMinutes(d.every) || 1440;
       const live = p.schedules.find(
-        (s) =>
-          s.origin_name === e.name &&
-          s.origin_path === path &&
-          s.status !== "ended",
+        (s) => s.origin_name === e.name && s.status !== "ended",
       );
       const fields = {
         title: d.title || d.name,
@@ -426,6 +555,8 @@ export function createAutomationsMock({
         skill: d.skill,
         every: d.every,
         every_words: everyWords(minutes, d.at),
+        origin: "repo:" + path + "#" + e.name,
+        origin_path: path,
         updated_at: t,
       };
       if (live) {
@@ -435,31 +566,35 @@ export function createAutomationsMock({
         if (
           !d.paused &&
           live.status === "paused" &&
-          live.note === "paused by " + path
+          live.note.startsWith("paused by ")
         )
           Object.assign(live, { status: "active", note: "" });
       } else {
         p.schedules.push(
-          row(p, d, {
-            ...fields,
-            created_by: "daemon",
-            origin: "repo:" + path + "#" + e.name,
-            origin_name: e.name,
-            origin_path: path,
-          }),
+          row(p, d, { ...fields, created_by: "daemon", origin_name: e.name }),
         );
       }
+      applied.push(e.name);
     }
     p.applied = {
-      path,
+      path: p.file?.path || "",
+      files: filesOf(p).map((f) => f.path),
       commit: p.repo.commit,
       at: t,
-      problems: [],
-      schedules: p.file.entries.map((e) => e.name),
+      problems,
+      schedules: applied,
     };
+    const parts = [];
+    if (p.file) parts.push(p.file.path);
+    if (filesOf(p).length) parts.push(DIR + "/");
     return {
-      line: path + ": " + p.file.entries.length + " entries applied",
-      problems: [],
+      line:
+        parts.join(" and ") +
+        ": " +
+        applied.length +
+        " applied" +
+        (held.size ? ", " + held.size + " held" : ""),
+      problems,
     };
   }
 
@@ -521,24 +656,26 @@ export function createAutomationsMock({
       });
     }
     const replace = body.replace ? String(body.replace) : "";
-    if (!p.file)
-      p.file = {
-        path: ".pulse/pulse.yaml",
-        text: "schedules: []\n",
-        entries: [],
-        needs: [],
-        problems: [],
-      };
     const entry = fileEntry(e);
-    const before = JSON.stringify(p.file.entries);
-    if (replace)
+    const folder = ensureFolder(p);
+    const before = JSON.stringify([p.file?.entries, folder.files]);
+    if (rest.form === "list") {
+      // A list item is edited in place, under its new name if it changed.
       p.file.entries = p.file.entries.map((x) =>
         x.name === replace ? entry : x,
       );
-    else p.file.entries.push(entry);
+      if (JSON.stringify(p.file.entries) !== before) rewriteList(p);
+    } else {
+      if (replace && replace !== e.name)
+        folder.files = folder.files.filter((f) => f.name !== replace);
+      const made = makeFile(entry);
+      const i = folder.files.findIndex((f) => f.name === e.name);
+      if (i >= 0) folder.files[i] = made;
+      else folder.files.push(made);
+      folder.files.sort((a, b) => (a.name < b.name ? -1 : 1));
+    }
     let commit = null;
-    if (JSON.stringify(p.file.entries) !== before) {
-      rewriteFile(p);
+    if (JSON.stringify([p.file?.entries, folder.files]) !== before) {
       commit = nextCommit();
       p.repo.commit = commit;
     }
@@ -548,27 +685,24 @@ export function createAutomationsMock({
       if (moved && !moved.origin && moved.status !== "ended")
         Object.assign(moved, {
           status: "ended",
-          note: "moved to " + p.file.path + " as " + e.name,
+          note: "moved to " + rest.path + " as " + e.name,
           next_at: "",
           updated_at: t,
         });
     }
     const schedule =
       p.schedules.find(
-        (s) =>
-          s.status !== "ended" &&
-          s.origin_name === e.name &&
-          s.origin_path === p.file.path,
+        (s) => s.status !== "ended" && s.origin_name === e.name,
       ) || null;
     emit(
       "human:console",
       replace ? "schedule.update" : "schedule.add",
       schedule?.id || e.name,
-      { project: p.slug, path: p.file.path },
+      { project: p.slug, path: rest.path },
     );
     return ok(replace ? 200 : 201, {
       where,
-      path: p.file.path,
+      path: rest.path,
       branch: p.repo.branch,
       commit,
       yaml: rest.yaml,
@@ -589,35 +723,39 @@ export function createAutomationsMock({
         "no project named " + slug + ".",
         "Pick a project from the list.",
       );
-    if (!p.repo || !p.file)
+    if (!p.repo)
       return failure(
         404,
-        "No file",
-        slug +
-          " has no " +
-          (p.file?.path || ".pulse/pulse.yaml") +
-          " on this machine",
+        "No checkout",
+        slug + " has no checkout on this machine",
         "pulse schedule list --project " + slug,
       );
-    if (!liveNames(p).includes(name))
+    const h = holder(p, name);
+    if (!h)
       return failure(
-        404,
-        "No such entry",
-        p.file.path + " has no entry named " + name,
-        "pulse manifest check --project " + slug,
+        400,
+        "No automation " + name + " in " + slug,
+        p.repo.branch +
+          " holds " +
+          (liveNames(p).join(", ") || "no automation"),
+        "refresh the list",
       );
-    p.file.entries = p.file.entries.filter((x) => x.name !== name);
-    rewriteFile(p);
+    if (h.form === "list") {
+      p.file.entries = p.file.entries.filter((x) => x.name !== name);
+      rewriteList(p);
+    } else {
+      p.automations.files = p.automations.files.filter((f) => f.name !== name);
+    }
     const commit = nextCommit();
     p.repo.commit = commit;
     const synced = sync(p);
     emit("human:console", "schedule.end", name, {
       project: slug,
-      path: p.file.path,
+      path: h.path,
     });
     return ok(200, {
       where: "repo",
-      path: p.file.path,
+      path: h.path,
       branch: p.repo.branch,
       commit,
       removed: name,
@@ -651,7 +789,7 @@ export function createAutomationsMock({
       });
     else if (verb === "run") Object.assign(s, { next_at: t, updated_at: t });
     else if (verb === "end") {
-      if (s.origin_path && p.file && liveNames(p).includes(s.origin_name)) {
+      if (s.origin_path && p.repo && holder(p, s.origin_name)) {
         const r = remove({ project: p.slug, name: s.origin_name });
         if (note) s.note = note;
         return r;
