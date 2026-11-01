@@ -129,6 +129,7 @@ import {
   GROUP_ORDER,
   TONE_TEXT,
   entryGroup,
+  foldedEntries,
   listEntries,
   relShort,
   reportVerb,
@@ -204,8 +205,6 @@ const GROUP_TITLES: Record<ListGroup, string> = {
   finished: "Finished",
   archived: "Archived",
 };
-// Finished ones pile up: the list shows the latest few and unfolds on request.
-const FINISHED_SHOWN = 8;
 
 const LET_AGENT_DECIDE = "__decide__";
 
@@ -1046,6 +1045,7 @@ export function ChatPageClient() {
       currentTask={task}
       onOpen={open}
       onOpenTask={openTask}
+      onNew={() => open(null)}
       showArchived={showArchived}
       onToggleArchived={() => setShowArchived((v) => !v)}
     />
@@ -1070,14 +1070,19 @@ export function ChatPageClient() {
             : "Ask an agent to do something. It works in its own branch, shows every step, and asks when it needs you. Leave a conversation without a project and the agent picks the project itself."
         }
         actions={
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => open(null)}
-            disabled={!opened}
-          >
-            <MessageSquarePlusIcon /> New conversation
-          </Button>
+          // On a phone the list is off-screen while a conversation is open,
+          // so the header carries the button; on wide screens the list's
+          // own button is always in view.
+          opened ? (
+            <Button
+              type="button"
+              size="sm"
+              className="lg:hidden"
+              onClick={() => open(null)}
+            >
+              <MessageSquarePlusIcon /> New conversation
+            </Button>
+          ) : undefined
         }
       >
         Chat
@@ -1141,6 +1146,7 @@ function ConversationList({
   currentTask,
   onOpen,
   onOpenTask,
+  onNew,
   showArchived,
   onToggleArchived,
 }: {
@@ -1151,11 +1157,14 @@ function ConversationList({
   currentTask: string;
   onOpen: (id: string) => void;
   onOpenTask: (id: string) => void;
+  onNew: () => void;
   showArchived: boolean;
   onToggleArchived: () => void;
 }) {
   const now = useNow(15000);
-  const [allFinished, setAllFinished] = useState(false);
+  // Finished conversations start hidden: they pile up and crowd out what is
+  // still moving. The section header keeps the count and a Show/Hide.
+  const [showFinished, setShowFinished] = useState(false);
   // One list: tasks and conversations together, by what moved last, in the
   // section of their state - the same words for both.
   const entries = useMemo(() => listEntries(rows, tasks), [rows, tasks]);
@@ -1163,20 +1172,22 @@ function ConversationList({
     g,
     entries: entries.filter((e) => entryGroup(e) === g),
   })).filter((x) => x.entries.length);
+  const composing = !current && !currentTask;
   return (
     <div className="grid min-w-0 gap-2">
-      <div className="flex items-center justify-between px-1">
-        <h2 className="text-[13px] font-semibold tracking-wide text-muted-foreground uppercase">
-          Conversations
-        </h2>
-        <button
-          type="button"
-          className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-          onClick={onToggleArchived}
-        >
-          {showArchived ? "Hide archived" : "Show archived"}
-        </button>
-      </div>
+      <Button
+        type="button"
+        variant={composing ? "secondary" : "default"}
+        className="w-full justify-start gap-2"
+        onClick={onNew}
+        aria-current={composing ? "page" : undefined}
+      >
+        <MessageSquarePlusIcon className="size-4" />
+        New conversation
+      </Button>
+      <h2 className="px-1 pt-1 text-[13px] font-semibold tracking-wide text-muted-foreground uppercase">
+        Conversations
+      </h2>
       {loading ? (
         <SkeletonRows n={4} />
       ) : entries.length === 0 ? (
@@ -1188,9 +1199,9 @@ function ConversationList({
         </EmptyState>
       ) : (
         groups.map(({ g, entries: all }) => {
-          const folded =
-            g === "finished" && !allFinished && all.length > FINISHED_SHOWN;
-          const shown = folded ? all.slice(0, FINISHED_SHOWN) : all;
+          const foldable = g === "finished";
+          const folded = foldable && !showFinished;
+          const shown = foldedEntries(all, g, folded, currentTask || current);
           return (
             <section
               key={g}
@@ -1200,45 +1211,57 @@ function ConversationList({
               <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
                 {GROUP_TITLES[g]}
                 <span className="tnum font-normal">{all.length}</span>
+                {foldable ? (
+                  <button
+                    type="button"
+                    className="ml-auto font-normal normal-case tracking-normal text-xs underline-offset-4 hover:text-foreground hover:underline"
+                    aria-expanded={!folded}
+                    onClick={() => setShowFinished((v) => !v)}
+                  >
+                    {folded ? "Show" : "Hide"}
+                  </button>
+                ) : null}
               </h3>
-              <ul className="grid min-w-0 gap-1.5" role="list">
-                {shown.map((e, i) =>
-                  e.kind === "task" ? (
-                    <TaskItem
-                      key={e.task.id}
-                      t={e.task}
-                      index={i}
-                      active={e.task.id === currentTask}
-                      now={now}
-                      onOpen={onOpenTask}
-                    />
-                  ) : (
-                    <ConversationItem
-                      key={e.family.c.id}
-                      c={e.family.c}
-                      subs={e.family.children}
-                      index={i}
-                      active={e.family.c.id === current}
-                      current={current}
-                      now={now}
-                      onOpen={onOpen}
-                    />
-                  ),
-                )}
-              </ul>
-              {folded ? (
-                <button
-                  type="button"
-                  className="justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                  onClick={() => setAllFinished(true)}
-                >
-                  Show all {all.length} finished
-                </button>
+              {shown.length ? (
+                <ul className="grid min-w-0 gap-1.5" role="list">
+                  {shown.map((e, i) =>
+                    e.kind === "task" ? (
+                      <TaskItem
+                        key={e.task.id}
+                        t={e.task}
+                        index={i}
+                        active={e.task.id === currentTask}
+                        now={now}
+                        onOpen={onOpenTask}
+                      />
+                    ) : (
+                      <ConversationItem
+                        key={e.family.c.id}
+                        c={e.family.c}
+                        subs={e.family.children}
+                        index={i}
+                        active={e.family.c.id === current}
+                        current={current}
+                        now={now}
+                        onOpen={onOpen}
+                      />
+                    ),
+                  )}
+                </ul>
               ) : null}
             </section>
           );
         })
       )}
+      {!loading ? (
+        <button
+          type="button"
+          className="justify-self-start px-1 pt-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          onClick={onToggleArchived}
+        >
+          {showArchived ? "Hide archived" : "Show archived"}
+        </button>
+      ) : null}
     </div>
   );
 }
