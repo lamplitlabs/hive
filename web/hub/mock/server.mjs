@@ -205,6 +205,7 @@ async function init() {
   state.mcpLogins = new Map();
   state.mcpOptions = await loadJson("mcp/options.json");
   state.skills = (await loadJson("skills.json")).skills;
+  state.memory = await loadJson("memory.json");
   const org = await loadJson("org.json");
   // An owner-set goal the fixture seeds (ADR-040) lives in state.goals like one set from the console, so GET goal, the org rows and the registry rows agree.
   for (const p of org.projects)
@@ -1320,6 +1321,12 @@ async function handle(req, res) {
         String(e.message),
         "send a JSON object",
       );
+    }
+    // Memory (crates/pulse-hub/src/memory_api.rs): remember appends a dated
+    // bullet to one file, forget removes the one entry whose line contains
+    // the text; both answer with the file as GET memory lists it.
+    if (segs[0] === "memory" && segs.length <= 2) {
+      return memoryWrite(res, segs, body);
     }
     // The Chat page's two switches on a conversation: Auto (approve tools
     // without asking) and Lockdown (sandbox). The hub flips the row and the
@@ -3645,7 +3652,7 @@ async function handle(req, res) {
       405,
       "no such write",
       req.method + " " + url.pathname + " is not an owner action",
-      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat/<id>/auto|lockdown",
+      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat/<id>/auto|lockdown, memory, memory/forget",
     );
   }
 
@@ -4316,6 +4323,9 @@ async function handle(req, res) {
       );
     }
     return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
+  }
+  if (segs[0] === "memory" && segs.length === 1) {
+    return send(res, 200, memoryView());
   }
   if (segs[0] === "skills") {
     if (segs.length === 1)
@@ -5129,6 +5139,104 @@ function skillValidate(row, except) {
       "Name where the secret lives (a reference, an env var) instead of pasting it.",
     ];
   return null;
+}
+
+// ----- Memory (what agents remembered) -----------------------------------
+// The fixture is the files as the hub lists them; writes change the in-memory
+// copy the way crates/pulse-harness/src/memory.rs changes the Markdown.
+function memoryView() {
+  const files = state.memory.files;
+  return {
+    ...state.memory,
+    total: files.reduce((n, f) => n + f.entries.length, 0),
+    files,
+  };
+}
+
+function memoryWrite(res, segs, body) {
+  const text = String(body.text ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+  if (!text)
+    return fail(
+      res,
+      400,
+      "Invalid text",
+      "text must be a non-empty string.",
+      "Send a JSON object with a valid text.",
+    );
+  const scope = String(body.scope ?? "");
+  const key = String(body.key ?? "").trim();
+  const wantUser = scope === "user" || (!scope && (!key || key === "user"));
+  const file = wantUser
+    ? state.memory.files.find((f) => f.kind === "user")
+    : state.memory.files.find((f) => f.key === key);
+  if (!file)
+    return fail(
+      res,
+      key ? 404 : 400,
+      key ? "No memory " + key : "A key is required",
+      key
+        ? "No project or memory file goes by that key."
+        : "A project memory needs the key of the file (the project's slug).",
+      key ? "Pick a file the memory list shows." : 'Send key: "<slug>" or scope: "user".',
+    );
+  const stamp = now();
+  if (segs.length === 1) {
+    if (text.length > state.memory.limits.text)
+      return fail(
+        res,
+        400,
+        text.length + " characters is too long for one memory; keep it under " + state.memory.limits.text + " (a fact, not an essay)",
+        "A memory is one fact, not an essay.",
+        "Keep it under " + state.memory.limits.text + " characters.",
+      );
+    const day = stamp.slice(0, 10);
+    if (!file.entries.some((e) => e.text === text)) {
+      file.entries.push({ day, text, line: "[" + day + "] " + text });
+      file.exists = true;
+      file.size += text.length + 16;
+      file.updated_at = stamp;
+      emit("human", "memory.remembered", file.key, {
+        scope: file.scope,
+        file: file.path,
+        count: file.entries.length,
+        from: "hub",
+      });
+    }
+    return send(res, 201, { file, count: file.entries.length });
+  }
+  if (segs[1] !== "forget")
+    return fail(res, 404, "Unknown API route", "That owner-console route does not exist.", "Use an /api/v1 route.");
+  const lower = text.toLowerCase();
+  const hits = file.entries.filter((e) => e.line.toLowerCase().includes(lower));
+  if (hits.length === 0)
+    return fail(
+      res,
+      404,
+      "nothing remembered contains " + JSON.stringify(text),
+      "No entry in that file contains the text.",
+      "Reload the page; another run may have forgotten it already.",
+    );
+  if (hits.length > 1)
+    return fail(
+      res,
+      409,
+      hits.length + " memories contain " + JSON.stringify(text) + "; give more of the one to forget",
+      "More than one entry matches, so none was removed.",
+      "Give more of the one to forget.",
+    );
+  file.entries = file.entries.filter((e) => e !== hits[0]);
+  file.size = Math.max(0, file.size - hits[0].line.length - 3);
+  file.updated_at = stamp;
+  emit("human", "memory.forgotten", file.key, {
+    scope: file.scope,
+    file: file.path,
+    count: file.entries.length,
+    from: "hub",
+  });
+  return send(res, 200, { file, count: file.entries.length });
 }
 
 function skillWrite(req, res, segs, q, body) {

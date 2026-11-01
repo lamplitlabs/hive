@@ -24,12 +24,23 @@ const outDir = process.env.PULSE_HUB_OUT_DIR
 
 const git = (args) => execFileSync("git", args, { cwd: hubRoot, encoding: "utf8" }).trim();
 
-// The tree object hash of the committed src/ this build stands on. A clean
-// src/ means the working tree matches HEAD, so the hash names exactly what
-// was built; a dirty src/ cannot be named by a committed tree, so stamp
-// "dirty" and let the test fall back to the commit time.
-const clean = git(["status", "--porcelain", "--", "src/"]) === "";
-const stamp = clean ? `src-tree ${git(["rev-parse", "HEAD^{tree}:./src"])}` : `dirty ${new Date().toISOString()}`;
+// The tree object hash of the src/ this build stands on. A clean src/ means
+// the working tree matches HEAD, so HEAD's tree names exactly what was
+// built. When every change under src/ is staged (the second status column
+// blank: the working tree matches the index), the index names it instead -
+// `git write-tree --prefix` hashes the staged src/ as the commit about to
+// carry it will, which is how src/ and out/ land in one commit with a real
+// stamp (crates/pulse-hub/src/server.rs accepts the same hash). Unstaged
+// edits cannot be named by any tree, so stamp "dirty" and let the test fall
+// back to the commit time.
+const status = git(["status", "--porcelain", "--", "src/"]);
+const staged = status !== "" && status.split("\n").every((l) => l[1] === " ");
+const stamp =
+  status === ""
+    ? `src-tree ${git(["rev-parse", "HEAD^{tree}:./src"])}`
+    : staged
+      ? `src-tree ${git(["write-tree", "--prefix=" + git(["rev-parse", "--show-prefix"]) + "src"])}`
+      : `dirty ${new Date().toISOString()}`;
 
 writeFileSync(join(outDir, ".build-stamp"), stamp + "\n");
 console.log(`build stamp: ${stamp}`);

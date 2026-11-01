@@ -1,0 +1,133 @@
+{
+  "on": true,
+  "dir": "~/.pulse/memory",
+  "limits": { "text": 600, "file": 65536 },
+  "total": 11,
+  "files": [
+    {
+      "key": "user",
+      "kind": "user",
+      "project": "",
+      "scope": "user",
+      "path": "~/.pulse/memory/user.md",
+      "exists": true,
+      "size": 412,
+      "updated_at": "2026-09-05T16:40:00Z",
+      "entries": [
+        {
+          "day": "2026-09-01",
+          "text": "Prefers short replies: what was done, what was found, what is next. No report headings.",
+          "line": "[2026-09-01] Prefers short replies: what was done, what was found, what is next. No report headings."
+        },
+        {
+          "day": "2026-09-03",
+          "text": "Never force-push or rewrite a shared branch; ask before any destructive git command.",
+          "line": "[2026-09-03] Never force-push or rewrite a shared branch; ask before any destructive git command."
+        },
+        {
+          "day": "2026-09-05",
+          "text": "Release-age rule: adopt a dependency release only once it is at least 3 days old.",
+          "line": "[2026-09-05] Release-age rule: adopt a dependency release only once it is at least 3 days old."
+        }
+      ]
+    },
+    {
+      "key": "conversations",
+      "kind": "conversations",
+      "project": "",
+      "scope": "project",
+      "path": "~/.pulse/memory/conversations.md",
+      "exists": true,
+      "size": 180,
+      "updated_at": "2026-09-04T09:12:00Z",
+      "entries": [
+        {
+          "day": "2026-09-04",
+          "text": "Screenshots for the owner go in $PULSE_ARTIFACTS; the hub shows that folder beside the chat.",
+          "line": "[2026-09-04] Screenshots for the owner go in $PULSE_ARTIFACTS; the hub shows that folder beside the chat."
+        }
+      ]
+    },
+    {
+      "key": "demo-app",
+      "kind": "project",
+      "project": "demo-app",
+      "scope": "project",
+      "path": "~/.pulse/memory/demo-app.md",
+      "exists": true,
+      "size": 1290,
+      "updated_at": "2026-09-06T21:05:00Z",
+      "entries": [
+        {
+          "day": "2026-09-01",
+          "text": "`npm test` touches tracked files under out/; run `git checkout -- out/` before committing.",
+          "line": "[2026-09-01] `npm test` touches tracked files under out/; run `git checkout -- out/` before committing."
+        },
+        {
+          "day": "2026-09-02",
+          "text": "The price cache lives in src/lib/prices.ts, not in the API layer; its TTL is 5 minutes.",
+          "line": "[2026-09-02] The price cache lives in src/lib/prices.ts, not in the API layer; its TTL is 5 minutes."
+        },
+        {
+          "day": "",
+          "text": "Hand-written by the owner: the staging database is read-only on weekends.",
+          "line": "Hand-written by the owner: the staging database is read-only on weekends."
+        },
+        {
+          "day": "2026-09-04",
+          "text": "Flake: checkout.test.ts \"applies the coupon once\" fails under load and passes alone; rerun before investigating.",
+          "line": "[2026-09-04] Flake: checkout.test.ts \"applies the coupon once\" fails under load and passes alone; rerun before investigating."
+        },
+        {
+          "day": "2026-09-05",
+          "text": "The verify command is `npm run check` (typecheck + lint + build to a scratch dir + tests), about 4 minutes.",
+          "line": "[2026-09-05] The verify command is `npm run check` (typecheck + lint + build to a scratch dir + tests), about 4 minutes."
+        },
+        {
+          "day": "2026-09-06",
+          "text": "Playwright screenshots work headless with Microsoft Edge when no cached chromium is present.",
+          "line": "[2026-09-06] Playwright screenshots work headless with Microsoft Edge when no cached chromium is present."
+        }
+      ]
+    },
+    {
+      "key": "demo-lib",
+      "kind": "project",
+      "project": "demo-lib",
+      "scope": "project",
+      "path": "~/.pulse/memory/demo-lib.md",
+      "exists": false,
+      "size": 0,
+      "updated_at": "",
+      "entries": []
+    },
+    {
+      "key": "pulse",
+      "kind": "project",
+      "project": "pulse",
+      "scope": "project",
+      "path": "~/.pulse/memory/pulse.md",
+      "exists": false,
+      "size": 0,
+      "updated_at": "",
+      "entries": []
+    },
+    {
+      "key": "old-shop",
+      "kind": "project",
+      "project": "",
+      "scope": "project",
+      "path": "~/.pulse/memory/old-shop.md",
+      "exists": true,
+      "size": 96,
+      "updated_at": "2026-07-14T08:00:00Z",
+      "entries": [
+        {
+          "day": "2026-07-14",
+          "text": "The shop's checkout runs on the legacy server; deploys go through deploy.sh.",
+          "line": "[2026-07-14] The shop's checkout runs on the legacy server; deploys go through deploy.sh."
+        }
+      ]
+    }
+  ]
+}

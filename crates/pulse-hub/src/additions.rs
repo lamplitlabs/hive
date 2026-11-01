@@ -69,6 +69,7 @@ impl Handler {
             "automations" => self.addition_automations(w, r, parts),
             "hygiene" => self.addition_hygiene(w, r, parts),
             "mcp" => self.addition_mcp(w, r, parts),
+            "memory" => self.addition_memory(w, r, parts),
             "skills" => self.addition_skills(w, r, parts),
             "service" => self.addition_service(w, r, parts),
             _ => return false,

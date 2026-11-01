@@ -57,6 +57,7 @@ pub mod leads_api;
 pub mod lifecycle;
 pub mod machines;
 pub mod mcp;
+pub mod memory_api;
 pub mod privacy;
 pub mod project_goal;
 pub mod read;

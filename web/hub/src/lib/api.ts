@@ -3060,6 +3060,52 @@ export interface SkillInput {
 
 export type SkillPatch = Partial<SkillInput>;
 
+// ----- Memory: what agents remembered across runs (`/api/v1/memory`) -------
+// One Markdown file of dated bullets per project under ~/.pulse/memory/, one
+// for the owner that every project reads, one shared by chats without a
+// project. The harness reads them into every run's system prompt; agents
+// extend them with the `memory` tool. The hub lists them and writes the way
+// the tool does (crates/pulse-hub/src/memory_api.rs).
+
+export interface MemoryEntry {
+  day: string; // "2026-01-02" when the tool wrote it; "" for a hand-written line
+  text: string; // the fact without the day
+  line: string; // the whole bullet as the file has it (what forget matches)
+}
+
+export type MemoryFileKind = "user" | "conversations" | "project";
+
+export interface MemoryFile {
+  key: string; // the file's name without .md; what writes name
+  kind: MemoryFileKind;
+  project: string; // the registered project's slug; "" for the user's, the shared, or an orphan file
+  scope: "user" | "project";
+  path: string; // ~/.pulse/memory/<key>.md
+  exists: boolean;
+  size: number; // bytes on disk
+  updated_at: string; // ISO; "" when the file does not exist
+  entries: MemoryEntry[]; // oldest first
+}
+
+export interface MemoryPayload {
+  on: boolean; // harness.memory is not off
+  dir: string;
+  limits: { text: number; file: number };
+  total: number;
+  files: MemoryFile[];
+}
+
+export interface MemoryWrite {
+  key?: string; // the file; "user" or omitted with scope "user" is the owner's
+  scope?: "user" | "project";
+  text: string;
+}
+
+export interface MemoryWritten {
+  file: MemoryFile;
+  count: number;
+}
+
 // ----- Automations: the standing jobs of a project (`pulse schedule`,
 // `.pulse/automations/<name>.yaml`; GET/POST /api/v1/automations) ------------
 
@@ -3445,6 +3491,11 @@ export const writes = {
     patch<{ skill: Skill }>("skills/" + enc(id), input),
   setSkillStatus: (id: string, status: McpStatus) =>
     post<{ skill: Skill }>("skills/" + enc(id) + "/status", { status }),
+  // Memory: the same writes an agent's `memory remember` / `memory forget` make.
+  rememberMemory: (input: MemoryWrite) =>
+    post<MemoryWritten>("memory", input),
+  forgetMemory: (input: MemoryWrite) =>
+    post<MemoryWritten>("memory/forget", input),
   // Automations: the same checks and writes `pulse schedule` and the daemon's
   // manifest sync make; `check` composes the YAML without writing anything.
   checkAutomation: (input: AutomationWrite) =>

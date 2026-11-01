@@ -6,6 +6,7 @@ import { Suspense, useEffect } from "react";
 import {
   BookOpenIcon,
   BotIcon,
+  BrainIcon,
   CalendarClockIcon,
   ChevronDownIcon,
   FolderIcon,
@@ -134,6 +135,13 @@ const SYSTEM: NavItem[] = [
     hint: "Standing jobs on a schedule, kept in each project's PULSE file",
     icon: CalendarClockIcon,
     match: (p) => p.startsWith("/automations"),
+  },
+  {
+    href: "/memory/",
+    label: "Memory",
+    hint: "What agents remembered across runs, file by file",
+    icon: BrainIcon,
+    match: (p) => p.startsWith("/memory"),
   },
   {
     href: "/settings/",
