@@ -833,10 +833,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut env = env_in(dir.path());
         let start = Instant::now();
+        // The timeout must leave the shell time to fork and write bg.pid:
+        // a shell killed first never writes it, so no wait after the fact
+        // helps. Under a loaded verify 200ms and 500ms lost that race
+        // (10-20% of runs with 36-48 CPU hogs); 1s and 2s never did.
         let obs = env.execute(
             &CancelToken::new(),
             "sleep 300 & echo $! > bg.pid; sleep 300",
-            Duration::from_millis(200),
+            Duration::from_secs(2),
         );
         assert!(obs.timed_out);
         assert_eq!(obs.exit_code, -1);
