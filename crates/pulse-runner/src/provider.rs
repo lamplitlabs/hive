@@ -481,6 +481,17 @@ mod tests {
     use crate::test_helpers_environment::drained_by_login;
     use crate::test_helpers_provider::*;
 
+    /// The compute harness with the machine sweep off: the daemon pass's landing-maintenance
+    /// sweep (`tend_sweep`) otherwise walks the real `$HOME` runner folders and waits on each
+    /// installed runner's `--version`, and `DaemonMaintenance::finish` holds the test for it -
+    /// seconds a pass, minutes across these tests under `cargo test --workspace`. The compute
+    /// sweep these tests exercise is separate (`compute::sweep_due`) and stays on.
+    fn compute_harness(s: &pulse_store::Store, settings: &[(&str, &str)]) -> ComputeHarness {
+        let h = new_compute_harness(s, settings);
+        set_setting(s, "daemon.sweep", "off");
+        h
+    }
+
     const TEST_HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKBLOCKB root@pulse";
 
     #[test]
@@ -597,7 +608,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(
+        let h = compute_harness(
             &s,
             &[
                 ("compute.provider", "aws"),
@@ -667,7 +678,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(
+        let h = compute_harness(
             &s,
             &[
                 ("compute.provider", "gcp"),
@@ -735,7 +746,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(&s, &[("compute.provider", "multipass")]);
+        let h = compute_harness(&s, &[("compute.provider", "multipass")]);
         let mp = new_fake_multipass();
         let _fake = install_fake(crate::multipass::set_run_multipass, {
             let mp = mp.clone();
@@ -774,7 +785,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(
+        let h = compute_harness(
             &s,
             &[
                 ("compute.provider", "gcp"),
@@ -825,7 +836,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(&s, &[("compute.provider", "multipass")]);
+        let h = compute_harness(&s, &[("compute.provider", "multipass")]);
         let _old_wait = set_provision_wait(std::time::Duration::from_millis(1500));
         let mp = new_fake_multipass();
         let _fake = install_fake(crate::multipass::set_run_multipass, {
@@ -902,7 +913,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let h = compute_harness(&s, AZURE_SETTINGS);
         let az = new_fake_az();
         let _fake = install_fake(crate::azure::set_run_az, {
             let az = az.clone();
@@ -953,7 +964,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let h = compute_harness(&s, AZURE_SETTINGS);
         let az = new_fake_az();
         let _fake = install_fake(crate::azure::set_run_az, {
             let az = az.clone();
@@ -1002,7 +1013,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let h = compute_harness(&s, AZURE_SETTINGS);
         let az = new_fake_az();
         let _fake = install_fake(crate::azure::set_run_az, {
             let az = az.clone();
@@ -1074,7 +1085,7 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         let _serial = crate::test_helpers::serial();
         let _lock = provider_test_lock();
         let s = new_store();
-        let h = new_compute_harness(&s, AZURE_SETTINGS);
+        let h = compute_harness(&s, AZURE_SETTINGS);
         let az = new_fake_az();
         let _fake = install_fake(crate::azure::set_run_az, {
             let az = az.clone();
