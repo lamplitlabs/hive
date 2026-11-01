@@ -3,7 +3,7 @@
 use anyhow::Result;
 use pulse_provider::{
     CancelToken, Login, Logouter, Message, Model, Provider, ProviderError, Request, Response, Role,
-    Tool, ToolCall, Usage, register as register_provider,
+    TITLE_INITIATOR, Tool, ToolCall, Usage, register as register_provider,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -58,6 +58,11 @@ pub struct Script {
     pub tokens_per_char: f64,
     #[serde(rename = "loop", default, skip_serializing_if = "is_false")]
     pub loop_replies: bool,
+    /// What the fake answers a conversation-title request with (a request
+    /// whose initiator is `title`); empty: no title, and the scripted
+    /// replies are not consumed by it.
+    #[serde(rename = "title", default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
 }
 
 fn is_default_f64(v: &f64) -> bool {
@@ -140,6 +145,21 @@ impl Provider for FakeProvider {
         cancel.check()?;
         let mut inner = self.inner.lock().expect("fake provider poisoned");
         inner.requests.push(req.clone());
+        if req.initiator == TITLE_INITIATOR {
+            // A conversation-title request is answered aside from the
+            // script, so a test's scripted turns stay in step.
+            let title = inner.script.title.clone();
+            drop(inner);
+            let mut msg = Message::new(Role::Assistant);
+            msg.content = title;
+            return Ok(Response {
+                message: Some(msg),
+                finish_reason: "stop".to_string(),
+                usage: Usage::default(),
+                model: req.model,
+                ..Response::default()
+            });
+        }
         let request_count = inner.requests.len();
         let reply = Self::next_reply(&mut inner);
         let tokens_per_char = inner.script.tokens_per_char;

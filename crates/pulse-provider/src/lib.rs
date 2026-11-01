@@ -24,6 +24,11 @@ use thiserror::Error;
 /// The provider a fresh install uses.
 pub const DEFAULT: &str = "copilot";
 
+/// The [`Request::initiator`] of a side call that names a conversation
+/// from its recent exchange: not the agent's own turn, so a provider can
+/// tell it apart (the fake answers it aside from its script).
+pub const TITLE_INITIATOR: &str = "title";
+
 /// Device login poll answer: the login is not ready yet.
 pub const DEVICE_PENDING: &str = "pending";
 /// Device login poll answer: the login completed.

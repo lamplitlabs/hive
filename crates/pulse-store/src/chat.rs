@@ -42,6 +42,10 @@ pub struct Conversation {
     /// started it and hears how it ends); empty at the top level.
     #[serde(default)]
     pub parent: String,
+    /// True once the owner named the conversation by hand: the title then
+    /// stays as written, and the agent's retitling after a reply leaves it.
+    #[serde(default)]
+    pub title_owner: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -54,11 +58,12 @@ pub struct ConversationMessage {
     pub extra: Value,
 }
 
-const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning, parent";
+const CHAT_COLS: &str = "id, title, project, cwd, branch, status, session_id, provider, model, auto_approve, created_by, created_at, updated_at, last_at, turns, cost, note, reasoning, parent, title_owner";
 const MESSAGE_COLS: &str = "conversation_id, n, at, role, content, extra";
 
 fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     let auto: i64 = r.get(9)?;
+    let title_owner: i64 = r.get(19)?;
     Ok(Conversation {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -79,6 +84,7 @@ fn scan_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
         note: r.get(16)?,
         reasoning: r.get(17)?,
         parent: r.get(18)?,
+        title_owner: title_owner != 0,
     })
 }
 
@@ -177,7 +183,7 @@ impl Store {
         let now = self.now();
         let tx = self.begin()?;
         tx.execute(
-            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+            &format!("INSERT INTO conversations ({CHAT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
             params![
                 c.id,
                 c.title,
@@ -197,7 +203,8 @@ impl Store {
                 c.cost,
                 c.note,
                 c.reasoning,
-                c.parent
+                c.parent,
+                c.title_owner as i64
             ],
         )?;
         tx.commit()?;
@@ -322,8 +329,27 @@ impl Store {
         self.chat_update(id, "auto_approve = ?1", params![on as i64])
     }
 
+    /// The owner names the conversation: the title is kept as written and
+    /// marked theirs, so [`Store::chat_retitle`] no longer touches it.
     pub fn chat_set_title(&self, id: &str, title: &str) -> Result<()> {
-        self.chat_update(id, "title = ?1", params![title.trim()])
+        self.chat_update(id, "title = ?1, title_owner = 1", params![title.trim()])
+    }
+
+    /// The agent renames the conversation after what it has become, unless
+    /// the owner named it by hand. Returns whether the title changed.
+    pub fn chat_retitle(&self, id: &str, title: &str) -> Result<bool> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Ok(false);
+        }
+        let now = self.now();
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "UPDATE conversations SET title = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND title_owner = 0 AND title <> ?1",
+            params![title, now, id],
+        )?;
+        Ok(changed > 0)
     }
 
     /// The model the next turn runs on (the runtime restarts its session
@@ -526,6 +552,40 @@ mod tests {
         assert_eq!(got.cost, 0.5);
         assert!(!got.auto_approve);
         assert_eq!(got.title, "a title");
+        assert!(got.title_owner, "a hand-given title is marked the owner's");
+    }
+
+    #[test]
+    fn the_agent_retitles_until_the_owner_names_the_conversation() {
+        let (s, _home) = new_store();
+        let c = s.chat_create(&chat("chat-1")).expect("create");
+        assert!(
+            !c.title_owner,
+            "a fresh conversation's title is the agent's"
+        );
+        assert!(
+            s.chat_retitle("chat-1", " Login fix ").expect("retitle"),
+            "a new title is written"
+        );
+        let got = s.chat_get("chat-1").unwrap().unwrap();
+        assert_eq!(got.title, "Login fix");
+        assert!(!got.title_owner);
+        assert!(
+            !s.chat_retitle("chat-1", "Login fix").expect("same"),
+            "the same title again is not a change"
+        );
+        assert!(!s.chat_retitle("chat-1", "   ").expect("blank"));
+        assert_eq!(s.chat_get("chat-1").unwrap().unwrap().title, "Login fix");
+
+        s.chat_set_title("chat-1", "My name").expect("owner");
+        assert!(
+            !s.chat_retitle("chat-1", "Something else").expect("kept"),
+            "the owner's title is left alone"
+        );
+        let got = s.chat_get("chat-1").unwrap().unwrap();
+        assert_eq!(got.title, "My name");
+        assert!(got.title_owner);
+        assert!(!s.chat_retitle("chat-missing", "x").expect("missing"));
     }
 
     #[test]
@@ -665,7 +725,8 @@ mod tests {
         s.chat_add_message("chat-old", "assistant", "hi", &Value::Null)
             .expect("message");
         // Give the table the shape a store made before `closed` has: no
-        // `closed` in the CHECK, no `reasoning` or `parent` column.
+        // `closed` in the CHECK, no `reasoning`, `parent` or `title_owner`
+        // column.
         let narrow = crate::chat_ddl::CHAT_DDL[0]
             .replace("'closed',", "")
             .replace(
@@ -673,7 +734,7 @@ mod tests {
                 "",
             )
             .replace(
-                "  note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line\n  parent TEXT NOT NULL DEFAULT ''      -- the conversation this one is a sub-conversation of; '' = top level\n",
+                "  note TEXT NOT NULL DEFAULT '',       -- why it ended or waits, one line\n  parent TEXT NOT NULL DEFAULT '',     -- the conversation this one is a sub-conversation of; '' = top level\n  title_owner INTEGER NOT NULL DEFAULT 0 -- 1 once the owner named it by hand; the agent then leaves the title\n",
                 "  note TEXT NOT NULL DEFAULT ''\n",
             )
             .replacen(
@@ -683,6 +744,7 @@ mod tests {
             );
         assert!(!narrow.contains("reasoning"), "{narrow}");
         assert!(!narrow.contains("parent"), "{narrow}");
+        assert!(!narrow.contains("title_owner"), "{narrow}");
         {
             let conn = s.conn().unwrap();
             conn.pragma_update(None, "foreign_keys", 0).unwrap();
@@ -697,6 +759,7 @@ mod tests {
             assert!(!crate::store::table_sql_has(&conn, "conversations", "'closed'").unwrap());
             assert!(!crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
             assert!(!crate::store::has_column(&conn, "conversations", "parent").unwrap());
+            assert!(!crate::store::has_column(&conn, "conversations", "title_owner").unwrap());
         }
         s.close().unwrap();
         let s = open();
@@ -705,6 +768,7 @@ mod tests {
             assert!(crate::store::table_sql_has(&conn, "conversations", "'closed'").unwrap());
             assert!(crate::store::has_column(&conn, "conversations", "reasoning").unwrap());
             assert!(crate::store::has_column(&conn, "conversations", "parent").unwrap());
+            assert!(crate::store::has_column(&conn, "conversations", "title_owner").unwrap());
             assert!(!crate::store::table_present(&conn, "conversations_widened").unwrap());
             let fk: i64 = conn
                 .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {

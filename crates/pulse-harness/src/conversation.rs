@@ -24,6 +24,7 @@ use crate::harness::{
     Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, Sink, Step, StreamSink,
     Trajectory, Turn, Ui,
 };
+use crate::retitle;
 use anyhow::{Context as _, Result, anyhow, bail};
 use pulse_cli::{Context, FlagSet};
 use pulse_provider::{CancelToken, ImageContent};
@@ -1029,6 +1030,9 @@ impl Runtime {
                 let _ = self
                     .store
                     .chat_add_message(&self.id, "assistant", &reply, &extra);
+                if !cancel.is_cancelled() {
+                    self.retitle(&text, &reply);
+                }
                 report = Some((REPORT_REPLIED, reply));
             }
             Ok(Turn::Blocked(reason)) => {
@@ -1210,6 +1214,54 @@ impl Runtime {
             && let Some(m) = self.manager()
         {
             m.deliver_report(row, kind, &text);
+        }
+    }
+
+    /// Renames the conversation after what it has become: a short title
+    /// the session's model gives for the recent exchange, written unless
+    /// the owner named the conversation by hand. Best effort: a failed or
+    /// empty answer leaves the title as it was, and nothing here touches
+    /// the turn's outcome.
+    fn retitle(&self, asked: &str, reply: &str) {
+        let row = match self.store.chat_get(&self.id) {
+            Ok(Some(row)) if !row.title_owner => row,
+            _ => return,
+        };
+        let (provider, model) = {
+            let guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(s) => (s.prepared.provider.clone(), s.model.clone()),
+                None => return,
+            }
+        };
+        let exchange: Vec<(&'static str, String)> = match self.store.chat_messages(&self.id, 0) {
+            Ok(messages) => messages
+                .into_iter()
+                .filter_map(|m| match m.role.as_str() {
+                    "user" => Some(("owner", m.content)),
+                    "assistant" => Some(("agent", m.content)),
+                    _ => None,
+                })
+                .collect(),
+            Err(_) => vec![("owner", asked.to_string()), ("agent", reply.to_string())],
+        };
+        let lines: Vec<retitle::Line<'_>> = exchange
+            .iter()
+            .map(|(who, text)| retitle::Line { who, text })
+            .collect();
+        let req = retitle::title_request(&model, &row.title, &lines);
+        let cancel = CancelToken::new();
+        let answer = match provider.chat(&cancel, req) {
+            Ok(r) => r.message.map(|m| m.content).unwrap_or_default(),
+            // A title is a nicety: a provider error here is not the
+            // owner's concern and the turn already replied.
+            Err(_) => return,
+        };
+        if let Some(title) = retitle::title_from_answer(&answer)
+            && self.store.chat_retitle(&self.id, &title).unwrap_or(false)
+        {
+            let mut st = self.shared.lock();
+            self.shared.bump(&mut st);
         }
     }
 
@@ -3356,6 +3408,94 @@ mod tests {
         m.archive(&row.id).expect("archive");
         assert_eq!(m.row(&row.id).unwrap().status, "archived");
         assert!(m.send(&row.id, "more").is_err());
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn the_title_follows_the_conversation_until_the_owner_names_it() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        // The fake answers every title request with the same line, aside
+        // from its scripted replies.
+        let path = home.path().join("script.json");
+        std::fs::write(
+            &path,
+            json!({
+                "replies": [{"content": "Done: the redirect now keeps the query."}, {"content": "Second reply."}],
+                "title": "\"Fix the login redirect.\"\n"
+            })
+            .to_string(),
+        )
+        .expect("script");
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &path) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create(
+                "",
+                "",
+                true,
+                "hi, can you look at something for me",
+                "owner",
+            )
+            .expect("create");
+        assert_eq!(
+            row.title, "hi, can you look at something for me",
+            "born with its first line"
+        );
+        assert!(!row.title_owner);
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(
+            row.title, "Fix the login redirect",
+            "after the reply the title names what the talk is about"
+        );
+        assert!(!row.title_owner, "the agent's title is not the owner's");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant"],
+            "the title call left no trace in the transcript: {msgs:?}"
+        );
+        assert_eq!(msgs[1].content, "Done: the redirect now keeps the query.");
+
+        // The owner names it: from then on the agent leaves it.
+        m.set_title(&row.id, "Login work").expect("rename");
+        assert!(m.row(&row.id).unwrap().title_owner);
+        m.send(&row.id, "and again").expect("send");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.title, "Login work", "the owner's title stays");
+        assert_eq!(s.chat_messages(&row.id, 0).unwrap().len(), 4);
+        m.archive(&row.id).expect("archive");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_title_call_that_answers_nothing_leaves_the_title_as_it_was() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        // No `title` in the script: the fake answers the title request
+        // with an empty line.
+        let script = script(home.path(), json!([{"content": "Hello from the agent."}]));
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "say hello please", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.title, "say hello please");
+        assert!(!row.title_owner);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
+        assert_eq!(msgs[1].content, "Hello from the agent.");
+        m.archive(&row.id).expect("archive");
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }

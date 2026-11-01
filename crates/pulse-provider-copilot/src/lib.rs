@@ -1663,6 +1663,11 @@ fn initiator(req: &Request) -> String {
     if req.initiator == "user" || req.initiator == "agent" {
         return req.initiator.clone();
     }
+    // A side call PULSE makes for itself (naming a conversation) is the
+    // agent's doing even though its last message is a user turn.
+    if req.initiator == pulse_provider::TITLE_INITIATOR {
+        return "agent".to_string();
+    }
     if req
         .messages
         .last()
@@ -2254,6 +2259,19 @@ mod tests {
         assert_eq!(*saw.lock().unwrap(), "user");
         assert_eq!(resp.message.unwrap().content, "plain");
         assert_eq!(resp.finish_reason, "stop");
+        // A conversation-title side call ends on a user message too, but
+        // it is PULSE's own doing, not the person's.
+        p.chat(
+            &cancel(),
+            Request {
+                model: "gpt-4.1".to_string(),
+                messages: vec![msg(Role::User, "name this")],
+                initiator: pulse_provider::TITLE_INITIATOR.to_string(),
+                ..Request::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(*saw.lock().unwrap(), "agent");
         drop(srv);
     }
 
