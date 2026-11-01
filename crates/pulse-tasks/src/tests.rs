@@ -4032,6 +4032,290 @@ schedules:
 }
 
 #[test]
+fn manifest_parse_automation_reads_one_entry_named_by_its_file() {
+    let e = manifest::parse_automation(
+        "deps-audit",
+        "title: Audit\nevery: 1d\nat: \"02:00\"\nbrief: Audit.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            e.name.as_str(),
+            e.title.as_str(),
+            e.every.as_str(),
+            e.at.as_str()
+        ),
+        ("deps-audit", "Audit", "1d", "02:00")
+    );
+    // The key may repeat the file's name, and nothing else.
+    assert_eq!(
+        manifest::parse_automation("deps-audit", "name: deps-audit\nevery: 1d\n")
+            .unwrap()
+            .name,
+        "deps-audit"
+    );
+    let err = manifest::parse_automation("deps-audit", "name: other\nevery: 1d\n").unwrap_err();
+    assert!(
+        err.contains("`name: other` does not match the file name deps-audit"),
+        "{err}"
+    );
+    let err = manifest::parse_automation("x", MANIFEST_V1).unwrap_err();
+    assert!(err.contains("one automation per file"), "{err}");
+    assert_eq!(
+        manifest::parse_automation("x", "\n").unwrap(),
+        manifest::Entry {
+            name: "x".to_string(),
+            ..manifest::Entry::default()
+        }
+    );
+    assert_eq!(
+        manifest::automation_path("deps-audit"),
+        ".pulse/automations/deps-audit.yaml"
+    );
+    assert_eq!(
+        manifest::automation_stem(".pulse/automations/deps-audit.yaml"),
+        Some("deps-audit")
+    );
+    assert_eq!(
+        manifest::automation_stem(".pulse/automations/deps-audit.yml"),
+        Some("deps-audit")
+    );
+    for other in [
+        ".pulse/automations/README.md",
+        ".pulse/automations/.yaml",
+        ".pulse/automations/sub/x.yaml",
+        ".pulse/automations",
+        ".pulse/pulse.yaml",
+    ] {
+        assert_eq!(manifest::automation_stem(other), None, "{other}");
+    }
+    assert_eq!(
+        manifest::origin_parts("repo:.pulse/automations/deps-audit.yaml#deps-audit"),
+        Some((".pulse/automations/deps-audit.yaml", "deps-audit"))
+    );
+    assert_eq!(manifest::origin_parts("human"), None);
+}
+
+#[test]
+fn manifest_sync_reads_one_file_per_automation_beside_the_list() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let dir = script_repo(s);
+    const DEPS: &str = "title: Audit the dependencies\nevery: 1d\nat: \"02:00\"\nbrief: Run the audit and fix what it names.\n";
+    const CHECK: &str = "kind: check\nscript: scripts/check.sh\nevery: daily\njob_kind: improve\n";
+    const TIDY_LIST: &str = "schedules:\n  - name: tidy\n    kind: clean\n    every: weekly\n    brief: Remove what nobody uses.\n";
+    const TIDY_FILE: &str = "kind: clean\nevery: weekly\nbrief: Remove what nobody uses.\n";
+    commit_files(
+        &dir,
+        &[
+            (".pulse/pulse.yaml", TIDY_LIST),
+            (".pulse/automations/deps-audit.yaml", DEPS),
+            (".pulse/automations/nightly-check.yml", CHECK),
+            (".pulse/automations/Bad Name.yaml", "every: 1d\n"),
+            (".pulse/automations/notes.txt", "not an automation\n"),
+            (".pulse/automations/nested/x.yaml", "every: 1d\n"),
+        ],
+        "automations",
+    );
+
+    // The list and the folder together: one schedule per entry, the
+    // folder's files in name order, a file that is not a slug reported.
+    let first = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(first.path, ".pulse/pulse.yaml");
+    assert_eq!(
+        first.files,
+        vec![
+            ".pulse/automations/Bad Name.yaml",
+            ".pulse/automations/deps-audit.yaml",
+            ".pulse/automations/nightly-check.yml",
+        ]
+    );
+    assert_eq!(first.schedules.added, 3, "{}", first.line());
+    assert_eq!(
+        first.problems,
+        vec![
+            ".pulse/automations/Bad Name.yaml: the file name is the automation's name and must be a slug (lowercase letters, digits and dashes)".to_string()
+        ]
+    );
+    assert!(
+        first
+            .line()
+            .contains(".pulse/pulse.yaml and 3 files in .pulse/automations/ at"),
+        "{}",
+        first.line()
+    );
+    assert_eq!(first.source(), ".pulse/pulse.yaml");
+    let rows = schedules::list(s, "demo", "").unwrap();
+    let by_origin = |origin: &str| {
+        rows.iter()
+            .find(|r| r.origin == origin)
+            .cloned()
+            .unwrap_or_else(|| panic!("no schedule from {origin}: {rows:?}"))
+    };
+    let deps = by_origin("repo:.pulse/automations/deps-audit.yaml#deps-audit");
+    assert_eq!(
+        (
+            deps.title.as_str(),
+            deps.at_time.as_str(),
+            deps.every_minutes
+        ),
+        ("Audit the dependencies", "02:00", 1440)
+    );
+    let check = by_origin("repo:.pulse/automations/nightly-check.yml#nightly-check");
+    assert_eq!(
+        (check.kind.as_str(), check.script.as_str()),
+        ("check", "scripts/check.sh")
+    );
+    let tidy = by_origin("repo:.pulse/pulse.yaml#tidy");
+    assert_eq!(tidy.kind, "clean");
+    let st = manifest::status(s, "demo").unwrap().unwrap();
+    assert_eq!(st.files, first.files);
+    assert_eq!(st.schedules, vec!["tidy", "deps-audit", "nightly-check"]);
+    let d = detail(&events(s, "manifest.synced")[0]);
+    assert_eq!(d["files"], serde_json::json!(first.files));
+
+    // A `.yml` twin is reported and the `.yaml` is still the one read; a
+    // name in both the list and a file is held until one of them goes.
+    commit_files(
+        &dir,
+        &[
+            (".pulse/automations/deps-audit.yml", "every: 3d\n"),
+            (
+                ".pulse/automations/tidy.yaml",
+                "kind: clean\nevery: daily\n",
+            ),
+        ],
+        "twins",
+    );
+    let second = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(
+        second.problems,
+        vec![
+            ".pulse/automations/Bad Name.yaml: the file name is the automation's name and must be a slug (lowercase letters, digits and dashes)".to_string(),
+            "both .pulse/automations/deps-audit.yaml and .pulse/automations/deps-audit.yml exist; .pulse/automations/deps-audit.yaml is read, remove the other".to_string(),
+            "schedule `tidy`: named in both .pulse/pulse.yaml and .pulse/automations/tidy.yaml; keep one of them".to_string(),
+        ]
+    );
+    assert_eq!(
+        (
+            second.schedules.kept,
+            second.schedules.updated,
+            second.schedules.removed
+        ),
+        (2, 0, 0),
+        "{}",
+        second.line()
+    );
+    assert_eq!(schedules::get(s, &deps.id).unwrap().every_minutes, 1440);
+    let tidy2 = schedules::get(s, &tidy.id).unwrap();
+    assert_eq!(
+        (tidy2.status.as_str(), tidy2.every_minutes),
+        ("active", 10080)
+    );
+    assert_eq!(tidy2.origin, "repo:.pulse/pulse.yaml#tidy");
+
+    // The list lets go of the name: the file takes the row over, and its
+    // origin moves with it.
+    commit_files(
+        &dir,
+        &[
+            (".pulse/pulse.yaml", "schedules: []\n"),
+            (".pulse/automations/deps-audit.yml", ""),
+            (".pulse/automations/tidy.yaml", TIDY_FILE),
+        ],
+        "moved",
+    );
+    let third = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(third.problems.len(), 1, "{}", third.line());
+    assert_eq!(
+        (
+            third.schedules.kept,
+            third.schedules.updated,
+            third.schedules.added,
+            third.schedules.removed
+        ),
+        (2, 1, 0, 0),
+        "{}",
+        third.line()
+    );
+    let tidy3 = schedules::get(s, &tidy.id).unwrap();
+    assert_eq!(tidy3.origin, "repo:.pulse/automations/tidy.yaml#tidy");
+    assert_eq!(
+        (tidy3.status.as_str(), tidy3.every_minutes),
+        ("active", 10080)
+    );
+    let updated = events(s, "schedule.updated");
+    assert_eq!(updated.len(), 1);
+    assert_eq!(
+        detail(&updated[0])["changed"],
+        serde_json::json!(["origin"])
+    );
+    assert_eq!(
+        manifest::status(s, "demo").unwrap().unwrap().schedules,
+        vec!["deps-audit", "nightly-check", "tidy"]
+    );
+
+    // A file that does not read holds its own row and nothing else.
+    commit_files(
+        &dir,
+        &[(
+            ".pulse/automations/nightly-check.yml",
+            "kind: check\nevry: daily\n",
+        )],
+        "typo",
+    );
+    let fourth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(
+        fourth.problems.iter().any(|p| p
+            .starts_with(".pulse/automations/nightly-check.yml could not be read, so its schedule stays as it was:")
+            && p.contains("evry")),
+        "{:?}",
+        fourth.problems
+    );
+    assert_eq!(fourth.schedules.kept, 2, "{}", fourth.line());
+    assert_eq!(schedules::get(s, &check.id).unwrap().status, "active");
+
+    // Removing files ends what they kept; without a list file the folder
+    // is the source, and the rest stays.
+    commit_files(
+        &dir,
+        &[
+            (".pulse/pulse.yaml", ""),
+            (".pulse/automations/deps-audit.yaml", ""),
+            (".pulse/automations/nightly-check.yml", ""),
+            (".pulse/automations/Bad Name.yaml", ""),
+        ],
+        "fewer",
+    );
+    let fifth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(fifth.path.is_empty());
+    assert_eq!(fifth.files, vec![".pulse/automations/tidy.yaml"]);
+    assert_eq!(fifth.source(), ".pulse/automations/");
+    assert!(fifth.problems.is_empty(), "{:?}", fifth.problems);
+    assert_eq!(
+        (fifth.schedules.kept, fifth.schedules.removed),
+        (1, 2),
+        "{}",
+        fifth.line()
+    );
+    assert!(
+        fifth.line().contains("1 file in .pulse/automations/ at"),
+        "{}",
+        fifth.line()
+    );
+    let deps5 = schedules::get(s, &deps.id).unwrap();
+    assert_eq!(
+        (deps5.status.as_str(), deps5.note.as_str()),
+        ("ended", manifest::ENDED_NOTE)
+    );
+    assert_eq!(schedules::get(s, &check.id).unwrap().status, "ended");
+    assert_eq!(schedules::get(s, &tidy.id).unwrap().status, "active");
+    let sixth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(sixth.skipped, "{}", sixth.line());
+}
+
+#[test]
 fn manifest_entry_with_a_problem_keeps_its_row_and_a_taken_skill_name_is_reported() {
     let _serial = crate::test_helpers::serial();
     let t = new_store();
@@ -4359,6 +4643,41 @@ fn manifest_command_checks_a_working_copy_and_shows_and_syncs_a_project() {
         "{}",
         out.string()
     );
+
+    // A file under .pulse/automations/ is one automation named by the
+    // file: sound alone, refused when its name is not a slug or the key
+    // inside disagrees.
+    let one = Path::new(&dir).join(".pulse/automations/deps-audit.yaml");
+    std::fs::create_dir_all(one.parent().unwrap()).unwrap();
+    std::fs::write(
+        &one,
+        "title: Audit\nevery: 1d\nat: \"02:00\"\nbrief: Audit.\n",
+    )
+    .unwrap();
+    let (mut c, out) = ctx_for(s, "", "", true);
+    run_cmd(&mut c, "manifest", &["check", one.to_str().unwrap()]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+    assert_eq!(v["schedules"], serde_json::json!(["deps-audit"]));
+    assert_eq!(v["files"], serde_json::json!([one.to_str().unwrap()]));
+    assert_eq!(v["problems"], serde_json::json!([]));
+    std::fs::write(&one, "name: other\nevery: 1d\n").unwrap();
+    let (mut c, out) = ctx_for(s, "", "", false);
+    let err = run_cmd(&mut c, "manifest", &["check", one.to_str().unwrap()])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("1 problem in"), "{err}");
+    assert!(
+        out.string()
+            .contains("does not match the file name deps-audit"),
+        "{}",
+        out.string()
+    );
+    let bad = Path::new(&dir).join(".pulse/automations/Bad Name.yaml");
+    std::fs::write(&bad, "every: 1d\n").unwrap();
+    let (mut c, out) = ctx_for(s, "", "", false);
+    run_cmd(&mut c, "manifest", &["check", bad.to_str().unwrap()]).unwrap_err();
+    assert!(out.string().contains("must be a slug"), "{}", out.string());
+    std::fs::remove_dir_all(one.parent().unwrap()).unwrap();
 
     // Nothing applied yet: show says so; sync applies the committed file.
     let (mut c, out) = ctx_for(s, "", "demo", false);

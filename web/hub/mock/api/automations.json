@@ -10,24 +10,8 @@
       },
       "file": {
         "path": ".pulse/pulse.yaml",
-        "text": "# What PULSE runs for demo-app without being asked.\nschedules:\n  - name: nightly-audit\n    title: Nightly dependency audit\n    every: 1d\n    at: \"02:00\"\n    brief: |-\n      Audit the dependencies for known advisories and unused entries.\n      Open a task for anything that needs a human.\n  - name: site-check\n    title: Site is up\n    every: 30m\n    kind: check\n    script: scripts/check-site.sh\n    job_kind: task\n    tier: 0\n  - name: weekly-tidy\n    title: Weekly tidy\n    every: 1w\n    at: \"06:00\"\n    kind: clean\n    brief: Remove merged branches and stale worktrees; list what you kept and why.\n    paused: true\n",
+        "text": "# What PULSE runs for demo-app without being asked.\n# Newer automations live one per file under .pulse/automations/.\nschedules:\n  - name: weekly-tidy\n    title: Weekly tidy\n    every: 1w\n    at: \"06:00\"\n    kind: clean\n    brief: Remove merged branches and stale worktrees; list what you kept and why.\n    paused: true\n",
         "entries": [
-          {
-            "name": "nightly-audit",
-            "title": "Nightly dependency audit",
-            "every": "1d",
-            "at": "02:00",
-            "brief": "Audit the dependencies for known advisories and unused entries.\nOpen a task for anything that needs a human."
-          },
-          {
-            "name": "site-check",
-            "title": "Site is up",
-            "every": "30m",
-            "kind": "check",
-            "script": "scripts/check-site.sh",
-            "job_kind": "task",
-            "tier": 0
-          },
           {
             "name": "weekly-tidy",
             "title": "Weekly tidy",
@@ -41,12 +25,92 @@
         "needs": [],
         "problems": []
       },
+      "automations": {
+        "dir": ".pulse/automations",
+        "files": [
+          {
+            "path": ".pulse/automations/docs-sweep.yaml",
+            "name": "docs-sweep",
+            "text": "title: Docs sweep\nevry: 1w\nat: \"05:00\"\nbrief: Find pages of docs/ that name a flag or a command which no longer exists.\n",
+            "entry": {
+              "name": "docs-sweep",
+              "title": "Docs sweep",
+              "every": "",
+              "at": "05:00",
+              "kind": "",
+              "brief": "Find pages of docs/ that name a flag or a command which no longer exists.",
+              "skill": "",
+              "script": "",
+              "job_kind": "",
+              "tier": 1,
+              "priority": 0,
+              "run_as": "",
+              "times": 0,
+              "paused": false
+            },
+            "problems": [
+              "needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)"
+            ]
+          },
+          {
+            "path": ".pulse/automations/nightly-audit.yaml",
+            "name": "nightly-audit",
+            "text": "title: Nightly dependency audit\nevery: 1d\nat: \"02:00\"\nbrief: |-\n  Audit the dependencies for known advisories and unused entries.\n  Open a task for anything that needs a human.\n",
+            "entry": {
+              "name": "nightly-audit",
+              "title": "Nightly dependency audit",
+              "every": "1d",
+              "at": "02:00",
+              "kind": "",
+              "brief": "Audit the dependencies for known advisories and unused entries.\nOpen a task for anything that needs a human.",
+              "skill": "",
+              "script": "",
+              "job_kind": "",
+              "tier": 1,
+              "priority": 0,
+              "run_as": "",
+              "times": 0,
+              "paused": false
+            },
+            "problems": []
+          },
+          {
+            "path": ".pulse/automations/site-check.yaml",
+            "name": "site-check",
+            "text": "title: Site is up\nevery: 30m\nkind: check\nscript: scripts/check-site.sh\ntier: 0\n",
+            "entry": {
+              "name": "site-check",
+              "title": "Site is up",
+              "every": "30m",
+              "at": "",
+              "kind": "check",
+              "brief": "",
+              "skill": "",
+              "script": "scripts/check-site.sh",
+              "job_kind": "task",
+              "tier": 0,
+              "priority": 0,
+              "run_as": "",
+              "times": 0,
+              "paused": false
+            },
+            "problems": []
+          }
+        ]
+      },
       "applied": {
         "path": ".pulse/pulse.yaml",
+        "files": [
+          ".pulse/automations/docs-sweep.yaml",
+          ".pulse/automations/nightly-audit.yaml",
+          ".pulse/automations/site-check.yaml"
+        ],
         "commit": "6d2f1c9a8b7e4f3a2c1d0e9f8a7b6c5d4e3f2a1b",
         "at": "2026-09-01T09:10:00Z",
-        "problems": [],
-        "schedules": ["nightly-audit", "site-check", "weekly-tidy"]
+        "problems": [
+          "schedule `docs-sweep`: needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)"
+        ],
+        "schedules": ["weekly-tidy", "nightly-audit", "site-check"]
       },
       "schedules": [
         {
@@ -78,11 +142,11 @@
           "fails": 0,
           "agent": "",
           "skill": "",
-          "origin": "repo:.pulse/pulse.yaml#nightly-audit",
+          "origin": "repo:.pulse/automations/nightly-audit.yaml#nightly-audit",
           "every": "1d",
           "every_words": "every day at 02:00 UTC",
           "origin_name": "nightly-audit",
-          "origin_path": ".pulse/pulse.yaml"
+          "origin_path": ".pulse/automations/nightly-audit.yaml"
         },
         {
           "id": "SCHED-002",
@@ -113,11 +177,11 @@
           "fails": 2,
           "agent": "",
           "skill": "",
-          "origin": "repo:.pulse/pulse.yaml#site-check",
+          "origin": "repo:.pulse/automations/site-check.yaml#site-check",
           "every": "30m",
           "every_words": "every 30 minutes",
           "origin_name": "site-check",
-          "origin_path": ".pulse/pulse.yaml"
+          "origin_path": ".pulse/automations/site-check.yaml"
         },
         {
           "id": "SCHED-003",
@@ -239,6 +303,7 @@
         "commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
       },
       "file": null,
+      "automations": { "dir": ".pulse/automations", "files": [] },
       "applied": null,
       "schedules": [
         {

@@ -3051,10 +3051,13 @@ export interface SkillInput {
 export type SkillPatch = Partial<SkillInput>;
 
 // ----- Automations: the standing jobs of a project (`pulse schedule`,
-// `.pulse/pulse.yaml`; GET/POST /api/v1/automations) -------------------------
+// `.pulse/automations/<name>.yaml`; GET/POST /api/v1/automations) ------------
 
-// One entry of `.pulse/pulse.yaml`'s `schedules:` list, the fields the file
-// takes. The same shape describes a schedule kept in the store alone.
+// One automation as its file says it: `.pulse/automations/<name>.yaml` holds
+// these fields at the top level (the file's name is the automation's), and
+// the older `schedules:` list of `.pulse/pulse.yaml` holds the same shape per
+// item with `name:` inside. The same shape describes a schedule kept in the
+// store alone.
 export interface AutomationEntry {
   name: string;
   title: string;
@@ -3110,7 +3113,9 @@ export interface AutomationSchedule {
   origin_path: string; // the file, "" for a hand-set one
 }
 
-// The project's file on its default branch, as it is now.
+// The project's list file (`.pulse/pulse.yaml`, `schedules:`) on its default
+// branch, as it is now. Older projects keep automations there; new ones get a
+// file each under `.pulse/automations/`.
 export interface AutomationFile {
   path: string;
   text: string;
@@ -3119,13 +3124,25 @@ export interface AutomationFile {
   problems: string[];
 }
 
+// One file of `.pulse/automations/`: the automation it holds (null when the
+// file cannot be read as one) and what is wrong with it, if anything.
+export interface AutomationRepoFile {
+  path: string; // .pulse/automations/<name>.yaml
+  name: string; // the file's stem, which is the automation's name
+  text: string;
+  entry: AutomationEntry | null;
+  problems: string[];
+}
+
 export interface AutomationProject {
   slug: string;
   name: string;
   repo: { path: string; branch: string; commit: string } | null; // null: no checkout here
-  file: AutomationFile | null; // null: the branch has no file
+  file: AutomationFile | null; // null: the branch has no list file
+  automations: { dir: string; files: AutomationRepoFile[] } | null; // null: no checkout here
   applied: {
     path: string;
+    files: string[]; // the automation files the daemon read
     commit: string;
     at: string;
     problems: string[];
@@ -3150,9 +3167,9 @@ export interface AutomationWrite {
   project: string;
   entry: AutomationEntry;
   where: AutomationPlace;
-  replace?: string; // the file entry this one replaces (an edit)
+  replace?: string; // the repository automation this one replaces (an edit), by name
   id?: string; // the store schedule this one updates (an edit)
-  move?: string; // a hand-set schedule that moves into the file
+  move?: string; // a hand-set schedule that moves into the repository
 }
 
 // The checks of a draft: the YAML it composes and what would be refused.
@@ -3160,8 +3177,9 @@ export interface AutomationCheck {
   yaml: string;
   problems: string[];
   warning: string;
-  path: string;
+  path: string; // the file the write would touch
   branch: string;
+  form: "file" | "list"; // its own file, or an item of the `schedules:` list
 }
 
 export interface AutomationWritten {

@@ -88,7 +88,7 @@ pub const TASKS_DDL: &[&str] = &[
   fails INTEGER NOT NULL DEFAULT 0,   -- consecutive non-zero exits
   agent TEXT NOT NULL DEFAULT '',     -- the custom agent its jobs run as; '' lets the runner choose
   skill TEXT NOT NULL DEFAULT '',     -- the skill every job it queues follows; '' for none
-  origin TEXT NOT NULL DEFAULT ''     -- '' when set by hand; repo:<path>#<name> when the project's .pulse/pulse.yaml keeps it
+  origin TEXT NOT NULL DEFAULT ''     -- '' when set by hand; repo:<path>#<name> when a PULSE file of the project keeps it
 );"####,
     r####"CREATE INDEX IF NOT EXISTS schedules_project_status ON schedules (project, status, next_at);"####,
     r####"CREATE TRIGGER IF NOT EXISTS schedules_no_delete BEFORE DELETE ON schedules BEGIN SELECT RAISE(ABORT, 'schedules are never deleted: end instead'); END;"####,

@@ -1,15 +1,17 @@
-//! The project's own PULSE file. `.pulse/pulse.yaml` on the default branch
-//! names the schedules the daemon keeps for the project - standing jobs,
-//! skill runs, check and watch scripts - and the `SKILL.md` folders beside
-//! it (`.pulse/skills`, `.claude/skills`, `.github/skills`, `.agents/skills`)
-//! join the project's `pulse skill` registry. Both travel with the code: a
+//! The project's own PULSE files. `.pulse/automations/<name>.yaml` on the
+//! default branch - one file per automation, the file's name its name -
+//! and the older `.pulse/pulse.yaml` with a `schedules:` list name the
+//! schedules the daemon keeps for the project - standing jobs, skill runs,
+//! check and watch scripts - and the `SKILL.md` folders beside them
+//! (`.pulse/skills`, `.claude/skills`, `.github/skills`, `.agents/skills`)
+//! join the project's `pulse skill` registry. All travel with the code: a
 //! commit changes them, a pull request reviews them, a clone has them.
 //!
 //! The daemon reads the committed tree of the default branch, never a
-//! working copy, and re-applies the file only when a commit changed it or
-//! the skill folders (one `git ls-tree` tells). A schedule the file names
+//! working copy, and re-applies the files only when a commit changed them
+//! or the skill folders (one `git ls-tree` tells). A schedule a file names
 //! is added, updated in place, paused, resumed or ended as the file says;
-//! one it no longer names ends. What the file gets wrong is a problem the
+//! one no file names any more ends. What a file gets wrong is a problem the
 //! daemon reports - on its own line, in a `manifest.synced` event and on the
 //! project board when it appears or clears - never a stopped schedule: an
 //! entry with a problem leaves the row it had as it was.
@@ -22,9 +24,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::schedules::{self, ScheduleInput};
 
-/// Where the file lives, relative to the repository root. The first is the
-/// one to use; the second is read when it is the only one present.
+/// Where the list file lives, relative to the repository root. The first is
+/// the one to use; the second is read when it is the only one present.
 pub const MANIFEST_PATHS: &[&str] = &[".pulse/pulse.yaml", ".pulse/pulse.yml"];
+/// The folder of per-automation files: `<dir>/<name>.yaml` holds one
+/// automation, its fields at the top level, the file's stem its name.
+pub const AUTOMATIONS_DIR: &str = ".pulse/automations";
 /// The skill folders the daemon reads, in the order the native harness
 /// searches them: the first `SKILL.md` of a name wins.
 pub const SKILL_DIRS: &[&str] = &[
@@ -83,11 +88,13 @@ fn needs_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Strin
 }
 
 /// One schedule of the file. `name` is its identity: the row keeps the
-/// name's changes in place and a renamed entry is a new schedule.
+/// name's changes in place and a renamed entry is a new schedule. In a
+/// per-automation file the name is the file's stem and the key is left out.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     /// A slug: lowercase letters, digits and dashes.
+    #[serde(default)]
     pub name: String,
     /// The title of every job; the name when empty.
     #[serde(default)]
@@ -193,12 +200,16 @@ pub fn origin_of(path: &str, name: &str) -> String {
     format!("{}{path}#{name}", pulse_store::REPO_ORIGIN)
 }
 
-/// The entry name in a schedule's `origin`, when the file keeps it.
-pub fn origin_name(origin: &str) -> Option<&str> {
+/// The path and entry name in a schedule's `origin`, when a file keeps it.
+pub fn origin_parts(origin: &str) -> Option<(&str, &str)> {
     origin
         .strip_prefix(pulse_store::REPO_ORIGIN)?
         .split_once('#')
-        .map(|(_, name)| name)
+}
+
+/// The entry name in a schedule's `origin`, when a file keeps it.
+pub fn origin_name(origin: &str) -> Option<&str> {
+    origin_parts(origin).map(|(_, name)| name)
 }
 
 /// Reads the file. The error names the line when the YAML is at fault and
@@ -208,6 +219,51 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
         return Ok(Manifest::default());
     }
     serde_saphyr::from_str::<Manifest>(text).map_err(|e| e.to_string().trim().to_string())
+}
+
+/// Reads one per-automation file, `.pulse/automations/<stem>.yaml`: the
+/// entry's fields at the top level, the stem its name. A `name:` inside is
+/// allowed only when it says the same.
+pub fn parse_automation(stem: &str, text: &str) -> Result<Entry, String> {
+    let mut e = if text.trim().is_empty() {
+        Entry::default()
+    } else {
+        serde_saphyr::from_str::<Entry>(text).map_err(|e| {
+            let msg = e.to_string().trim().to_string();
+            if msg.contains("schedules") {
+                format!(
+                    "{msg} (one automation per file: its fields at the top level, no `schedules:` list)"
+                )
+            } else {
+                msg
+            }
+        })?
+    };
+    let inner = e.name.trim();
+    if !inner.is_empty() && inner != stem {
+        return Err(format!(
+            "`name: {inner}` does not match the file name {stem}; leave the key out or make them the same"
+        ));
+    }
+    e.name = stem.to_string();
+    Ok(e)
+}
+
+/// The path of the per-automation file of `name`.
+pub fn automation_path(name: &str) -> String {
+    format!("{AUTOMATIONS_DIR}/{name}.yaml")
+}
+
+/// The automation name a path under [`AUTOMATIONS_DIR`] carries: the file's
+/// stem, for a `.yaml` or `.yml` right under the folder.
+pub fn automation_stem(path: &str) -> Option<&str> {
+    let file = path.strip_prefix(AUTOMATIONS_DIR)?.strip_prefix('/')?;
+    if file.contains('/') {
+        return None;
+    }
+    file.strip_suffix(".yaml")
+        .or_else(|| file.strip_suffix(".yml"))
+        .filter(|stem| !stem.is_empty())
 }
 
 /// What is wrong with a file before any store is asked: names, kinds,
@@ -341,16 +397,19 @@ pub struct Status {
     /// The default branch's commit when the daemon read it.
     #[serde(default)]
     pub commit: String,
-    /// The file that was read; empty when the repository has none.
+    /// The list file that was read; empty when the repository has none.
     #[serde(default)]
     pub path: String,
+    /// The per-automation files that were read (`.pulse/automations/`).
+    #[serde(default)]
+    pub files: Vec<String>,
     /// When the daemon last applied it.
     #[serde(default)]
     pub at: String,
     /// The problems it reported then.
     #[serde(default)]
     pub problems: Vec<String>,
-    /// Entries the file named then, by name.
+    /// Entries the files named then, by name.
     #[serde(default)]
     pub schedules: Vec<String>,
     /// Skills the repository kept then, by name.
@@ -412,8 +471,10 @@ impl Counts {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Synced {
     pub project: String,
-    /// The file read; empty when the repository has none on the branch.
+    /// The list file read; empty when the repository has none on the branch.
     pub path: String,
+    /// The per-automation files read, in name order.
+    pub files: Vec<String>,
     /// The default branch and its commit (short).
     pub branch: String,
     pub commit: String,
@@ -429,6 +490,18 @@ pub struct Synced {
 }
 
 impl Synced {
+    /// What was read, for a heading: the list file, the automations
+    /// folder, or the list file's path when the repository has neither.
+    pub fn source(&self) -> String {
+        if !self.path.is_empty() {
+            self.path.clone()
+        } else if !self.files.is_empty() {
+            format!("{AUTOMATIONS_DIR}/")
+        } else {
+            MANIFEST_PATHS[0].to_string()
+        }
+    }
+
     /// One line for the daemon's log and `pulse manifest sync`.
     pub fn line(&self) -> String {
         if self.skipped {
@@ -443,10 +516,22 @@ impl Synced {
             );
         }
         let mut line = format!("manifest {}: ", self.project);
-        if self.path.is_empty() {
-            line.push_str(&format!("no .pulse/pulse.yaml on {}", self.branch));
-        } else {
+        let files = match self.files.len() {
+            0 => String::new(),
+            1 => format!("1 file in {AUTOMATIONS_DIR}/"),
+            n => format!("{n} files in {AUTOMATIONS_DIR}/"),
+        };
+        if self.path.is_empty() && files.is_empty() {
+            line.push_str(&format!(
+                "no {} and no {AUTOMATIONS_DIR}/ on {}",
+                MANIFEST_PATHS[0], self.branch
+            ));
+        } else if self.path.is_empty() {
+            line.push_str(&format!("{files} at {}", self.commit));
+        } else if files.is_empty() {
             line.push_str(&format!("{} at {}", self.path, self.commit));
+        } else {
+            line.push_str(&format!("{} and {files} at {}", self.path, self.commit));
         }
         let sched = self.schedules.summary("ended");
         if !sched.is_empty() {
@@ -791,6 +876,84 @@ fn read_manifest(repo: &str, branch: &str) -> Result<Option<(String, String)>, S
     }
 }
 
+/// One `.pulse/automations/<name>.yaml` of the branch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AutomationFile {
+    pub path: String,
+    /// The file's stem: the automation's name.
+    pub name: String,
+    pub text: String,
+    /// The entry the file holds; `None` when it could not be read, and
+    /// `problems` says why.
+    pub entry: Option<Entry>,
+    /// What keeps the file from being applied, before any store is asked.
+    pub problems: Vec<String>,
+}
+
+/// The per-automation files of `branch`, in name order: every `.yaml` or
+/// `.yml` right under [`AUTOMATIONS_DIR`]. Other files there are left
+/// alone. A `.yml` beside a `.yaml` of the same name is a problem on the
+/// one that is read.
+pub fn read_automations(repo: &str, branch: &str) -> Vec<AutomationFile> {
+    let dir = format!("{AUTOMATIONS_DIR}/");
+    let Some(listing) = git_text(repo, &["ls-tree", branch, "--", &dir]) else {
+        return Vec::new();
+    };
+    let mut out: Vec<AutomationFile> = Vec::new();
+    for line in listing.lines() {
+        // `100644 blob <hash>\t<path>`
+        let Some((meta, path)) = line.split_once('\t') else {
+            continue;
+        };
+        if meta.split_whitespace().nth(1) != Some("blob") {
+            continue;
+        }
+        let Some(stem) = automation_stem(path) else {
+            continue;
+        };
+        if let Some(twin) = out.iter_mut().find(|f| f.name == stem) {
+            twin.problems.push(format!(
+                "both {} and {path} exist; {} is read, remove the other",
+                twin.path, twin.path
+            ));
+            continue;
+        }
+        let mut file = AutomationFile {
+            path: path.to_string(),
+            name: stem.to_string(),
+            ..Default::default()
+        };
+        if !pulse_store::is_slug(stem) {
+            file.problems.push(format!(
+                "{path}: the file name is the automation's name and must be a slug (lowercase letters, digits and dashes)"
+            ));
+            out.push(file);
+            continue;
+        }
+        match blob(repo, branch, path) {
+            Some(Ok(text)) => match parse_automation(stem, &text) {
+                Ok(entry) => {
+                    file.text = text;
+                    file.entry = Some(entry);
+                }
+                Err(e) => {
+                    file.text = text;
+                    file.problems.push(format!(
+                        "{path} could not be read, so its schedule stays as it was: {e}"
+                    ));
+                }
+            },
+            Some(Err(e)) => file.problems.push(e),
+            None => file
+                .problems
+                .push(format!("{path} could not be read from {branch}")),
+        }
+        out.push(file);
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// Applies the project's file and skill folders to the store. Reads
 /// nothing and writes nothing when no commit changed them since the last
 /// sync, unless `force`. `Ok(None)` when the project has no checkout the
@@ -811,6 +974,7 @@ pub fn sync(
         return Ok(Some(Synced {
             project: slug.to_string(),
             path: before.path.clone(),
+            files: before.files.clone(),
             branch,
             commit: short,
             skipped: true,
@@ -841,12 +1005,17 @@ pub fn sync(
     synced.problems.extend(skill_problems);
 
     let mut names = Vec::new();
+    // Every entry the files name, with the path that names it, and the
+    // names a problem holds: those rows stay as they are.
+    let mut entries: Vec<(Entry, String)> = Vec::new();
+    let mut held: BTreeSet<String> = BTreeSet::new();
+    let mut list = Manifest::default();
     match read_manifest(&repo, &branch) {
-        Err(problem) => synced.problems.push(problem),
-        Ok(None) => {
-            // No file: whatever it kept before ends.
-            end_missing(s, slug, actor, &BTreeSet::new(), &mut synced.schedules)?;
+        Err(problem) => {
+            synced.problems.push(problem);
+            held.extend(kept_by_list(s, slug)?);
         }
+        Ok(None) => {}
         Ok(Some((path, text))) => {
             synced.path = path.clone();
             if MANIFEST_PATHS.iter().skip(1).any(|p| {
@@ -862,36 +1031,58 @@ pub fn sync(
                 ));
             }
             match parse(&text) {
-                Err(e) => synced.problems.push(format!(
-                    "{path} could not be read, so its schedules stay as they were: {e}"
-                )),
+                Err(e) => {
+                    synced.problems.push(format!(
+                        "{path} could not be read, so its schedules stay as they were: {e}"
+                    ));
+                    held.extend(kept_by_list(s, slug)?);
+                }
                 Ok(m) => {
-                    names = m
-                        .schedules
-                        .iter()
-                        .map(|e| e.name.trim().to_string())
-                        .collect();
-                    let problems = static_problems(&m);
-                    let held: BTreeSet<String> = problems
-                        .iter()
-                        .filter_map(|p| {
-                            p.strip_prefix("schedule `")
-                                .and_then(|r| r.split_once('`'))
-                                .map(|(n, _)| n.to_string())
-                        })
-                        .collect();
-                    synced.problems.extend(problems);
-                    sync_needs(s, slug, actor, &m, &mut synced)?;
-                    sync_schedules(s, slug, actor, &path, &m, &held, &mut synced)?;
+                    for e in &m.schedules {
+                        names.push(e.name.trim().to_string());
+                        entries.push((e.clone(), path.clone()));
+                    }
+                    list = m;
                 }
             }
         }
     }
+    let files = read_automations(&repo, &branch);
+    for file in &files {
+        synced.files.push(file.path.clone());
+        synced.problems.extend(file.problems.iter().cloned());
+        let Some(entry) = &file.entry else {
+            held.insert(file.name.clone());
+            continue;
+        };
+        if let Some((_, other)) = entries.iter().find(|(e, _)| e.name.trim() == file.name) {
+            synced.problems.push(format!(
+                "schedule `{}`: named in both {other} and {}; keep one of them",
+                file.name, file.path
+            ));
+            continue;
+        }
+        names.push(file.name.clone());
+        entries.push((entry.clone(), file.path.clone()));
+    }
+    let problems = static_problems(&Manifest {
+        needs: list.needs.clone(),
+        schedules: entries.iter().map(|(e, _)| e.clone()).collect(),
+    });
+    synced.problems.extend(problems);
+    held.extend(synced.problems.iter().filter_map(|p| {
+        p.strip_prefix("schedule `")
+            .and_then(|r| r.split_once('`'))
+            .map(|(n, _)| n.to_string())
+    }));
+    sync_needs(s, slug, actor, &list, &mut synced)?;
+    sync_schedules(s, slug, actor, &entries, &held, &mut synced)?;
 
     let after = Status {
         fingerprint: print,
         commit: short,
         path: synced.path.clone(),
+        files: synced.files.clone(),
         at: now.clone(),
         problems: synced.problems.clone(),
         schedules: names,
@@ -905,6 +1096,7 @@ pub fn sync(
         slug,
         pulse_store::Detail::json(json!({
             "path": synced.path,
+            "files": synced.files,
             "branch": synced.branch,
             "commit": synced.commit,
             "schedules": synced.schedules,
@@ -1051,18 +1243,32 @@ fn live_rows(s: &pulse_store::Store, slug: &str) -> Result<BTreeMap<String, sche
     Ok(out)
 }
 
+/// The names of the live schedules the list file keeps: held as they are
+/// when the file cannot be read.
+fn kept_by_list(s: &pulse_store::Store, slug: &str) -> Result<Vec<String>> {
+    Ok(live_rows(s, slug)?
+        .into_iter()
+        .filter(|(_, row)| {
+            origin_parts(&row.origin).is_some_and(|(path, _)| MANIFEST_PATHS.contains(&path))
+        })
+        .map(|(name, _)| name)
+        .collect())
+}
+
+/// Applies `entries` - each with the path of the file that names it - to
+/// the project's schedules and ends every live one no file names, except
+/// the `held` names, whose rows stay as they are.
 fn sync_schedules(
     s: &pulse_store::Store,
     slug: &str,
     actor: &str,
-    path: &str,
-    m: &Manifest,
+    entries: &[(Entry, String)],
     held: &BTreeSet<String>,
     synced: &mut Synced,
 ) -> Result<()> {
     let live = live_rows(s, slug)?;
     let mut keep: BTreeSet<String> = held.clone();
-    for e in &m.schedules {
+    for (e, path) in entries {
         let name = e.name.trim().to_string();
         if held.contains(&name) {
             continue;
