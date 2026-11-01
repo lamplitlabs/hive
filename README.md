@@ -580,6 +580,12 @@ dashed circle until one takes it), its state (*Waiting*, *Starting*, *Working*,
 *Done*, *Failed*, *Blocked*) and when it last moved; a finished task folds its
 steps (*N steps · show*).
 
+A conversation's title follows the conversation: it starts as the first line
+you wrote, and after each reply the agent asks its model for a short name of
+what the talk is about now and renames the row (the list and the tab title
+pick it up on the next poll). Rename one yourself and it is yours - the agent
+leaves it alone from then on.
+
 Opening a task, or a step without an agent yet, opens the task in place the way
 a conversation opens (`?task=TASK-NNN` in the address, so a link lands on it):
 a header with its state, project and lead, **Finish** and **Cancel** beside it
