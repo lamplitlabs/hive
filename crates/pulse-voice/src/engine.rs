@@ -153,7 +153,7 @@ impl Engine {
             }
         };
         let text = decoder
-            .transcribe_audio(samples)
+            .transcribe_audio(&audio::with_margins(samples))
             .map_err(|e| anyhow!("transcribing: {e}"))
             .context("the model failed on this recording")?;
         loaded.last_used = Instant::now();

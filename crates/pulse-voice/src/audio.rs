@@ -114,6 +114,27 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
     out
 }
 
+/// Silence put around a recording before the recognizer hears it. The
+/// streaming model decodes in chunks whose first one has an empty
+/// pre-encode cache, so a word that starts at sample 0 loses its first
+/// syllable ("Bitte füge dem Chat..." came back as "füge dem Chat...");
+/// half a second of lead-in restores it. The tail gives the last chunk
+/// room to flush.
+pub const LEAD_IN_SECONDS: f32 = 0.5;
+pub const TAIL_SECONDS: f32 = 0.5;
+
+/// `samples` with [`LEAD_IN_SECONDS`] of silence before and
+/// [`TAIL_SECONDS`] after.
+pub fn with_margins(samples: &[f32]) -> Vec<f32> {
+    let lead = (SAMPLE_RATE as f32 * LEAD_IN_SECONDS) as usize;
+    let tail = (SAMPLE_RATE as f32 * TAIL_SECONDS) as usize;
+    let mut out = Vec::with_capacity(lead + samples.len() + tail);
+    out.resize(lead, 0.0);
+    out.extend_from_slice(samples);
+    out.resize(lead + samples.len() + tail, 0.0);
+    out
+}
+
 /// Seconds of audio in `samples` at the model's rate.
 pub fn seconds(samples: &[f32]) -> f32 {
     samples.len() as f32 / SAMPLE_RATE as f32
@@ -191,5 +212,15 @@ mod tests {
         let same = resample(&[0.5; 10], 16_000, 16_000);
         assert_eq!(same.len(), 10);
         assert!(resample(&[], 48_000, 16_000).is_empty());
+    }
+
+    #[test]
+    fn margins_wrap_the_recording_in_silence() {
+        let s = with_margins(&[0.25, -0.25]);
+        assert_eq!(s.len(), 8_000 + 2 + 8_000);
+        assert!(s[..8_000].iter().all(|v| *v == 0.0));
+        assert_eq!(&s[8_000..8_002], &[0.25, -0.25]);
+        assert!(s[8_002..].iter().all(|v| *v == 0.0));
+        assert_eq!(with_margins(&[]).len(), 16_000);
     }
 }
