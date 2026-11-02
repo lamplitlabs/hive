@@ -31,6 +31,13 @@ pub(crate) struct PairOpts {
     pub dry_run: bool,
     pub actor: String,
     pub hub_home: String,
+    /// The caller places the harness login right after this pairing (the compute path: a machine
+    /// PULSE bought has no login until the daemon copies one over). A probe whose only problem is
+    /// the missing login then leaves the report ok and the executor drained with that note, and
+    /// the summary names the login as the next step instead of asking a human for it; the
+    /// caller's probe after the login decides. Every other probe outcome is handled as for
+    /// `pulse pair`.
+    pub login_follows: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1011,6 +1018,71 @@ pub(crate) fn pair_probe_broken(note: &str) -> bool {
         || note.contains("hands predate ADR-022")
 }
 
+/// A probe note whose only problem is the missing harness login: the hands answer through the
+/// pairing, git, the key and the workdir are fine, and the login is what the compute path places
+/// next (`PairOpts::login_follows`). The probe joins several problems with `; `, so a note with
+/// more in it is not this.
+pub(crate) fn pair_probe_login_only(note: &str) -> bool {
+    note.starts_with("harness login missing") && !note.contains("; ")
+}
+
+/// The line of a pair report that says why it stopped: the probe's verdict, the step that failed,
+/// or the next step it named - never the summary's `undo` one-liner, which is what the last line
+/// of a report is. The compute worker stores this as the reason a request failed.
+pub(crate) fn pair_failure_reason(lines: &[String]) -> String {
+    let lines = lines
+        .iter()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>();
+    for prefix in [
+        "probe FAILED:",
+        "apply failed",
+        "inspection failed",
+        "sudo asked",
+        "next:",
+        "next ",
+    ] {
+        if let Some(l) = lines.iter().find(|l| l.starts_with(prefix)) {
+            return l.clone();
+        }
+    }
+    lines.last().cloned().unwrap_or_default()
+}
+
+/// Removes the known_hosts lines for one address (`host`, or `[host]:port` off port 22) from
+/// `hub_home/.ssh/known_hosts`, the inverse of `pair_write_known_hosts` for a machine that is
+/// gone: a cloud provider hands the same address to a later machine, whose host key differs, and
+/// a line kept from the old one would refuse the new one as a changed host. Returns how many
+/// lines went.
+pub(crate) fn pair_remove_known_hosts(hub_home: &str, host: &str, port: i32) -> usize {
+    if host.trim().is_empty() {
+        return 0;
+    }
+    let path = Path::new(hub_home).join(".ssh").join("known_hosts");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return 0;
+    };
+    let prefix = pair_known_host_prefix(host.trim().to_string(), port);
+    let kept = text
+        .lines()
+        .filter(|l| l.split_whitespace().next() != Some(prefix.as_str()))
+        .collect::<Vec<_>>();
+    let removed = text.lines().count() - kept.len();
+    if removed == 0 {
+        return 0;
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    if std::fs::write(&path, out).is_ok() {
+        removed
+    } else {
+        0
+    }
+}
+
 pub(crate) fn pair_next_step(name: &str, admin: &str, note: &str) -> String {
     if note.contains("harness login missing") || note.contains("not logged in") {
         format!(
@@ -1340,6 +1412,9 @@ fn pair_apply_live(
         ),
     };
     let broken = !ok && pair_probe_broken(&note);
+    // The compute path: the login is the caller's next step, so hands that lack only that are
+    // paired and waiting, not a failure for a human to finish.
+    let login_next = !ok && !broken && opts.login_follows && pair_probe_login_only(&note);
     if ok {
         let row = crate::executor::executor_row(s, name);
         if row.str("status") != "active" && row.str("probe_note").starts_with("ok") {
@@ -1423,6 +1498,9 @@ fn pair_apply_live(
     if !decision.is_empty() {
         detail["decision"] = serde_json::Value::String(decision.to_string());
     }
+    if login_next {
+        detail["login_next"] = serde_json::Value::Bool(true);
+    }
     crate::util::event_at(&s.conn()?, now, actor, "pair.applied", name, detail);
 
     if broken {
@@ -1436,6 +1514,8 @@ fn pair_apply_live(
     rep.lines.push(String::new());
     rep.lines.push(if ok {
         format!("paired {name}: {status}")
+    } else if login_next {
+        format!("paired {name}: {status} (the harness login comes next)")
     } else {
         format!("paired {name}: {status} (the probe did not pass)")
     });
@@ -1447,11 +1527,13 @@ fn pair_apply_live(
         format!("  projects  {projects}"),
         if ok {
             format!("  probe     {note}")
+        } else if login_next {
+            format!("  probe     {note}; the caller places the login and probes again")
         } else {
             format!("  probe     FAILED: {note}")
         },
     ]);
-    if !ok {
+    if !ok && !login_next {
         rep.lines.push(format!(
             "  next      {}",
             pair_next_step(name, admin, &note)
@@ -1459,7 +1541,7 @@ fn pair_apply_live(
     }
     rep.lines
         .push(format!("  undo      pulse remove executor {name}"));
-    rep.ok = ok;
+    rep.ok = ok || login_next;
     Ok(Some(Box::new(rep)))
 }
 
@@ -2407,6 +2489,191 @@ mod tests {
                 && events[0]["probe_ok"] == false
                 && events[0]["outcome"] == "drained",
             "pair.applied: {events:?}"
+        );
+    }
+
+    /// The compute path pairs a machine that cannot have a login yet (the daemon places it right
+    /// after): hands that lack only the login are paired and waiting, the report is ok and names
+    /// no human step; any other shortfall is reported as for `pulse pair`.
+    #[test]
+    fn pair_live_login_follows_keeps_the_report_ok_for_a_missing_login_only() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = PAIR_TEST_LOCK.lock().expect("pair test lock");
+        let s = new_store();
+        let hub = hub_with_key();
+        let old_binary = set_hands_binary(fake_hands_binary());
+        let opts = PairOpts {
+            login_follows: true,
+            ..live_opts(&hub, 1)
+        };
+        let (ssh, calls) = install_live_fake(LiveReplies {
+            probe: (
+                0,
+                PROBE_OK.replace("harness=yes", "harness=no"),
+                String::new(),
+            ),
+            ..Default::default()
+        });
+        let rep = pair_executor(
+            &s,
+            "admin@example.invalid".into(),
+            "hands-two".into(),
+            TEST_NOW.into(),
+            opts.clone(),
+        )
+        .unwrap_or_else(|e| panic!("live pair: {e}"))
+        .expect("report");
+        drop(ssh);
+        let kinds = calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .map(|c| c.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["inspect", "apply", "probe", "commit"],
+            "the pairing is committed, not undone"
+        );
+        let text = rep.lines.join("\n");
+        assert!(
+            rep.ok,
+            "report not ok although only the login is missing:\n{text}"
+        );
+        for want in [
+            "paired hands-two: drained (the harness login comes next)",
+            "  probe     harness login missing (run `pulse executor login hands-two --admin <admin@host> --with-token`); the caller places the login and probes again",
+            "  undo      pulse remove executor hands-two",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(
+            !text.contains("  next      ") && !text.contains("probe     FAILED"),
+            "a human step was named:\n{text}"
+        );
+        let row = crate::executor::executor_row(&s, "hands-two");
+        assert!(
+            row.str("status") == "drained"
+                && row.str("probe_note").starts_with("harness login missing"),
+            "executor row: {row:?}"
+        );
+        let events = pair_applied_events(&s);
+        assert!(
+            events.len() == 1
+                && events[0]["probe_ok"] == false
+                && events[0]["outcome"] == "drained"
+                && events[0]["login_next"] == true,
+            "pair.applied: {events:?}"
+        );
+
+        // The same option with a second problem beside the login: not ok, and the next step is named.
+        let (ssh, _) = install_live_fake(LiveReplies {
+            probe: (
+                0,
+                PROBE_OK
+                    .replace("harness=yes", "harness=no")
+                    .replace("disk_free_mb=200000", "disk_free_mb=100"),
+                String::new(),
+            ),
+            ..Default::default()
+        });
+        crate::test_helpers_daemon::set_setting(&s, "daemon.min_free_mb", "10240");
+        let rep = pair_executor(
+            &s,
+            "admin@example.invalid".into(),
+            "hands-two".into(),
+            TEST_NOW.into(),
+            opts,
+        )
+        .unwrap_or_else(|e| panic!("second live pair: {e}"))
+        .expect("report");
+        drop(ssh);
+        let _ = set_hands_binary(old_binary);
+        let text = rep.lines.join("\n");
+        assert!(!rep.ok, "report ok with the disk under the floor:\n{text}");
+        assert!(
+            text.contains("  probe     FAILED: harness login missing")
+                && text.contains("under 10 GiB free on /srv/pulse")
+                && text.contains("  next      "),
+            "second report:\n{text}"
+        );
+        assert_eq!(
+            pair_failure_reason(&rep.lines),
+            format!(
+                "probe FAILED: harness login missing (run `pulse executor login hands-two --admin <admin@host> --with-token`); under 10 GiB free on /srv/pulse"
+            ),
+            "the reason is the probe's verdict, not the undo line"
+        );
+    }
+
+    #[test]
+    fn pair_failure_reason_prefers_the_verdict_over_the_undo_line() {
+        let drained = [
+            "pairing executor hands-two",
+            "registered executor hands-two (pulse@hands-two, /srv/pulse, 1 worker(s), projects *)",
+            "",
+            "paired hands-two: drained (the probe did not pass)",
+            "  host      example.invalid:22 (admin admin@example.invalid)",
+            "  probe     FAILED: harness login missing (run `pulse executor login hands-two --admin <admin@host> --with-token`)",
+            "  next      `pulse executor login hands-two --admin admin@example.invalid` (add --with-token to paste a token), then `pulse executor probe hands-two`",
+            "  undo      pulse remove executor hands-two",
+        ]
+        .map(String::from);
+        assert_eq!(
+            pair_failure_reason(&drained),
+            "probe FAILED: harness login missing (run `pulse executor login hands-two --admin <admin@host> --with-token`)"
+        );
+        let apply = ["apply failed on example.invalid (exit 1): useradd: no space", "  steps: user=failed", "next: fix that on the machine, then run `pulse pair admin@example.invalid --name hands-two` again; the apply script is idempotent"].map(String::from);
+        assert_eq!(
+            pair_failure_reason(&apply),
+            "apply failed on example.invalid (exit 1): useradd: no space"
+        );
+        let broken = [
+            "probe FAILED: unreachable: ssh: connect to host example.invalid port 22: Connection refused",
+            "undid the sshd drop-in on example.invalid: dropin=restored-or-removed",
+            "removed executor hands-two from the store",
+            "next: check the connection from this account (`ssh -v hands-two`)",
+        ]
+        .map(String::from);
+        assert_eq!(
+            pair_failure_reason(&broken),
+            "probe FAILED: unreachable: ssh: connect to host example.invalid port 22: Connection refused"
+        );
+        assert_eq!(
+            pair_failure_reason(&["only this".to_string(), String::new()]),
+            "only this"
+        );
+        assert_eq!(pair_failure_reason(&[]), "");
+        assert!(pair_probe_login_only(
+            "harness login missing (run `pulse executor login x --admin <admin@host> --with-token`)"
+        ));
+        assert!(!pair_probe_login_only(
+            "harness login missing (run `pulse executor login x --admin <admin@host> --with-token`); git missing"
+        ));
+        assert!(!pair_probe_login_only("git missing"));
+    }
+
+    #[test]
+    fn pair_remove_known_hosts_drops_only_the_named_address() {
+        let hub = hub_with_key();
+        let home = hub.path().display().to_string();
+        let path = hub.path().join(".ssh/known_hosts");
+        assert_eq!(pair_remove_known_hosts(&home, "203.0.113.5", 22), 0);
+        std::fs::write(
+            &path,
+            "203.0.113.5 ssh-ed25519 AAAAONE\n203.0.113.50 ssh-ed25519 AAAATWO\n[203.0.113.5]:2222 ssh-ed25519 AAAATHREE\n203.0.113.5 ecdsa-sha2-nistp256 AAAAFOUR\n",
+        )
+        .expect("known_hosts");
+        assert_eq!(pair_remove_known_hosts(&home, "203.0.113.5", 22), 2);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("known_hosts"),
+            "203.0.113.50 ssh-ed25519 AAAATWO\n[203.0.113.5]:2222 ssh-ed25519 AAAATHREE\n"
+        );
+        assert_eq!(pair_remove_known_hosts(&home, "203.0.113.5", 2222), 1);
+        assert_eq!(pair_remove_known_hosts(&home, "", 22), 0);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("known_hosts"),
+            "203.0.113.50 ssh-ed25519 AAAATWO\n"
         );
     }
 

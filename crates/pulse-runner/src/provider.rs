@@ -46,7 +46,9 @@ pub(crate) type PairHandsFn = dyn Fn(
 pub(crate) type ProviderLogFn = dyn Fn(&str, &[serde_json::Value]) + Send + Sync;
 
 pub(crate) use crate::compute::provider_named;
-pub use crate::compute::{Machine, Provider, ProvisionRequest, provider_names, register_provider};
+pub use crate::compute::{
+    LogSink, Machine, Provider, ProvisionRequest, provider_names, register_provider,
+};
 
 pub(crate) static PAIR_HANDS: LazyLock<RwLock<Box<PairHandsFn>>> = LazyLock::new(|| {
     RwLock::new(Box::new(|s, admin, name, now, o| {
@@ -205,12 +207,69 @@ pub(crate) fn provision_start(
             crate::board::py_repr(req.executor)
         ));
     }
+    // The caps hold a request while there is no login to give a new machine; a provider is never
+    // asked for one without it, since a machine without a login is paid for and does nothing.
+    if !crate::token::has_login_source(&s) {
+        return Err(anyhow!(
+            "{}: a machine would have no Copilot login (place one with `pulse executor token --with-token`); no machine was bought",
+            pulse_tasks::NO_LOGIN_SOURCE
+        ));
+    }
     let hub_home = if req.hub_home.is_empty() {
         crate::util::home_dir()
     } else {
         req.hub_home
     };
-    Ok((s, hub_home, Box::new(|_, _| {})))
+    Ok((s, hub_home, provider_log(req.log)))
+}
+
+/// The provider's log line sink: each line, formatted and with secrets redacted, goes to the
+/// request's `log` (the compute worker's daemon-log line and the request's note); a request
+/// without one logs nowhere. Templates are the Go `%s`/`%d`/`%v` kind the provider code carries.
+pub(crate) fn provider_log(sink: Option<crate::compute::LogSink>) -> Box<ProviderLogFn> {
+    Box::new(move |template, args| {
+        if let Some(sink) = &sink {
+            sink(&crate::compute::redact_secrets(&format_log(template, args)));
+        }
+    })
+}
+
+/// Fills a `%s`/`%d`/`%v` template from its arguments in order; an argument beyond the verbs is
+/// appended, a verb beyond the arguments reads `%?`.
+pub(crate) fn format_log(template: &str, args: &[serde_json::Value]) -> String {
+    let word = |v: &serde_json::Value| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let mut out = String::with_capacity(template.len());
+    let mut args = args.iter();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.peek() {
+                Some('s' | 'd' | 'v') => {
+                    chars.next();
+                    match args.next() {
+                        Some(v) => out.push_str(&word(v)),
+                        None => out.push_str("%?"),
+                    }
+                    continue;
+                }
+                Some('%') => {
+                    chars.next();
+                    out.push('%');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    for v in args {
+        out.push(' ');
+        out.push_str(&word(v));
+    }
+    out
 }
 
 pub(crate) fn machine_tags(req: crate::provider::ProvisionRequest) -> BTreeMap<String, String> {
@@ -310,6 +369,13 @@ pub(crate) fn wait_cloud_init(
     }
 }
 
+/// The steps after the provider has a machine with an address and a host key: the hub's ssh
+/// files, cloud-init, the pairing, the harness login, then the probe that makes the executor
+/// active. In that order because a machine PULSE bought has no login until the daemon copies one
+/// over: a pairing whose probe lacks only the login is paired and waiting
+/// (`PairOpts::login_follows`), the login is placed, and the probe after it decides. Any
+/// failure returns the reason the worker stores (the probe's note, the step that failed) and the
+/// worker releases what was created.
 pub(crate) fn provision_finish(
     ctx: &pulse_bus::CancellationToken,
     req: crate::provider::ProvisionRequest,
@@ -339,7 +405,11 @@ pub(crate) fn provision_finish(
         &[json!(m.name), json!(ip)],
     );
     wait_cloud_init(ctx, admin.clone(), &*log)?;
-    let rep = (PAIR_HANDS.read().expect("pair_hands poisoned"))(
+    log(
+        "cloud-init done on %s; pairing %s",
+        &[json!(m.name), json!(req.executor)],
+    );
+    let paired = (PAIR_HANDS.read().expect("pair_hands poisoned"))(
         &s,
         &admin,
         &req.executor,
@@ -350,55 +420,122 @@ pub(crate) fn provision_finish(
             projects: req.project.clone(),
             actor: crate::util::HUMAN_AGENT.into(),
             hub_home: hub_home.clone(),
+            login_follows: true,
             ..Default::default()
         },
-    )?
-    .ok_or_else(|| anyhow!("pairing {} did not complete", req.executor))?;
+    );
+    let rep = match paired {
+        Ok(Some(rep)) => rep,
+        Ok(None) => return Err(anyhow!("pairing {} did not complete", req.executor)),
+        // A refusal, a failed apply or an undone pairing: the report is the error's text.
+        Err(e) => {
+            let lines = crate::run::err_message(&e)
+                .lines()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            for l in &lines {
+                log("pair: %s", &[json!(l)]);
+            }
+            return Err(anyhow!(
+                "pairing {} failed: {}",
+                req.executor,
+                crate::compute::redact_secrets(&crate::pair::pair_failure_reason(&lines))
+            ));
+        }
+    };
     for l in &rep.lines {
         log("pair: %s", &[json!(l)]);
     }
     if !rep.ok {
-        let last = rep.lines.last().cloned().unwrap_or_default();
         return Err(anyhow!(
             "pairing {} did not complete: {}",
             req.executor,
-            crate::compute::redact_secrets(&last)
+            crate::compute::redact_secrets(&crate::pair::pair_failure_reason(&rep.lines))
         ));
     }
     crate::executor::set_executor_admin(&s, &req.executor, &m.address);
-    if let Ok((tok, origin)) = crate::token::login_source(&s) {
-        if !tok.is_empty() {
-            let mut rdr = crate::token::token_reader(tok);
-            let res = (*crate::executor::PLACE_LOGIN
-                .read()
-                .expect("place_login poisoned"))(
+    // The login. The caps hold a request without a source before anything is bought, so one is
+    // expected here; a source that went away meanwhile leaves a machine that cannot work.
+    let (tok, origin) = crate::token::login_source(&s)?;
+    if tok.is_empty() {
+        return Err(anyhow!(
+            "{}: {} is paired but has no Copilot login to work with; the source went away while the machine was being provisioned (place one with `pulse executor token --with-token`)",
+            pulse_tasks::NO_LOGIN_SOURCE,
+            req.executor
+        ));
+    }
+    log(
+        "placing the %s on %s",
+        &[json!(origin), json!(req.executor)],
+    );
+    let mut rdr = crate::token::token_reader(tok);
+    let res = (*crate::executor::PLACE_LOGIN
+        .read()
+        .expect("place_login poisoned"))(
+        &s,
+        &s.now(),
+        &req.executor,
+        &m.address,
+        &mut rdr,
+        false,
+        false,
+        &req.actor,
+    )?;
+    for l in &res.lines {
+        log("login: %s", &[json!(crate::compute::redact_secrets(l))]);
+    }
+    if !res.ok {
+        return Err(anyhow!(
+            "the {} was refused on {}: {}",
+            origin,
+            req.executor,
+            crate::compute::redact_secrets(&login_failure_reason(&res.lines))
+        ));
+    }
+    // The probe decides: with the login on the machine the hands must answer fit, and the
+    // executor is active when they do. The login step probes itself; this is for a login placed
+    // another way (a test's, an older hands build) that left the row as the pairing made it.
+    let row = crate::executor::executor_row(&s, &req.executor);
+    if row.str("status") != "active" {
+        let now = s.now();
+        let (ok, note) = crate::executor::probe_executor(&s, &req.executor, &req.actor, &now)?;
+        log("probe: %s", &[json!(note)]);
+        if !ok {
+            return Err(anyhow!(
+                "{} is paired and logged in but its probe fails: {}",
+                req.executor,
+                crate::compute::redact_secrets(&note)
+            ));
+        }
+        if crate::executor::executor_row(&s, &req.executor).str("status") != "active" {
+            crate::executor::set_executor_status(
                 &s,
-                &s.now(),
+                &now,
                 &req.executor,
-                &m.address,
-                &mut rdr,
-                false,
-                false,
+                "active",
                 &req.actor,
+                Some(&note),
             )?;
-            for l in &res.lines {
-                log("login: %s", &[json!(crate::compute::redact_secrets(l))]);
-            }
-            if !res.ok {
-                return Err(anyhow!(
-                    "the {} was refused on {}; the machine cannot work",
-                    origin,
-                    req.executor
-                ));
-            }
-        } else {
-            log(
-                "no login source: %s starts without a worker login",
-                &[json!(req.executor)],
-            );
         }
     }
+    log(
+        "%s is active: executor %s",
+        &[json!(m.name), json!(req.executor)],
+    );
     Ok(())
+}
+
+/// The line of a login report that says why it did not take: the failed check or probe, the
+/// refused login, the unreachable machine; else its last line.
+pub(crate) fn login_failure_reason(lines: &[String]) -> String {
+    lines
+        .iter()
+        .find(|l| {
+            l.contains("FAILED") || l.starts_with("login failed") || l.contains("unreachable:")
+        })
+        .or_else(|| lines.iter().rev().find(|l| !l.trim().is_empty()))
+        .cloned()
+        .unwrap_or_default()
 }
 
 pub(crate) fn sleep_ctx(ctx: &pulse_bus::CancellationToken, d: std::time::Duration) -> bool {
@@ -1003,6 +1140,469 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
                 .0
                 .is_empty(),
             "an executor was registered for a failed machine"
+        );
+    }
+
+    const LOGIN_MISSING_NOTE: &str = "harness login missing (run `pulse executor login hands-cr-001 --admin <admin@host> --with-token`)";
+    const HANDS_PROBE_OK: &str = "hands=ok user=pulse workdir=/srv/pulse git=2.43 harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=200000 jobs=- keys=- heartbeat=1\n";
+
+    /// A pairing as `pair_apply_live` leaves one on a machine that has no login yet
+    /// (`login_follows`): the row registered and drained with the probe's note, the `Host NAME`
+    /// block written under `hub_home`, the report ok. Returns the pair hook it replaced.
+    fn install_login_pending_pair(hub_home: &str) -> Box<PairHandsFn> {
+        let hub_home = hub_home.to_string();
+        set_pair_hands(Box::new(move |st, admin, name, now, o| {
+            assert!(o.login_follows, "the compute path pairs with login_follows");
+            crate::executor::add_executor(
+                st,
+                now,
+                name,
+                &format!("pulse@{name}"),
+                &o.workdir,
+                o.workers,
+                &o.projects,
+                pulse_store::HUMAN_AGENT,
+            )?;
+            st.conn()?.execute(
+                "UPDATE executors SET probe_note = ?, last_probe_at = ? WHERE name = ?",
+                rusqlite::params![LOGIN_MISSING_NOTE, now, name],
+            )?;
+            let config = std::path::Path::new(&hub_home).join(".ssh").join("config");
+            let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+            text.push('\n');
+            text.push_str(&crate::pair::pair_host_block(
+                name.to_string(),
+                "203.0.113.5".into(),
+                22,
+            ));
+            std::fs::write(&config, text).expect("ssh config");
+            Ok(Some(Box::new(crate::pair::PairReport {
+                ok: true,
+                lines: vec![
+                    format!(
+                        "registered executor {name} (pulse@{name}, {}, 1 worker(s), projects {})",
+                        o.workdir, o.projects
+                    ),
+                    format!("paired {name}: drained (the harness login comes next)"),
+                    format!("  host      203.0.113.5:22 (admin {admin})"),
+                    format!(
+                        "  probe     {LOGIN_MISSING_NOTE}; the caller places the login and probes again"
+                    ),
+                    format!("  undo      pulse remove executor {name}"),
+                ],
+                ..Default::default()
+            })))
+        }))
+    }
+
+    /// An ssh fake that answers the hands' probe with `reply` and everything else (cloud-init,
+    /// the login) with `pulse-ready`.
+    fn install_probe_ssh(reply: &'static str) -> crate::executor::SshRunner {
+        crate::executor::set_run_ssh(move |_, argv: &[String], _, _| {
+            if argv.last().is_some_and(|a| a == "b64 cHJvYmUA") {
+                return Ok((0, reply.to_string(), String::new()));
+            }
+            Ok((0, "pulse-ready\n".into(), String::new()))
+        })
+    }
+
+    fn ssh_files(h: &ComputeHarness) -> (String, String) {
+        (
+            std::fs::read_to_string(format!("{}/.ssh/config", h.hub_home)).unwrap_or_default(),
+            std::fs::read_to_string(format!("{}/.ssh/known_hosts", h.hub_home)).unwrap_or_default(),
+        )
+    }
+
+    /// CR-001..CR-059 on the live hub: every machine came up, was paired, and failed on the
+    /// probe's `harness login missing` - the login was the step after the one that failed. The
+    /// login now follows the pairing, the probe after it makes the hand active, and the machine
+    /// is kept; every step reaches the daemon log under the request's id.
+    #[test]
+    fn compute_places_the_login_after_pairing_and_the_probe_makes_the_hand_active() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let _pair = install_login_pending_pair(&h.hub_home);
+        let _ssh = install_probe_ssh(HANDS_PROBE_OK);
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (
+                got.status.as_str(),
+                got.executor.as_str(),
+                got.note.as_str()
+            ),
+            ("ready", "hands-cr-001", ""),
+            "request: {got:?}\n{log}"
+        );
+        let ex = crate::executor::executor_row(&s, "hands-cr-001");
+        assert!(
+            ex.str("status") == "active"
+                && ex.str("probe_note").starts_with("ok:")
+                && ex.str("admin") == "pulseadmin@203.0.113.5",
+            "executor after the login: {ex:?}\n{log}"
+        );
+        let placed = place_login_calls();
+        assert!(
+            placed.len() == 1 && placed[0].admin == "pulseadmin@203.0.113.5",
+            "login placement: {placed:?}"
+        );
+        assert!(az.deleted().is_empty(), "the machine was released: {log}");
+        let (_, mrow) = crate::compute::load_machine(&s, &req.id);
+        assert_eq!(mrow.str("released_at"), "", "machine row: {mrow:?}");
+        for want in [
+            "compute CR-001: pulse-cr-001 is up at 203.0.113.5; waiting for cloud-init",
+            "compute CR-001: cloud-init done on pulse-cr-001; pairing hands-cr-001",
+            "compute CR-001: pair: paired hands-cr-001: drained (the harness login comes next)",
+            "compute CR-001: placing the executor token on hands-cr-001",
+            "compute CR-001: login: placed login",
+            "compute CR-001: probe: ok: ",
+            "compute CR-001: pulse-cr-001 is active: executor hands-cr-001",
+            "compute CR-001 ready: executor hands-cr-001",
+        ] {
+            assert!(log.contains(want), "daemon log lacks {want:?}:\n{log}");
+        }
+        assert!(
+            !log.contains("did not complete"),
+            "the old failure is still reported:\n{log}"
+        );
+    }
+
+    /// The probe after the login still decides: a hand that is unfit for another reason fails
+    /// the request with that reason - on the request's note and the finding, not the report's
+    /// `undo` line - and the attempt leaves nothing behind: the machine is released, the
+    /// executor row and the ssh files written for the machine are gone.
+    #[test]
+    fn compute_fails_with_the_probe_note_and_leaves_no_executor_behind() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        set_setting(&s, "daemon.min_free_mb", "10240");
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let _pair = install_login_pending_pair(&h.hub_home);
+        let _ssh = install_probe_ssh(
+            "hands=ok user=pulse workdir=/srv/pulse git=2.43 harness=yes pulse=/usr/local/bin/pulse remotes=0 keys_ok=yes disk_free_mb=100 jobs=- keys=- heartbeat=1\n",
+        );
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        let want_reason = "hands-cr-001 is paired and logged in but its probe fails: under 10 GiB free on /srv/pulse; what was created is released";
+        assert_eq!(
+            (got.status.as_str(), got.note.as_str()),
+            ("failed", want_reason),
+            "request: {got:?}\n{log}"
+        );
+        let found = findings_like(&s, "compute CR-001 failed:%");
+        assert_eq!(
+            found,
+            vec![format!("compute CR-001 failed: {want_reason}")],
+            "{log}"
+        );
+        assert_eq!(az.deleted(), vec!["pulse-cr-001"], "{log}");
+        assert!(
+            crate::executor::executor_row(&s, "hands-cr-001")
+                .0
+                .is_empty(),
+            "the executor row survived the failed provisioning\n{log}"
+        );
+        let (config, known) = ssh_files(&h);
+        assert!(
+            crate::pair::pair_alias_state(config.clone(), "hands-cr-001".into()).is_none()
+                && crate::pair::pair_alias_state(config.clone(), "pulse-cr-001-admin".into())
+                    .is_none(),
+            "ssh config after the failure: {config:?}\n{log}"
+        );
+        assert!(
+            !known.lines().any(|l| l.starts_with("203.0.113.5 ")),
+            "known_hosts after the failure: {known:?}\n{log}"
+        );
+        for want in [
+            "compute CR-001: probe: under 10 GiB free on /srv/pulse",
+            "compute CR-001: removed executor hands-cr-001",
+            "compute CR-001: removed the hands-cr-001 block from ~/.ssh/config",
+            "compute CR-001: removed the pulse-cr-001-admin block from ~/.ssh/config",
+            "compute CR-001: removed 1 known_hosts line(s) for 203.0.113.5",
+            &format!("compute CR-001 failed: {want_reason}"),
+        ] {
+            assert!(log.contains(want), "daemon log lacks {want:?}:\n{log}");
+        }
+    }
+
+    /// A pairing that stops short for a reason of its own (here: not ok, git missing) fails the
+    /// request with the probe's verdict, where the undo one-liner used to be.
+    #[test]
+    fn compute_fails_with_the_pair_verdict_not_its_undo_line() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let _pair = set_pair_hands(Box::new(|st, _admin, name, now, o| {
+            crate::executor::add_executor(
+                st,
+                now,
+                name,
+                &format!("pulse@{name}"),
+                &o.workdir,
+                o.workers,
+                &o.projects,
+                pulse_store::HUMAN_AGENT,
+            )?;
+            Ok(Some(Box::new(crate::pair::PairReport {
+                ok: false,
+                lines: vec![
+                    format!("paired {name}: drained (the probe did not pass)"),
+                    "  probe     FAILED: git missing; harness login missing (run `pulse executor login hands-cr-001 --admin <admin@host> --with-token`)".into(),
+                    format!("  next      fix that on the machine, then `pulse executor probe {name}`"),
+                    format!("  undo      pulse remove executor {name}"),
+                ],
+                ..Default::default()
+            })))
+        }));
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = pulse_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "failed", "request: {got:?}\n{log}");
+        assert!(
+            got.note
+                .starts_with("pairing hands-cr-001 did not complete: probe FAILED: git missing")
+                && got.note.ends_with("; what was created is released"),
+            "note: {:?}\n{log}",
+            got.note
+        );
+        assert!(
+            place_login_calls().is_empty(),
+            "a login was placed on hands that did not pair"
+        );
+        assert!(
+            crate::executor::executor_row(&s, "hands-cr-001")
+                .0
+                .is_empty(),
+            "the executor row survived\n{log}"
+        );
+        assert_eq!(az.deleted(), vec!["pulse-cr-001"], "{log}");
+    }
+
+    /// The provider boundary refuses to buy without a login source, whatever reached it; the
+    /// worker's caps hold such a request earlier still.
+    #[test]
+    fn provision_start_buys_nothing_without_a_login_source() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let req = ProvisionRequest {
+            id: "CR-001".into(),
+            project: "proj".into(),
+            executor: "hands-cr-001".into(),
+            store: Some((*s).clone()),
+            ..Default::default()
+        };
+        let err = match provision_start("azure".into(), req.clone()) {
+            Err(err) => err,
+            Ok(_) => panic!("a machine was bought without a login source"),
+        };
+        assert!(
+            err.to_string().starts_with(pulse_tasks::NO_LOGIN_SOURCE)
+                && err.to_string().ends_with("no machine was bought"),
+            "error: {err}"
+        );
+        crate::test_helpers_hands::write_executor_token(&s);
+        let (_, _, log) = match provision_start("azure".into(), req) {
+            Ok(v) => v,
+            Err(err) => panic!("with a source: {err}"),
+        };
+        log("nothing listens: %s", &[json!("fine")]);
+    }
+
+    #[test]
+    fn format_log_fills_go_verbs_in_order() {
+        assert_eq!(
+            format_log(
+                "%s is up at %s; attempt %d",
+                &[json!("vm"), json!("1.2.3.4"), json!(3)]
+            ),
+            "vm is up at 1.2.3.4; attempt 3"
+        );
+        assert_eq!(format_log("100%% done %s", &[json!("x")]), "100% done x");
+        assert_eq!(format_log("short %s %s", &[json!("one")]), "short one %?");
+        assert_eq!(
+            format_log("extra", &[json!("one"), json!(2)]),
+            "extra one 2"
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let log = provider_log(Some(std::sync::Arc::new(move |l: &str| {
+            sink.lock().unwrap().push(l.to_string())
+        })));
+        log(
+            "login: %s",
+            &[json!(
+                "token github_pat_11ATESTTOKEN0000000000_TESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTESTTEST placed"
+            )],
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["login: token [redacted] placed".to_string()],
+            "the sink redacts"
+        );
+    }
+
+    /// The rows older daemons left behind - 54 drained `hands-cr-N` executors on the live hub,
+    /// each probed every cycle against an address that is gone - go with the sweep, with the ssh
+    /// files written for their machines; a hand whose machine is live, and a drained machine
+    /// PULSE did not buy, stay.
+    #[test]
+    fn compute_sweep_forgets_the_hands_of_released_machines() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let gone = approved_request(&s);
+        let live = approved_request(&s);
+        for (r, ip) in [(&gone, "203.0.113.5"), (&live, "203.0.113.6")] {
+            let name = format!("pulse-{}", r.id.to_lowercase());
+            let executor = crate::compute::compute_executor_name(&r.id);
+            crate::compute::save_machine(
+                &s,
+                &r.id,
+                &Machine {
+                    provider: "azure".into(),
+                    name: name.clone(),
+                    executor: executor.clone(),
+                    address: format!("pulseadmin@{ip}"),
+                    detail: BTreeMap::from([("public_ip".to_string(), ip.to_string())]),
+                    ..Default::default()
+                },
+                TEST_NOW,
+            );
+            crate::executor::add_executor(
+                &s,
+                TEST_NOW,
+                &executor,
+                &format!("pulse@{executor}"),
+                HANDS_WORKDIR,
+                1,
+                "proj",
+                pulse_store::HUMAN_AGENT,
+            )
+            .unwrap_or_else(|err| panic!("{err}"));
+            write_admin_alias(h.hub_home.clone(), format!("{name}-admin"), ip.into())
+                .unwrap_or_else(|err| panic!("{err}"));
+            let config = format!("{}/.ssh/config", h.hub_home);
+            let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+            text.push('\n');
+            text.push_str(&crate::pair::pair_host_block(executor, ip.into(), 22));
+            std::fs::write(&config, text).expect("ssh config");
+            crate::pair::pair_write_known_hosts(
+                h.hub_home.clone(),
+                ip.into(),
+                22,
+                vec![TEST_HOST_KEY.into()],
+            );
+        }
+        pulse_tasks::set_compute_status(&s, &gone.id, "failed", "", TEST_DAEMON)
+            .unwrap_or_else(|err| panic!("{err}"));
+        crate::compute::machine_released(&s, &gone.id, TEST_NOW);
+        pulse_tasks::set_compute_status(&s, &live.id, "ready", "hands-cr-002", TEST_DAEMON)
+            .unwrap_or_else(|err| panic!("{err}"));
+        crate::executor::add_executor(
+            &s,
+            TEST_NOW,
+            "vm-seven",
+            "pulse@vm-seven",
+            HANDS_WORKDIR,
+            1,
+            "*",
+            pulse_store::HUMAN_AGENT,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+        let log = once(&s, &h);
+        assert!(
+            crate::executor::executor_row(&s, "hands-cr-001")
+                .0
+                .is_empty(),
+            "the stale hand stayed registered\n{log}"
+        );
+        assert_eq!(
+            must_one(
+                &s,
+                "SELECT status FROM executors WHERE name = 'hands-cr-001'",
+                &[]
+            )
+            .str("status"),
+            "removed",
+            "the row is kept as removed"
+        );
+        for kept in ["hands-cr-002", "vm-seven"] {
+            assert!(
+                !crate::executor::executor_row(&s, kept).0.is_empty(),
+                "{kept} was removed by the sweep\n{log}"
+            );
+        }
+        let (config, known) = ssh_files(&h);
+        for gone in ["hands-cr-001", "pulse-cr-001-admin"] {
+            assert!(
+                crate::pair::pair_alias_state(config.clone(), gone.into()).is_none(),
+                "{gone} block kept: {config:?}"
+            );
+        }
+        for kept in ["hands-cr-002", "pulse-cr-002-admin"] {
+            assert!(
+                crate::pair::pair_alias_state(config.clone(), kept.into()).is_some(),
+                "{kept} block removed: {config:?}"
+            );
+        }
+        assert!(
+            !known.lines().any(|l| l.starts_with("203.0.113.5 "))
+                && known.lines().any(|l| l.starts_with("203.0.113.6 ")),
+            "known_hosts: {known:?}"
+        );
+        assert!(
+            log.contains("compute CR-001: removed executor hands-cr-001; its machine was released")
+                && log
+                    .contains("compute CR-001: removed the hands-cr-001 block from ~/.ssh/config")
+                && log.contains("compute CR-001: removed 1 known_hosts line(s) for 203.0.113.5"),
+            "{log}"
+        );
+        // Nothing left to forget: the next sweep says nothing about it.
+        let later = pulse_store::Store::open(pulse_store::Options {
+            home: s.home.clone(),
+            now: crate::util::plus_hours(TEST_NOW, 1.0),
+            ..Default::default()
+        })
+        .expect("later store");
+        let cancel = pulse_bus::CancellationToken::new();
+        let w = crate::compute::new_compute_worker(
+            &cancel,
+            &later,
+            crate::compute::ComputeOpts {
+                hub_home: h.hub_home.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            w.forget_stale_hands().is_empty(),
+            "a second sweep found more"
         );
     }
 

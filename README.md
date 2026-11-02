@@ -822,11 +822,26 @@ provider vouches for before the first connection, and tags what it makes
 linux `pulse` binary for the size's architecture to pair the machine with
 (`PULSE_HANDS_BINARY`, a `pulse-linux-amd64`/`-arm64` beside the hub's binary,
 or a cross-build from the brain project's checkout - `rustup target add
-x86_64-unknown-linux-musl`, plus `cargo-zigbuild` and `zig` on macOS); a
-request that fails later releases what it created first (on Azure the VM and
-its public IP, VNet and NSG), and a sweep every 30 minutes releases any machine
+x86_64-unknown-linux-musl`, plus `cargo-zigbuild` and `zig` on macOS), nor
+while there is no login source for the machine (`pulse executor token
+--with-token`, or the brain's own harness sign-in): the request is held, not
+failed, and the hold is explained once a day. Once the machine answers, the
+daemon waits for cloud-init, pairs it as `pulse pair` would (the machine has
+no Copilot login yet, so a probe that lacks only that leaves the hand paired
+and waiting rather than failing it), places the login over the admin session,
+and probes again; the hand is `active` and the request `ready` when that
+probe passes. Every step reaches the daemon log as `compute CR-NNN: ...` and
+the request's card on this page carries the latest one while it runs. A
+request that fails after that point carries the reason the way the daemon
+saw it - the probe's note (`under 10 GiB free on /srv/pulse`), the step that
+failed - on its card and in the finding, releases what it created first (on
+Azure the VM and its public IP, VNet and NSG), and removes the executor row
+the pairing registered together with the `~/.ssh/config` blocks and
+`known_hosts` lines written for the machine, so no probe keeps trying an
+address that is gone; the sweep every 30 minutes releases any machine
 still running under a request that is over - a daemon restarted mid-create
-cannot leave one billing. A request that failed before a machine was ready
+cannot leave one billing - and removes the `hands-cr-NNN` executors older
+daemons left behind once their machine is released. A request that failed before a machine was ready
 gives its hours back to the day's `compute.max_hours_per_day`: nothing was
 bought, so the retry that fixes the cause is not held by the attempt that found
 it. Each executor row offers the same preview-then-remove as `pulse remove
@@ -4380,7 +4395,9 @@ links to) given the brief, the clone, the limits and the model from Settings,
 one minute less than `minutes_per_job` so it can stop with a report of its own,
 and the run id as its session; its stdout is the report the runner reads. A
 paired hand needs the same sign-in once: the native harness reuses the brain's
-stored provider login during heal/provision, and `pulse executor login NAME
+stored provider login during heal/provision (a machine the daemon buys is
+paired first and logged in right after, before the probe that makes it
+active), and `pulse executor login NAME
 --admin admin@host` copies that login to the hand's `pulse` user
 (`--with-token` still reads a token from stdin; `--remove` forgets it). The
 hand's probe reports `harness=yes|no` and the `pulse` build it runs. The probe
@@ -5200,7 +5217,12 @@ block is printed). Then, in this order:
   but not ready - no harness login, disk under the floor - the pairing
   stays, the executor stays `drained` with the probe note, the summary names
   the next step (`pulse executor login NAME --admin ADMIN@HOST --with-token`,
-  or fix it and `pulse executor probe NAME`) and the exit code is 1. When the
+  or fix it and `pulse executor probe NAME`) and the exit code is 1. The
+  daemon pairs a machine it bought the same way, except that the login is
+  its own next step: a probe that lacks only the harness login leaves the
+  hand paired and waiting (`paired NAME: drained (the harness login comes
+  next)`, the report ok, the `pair.applied` event marked `login_next`), the
+  daemon places the login and probes again, and that probe decides. When the
   hand does not answer
   at all - ssh refused, the forced command missing, the wrong workdir - the
   undo script runs over the admin session (the drop-in this run wrote is
@@ -5251,7 +5273,11 @@ one route, `POST /api/v1/compute/executors`, told apart by `mode`:
   configured size.
 
 Each way records what its command would: `executor.add`, `executor.probe`,
-`pair.applied`, `compute.requested`. The hub serving one project
+`pair.applied`, `compute.requested`. The request rows `GET /api/v1/compute`
+lists carry a `note`: the daemon's last word on each (the provisioning step
+in progress, why it failed, why its machine was released; empty once a
+machine is ready), which is what the card on the Machines page shows under
+the reason. The hub serving one project
 (`pulse hub --project`) takes requests for that project only.
 
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) still reads

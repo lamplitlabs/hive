@@ -469,7 +469,7 @@ impl Handler {
             addition_failure(w, e.to_string());
             return;
         }
-        let query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,at,updated_at FROM compute_requests WHERE id=?";
+        let query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,note,at,updated_at FROM compute_requests WHERE id=?";
         match self.addition_rows(r, query, vec![SqlValue::Text(req.id.clone())]) {
             Ok(mut rows) if !rows.is_empty() => {
                 write_json(w, 201, json!({"request": rows.remove(0)}));
