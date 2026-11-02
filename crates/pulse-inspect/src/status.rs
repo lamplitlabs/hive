@@ -154,13 +154,29 @@ pub fn runner_stopped(s: &pulse_store::Store) -> Result<String> {
     Ok(String::new())
 }
 
+/// How long `pulse status` waits for the provider's login check. The check
+/// may ask the vendor (GitHub Copilot asks api.github.com about the token it
+/// found) through an HTTP client whose whole-request timeout is 120 s, and
+/// the token exchange that follows is a second such request; a status screen
+/// must not hang for minutes on a slow or unreachable host.
+pub const HARNESS_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub fn harness_line(s: &pulse_store::Store) -> String {
+    harness_line_within(s, HARNESS_STATUS_TIMEOUT)
+}
+
+/// [`harness_line`] with the wait for the provider's answer bounded by
+/// `timeout`. The check runs on its own thread with a cancel token that
+/// expires at the same deadline, so a provider that looks at the token stops
+/// early; one blocked inside a request is left to finish on its own while
+/// this line says the status is unknown.
+pub fn harness_line_within(s: &pulse_store::Store, timeout: std::time::Duration) -> String {
     let name = s.setting("provider", pulse_provider::DEFAULT);
     let mut label = pulse_provider::label_of(&name);
     if label.is_empty() {
         label = name.clone();
     }
-    let cancel = pulse_provider::CancelToken::new();
+    let cancel = pulse_provider::CancelToken::new().with_timeout(timeout);
     let p = match pulse_provider::open(
         &name,
         pulse_provider::Options {
@@ -176,22 +192,48 @@ pub fn harness_line(s: &pulse_store::Store) -> String {
             );
         }
     };
-    match p.status(&cancel) {
+    let label = p.label().to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("pulse-status-harness".into())
+        .spawn(move || {
+            // The receiver is gone once the wait below gave up; nobody
+            // needs this answer any more.
+            let _ = tx.send(p.status(&cancel));
+        });
+    if let Err(err) = spawned {
+        return format!(
+            "native · {label} · status unknown (could not start the login check: {})",
+            one_status_line(&err.to_string(), 200)
+        );
+    }
+    let answer = match rx.recv_timeout(timeout) {
+        Ok(answer) => answer,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            return format!(
+                "native · {label} · status unknown (no answer within {}; the provider may be slow or unreachable - pulse harness status waits for it)",
+                pulse_provider::http::format_duration(timeout)
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return format!(
+                "native · {label} · status unknown (the login check stopped without an answer)"
+            );
+        }
+    };
+    match answer {
         Ok(login) if login.logged_in => {
-            format!("native · {} · signed in as {}", p.label(), login.user)
+            format!("native · {label} · signed in as {}", login.user)
         }
         Ok(login) if !login.detail.is_empty() => format!(
-            "native · {} · not signed in - {}",
-            p.label(),
+            "native · {label} · not signed in - {}",
             one_status_line(&login.detail, 240)
         ),
         Ok(_) => format!(
-            "native · {} · not signed in - open Settings → Harness or run pulse harness login",
-            p.label()
+            "native · {label} · not signed in - open Settings → Harness or run pulse harness login"
         ),
         Err(err) => format!(
-            "native · {} · status unknown ({})",
-            p.label(),
+            "native · {label} · status unknown ({})",
             one_status_line(&err.to_string(), 200)
         ),
     }
@@ -745,6 +787,96 @@ pub fn run_status(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+
+    /// A provider whose login check stands in for api.github.com: `slow`
+    /// blocks like a request stuck inside its 120 s client timeout and never
+    /// looks at the cancel token; otherwise it answers at once.
+    struct StatusProbe {
+        slow: bool,
+    }
+
+    impl pulse_provider::Provider for StatusProbe {
+        fn name(&self) -> &str {
+            if self.slow {
+                "inspectslow"
+            } else {
+                "inspectquick"
+            }
+        }
+        fn label(&self) -> &str {
+            "Probe"
+        }
+        fn chat(
+            &self,
+            _cancel: &pulse_provider::CancelToken,
+            _req: pulse_provider::Request,
+        ) -> Result<pulse_provider::Response> {
+            Ok(pulse_provider::Response::default())
+        }
+        fn models(
+            &self,
+            _cancel: &pulse_provider::CancelToken,
+        ) -> Result<Vec<pulse_provider::Model>> {
+            Ok(vec![])
+        }
+        fn status(&self, _cancel: &pulse_provider::CancelToken) -> Result<pulse_provider::Login> {
+            if self.slow {
+                std::thread::sleep(std::time::Duration::from_secs(120));
+            }
+            Ok(pulse_provider::Login {
+                logged_in: true,
+                user: "octocat".into(),
+                ..pulse_provider::Login::default()
+            })
+        }
+    }
+
+    fn use_status_probe(s: &pulse_store::Store, name: &str) {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            pulse_provider::register("inspectslow", "Probe", |_| {
+                Ok(Box::new(StatusProbe { slow: true }))
+            });
+            pulse_provider::register("inspectquick", "Probe", |_| {
+                Ok(Box::new(StatusProbe { slow: false }))
+            });
+        });
+        exec_sql(
+            s,
+            &format!(
+                "INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('provider', '{name}', '{TEST_NOW}', 'human') ON CONFLICT(name) DO UPDATE SET value = excluded.value"
+            ),
+        );
+    }
+
+    #[test]
+    fn harness_line_gives_up_on_a_provider_that_does_not_answer() {
+        let (_dir, s) = temporary_store();
+        use_status_probe(&s, "inspectslow");
+        let started = std::time::Instant::now();
+        let line = harness_line_within(&s, std::time::Duration::from_millis(200));
+        let waited = started.elapsed();
+        assert_eq!(
+            line,
+            "native · Probe · status unknown (no answer within 0.200s; the provider may be slow or unreachable - pulse harness status waits for it)"
+        );
+        // The provider blocks for 120 s, as a stuck request would; the line
+        // comes back after the bound, not after the provider.
+        assert!(
+            waited < std::time::Duration::from_secs(10),
+            "harness_line waited {waited:?}"
+        );
+    }
+
+    #[test]
+    fn harness_line_reports_a_prompt_answer_within_the_bound() {
+        let (_dir, s) = temporary_store();
+        use_status_probe(&s, "inspectquick");
+        assert_eq!(
+            harness_line_within(&s, HARNESS_STATUS_TIMEOUT),
+            "native · Probe · signed in as octocat"
+        );
+    }
 
     #[test]
     fn one_status_line_cuts_on_char_boundaries() {
