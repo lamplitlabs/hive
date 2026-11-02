@@ -573,6 +573,69 @@ pub(crate) fn follow_up_due(t: pulse_tasks::Task, since: String) -> String {
     crate::util::format_iso(last + wait)
 }
 
+/// The reason a task is due again when its lead sitting failed for a
+/// transient cause: the lead said nothing about the task, the run itself
+/// broke (a provider outage, a timeout, a lost run).
+pub(crate) const LEAD_FAILED_WHY: &str = "lead-failed";
+
+/// An open task whose stamped lead sitting `job` failed for a transient
+/// cause is due again on the recovery backoff (failure.rs `recover_due`: 5
+/// min, then 15, 45...), counted over the sittings that failed in a row,
+/// instead of the parked pacing. A lead that fails to start plans nothing:
+/// TASK-052's sitting died in a provider outage after one model call, and
+/// with `lead` outside recover.rs the task sat until the owner wrote again
+/// (the parked pacing would have taken an hour). A sitting that ended with
+/// its own verdict (a deterministic or structural failure: the lead said it
+/// is blocked) keeps the parked pacing. `None` when the job did not fail
+/// that way or the backoff has not run out.
+pub(crate) fn lead_failed_due(
+    q: &(impl crate::util::Querier + ?Sized),
+    t: &pulse_tasks::Task,
+    job: &Row,
+    now: &str,
+) -> Option<DueTask> {
+    if job.str("status") != "failed" || job.str("kind") != LEAD_KIND {
+        return None;
+    }
+    let run = must_one(
+        q,
+        "SELECT status, summary FROM runs WHERE job_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+        &[&job.str("id")],
+    );
+    let f = crate::failure::classify_failure(
+        job.str("result"),
+        run.str("status"),
+        run.str("summary"),
+        false,
+    );
+    if f.class.0 != crate::failure::FAILURE_TRANSIENT {
+        return None;
+    }
+    // The sittings of this project that failed since its last one that ended
+    // well: the backoff grows with them, so an outage that lasts does not
+    // queue a sitting every pass.
+    let failed_in_a_row = must_one(
+        q,
+        "SELECT COUNT(*) AS n FROM jobs f WHERE f.project = ? AND f.kind = ? AND f.status = 'failed' AND f.source NOT LIKE 'lead-role:%' AND f.finished_at > COALESCE((SELECT MAX(d.finished_at) FROM jobs d WHERE d.project = f.project AND d.kind = f.kind AND d.status = 'done' AND d.source NOT LIKE 'lead-role:%'), '')",
+        &[&job.str("project"), &LEAD_KIND],
+    )
+    .int("n");
+    let finished = job.str("finished_at");
+    if now < crate::failure::recover_due(finished.clone(), (failed_in_a_row - 1).max(0)).as_str() {
+        return None;
+    }
+    Some(DueTask {
+        detail: format!(
+            "{LEAD_FAILED_WHY}: your last sitting {} ended {} before planning it ({}); the task is still open with no job. Plan it now.",
+            job.str("id"),
+            finished,
+            trunc(&f.reason, 300)
+        ),
+        why: LEAD_FAILED_WHY.into(),
+        task: t.clone(),
+    })
+}
+
 pub(crate) fn lead_due(
     s: &pulse_store::Store,
     slug: String,
@@ -611,6 +674,12 @@ pub(crate) fn lead_due(
             continue;
         }
         let jobs = pulse_tasks::jobs(s, &t.id)?;
+        if jobs.is_empty()
+            && let Some(due_task) = lead_failed_due(&conn, &t, &job, &now)
+        {
+            due.push(due_task);
+            continue;
+        }
         if !jobs.is_empty() || now < follow_up_due(t.clone(), finished.clone()) {
             continue;
         }

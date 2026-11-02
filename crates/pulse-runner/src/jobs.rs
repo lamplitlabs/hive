@@ -126,9 +126,20 @@ pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
 
 /// The job kinds whose runs commit and so run the project's check under the
 /// verify lock (a clone's pre-commit hook, the post-run check, the landing):
-/// these share a project's work lanes. Research, ballots, answers and leads
-/// read and post; they keep the plain `parallel_per_project` limit.
+/// these share a project's work lanes. Research, ballots and answers read
+/// and post; they keep the plain `parallel_per_project` limit. The project
+/// lead's own sitting is outside that count ([`LEAD_SITTING_SQL`]): it is
+/// the owner's work directing the fleet's, and with the limit at two and two
+/// long fleet runs in the project it once waited 54 minutes for a lane the
+/// express slot had already offered it.
 pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
+
+/// A project lead's sitting over `j`: the lead jobs the daemon queues for the
+/// owner's tasks and messages, not a role lead's standing sitting
+/// (`lead-role:` sources queue with the fleet). One lead agent leases one
+/// job at a time, so letting it past the plain `parallel_per_project` count
+/// is at most one short run over the limit.
+pub(crate) const LEAD_SITTING_SQL: &str = "(j.kind = 'lead' AND j.source NOT LIKE 'lead-role:%')";
 
 /// [`WORK_KINDS`] as a SQL list for `kind IN (...)`.
 pub(crate) fn work_kinds_sql() -> String {
@@ -377,8 +388,11 @@ pub(crate) fn lease_job(
                 Value::String("lease expired".into()),
             );
         }
+        // The plain per-project count holds every kind but the project lead's
+        // own sitting (LEAD_SITTING_SQL): the lead plans the owner's work and
+        // waits for no fleet run of its project.
         let mut sql = format!(
-            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?"
+            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({LEAD_SITTING_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?)"
         );
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
         // A project whose checks take turns runs only as many work jobs as fit the
@@ -4077,6 +4091,118 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(got.0.is_empty(), "lead leased a worker job: {got:?}");
     }
 
+    /// TASK-052: with `parallel_per_project` 2 and two fleet improve runs in
+    /// flight in the project, the lead sitting the owner's message queued
+    /// waited 54 minutes for a lane while the express slot was offered to it
+    /// every tick. The project lead's sitting is outside the plain count; a
+    /// role lead's sitting and the fleet's own jobs still wait.
+    #[test]
+    fn a_projects_lead_sitting_leases_past_the_projects_full_lanes() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "2")
+            .unwrap();
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        // Two fleet improve jobs fill the project's lanes.
+        for (agent, source) in [
+            ("aurora", "schedule:SCHED-1"),
+            ("borealis", "suggestion:S-1"),
+        ] {
+            let id = queue(&s, "proj", "improve", source, 10);
+            let got = crate::jobs::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: id.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(got.str("id"), id, "{agent} leased {got:?}");
+        }
+        // A third fleet job of the project waits, lanes full.
+        queue(&s, "proj", "reflect", "reflect:1", 10);
+        let got = crate::jobs::lease_job(
+            &s,
+            "cinder".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            crate::jobs::LeaseOpts::default(),
+        )
+        .unwrap();
+        assert!(got.0.is_empty(), "the fleet leased past the lanes: {got:?}");
+        // The lead's sitting does not: the owner's work directs the fleet's.
+        let (lead_job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "lead".into(),
+            "Lead: answer 1 message(s), plan 0 task(s) for proj".into(),
+            "plan it".into(),
+            0,
+            crate::lead::LEAD_JOB_PRIORITY,
+            "lead:proj:20261102T025230Z".into(),
+            "daemon".into(),
+            true,
+        )
+        .unwrap();
+        let got = crate::jobs::lease_job(
+            &s,
+            "proj-lead".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                fits: crate::jobs::owner_lane_fits(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            got.str("id"),
+            lead_job.str("id"),
+            "the lead sitting waited for the fleet's lanes: {got:?}"
+        );
+        // A role lead's standing sitting is the fleet's work and waits.
+        let role = pulse_tasks::leads::add(
+            &s,
+            pulse_tasks::leads::LeadInput {
+                project: "proj".into(),
+                role: "rsi".into(),
+                author: pulse_store::HUMAN_AGENT.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::lead_roles::ensure_role_lead(&s, &role).unwrap();
+        let (role_job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "lead".into(),
+            "Lead (rsi): standing sitting".into(),
+            "sit".into(),
+            0,
+            crate::lead::LEAD_JOB_PRIORITY,
+            role.source("20261102T025230Z"),
+            "daemon".into(),
+            true,
+        )
+        .unwrap();
+        let got = crate::jobs::lease_job(
+            &s,
+            role.agent.clone(),
+            crate::test_helpers::TEST_NOW.into(),
+            crate::jobs::LeaseOpts::default(),
+        )
+        .unwrap();
+        assert!(
+            got.0.is_empty(),
+            "the role sitting {} leased past the lanes: {got:?}",
+            role_job.str("id")
+        );
+    }
+
     #[test]
     fn tend_tasks_follows_the_leads_jobs() {
         let _serial = crate::test_helpers::serial();
@@ -5020,6 +5146,115 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         );
         check(60 * 24 + 2, &[format!("{}:parked", normal.id)]);
         check(60 * 24 - 2, &[]);
+    }
+
+    /// TASK-052: its lead sitting died in a provider outage after one model
+    /// call, planned nothing, and with `lead` outside recover.rs the task sat
+    /// until the owner wrote again. A sitting that fails for a transient cause
+    /// brings its tasks back to the lead on the recovery backoff (5 min, then
+    /// 15...), not the parked pacing; a sitting that ended with the lead's own
+    /// verdict keeps the parked pacing.
+    #[test]
+    fn a_lead_sitting_lost_to_an_outage_brings_the_task_back_on_the_recovery_backoff() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_repo(&s);
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        let task = pulse_tasks::new(
+            &s,
+            "proj",
+            "PULSE needs computer use",
+            "see the brief",
+            10,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let at = |min: i32| crate::util::plus_minutes(crate::test_helpers::TEST_NOW, min as f64);
+        let due_at = |min: i32| {
+            let (_, due, _) =
+                crate::lead::lead_due(&s, "proj".into(), "proj-lead".into(), at(min)).unwrap();
+            due.iter()
+                .map(|d| format!("{}:{}", d.task.id, d.why))
+                .collect::<Vec<_>>()
+        };
+        let lines = crate::lead::tend_lead(&s, "proj".into(), at(0), "daemon".into());
+        let first = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM jobs WHERE kind = 'lead' AND status = 'queued'",
+            &[],
+        );
+        assert_eq!(first.len(), 1, "first sitting: {lines:?}");
+        let outage = "worker exited 3: harness stopped: provider_error after 1 model calls and 0 commands; copilot: error sending request for url (https://api.business.githubcopilot.com/chat/completions)";
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'failed', lease_agent = '', finished_at = ?, result = ? WHERE id = ?",
+            &[&at(4), &outage, &first[0].str("id")],
+        );
+        // Still inside the 5 min backoff: nothing is due, no sitting queued.
+        assert_eq!(due_at(6), Vec::<String>::new(), "inside the backoff");
+        let lines = crate::lead::tend_lead(&s, "proj".into(), at(6), "daemon".into());
+        assert!(
+            !lines.iter().any(|l| l.starts_with("queued lead")),
+            "a sitting queued inside the backoff: {lines:?}"
+        );
+        // Past it: the task is due as lead-failed, well before the parked hour.
+        assert_eq!(
+            due_at(10),
+            vec![format!("{}:{}", task.id, crate::lead::LEAD_FAILED_WHY)]
+        );
+        let lines = crate::lead::tend_lead(&s, "proj".into(), at(10), "daemon".into());
+        let second = crate::util::must_rows(
+            &*s.conn().unwrap(),
+            "SELECT * FROM jobs WHERE kind = 'lead' AND status = 'queued'",
+            &[],
+        );
+        assert_eq!(second.len(), 1, "second sitting: {lines:?}");
+        assert!(
+            second[0]
+                .str("brief")
+                .contains("lead-failed: your last sitting")
+                && second[0].str("brief").contains("provider_error")
+                && lines
+                    .join("\n")
+                    .contains(&format!("{} lead-failed: back to proj-lead", task.id)),
+            "second sitting: {}\n{lines:?}",
+            second[0].str("brief")
+        );
+        let (t, _) = pulse_tasks::get(&s, &task.id).unwrap();
+        assert_eq!(
+            t.job_id,
+            second[0].str("id"),
+            "the task follows the new sitting"
+        );
+        // The outage lasts: the second sitting fails too, and the backoff
+        // grows (15 min) so a long outage does not queue a sitting every pass.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'failed', lease_agent = '', finished_at = ?, result = ? WHERE id = ?",
+            &[&at(12), &outage, &second[0].str("id")],
+        );
+        assert_eq!(
+            due_at(20),
+            Vec::<String>::new(),
+            "inside the second backoff"
+        );
+        assert_eq!(
+            due_at(28),
+            vec![format!("{}:{}", task.id, crate::lead::LEAD_FAILED_WHY)]
+        );
+        // A sitting that ended with the lead's own verdict is not an outage:
+        // the parked pacing holds (60 min for priority 10).
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET result = 'SUMMARY: queued 0 jobs pending an owner-prepared console build' WHERE id = ?",
+            &[&second[0].str("id")],
+        );
+        assert_eq!(
+            due_at(28),
+            Vec::<String>::new(),
+            "a verdict keeps the parked pacing"
+        );
+        assert_eq!(due_at(73), vec![format!("{}:parked", task.id)]);
     }
 
     #[test]

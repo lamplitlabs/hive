@@ -409,7 +409,11 @@ the timeline), once per message - a nudge moves the work, not only the lead.
 
 Nothing waits on you: a task the lead parked comes back to it on a doubling
 schedule (15 min for urgent, then 30, 60, ...) until the blocker is gone, a
-failed job goes back to the lead to re-plan, and a task whose jobs are done and
+failed job goes back to the lead to re-plan, a sitting the lead lost to an
+outage (a provider error, a timeout, a dead run - anything the daemon would
+retry for a worker) brings its tasks back after five minutes, then 15, 45...
+while the outage lasts (`lead-failed` in the daemon's line), and a task whose
+jobs are done and
 landed comes back to you once with the question that matters - *the work
 landed. Have a look - is it what you wanted?* with what landed under it and the
 choices *Yes, close it*, *Not what I meant* and *Change what I asked* - while a
@@ -4663,6 +4667,15 @@ can start; it carries on later`, writes a `job.yield` event on the fleet job
 work could start first after N steps`. The owner's own runs are never held, and
 a project whose default branch is red is left alone: the owner's task waits
 behind the fix job there and holding the fix would only lengthen the wait.
+
+The lead's own sitting is outside its project's count altogether. A sitting
+reads and posts for a minute, plans the owner's work and directs the fleet's;
+with `parallel_per_project 2` and two long fleet `improve` runs in the project,
+the sitting an owner's *continue* queued once waited 54 minutes for a lane the
+express slot had offered it every tick. Now a project lead's sitting leases
+whatever the project's lanes hold (at most one short run over the limit: one
+lead leases one job at a time); a role lead's standing sitting (`lead-role:`)
+is the fleet's work and keeps the count.
 
 #### Nice, build jobs and probes
 
