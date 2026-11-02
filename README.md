@@ -6170,6 +6170,7 @@ crates/pulse-hub               the HTTP API and SSE the console uses; embeds web
 crates/pulse-testutil          shared test helpers
 web/hub/                       the console (source, mock API, committed static export, rust-embed)
 apps/macos/                    the Mac app: a Swift package (PulseKit decides, the AppKit shell shows), build.sh, check.sh
+docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)
 ```
 
 ### Upgrading from older PULSE
