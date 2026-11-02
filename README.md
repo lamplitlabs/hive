@@ -105,7 +105,7 @@ embedded in the binary.
    environment recipe a fresh machine needs (`pulse init --name my-app
    --verify 'npm test'` in the checkout does the same).
 5. **Give the lead a task.** **New task**: a title, what you want, a
-   priority. The project's lead agent picks it up on the next tick, cuts the
+   priority. The project's lead agent starts on it at once, cuts the
    steps and the agents start. Open the task and watch - every command, every
    file, every word, as it happens - and type into the box when you want to
    steer.
@@ -387,8 +387,10 @@ set --project my-app --text '...'` sets it from a terminal.
 ### Tasks
 
 Write a brief, set a priority, amend or cancel it later; each revision is kept.
-The project's lead agent picks it up the same tick, turns it into jobs at the
-task's priority (urgent runs first) and reports back on the task thread. A task
+The project's lead agent starts on it at once - your write wakes the daemon
+and it plans right away, not at the next `daemon.pass_seconds` - turns it
+into jobs at the task's priority (urgent runs first) and reports back on the
+task thread. A task
 is a group of conversations - yours with the lead, and one agent session per
 job the lead cut - and the **Chat** page lists it that way, under **Tasks**
 above the single conversations (see Chat); the Chat composer gives a task too

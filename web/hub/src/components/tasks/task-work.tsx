@@ -34,7 +34,7 @@ export function idleLine(t: Task): string | null {
   if (p.working.length || p.running || (t.status !== "in_progress" && t.status !== "planned")) return null;
   if (p.queued) return "The next step is waiting for a free agent.";
   if (p.blocked) return "A step is blocked. The lead agent will sort it out or ask you.";
-  if (!p.total) return t.lead ? "The lead agent is planning the steps." : "Waiting for the lead agent to plan the steps.";
+  if (!p.total) return t.lead ? "The lead agent is planning the steps." : "The lead agent is starting on it.";
   if (p.failed) return "A step failed. The lead agent is planning another way.";
   return "Every step is done. Waiting to merge the work.";
 }

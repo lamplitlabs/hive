@@ -12,7 +12,7 @@ test("a task's word puts the owner's turn first, then what the agents do", () =>
   assert.equal(taskMood(task({ sessions: [session({ job_status: "leased" })] })).word, "Working");
   assert.equal(taskMood(task({ sessions: [session({ job_status: "done", status: "ended" })] })).word, "In progress");
   assert.equal(taskMood(task({ status: "open", lead: "" })).word, "New");
-  assert.equal(taskMood(task({ status: "open" })).word, "Waiting for the lead agent");
+  assert.equal(taskMood(task({ status: "open" })).word, "Lead agent starting");
   assert.equal(taskMood(task({ status: "planned" })).word, "Planned");
   assert.equal(taskMood(task({ status: "done", sessions: [session({ status: "running" })] })).word, "Done");
   assert.equal(taskMood(task({ status: "cancelled" })).word, "Cancelled");
