@@ -549,6 +549,16 @@ impl Store {
         Ok(v.map_or((String::new(), false), |v| (v, true)))
     }
 
+    /// Writes one `meta` row, replacing the value the key had.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
+
     /// Page accounting of the store file: how big it is and how much of it is free
     /// pages that only a vacuum gives back to the file system.
     pub fn db_space(&self) -> Result<DbSpace> {

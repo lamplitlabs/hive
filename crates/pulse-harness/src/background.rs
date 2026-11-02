@@ -59,12 +59,12 @@ pub fn process_tool() -> Tool {
     Tool {
         name: PROCESS_TOOL.to_string(),
         description: format!(
-            "Manage the commands started with bash background:true. action output returns what the process wrote since the last read, and its exit code once it has ended; wait blocks up to seconds (default {}) for it to end, then returns the same; stop ends it (SIGTERM, then SIGKILL) and returns the rest of its output; list shows every background process of this session with its state. Stop the processes you started when you no longer need them.",
+            "Manage the commands started with bash background:true. action output returns what the process wrote since the last read, and its exit code once it has ended; wait blocks up to seconds (default {}) for it to end, then returns the same; stop ends it (SIGTERM, then SIGKILL) and returns the rest of its output; list shows every background process of this session with its state; notify hands a long run (hours, days) over to the conversation: it keeps running after this turn ends and a note with its exit code and last output wakes you when it is done, so end your turn instead of polling. Stop the processes you started when you no longer need them.",
             PROCESS_WAIT_DEFAULT.as_secs()
         ),
         parameters: json!({"type":"object","properties":{
-            "action":{"type":"string","enum":["output","wait","stop","list"],"description":"What to do."},
-            "id":{"type":"string","description":"The process id bash returned (bg-1). Required for output, wait and stop."},
+            "action":{"type":"string","enum":["output","wait","stop","list","notify"],"description":"What to do."},
+            "id":{"type":"string","description":"The process id bash returned (bg-1). Required for output, wait, stop and notify."},
             "seconds":{"type":"integer","description":"For wait: how long to wait at most for the process to end."}
         },"required":["action"]}),
     }
@@ -235,6 +235,12 @@ impl Procs {
         Some(self.list.remove(i))
     }
 
+    /// Returns a removed process to the list (a keeper refused it); it
+    /// keeps its id and its place is at the end.
+    pub fn put_back(&mut self, m: Managed) {
+        self.list.push(m);
+    }
+
     pub fn ids(&self) -> Vec<String> {
         self.list.iter().map(|m| m.id.clone()).collect()
     }
@@ -274,6 +280,11 @@ pub enum ProcessAction {
         timeout: Option<Duration>,
     },
     Stop {
+        id: String,
+    },
+    /// Hands the process to the conversation, which keeps it across
+    /// turns and wakes the agent when it ends.
+    Notify {
         id: String,
     },
     List,
@@ -322,10 +333,13 @@ impl ProcessAction {
             "stop" | "kill" => Ok(Self::Stop {
                 id: need_id("stop")?,
             }),
+            "notify" | "keep" => Ok(Self::Notify {
+                id: need_id("notify")?,
+            }),
             "list" => Ok(Self::List),
             "" => Err("arguments must be a JSON object with a string action".to_string()),
             other => Err(format!(
-                "unknown action {other}; one of output, wait, stop, list"
+                "unknown action {other}; one of output, wait, stop, notify, list"
             )),
         }
     }
@@ -339,6 +353,7 @@ impl ProcessAction {
                 timeout: Some(t),
             } => format!("wait {id} {}s", t.as_secs()),
             Self::Stop { id } => format!("stop {id}"),
+            Self::Notify { id } => format!("notify {id}"),
             Self::List => "list".to_string(),
         }
     }
@@ -529,6 +544,18 @@ mod tests {
         assert_eq!(
             ProcessAction::parse(r#"{"action":"list"}"#),
             Ok(ProcessAction::List)
+        );
+        assert_eq!(
+            ProcessAction::parse(r#"{"action":"notify","id":"bg-4"}"#),
+            Ok(ProcessAction::Notify { id: "bg-4".into() })
+        );
+        assert_eq!(
+            ProcessAction::Notify { id: "bg-4".into() }.spec(),
+            "notify bg-4"
+        );
+        assert_eq!(
+            ProcessAction::parse(r#"{"action":"notify"}"#).unwrap_err(),
+            "action notify needs the id bash returned (bg-1)"
         );
         assert_eq!(
             ProcessAction::parse(r#"{"action":"output"}"#).unwrap_err(),
