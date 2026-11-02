@@ -183,6 +183,24 @@ pub(crate) fn cargo_target_dir_is_outside_clone(target_dir: &str, clone_dir: &st
     !target.starts_with(Path::new(clone_dir))
 }
 
+/// True when the project's check builds into a target dir outside the clone:
+/// the recipe's `CARGO_TARGET_DIR`, or the one the verify command names itself
+/// (`env CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/shared/land} ... cargo test`,
+/// resolved the way the check's shell would). A recipe that leaves the
+/// variable to the verify command still shares that dir with every other
+/// clone and landing of the project, so either source counts.
+pub(crate) fn check_shares_cargo_target_dir(
+    recipe_target_dir: Option<&str>,
+    verify_cmd: &str,
+    clone_dir: &str,
+) -> bool {
+    let verify_target_dir = crate::sweep::cargo_target_dir_from_verify(verify_cmd);
+    [recipe_target_dir, verify_target_dir.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|dir| cargo_target_dir_is_outside_clone(dir, clone_dir))
+}
+
 /// The one command `freshen_sources_for_check` runs before a check: bump the
 /// mtime of every tracked source Cargo could reuse a stale artifact for, so a
 /// check in this clone never runs another tree's binary from a shared
@@ -242,19 +260,27 @@ impl LocalExec {
     pub(crate) fn name(&self) -> String {
         self.row.str("name")
     }
-    /// Bumps the mtime of this clone's tracked sources when the recipe's
-    /// `CARGO_TARGET_DIR` is shared with another tree, so the check that
+    /// Bumps the mtime of this clone's tracked sources when the check's
+    /// `CARGO_TARGET_DIR` - the recipe's, or the one the project's verify
+    /// command names - is shared with another tree, so the check that
     /// follows rebuilds the workspace crates from this clone and never
     /// serves another tree's artifact as fresh. Runs immediately before the
     /// pre-commit hook's check and the run-end verify; a no-op when the
-    /// recipe's target dir lives inside the clone (it can only hold this
-    /// tree's work) or the recipe names none. A failed touch never blocks
-    /// the check: the run log records it and the check runs as it is.
+    /// target dir lives inside the clone (it can only hold this tree's work)
+    /// or neither names one. A failed touch never blocks the check: the run
+    /// log records it and the check runs as it is.
+    ///
+    /// Without the verify command's own dir a run-end verify of a clone made
+    /// hours earlier reused crates that landings of a newer default branch
+    /// had built into the shared land dir since, and failed tests the branch
+    /// never touched (job-20261102T034659Z-2ad33c: exit 101 on a docs-only
+    /// commit while its base verified green).
     fn freshen_sources_for_check(&self) {
-        let Some(target_dir) = self.recipe_cargo_target_dir.as_deref() else {
-            return;
-        };
-        if !cargo_target_dir_is_outside_clone(target_dir, &self.clone_dir) {
+        if !check_shares_cargo_target_dir(
+            self.recipe_cargo_target_dir.as_deref(),
+            &self.project.str("verify_cmd"),
+            &self.clone_dir,
+        ) {
             return;
         }
         let cmd = freshen_sources_cmd(&self.clone_dir);
@@ -268,7 +294,7 @@ impl LocalExec {
         );
         match out {
             Ok(out) if out.exit_code == 0 => {
-                self.log.add("$ touch the clone's tracked sources (the recipe's CARGO_TARGET_DIR is shared with another tree)".to_string());
+                self.log.add("$ touch the clone's tracked sources (the check's CARGO_TARGET_DIR is shared with another tree)".to_string());
             }
             Ok(out) => {
                 self.log.add(format!(
@@ -1412,6 +1438,96 @@ mod tests {
         assert!(!cargo_target_dir_is_outside_clone("   ", clone));
         // A sibling whose name shares a prefix is not inside the clone.
         assert!(cargo_target_dir_is_outside_clone("/tmp/fleet/abc", clone));
+    }
+
+    #[test]
+    fn check_shares_cargo_target_dir_reads_the_recipe_and_the_verify_command() {
+        let clone = "/tmp/fleet/a";
+        // The registered check of a project whose recipe leaves the target
+        // dir to it: the default it names is shared by every clone.
+        let land = "env CARGO_TARGET_DIR=${PULSE_TEST_FRESHEN_UNSET:-/h/.pulse/cache/cargo-target-land/p} CARGO_INCREMENTAL=0 sh -c 'cargo test --workspace'";
+        assert!(check_shares_cargo_target_dir(None, land, clone));
+        // The recipe's own shared dir still counts without one in the check.
+        assert!(check_shares_cargo_target_dir(
+            Some("/h/.pulse/cache/cargo-target/p/0"),
+            "cargo test",
+            clone
+        ));
+        // Either one outside the clone is enough.
+        assert!(check_shares_cargo_target_dir(
+            Some("/tmp/fleet/a/target"),
+            land,
+            clone
+        ));
+        // Inside the clone, relative, or not named at all: no freshening.
+        assert!(!check_shares_cargo_target_dir(None, "cargo test", clone));
+        assert!(!check_shares_cargo_target_dir(
+            Some("target"),
+            "env CARGO_TARGET_DIR=/tmp/fleet/a/target cargo test",
+            clone
+        ));
+        assert!(!check_shares_cargo_target_dir(Some(""), "", clone));
+    }
+
+    #[test]
+    fn a_verify_command_with_a_shared_target_dir_freshens_the_clone_before_the_check() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let mut project = insert_git_project(&s);
+        let root = project.str("path");
+        std::fs::write(std::path::Path::new(&root).join("lib.rs"), "// lib\n").unwrap();
+        // Tracked is enough for `git ls-files`; no commit needed.
+        pulse_testutil::git(&["-C", root.as_str(), "add", "lib.rs"]).unwrap();
+        let source = std::path::Path::new(&root).join("lib.rs");
+        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let mtime = || std::fs::metadata(&source).unwrap().modified().unwrap();
+        let mut r = Row::new();
+        r.insert("name", serde_json::json!("local"));
+        let mut job = Row::new();
+        job.insert("id", serde_json::json!("job-freshen"));
+        let log = RunLog::default();
+        let mut e = new_local_exec(
+            r,
+            &s,
+            &s.home,
+            job,
+            project.clone(),
+            "cinder",
+            &mut log.clone(),
+        );
+        // The recipe names no target dir (the store has none), so only the
+        // verify command can say the check shares one.
+        assert_eq!(e.recipe_cargo_target_dir, None);
+        e.clone_dir = root.clone();
+
+        // A check that builds inside the clone leaves the sources alone.
+        e.project
+            .insert("verify_cmd", serde_json::json!("cargo test --workspace"));
+        e.freshen_sources_for_check();
+        assert_eq!(mtime(), old);
+        assert!(!log.text().contains("touch the clone"), "{}", log.text());
+
+        // The registered check's shared land dir freshens them.
+        project.insert(
+            "verify_cmd",
+            serde_json::json!(
+                "env CARGO_TARGET_DIR=${PULSE_TEST_FRESHEN_UNSET:-/tmp/pulse-land-shared} sh -c 'cargo test'"
+            ),
+        );
+        e.project = project;
+        e.freshen_sources_for_check();
+        assert!(mtime() > old, "the tracked source kept its old mtime");
+        assert!(
+            log.text().contains("touch the clone's tracked sources"),
+            "{}",
+            log.text()
+        );
     }
 
     #[test]
