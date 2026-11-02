@@ -461,7 +461,7 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     );
     w!("     dropped, not posted), ending in `Signal: <repository-relative path | post id |");
     w!(
-        "     check:NAME>` naming the evidence as it exists at the project's HEAD - not a log under /tmp, not the"
+        "     check:COMMAND>` naming the evidence as it exists at the project's HEAD - not a log under /tmp, not the"
     );
     w!(
         "     clone's absolute path, not a file the card would create; a card whose Signal does not resolve is"
@@ -470,17 +470,27 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "     listed for votes but never planned into a job until an opinion or vote on its thread carries a"
     );
     w!(
-        "     Signal that does. Write it as an experiment card when you can, the fields on the one line separated"
+        "     Signal that does. A `check:` is the command a shell runs from the tree root on the base and on the"
     );
     w!(
-        "     by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>;"
+        "     variant (its exit status, or one integer on stdout as a count that should fall), like `check:npm test`"
     );
     w!(
-        "     Hypothesis: <user-visible outcome and check>; Tier: 0|1; Signal: <evidence>` - product cards name the"
+        "     or `check:cargo test -p app parser`; a check's name or prose (`check:cargo-test, which ...`) fails on"
     );
     w!(
-        "     product file in File:, while test, fixture, CI or tooling paths are operating-layer whatever they declare"
+        "     both trees and leaves the hypothesis unmeasured. Write it as an experiment card when you can, the"
     );
+    w!(
+        "     fields on the one line separated by `;`: `Class: operating-layer|product; File: <one repository-relative"
+    );
+    w!(
+        "     file>; Variable: <the one change>; Hypothesis: <user-visible outcome and check>; Tier: 0|1; Signal:"
+    );
+    w!(
+        "     <evidence>` - product cards name the product file in File:, while test, fixture, CI or tooling paths"
+    );
+    w!("     are operating-layer whatever they declare");
     w!(
         "     and are capped by `plan.operating_layer_per_day`. A card about PULSE itself - the planner, a brief, a"
     );
@@ -1540,6 +1550,38 @@ mod tests {
         job.insert("title", serde_json::json!("Read the issues"));
         job.insert("brief", serde_json::json!("do it"));
         job
+    }
+
+    #[test]
+    fn a_suggestion_check_is_a_command_both_trees_run_not_a_name() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        let brief = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        // pulse_evolve::card_check_of runs the text after `check:` as a shell
+        // command on the base and the variant; a check's name or prose fails
+        // on both, the card-check fixture scores 0/0 and the cycle is neutral.
+        assert!(!brief.contains("check:NAME"), "{brief}");
+        assert!(brief.contains("check:COMMAND"), "{brief}");
+        assert!(
+            brief.contains(
+                "A `check:` is the command a shell runs from the tree root on the base and on the"
+            ),
+            "{brief}"
+        );
+        assert_eq!(
+            pulse_evolve::card_check_of("Signal: check:cargo test -p app parser\n"),
+            "cargo test -p app parser"
+        );
     }
 
     #[test]
