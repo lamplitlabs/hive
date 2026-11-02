@@ -568,13 +568,8 @@ fn recheck_passes(s: &pulse_store::Store, project: &Row, mark: &RedBase, now: &s
     if root.is_empty() {
         return false;
     }
-    let q = crate::util::shell_quote;
     let wt = format!("../.pulse-recheck-{}", crate::recipe::short(&mark.base, 12));
-    let cmd = format!(
-        "git worktree remove --force {wt} >/dev/null 2>&1; git worktree add -q --detach {wt} {b} || exit 125; (cd {wt} && {check}); rc=$?; git worktree remove --force {wt} >/dev/null 2>&1; git worktree prune >/dev/null 2>&1; exit $rc",
-        wt = q(&wt),
-        b = q(&mark.base),
-    );
+    let cmd = crate::run::base_worktree_command(&wt, &mark.base, &check);
     let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
     let argv = vec!["/bin/sh".to_string(), "-c".to_string(), cmd];
     let outcome = crate::proc::run_group(

@@ -3327,6 +3327,24 @@ pub(crate) fn wrapped_check(
     crate::verify_lock::wrap(s, &project.str("slug"), &cmd)
 }
 
+/// The shell line that runs `check` on a detached worktree of `base` at `wt`
+/// (a path relative to the clone) and removes the worktree again whatever
+/// the check did. One shell string, so it runs the same way on a local or an
+/// ssh executor. Exit 125 marks a worktree that could not be made or entered,
+/// which says nothing about the base. The `cd` guards the whole check, not
+/// only its first command: a wrapped check is several lines (the disk and
+/// lock preludes), and with `cd wt && check` a worktree that vanished before
+/// the `cd` (the clone moved to the trash mid-run) let the rest of the check
+/// run in the job's own clone and called the base red for it.
+pub(crate) fn base_worktree_command(wt: &str, base: &str, check: &str) -> String {
+    let q = crate::util::shell_quote;
+    format!(
+        "git worktree remove --force {wt} >/dev/null 2>&1; git worktree add -q --detach {wt} {b} || exit 125; (cd {wt} || exit 125\n{check}\n); rc=$?; git worktree remove --force {wt} >/dev/null 2>&1; git worktree prune >/dev/null 2>&1; exit $rc",
+        wt = q(wt),
+        b = q(base),
+    )
+}
+
 /// What a check of the base tree itself found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BaseVerdict {
@@ -3355,17 +3373,7 @@ pub(crate) fn base_tree_verify(
         return BaseVerdict::Unknown;
     }
     let wt = format!("../.pulse-base-{}", crate::recipe::short(base, 12));
-    let q = crate::util::shell_quote;
-    // One shell string so it runs the same way on a local or an ssh executor:
-    // a detached worktree at the base, the check inside it, then the worktree
-    // goes away whatever the check did. Exit 125 marks a worktree that could
-    // not be made, which says nothing about the base.
-    let cmd = format!(
-        "git worktree remove --force {wt} >/dev/null 2>&1; git worktree add -q --detach {wt} {b} || exit 125; (cd {wt} && {c}); rc=$?; git worktree remove --force {wt} >/dev/null 2>&1; git worktree prune >/dev/null 2>&1; exit $rc",
-        wt = q(&wt),
-        b = q(base),
-        c = check_cmd
-    );
+    let cmd = base_worktree_command(&wt, base, check_cmd);
     log.add(format!(
         "$ verify the base tree {} ({why})",
         crate::recipe::short(base, 12)
@@ -3378,7 +3386,7 @@ pub(crate) fn base_tree_verify(
         }
         Some(125) => {
             log.add(format!(
-                "could not check out the base tree; {}",
+                "could not check out or enter the base tree; {}",
                 tail(&out, 2000)
             ));
             BaseVerdict::Unknown
@@ -4188,6 +4196,84 @@ mod tests {
         assert!(
             log.contains(&format!("red base: fix job {} planned", fix.str("id"))),
             "{log}"
+        );
+    }
+
+    #[test]
+    fn base_worktree_command_runs_the_whole_check_in_the_worktree_or_not_at_all() {
+        // It spawns git and sh from PATH: other tests swap PATH under these.
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("clone");
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["git", "init", "-q"]);
+        run(
+            &root,
+            &["git", "commit", "-q", "--allow-empty", "-m", "base"],
+        );
+        let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+        let marks = tmp.path().join("marks");
+        std::fs::create_dir_all(&marks).unwrap();
+        let mark = |name: &str| marks.join(name).display().to_string();
+        // A wrapped check is several lines (the disk and lock preludes come
+        // first); each line records where it ran.
+        let check = format!(
+            "pwd -P > {}\npwd -P > {}\nexit 3",
+            crate::util::shell_quote(&mark("first")),
+            crate::util::shell_quote(&mark("second"))
+        );
+        let sh = |cmd: &str| -> i32 {
+            let env = crate::util::strip_hook_git_env(
+                &std::env::vars()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>(),
+            );
+            let mut c = std::process::Command::new("/bin/sh");
+            c.args(["-c", cmd]).current_dir(&root).env_clear();
+            for kv in env {
+                if let Some((k, v)) = kv.split_once('=') {
+                    c.env(k, v);
+                }
+            }
+            c.env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .code()
+                .unwrap_or(-1)
+        };
+        let cmd = base_worktree_command("../.pulse-base-test", &base, &check);
+        // The check runs on the base tree, every line of it, and its exit
+        // code is the verdict; the worktree goes away again.
+        assert_eq!(sh(&cmd), 3);
+        for line in ["first", "second"] {
+            let ran_in = std::fs::read_to_string(mark(line)).unwrap();
+            assert!(
+                ran_in.trim().ends_with("/.pulse-base-test"),
+                "the {line} line ran in {ran_in}"
+            );
+            std::fs::remove_file(mark(line)).unwrap();
+        }
+        assert!(!tmp.path().join(".pulse-base-test").exists());
+        assert_eq!(run(&root, &["git", "worktree", "list"]).lines().count(), 1);
+        // The worktree is gone before the check can enter it, as when the
+        // clone is moved to the trash mid-run: no line of the check may run
+        // in the job's own clone, and the exit says the base was not checked.
+        let hook = root.join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\ncase \"$PWD\" in */.pulse-base-test) rm -rf \"$PWD\" ;; esac\n",
+        )
+        .unwrap();
+        run(&root, &["chmod", "+x", ".git/hooks/post-checkout"]);
+        assert_eq!(sh(&cmd), 125, "a worktree that vanished is no verdict");
+        assert!(!std::path::Path::new(&mark("first")).exists());
+        assert!(
+            !std::path::Path::new(&mark("second")).exists(),
+            "the rest of the check ran outside the base tree: {}",
+            std::fs::read_to_string(mark("second")).unwrap_or_default()
         );
     }
 
