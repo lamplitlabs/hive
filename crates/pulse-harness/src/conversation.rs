@@ -1515,12 +1515,19 @@ impl Runtime {
         brief_text(row, &projects, &artifacts_dir(&self.home, &row.id))
     }
 
+    /// Hands the owner's answer to the parked agent and records it in the
+    /// transcript first, under the lock the agent wakes through: once the
+    /// agent has the answer it can finish its turn, note a move and ask
+    /// again, and none of that may land above the answer that caused it.
+    /// A failed write leaves the question waiting.
     fn answer(&self, text: String) -> Result<()> {
         let mut st = self.shared.lock();
         let Some(Pending::Question { id, .. }) = &st.pending else {
             bail!("the agent is not waiting for an answer");
         };
         let id = *id;
+        self.store
+            .chat_add_message(&self.id, "answer", &text, &Value::Null)?;
         st.answer = Some((id, Answer::Text(text)));
         st.pending = None;
         self.shared.bump(&mut st);
@@ -2431,10 +2438,7 @@ impl Manager {
         let rt = self
             .running(id)
             .ok_or_else(|| anyhow!("the agent is not waiting for an answer"))?;
-        rt.answer(text.to_string())?;
-        self.store
-            .chat_add_message(id, "answer", text, &Value::Null)?;
-        Ok(())
+        rt.answer(text.to_string())
     }
 
     /// The owner's decision on the call the agent wants to make:
