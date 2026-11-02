@@ -5,8 +5,11 @@
 # real mouse click on the sidebar (through AppKit's hit testing, so nothing
 # native may sit over the page), right-clicks the sidebar's Tasks link and a
 # bare patch of page (an app's menu must show, not a browser's), loses the
-# console while it reloads, and has to come back by itself; the app's own
-# log and two snapshots are the evidence. The outage follows the app's own progress (the Tasks snapshot on
+# console while it reloads, has to come back by itself, and clicks a web
+# link (an https address: not the console's, and the mock cannot serve it)
+# that must open in the browser panel beside the console, not in the
+# default browser, before the panel is put away; the app's own log and two
+# snapshots are the evidence. The outage follows the app's own progress (the Tasks snapshot on
 # disk, the failed reload in its log), not a clock, so a slow first launch
 # cannot shift it onto the wrong step. The click asks to bring the app's
 # window to the front for a moment, and lands whether or not macOS agrees.
@@ -73,12 +76,17 @@ wait_logged() {
   done
 }
 
+# A web link for the panel: https on the mock's port is not the console
+# (the console is http), so it opens beside; the mock speaks no TLS, so the
+# panel reports the page did not load - the route is what is checked.
+beside="https://127.0.0.1:$port/"
+
 say "== run against the mock on $console"
 start_mock
 since=$(date '+%Y-%m-%d %H:%M:%S')
 # The commands' clock starts when the first page has loaded.
 "$app/Contents/MacOS/PULSE" -EphemeralRun YES -HubURL "$console" -QuitAfter 60 \
-  -Commands "1:go /records/;2:clicklink /tasks/;3:snapshot $scratch/tasks.png;4:rightclicklink /tasks/;6:rightclick 700 500;8:reload;16:snapshot $scratch/back.png;17:quit" >/dev/null 2>&1 &
+  -Commands "1:go /records/;2:clicklink /tasks/;3:snapshot $scratch/tasks.png;4:rightclicklink /tasks/;6:rightclick 700 500;8:reload;16:snapshot $scratch/back.png;17:addlink $beside blank;18:clicklink $beside;21:beside;23:quit" >/dev/null 2>&1 &
 pid=$!
 note "app started (pid $pid)"
 i=0
@@ -135,6 +143,10 @@ expect_prefix "state: reconnecting($console"
 expect "state: ready($console)"
 expect "showing ${console}tasks/"
 expect "snapshot written to $scratch/back.png"
+expect "test hook: click lands on ConsoleWebView"
+expect "beside $beside"
+expect_prefix "load failed"
+expect "beside away"
 
 for shot in tasks back; do
   size=$(wc -c < "$scratch/$shot.png" 2>/dev/null || echo 0)

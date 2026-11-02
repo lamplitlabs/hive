@@ -9,8 +9,13 @@ public enum LinkTarget: Equatable, Sendable {
     case redirect(URL)
     /// A console page that asked for a new window (target=_blank, ⌘-click).
     case newTab(URL)
+    /// A web page the owner clicked: the browser panel beside the console,
+    /// the way the Copilot app opens a page beside its chat.
+    case beside(URL)
     /// A web page: the default browser. The console signs in to MCP servers
-    /// and model providers this way, and their callbacks reach the hub there.
+    /// and model providers this way (window.open from a script, never a
+    /// click), and their callbacks reach the hub there; a ⌘-click asks for
+    /// it too.
     case browser(URL)
     /// mailto: and other apps' links: the system's handler.
     case otherApp(URL, ask: Bool)
@@ -20,7 +25,8 @@ public enum LinkTarget: Equatable, Sendable {
 }
 
 /// Decides where main-frame navigations and new-window requests go; subframes
-/// (the chat's artifact viewer) are the console's own business.
+/// (the chat's artifact viewer) are the console's own business, except that
+/// a link clicked in one goes where a clicked link goes.
 public struct LinkPolicy: Equatable, Sendable {
     public var console: URL
 
@@ -28,11 +34,15 @@ public struct LinkPolicy: Equatable, Sendable {
         self.console = console
     }
 
-    public func target(for url: URL, newWindow: Bool) -> LinkTarget {
+    /// `newWindow`: the page asked for one (target=_blank, window.open) or
+    /// the click did (⌘, middle button). `click`: a plain click on a link -
+    /// no modifier, no script - which is what opens a web page beside the
+    /// console; anything else sends it to the default browser.
+    public func target(for url: URL, newWindow: Bool, click: Bool = false) -> LinkTarget {
         guard let scheme = url.scheme?.lowercased() else { return .refuse }
         switch scheme {
         case "http", "https":
-            guard isConsole(url) else { return .browser(url) }
+            guard isConsole(url) else { return click ? .beside(url) : .browser(url) }
             let canonical = canonicalConsoleURL(url)
             if newWindow { return .newTab(canonical) }
             return canonical == url ? .here : .redirect(canonical)

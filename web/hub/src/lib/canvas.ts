@@ -1,6 +1,7 @@
 // The canvas beside a conversation or a task: the tabs the agent's steps
 // open on their own (the file it edits, the terminal it runs commands in,
-// the page it fetched, its plan) and the ones you open from the "+" menu.
+// the page it fetched or drove in a browser, its plan) and the ones you
+// open from the "+" menu.
 // Pure rules, so the component stays a view; components/chat/canvas.tsx
 // draws them.
 
@@ -113,10 +114,27 @@ export function readPaths(s: HarnessStep): string[] {
     .filter(Boolean);
 }
 
-// The URL a fetch, or the query a search, that a page tab shows.
+// The URL a fetch, the query a search, or the page a browser tool opened
+// (an MCP `browser_navigate` call: Playwright's) that a page tab shows.
 export function stepPage(s: HarnessStep): string {
+  if (s.kind === "mcp") return browserPage(s);
   if (s.kind !== "fetch" && s.kind !== "search") return "";
   return (s.content || s.command || "").split("\n")[0].trim();
+}
+
+// The URL an MCP browser tool was sent to. The step reads `mcp__<server>__
+// browser_navigate {"url":"…"}`; the arguments may be cut short, so the url
+// is read on its own rather than parsed as a whole.
+export function browserPage(s: HarnessStep): string {
+  if (s.kind !== "mcp" || !/__browser_navigate$/.test(s.command || "")) return "";
+  const m = /"url"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(s.content || "");
+  if (!m) return "";
+  try {
+    const url = JSON.parse('"' + m[1] + '"') as string;
+    return /^https?:\/\//i.test(url) ? url : "";
+  } catch {
+    return "";
+  }
 }
 
 // Edits and writes, newest first, one entry per path.
@@ -250,8 +268,9 @@ const FIRST_FILES = 3;
 const FIRST_PAGES = 1;
 
 // Which tabs steps after `after` (a step number) open. Edits and writes
-// open the file, commands the terminal, fetches and searches the page, a
-// plan the plan; the newest such step is the one brought to the front. On
+// open the file, commands the terminal, fetches, searches and a browser
+// tool's navigations the page, a plan the plan; the newest such step is the
+// one brought to the front. On
 // the first pass over a run (`after` 0) only the last few files and pages
 // open, so an old run does not greet you with twenty tabs.
 export function autoOpen(steps: HarnessStep[], after: number): AutoOpen {
@@ -276,7 +295,7 @@ export function autoOpen(steps: HarnessStep[], after: number): AutoOpen {
       tab = makeTab("file", p);
     } else if (s.kind === "command" || s.kind === "process") {
       tab = makeTab("terminal");
-    } else if (s.kind === "fetch" || s.kind === "search") {
+    } else if (s.kind === "fetch" || s.kind === "search" || s.kind === "mcp") {
       const p = stepPage(s);
       if (!p) continue;
       const isNew = !open.some((o) => o.id === tabId("page", p));

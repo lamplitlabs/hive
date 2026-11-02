@@ -228,6 +228,27 @@ import Testing
         #expect(policy.target(for: slack, newWindow: false) == .otherApp(slack, ask: true))
     }
 
+    @Test func aClickedWebPageOpensBesideTheConsole() {
+        let docs = URL(string: "https://docs.rs/reqwest/latest/")!
+        // A plain click, whether the link asked for a new window or not.
+        #expect(policy.target(for: docs, newWindow: false, click: true) == .beside(docs))
+        #expect(policy.target(for: docs, newWindow: true, click: true) == .beside(docs))
+        // The page an agent drove on a dev server: another port is not the console.
+        let preview = URL(string: "http://127.0.0.1:3000/")!
+        #expect(policy.target(for: preview, newWindow: true, click: true) == .beside(preview))
+        // A console page clicked is still a console page.
+        #expect(policy.target(for: URL(string: "http://localhost:8765/chat/")!, newWindow: false, click: true)
+            == .redirect(URL(string: "http://127.0.0.1:8765/chat/")!))
+        #expect(policy.target(for: URL(string: "http://127.0.0.1:8765/chat/")!, newWindow: true, click: true)
+            == .newTab(URL(string: "http://127.0.0.1:8765/chat/")!))
+        // Not a click (window.open, a script's redirect, ⌘-click): the default browser.
+        #expect(policy.target(for: docs, newWindow: true, click: false) == .browser(docs))
+        // Other schemes go where they always went.
+        let mail = URL(string: "mailto:owner@example.com")!
+        #expect(policy.target(for: mail, newWindow: false, click: true) == .otherApp(mail, ask: false))
+        #expect(policy.target(for: URL(string: "javascript:alert(1)")!, newWindow: false, click: true) == .refuse)
+    }
+
     @Test func filesScriptsAndBlobsNeverReplaceTheConsole() {
         for link in ["file:///Users/me/Desktop/report.pdf", "javascript:alert(1)", "data:text/html,hi", "blob:http://127.0.0.1:8765/1"] {
             #expect(policy.target(for: URL(string: link)!, newWindow: false) == .refuse, "\(link)")
@@ -242,6 +263,38 @@ import Testing
             == "http://127.0.0.1:50123/tasks/?project=a#top")
         #expect(moved.isConsole(URL(string: "http://localhost:50123/x")!))
         #expect(!moved.isConsole(URL(string: "http://127.0.0.1:8765/x")!))
+    }
+}
+
+@Suite struct TypedAddressTests {
+    func address(_ text: String) -> String? { TypedAddress.url(text)?.absoluteString }
+
+    @Test func webAddressesStayAsTyped() {
+        #expect(address("https://github.com/acme/app/pull/12") == "https://github.com/acme/app/pull/12")
+        #expect(address("  http://127.0.0.1:3000/?x=1#top ") == "http://127.0.0.1:3000/?x=1#top")
+        #expect(address("HTTP://Example.com") == "HTTP://Example.com")
+    }
+
+    @Test func hostsGetAScheme() {
+        #expect(address("docs.rs/reqwest/latest") == "https://docs.rs/reqwest/latest")
+        #expect(address("example.com") == "https://example.com")
+        #expect(address("example.com:443/x") == "https://example.com:443/x")
+        // A machine's own, and anything naming a port: a dev server speaks http.
+        #expect(address("localhost:3000") == "http://localhost:3000")
+        #expect(address("localhost") == "http://localhost")
+        #expect(address("127.0.0.1:4123/posts/x") == "http://127.0.0.1:4123/posts/x")
+        #expect(address("0.0.0.0:8000") == "http://0.0.0.0:8000")
+        #expect(address("[::1]:3000/") == "http://[::1]:3000/")
+        #expect(address("my-app:8080") == "http://my-app:8080")
+        #expect(address("preview.local/") == "http://preview.local/")
+        #expect(address("192.168.1.10:3000") == "http://192.168.1.10:3000")
+    }
+
+    @Test func wordsAndOtherSchemesAreNotAnAddress() {
+        for text in ["", "   ", "hello", "retry after", "mailto:owner@example.com", "javascript:alert(1)",
+                     "file:///Users/me/report.pdf", "slack://open", ".com", "example.", "host:port", "host:"] {
+            #expect(TypedAddress.url(text) == nil, "\(text)")
+        }
     }
 }
 
