@@ -444,7 +444,7 @@ impl Handler {
         id: &str,
         action: &str,
     ) {
-        let limit = if action == "message" {
+        let limit = if action == "message" || action == "steer" {
             MESSAGE_BODY_LIMIT
         } else {
             crate::server::JSON_BODY_LIMIT
@@ -458,7 +458,7 @@ impl Handler {
         };
         let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
         let result = match action {
-            "message" => {
+            "message" | "steer" => {
                 let (text, ok) = addition_string(w, &payload, "text", false);
                 if !ok {
                     return;
@@ -469,10 +469,13 @@ impl Handler {
                 let Some(images) = payload_images(w, &payload, "images") else {
                     return;
                 };
-                if images.is_empty() {
-                    chats.send_with(id, &text, &attachments)
-                } else {
-                    chats.send_with_images(id, &text, &attachments, &images)
+                // A steer reaches the agent inside the running turn; a
+                // message waits behind it.
+                match (action, images.is_empty()) {
+                    ("steer", true) => chats.steer_with(id, &text, &attachments),
+                    ("steer", false) => chats.steer_with_images(id, &text, &attachments, &images),
+                    (_, true) => chats.send_with(id, &text, &attachments),
+                    (_, false) => chats.send_with_images(id, &text, &attachments, &images),
                 }
             }
             "answer" => {
@@ -1000,6 +1003,89 @@ mod tests {
             json!({"text": "x"}),
         );
         assert_eq!(code, 409, "an archived conversation takes no messages");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// A steer while the turn runs goes into the turn (the agent takes it
+    /// before its next model call), not behind it: the live state lists it
+    /// under `steered`, never `queued`, and the row is in the transcript at
+    /// once, marked. Steering an idle conversation is a plain message.
+    #[test]
+    fn a_steer_over_http_reaches_the_running_turn() {
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(
+            &ts,
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        let (code, body, raw) = call(&h, "POST", "/api/v1/chat", json!({"text": "one"}));
+        assert_eq!(code, 201, "{raw}");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        wait_status(&h, &id, &["idle"]);
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/message"),
+            json!({"text": "two"}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        for _ in 0..400 {
+            let (_, body, _) = call(&h, "GET", &format!("/api/v1/chat/{id}"), Value::Null);
+            if body["live"]["status"] == "running" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/steer"),
+            json!({"text": "actually, b"}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let live = &body["conversation"]["live"];
+        assert_eq!(live["queued"], json!([]), "a steer does not queue: {live}");
+        assert_eq!(live["steered"], json!(["actually, b"]), "{live}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        let rows: Vec<(&str, &str)> = shown["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["role"].as_str().unwrap(), m["content"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("user", "one"),
+                ("assistant", "First."),
+                ("user", "two"),
+                ("user", "actually, b"),
+                ("assistant", "Second."),
+            ],
+            "the steer ran inside the turn"
+        );
+        assert_eq!(shown["messages"][3]["extra"]["steered"], true);
+        assert_eq!(shown["live"]["steered"], json!([]));
+        // Idle, a steer is a message of its own.
+        let (code, _, raw) = call(
+            &h,
+            "POST",
+            &format!("/api/v1/chat/{id}/steer"),
+            json!({"text": "four"}),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let shown = wait_status(&h, &id, &["idle"]);
+        let msgs = shown["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 7, "{msgs:#?}");
+        assert_eq!(msgs[5]["content"], "four");
+        assert!(msgs[5]["extra"]["steered"].is_null(), "{:?}", msgs[5]);
+        assert_eq!(msgs[6]["content"], "Third.");
         std::thread::sleep(Duration::from_millis(100));
     }
 

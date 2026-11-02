@@ -22,8 +22,8 @@
 use crate::background::{Managed, fmt_dur};
 use crate::commands::{PrepareOpts, Prepared, add_agent_flags, prepare_agent_with};
 use crate::harness::{
-    Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, KeepResult, Sink, Step,
-    StreamSink, Trajectory, Turn, Ui, trim_dangling_tool_calls,
+    Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, KeepResult, Sink,
+    SteerSlot, Step, StreamSink, Trajectory, Turn, Ui, trim_dangling_tool_calls,
 };
 use crate::repair::repair_tool_arguments;
 use crate::retitle;
@@ -180,6 +180,10 @@ pub struct Live {
     pub pending: Option<Pending>,
     /// Messages typed while a turn ran, in order.
     pub queued: Vec<String>,
+    /// Messages steered into the running turn that the agent has not taken
+    /// up yet: they reach it before its next model call, not after the
+    /// turn. Already in the transcript (marked `steered`).
+    pub steered: Vec<String>,
     /// The harness step number the running turn started after (-1 when the
     /// session has no step yet); the turn's steps are `turn_from < n`.
     pub turn_from: i64,
@@ -364,6 +368,13 @@ struct LiveState {
     pending: Option<Pending>,
     answer: Option<(u64, Answer)>,
     queued: VecDeque<Queued>,
+    /// The running turn's steering slot ([`Agent::steer_slot`]): a message
+    /// pushed here reaches the agent before its next model call. None
+    /// between turns.
+    steer: Option<SteerSlot>,
+    /// What the owner steered into the running turn, in order, as shown;
+    /// the last `slot.len()` of them still wait for the agent's next step.
+    steered: Vec<String>,
     /// Messages dropped from the queue (a stop, a close, a shutdown) that
     /// the worker still has to write to the transcript, after the note of
     /// the turn they waited behind.
@@ -407,6 +418,8 @@ impl Shared {
                 pending: None,
                 answer: None,
                 queued: VecDeque::new(),
+                steer: None,
+                steered: Vec::new(),
                 unsent: Vec::new(),
                 finish: None,
                 cancel: None,
@@ -453,6 +466,15 @@ impl Shared {
             stream: st.stream.clone(),
             pending: st.pending.clone(),
             queued: st.queued.iter().map(Queued::shown).collect(),
+            steered: match &st.steer {
+                // The slot is drained whole, so what still waits is the
+                // tail of what was steered.
+                Some(slot) => {
+                    let waiting = slot.len().min(st.steered.len());
+                    st.steered[st.steered.len() - waiting..].to_vec()
+                }
+                None => Vec::new(),
+            },
             turn_from: st.turn_from,
             turn_started_at: st.turn_started_at.clone(),
             auto_approve: st.auto,
@@ -791,6 +813,19 @@ impl Queued {
     }
 }
 
+/// A message row's extra with `steered: true` on it: the hub shows the
+/// message as one that reached the agent mid-turn.
+fn steered_extra(extra: &Value) -> Value {
+    match extra {
+        Value::Object(map) => {
+            let mut map = map.clone();
+            map.insert("steered".to_string(), Value::Bool(true));
+            Value::Object(map)
+        }
+        _ => json!({"steered": true}),
+    }
+}
+
 /// Why a queued message never reached the agent; the transcript says so
 /// under it, since "continue" would not bring it back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1092,6 +1127,45 @@ impl Runtime {
         }
     }
 
+    /// Steers the running turn: the message goes to the agent's steering
+    /// slot, so it reads it before its next model call, and into the
+    /// transcript now (marked `steered`, since it lands mid-turn rather
+    /// than after the reply). A turn waiting on a question or an approval
+    /// is still in flight: the steer reaches the agent once the answer
+    /// does, before its next call. With no turn running, or one that cannot
+    /// be steered (it is stopping, or has not reached the agent yet), the
+    /// message queues as [`Runtime::enqueue`] does.
+    fn steer(self: &Arc<Self>, message: Queued) {
+        let role = message.role();
+        let written = {
+            let mut st = self.shared.lock();
+            let steerable = matches!(st.status, Status::Running | Status::Waiting)
+                && !st.closed
+                && st.finish.is_none()
+                && !st.cancel.as_ref().is_some_and(|c| c.is_cancelled());
+            match st.steer.clone().filter(|_| steerable) {
+                Some(slot) => {
+                    let shown = message.shown();
+                    let extra = match &message.row {
+                        Some((_, extra)) => steered_extra(extra),
+                        None => json!({"steered": true}),
+                    };
+                    slot.push(message.text.clone(), message.images.clone());
+                    st.steered.push(shown.clone());
+                    self.shared.bump(&mut st);
+                    Some((shown, extra))
+                }
+                None => None,
+            }
+        };
+        match written {
+            Some((shown, extra)) => {
+                let _ = self.store.chat_add_message(&self.id, role, &shown, &extra);
+            }
+            None => self.enqueue(message),
+        }
+    }
+
     fn work(self: Arc<Self>) {
         loop {
             // Taking the next message and standing down are one step under
@@ -1223,12 +1297,15 @@ impl Runtime {
             None => message,
         };
         let cancel = CancelToken::new();
+        let steer = agent.lock().unwrap_or_else(|e| e.into_inner()).steer_slot();
         {
             let mut st = self.shared.lock();
             st.status = Status::Running;
             st.note.clear();
             st.stream.clear();
             st.cancel = Some(cancel.clone());
+            st.steer = Some(steer.clone());
+            st.steered.clear();
             st.turn_from = st.last_step;
             st.turn_started_at = now();
             st.session_id = session_id.clone();
@@ -1253,6 +1330,26 @@ impl Runtime {
             .turn_with_images(&cancel, &message, images);
         if let Some(stop) = stop_watch {
             stop();
+        }
+        // A steer that arrived after the agent's last step never reached
+        // it: it runs as the next turn, its row already in the transcript.
+        let leftovers: Vec<Queued> = steer
+            .take()
+            .into_iter()
+            .map(|(text, images)| Queued {
+                text,
+                images,
+                row: None,
+                report: false,
+            })
+            .collect();
+        {
+            let mut st = self.shared.lock();
+            st.steer = None;
+            st.steered.clear();
+            for q in leftovers.into_iter().rev() {
+                st.queued.push_front(q);
+            }
         }
         let turn_from = self.shared.lock().turn_from;
         let steps_to = self.shared.lock().last_step;
@@ -2422,16 +2519,81 @@ impl Manager {
     /// message keeps the owner's words; the agent gets the files' paths
     /// with them.
     pub fn send_with(&self, id: &str, text: &str, attachments: &[String]) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, &[])?;
+        rt.enqueue(message);
+        Ok(())
+    }
+
+    /// Steers the running turn with the owner's message: the agent reads
+    /// it before its next model call, instead of after the turn. With no
+    /// turn running (or none that can take a steer) the message runs a
+    /// turn of its own, as [`Manager::send`] does.
+    pub fn steer(&self, id: &str, text: &str) -> Result<()> {
+        self.steer_with(id, text, &[])
+    }
+
+    /// [`Manager::steer`] with uploaded files, as [`Manager::send_with`].
+    pub fn steer_with(&self, id: &str, text: &str, attachments: &[String]) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, &[])?;
+        rt.steer(message);
+        Ok(())
+    }
+
+    /// [`Manager::steer`] with inline images, as [`Manager::send_with_images`].
+    pub fn steer_with_images(
+        &self,
+        id: &str,
+        text: &str,
+        attachments: &[String],
+        images: &[ImageAttachment],
+    ) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, images)?;
+        rt.steer(message);
+        Ok(())
+    }
+
+    /// The owner's message as the agent gets it: validated, its files
+    /// resolved to their saved paths, its images saved and carried inline,
+    /// with the transcript row (the owner's words plus the attachments and
+    /// images as the hub lists them). Also the runtime it goes to.
+    fn owner_message(
+        &self,
+        id: &str,
+        text: &str,
+        attachments: &[String],
+        images: &[ImageAttachment],
+    ) -> Result<(Arc<Runtime>, Queued)> {
         let text = text.trim();
-        if text.is_empty() && attachments.is_empty() {
-            bail!("the message is empty");
-        }
-        if attachments.len() > ATTACHMENTS_PER_MESSAGE {
+        if attachments.len() + images.len() > ATTACHMENTS_PER_MESSAGE {
             bail!("Invalid attachments: one message carries up to {ATTACHMENTS_PER_MESSAGE} files");
+        }
+        if text.is_empty() && attachments.is_empty() && images.is_empty() {
+            bail!("the message is empty");
         }
         let row = self.row(id)?;
         if row.status == "archived" {
             bail!("conversation {id} is archived");
+        }
+        let mut stored: Vec<Value> = Vec::with_capacity(images.len());
+        let mut shown: Vec<ImageContent> = Vec::with_capacity(images.len());
+        for (n, image) in images.iter().enumerate() {
+            let data = image.decode()?;
+            shown.push(ImageContent {
+                media_type: image.mime.trim().to_ascii_lowercase(),
+                data: image.data.trim().to_string(),
+            });
+            let name = if image.name.trim().is_empty() {
+                format!("image-{}.{}", n + 1, image.ext())
+            } else {
+                image.name.trim().to_string()
+            };
+            let saved = self.save_attachment(id, &name, &data)?;
+            stored.push(json!({
+                "name": saved.name,
+                "mime": image.mime.trim().to_ascii_lowercase(),
+                "size": saved.size,
+                "path": format!("image/{id}/{n}"),
+            }));
         }
         let mut files: Vec<Attachment> = Vec::new();
         for name in attachments {
@@ -2450,7 +2612,7 @@ impl Manager {
             });
         }
         let text = if text.is_empty() {
-            if files.len() == 1 {
+            if files.len() + stored.len() == 1 {
                 "Look at the attached file.".to_string()
             } else {
                 "Look at the attached files.".to_string()
@@ -2458,19 +2620,22 @@ impl Manager {
         } else {
             text.to_string()
         };
-        let extra = if files.is_empty() {
-            Value::Null
-        } else {
-            json!({"attachments": files})
+        let extra = match (files.is_empty(), stored.is_empty()) {
+            (true, true) => Value::Null,
+            (false, true) => json!({"attachments": files}),
+            (true, false) => json!({"images": stored}),
+            (false, false) => json!({"attachments": files, "images": stored}),
         };
         let rt = self.runtime(&row);
-        rt.enqueue(Queued {
-            text: message_with_attachments(&text, &files),
-            images: Vec::new(),
-            row: Some((text, extra)),
-            report: false,
-        });
-        Ok(())
+        Ok((
+            rt,
+            Queued {
+                text: message_with_attachments(&text, &files),
+                images: shown,
+                row: Some((text, extra)),
+                report: false,
+            },
+        ))
     }
 
     /// Wakes the agent of a conversation with a note from outside it: a
@@ -2512,76 +2677,8 @@ impl Manager {
         attachments: &[String],
         images: &[ImageAttachment],
     ) -> Result<()> {
-        if attachments.len() + images.len() > ATTACHMENTS_PER_MESSAGE {
-            bail!("Invalid attachments: one message carries up to {ATTACHMENTS_PER_MESSAGE} files");
-        }
-        let mut stored: Vec<Value> = Vec::with_capacity(images.len());
-        let mut shown: Vec<ImageContent> = Vec::with_capacity(images.len());
-        for (n, image) in images.iter().enumerate() {
-            let data = image.decode()?;
-            shown.push(ImageContent {
-                media_type: image.mime.trim().to_ascii_lowercase(),
-                data: image.data.trim().to_string(),
-            });
-            let name = if image.name.trim().is_empty() {
-                format!("image-{}.{}", n + 1, image.ext())
-            } else {
-                image.name.trim().to_string()
-            };
-            let saved = self.save_attachment(id, &name, &data)?;
-            stored.push(json!({
-                "name": saved.name,
-                "mime": image.mime.trim().to_ascii_lowercase(),
-                "size": saved.size,
-                "path": format!("image/{id}/{n}"),
-            }));
-        }
-        let text = text.trim();
-        if text.is_empty() && attachments.is_empty() && stored.is_empty() {
-            bail!("the message is empty");
-        }
-        let row = self.row(id)?;
-        if row.status == "archived" {
-            bail!("conversation {id} is archived");
-        }
-        let mut files: Vec<Attachment> = Vec::new();
-        for name in attachments {
-            let path = self.attachment_path(id, name).ok_or_else(|| {
-                anyhow!(
-                    "Invalid attachments: no file named {name:?} in this conversation; upload it first"
-                )
-            })?;
-            if files.iter().any(|f| f.name == *name) {
-                continue;
-            }
-            files.push(Attachment {
-                name: name.clone(),
-                size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
-                path: path.display().to_string(),
-            });
-        }
-        let text = if text.is_empty() {
-            if files.len() + stored.len() == 1 {
-                "Look at the attached file.".to_string()
-            } else {
-                "Look at the attached files.".to_string()
-            }
-        } else {
-            text.to_string()
-        };
-        let extra = match (files.is_empty(), stored.is_empty()) {
-            (true, true) => Value::Null,
-            (false, true) => json!({"attachments": files}),
-            (true, false) => json!({"images": stored}),
-            (false, false) => json!({"attachments": files, "images": stored}),
-        };
-        let rt = self.runtime(&row);
-        rt.enqueue(Queued {
-            text: message_with_attachments(&text, &files),
-            images: shown,
-            row: Some((text, extra)),
-            report: false,
-        });
+        let (rt, message) = self.owner_message(id, text, attachments, images)?;
+        rt.enqueue(message);
         Ok(())
     }
 
@@ -4666,6 +4763,62 @@ mod tests {
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
 
+    /// A turn parked on a question is still in flight: a steer written
+    /// then is in the transcript at once and reaches the agent with the
+    /// answer, before its next model call, instead of waiting for a turn
+    /// of its own.
+    #[test]
+    fn a_steer_while_a_question_waits_reaches_the_agent_with_the_answer() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"content": "Dark blue it is."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("colours", "", true, "pick a colour", "owner")
+            .unwrap();
+        let id = row.id.clone();
+        wait_pending(&m, &id);
+        m.steer(&id, "and make it dark").expect("steer");
+        let live = m.live(&m.row(&id).unwrap());
+        assert_eq!(live.status, "waiting");
+        assert!(live.queued.is_empty(), "{live:?}");
+        assert_eq!(live.steered, vec!["and make it dark".to_string()]);
+        m.answer(&id, "blue").expect("answer");
+        wait_idle(&m, &id);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "pick a colour".to_string()),
+                ("question".to_string(), "Red or blue?".to_string()),
+                ("user".to_string(), "and make it dark".to_string()),
+                ("answer".to_string(), "blue".to_string()),
+                ("assistant".to_string(), "Dark blue it is.".to_string()),
+            ],
+            "one turn, steered while it waited"
+        );
+        let row = m.row(&id).unwrap();
+        assert!(m.live(&row).steered.is_empty());
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content == format!("{}: and make it dark", crate::harness::STEERED_NOTE)),
+            "{steps:?}"
+        );
+        m.archive(&id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
     #[test]
     fn approvals_park_when_auto_is_off_and_pass_when_on() {
         let _env = pulse_testutil::env_lock();
@@ -5538,6 +5691,89 @@ mod tests {
                 ("assistant".to_string(), "Third.".to_string()),
             ]
         );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// A steer during a turn reaches the agent before its next model call:
+    /// the row lands in the transcript at once (marked steered), the hub
+    /// lists it as steered until the agent takes it, a note step marks
+    /// where it landed, and the reply that follows saw it. With no turn
+    /// running a steer is a plain send.
+    #[test]
+    fn a_steer_during_a_turn_reaches_the_agent_before_its_next_step() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(200));
+        m.steer(&id, "actually, b").expect("steer");
+        let live = m.live(&m.row(&id).unwrap());
+        assert!(live.queued.is_empty(), "a steer does not queue: {live:?}");
+        assert_eq!(live.steered, vec!["actually, b".to_string()]);
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        assert_eq!(
+            (msgs[3].role.as_str(), msgs[3].content.as_str()),
+            ("user", "actually, b"),
+            "the steered row is in the transcript at once: {msgs:#?}"
+        );
+        assert_eq!(msgs[3].extra["steered"], true);
+        wait_idle(&m, &id);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "one".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+                ("user".to_string(), "two".to_string()),
+                ("user".to_string(), "actually, b".to_string()),
+                ("assistant".to_string(), "Second.".to_string()),
+            ],
+            "the steer ran inside the turn, not as one of its own"
+        );
+        let row = m.row(&id).unwrap();
+        let live = m.live(&row);
+        assert!(live.steered.is_empty(), "{live:?}");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content == format!("{}: actually, b", crate::harness::STEERED_NOTE)),
+            "{steps:?}"
+        );
+        // Idle: a steer is a send.
+        m.steer(&id, "four").expect("steer idle");
+        wait_idle(&m, &id);
+        let tail: Vec<(String, String)> = transcript(&s, &id).into_iter().skip(5).collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("user".to_string(), "four".to_string()),
+                ("assistant".to_string(), "Third.".to_string()),
+            ]
+        );
+        let last_user = s
+            .chat_messages(&id, 0)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.content == "four")
+            .unwrap();
+        assert!(last_user.extra.get("steered").is_none(), "{last_user:?}");
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }

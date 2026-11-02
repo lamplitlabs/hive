@@ -21,6 +21,8 @@ test("the words of a sent message are the owner's, or the hub's line for files a
   assert.equal(s.text, "hello");
   assert.equal(s.at, 1000);
   assert.notEqual(sentMessage("hello", [], 1000).key, s.key, "keys are unique");
+  assert.equal(s.steered, undefined, "a plain send is not marked steered");
+  assert.equal(sentMessage("hello", [], 1000, true).steered, true, "a steer is");
 });
 
 test("a message sent to an idle agent shows at once; behind a turn the hub lists it as queued", () => {
@@ -38,6 +40,10 @@ test("a sent message leaves once its row arrives", () => {
   assert.deepEqual(kept, []);
   // An agent's words, even the same, are not its row.
   assert.deepEqual(reconcileSent([s], [{ role: "assistant", content: "fix the footer" }], running, 1500), [s]);
+  // A steered message's row (written mid-turn) settles it the same way.
+  const st = sentMessage("go left", [], 1000, true);
+  assert.deepEqual(reconcileSent([st], [{ role: "user", content: "go left" }], running, 1500), []);
+  assert.deepEqual(reconcileSent([st], [], running, 1500), [st]);
 });
 
 test("a poll sent before the message cannot settle it", () => {
@@ -71,4 +77,7 @@ test("the queued list drops what the page shows as sent", () => {
   const same = ["and the header"];
   assert.equal(queuedBesides(same, [s]), same);
   assert.equal(queuedBesides(same, []), same);
+  // The steered list is deduped the same way against a steer just shown.
+  const st = sentMessage("go left", [], 1000, true);
+  assert.deepEqual(queuedBesides(["go left", "then right"], [st]), ["then right"]);
 });

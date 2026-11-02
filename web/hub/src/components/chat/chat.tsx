@@ -32,6 +32,7 @@ import {
   GitBranchIcon,
   InfoIcon,
   ListChecksIcon,
+  ListEndIcon,
   LoaderCircleIcon,
   LockIcon,
   LockOpenIcon,
@@ -46,6 +47,7 @@ import {
   SparklesIcon,
   UsersIcon,
   XIcon,
+  ZapIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -101,6 +103,23 @@ import {
   lockdownHint,
   lockdownOf,
 } from "@/components/chat/lockdown-state";
+import {
+  QUEUE_LABEL,
+  QUEUE_TITLE,
+  SEND_LABEL,
+  SEND_TITLE,
+  STEERED_HINT,
+  STEER_LABEL,
+  STEER_TITLE,
+  composeKeysHint,
+  composeMode,
+  composePlaceholder,
+  sentLabel,
+  showsNow,
+  steeredOf,
+  turnOpen,
+  type ComposeMode,
+} from "@/components/chat/compose-mode";
 import type {
   ChatArtifact,
   ChatAttachment,
@@ -2202,6 +2221,10 @@ function ConversationBody({
   // What waits behind the turn, less what the transcript already shows as
   // just sent.
   const queued = queuedBesides(live.queued, d.sent);
+  // What was steered into the running turn and not taken up yet: its row
+  // is in the transcript already, so this is a hint under it, less what
+  // the page still shows as just sent.
+  const steered = queuedBesides(steeredOf(live), d.sent);
   const archived = c.status === "archived";
   // Lockdown (sandbox) mode: the live word follows a flip at once.
   const sealed = lockdownOf(c, live);
@@ -2719,6 +2742,27 @@ function ConversationBody({
               act={act}
             />
           ) : null}
+          {steered.length ? (
+            <ul
+              className="mx-auto mt-3 grid w-full max-w-3xl gap-1"
+              aria-label="Steered messages"
+            >
+              {steered.map((q, i) => (
+                <li
+                  key={i}
+                  className="flex min-w-0 items-center gap-2 rounded-lg border border-dashed border-primary/40 px-2.5 py-1.5 text-xs text-muted-foreground"
+                  title={STEERED_HINT}
+                >
+                  <ZapIcon className="size-3 shrink-0 text-primary" aria-hidden />{" "}
+                  <span className="shrink-0">Steered:</span>{" "}
+                  <span className="min-w-0 truncate text-foreground">{q}</span>
+                  <span className="ml-auto hidden shrink-0 sm:inline">
+                    {STEERED_HINT}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {queued.length ? (
             <ul
               className="mx-auto mt-3 grid w-full max-w-3xl gap-1"
@@ -2883,13 +2927,20 @@ function SentRow({ s, id }: { s: SentMessage; id: string }) {
   return (
     <li
       className="enter group/msg grid min-w-0 justify-items-end gap-1"
-      aria-label="Sent, awaiting the agent"
+      aria-label={
+        s.steered ? "Steered, reaching the agent" : "Sent, awaiting the agent"
+      }
     >
       <div className="grid min-w-0 max-w-[85%] gap-2 rounded-2xl rounded-br-md bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
         <div className="whitespace-pre-wrap anywhere">{s.text}</div>
         <AttachmentChips id={id} list={s.attachments} onUser={false} />
       </div>
-      <p className="text-[11px] text-muted-foreground">Sent</p>
+      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        {s.steered ? (
+          <ZapIcon className="size-3 text-primary" aria-hidden />
+        ) : null}
+        {sentLabel("sent", !!s.steered)}
+      </p>
     </li>
   );
 }
@@ -2916,6 +2967,9 @@ function MessageRow({
   );
   if (role === "user" || role === "answer") {
     const files = chatAttachments(m);
+    // Steered in mid-turn (the composer's Steer while the agent ran): the
+    // agent read it before its next step rather than starting a turn on it.
+    const steered = m.extra?.steered === true;
     return (
       <li className="enter group/msg grid min-w-0 justify-items-end gap-1">
         <div
@@ -2937,8 +2991,11 @@ function MessageRow({
           <AttachmentChips id={d.conversation.id} list={files} onUser={false} />
         </div>
         {when}
-        <p className="text-[11px] text-muted-foreground">
-          {status === "answered" ? "Answered" : "Sent"}
+        <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          {steered ? (
+            <ZapIcon className="size-3 text-primary" aria-hidden />
+          ) : null}
+          {sentLabel(status, steered)}
         </p>
       </li>
     );
@@ -3494,10 +3551,12 @@ function Composer({
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<Picked[]>([]);
   const [busy, setBusy] = useState("");
+  // Which way the message in flight goes, so the right button spins.
+  const [sending, setSending] = useState<ComposeMode | "">("");
   const [over, setOver] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
-  const running = live.status === "running" || live.status === "waiting";
+  const running = turnOpen(live.status);
   const sealed = lockdownOf(conversation, live);
   const canSend = (!!text.trim() || picked.length > 0) && !busy && !disabled;
 
@@ -3525,37 +3584,53 @@ function Composer({
   // Files go up one at a time, then the message names what the hub kept
   // (a name the hub renumbered comes back renumbered). The sent message
   // goes up with the answer so the transcript shows it at once.
-  const send = async () => {
+  //
+  // With a turn open the message goes one of two ways (compose-mode.ts):
+  // steer puts it into the running turn, where the agent reads it before
+  // its next step; queue holds it for after. Idle, there is only send.
+  const send = async (mode: ComposeMode = composeMode(live.status, false)) => {
     if (!canSend) return;
     const t = text.trim();
     const files = picked;
-    setBusy(files.length ? "upload" : "send");
+    setSending(mode);
+    setBusy(files.length ? "upload" : mode);
     try {
       const kept: ChatAttachment[] = [];
       for (let i = 0; i < files.length; i++) {
         setBusy("upload " + (i + 1) + "/" + files.length);
         kept.push(await chatUpload(conversation.id, files[i].file));
       }
-      setBusy("send");
+      setBusy(mode);
       const sentAt = Date.now();
-      const r = await writes.chatSend(
-        conversation.id,
-        t,
-        kept.map((a) => a.name),
-      );
+      const names = kept.map((a) => a.name);
+      const r =
+        mode === "steer"
+          ? await writes.chatSteer(conversation.id, t, names)
+          : await writes.chatSend(conversation.id, t, names);
       setText("");
       setPicked([]);
-      // Behind a running turn the hub's answer already lists the message
-      // as queued; sent to an idle agent it has no place yet, so the
-      // transcript shows it.
+      // A steer's row is in the transcript already, so the page shows it
+      // now (unless the hub had to queue it after all, which its answer
+      // says). Behind a running turn a queued message is listed as such;
+      // sent to an idle agent it has no place yet, so the transcript
+      // shows it.
+      const shown = sentMessage(t, kept, sentAt, mode === "steer");
       onSent(
         r,
-        sentShowsNow(live.status) ? sentMessage(t, kept, sentAt) : undefined,
+        showsNow(mode, live.status, r.conversation.live, shown.text)
+          ? shown
+          : undefined,
       );
     } catch (e) {
-      fail(e, "The message did not send");
+      fail(
+        e,
+        mode === "steer"
+          ? "The message did not reach the agent"
+          : "The message did not send",
+      );
     } finally {
       setBusy("");
+      setSending("");
     }
   };
 
@@ -3640,7 +3715,9 @@ function Composer({
               !e.nativeEvent.isComposing
             ) {
               e.preventDefault();
-              void send();
+              // Idle: Enter sends. With a turn open: Enter steers it,
+              // ⌘/Ctrl+Enter queues for after.
+              void send(composeMode(live.status, e.metaKey || e.ctrlKey));
             }
           }}
           onPaste={(e) => {
@@ -3653,12 +3730,12 @@ function Composer({
             disabled
               ? "This conversation is archived."
               : running
-                ? "Type the next thing; it goes after this turn."
+                ? composePlaceholder(true)
                 : closed
                   ? "Write to reopen this conversation…"
                   : picked.length
                     ? "Say what to do with the files, or just send them."
-                    : "Tell the agent what to do next…"
+                    : composePlaceholder(false)
           }
           disabled={disabled}
           rows={1}
@@ -3694,15 +3771,36 @@ function Composer({
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
             {tools}
           </div>
+          {running ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              onClick={() => void send("queue")}
+              disabled={!canSend}
+              aria-label={QUEUE_LABEL}
+              title={QUEUE_TITLE}
+              className="shrink-0 rounded-xl"
+            >
+              {sending === "queue" ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <ListEndIcon />
+              )}
+            </Button>
+          ) : null}
           <Button
             type="submit"
             size="icon"
             disabled={!canSend}
-            aria-label={running ? "Queue message" : "Send"}
+            aria-label={running ? STEER_LABEL : SEND_LABEL}
+            title={running ? STEER_TITLE : SEND_TITLE}
             className="shrink-0 rounded-xl"
           >
-            {busy ? (
+            {sending && sending !== "queue" ? (
               <LoaderCircleIcon className="animate-spin" />
+            ) : running ? (
+              <ZapIcon />
             ) : (
               <ArrowUpIcon />
             )}
@@ -3718,9 +3816,8 @@ function Composer({
           <span className="text-primary">Drop to attach</span>
         ) : (
           <span>
-            Enter sends, Shift+Enter for a new line. Drop or paste files to
-            attach them, or press the microphone to dictate.
-            {running ? " The agent is busy: your message waits in line." : ""}
+            {composeKeysHint(running)} Drop or paste files to attach them, or
+            press the microphone to dictate.
           </span>
         )}
         {conversation.cwd ? (

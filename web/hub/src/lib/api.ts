@@ -1591,7 +1591,14 @@ export interface ConversationLive {
   note: string;
   stream: string;
   pending: ChatPending | null;
+  // Messages waiting behind the turn in flight (`writes.chatSend` while
+  // running); each starts a turn of its own once this one ends.
   queued: string[];
+  // Messages steered into the running turn (`writes.chatSteer`) that the
+  // agent has not taken up yet: already in the transcript (their user rows
+  // carry `extra.steered: true`), they reach the model before its next
+  // call, and the list empties as the agent takes them.
+  steered: string[];
   turn_from: number;
   turn_started_at: string;
   auto_approve: boolean;
@@ -3641,6 +3648,16 @@ export const writes = {
   chatSend: (id: string, text: string, attachments: string[] = []) =>
     post<{ conversation: Conversation }>(
       "chat/" + enc(id) + "/message",
+      attachments.length ? { text, attachments } : { text },
+    ),
+  // Steer the running turn: the same body as chatSend, but the text reaches
+  // the agent before its next model call instead of waiting behind the turn,
+  // and its row is written to the transcript at once (extra.steered: true).
+  // With no turn running it falls back to an ordinary send, so the answer is
+  // always the row and its live state.
+  chatSteer: (id: string, text: string, attachments: string[] = []) =>
+    post<{ conversation: Conversation }>(
+      "chat/" + enc(id) + "/steer",
       attachments.length ? { text, attachments } : { text },
     ),
   chatModel: (id: string, model: string) =>

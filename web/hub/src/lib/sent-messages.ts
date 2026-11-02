@@ -21,6 +21,9 @@ export interface SentMessage {
   // cannot know about it, so its answer says nothing about whether the
   // row arrived.
   at: number;
+  // Steered into the running turn (compose-mode.ts) rather than sent to
+  // start one: the row under it says so.
+  steered?: boolean;
 }
 
 // The live state a poll answers with, as far as reconciling needs it.
@@ -49,6 +52,7 @@ export function sentMessage(
   text: string,
   attachments: SentAttachment[],
   at: number = Date.now(),
+  steered = false,
 ): SentMessage {
   seq += 1;
   return {
@@ -56,6 +60,7 @@ export function sentMessage(
     text: sentWords(text, attachments.length),
     attachments,
     at,
+    ...(steered ? { steered: true } : {}),
   };
 }
 

@@ -686,6 +686,49 @@ pub trait Environment: Send {
     }
 }
 
+/// Messages the owner sends into a running turn: the loop drains the slot
+/// before each model call and the agent reads them at its next step
+/// instead of after the turn (where a queued message waits). Shared by
+/// the turn's owner (the conversation runtime) and the agent, which is
+/// locked for the whole turn.
+#[derive(Clone, Default)]
+pub struct SteerSlot(Arc<Mutex<Vec<Steered>>>);
+
+/// One steered message: its words and the images that came with it.
+pub type Steered = (String, Vec<ImageContent>);
+
+impl SteerSlot {
+    pub fn new() -> SteerSlot {
+        SteerSlot::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(String, Vec<ImageContent>)>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A message for the agent's next step.
+    pub fn push(&self, text: String, images: Vec<ImageContent>) {
+        self.lock().push((text, images));
+    }
+
+    /// Everything pushed since the last take, in order.
+    pub fn take(&self) -> Vec<Steered> {
+        std::mem::take(&mut *self.lock())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
+    /// How many messages wait for the agent's next step.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+/// The note a steering message leaves in the transcript.
+pub const STEERED_NOTE: &str = "Steered";
+
 pub struct Agent {
     p: Arc<dyn Provider>,
     env: Box<dyn Environment>,
@@ -702,6 +745,9 @@ pub struct Agent {
     /// Raised (with the cancel token) when the runner asks the run to hold:
     /// the run ends `held` instead of `cancelled` wherever it notices.
     hold: Arc<AtomicBool>,
+    /// Owner messages that reach the model at the loop's next call
+    /// ([`Agent::steer_slot`]).
+    steer: SteerSlot,
     /// The message a resumed job run starts with instead of its task: the
     /// task is already the first user message of the carried-over
     /// conversation ([`Agent::resume_run`]).
@@ -1217,6 +1263,7 @@ pub fn new_shared(
         started: Instant::now(),
         cancel_reason: String::new(),
         hold: Arc::new(AtomicBool::new(false)),
+        steer: SteerSlot::new(),
         continuation: None,
         fatal: None,
         mcp: McpTools::default(),
@@ -1979,6 +2026,28 @@ impl Agent {
         self.hold.load(Ordering::SeqCst)
     }
 
+    /// The slot a message steering the running turn goes into: the loop
+    /// hands its contents to the model before its next call, as user
+    /// messages, each noted in the transcript. Take it before the turn;
+    /// the agent is locked while a turn runs.
+    pub fn steer_slot(&self) -> SteerSlot {
+        self.steer.clone()
+    }
+
+    /// Hands the steering messages waiting in the slot to the model: user
+    /// messages after whatever the loop last added (a tool result, say),
+    /// each with a note step so the transcript shows where they landed.
+    fn take_steering(&mut self) {
+        for (text, images) in self.steer.take() {
+            self.emit(Step {
+                kind: StepKind::Note,
+                content: format!("{STEERED_NOTE}: {text}"),
+                ..Step::default()
+            });
+            self.push_user_with_images(text, images);
+        }
+    }
+
     /// The model's view of an observation; a command the run's stop cut
     /// short says so instead of reading as the command's own timeout.
     fn observation_text(&self, cancel: &CancelToken, obs: &Observation) -> String {
@@ -2218,6 +2287,9 @@ impl Agent {
                 let msg = self.limit_error(status);
                 return Drive::Stopped { status, error: msg };
             }
+            // What the owner sent into the turn since the last call goes
+            // to the model now, before the call it steers.
+            self.take_steering();
             let tools = self.tools();
             {
                 // Compaction first: it keeps the facts in a summary the
@@ -14726,6 +14798,119 @@ mod tests {
         assert!(
             h.resume_messages(Vec::new()).is_err(),
             "no resuming after the first turn"
+        );
+    }
+
+    /// A provider that steers the turn from inside its first call, the way
+    /// an owner's message lands while the model is busy.
+    struct SteeringProvider {
+        inner: SharedFakeProvider,
+        slot: Arc<Mutex<Option<SteerSlot>>>,
+        steered: AtomicBool,
+    }
+
+    impl Provider for SteeringProvider {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn label(&self) -> &str {
+            "Fake"
+        }
+        fn chat(
+            &self,
+            cancel: &CancelToken,
+            req: Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            if !self.steered.swap(true, Ordering::SeqCst)
+                && let Some(slot) = self.slot.lock().unwrap().as_ref()
+            {
+                slot.push("actually, use b.txt".into(), Vec::new());
+            }
+            self.inner.chat(cancel, req)
+        }
+        fn models(&self, _cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+            Ok(Vec::new())
+        }
+        fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
+            Ok(Login::default())
+        }
+    }
+
+    #[test]
+    fn a_steering_message_reaches_the_model_before_its_next_call() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[("r1", "read", json!({"path":"a.txt"}))])),
+            resp(msg("Switched to b.txt.")),
+        ]));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut cfg = base_config();
+        cfg.task = String::new();
+        cfg.system_prompt = String::new();
+        cfg.cwd = dir.path().display().to_string();
+        cfg.max_steps = 20;
+        cfg.interactive = true;
+        let sink_steps = steps.clone();
+        let slot: Arc<Mutex<Option<SteerSlot>>> = Arc::new(Mutex::new(None));
+        let mut h = new(
+            Box::new(SteeringProvider {
+                inner: SharedFakeProvider(p.clone()),
+                slot: slot.clone(),
+                steered: AtomicBool::new(false),
+            }),
+            Box::new(crate::localenv::new_local_env(
+                dir.path().display().to_string(),
+                None,
+            )),
+            cfg,
+            vec![Box::new(SinkFunc(move |s| {
+                sink_steps.lock().unwrap().push(s);
+            }))],
+        );
+        // The slot the runtime takes before the turn is the agent's own;
+        // the provider steers through it from inside the first call.
+        let agent_slot = h.steer_slot();
+        *slot.lock().unwrap() = Some(agent_slot.clone());
+        agent_slot.push("first word".into(), Vec::new());
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "what is in a.txt?").unwrap();
+        assert!(
+            matches!(&turn, Turn::Reply(t) if t == "Switched to b.txt."),
+            "{turn:?}"
+        );
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 2);
+        // What waited in the slot before the turn went with the first call;
+        // what arrived during the first call went right after its tool
+        // result, before the second.
+        let first: Vec<&str> = reqs[0]
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(first, vec!["what is in a.txt?", "first word"]);
+        let second_tail: Vec<(Role, &str)> = reqs[1]
+            .messages
+            .iter()
+            .rev()
+            .take(2)
+            .map(|m| (m.role.clone(), m.content.as_str()))
+            .collect();
+        assert_eq!(second_tail[0], (Role::User, "actually, use b.txt"));
+        assert_eq!(second_tail[1].0, Role::Tool);
+        assert!(agent_slot.is_empty(), "the slot is drained");
+        let notes: Vec<String> = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == StepKind::Note && s.content.starts_with(STEERED_NOTE))
+            .map(|s| s.content.clone())
+            .collect();
+        assert_eq!(
+            notes,
+            vec!["Steered: first word", "Steered: actually, use b.txt"]
         );
     }
 
