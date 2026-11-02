@@ -454,6 +454,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if let base = window.webView.url, let target = URL(string: argument, relativeTo: base)?.absoluteURL {
                 openTab(target, from: window, background: false)
             }
+        case "beside":
+            // A web page in the browser panel, or the panel away without one.
+            if let target = URL(string: argument), target.host != nil { window.showBeside(target) } else { window.toggleBeside(nil) }
         case "snapshot": writeSnapshot(of: window, to: argument, quitAfter: false)
         case "click", "rightclick":
             // A real mouse click through AppKit's hit testing, at points from
@@ -494,14 +497,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     window.dismissContextMenu()
                 }
             }
+        case "addlink":
+            // A link to click (`addlink <url> [blank]`), pinned to the top
+            // left of the page: the mock console has no web link of its own.
+            let parts = argument.split(separator: " ").map(String.init)
+            guard let href = parts.first else { return }
+            let target = parts.count > 1 ? "_blank" : ""
+            let add = "(() => { const a = document.createElement('a'); a.href = \(PageBridge.jsString(href)); if (\(PageBridge.jsString(target))) a.target = '_blank'; a.textContent = 'test link'; a.style.cssText = 'position:fixed;left:8px;top:8px;z-index:99999;padding:8px;background:#fff;color:#00f;font:14px sans-serif'; document.body.appendChild(a); return true; })()"
+            window.webView.evaluateJavaScript(add, in: nil, in: PageBridge.world, completionHandler: nil)
         case "clicklink", "rightclicklink":
-            // A real click on the sidebar's own link: where it is comes from
-            // the page, in CSS pixels from the web view's top left.
-            let find = "(() => { const a = document.querySelector('aside[aria-label=\"Sidebar\"] a[href=' + JSON.stringify(\(PageBridge.jsString(argument))) + ']'); if (!a) return null; const r = a.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()"
+            // A real click on the sidebar's own link (or, failing that, any
+            // link in the page): where it is comes from the page, in CSS
+            // pixels from the web view's top left.
+            let find = "(() => { const href = JSON.stringify(\(PageBridge.jsString(argument))); const a = document.querySelector('aside[aria-label=\"Sidebar\"] a[href=' + href + ']') || document.querySelector('a[href=' + href + ']'); if (!a) return null; const r = a.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()"
             window.webView.evaluateJavaScript(find, in: nil, in: PageBridge.world) { [weak self, weak window] result in
                 guard let self, let window, let content = window.window?.contentView else { return }
                 guard case .success(let value) = result, let center = value as? [Double], center.count == 2 else {
-                    self.log.error("test hook: no sidebar link \(argument, privacy: .public)")
+                    self.log.error("test hook: no link \(argument, privacy: .public)")
                     return
                 }
                 let zoom = Double(window.webView.pageZoom)

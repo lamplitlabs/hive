@@ -661,8 +661,10 @@ chat, and the agent opens most of them: the file it edits or writes opens as a
 **File** tab (reloaded on each later edit, the branch's changed lines marked;
 when the worktree is gone the tab shows its edit blocks and the diff instead),
 a command opens the **Terminal** - every command of the session, its output,
-exit code and time, a dot while one runs - a page it reads or a search it makes
-opens a **Page** tab (**Open** for the real one), and a plan it writes opens
+exit code and time, a dot while one runs - a page it reads, a search it makes
+or a page it opens in its browser tool (Playwright's `browser_navigate`)
+opens a **Page** tab (what came back - the text, or the browser's snapshot of
+the page - with **Open** for the real one), and a plan it writes opens
 **Plan** with its items ticked as they finish; while the agent works the newest
 of these comes to the front, and a tab you pick yourself stays in front for
 half a minute so the agent cannot pull it from under you. **+** opens the rest:
@@ -1074,14 +1076,23 @@ What the app does on its own:
   by itself, on the same page, the moment the console answers; after sleep the
   app checks again.
 - **Keeps links where they belong.** Console pages open in the window, or in a
-  new tab for ⌘-click and the console's own new-tab links. Every other web
-  link - a pull request, a provider's sign-in page, docs - opens in your
-  default browser, which is also where MCP sign-ins finish. `mailto:` links
-  open your mail app, links to other apps ask first, and a file or script
-  never replaces the console (a file dropped outside the chat composer is
-  ignored). A right-click shows an app's menu, not a browser's: the text and
-  image commands, and for the link under the pointer **Open in New Tab** (a
-  console page) or **Open in Browser** (anything else) with **Copy Link** - no
+  new tab for ⌘-click and the console's own new-tab links. Any other web link
+  you click - a pull request, docs, the **Open** of a Page tab, the page an
+  agent drove on a dev server - opens in the **browser panel** beside the
+  console, the way the Copilot app opens a page beside its chat: a small
+  browser of its own with back, forward, reload, an address you can type in
+  (`localhost:3000` and `127.0.0.1:…` get `http://`, the rest `https://`),
+  **Open in Browser** to hand the page to your default browser, and ✕ to put
+  it away; ⇧⌘B shows or hides it, dragging the divider sizes it, and a
+  console link clicked in it comes back to the console. A ⌘-click, and what
+  a page opens on its own (window.open, a script's redirect) - a provider's
+  or MCP server's sign-in page - still goes to your default browser, which is
+  where those sign-ins finish. `mailto:` links open your mail app, links to
+  other apps ask first, and a file or script never replaces the console (a
+  file dropped outside the chat composer is ignored). A right-click shows an
+  app's menu, not a browser's: the text and image commands, and for the link
+  under the pointer **Open in New Tab** (a console page) or **Open in
+  Browser** (anything else, in your default browser) with **Copy Link** - no
   Open Link, Download Linked File, Back, Forward or Reload, and nothing at all
   on a bare patch of page.
 - **Handles files.** The chat's paperclip opens a file panel, files dropped on
@@ -1093,8 +1104,9 @@ What the app does on its own:
   its data and live stream), For You, Code Delivered, ⌘[ and ⌘] for back and
   forward, and ⌘K / ⌘J for search and Ask, which the page itself answers
   first. ⌘, opens Settings. Edit has the usual text commands and find in page
-  (⌘F, ⌘G, ⇧⌘G, ⌘E). View has reload (⌘R), zoom (⌘+, ⌘-, ⌘0) and Appearance -
-  the console's own light/dark/system switch, which the window follows. File
+  (⌘F, ⌘G, ⇧⌘G, ⌘E). View has reload (⌘R), zoom (⌘+, ⌘-, ⌘0), Appearance -
+  the console's own light/dark/system switch, which the window follows - and
+  **Show/Hide Browser Panel** (⇧⌘B). File
   has new windows and tabs (⌘N, ⌘T), **Open in Browser** (⇧⌘O), **Copy Link to
   This Page** (⇧⌘C) and Print (⌘P). The last page you had open comes back at
   the next launch.
@@ -1134,7 +1146,9 @@ the setup, the hub's output and exits, the link policy, launchd's answers,
 and the connection itself against a fake launchd, port and clock - restart
 windows, a handover, a console that keeps stopping, quitting), a release
 build, and a run of the built app against the mock console that goes to Tasks,
-loses the console in the middle of a reload and has to come back on its own.
+loses the console in the middle of a reload and has to come back on its own,
+then clicks a web link that must open in the browser panel beside the console
+(never the default browser) and puts the panel away.
 
 ## Share PULSE
 

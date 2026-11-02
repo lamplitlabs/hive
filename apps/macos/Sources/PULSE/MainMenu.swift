@@ -156,6 +156,8 @@ enum MainMenu {
         appearance.addItem(item("Match System", #selector(ConsoleWindowController.setConsoleAppearance(_:)), represented: "system"))
         menu.addItem(submenuItem(appearance))
         menu.addItem(.separator())
+        menu.addItem(item("Show Browser Panel", #selector(ConsoleWindowController.toggleBeside(_:)), "b", [.command, .shift]))
+        menu.addItem(.separator())
         menu.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
         return menu
     }

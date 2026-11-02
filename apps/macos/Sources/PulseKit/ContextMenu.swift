@@ -62,7 +62,8 @@ public enum ContextMenu {
         case .newTab: return "Open in New Tab"
         case .browser: return "Open in Browser"
         case .otherApp: return "Open Link"
-        case .here, .redirect, .refuse: return nil
+        // A new-window request is never a click, so .beside does not come here.
+        case .here, .redirect, .refuse, .beside: return nil
         }
     }
 

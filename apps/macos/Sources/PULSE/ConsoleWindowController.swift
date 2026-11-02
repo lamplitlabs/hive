@@ -9,6 +9,14 @@ import os
 final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation,
     WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let webView: ConsoleWebView
+    /// The web page beside the console (BrowserPane), hidden until a link asks for it.
+    let beside: BrowserPane
+    private let split = NSSplitView()
+    /// The panel's width, kept while it is hidden so it comes back as it was.
+    private var besideWidth: CGFloat = 0
+    /// The panel's least width, in force only while it shows (a collapsed
+    /// panel is as wide as nothing).
+    private lazy var besideMinWidth = beside.widthAnchor.constraint(greaterThanOrEqualToConstant: 320)
     private unowned let app: AppDelegate
     private let strip = TitleStrip()
     private let status = StatusView()
@@ -56,6 +64,13 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         configuration.userContentController.addUserScript(PageBridge.userScript)
         webView = ConsoleWebView(frame: .zero, configuration: configuration)
 
+        // The panel is a browser: the console's storage (a sign-in made there
+        // stays made), no bridge, WebKit's own warnings.
+        let besideConfiguration = WKWebViewConfiguration()
+        besideConfiguration.websiteDataStore = app.dataStore
+        besideConfiguration.applicationNameForUserAgent = "PULSE/\(AppIdentity.version)"
+        beside = BrowserPane(configuration: besideConfiguration)
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1320, height: 860),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -69,6 +84,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         )
         setUpWindow(window)
         setUpWebView()
+        setUpBeside()
         layOut(in: window)
 
         stateToken = app.supervisor.observe { [weak self] state in self?.render(state) }
@@ -134,6 +150,25 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
     }
 
+    private func setUpBeside() {
+        beside.isHidden = true
+        if app.ephemeral { Self.setFlag(beside.webView, "_setWindowOcclusionDetectionEnabled:", false) }
+        beside.onConsolePage = { [weak self] url in
+            guard let self else { return }
+            self.log.notice("the panel was sent to a console page; the console shows it")
+            self.webView.load(URLRequest(url: url))
+        }
+        beside.onOtherApp = { [weak self] url, ask in
+            guard let self else { return }
+            self.app.openInOtherApp(url, ask: ask, window: self.window)
+        }
+        beside.onDownload = { [weak self] download in
+            guard let self else { return }
+            self.app.downloads.track(download, from: self)
+        }
+        beside.onClose = { [weak self] in self?.hideBeside() }
+    }
+
     /// Calls a BOOL setter WebKit may or may not have, through its
     /// implementation: key-value coding guesses accessor names and throws on
     /// a miss, and an exception during launch leaves the app half started.
@@ -151,10 +186,19 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func layOut(in window: NSWindow) {
         let content = NSView()
         window.contentView = content
-        for view in [strip, webView, status, findBar, toast] as [NSView] {
+        // The console, and beside it the browser panel while one is open.
+        split.isVertical = true
+        split.dividerStyle = .thin
+        split.addArrangedSubview(webView)
+        split.addArrangedSubview(beside)
+        // The console gives way when the window is resized; the panel keeps its width.
+        split.setHoldingPriority(NSLayoutConstraint.Priority(rawValue: 260), forSubviewAt: 1)
+        for view in [strip, split, status, findBar, toast] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
+        let consoleWidth = webView.widthAnchor.constraint(greaterThanOrEqualToConstant: 320)
+        consoleWidth.priority = .defaultHigh
         // Below the title bar, or the whole window in full screen.
         let top = (window.contentLayoutGuide as? NSLayoutGuide)?.topAnchor ?? content.topAnchor
         NSLayoutConstraint.activate([
@@ -163,10 +207,11 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
             strip.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             strip.bottomAnchor.constraint(equalTo: top),
 
-            webView.topAnchor.constraint(equalTo: top),
-            webView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            webView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            split.topAnchor.constraint(equalTo: top),
+            split.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            split.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            consoleWidth,
 
             status.topAnchor.constraint(equalTo: top),
             status.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -189,6 +234,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         case .ready(let url):
             let moved = policy.map { $0.console != url } ?? false
             policy = LinkPolicy(console: url)
+            beside.policy = policy
             if !hasPage || loadFailed || moved {
                 if !covering { showStatus(.opening) }
                 loadWanted()
@@ -295,9 +341,15 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
             decisionHandler(.cancel)
             return
         }
+        // A plain click on a link: no modifier, no middle button, no script.
+        // It is what opens a web page beside the console; a ⌘-click or a
+        // window.open goes to the default browser as before.
+        let plainClick = action.navigationType == .linkActivated
+            && action.modifierFlags.isDisjoint(with: [.command, .shift, .option, .control])
+            && action.buttonNumber != Self.middleButton
         // Subframes hold the console's own files (the chat's artifact viewer:
         // sandboxed HTML, PDF). They never load another site inside the
-        // console; a link clicked in one opens in the browser instead.
+        // console; a link clicked in one opens beside it, or in the browser.
         if let frame = action.targetFrame, !frame.isMainFrame {
             let scheme = url.scheme?.lowercased() ?? ""
             if policy.isConsole(url) || scheme == "about" || scheme == "blob" || scheme == "data" {
@@ -306,7 +358,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
             }
             decisionHandler(.cancel)
             if action.navigationType == .linkActivated, scheme == "http" || scheme == "https" {
-                NSWorkspace.shared.open(url)
+                if plainClick { showBeside(url) } else { NSWorkspace.shared.open(url) }
             }
             return
         }
@@ -324,7 +376,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         // buttonNumber is WebKit's own mask: 1 left, 2 right, 4 middle.
         let asksForNew = action.targetFrame == nil || (action.navigationType == .linkActivated
             && (action.modifierFlags.contains(.command) || action.buttonNumber == Self.middleButton))
-        switch policy.target(for: url, newWindow: asksForNew) {
+        switch policy.target(for: url, newWindow: asksForNew, click: plainClick) {
         case .here:
             decisionHandler(.allow)
         case .redirect(let canonical):
@@ -335,6 +387,9 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
             // ⌘-click opens behind (⇧ brings it forward), as in Safari.
             let behind = action.modifierFlags.contains(.command) && !action.modifierFlags.contains(.shift)
             app.openTab(page, from: self, background: behind)
+        case .beside(let page):
+            decisionHandler(.cancel)
+            showBeside(page)
         case .browser(let page):
             decisionHandler(.cancel)
             NSWorkspace.shared.open(page)
@@ -479,6 +534,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
         switch policy.target(for: url, newWindow: true) {
         case .newTab(let page): app.openTab(page, from: self, background: false)
+        case .beside(let page): showBeside(page)
         case .browser(let page): NSWorkspace.shared.open(page)
         case .otherApp(let link, let ask): app.openInOtherApp(link, ask: ask, window: window)
         case .here, .redirect, .refuse: break
@@ -648,6 +704,9 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
             return showing
         case #selector(openInBrowser(_:)), #selector(copyPageLink(_:)):
             return policy != nil
+        case #selector(toggleBeside(_:)):
+            item.title = beside.isHidden ? "Show Browser Panel" : "Hide Browser Panel"
+            return true
         default:
             return true
         }
@@ -791,6 +850,50 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
     }
 
+    // MARK: - The browser panel
+
+    /// Shows a web page beside the console, in the panel.
+    func showBeside(_ url: URL) {
+        log.notice("beside \(url.absoluteString, privacy: .public)")
+        beside.show(url)
+        revealBeside()
+        window?.makeFirstResponder(beside.webView)
+    }
+
+    /// View menu: the panel with nothing in it yet, or away.
+    @objc func toggleBeside(_ sender: Any?) {
+        if beside.isHidden {
+            revealBeside()
+            beside.focusAddress()
+        } else {
+            hideBeside()
+        }
+    }
+
+    private func revealBeside() {
+        guard beside.isHidden else { return }
+        beside.isHidden = false
+        besideMinWidth.isActive = true
+        split.layoutSubtreeIfNeeded()
+        // Two fifths of the window, within reason, the first time; the width
+        // it had when it was put away after that, as far as the console allows.
+        let width = split.bounds.width
+        let pane = besideWidth > 0
+            ? min(max(besideWidth, 320), max(width - 320 - split.dividerThickness, 320))
+            : min(max(width * 0.42, 360), 720)
+        split.setPosition(width - pane - split.dividerThickness, ofDividerAt: 0)
+    }
+
+    func hideBeside() {
+        guard !beside.isHidden else { return }
+        log.notice("beside away")
+        besideWidth = beside.bounds.width
+        beside.isHidden = true
+        besideMinWidth.isActive = false
+        beside.clear()
+        window?.makeFirstResponder(webView)
+    }
+
     override func newWindowForTab(_ sender: Any?) {
         app.openTab(policy?.console ?? PulseSetup.consoleURL(port: PulseSetup.servicePort), from: self, background: false)
     }
@@ -799,6 +902,8 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
     func unloadForQuit() {
         webView.stopLoading()
         webView.loadHTMLString("", baseURL: nil)
+        beside.webView.stopLoading()
+        beside.webView.loadHTMLString("", baseURL: nil)
     }
 
     func showToast(_ text: String, button: String?, action: (() -> Void)?) {
@@ -821,15 +926,24 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
                 completion(nil)
                 return
             }
-            let image = NSImage(size: frameView.bounds.size)
-            image.lockFocus()
-            Self.draw(frameView, in: frameView.bounds)
-            if self.hasPage, let page { page.draw(in: self.webView.convert(self.webView.bounds, to: nil)) }
-            for view in [self.status, self.findBar, self.toast] as [NSView] where !view.isHidden {
-                Self.draw(view, in: view.convert(view.bounds, to: nil))
+            let compose: @MainActor (NSImage?) -> Void = { besidePage in
+                let image = NSImage(size: frameView.bounds.size)
+                image.lockFocus()
+                Self.draw(frameView, in: frameView.bounds)
+                if self.hasPage, let page { page.draw(in: self.webView.convert(self.webView.bounds, to: nil)) }
+                if let besidePage { besidePage.draw(in: self.beside.webView.convert(self.beside.webView.bounds, to: nil)) }
+                for view in [self.status, self.findBar, self.toast] as [NSView] where !view.isHidden {
+                    Self.draw(view, in: view.convert(view.bounds, to: nil))
+                }
+                image.unlockFocus()
+                completion(image)
             }
-            image.unlockFocus()
-            completion(image)
+            // The panel's page is web content too: its own snapshot, when it shows.
+            if self.beside.isHidden {
+                compose(nil)
+            } else {
+                self.beside.webView.takeSnapshot(with: configuration) { besidePage, _ in compose(besidePage) }
+            }
         }
     }
 
@@ -849,6 +963,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.configuration.userContentController.removeAllScriptMessageHandlers()
+        beside.tearDown()
         app.windowClosed(self)
     }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addTabs, afterClose, autoOpen, changedNewLines, editBlocks, extractLinks, fileName, latestPlanStep, linkLabel, makeTab, pageLabel, pageText, readPaths, stepPage, stepPath, tabId, terminalEntries, touchedFiles, visitedPages } from "./canvas.ts";
+import { addTabs, afterClose, autoOpen, browserPage, changedNewLines, editBlocks, extractLinks, fileName, latestPlanStep, linkLabel, makeTab, pageLabel, pageText, readPaths, stepPage, stepPath, tabId, terminalEntries, touchedFiles, visitedPages } from "./canvas.ts";
 
 let n = 0;
 const step = (kind, content, over = {}) => ({ n: ++n, at: "2026-10-27T10:0" + (n % 10) + ":00Z", kind, content, command: "", exit_code: null, duration_ms: 0, prompt_tokens: 0, completion_tokens: 0, model: "", ...over });
@@ -21,6 +21,40 @@ test("readPaths and stepPage strip ranges and keep the first line", () => {
   assert.equal(stepPage(step("fetch", "https://docs.rs/reqwest/latest/")), "https://docs.rs/reqwest/latest/");
   assert.equal(stepPage(step("search", "retry after header")), "retry after header");
   assert.equal(stepPage(step("command", "curl x")), "");
+});
+
+const navigate = (url, over = {}) => step("mcp", 'mcp__playwright__browser_navigate {"url":' + JSON.stringify(url) + "}", { command: "mcp__playwright__browser_navigate", ...over });
+
+test("a browser tool's navigation is a page; its other calls are not", () => {
+  reset();
+  assert.equal(stepPage(navigate("http://127.0.0.1:3000/posts/x")), "http://127.0.0.1:3000/posts/x");
+  assert.equal(browserPage(navigate("https://docs.rs/reqwest/")), "https://docs.rs/reqwest/");
+  // Another browser server's navigate counts; its clicks and screenshots do not.
+  assert.equal(stepPage(step("mcp", 'mcp__chrome__browser_navigate {"url":"https://x.org/"}', { command: "mcp__chrome__browser_navigate" })), "https://x.org/");
+  assert.equal(stepPage(step("mcp", 'mcp__playwright__browser_click {"ref":"e12"}', { command: "mcp__playwright__browser_click" })), "");
+  assert.equal(stepPage(step("mcp", 'mcp__playwright__browser_take_screenshot {"filename":"check.png"}', { command: "mcp__playwright__browser_take_screenshot" })), "");
+  // A url that is not a web page, or arguments cut short before it, open nothing.
+  assert.equal(stepPage(navigate("file:///etc/passwd")), "");
+  assert.equal(stepPage(step("mcp", 'mcp__playwright__browser_navigate {"ur', { command: "mcp__playwright__browser_navigate" })), "");
+  // Escapes in the url come through as the agent meant them.
+  assert.equal(stepPage(step("mcp", 'mcp__playwright__browser_navigate {"url":"https://x.org/a\\u0026b=1"}', { command: "mcp__playwright__browser_navigate" })), "https://x.org/a&b=1");
+});
+
+test("a browser tool's page opens as a tab with its snapshot behind it", () => {
+  reset();
+  const steps = [step("command", "npm run dev &", { command: "npm run dev &" }), step("observation", "started"), navigate("http://127.0.0.1:3000/"), step("observation", "- Page URL: http://127.0.0.1:3000/\n- Page Title: Blog\n- Page Snapshot:\n```yaml\n- heading \"Hello\"\n```", { exit_code: 0 })];
+  const opened = autoOpen(steps, 0);
+  assert.deepEqual(
+    opened.open.map((t) => t.id),
+    ["terminal", "page:http://127.0.0.1:3000/"],
+  );
+  assert.equal(opened.front, "page:http://127.0.0.1:3000/");
+  assert.equal(makeTab("page", "http://127.0.0.1:3000/").label, "127.0.0.1");
+  assert.deepEqual(visitedPages(steps), ["http://127.0.0.1:3000/"]);
+  assert.equal(pageText(steps, "http://127.0.0.1:3000/").text, steps[3].content);
+  // A navigation that failed still shows what came back.
+  const broken = [navigate("http://localhost:3123/"), step("observation", "mcp__playwright__browser_navigate: npx closed its stdin: Broken pipe", { exit_code: 1 })];
+  assert.equal(pageText(broken, "http://localhost:3123/").exit_code, 1);
 });
 
 test("labels: file names, page hosts, search queries", () => {
