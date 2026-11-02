@@ -104,6 +104,16 @@ impl Schedule {
     pub fn source(&self) -> String {
         format!("{SOURCE_PREFIX}{}", self.id)
     }
+    /// The `at` time of day that anchors a cadence of whole days, if any. A
+    /// stored value that does not parse counts as none.
+    pub fn at(&self) -> Option<NaiveTime> {
+        parse_at(&self.at_time).ok().flatten()
+    }
+    /// The time after this run: one cadence on, kept on the `at` time of
+    /// day when there is one (`advance_at`).
+    pub fn next_after(&self, now: &str) -> Result<String> {
+        advance_at(&self.next_at, i64::from(self.every_minutes), self.at(), now)
+    }
     /// A check or a watch: the daemon runs its script instead of queueing a
     /// job each time.
     pub fn is_script(&self) -> bool {
@@ -336,6 +346,49 @@ pub fn advance(next_at: &str, every_minutes: i64, now: &str) -> Result<String> {
         next += Duration::minutes(behind * every_minutes.max(1));
     }
     Ok(iso(next))
+}
+
+/// `advance` for a schedule that may carry an `at` time of day. Without one,
+/// or on a cadence that is not whole days, it is plain `advance`. With one,
+/// the next time keeps that time of day even when `next_at` lost it - a
+/// manual `pulse schedule run` makes a schedule due at the moment it was
+/// run, and a cadence stepped from there would fire at that moment for
+/// ever:
+///
+/// - daily: the next `at` strictly after `now`, as `first_due` picks it (a
+///   manual run is one run more; the 05:00 run keeps its place);
+/// - every N > 1 days: the first `at` at least one cadence on from
+///   `next_at` (the cadence's weekday is not kept anywhere once a manual run
+///   replaced `next_at`, so the next run is a whole cadence away, never
+///   sooner). On time, `next_at` already sits on `at` and keeps its weekday.
+///
+/// Missed ticks still collapse into one run, as `advance` does.
+pub fn advance_at(
+    next_at: &str,
+    every_minutes: i64,
+    at: Option<NaiveTime>,
+    now: &str,
+) -> Result<String> {
+    let stepped = advance(next_at, every_minutes, now)?;
+    let Some(at) = at else {
+        return Ok(stepped);
+    };
+    if every_minutes <= 0 || every_minutes % MINUTES_PER_DAY != 0 {
+        return Ok(stepped);
+    }
+    let from = if every_minutes == MINUTES_PER_DAY {
+        parse_iso(now)?
+    } else {
+        // `stepped` is past `now`; one second back lets an `at` that falls
+        // exactly on it count as "at least one cadence on".
+        parse_iso(&stepped)? - Duration::seconds(1)
+    };
+    let same_day = from.date_naive().and_time(at).and_utc();
+    Ok(iso(if same_day > from {
+        same_day
+    } else {
+        same_day + Duration::days(1)
+    }))
 }
 
 fn setting_int(s: &pulse_store::Store, name: &str, default: i64) -> i64 {
@@ -1280,6 +1333,8 @@ pub fn end(s: &pulse_store::Store, id: &str, note: &str, author: &str) -> Result
 }
 
 /// Makes the schedule due now; the daemon queues its job on the next tick.
+/// A schedule with an `at` time of day comes back to it after this run
+/// (`advance_at`).
 pub fn run_now(s: &pulse_store::Store, id: &str, author: &str) -> Result<Schedule> {
     let sched = get(s, id)?;
     owned_by(&sched, author)?;
@@ -1581,7 +1636,7 @@ pub fn record_script_run(
 ) -> Result<Recorded> {
     let runs = sched.runs + 1;
     let ended = sched.max_runs > 0 && runs >= sched.max_runs;
-    let next_at = advance(&sched.next_at, i64::from(sched.every_minutes), now)?;
+    let next_at = sched.next_after(now)?;
     let note = if ended {
         format!("ended after {runs} runs")
     } else {
@@ -1747,7 +1802,7 @@ pub fn fire_due(
         )?;
         let runs = if queued { run } else { sched.runs };
         let ended = sched.max_runs > 0 && runs >= sched.max_runs;
-        let next_at = advance(&sched.next_at, i64::from(sched.every_minutes), now)?;
+        let next_at = sched.next_after(now)?;
         let note = if ended {
             format!("ended after {runs} runs")
         } else {

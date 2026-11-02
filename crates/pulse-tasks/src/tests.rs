@@ -1749,6 +1749,197 @@ fn schedule_cadence_parsing_and_arithmetic() {
     );
 }
 
+fn hm(h: u32, m: u32) -> Option<chrono::NaiveTime> {
+    chrono::NaiveTime::from_hms_opt(h, m, 0)
+}
+
+#[test]
+fn advance_at_brings_a_daily_schedule_run_by_hand_back_to_its_at_time() {
+    // `pulse schedule run` at 14:18 made the 05:00 schedule due then; the
+    // run fires a few seconds later and the next one is tomorrow's 05:00,
+    // not 14:18 for ever.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-01T14:18:00Z",
+            1440,
+            hm(5, 0),
+            "2026-11-01T14:18:30Z"
+        )
+        .unwrap(),
+        "2026-11-02T05:00:00Z"
+    );
+    // Run by hand before the day's 05:00: that 05:00 still runs.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-01T03:10:00Z",
+            1440,
+            hm(5, 0),
+            "2026-11-01T03:10:05Z"
+        )
+        .unwrap(),
+        "2026-11-01T05:00:00Z"
+    );
+    // On time, and a tick a few minutes late: the next day's 05:00.
+    for now in ["2026-11-02T05:00:00Z", "2026-11-02T05:07:00Z"] {
+        assert_eq!(
+            schedules::advance_at("2026-11-02T05:00:00Z", 1440, hm(5, 0), now).unwrap(),
+            "2026-11-03T05:00:00Z",
+            "{now}"
+        );
+    }
+}
+
+#[test]
+fn advance_at_puts_a_weekly_schedule_run_by_hand_on_the_first_at_time_a_full_week_after_the_run() {
+    // A manual run replaces next_at, so the weekday the schedule was set on
+    // is not kept anywhere: the next run is the first 05:30 at least one
+    // cadence after the manual one. Sunday 2026-11-01 14:18 -> a week on is
+    // Sunday 14:18, the first 05:30 from there is Monday the 9th.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-01T14:18:00Z",
+            10080,
+            hm(5, 30),
+            "2026-11-01T14:18:30Z"
+        )
+        .unwrap(),
+        "2026-11-09T05:30:00Z"
+    );
+    // Run by hand at 03:00: a week on is 03:00, its day's 05:30 follows.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-01T03:00:00Z",
+            10080,
+            hm(5, 30),
+            "2026-11-01T03:00:10Z"
+        )
+        .unwrap(),
+        "2026-11-08T05:30:00Z"
+    );
+    // On time it keeps its weekday: Monday 05:30 -> the next Monday 05:30.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-02T05:30:00Z",
+            10080,
+            hm(5, 30),
+            "2026-11-02T05:30:20Z"
+        )
+        .unwrap(),
+        "2026-11-09T05:30:00Z"
+    );
+    // A daemon down for ten days: one run, still on Monday's 05:30.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-02T05:30:00Z",
+            10080,
+            hm(5, 30),
+            "2026-11-12T10:00:00Z"
+        )
+        .unwrap(),
+        "2026-11-16T05:30:00Z"
+    );
+}
+
+#[test]
+fn advance_at_without_an_at_time_is_plain_advance() {
+    for (next_at, every, now) in [
+        ("2026-09-07T03:00:00Z", 360, "2026-09-07T03:04:00Z"),
+        ("2026-09-07T03:00:00Z", 360, "2026-09-08T10:00:00Z"),
+        ("2026-11-01T14:18:00Z", 1440, "2026-11-01T14:18:30Z"),
+        ("2026-11-01T14:18:00Z", 10080, "2026-11-05T09:00:00Z"),
+    ] {
+        assert_eq!(
+            schedules::advance_at(next_at, every, None, now).unwrap(),
+            schedules::advance(next_at, every, now).unwrap(),
+            "{next_at} every {every} at {now}"
+        );
+    }
+    // A cadence that is not whole days has no time of day to keep (add and
+    // the manifest refuse the pair; a stored one is ignored).
+    assert_eq!(
+        schedules::advance_at(
+            "2026-09-07T03:00:00Z",
+            360,
+            hm(5, 0),
+            "2026-09-07T03:04:00Z"
+        )
+        .unwrap(),
+        "2026-09-07T09:00:00Z"
+    );
+}
+
+#[test]
+fn advance_at_collapses_missed_days_into_one_run_at_the_at_time() {
+    // Due Monday 05:00, the daemon is back on Thursday at 10:00: one run
+    // now, the next at Friday's 05:00.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-02T05:00:00Z",
+            1440,
+            hm(5, 0),
+            "2026-11-05T10:00:00Z"
+        )
+        .unwrap(),
+        "2026-11-06T05:00:00Z"
+    );
+    // Every two days, due on the 2nd, back on the 5th: the 6th keeps the
+    // two-day step from the 2nd.
+    assert_eq!(
+        schedules::advance_at(
+            "2026-11-02T05:00:00Z",
+            2880,
+            hm(5, 0),
+            "2026-11-05T10:00:00Z"
+        )
+        .unwrap(),
+        "2026-11-06T05:00:00Z"
+    );
+}
+
+#[test]
+fn a_daily_at_schedule_keeps_its_at_time_after_a_manual_run_and_missed_days() {
+    let s = new_store();
+    let sc = schedules::add(
+        &s,
+        schedules::ScheduleInput {
+            at: "05:00".into(),
+            ..sched_input("1d")
+        },
+    )
+    .unwrap();
+    assert_eq!(sc.next_at, "2026-09-07T05:00:00Z");
+    let ran = schedules::run_now(&s, &sc.id, "demo-lead").unwrap();
+    assert_eq!(ran.next_at, "2026-09-06T21:00:00Z");
+    let demo = vec!["demo".to_string()];
+    let fired = schedules::fire_due(&s, "2026-09-06T21:00:30Z", &demo, "daemon").unwrap();
+    assert_eq!(fired.len(), 1);
+    assert!(fired[0].queued);
+    assert_eq!(
+        fired[0].schedule.next_at, "2026-09-07T05:00:00Z",
+        "the manual run did not move the 05:00 run"
+    );
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            params!["2026-09-06T22:00:00Z", fired[0].job],
+        )
+        .unwrap();
+
+    // The daemon was down from the 7th to the 10th: one job, then 05:00.
+    let fired = schedules::fire_due(&s, "2026-09-10T10:00:00Z", &demo, "daemon").unwrap();
+    assert_eq!(fired.len(), 1, "missed days queue one run");
+    assert!(fired[0].queued);
+    assert_eq!(fired[0].schedule.runs, 2);
+    assert_eq!(fired[0].schedule.next_at, "2026-09-11T05:00:00Z");
+    assert!(
+        schedules::fire_due(&s, "2026-09-10T10:00:30Z", &demo, "daemon")
+            .unwrap()
+            .is_empty(),
+        "fired twice for the missed days"
+    );
+}
+
 #[test]
 fn schedule_add_validates_and_lists() {
     let s = new_store();
@@ -2666,6 +2857,31 @@ fn schedule_script_runs_are_recorded() {
     assert_eq!(rec.schedule.last_output.len(), schedules::OUTPUT_TAIL);
     assert!(rec.schedule.last_output.ends_with("END"));
     assert_eq!(rec.schedule.state, "ok");
+}
+
+#[test]
+fn a_weekly_at_check_run_by_hand_comes_back_to_its_at_time() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    script_repo(&s);
+    let mut input = script_input("check", ".pulse/automations/check.sh");
+    input.every = "1w".into();
+    input.at = "05:30".into();
+    let sc = schedules::add(&s, input).unwrap();
+    assert_eq!(sc.next_at, "2026-09-07T05:30:00Z");
+    let ran = schedules::run_now(&s, &sc.id, "demo-lead").unwrap();
+    assert_eq!(ran.next_at, "2026-09-06T21:00:00Z");
+    let run = schedules::ScriptRun {
+        rc: Some(0),
+        verdict: schedules::verdict(&ran, 0, ""),
+        ..Default::default()
+    };
+    let rec =
+        schedules::record_script_run(&s, &ran, "2026-09-06T21:00:40Z", "daemon", &run).unwrap();
+    assert_eq!(
+        rec.schedule.next_at, "2026-09-14T05:30:00Z",
+        "the first 05:30 a full week after the manual run, not 21:00"
+    );
 }
 
 /// `history` lists what happened to one schedule newest first - each run

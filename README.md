@@ -1341,7 +1341,10 @@ worker takes the job is the scheduled agent for that run; the brief carries a
 footer naming the schedule, the run number and who set it. One open job per
 schedule: while the previous run's job is still queued or leased, the tick is
 skipped (event `schedule.skipped`) and the schedule still moves on; ticks a
-stopped daemon missed collapse into one. Scheduled jobs are subject to
+stopped daemon missed collapse into one. A schedule with `--at` keeps its time
+of day through a late tick or a `pulse schedule run`: a daily one comes back
+to the next `at` after the run, a longer cadence to the first `at` a whole
+cadence after it. Scheduled jobs are subject to
 `jobs_per_day` and the other runner caps like every job. `--run-as NAME`
 makes every job the schedule queues run as that custom agent (**Custom
 agents** under The harness; `pulse agents list --project P` names the ones
@@ -1367,7 +1370,7 @@ pulse schedule list --project my-app        # ID, status, cadence, next time, ru
 pulse schedule show SCHED-001               # the schedule, its brief and the jobs it queued
 pulse schedule pause SCHED-001 --note "release week"
 pulse schedule resume SCHED-001             # a time missed while paused fires once on the next tick
-pulse schedule run SCHED-001                # due now; the daemon queues its job on the next tick
+pulse schedule run SCHED-001                # due now; the daemon queues its job on the next tick; --at keeps its time
 pulse schedule end SCHED-001 --note "done"  # final; the row stays for its history
 ```
 
