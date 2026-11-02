@@ -431,6 +431,17 @@ fn print_schedule(c: &mut Context, sc: &schedules::Schedule) -> Result<()> {
                 sc.kind, sc.script, sc.job_kind, sc.tier, sc.priority, sc.created_by, sc.created_at
             ),
         )?;
+        if sc.script_outside() {
+            printf(
+                c,
+                format_args!(
+                    "script outside .pulse/: it keeps running from there; the place for it is {}\n",
+                    schedules::script_home(
+                        crate::manifest::origin_name(&sc.origin).unwrap_or(&sc.id.to_lowercase())
+                    )
+                ),
+            )?;
+        }
         if sc.state.is_empty() {
             c.println("state: not run yet")?;
         } else {

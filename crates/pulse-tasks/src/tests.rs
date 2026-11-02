@@ -2188,13 +2188,21 @@ fn schedule_list_rejects_unknown_project() {
     assert!(out.string().contains("No schedules"), "{}", out.string());
 }
 
-/// A git repo for project `demo` whose `main` holds `scripts/check.sh` and
-/// `scripts/watch.sh`, with the project row pointed at it.
+/// A git repo for project `demo` whose `main` holds `.pulse/automations/check.sh` and
+/// `.pulse/automations/watch.sh`, with the project row pointed at it.
 fn script_repo(s: &pulse_store::Store) -> String {
     let repo = Path::new(&s.home).join("demo-repo");
-    std::fs::create_dir_all(repo.join("scripts")).unwrap();
-    std::fs::write(repo.join("scripts/check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::write(repo.join("scripts/watch.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    std::fs::create_dir_all(repo.join(".pulse/automations")).unwrap();
+    std::fs::write(
+        repo.join(".pulse/automations/check.sh"),
+        "#!/bin/sh\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join(".pulse/automations/watch.sh"),
+        "#!/bin/sh\necho hi\n",
+    )
+    .unwrap();
     let dir = repo.display().to_string();
     let git = |args: &[&str]| {
         let mut full = vec!["-C", dir.as_str()];
@@ -2207,7 +2215,7 @@ fn script_repo(s: &pulse_store::Store) -> String {
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "scripts"]);
     // One file only in the working tree, never committed: not on main.
-    std::fs::write(repo.join("scripts/draft.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(repo.join(".pulse/automations/draft.sh"), "#!/bin/sh\n").unwrap();
     s.conn()
         .unwrap()
         .execute(
@@ -2237,8 +2245,11 @@ fn script_input(kind: &str, script: &str) -> schedules::ScheduleInput {
 #[test]
 fn schedule_script_path_validation() {
     for (path, want) in [
-        ("scripts/check.sh", "scripts/check.sh"),
-        ("./scripts/check.sh", "scripts/check.sh"),
+        (".pulse/automations/check.sh", ".pulse/automations/check.sh"),
+        (
+            "./.pulse/automations/check.sh",
+            ".pulse/automations/check.sh",
+        ),
         ("check.sh", "check.sh"),
         (" scripts/a b.sh ", "scripts/a b.sh"),
     ] {
@@ -2270,7 +2281,7 @@ fn schedule_script_kinds_need_a_script_on_the_default_branch() {
     let repo = script_repo(&s);
     // A job kind takes no script and no job kind.
     let mut input = sched_input("1d");
-    input.script = "scripts/check.sh".into();
+    input.script = ".pulse/automations/check.sh".into();
     let err = format!("{}", schedules::add(&s, input).unwrap_err());
     assert!(err.contains("--script is for a check or a watch"), "{err}");
     let mut input = sched_input("1d");
@@ -2294,25 +2305,39 @@ fn schedule_script_kinds_need_a_script_on_the_default_branch() {
     // On the default branch, not merely in the working tree.
     let err = format!(
         "{}",
-        schedules::add(&s, script_input("check", "scripts/draft.sh")).unwrap_err()
+        schedules::add(&s, script_input("check", ".pulse/automations/draft.sh")).unwrap_err()
     );
     assert!(
-        err.contains("No file \"scripts/draft.sh\" on main of demo"),
+        err.contains("No file \".pulse/automations/draft.sh\" on main of demo"),
         "{err}"
     );
     let err = format!(
         "{}",
-        schedules::add(&s, script_input("check", "scripts")).unwrap_err()
+        schedules::add(&s, script_input("check", ".pulse/automations")).unwrap_err()
     );
-    assert!(err.contains("No file \"scripts\" on main"), "{err}");
+    assert!(
+        err.contains("No file \".pulse/automations\" on main"),
+        "{err}"
+    );
+    // A new script lives under .pulse/; one set before the rule stays
+    // where it is until the script changes.
+    let err = format!(
+        "{}",
+        schedules::add(&s, script_input("check", "scripts/check.sh")).unwrap_err()
+    );
+    assert!(
+        err.contains("The script \"scripts/check.sh\" is outside .pulse/"),
+        "{err}"
+    );
+    assert!(err.contains(".pulse/automations/<name>.sh"), "{err}");
     // The job kind of a script is task or improve.
-    let mut input = script_input("check", "scripts/check.sh");
+    let mut input = script_input("check", ".pulse/automations/check.sh");
     input.job_kind = "clean".into();
     let err = format!("{}", schedules::add(&s, input).unwrap_err());
     assert!(err.contains("A check cannot queue \"clean\" jobs"), "{err}");
     // Brief optional; job_kind defaults to task.
     let (sc, warning) =
-        schedules::add_checked(&s, script_input("check", "./scripts/check.sh")).unwrap();
+        schedules::add_checked(&s, script_input("check", "./.pulse/automations/check.sh")).unwrap();
     assert_eq!(warning, "");
     assert_eq!(
         (
@@ -2323,10 +2348,10 @@ fn schedule_script_kinds_need_a_script_on_the_default_branch() {
             sc.last_rc,
             sc.fails
         ),
-        ("check", "scripts/check.sh", "task", "", None, 0)
+        ("check", ".pulse/automations/check.sh", "task", "", None, 0)
     );
     assert!(sc.is_script());
-    let mut input = script_input("watch", "scripts/watch.sh");
+    let mut input = script_input("watch", ".pulse/automations/watch.sh");
     input.job_kind = "improve".into();
     input.brief = "Triage the issues it lists.".into();
     let sc = schedules::add(&s, input).unwrap();
@@ -2336,7 +2361,7 @@ fn schedule_script_kinds_need_a_script_on_the_default_branch() {
     );
     let added = events(&s, "schedule.added");
     assert_eq!(added.len(), 2);
-    assert_eq!(detail(&added[1])["script"], "scripts/watch.sh");
+    assert_eq!(detail(&added[1])["script"], ".pulse/automations/watch.sh");
     assert_eq!(detail(&added[1])["job_kind"], "improve");
     // The job kinds record their own kind as the job kind.
     let sc = schedules::add(&s, sched_input("1d")).unwrap();
@@ -2350,14 +2375,14 @@ fn schedule_script_kinds_need_a_script_on_the_default_branch() {
         )
         .unwrap();
     let (sc, warning) =
-        schedules::add_checked(&s, script_input("check", "scripts/nowhere.sh")).unwrap();
-    assert_eq!(sc.script, "scripts/nowhere.sh");
+        schedules::add_checked(&s, script_input("check", ".pulse/automations/nowhere.sh")).unwrap();
+    assert_eq!(sc.script, ".pulse/automations/nowhere.sh");
     assert!(
-        warning.contains("could not look for scripts/nowhere.sh on main"),
+        warning.contains("could not look for .pulse/automations/nowhere.sh on main"),
         "{warning}"
     );
     // The commons has no repo to run a script in.
-    let mut input = script_input("check", "scripts/check.sh");
+    let mut input = script_input("check", ".pulse/automations/check.sh");
     input.project = pulse_store::COMMONS_SLUG.into();
     let err = format!("{}", schedules::add(&s, input).unwrap_err());
     assert!(err.contains("needs a repo"), "{err}");
@@ -2368,7 +2393,7 @@ fn schedule_scripts_are_not_fired_as_jobs() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
     script_repo(&s);
-    let check = schedules::add(&s, script_input("check", "scripts/check.sh")).unwrap();
+    let check = schedules::add(&s, script_input("check", ".pulse/automations/check.sh")).unwrap();
     let job = schedules::add(&s, sched_input("1d")).unwrap();
     let later = "2026-09-08T10:00:00Z";
     let fired = schedules::fire_due(&s, later, &[], "daemon").unwrap();
@@ -2389,7 +2414,7 @@ fn schedule_scripts_are_not_fired_as_jobs() {
         "not due yet"
     );
     // The longest overdue first.
-    let watch = schedules::add(&s, script_input("watch", "scripts/watch.sh")).unwrap();
+    let watch = schedules::add(&s, script_input("watch", ".pulse/automations/watch.sh")).unwrap();
     s.conn()
         .unwrap()
         .execute(
@@ -2412,7 +2437,7 @@ fn schedule_verdicts_and_briefs() {
         title: "Store tests".into(),
         kind: "check".into(),
         brief: "Keep the store green.".into(),
-        script: "scripts/check.sh".into(),
+        script: ".pulse/automations/check.sh".into(),
         every_minutes: 1440,
         created_by: "demo-lead".into(),
         ..Default::default()
@@ -2446,7 +2471,7 @@ fn schedule_verdicts_and_briefs() {
     );
     let watch = schedules::Schedule {
         kind: "watch".into(),
-        script: "scripts/watch.sh".into(),
+        script: ".pulse/automations/watch.sh".into(),
         brief: String::new(),
         ..sched.clone()
     };
@@ -2487,9 +2512,9 @@ fn schedule_verdicts_and_briefs() {
         &tree,
         "test store::x ... FAILED\n",
     );
-    assert!(brief.starts_with("Keep the store green.\n\nThe check `scripts/check.sh` failed (exit 1) at 2026-09-07T09:00:00Z on main@0123456789ab. Output tail:\n\n    test store::x ... FAILED\n\nMake it pass on the default branch. If the check itself is wrong, fix the script, or end the schedule with `pulse schedule end SCHED-007 --note WHY` and say why."), "{brief}");
+    assert!(brief.starts_with("Keep the store green.\n\nThe check `.pulse/automations/check.sh` failed (exit 1) at 2026-09-07T09:00:00Z on main@0123456789ab. Output tail:\n\n    test store::x ... FAILED\n\nMake it pass on the default branch. If the check itself is wrong, fix the script, or end the schedule with `pulse schedule end SCHED-007 --note WHY` and say why."), "{brief}");
     assert!(
-        brief.contains("run 3 of schedule SCHED-007 (a check of `scripts/check.sh`, every 1d), set by demo-lead")
+        brief.contains("run 3 of schedule SCHED-007 (a check of `.pulse/automations/check.sh`, every 1d), set by demo-lead")
             && brief.contains("pulse schedule log SCHED-007"),
         "{brief}"
     );
@@ -2506,23 +2531,23 @@ fn schedule_verdicts_and_briefs() {
         "#12 Crash on start\n#13 Typo\n",
     );
     assert!(
-        brief.starts_with("The watcher `scripts/watch.sh` reported at 2026-09-07T09:00:00Z:\n\n    #12 Crash on start\n    #13 Typo\n\nHandle what it reports; when done, the next run of the watcher will see your changes."),
+        brief.starts_with("The watcher `.pulse/automations/watch.sh` reported at 2026-09-07T09:00:00Z:\n\n    #12 Crash on start\n    #13 Typo\n\nHandle what it reports; when done, the next run of the watcher will see your changes."),
         "{brief}"
     );
     let brief = schedules::watch_fix_brief(&watch, 4, 2, 3, "t", &tree, "gh: not found");
     assert!(
-        brief.contains("The watcher `scripts/watch.sh` itself is broken: it failed (exit 2) 3 runs in a row, last at t on main@0123456789ab.")
+        brief.contains("The watcher `.pulse/automations/watch.sh` itself is broken: it failed (exit 2) 3 runs in a row, last at t on main@0123456789ab.")
             && brief.contains("    gh: not found")
             && brief.contains("pulse schedule end SCHED-007 --note WHY"),
         "{brief}"
     );
     assert_eq!(
         schedules::script_job_title(&sched, "red"),
-        "Make check `scripts/check.sh` pass: Store tests"
+        "Make check `.pulse/automations/check.sh` pass: Store tests"
     );
     assert_eq!(
         schedules::script_job_title(&watch, "fix"),
-        "Fix watcher `scripts/watch.sh`: Store tests"
+        "Fix watcher `.pulse/automations/watch.sh`: Store tests"
     );
     assert_eq!(
         schedules::script_job_title(&watch, "trigger"),
@@ -2535,7 +2560,7 @@ fn schedule_script_runs_are_recorded() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
     script_repo(&s);
-    let mut input = script_input("check", "scripts/check.sh");
+    let mut input = script_input("check", ".pulse/automations/check.sh");
     input.times = 2;
     let sc = schedules::add(&s, input).unwrap();
     let t1 = "2026-09-08T10:00:00Z";
@@ -2612,7 +2637,7 @@ fn schedule_script_runs_are_recorded() {
     assert_eq!(events(&s, "schedule.skipped").len(), 1);
     assert_eq!(events(&s, "schedule.ended").len(), 1);
     // A run that could not start: counted, nothing else changes.
-    let other = schedules::add(&s, script_input("watch", "scripts/watch.sh")).unwrap();
+    let other = schedules::add(&s, script_input("watch", ".pulse/automations/watch.sh")).unwrap();
     let run = schedules::ScriptRun {
         rc: None,
         output: "no worktree: git failed".into(),
@@ -2641,6 +2666,193 @@ fn schedule_script_runs_are_recorded() {
     assert_eq!(rec.schedule.last_output.len(), schedules::OUTPUT_TAIL);
     assert!(rec.schedule.last_output.ends_with("END"));
     assert_eq!(rec.schedule.state, "ok");
+}
+
+/// `history` lists what happened to one schedule newest first - each run
+/// with its exit code and state, the job it queued or found open with the
+/// job's status now, red/green turns, and the changes by hand - and pages
+/// by sequence number.
+#[test]
+fn schedule_history_lists_runs_jobs_and_changes_newest_first() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    script_repo(&s);
+    let sc = schedules::add(&s, script_input("check", ".pulse/automations/check.sh")).unwrap();
+    let job_id = "job-check-1".to_string();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at, created_by, lease_agent) VALUES (?, 'demo', 'task', 'Fix the check', 'fix it', ?, 'leased', ?, 'daemon', 'demo-dev')",
+            params![job_id, sc.id, s.now()],
+        )
+        .unwrap();
+    let t1 = "2026-09-08T10:00:00Z";
+    let run = schedules::ScriptRun {
+        rc: Some(1),
+        seconds: 3.21,
+        output: "boom\n".into(),
+        verdict: schedules::verdict(&sc, 1, ""),
+        job: job_id.clone(),
+        queued: true,
+        post: "POST-1".into(),
+        ..Default::default()
+    };
+    let rec = schedules::record_script_run(&s, &sc, t1, "daemon", &run).unwrap();
+    schedules::pause(&s, &sc.id, "looking into it", "demo-lead").unwrap();
+    let other = schedules::add(&s, script_input("watch", ".pulse/automations/watch.sh")).unwrap();
+    schedules::pause(&s, &other.id, "not this one", "demo-lead").unwrap();
+
+    let got = schedules::history(&s, &sc.id, 0, 50).unwrap();
+    let whats: Vec<&str> = got.iter().map(|e| e.what.as_str()).collect();
+    assert_eq!(
+        whats,
+        vec!["paused", "fired", "red", "ran", "added"],
+        "newest first, this schedule's events alone: {got:#?}"
+    );
+    assert!(got.windows(2).all(|w| w[0].seq > w[1].seq));
+    let paused = &got[0];
+    assert_eq!(
+        (paused.actor.as_str(), paused.note.as_str()),
+        ("demo-lead", "looking into it")
+    );
+    let fired = &got[1];
+    assert_eq!(
+        (
+            fired.job.as_str(),
+            fired.queued,
+            fired.run,
+            fired.job_status.as_str(),
+            fired.job_agent.as_str()
+        ),
+        (job_id.as_str(), true, 1, "leased", "demo-dev"),
+        "the job's status as it is now rides along"
+    );
+    assert_eq!(fired.why, schedules::verdict(&sc, 1, "").job_why);
+    let red = &got[2];
+    assert_eq!(
+        (red.state.as_str(), red.previous.as_str(), red.note.as_str()),
+        ("red", "", "POST-1")
+    );
+    let ran = &got[3];
+    assert_eq!(
+        (ran.rc, ran.seconds, ran.state.as_str(), ran.run),
+        (Some(1), 3.2, "red", 1)
+    );
+    assert!(!ran.at.is_empty());
+    assert!(!ran.timeout);
+    assert_eq!(got[4].what, "added");
+    assert_eq!(got[4].origin, "", "a hand-set schedule names no file");
+    // One the file brought in says which file.
+    let mut from_file = script_input("watch", ".pulse/automations/watch.sh");
+    from_file.title = "From the file".into();
+    from_file.origin = "repo:.pulse/automations/w.yaml#w".into();
+    from_file.author = "daemon".into();
+    let filed = schedules::add(&s, from_file).unwrap();
+    let got_filed = schedules::history(&s, &filed.id, 0, 10).unwrap();
+    assert_eq!(got_filed.len(), 1);
+    assert_eq!(
+        (got_filed[0].actor.as_str(), got_filed[0].origin.as_str()),
+        ("daemon", "repo:.pulse/automations/w.yaml#w")
+    );
+    assert_eq!(rec.schedule.last_output, "boom\n");
+    // Paging: `before` names the oldest seq seen, `limit` caps the page.
+    let page = schedules::history(&s, &sc.id, 0, 2).unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].what, "paused");
+    let rest = schedules::history(&s, &sc.id, page[1].seq, 50).unwrap();
+    let whats: Vec<&str> = rest.iter().map(|e| e.what.as_str()).collect();
+    assert_eq!(whats, vec!["red", "ran", "added"]);
+    // An update by hand lists the fields that changed.
+    schedules::resume(&s, &sc.id, "demo-lead").unwrap();
+    let mut input = script_input("check", ".pulse/automations/check.sh");
+    input.every = "2d".into();
+    let (_, changed, _) = schedules::update(&s, &sc.id, &input, "demo-lead").unwrap();
+    assert_eq!(changed, vec!["every"]);
+    let got = schedules::history(&s, &sc.id, 0, 1).unwrap();
+    assert_eq!(got[0].what, "updated");
+    assert_eq!(got[0].changed, vec!["every"]);
+    // Nothing for an unknown id.
+    assert!(
+        schedules::history(&s, "SCHED-999", 0, 50)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A check or watch set before the .pulse/ rule keeps running its script
+/// from where it is - `script_outside` flags it - and an edit that keeps
+/// that script passes; one that names another path outside .pulse/ does
+/// not.
+#[test]
+fn schedule_scripts_outside_pulse_are_kept_but_flagged() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let repo = script_repo(&s);
+    // The rule did not exist when this row was written: put it there directly.
+    let sc = schedules::add(&s, script_input("check", ".pulse/automations/check.sh")).unwrap();
+    assert!(!sc.script_outside());
+    std::fs::create_dir_all(Path::new(&repo).join("scripts")).unwrap();
+    std::fs::write(
+        Path::new(&repo).join("scripts/old.sh"),
+        "#!/bin/sh\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        Path::new(&repo).join("scripts/new.sh"),
+        "#!/bin/sh\nexit 0\n",
+    )
+    .unwrap();
+    pulse_testutil::git(&["-C", &repo, "add", "."]).unwrap();
+    pulse_testutil::git(&["-C", &repo, "commit", "-q", "-m", "old scripts"]).unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE schedules SET script = 'scripts/old.sh' WHERE id = ?",
+            [&sc.id],
+        )
+        .unwrap();
+    let sc = schedules::get(&s, &sc.id).unwrap();
+    assert!(sc.script_outside());
+    assert_eq!(schedules::script_home("site"), ".pulse/automations/site.sh");
+    // `pulse schedule show` says so, and where the script belongs.
+    let (mut c, out) = ctx_for(&s, "demo-lead", "demo", false);
+    run_cmd(&mut c, "schedule", &["show", &sc.id]).unwrap();
+    let text = out.string();
+    assert!(
+        text.contains(&format!(
+            "script outside .pulse/: it keeps running from there; the place for it is .pulse/automations/{}.sh\n",
+            sc.id.to_lowercase()
+        )),
+        "{text}"
+    );
+    // An edit that keeps the script passes; the cadence changes.
+    let mut input = script_input("check", "scripts/old.sh");
+    input.every = "2d".into();
+    let (up, changed, _) = schedules::update(&s, &sc.id, &input, "demo-lead").unwrap();
+    assert_eq!(changed, vec!["title", "every"]);
+    assert!(up.script_outside());
+    assert_eq!(
+        schedules::check_update(&s, &input, "scripts/old.sh").unwrap(),
+        ""
+    );
+    // Another path outside .pulse/ is refused, by hand and by the check.
+    let input = script_input("check", "scripts/new.sh");
+    let err = schedules::update(&s, &sc.id, &input, "demo-lead")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is outside .pulse/"), "{err}");
+    let err = schedules::check(&s, &input).unwrap_err().to_string();
+    assert!(err.contains("is outside .pulse/"), "{err}");
+    // Moving it under .pulse/ clears the flag.
+    let (up, changed, _) = schedules::update(
+        &s,
+        &sc.id,
+        &script_input("check", ".pulse/automations/check.sh"),
+        "demo-lead",
+    )
+    .unwrap();
+    assert_eq!(changed, vec!["title", "every", "script"]);
+    assert!(!up.script_outside());
 }
 
 #[test]
@@ -2674,7 +2886,7 @@ fn schedule_script_commands_end_to_end() {
             "--every",
             "1d",
             "--script",
-            "scripts/check.sh",
+            ".pulse/automations/check.sh",
             "--brief",
             "b",
         ],
@@ -2698,7 +2910,7 @@ fn schedule_script_commands_end_to_end() {
             "--kind",
             "check",
             "--script",
-            "scripts/check.sh",
+            ".pulse/automations/check.sh",
             "--job-kind",
             "improve",
         ],
@@ -2706,7 +2918,7 @@ fn schedule_script_commands_end_to_end() {
     .unwrap();
     assert!(
         out.string().contains(
-            "SCHED-001 set in demo: check `scripts/check.sh` every 1d, first run at 2026-09-07T03:00:00Z"
+            "SCHED-001 set in demo: check `.pulse/automations/check.sh` every 1d, first run at 2026-09-07T03:00:00Z"
         ),
         "{}",
         out.string()
@@ -2724,7 +2936,7 @@ fn schedule_script_commands_end_to_end() {
             "--kind",
             "watch",
             "--script",
-            "scripts/watch.sh",
+            ".pulse/automations/watch.sh",
             "--brief",
             "Triage each issue.",
         ],
@@ -2736,7 +2948,7 @@ fn schedule_script_commands_end_to_end() {
     assert!(text.contains("KIND") && text.contains("STATE"), "{text}");
     let line = text.lines().find(|l| l.starts_with("SCHED-001")).unwrap();
     assert!(
-        line.contains("check") && line.contains("Store tests (scripts/check.sh)"),
+        line.contains("check") && line.contains("Store tests (.pulse/automations/check.sh)"),
         "{line}"
     );
     assert_eq!(
@@ -2749,7 +2961,7 @@ fn schedule_script_commands_end_to_end() {
     let text = out.string();
     assert!(
         text.contains(
-            "check `scripts/check.sh`, queues improve jobs at tier 1, priority 0; set by demo-lead"
+            "check `.pulse/automations/check.sh`, queues improve jobs at tier 1, priority 0; set by demo-lead"
         ) && text.contains("state: not run yet")
             && text.contains("JOBS"),
         "{text}"
@@ -2758,15 +2970,16 @@ fn schedule_script_commands_end_to_end() {
     run_cmd(&mut c, "schedule", &["log", "SCHED-001"]).unwrap();
     assert!(
         out.string()
-            .contains("SCHED-001 has not run `scripts/check.sh` yet"),
+            .contains("SCHED-001 has not run `.pulse/automations/check.sh` yet"),
         "{}",
         out.string()
     );
     out.clear();
     run_cmd(&mut c, "schedule", &["run", "SCHED-001"]).unwrap();
     assert!(
-        out.string()
-            .contains("SCHED-001 due now; the daemon runs `scripts/check.sh` on the next tick"),
+        out.string().contains(
+            "SCHED-001 due now; the daemon runs `.pulse/automations/check.sh` on the next tick"
+        ),
         "{}",
         out.string()
     );
@@ -2806,8 +3019,9 @@ fn schedule_script_commands_end_to_end() {
     run_cmd(&mut c, "schedule", &["log", "SCHED-001"]).unwrap();
     let text = out.string();
     assert!(
-        text.contains("SCHED-001 `scripts/check.sh` at 2026-09-07T03:00:05Z: red (exit 101)")
-            && text.contains("line 1\nline 2\ntest x FAILED"),
+        text.contains(
+            "SCHED-001 `.pulse/automations/check.sh` at 2026-09-07T03:00:05Z: red (exit 101)"
+        ) && text.contains("line 1\nline 2\ntest x FAILED"),
         "{text}"
     );
     out.clear();
@@ -2837,7 +3051,7 @@ fn schedule_script_commands_end_to_end() {
     run_cmd(&mut c, "schedule", &["show", "SCHED-001"]).unwrap();
     let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
     assert_eq!(v["schedule"]["kind"], "check");
-    assert_eq!(v["schedule"]["script"], "scripts/check.sh");
+    assert_eq!(v["schedule"]["script"], ".pulse/automations/check.sh");
     assert_eq!(v["schedule"]["job_kind"], "improve");
     assert_eq!(v["schedule"]["state"], "red");
     assert_eq!(v["schedule"]["state_since"], t);
@@ -2857,7 +3071,7 @@ fn schedule_script_commands_end_to_end() {
         .find(|sc| sc["id"] == "SCHED-002")
         .unwrap();
     assert_eq!(watch["kind"], "watch");
-    assert_eq!(watch["script"], "scripts/watch.sh");
+    assert_eq!(watch["script"], ".pulse/automations/watch.sh");
     assert_eq!(watch["job_kind"], "task");
     assert!(watch["last_rc"].is_null());
     out.clear();
@@ -3740,7 +3954,7 @@ schedules:
     brief: Run the audit and fix what it names.
   - name: nightly-check
     kind: check
-    script: scripts/check.sh
+    script: .pulse/automations/check.sh
     every: daily
     job_kind: improve
   - name: release-notes
@@ -3980,7 +4194,7 @@ fn manifest_sync_adds_updates_pauses_and_ends_schedules_and_imports_skills() {
             check.script.as_str(),
             check.job_kind.as_str()
         ),
-        ("check", "scripts/check.sh", "improve")
+        ("check", ".pulse/automations/check.sh", "improve")
     );
     let notes = by_name("release-notes");
     assert_eq!(
@@ -4033,7 +4247,7 @@ schedules:
     brief: Run the audit and fix what it names.
   - name: nightly-check
     kind: check
-    script: scripts/check.sh
+    script: .pulse/automations/check.sh
     every: daily
     job_kind: improve
     paused: true
@@ -4235,7 +4449,8 @@ fn manifest_sync_reads_one_file_per_automation_beside_the_list() {
     let s = &t;
     let dir = script_repo(s);
     const DEPS: &str = "title: Audit the dependencies\nevery: 1d\nat: \"02:00\"\nbrief: Run the audit and fix what it names.\n";
-    const CHECK: &str = "kind: check\nscript: scripts/check.sh\nevery: daily\njob_kind: improve\n";
+    const CHECK: &str =
+        "kind: check\nscript: .pulse/automations/check.sh\nevery: daily\njob_kind: improve\n";
     const TIDY_LIST: &str = "schedules:\n  - name: tidy\n    kind: clean\n    every: weekly\n    brief: Remove what nobody uses.\n";
     const TIDY_FILE: &str = "kind: clean\nevery: weekly\nbrief: Remove what nobody uses.\n";
     commit_files(
@@ -4297,7 +4512,7 @@ fn manifest_sync_reads_one_file_per_automation_beside_the_list() {
     let check = by_origin("repo:.pulse/automations/nightly-check.yml#nightly-check");
     assert_eq!(
         (check.kind.as_str(), check.script.as_str()),
-        ("check", "scripts/check.sh")
+        ("check", ".pulse/automations/check.sh")
     );
     let tidy = by_origin("repo:.pulse/pulse.yaml#tidy");
     assert_eq!(tidy.kind, "clean");
@@ -4492,7 +4707,7 @@ fn manifest_entry_with_a_problem_keeps_its_row_and_a_taken_skill_name_is_reporte
         &dir,
         &[(
             ".pulse/pulse.yaml",
-            "schedules:\n  - name: audit\n    kind: check\n    script: scripts/missing.sh\n    every: 1d\n",
+            "schedules:\n  - name: audit\n    kind: check\n    script: .pulse/automations/missing.sh\n    every: 1d\n",
         )],
         "v2",
     );
@@ -4507,7 +4722,7 @@ fn manifest_entry_with_a_problem_keeps_its_row_and_a_taken_skill_name_is_reporte
     assert_eq!((row.kind.as_str(), row.brief.as_str()), ("task", "Audit."));
     assert!(
         second.problems.iter().any(|p| p
-            .contains("schedule `audit`: No file \"scripts/missing.sh\" on main")
+            .contains("schedule `audit`: No file \".pulse/automations/missing.sh\" on main")
             && p.contains("stays as it was")),
         "{:?}",
         second.problems
@@ -4809,7 +5024,9 @@ fn manifest_command_checks_a_working_copy_and_shows_and_syncs_a_project() {
     let (mut c, out) = ctx_for(s, "", "", false);
     run_cmd(&mut c, "manifest", &["check", bad.to_str().unwrap()]).unwrap_err();
     assert!(out.string().contains("must be a slug"), "{}", out.string());
-    std::fs::remove_dir_all(one.parent().unwrap()).unwrap();
+    // The scripts of `script_repo` stay beside them.
+    std::fs::remove_file(&one).unwrap();
+    std::fs::remove_file(&bad).unwrap();
 
     // Nothing applied yet: show says so; sync applies the committed file.
     let (mut c, out) = ctx_for(s, "", "demo", false);

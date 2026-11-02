@@ -394,3 +394,101 @@ test("pause, resume and run act on the row", () => {
     "ended",
   );
 });
+
+test("history lists what happened newest first, pages by seq, and grows with the actions", () => {
+  const { mock } = setup();
+  const q = (o = {}) => new URLSearchParams(o);
+  const r = mock.history("SCHED-002", q({ limit: "5" }));
+  assert.equal(r.status, 200);
+  assert.deepEqual(keys(r.body), [
+    "entries",
+    "jobs",
+    "last_output",
+    "more",
+    "schedule",
+  ]);
+  assert.equal(r.body.entries.length, 5);
+  assert.equal(r.body.more, true);
+  const seqs = r.body.entries.map((e) => e.seq);
+  assert.deepEqual(seqs, [...seqs].sort((a, b) => b - a), "newest first");
+  assert.equal(r.body.entries[0].what, "skipped");
+  assert.equal(r.body.entries[0].job, "JOB-0402");
+  assert.equal(r.body.schedule.script_outside, true);
+  assert.equal(r.body.schedule.script_home, ".pulse/automations/site-check.sh");
+  assert.deepEqual(
+    r.body.jobs.map((j) => j.id),
+    ["JOB-0402", "JOB-0377"],
+  );
+  assert.equal(r.body.last_output, "HTTP 502 from https://demo.example/health");
+  // The next page starts below the last seq of this one.
+  const older = mock.history(
+    "SCHED-002",
+    q({ before: String(seqs[seqs.length - 1]), limit: "100" }),
+  );
+  assert.ok(older.body.entries.every((e) => e.seq < seqs[seqs.length - 1]));
+  assert.equal(older.body.more, false);
+  assert.equal(older.body.entries[older.body.entries.length - 1].what, "added");
+  // An action is the newest entry afterwards.
+  mock.action("SCHED-002", "pause", { note: "known outage" });
+  const after = mock.history("SCHED-002", q({ limit: "1" })).body.entries[0];
+  assert.equal(after.what, "paused");
+  assert.equal(after.actor, "human");
+  assert.equal(after.note, "known outage");
+  assert.ok(after.seq > seqs[0]);
+  assert.equal(mock.history("SCHED-999", q()).status, 404);
+});
+
+test("a new check's script must sit under .pulse/; an edit may keep the old one", () => {
+  const { mock } = setup();
+  const outside = mock.check({
+    project: "demo-app",
+    where: "store",
+    entry: entry({ name: "site-2", kind: "check", script: "scripts/site.sh" }),
+  });
+  assert.ok(
+    outside.body.problems.some((p) => p.includes("is outside .pulse/")),
+    outside.body.problems.join("|"),
+  );
+  const inside = mock.check({
+    project: "demo-app",
+    where: "store",
+    entry: entry({
+      name: "site-2",
+      kind: "check",
+      script: ".pulse/automations/site-2.sh",
+    }),
+  });
+  assert.deepEqual(inside.body.problems, []);
+  // SCHED-002 runs scripts/check-site.sh from before the rule: an edit that
+  // keeps it passes, another outside path does not.
+  const kept = mock.check({
+    project: "demo-app",
+    where: "repo",
+    replace: "site-check",
+    entry: entry({
+      name: "site-check",
+      kind: "check",
+      every: "1h",
+      script: "scripts/check-site.sh",
+    }),
+  });
+  assert.deepEqual(kept.body.problems, []);
+  const moved = mock.check({
+    project: "demo-app",
+    where: "repo",
+    replace: "site-check",
+    entry: entry({
+      name: "site-check",
+      kind: "check",
+      every: "1h",
+      script: "scripts/other.sh",
+    }),
+  });
+  assert.ok(moved.body.problems.some((p) => p.includes("is outside .pulse/")));
+  // The list flags the old row.
+  const row = mock
+    .list(new URLSearchParams({ project: "demo-app" }))
+    .body.projects[0].schedules.find((s) => s.id === "SCHED-002");
+  assert.equal(row.script_outside, true);
+  assert.equal(row.script_home, ".pulse/automations/site-check.sh");
+});

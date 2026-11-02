@@ -18,6 +18,10 @@ const pad = (n, w) => String(n).padStart(w, "0");
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const SCRIPT_KINDS = ["check", "watch"];
 const DIR = ".pulse/automations";
+const scriptInPulse = (path) =>
+  String(path).replace(/^\.\//, "").startsWith(".pulse/") &&
+  String(path).replace(/^\.\//, "").length > ".pulse/".length;
+const scriptHome = (name) => DIR + "/" + (name || "<name>") + ".sh";
 
 export const KINDS = ["task", "improve", "clean", "reflect"];
 export const SCRIPT_JOB_KINDS = ["task", "improve"];
@@ -152,12 +156,38 @@ export function createAutomationsMock({
     return names;
   };
   const pathOf = (name) => DIR + "/" + name + ".yaml";
+  // A check or watch whose script sits outside .pulse/ is flagged with the
+  // place it belongs, the way the hub's schedule_json does.
+  const flagScript = (s) => {
+    const outside = SCRIPT_KINDS.includes(s.kind) && !!s.script && !scriptInPulse(s.script);
+    s.script_outside = outside;
+    s.script_home = outside
+      ? scriptHome(
+          s.origin_name ||
+            String(s.title || s.id)
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, ""),
+        )
+      : "";
+    return s;
+  };
+  // The script the automation a draft edits already runs, or "".
+  const keptScript = (p, body) => {
+    if (body.id) return p.schedules.find((x) => x.id === String(body.id))?.script || "";
+    if (body.replace) {
+      const h = holder(p, String(body.replace));
+      return h?.file?.entry?.script || h?.entry?.script || "";
+    }
+    return "";
+  };
 
   function list(query) {
     const slug = query.get("project") || "";
     const projects = slug
       ? data.projects.filter((p) => p.slug === slug)
       : data.projects;
+    for (const p of projects) for (const s of p.schedules) flagScript(s);
     return ok(200, {
       projects,
       limits: data.limits,
@@ -195,8 +225,9 @@ export function createAutomationsMock({
   }
 
   // What is wrong with an entry's own fields, the way the hub's static and
-  // store checks word it.
-  function fieldProblems(p, e) {
+  // store checks word it. `kept` is the script the automation already
+  // runs: it may stay where it is, even outside .pulse/.
+  function fieldProblems(p, e, kept = "") {
     const problems = [];
     if (!e.name) problems.push("name: a lowercase name is required");
     else if (!SLUG.test(e.name))
@@ -244,7 +275,13 @@ export function createAutomationsMock({
         problems.push(
           "script: " + e.script + " must be a path inside the repository",
         );
-      else if (!/^scripts\//.test(e.script))
+      else if (!scriptInPulse(e.script) && e.script !== kept)
+        problems.push(
+          "The script " +
+            JSON.stringify(e.script) +
+            " is outside .pulse/",
+        );
+      else if (!/^\.pulse\/automations\//.test(e.script) && e.script !== kept)
         problems.push(
           "script: " +
             e.script +
@@ -286,7 +323,7 @@ export function createAutomationsMock({
       );
     const where = body.where === "store" ? "store" : "repo";
     const e = draft(body);
-    const problems = fieldProblems(p, e);
+    const problems = fieldProblems(p, e, keptScript(p, body));
     let path = pathOf(e.name);
     let form = "file";
     let branch = "";
@@ -637,20 +674,22 @@ export function createAutomationsMock({
           Object.assign(s, { status: "paused", note: "paused" });
         if (!e.paused && s.status === "paused")
           Object.assign(s, { status: "active", note: "", next_at: t });
+        record(s.id, "updated", { changed: ["title", "every"] });
         emit("human:console", "schedule.update", s.id, { project: p.slug });
         return ok(200, {
           where,
-          schedule: s,
+          schedule: flagScript(s),
           yaml: rest.yaml,
           warning: rest.warning,
         });
       }
       const s = row(p, e);
       p.schedules.push(s);
+      record(s.id, "added");
       emit("human:console", "schedule.add", s.id, { project: p.slug });
       return ok(201, {
         where,
-        schedule: s,
+        schedule: flagScript(s),
         yaml: rest.yaml,
         warning: rest.warning,
       });
@@ -694,6 +733,13 @@ export function createAutomationsMock({
       p.schedules.find(
         (s) => s.status !== "ended" && s.origin_name === e.name,
       ) || null;
+    if (schedule) {
+      const origin = "repo:" + rest.path + "#" + e.name;
+      if (replace)
+        record(schedule.id, "updated", { actor: "daemon", changed: ["title"], origin });
+      else record(schedule.id, "added", { actor: "daemon", origin });
+      flagScript(schedule);
+    }
     emit(
       "human:console",
       replace ? "schedule.update" : "schedule.add",
@@ -792,6 +838,7 @@ export function createAutomationsMock({
       if (s.origin_path && p.repo && holder(p, s.origin_name)) {
         const r = remove({ project: p.slug, name: s.origin_name });
         if (note) s.note = note;
+        record(s.id, "ended", { note: note || s.note });
         return r;
       }
       Object.assign(s, { status: "ended", note, next_at: "", updated_at: t });
@@ -802,11 +849,90 @@ export function createAutomationsMock({
         verb + " is not pause, resume, end or run",
         "pulse schedule --help",
       );
+    record(s.id, verb === "end" ? "ended" : verb === "pause" ? "paused" : verb === "resume" ? "resumed" : "run", { note });
     emit("human:console", "schedule." + verb, s.id, { project: s.project });
-    return ok(200, { where: "store", schedule: s, yaml: "", warning: "" });
+    return ok(200, { where: "store", schedule: flagScript(s), yaml: "", warning: "" });
   }
 
-  return { list, check: (body) => strip(check(body)), write, remove, action };
+  // ----- history -----------------------------------------------------------
+
+  // The event log, one entry per thing that happened to a schedule, newest
+  // last; the fixture seeds it (`history` keyed by id) and the actions and
+  // writes append to it the way the hub's events table grows.
+  const log = () => (data.history ??= {});
+  let seq = Object.values(log())
+    .flat()
+    .reduce((m, e) => Math.max(m, e.seq || 0), 0);
+  const blank = () => ({
+    seq: 0,
+    at: "",
+    actor: "",
+    what: "",
+    run: 0,
+    rc: null,
+    timeout: false,
+    seconds: 0,
+    state: "",
+    previous: "",
+    job: "",
+    job_status: "",
+    job_agent: "",
+    job_finished_at: "",
+    queued: false,
+    why: "",
+    note: "",
+    changed: [],
+    origin: "",
+  });
+  function record(id, what, over = {}) {
+    const entries = (log()[id] ??= []);
+    entries.push({
+      ...blank(),
+      seq: ++seq,
+      at: now(),
+      actor: "human",
+      what,
+      ...over,
+    });
+  }
+
+  // GET automations/<id>/history?before=SEQ&limit=N: newest first, with the
+  // jobs it queued and the last output, the shape the hub answers.
+  function history(id, query) {
+    const p = data.projects.find((x) => x.schedules.some((s) => s.id === id));
+    const s = p?.schedules.find((x) => x.id === id);
+    if (!s)
+      return failure(
+        404,
+        "No schedule " + id,
+        "The id is not in this store.",
+        "Refresh the list.",
+      );
+    const before = Number(query?.get?.("before") || 0) || 0;
+    const limit = Math.min(500, Math.max(1, Number(query?.get?.("limit") || 50) || 50));
+    const all = [...(log()[id] || [])]
+      .map((e) => ({ ...blank(), ...e }))
+      .filter((e) => !before || e.seq < before)
+      .sort((a, b) => b.seq - a.seq);
+    const entries = all.slice(0, limit);
+    const jobs = (data.jobs || []).filter((j) => j.source === "schedule:" + id);
+    return ok(200, {
+      schedule: flagScript(s),
+      entries,
+      more: all.length > limit,
+      jobs,
+      last_output: s.last_output || "",
+    });
+  }
+
+  return {
+    list,
+    check: (body) => strip(check(body)),
+    write,
+    remove,
+    action,
+    history,
+  };
 }
 
 // The check's private fields never leave the mock.

@@ -928,15 +928,28 @@ name, its state (*live*, *paused*, *held* with the problem beside it, or
 or script, with **Edit**. Below them a card per schedule shows the cadence,
 the kind, where it is kept (*in .pulse/automations/NAME.yaml*, *in
 .pulse/pulse.yaml* with its `#name`, or *set by you* / *set by AGENT*), the
-next start, the runs so far and the last job; **Run now**, **Pause**,
-**Resume** and **End** are the `pulse schedule` verbs, in your name.
+next start, the runs so far, the last run and the last job; a check or
+watch whose script sits outside `.pulse/` carries a *script outside .pulse*
+mark and the path it belongs at. **History** opens what happened to the
+automation, newest first: each run of its script with the exit code, how
+long it took and the state it left (green or red, quiet or broken), the
+job a run queued or found still open and where that job stands now, every
+turn of state with the finding posted, and every change by hand or by the
+file (added, changed and what changed, paused with its note, resumed, ended,
+run now) - with the last output in full at the top and the jobs it queued
+below; **Older** pages back through the rest. **Run now**, **Pause**,
+**Resume** and **End** are the `pulse schedule` verbs, in your name. What
+the daemon said about a skill folder is the Skills page's business and does
+not show here.
 
 **New automation** writes the YAML for you: the project, what it does (a
 task, improve, clean or reflect job; or a check or a watch that runs a
 script), a title that proposes the `name` - lowercase, digits and dashes;
 the file is named after it and it must be unique in the project - a cadence
 from the presets or typed (`45m`, `3d`), the clock for a cadence of whole
-days, the brief and an optional skill - or the script and the kind of job a
+days, the brief and an optional skill - or the script, which lives under
+`.pulse/` (`.pulse/automations/<name>.sh` is proposed; an edit may keep a
+script that already runs from outside), and the kind of job a
 red run queues - and under **More** the tier, the priority, the custom
 agent, how many times it runs and whether it starts paused. The preview
 beside the form is the file exactly as it will sit at
@@ -973,8 +986,15 @@ YAML, its `path`, the `form` it takes - `file` or `list` - the problems and a
 warning, nothing written), `POST /api/v1/automations` (`{project, entry,
 where: "repo"|"store", replace?: NAME, id?: SCHED-NNN, move?: SCHED-NNN}`:
 the commit and the schedule, or `400` with `problems[]`),
-`POST /api/v1/automations/remove` (`{project, name, note?}`) and
-`POST /api/v1/automations/<id>/pause|resume|end|run` (`{note?}`). `entry`
+`POST /api/v1/automations/remove` (`{project, name, note?}`),
+`POST /api/v1/automations/<id>/pause|resume|end|run` (`{note?}`) and
+`GET /api/v1/automations/<id>/history?before=SEQ&limit=N` (the schedule,
+its `entries` newest first - each with `seq, at, actor, what` (`ran`,
+`fired`, `skipped`, `red`, `green`, `added`, `updated`, `paused`, `resumed`,
+`ended`, `run`) and, as they apply, `run, rc, timeout, seconds, state,
+previous, job, job_status, job_agent, job_finished_at, queued, why, note,
+changed[]` - `more` when older entries exist below the last `seq`, the
+`jobs` it queued and its `last_output`). `entry`
 takes the fields of an automation file: `name, title, every, at, kind,
 brief, skill, script, job_kind, tier, priority, run_as, times, paused`.
 
@@ -1360,9 +1380,16 @@ only when the script says so.
   says so once on the board and, after three failures in a row, queues one
   job to fix the watcher.
 
-Both take `--script REL_PATH`: a path relative to the repo root, committed on
-the project's default branch (`pulse schedule add` refuses a path that is not
-there, or that is absolute or climbs out with `..`). `--brief` is optional and
+Both take `--script REL_PATH`: a path relative to the repo root, under the
+project's `.pulse/` folder - `.pulse/automations/<name>.sh`, beside the
+automation's file, is the place for it - and committed on the project's
+default branch (`pulse schedule add` refuses a path that is not there, that
+is outside `.pulse/`, or that is absolute or climbs out with `..`). The rule
+keeps everything PULSE adds to a repository in one folder; a check or watch
+set before it keeps running its script from where it is and is flagged
+(*script outside .pulse* on the Automations page, `script_outside` in the
+API) until the script moves - an edit may keep that script but not name
+another one outside `.pulse/`. `--brief` is optional and
 is prepended to the job's brief as context; `--job-kind task|improve`
 (default `task`) is the kind of job a red check or a firing watch queues;
 `--tier`, `--priority`, `--every`, `--at` and `--times` mean what they mean
@@ -1406,9 +1433,9 @@ tick with room. After a run the schedule moves on one cadence like a standing
 job, and the log has one line per run:
 
 ```text
-schedule SCHED-004 (my-app): check scripts/store-tests.sh red (exit 101, 48.3s); queued job-20260906T020000Z-1f3a; posted 20260906T020000Z-daemon; next at 2026-09-07T02:00:00Z
-schedule SCHED-005 (my-app): watch scripts/new-issues.sh quiet (exit 0, 1.2s); next at 2026-09-06T03:00:00Z
-schedule SCHED-005 (my-app): watch scripts/new-issues.sh fired job-20260906T030000Z-9c2e (exit 0, 1.4s); next at 2026-09-06T04:00:00Z
+schedule SCHED-004 (my-app): check .pulse/automations/store-tests.sh red (exit 101, 48.3s); queued job-20260906T020000Z-1f3a; posted 20260906T020000Z-daemon; next at 2026-09-07T02:00:00Z
+schedule SCHED-005 (my-app): watch .pulse/automations/new-issues.sh quiet (exit 0, 1.2s); next at 2026-09-06T03:00:00Z
+schedule SCHED-005 (my-app): watch .pulse/automations/new-issues.sh fired job-20260906T030000Z-9c2e (exit 0, 1.4s); next at 2026-09-06T04:00:00Z
 ```
 
 Events: `schedule.ran` on every run (exit code, seconds, state),
@@ -1418,7 +1445,7 @@ kind, script and state; `pulse schedule show` the script, job kind, state and
 since when, the last exit code, the failures in a row and the last run.
 
 A nightly check that keeps one crate's tests green, as a script at
-`scripts/store-tests.sh` on the default branch:
+`.pulse/automations/store-tests.sh` on the default branch:
 
 ```sh
 #!/bin/sh
@@ -1428,7 +1455,7 @@ exec cargo test -p pulse-store --quiet
 ```
 
 ```bash
-pulse schedule add --project my-app --kind check --script scripts/store-tests.sh --title "Store tests stay green" --every 1d --at 02:00 --job-kind task
+pulse schedule add --project my-app --kind check --script .pulse/automations/store-tests.sh --title "Store tests stay green" --every 1d --at 02:00 --job-kind task
 pulse schedule log SCHED-004     # the last output, after the first run
 ```
 
@@ -1449,7 +1476,7 @@ echo "$now" > "$cursor"
 ```
 
 ```bash
-pulse schedule add --project my-app --kind watch --script scripts/new-issues.sh --title "New GitHub issues" --every 1h --brief "Triage each issue: reproduce, label, and fix it in this job when it is small."
+pulse schedule add --project my-app --kind watch --script .pulse/automations/new-issues.sh --title "New GitHub issues" --every 1h --brief "Triage each issue: reproduce, label, and fix it in this job when it is small."
 ```
 
 The first run writes the cursor and prints nothing; from then on every new
@@ -1483,7 +1510,7 @@ brief: Run the audit and fix what it names.
 ```yaml
 # .pulse/automations/nightly-store-tests.yaml
 kind: check                      # or watch; both run `script`
-script: scripts/store-tests.sh
+script: .pulse/automations/store-tests.sh   # under .pulse/, beside this file
 every: daily
 job_kind: improve                # the job a red check queues: task (default) or improve
 ```

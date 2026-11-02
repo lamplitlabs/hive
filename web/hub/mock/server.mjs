@@ -3989,6 +3989,11 @@ async function handle(req, res) {
     const r = state.automations.list(q);
     return send(res, r.status, r.body);
   }
+  // One automation's history: its runs, jobs and changes, newest first.
+  if (segs[0] === "automations" && segs.length === 3 && segs[2] === "history") {
+    const r = state.automations.history(segs[1], q);
+    return send(res, r.status, r.body);
+  }
   // The toolkit (`pulse toolkit`): what each checkout asks for and lacks.
   if (segs[0] === "toolkit" && segs.length === 1) {
     const p = q.get("project") || "";

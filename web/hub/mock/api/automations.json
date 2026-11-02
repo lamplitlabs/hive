@@ -108,7 +108,8 @@
         "commit": "6d2f1c9a8b7e4f3a2c1d0e9f8a7b6c5d4e3f2a1b",
         "at": "2026-09-01T09:10:00Z",
         "problems": [
-          "schedule `docs-sweep`: needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)"
+          "schedule `docs-sweep`: needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)",
+          "skill .github/skills/design-taste-frontend/SKILL.md: the file is 61 kB; a skill is at most 32 kB"
         ],
         "schedules": ["weekly-tidy", "nightly-audit", "site-check"]
       },
@@ -303,7 +304,10 @@
         "commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
       },
       "file": null,
-      "automations": { "dir": ".pulse/automations", "files": [] },
+      "automations": {
+        "dir": ".pulse/automations",
+        "files": []
+      },
       "applied": null,
       "schedules": [
         {
@@ -342,11 +346,387 @@
           "origin_path": ""
         }
       ],
-      "options": { "skills": [], "agents": [] }
+      "options": {
+        "skills": [],
+        "agents": []
+      }
     }
   ],
-  "limits": { "max_per_project": 20, "min_minutes": 30 },
+  "limits": {
+    "max_per_project": 20,
+    "min_minutes": 30
+  },
   "kinds": ["task", "improve", "clean", "reflect"],
   "script_kinds": ["check", "watch"],
-  "script_job_kinds": ["task", "improve"]
+  "script_job_kinds": ["task", "improve"],
+  "jobs": [
+    {
+      "id": "JOB-0402",
+      "kind": "task",
+      "title": "Make check `scripts/check-site.sh` pass: Site is up",
+      "status": "running",
+      "agent": "cinder",
+      "branch": "pulse/job-0402",
+      "project": "demo-app",
+      "tier": 0,
+      "priority": 0,
+      "source": "schedule:SCHED-002",
+      "created_at": "2026-09-01T08:30:04Z",
+      "leased_at": "2026-09-01T08:31:10Z",
+      "finished_at": "",
+      "executor": "local"
+    },
+    {
+      "id": "JOB-0377",
+      "kind": "task",
+      "title": "Make check `scripts/check-site.sh` pass: Site is up",
+      "status": "done",
+      "agent": "quartz",
+      "branch": "pulse/job-0377",
+      "project": "demo-app",
+      "tier": 0,
+      "priority": 0,
+      "source": "schedule:SCHED-002",
+      "created_at": "2026-08-27T14:00:03Z",
+      "leased_at": "2026-08-27T14:00:40Z",
+      "finished_at": "2026-08-27T14:26:12Z",
+      "executor": "local",
+      "result": "landed"
+    },
+    {
+      "id": "JOB-0410",
+      "kind": "task",
+      "title": "Weekly dependency bump",
+      "status": "done",
+      "agent": "iris",
+      "branch": "pulse/job-0410",
+      "project": "demo-app",
+      "tier": 1,
+      "priority": 0,
+      "source": "schedule:SCHED-001",
+      "created_at": "2026-09-01T06:00:02Z",
+      "leased_at": "2026-09-01T06:00:30Z",
+      "finished_at": "2026-09-01T06:41:00Z",
+      "executor": "local",
+      "result": "landed"
+    }
+  ],
+  "history": {
+    "SCHED-002": [
+      {
+        "seq": 1001,
+        "at": "2026-08-18T09:00:00Z",
+        "actor": "daemon",
+        "what": "added",
+        "origin": "repo:.pulse/automations/site-check.yaml#site-check"
+      },
+      {
+        "seq": 1002,
+        "at": "2026-08-18T09:30:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 1,
+        "rc": 0,
+        "seconds": 1.4,
+        "state": "green"
+      },
+      {
+        "seq": 1003,
+        "at": "2026-08-18T09:30:02Z",
+        "actor": "daemon",
+        "what": "green",
+        "state": "green",
+        "previous": "",
+        "note": ""
+      },
+      {
+        "seq": 1004,
+        "at": "2026-08-18T16:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 2,
+        "rc": 0,
+        "seconds": 1.4,
+        "state": "green"
+      },
+      {
+        "seq": 1005,
+        "at": "2026-08-18T19:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 3,
+        "rc": 0,
+        "seconds": 1.5,
+        "state": "green"
+      },
+      {
+        "seq": 1006,
+        "at": "2026-08-19T10:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 4,
+        "rc": 0,
+        "seconds": 1.6,
+        "state": "green"
+      },
+      {
+        "seq": 1007,
+        "at": "2026-08-19T13:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 5,
+        "rc": 0,
+        "seconds": 1.7,
+        "state": "green"
+      },
+      {
+        "seq": 1008,
+        "at": "2026-08-19T16:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 6,
+        "rc": 0,
+        "seconds": 1.8,
+        "state": "green"
+      },
+      {
+        "seq": 1009,
+        "at": "2026-08-19T19:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 7,
+        "rc": 0,
+        "seconds": 1.9,
+        "state": "green"
+      },
+      {
+        "seq": 1010,
+        "at": "2026-08-27T14:00:03Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 440,
+        "rc": 1,
+        "seconds": 3.8,
+        "state": "red",
+        "job": "JOB-0377",
+        "queued": true
+      },
+      {
+        "seq": 1011,
+        "at": "2026-08-27T14:00:03Z",
+        "actor": "daemon",
+        "what": "red",
+        "state": "red",
+        "previous": "green",
+        "note": "20260827T140003Z-daemon"
+      },
+      {
+        "seq": 1012,
+        "at": "2026-08-27T14:00:03Z",
+        "actor": "daemon",
+        "what": "fired",
+        "run": 440,
+        "job": "JOB-0377",
+        "queued": true,
+        "why": "exit 1"
+      },
+      {
+        "seq": 1013,
+        "at": "2026-08-27T14:30:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 441,
+        "rc": 1,
+        "seconds": 3.9,
+        "state": "red",
+        "job": "JOB-0377",
+        "queued": false
+      },
+      {
+        "seq": 1014,
+        "at": "2026-08-27T14:30:02Z",
+        "actor": "daemon",
+        "what": "skipped",
+        "run": 441,
+        "job": "JOB-0377",
+        "queued": false,
+        "why": "exit 1"
+      },
+      {
+        "seq": 1015,
+        "at": "2026-08-27T15:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 442,
+        "rc": 0,
+        "seconds": 1.3,
+        "state": "green"
+      },
+      {
+        "seq": 1016,
+        "at": "2026-08-27T15:00:02Z",
+        "actor": "daemon",
+        "what": "green",
+        "state": "green",
+        "previous": "red",
+        "note": "20260827T150002Z-daemon"
+      },
+      {
+        "seq": 1017,
+        "at": "2026-08-29T11:12:40Z",
+        "actor": "daemon",
+        "what": "updated",
+        "changed": ["every"],
+        "origin": "repo:.pulse/automations/site-check.yaml#site-check"
+      },
+      {
+        "seq": 1018,
+        "at": "2026-09-01T08:00:02Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 610,
+        "rc": 0,
+        "seconds": 1.1,
+        "state": "green"
+      },
+      {
+        "seq": 1019,
+        "at": "2026-09-01T08:30:04Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 611,
+        "rc": 1,
+        "seconds": 4.2,
+        "state": "red",
+        "job": "JOB-0402",
+        "queued": true
+      },
+      {
+        "seq": 1020,
+        "at": "2026-09-01T08:30:04Z",
+        "actor": "daemon",
+        "what": "red",
+        "state": "red",
+        "previous": "green",
+        "note": "20260901T083004Z-daemon"
+      },
+      {
+        "seq": 1021,
+        "at": "2026-09-01T08:30:04Z",
+        "actor": "daemon",
+        "what": "fired",
+        "run": 611,
+        "job": "JOB-0402",
+        "queued": true,
+        "why": "exit 1"
+      },
+      {
+        "seq": 1022,
+        "at": "2026-09-01T09:00:03Z",
+        "actor": "daemon",
+        "what": "ran",
+        "run": 612,
+        "rc": 1,
+        "seconds": 4.0,
+        "state": "red",
+        "job": "JOB-0402",
+        "queued": false
+      },
+      {
+        "seq": 1023,
+        "at": "2026-09-01T09:00:03Z",
+        "actor": "daemon",
+        "what": "skipped",
+        "run": 612,
+        "job": "JOB-0402",
+        "queued": false,
+        "why": "exit 1"
+      }
+    ],
+    "SCHED-001": [
+      {
+        "seq": 1024,
+        "at": "2026-07-01T10:00:00Z",
+        "actor": "human",
+        "what": "added"
+      },
+      {
+        "seq": 1025,
+        "at": "2026-08-25T06:00:02Z",
+        "actor": "daemon",
+        "what": "fired",
+        "run": 13,
+        "job": "JOB-0391",
+        "queued": true,
+        "why": "due"
+      },
+      {
+        "seq": 1026,
+        "at": "2026-08-30T16:20:11Z",
+        "actor": "human",
+        "what": "paused",
+        "note": "release week"
+      },
+      {
+        "seq": 1027,
+        "at": "2026-08-31T09:02:50Z",
+        "actor": "human",
+        "what": "resumed"
+      },
+      {
+        "seq": 1028,
+        "at": "2026-09-01T06:00:02Z",
+        "actor": "daemon",
+        "what": "fired",
+        "run": 14,
+        "job": "JOB-0410",
+        "queued": true,
+        "why": "due"
+      }
+    ],
+    "SCHED-004": [
+      {
+        "seq": 1029,
+        "at": "2026-08-20T12:00:00Z",
+        "actor": "demo-lead",
+        "what": "added"
+      },
+      {
+        "seq": 1030,
+        "at": "2026-08-21T12:00:02Z",
+        "actor": "daemon",
+        "what": "fired",
+        "run": 1,
+        "job": "JOB-0340",
+        "queued": true,
+        "why": "due"
+      },
+      {
+        "seq": 1031,
+        "at": "2026-08-22T12:00:02Z",
+        "actor": "daemon",
+        "what": "skipped",
+        "run": 2,
+        "job": "JOB-0340",
+        "queued": false,
+        "why": "due"
+      },
+      {
+        "seq": 1032,
+        "at": "2026-08-23T12:00:02Z",
+        "actor": "daemon",
+        "what": "fired",
+        "run": 3,
+        "job": "JOB-0366",
+        "queued": true,
+        "why": "due"
+      },
+      {
+        "seq": 1033,
+        "at": "2026-08-23T18:40:00Z",
+        "actor": "human",
+        "what": "run"
+      }
+    ]
+  }
 }

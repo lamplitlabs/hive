@@ -662,18 +662,20 @@ mod tests {
         join(&s, "aurora");
         commit_script(
             &dir,
-            "scripts/check.sh",
+            ".pulse/automations/check.sh",
             "#!/bin/sh\necho checking >&2\necho 'token=sk-abcdefghijklmnopqrstuvwxyz0123456789' >&2\nexit 1\n",
             true,
         );
         let sha = run(&dir, &["git", "rev-parse", "main"]).trim().to_string();
-        let sc = add(&s, "check", "scripts/check.sh", "task");
+        let sc = add(&s, "check", ".pulse/automations/check.sh", "task");
         assert!(tick(&s, 1.0).is_empty(), "ran before its time");
 
         let lines = tick(&s, 61.0);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0].starts_with("schedule SCHED-001 (proj): check scripts/check.sh red (exit 1, "),
+            lines[0].starts_with(
+                "schedule SCHED-001 (proj): check .pulse/automations/check.sh red (exit 1, "
+            ),
             "{lines:?}"
         );
         assert!(lines[0].contains("; queued job-"), "{lines:?}");
@@ -685,7 +687,7 @@ mod tests {
         assert_eq!(jobs1[0].str("created_by"), "aurora");
         assert_eq!(
             jobs1[0].str("title"),
-            "Make check `scripts/check.sh` pass: Keep scripts/check.sh happy"
+            "Make check `.pulse/automations/check.sh` pass: Keep .pulse/automations/check.sh happy"
         );
         let brief = jobs1[0].str("brief");
         assert!(
@@ -694,7 +696,7 @@ mod tests {
         );
         assert!(
             brief.contains(&format!(
-                "The check `scripts/check.sh` failed (exit 1) at {TEST_NOW} on main@{}.",
+                "The check `.pulse/automations/check.sh` failed (exit 1) at {TEST_NOW} on main@{}.",
                 &sha[..12]
             )),
             "{brief}"
@@ -716,7 +718,7 @@ mod tests {
         assert!(
             posts1[0]
                 .str("summary")
-                .starts_with("check `scripts/check.sh` red: exit 1 at main@"),
+                .starts_with("check `.pulse/automations/check.sh` red: exit 1 at main@"),
             "{posts1:?}"
         );
         assert!(
@@ -757,12 +759,18 @@ mod tests {
         assert_eq!(events(&s, &sc, "schedule.skipped"), 1);
 
         // Fixed on main: green again, one recovery finding, no job.
-        commit_script(&dir, "scripts/check.sh", "#!/bin/sh\nexit 0\n", true);
+        commit_script(
+            &dir,
+            ".pulse/automations/check.sh",
+            "#!/bin/sh\nexit 0\n",
+            true,
+        );
         let lines = tick(&s, 181.0);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0]
-                .starts_with("schedule SCHED-001 (proj): check scripts/check.sh green (exit 0, "),
+            lines[0].starts_with(
+                "schedule SCHED-001 (proj): check .pulse/automations/check.sh green (exit 0, "
+            ),
             "{lines:?}"
         );
         assert!(lines[0].contains("; posted "), "{lines:?}");
@@ -773,7 +781,7 @@ mod tests {
         assert!(
             posts[1]
                 .str("summary")
-                .starts_with("check `scripts/check.sh` green again: exit 0 at main@"),
+                .starts_with("check `.pulse/automations/check.sh` green again: exit 0 at main@"),
             "{posts:?}"
         );
         assert!(
@@ -806,25 +814,30 @@ mod tests {
         join(&s, "aurora");
         commit_script(
             &dir,
-            "scripts/issues.sh",
+            ".pulse/automations/issues.sh",
             "echo '#12 login breaks on Safari'\necho '#13 typo in README'\necho 'looked at 2 issues' >&2\n",
             false,
         );
-        let sc = add(&s, "watch", "scripts/issues.sh", "improve");
+        let sc = add(&s, "watch", ".pulse/automations/issues.sh", "improve");
         let lines = tick(&s, 61.0);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0].starts_with("schedule SCHED-001 (proj): watch scripts/issues.sh fired job-"),
+            lines[0].starts_with(
+                "schedule SCHED-001 (proj): watch .pulse/automations/issues.sh fired job-"
+            ),
             "{lines:?}"
         );
         let jobs1 = jobs(&s, &sc);
         assert_eq!(jobs1.len(), 1, "{jobs1:?}");
         assert_eq!(jobs1[0].str("kind"), "improve");
-        assert_eq!(jobs1[0].str("title"), "Keep scripts/issues.sh happy");
+        assert_eq!(
+            jobs1[0].str("title"),
+            "Keep .pulse/automations/issues.sh happy"
+        );
         let brief = jobs1[0].str("brief");
         assert!(
             brief.contains(&format!(
-                "The watcher `scripts/issues.sh` reported at {TEST_NOW}:"
+                "The watcher `.pulse/automations/issues.sh` reported at {TEST_NOW}:"
             )),
             "{brief}"
         );
@@ -869,16 +882,17 @@ mod tests {
         join(&s, "aurora");
         commit_script(
             &dir,
-            "scripts/quiet.sh",
+            ".pulse/automations/quiet.sh",
             "printf '  \\n\\n'\necho 'nothing new' >&2\nexit 0\n",
             false,
         );
-        let sc = add(&s, "watch", "scripts/quiet.sh", "task");
+        let sc = add(&s, "watch", ".pulse/automations/quiet.sh", "task");
         let lines = tick(&s, 61.0);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0]
-                .starts_with("schedule SCHED-001 (proj): watch scripts/quiet.sh quiet (exit 0, "),
+            lines[0].starts_with(
+                "schedule SCHED-001 (proj): watch .pulse/automations/quiet.sh quiet (exit 0, "
+            ),
             "{lines:?}"
         );
         assert!(jobs(&s, &sc).is_empty());
@@ -901,16 +915,16 @@ mod tests {
         join(&s, "aurora");
         commit_script(
             &dir,
-            "scripts/w.sh",
+            ".pulse/automations/w.sh",
             "echo 'gh: not logged in' >&2\nexit 2\n",
             false,
         );
-        let sc = add(&s, "watch", "scripts/w.sh", "task");
+        let sc = add(&s, "watch", ".pulse/automations/w.sh", "task");
 
         let lines = tick(&s, 61.0);
         assert!(
             lines[0].starts_with(
-                "schedule SCHED-001 (proj): watch scripts/w.sh broken (1 in a row) (exit 2, "
+                "schedule SCHED-001 (proj): watch .pulse/automations/w.sh broken (1 in a row) (exit 2, "
             ),
             "{lines:?}"
         );
@@ -923,7 +937,7 @@ mod tests {
         assert!(
             posts[0]
                 .str("summary")
-                .starts_with("watcher `scripts/w.sh` broken: exit 2 at main@"),
+                .starts_with("watcher `.pulse/automations/w.sh` broken: exit 2 at main@"),
             "{posts:?}"
         );
         assert!(
@@ -948,7 +962,7 @@ mod tests {
         assert_eq!(fix.len(), 1, "{fix:?}");
         assert_eq!(
             fix[0].str("title"),
-            "Fix watcher `scripts/w.sh`: Keep scripts/w.sh happy"
+            "Fix watcher `.pulse/automations/w.sh`: Keep .pulse/automations/w.sh happy"
         );
         let brief = fix[0].str("brief");
         assert!(brief.contains("failed (exit 2) 3 runs in a row"), "{brief}");
@@ -965,7 +979,7 @@ mod tests {
         assert_eq!(schedules::get(&s, &sc.id).unwrap().fails, 3);
 
         // Fixed: fails reset, one recovery finding, no new job.
-        commit_script(&dir, "scripts/w.sh", "exit 0\n", false);
+        commit_script(&dir, ".pulse/automations/w.sh", "exit 0\n", false);
         let lines = tick(&s, 241.0);
         assert!(
             lines[0].contains(" quiet (exit 0, ") && lines[0].contains("posted "),
@@ -977,7 +991,7 @@ mod tests {
         assert!(
             posts[1]
                 .str("summary")
-                .starts_with("watcher `scripts/w.sh` works again: exit 0 at main@"),
+                .starts_with("watcher `.pulse/automations/w.sh` works again: exit 0 at main@"),
             "{posts:?}"
         );
         let got = schedules::get(&s, &sc.id).unwrap();
@@ -993,17 +1007,17 @@ mod tests {
         join(&s, "aurora");
         commit_script(
             &dir,
-            "scripts/slow.sh",
+            ".pulse/automations/slow.sh",
             "echo starting\nsleep 30\necho done\n",
             false,
         );
-        let sc = add(&s, "check", "scripts/slow.sh", "task");
+        let sc = add(&s, "check", ".pulse/automations/slow.sh", "task");
         *TEST_BUDGET.lock().unwrap() = Some(Duration::from_millis(500));
         let lines = tick(&s, 61.0);
         *TEST_BUDGET.lock().unwrap() = None;
         assert!(
             lines[0].starts_with(
-                "schedule SCHED-001 (proj): check scripts/slow.sh red (timed out after 20m, "
+                "schedule SCHED-001 (proj): check .pulse/automations/slow.sh red (timed out after 20m, "
             ),
             "{lines:?}"
         );
@@ -1050,8 +1064,8 @@ mod tests {
         let s = new_store();
         let (_proj, dir) = new_bare_repo(&s);
         join(&s, "aurora");
-        commit_script(&dir, "scripts/check.sh", "exit 0\n", false);
-        let sc = add(&s, "check", "scripts/check.sh", "task");
+        commit_script(&dir, ".pulse/automations/check.sh", "exit 0\n", false);
+        let sc = add(&s, "check", ".pulse/automations/check.sh", "task");
         set_setting(&s, "daemon.max_load", "4");
         let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             load1: Some(40.2),
@@ -1085,7 +1099,7 @@ mod tests {
         join(&s, "aurora");
         commit_script(
             &dir,
-            "scripts/count.sh",
+            ".pulse/automations/count.sh",
             concat!(
                 "f=\"$PULSE_STATE_DIR/count\"\n",
                 "n=$(cat \"$f\" 2>/dev/null || echo 0)\n",
@@ -1097,7 +1111,7 @@ mod tests {
             false,
         );
         let sha = run(&dir, &["git", "rev-parse", "main"]).trim().to_string();
-        let sc = add(&s, "watch", "scripts/count.sh", "task");
+        let sc = add(&s, "watch", ".pulse/automations/count.sh", "task");
         let state = state_dir(&s.home, &sc.id);
         assert!(!state.exists());
 
@@ -1121,7 +1135,10 @@ mod tests {
             "worktree still registered"
         );
         assert!(
-            !Path::new(&dir).join("scripts").join("count").exists(),
+            !Path::new(&dir)
+                .join(".pulse/automations")
+                .join("count")
+                .exists(),
             "the script ran in the project checkout"
         );
 
@@ -1148,10 +1165,10 @@ mod tests {
         let s = new_store();
         let (_proj, dir) = new_bare_repo(&s);
         join(&s, "aurora");
-        commit_script(&dir, "scripts/a.sh", "exit 0\n", false);
-        commit_script(&dir, "scripts/b.sh", "exit 0\n", false);
-        let a = add(&s, "check", "scripts/a.sh", "task");
-        let b = add(&s, "check", "scripts/b.sh", "task");
+        commit_script(&dir, ".pulse/automations/a.sh", "exit 0\n", false);
+        commit_script(&dir, ".pulse/automations/b.sh", "exit 0\n", false);
+        let a = add(&s, "check", ".pulse/automations/a.sh", "task");
+        let b = add(&s, "check", ".pulse/automations/b.sh", "task");
         s.conn()
             .unwrap()
             .execute(
@@ -1163,13 +1180,13 @@ mod tests {
         let lines = tick(&s, 61.0);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
-            lines[0].starts_with("schedule SCHED-002 (proj): check scripts/b.sh green"),
+            lines[0].starts_with("schedule SCHED-002 (proj): check .pulse/automations/b.sh green"),
             "{lines:?}"
         );
         assert_eq!(schedules::get(&s, &a.id).unwrap().runs, 0);
         let lines = tick(&s, 61.0);
         assert!(
-            lines[0].starts_with("schedule SCHED-001 (proj): check scripts/a.sh green"),
+            lines[0].starts_with("schedule SCHED-001 (proj): check .pulse/automations/a.sh green"),
             "{lines:?}"
         );
         assert!(tick(&s, 61.0).is_empty());
@@ -1184,8 +1201,8 @@ mod tests {
         let s = new_store();
         let (_proj, dir) = new_bare_repo(&s);
         join(&s, "aurora");
-        commit_script(&dir, "scripts/check.sh", "exit 0\n", false);
-        let sc = add(&s, "check", "scripts/check.sh", "task");
+        commit_script(&dir, ".pulse/automations/check.sh", "exit 0\n", false);
+        let sc = add(&s, "check", ".pulse/automations/check.sh", "task");
         s.conn()
             .unwrap()
             .execute(
@@ -1212,7 +1229,9 @@ mod tests {
         drop(saturated);
         let out = once_daemon(&s, opts());
         assert!(
-            out.contains("schedule SCHED-001 (proj): check scripts/check.sh green (exit 0, "),
+            out.contains(
+                "schedule SCHED-001 (proj): check .pulse/automations/check.sh green (exit 0, "
+            ),
             "{out}"
         );
         assert_eq!(schedules::get(&s, &sc.id).unwrap().runs, 1, "{out}");
@@ -1225,8 +1244,8 @@ mod tests {
         let s = new_store();
         let (_proj, dir) = new_bare_repo(&s);
         join(&s, "aurora");
-        commit_script(&dir, "scripts/check.sh", "exit 0\n", false);
-        let sc = add(&s, "check", "scripts/check.sh", "task");
+        commit_script(&dir, ".pulse/automations/check.sh", "exit 0\n", false);
+        let sc = add(&s, "check", ".pulse/automations/check.sh", "task");
         let llm = schedules::add(
             &s,
             schedules::ScheduleInput {
@@ -1241,7 +1260,7 @@ mod tests {
             },
         )
         .unwrap();
-        run(&dir, &["git", "rm", "-q", "scripts/check.sh"]);
+        run(&dir, &["git", "rm", "-q", ".pulse/automations/check.sh"]);
         run(&dir, &["git", "commit", "-q", "-m", "drop the check"]);
         let lines = tick(&s, 61.0);
         assert_eq!(lines.len(), 2, "{lines:?}");
@@ -1250,15 +1269,16 @@ mod tests {
             "{lines:?}"
         );
         assert!(
-            lines[1]
-                .starts_with("schedule SCHED-001 (proj): check scripts/check.sh red (exit 127, "),
+            lines[1].starts_with(
+                "schedule SCHED-001 (proj): check .pulse/automations/check.sh red (exit 127, "
+            ),
             "{lines:?}"
         );
         let got = schedules::get(&s, &sc.id).unwrap();
         assert_eq!(got.last_rc, Some(127));
         assert!(
             got.last_output
-                .contains("scripts/check.sh: no such file on main@"),
+                .contains(".pulse/automations/check.sh: no such file on main@"),
             "{}",
             got.last_output
         );

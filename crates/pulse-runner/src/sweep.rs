@@ -3860,7 +3860,9 @@ mod tests {
         let s = sweep_store();
         let (_, root) = new_bare_repo(&s);
         crate::test_helpers::join(&s, "aurora");
-        std::fs::write(Path::new(&root).join("check.sh"), "exit 0\n").unwrap();
+        let automations = Path::new(&root).join(".pulse/automations");
+        std::fs::create_dir_all(&automations).unwrap();
+        std::fs::write(automations.join("check.sh"), "exit 0\n").unwrap();
         run(&root, &["git", "add", "-A"]);
         run(&root, &["git", "commit", "-q", "-m", "check"]);
         let sc = pulse_tasks::schedules::add(
@@ -3869,7 +3871,7 @@ mod tests {
                 project: "proj".into(),
                 title: "Check".into(),
                 kind: "check".into(),
-                script: "check.sh".into(),
+                script: ".pulse/automations/check.sh".into(),
                 tier: 1,
                 every: "1h".into(),
                 author: "aurora".into(),

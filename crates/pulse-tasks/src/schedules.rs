@@ -38,6 +38,10 @@ pub const SOURCE_PREFIX: &str = "schedule:";
 /// The board area the daemon posts a check's or watcher's findings under;
 /// the thread is the schedule id.
 pub const BOARD_AREA: &str = "schedule";
+/// Where a check's or watch's script lives: under the project's `.pulse/`
+/// folder, so everything PULSE adds to a repository stays in one place.
+/// `script_home` names the usual spot for one.
+pub const SCRIPT_ROOT: &str = ".pulse/";
 const TIME_LAYOUT: &str = "%Y-%m-%dT%H:%M:%SZ";
 pub(crate) const MINUTES_PER_DAY: i64 = 24 * 60;
 
@@ -117,6 +121,29 @@ impl Schedule {
     pub fn good_state(&self) -> &'static str {
         if self.kind == "watch" { "ok" } else { "green" }
     }
+    /// A check or a watch whose script sits outside `.pulse/`: set before
+    /// the rule, it keeps running from where it is, and is flagged until
+    /// the script moves.
+    pub fn script_outside(&self) -> bool {
+        self.is_script() && !script_in_pulse(&self.script)
+    }
+}
+
+/// Whether a script path (as `validate_script_path` returns it) is under
+/// the project's `.pulse/` folder.
+pub fn script_in_pulse(path: &str) -> bool {
+    path.starts_with(SCRIPT_ROOT) && path.len() > SCRIPT_ROOT.len()
+}
+
+/// The place a check's or watch's script belongs: beside its automation
+/// file, `.pulse/automations/<name>.sh`.
+pub fn script_home(name: &str) -> String {
+    let stem = name.trim();
+    format!(
+        "{}/{}.sh",
+        crate::manifest::AUTOMATIONS_DIR,
+        if stem.is_empty() { "<name>" } else { stem }
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -325,7 +352,7 @@ pub fn validate_script_path(path: &str) -> Result<String> {
             2,
             format!("Not a script path: {path:?}"),
             why,
-            "--script scripts/check.sh (relative to the repo root, committed on the default branch)",
+            "--script .pulse/automations/check.sh (relative to the repo root, committed on the default branch)",
         )
     };
     if path.is_empty() {
@@ -333,7 +360,7 @@ pub fn validate_script_path(path: &str) -> Result<String> {
             2,
             "A check or watch needs a script",
             "the daemon runs it from the repo root on a cadence",
-            "--script scripts/check.sh",
+            "--script .pulse/automations/check.sh",
         ));
     }
     if path.contains('\\') {
@@ -357,6 +384,25 @@ pub fn validate_script_path(path: &str) -> Result<String> {
         return Err(bad("it names no file"));
     }
     Ok(parts.join("/"))
+}
+
+/// The rule a new or changed script path must meet: it lives under
+/// `.pulse/`. `kept` is the script the schedule already runs, when there is
+/// one: an automation set before the rule keeps its script where it is
+/// (`Schedule::script_outside` flags it) until the script changes.
+pub fn check_script_place(script: &str, kept: &str) -> Result<()> {
+    if script_in_pulse(script) || (!kept.is_empty() && script == kept.trim()) {
+        return Ok(());
+    }
+    Err(input(
+        2,
+        format!("The script {script:?} is outside {SCRIPT_ROOT}"),
+        "a check's or watch's script lives under the project's .pulse/ folder, so everything PULSE adds to the repository stays in one place",
+        format!(
+            "move it to {} (or anywhere under {SCRIPT_ROOT}), commit on the default branch, and name that path",
+            script_home("")
+        ),
+    ))
 }
 
 /// Whether `path` is a file on `branch` of the repo at `repo`: `Some(true)`
@@ -401,7 +447,7 @@ pub fn add(s: &pulse_store::Store, input: ScheduleInput) -> Result<Schedule> {
 /// the script of a check or watch could not be looked for on the default
 /// branch because the repo was out of reach.
 pub fn add_checked(s: &pulse_store::Store, input: ScheduleInput) -> Result<(Schedule, String)> {
-    let v = validate(s, &input)?;
+    let v = validate(s, &input, "")?;
     let cap = setting_int(s, "schedule.max_per_project", 10);
     let now = s.now();
     let tx = s.begin()?;
@@ -556,7 +602,7 @@ fn update_as(
         origin,
         ..input.clone()
     };
-    let v = validate(s, &own)?;
+    let v = validate(s, &own, &sched.script)?;
     let mut changed = Vec::new();
     let differs: [(&str, bool); 13] = [
         ("origin", v.origin != sched.origin),
@@ -664,13 +710,24 @@ impl Validated {
 /// the first that fails; `pulse manifest check --project P` runs them on a
 /// file's entries without writing anything.
 pub fn check(s: &pulse_store::Store, input: &ScheduleInput) -> Result<String> {
-    validate(s, input).map(|v| v.warning)
+    validate(s, input, "").map(|v| v.warning)
+}
+
+/// `check` for a change to a schedule that already runs `kept_script`:
+/// that script may stay where it is (see `check_script_place`).
+pub fn check_update(
+    s: &pulse_store::Store,
+    input: &ScheduleInput,
+    kept_script: &str,
+) -> Result<String> {
+    validate(s, input, kept_script).map(|v| v.warning)
 }
 
 /// The checks every schedule passes before it is written, whether added or
 /// updated: the cap on schedules per project is the one check `add` alone
-/// makes.
-fn validate(s: &pulse_store::Store, input: &ScheduleInput) -> Result<Validated> {
+/// makes. `kept_script` is the script the schedule already runs (empty for
+/// a new one).
+fn validate(s: &pulse_store::Store, input: &ScheduleInput, kept_script: &str) -> Result<Validated> {
     let title = clean(&input.title);
     if title.is_empty() {
         return Err(self::input(
@@ -710,6 +767,7 @@ fn validate(s: &pulse_store::Store, input: &ScheduleInput) -> Result<Validated> 
     let mut warning = String::new();
     let (script, job_kind) = if script_kind {
         let script = validate_script_path(&input.script)?;
+        check_script_place(&script, kept_script)?;
         let job_kind = if input.job_kind.trim().is_empty() {
             "task".to_string()
         } else {
@@ -927,6 +985,167 @@ pub fn list(s: &pulse_store::Store, project: &str, status: &str) -> Result<Vec<S
     Ok(stmt
         .query_map(rusqlite::params_from_iter(refs), scan)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// One line of a schedule's history, newest first in `history`: what the
+/// daemon did with it (a run of its script, a job it queued or skipped, a
+/// state change) and what the owner or an agent did to it (added, changed,
+/// paused, resumed, ended, asked to run now).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct HistoryEntry {
+    /// The event's sequence number; a cursor for "older than".
+    pub seq: i64,
+    pub at: String,
+    pub actor: String,
+    /// The event's action without its `schedule.` prefix: `ran`, `fired`,
+    /// `skipped`, `red`, `green`, `added`, `updated`, `paused`, `resumed`,
+    /// `ended`, `run`.
+    pub what: String,
+    /// The run count after a `ran`/`fired`/`skipped`; 0 when not a run.
+    pub run: i32,
+    /// `ran`: the exit code (None for a run that could not start).
+    pub rc: Option<i32>,
+    pub timeout: bool,
+    /// `ran`: seconds the script took.
+    pub seconds: f64,
+    /// `ran`/`red`/`green`: the state after the run.
+    pub state: String,
+    /// `red`/`green`: the state before.
+    pub previous: String,
+    /// The job queued or found open, with its status now when it is known.
+    pub job: String,
+    pub job_status: String,
+    pub job_agent: String,
+    pub job_finished_at: String,
+    /// `fired`/`skipped`: whether a new job was queued.
+    pub queued: bool,
+    /// `fired`/`skipped`: why a job was wanted (`verdict.job_why`).
+    pub why: String,
+    /// `paused`/`ended`: the note; `red`/`green`: the finding posted.
+    pub note: String,
+    /// `updated`: the fields that changed.
+    pub changed: Vec<String>,
+    /// `added`/`updated`: the file that holds the schedule
+    /// (`repo:<path>#<name>`), "" for one set by hand.
+    pub origin: String,
+}
+
+/// The actions `history` reads, every one written with the schedule id as
+/// its subject.
+pub const HISTORY_ACTIONS: &[&str] = &[
+    "schedule.added",
+    "schedule.updated",
+    "schedule.paused",
+    "schedule.resumed",
+    "schedule.ended",
+    "schedule.run",
+    "schedule.ran",
+    "schedule.fired",
+    "schedule.skipped",
+    "schedule.red",
+    "schedule.green",
+];
+
+/// What happened to a schedule, newest first: at most `limit` entries with
+/// a sequence number below `before` (0 for the newest). A job named by an
+/// entry carries its status as it is now, so the line says whether the
+/// work it started is done.
+pub fn history(
+    s: &pulse_store::Store,
+    id: &str,
+    before: i64,
+    limit: usize,
+) -> Result<Vec<HistoryEntry>> {
+    let conn = s.conn()?;
+    let limit = limit.clamp(1, 500);
+    let before = if before <= 0 { i64::MAX } else { before };
+    let mut stmt = conn.prepare(
+        "SELECT seq, at, actor, action, detail FROM events WHERE subject = ? AND seq < ? AND action LIKE 'schedule.%' ORDER BY seq DESC LIMIT ?",
+    )?;
+    let rows = stmt
+        .query_map(params![id, before, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (seq, at, actor, action, detail) in rows {
+        let Some(what) = action.strip_prefix("schedule.") else {
+            continue;
+        };
+        if !HISTORY_ACTIONS.contains(&action.as_str()) {
+            continue;
+        }
+        let d: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+        let text = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let int = |k: &str| d.get(k).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let flag = |k: &str| d.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        let note = if what == "red" || what == "green" {
+            text("post")
+        } else {
+            text("note")
+        };
+        out.push(HistoryEntry {
+            seq,
+            at,
+            actor,
+            what: what.to_string(),
+            run: int("run"),
+            rc: d.get("rc").and_then(|v| v.as_i64()).map(|v| v as i32),
+            timeout: flag("timeout"),
+            seconds: d.get("seconds").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            state: text("state"),
+            previous: text("previous"),
+            job: text("job"),
+            queued: match what {
+                "fired" => true,
+                "skipped" => false,
+                _ => flag("queued"),
+            },
+            why: text("why"),
+            origin: text("origin"),
+            note,
+            changed: d
+                .get("changed")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        });
+    }
+    // The jobs as they stand now, one lookup each (a history page names a
+    // few dozen at most).
+    let mut job_stmt =
+        conn.prepare("SELECT status, lease_agent, finished_at FROM jobs WHERE id = ?")?;
+    for e in &mut out {
+        if e.job.is_empty() {
+            continue;
+        }
+        if let Some((status, agent, finished)) = job_stmt
+            .query_row([&e.job], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .optional()?
+        {
+            e.job_status = status;
+            e.job_agent = agent;
+            e.job_finished_at = finished;
+        }
+    }
+    Ok(out)
 }
 
 /// The jobs a schedule queued, newest first.

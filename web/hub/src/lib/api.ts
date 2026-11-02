@@ -3194,6 +3194,73 @@ export interface AutomationSchedule {
   every_words: string; // "every day at 02:00 UTC"
   origin_name: string; // the file entry's name, "" for a hand-set one
   origin_path: string; // the file, "" for a hand-set one
+  // A check or watch whose script sits outside .pulse/: set before the rule
+  // that keeps everything PULSE adds to a repository under one folder. It
+  // keeps running from where it is until the script moves to `script_home`.
+  script_outside?: boolean;
+  script_home?: string; // .pulse/automations/<name>.sh when script_outside
+}
+
+// One line of an automation's history (GET /api/v1/automations/<id>/history),
+// newest first: what the daemon did with it (a run of its script, a job it
+// queued or skipped, a red/green turn) and what the owner or an agent did to
+// it (added, changed, paused, resumed, ended, asked to run now).
+export interface AutomationHistoryEntry {
+  seq: number; // the event's sequence number; a cursor for "older than"
+  at: string;
+  actor: string;
+  what:
+    | "ran"
+    | "fired"
+    | "skipped"
+    | "red"
+    | "green"
+    | "added"
+    | "updated"
+    | "paused"
+    | "resumed"
+    | "ended"
+    | "run"
+    | string;
+  run: number; // the run count after a ran/fired/skipped; 0 otherwise
+  rc: number | null; // ran: the exit code (null when the run could not start)
+  timeout: boolean;
+  seconds: number; // ran: how long the script took
+  state: string; // ran/red/green: the state after
+  previous: string; // red/green: the state before
+  job: string; // the job queued or found open
+  job_status: string; // that job's status now, when it is known
+  job_agent: string;
+  job_finished_at: string;
+  queued: boolean; // fired: a new job was queued; skipped: one was open already
+  why: string; // fired/skipped: why a job was wanted
+  note: string; // paused/ended: the note; red/green: the post made
+  changed: string[]; // updated: the fields that changed
+  origin: string; // added/updated: the file holding it (repo:<path>#<name>), "" when set by hand
+}
+
+export interface AutomationHistory {
+  schedule: AutomationSchedule;
+  entries: AutomationHistoryEntry[];
+  more: boolean; // older entries exist past the last one here
+  jobs: TaskJob[]; // every job it queued, newest first
+  last_output: string; // the tail of the last script run's output
+}
+
+// The history path, with its paging.
+export function automationHistoryPath(
+  id: string,
+  o: { before?: number; limit?: number } = {},
+): string {
+  return (
+    "automations/" +
+    encodeURIComponent(id) +
+    "/history" +
+    query({
+      before: o.before ? String(o.before) : undefined,
+      limit: o.limit ? String(o.limit) : undefined,
+    })
+  );
 }
 
 // The project's list file (`.pulse/pulse.yaml`, `schedules:`) on its default

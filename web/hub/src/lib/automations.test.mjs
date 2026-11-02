@@ -4,12 +4,18 @@ import {
   EMPTY_ENTRY,
   cadenceWords,
   cleanEntry,
+  daemonProblems,
   entryFromFile,
   entryFromSchedule,
   entryHints,
   everyMinutes,
   fileEntryOf,
+  historySummary,
+  historyWords,
   keptWords,
+  scriptHome,
+  scriptInPulse,
+  scriptOutside,
   slugify,
   sortRows,
   stateWords,
@@ -131,6 +137,227 @@ test("entryHints names what is missing before the hub is asked", () => {
     entryHints({ ...EMPTY_ENTRY, name: "n", skill: "release-check" }).length ===
       0,
     "a skill stands in for the brief",
+  );
+});
+
+test("a check's script lives under .pulse/, unless it is the one it already runs", () => {
+  assert.equal(scriptHome("site-check"), ".pulse/automations/site-check.sh");
+  assert.equal(scriptHome(" "), ".pulse/automations/<name>.sh");
+  assert.ok(scriptInPulse(".pulse/automations/x.sh"));
+  assert.ok(scriptInPulse("./.pulse/x.sh"));
+  assert.ok(!scriptInPulse(".pulse/"));
+  assert.ok(!scriptInPulse("scripts/check.sh"));
+  assert.ok(!scriptInPulse(".pulsey/check.sh"));
+  const outside = entryHints({
+    ...EMPTY_ENTRY,
+    name: "site",
+    kind: "check",
+    script: "scripts/check.sh",
+  });
+  assert.equal(outside.length, 1, outside.join("|"));
+  assert.ok(outside[0].includes(".pulse/automations/site.sh"), outside[0]);
+  assert.deepEqual(
+    entryHints({
+      ...EMPTY_ENTRY,
+      name: "site",
+      kind: "check",
+      script: ".pulse/automations/site.sh",
+    }),
+    [],
+  );
+  // An edit keeps the script it already runs.
+  assert.deepEqual(
+    entryHints(
+      { ...EMPTY_ENTRY, name: "site", kind: "check", script: "scripts/check.sh" },
+      30,
+      "scripts/check.sh",
+    ),
+    [],
+  );
+  // The empty-script hint names the place.
+  assert.ok(
+    entryHints({ ...EMPTY_ENTRY, name: "site", kind: "watch" }).some((h) =>
+      h.includes(".pulse/automations/site.sh is the place"),
+    ),
+  );
+  assert.equal(scriptOutside(sched()), false);
+  assert.equal(
+    scriptOutside(sched({ kind: "check", script: "scripts/check.sh" })),
+    true,
+  );
+  assert.equal(
+    scriptOutside(
+      sched({ kind: "check", script: ".pulse/automations/check.sh" }),
+    ),
+    false,
+  );
+  // The hub's own word wins over the path when it is there.
+  assert.equal(
+    scriptOutside(
+      sched({ kind: "watch", script: "scripts/w.sh", script_outside: false }),
+    ),
+    false,
+  );
+});
+
+test("daemonProblems leaves the skill folders' problems to the Skills page", () => {
+  const p = {
+    slug: "demo-app",
+    name: "Demo",
+    repo: null,
+    file: null,
+    schedules: [],
+    options: { skills: [], agents: [] },
+    automations: { dir: ".pulse/automations", files: [] },
+    applied: {
+      problems: [
+        "skill .github/skills/design-taste-frontend/SKILL.md: the file is 61 kB; a skill is at most 32 kB",
+        "schedule `nightly`: needs `every`",
+        ".pulse/pulse.yaml: two items are named `tidy`",
+      ],
+    },
+  };
+  assert.deepEqual(daemonProblems(p), [
+    "schedule `nightly`: needs `every`",
+    ".pulse/pulse.yaml: two items are named `tidy`",
+  ]);
+});
+
+test("historyWords and historySummary say what happened in the owner's words", () => {
+  const entry = (over = {}) => ({
+    seq: 1,
+    at: "2026-09-01T09:00:03Z",
+    actor: "daemon",
+    what: "ran",
+    run: 0,
+    rc: null,
+    timeout: false,
+    seconds: 0,
+    state: "",
+    previous: "",
+    job: "",
+    job_status: "",
+    job_agent: "",
+    job_finished_at: "",
+    queued: false,
+    why: "",
+    note: "",
+    changed: [],
+    origin: "",
+    ...over,
+  });
+  const red = historyWords(
+    entry({ run: 611, rc: 1, seconds: 4.2, state: "red", job: "JOB-0402", queued: true }),
+    "check",
+  );
+  assert.equal(red.title, "Run 611: exit 1 in 4.2s");
+  assert.equal(red.detail, "The check failed. Queued JOB-0402.");
+  assert.equal(red.tone, "bad");
+  const again = historyWords(
+    entry({ run: 612, rc: 1, seconds: 40, state: "red", job: "JOB-0402" }),
+    "check",
+  );
+  assert.equal(again.title, "Run 612: exit 1 in 40s");
+  assert.equal(
+    again.detail,
+    "The check failed. JOB-0402 was still open, so nothing new was queued.",
+  );
+  const quiet = historyWords(
+    entry({ run: 3, rc: 0, seconds: 1.0, state: "ok" }),
+    "watch",
+  );
+  assert.equal(quiet.title, "Run 3: exit 0 in 1s");
+  assert.equal(quiet.detail, "Nothing to report.");
+  assert.equal(quiet.tone, "ok");
+  const out = historyWords(
+    entry({ run: 4, rc: 124, timeout: true, seconds: 1200, state: "red" }),
+    "check",
+  );
+  assert.equal(out.title, "Run 4: exit 124 (timed out) in 1200s");
+  assert.equal(out.tone, "warn");
+  assert.equal(historyWords(entry({ run: 5 }), "check").title, "Run 5 could not start");
+  assert.deepEqual(
+    historyWords(
+      entry({ what: "red", state: "broken", previous: "ok", note: "20260901T083004Z-daemon" }),
+      "watch",
+    ),
+    {
+      title: "Turned broken from quiet",
+      detail: "Posted 20260901T083004Z-daemon on the board.",
+      tone: "bad",
+    },
+  );
+  assert.equal(
+    historyWords(entry({ what: "green", state: "green", previous: "red" }), "check").title,
+    "Turned green from red",
+  );
+  assert.equal(
+    historyWords(entry({ what: "fired", job: "JOB-1", why: "due" }), "task").title,
+    "Queued JOB-1",
+  );
+  assert.equal(
+    historyWords(entry({ what: "skipped", job: "JOB-1" }), "task").detail,
+    "JOB-1 was still open.",
+  );
+  assert.equal(historyWords(entry({ what: "added", actor: "human" }), "task").title, "Added by you");
+  assert.equal(historyWords(entry({ what: "added", actor: "daemon" }), "task").title, "Added by the daemon");
+  assert.equal(
+    historyWords(
+      entry({ what: "added", actor: "daemon", origin: "repo:.pulse/automations/site.yaml#site" }),
+      "check",
+    ).title,
+    "Added from .pulse/automations/site.yaml",
+  );
+  assert.equal(
+    historyWords(
+      entry({
+        what: "updated",
+        actor: "daemon",
+        changed: ["every"],
+        origin: "repo:.pulse/automations/site.yaml#site",
+      }),
+      "check",
+    ).title,
+    "Changed by .pulse/automations/site.yaml",
+  );
+  assert.equal(
+    historyWords(entry({ what: "updated", actor: "demo-lead", changed: ["every", "at"] }), "task")
+      .detail,
+    "every, at changed.",
+  );
+  assert.equal(
+    historyWords(entry({ what: "paused", actor: "human", note: "release week" }), "task").detail,
+    "release week",
+  );
+  assert.equal(historyWords(entry({ what: "run", actor: "human" }), "task").title, "Run now, asked by you");
+
+  assert.equal(historySummary([], "check"), "Nothing has happened yet.");
+  assert.equal(
+    historySummary([entry({ what: "added" })], "check"),
+    "Nothing has happened yet.",
+  );
+  assert.equal(
+    historySummary([entry({ what: "paused" }), entry({ what: "added" })], "task"),
+    "No runs yet; 1 change.",
+  );
+  assert.equal(
+    historySummary(
+      [
+        entry({ rc: 1, state: "red", run: 3 }),
+        entry({ what: "fired", job: "J" }),
+        entry({ rc: 0, state: "green", run: 2 }),
+        entry({ run: 1 }),
+      ],
+      "check",
+    ),
+    "3 runs, 1 red, 1 could not start, 1 job queued on this page.",
+  );
+  assert.equal(
+    historySummary(
+      [entry({ rc: 0, state: "broken", run: 2 }), entry({ rc: 0, state: "ok", run: 1 })],
+      "watch",
+    ),
+    "2 runs, 1 firing on this page.",
   );
 });
 

@@ -24,6 +24,8 @@ use pulse_tasks::schedules::{self, Schedule, ScheduleInput};
 use serde_json::{Value, json};
 
 const ACTIONS: &[&str] = &["pause", "resume", "end", "run"];
+/// History entries per page when the console names no limit.
+const HISTORY_PAGE: usize = 50;
 
 /// The identity a commit carries when the repository names none.
 const FALLBACK_IDENTITY: (&str, &str) = ("PULSE", "pulse@localhost");
@@ -33,6 +35,7 @@ enum Route {
     Add,
     Check,
     Remove,
+    History(String),
     Action(String, String),
 }
 
@@ -48,6 +51,7 @@ impl Handler {
             1 => Route::Add,
             2 if parts[1] == "check" => Route::Check,
             2 if parts[1] == "remove" => Route::Remove,
+            3 if parts[2] == "history" => Route::History(parts[1].clone()),
             3 if ACTIONS.contains(&parts[2].as_str()) => {
                 Route::Action(parts[1].clone(), parts[2].clone())
             }
@@ -58,6 +62,7 @@ impl Handler {
         };
         let methods = match route {
             Route::List | Route::Add => vec!["GET".to_string(), "POST".to_string()],
+            Route::History(_) => vec!["GET".to_string()],
             _ => vec!["POST".to_string()],
         };
         if !addition_method(w, r, methods)
@@ -70,8 +75,68 @@ impl Handler {
             Route::Add => self.automations_add(w, r),
             Route::Check => self.automations_check(w, r),
             Route::Remove => self.automations_remove(w, r),
+            Route::History(id) => self.automations_history(w, r, &id),
             Route::Action(id, action) => self.automations_action(w, r, &id, &action),
         }
+    }
+
+    /// `GET /api/v1/automations/<id>/history?before=SEQ&limit=N`: what
+    /// happened to one automation, newest first - its script runs with
+    /// exit code, time and state, the jobs it queued or skipped and where
+    /// they stand, its red/green turns, and every change by hand or by the
+    /// file - with the last script output in full.
+    fn automations_history(&self, w: &mut ResponseWriter, r: &Request, id: &str) {
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        let sched = match schedules::get(store, id) {
+            Ok(s) if self.project.is_empty() || s.project == self.project => s,
+            _ => {
+                write_error(
+                    w,
+                    404,
+                    format!("No schedule {id}"),
+                    "The id is not in this store.".to_string(),
+                    "Refresh the list.".to_string(),
+                );
+                return;
+            }
+        };
+        let before = r.query("before").trim().parse::<i64>().unwrap_or(0);
+        let limit = r
+            .query("limit")
+            .trim()
+            .parse::<usize>()
+            .unwrap_or(HISTORY_PAGE)
+            .clamp(1, 500);
+        // One more than asked tells the console whether older entries exist.
+        let mut entries = match schedules::history(store, id, before, limit + 1) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e);
+                return;
+            }
+        };
+        let more = entries.len() > limit;
+        entries.truncate(limit);
+        let jobs = match schedules::jobs(store, id) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e);
+                return;
+            }
+        };
+        write_json(
+            w,
+            200,
+            json!({
+                "schedule": schedule_json(&sched),
+                "entries": entries,
+                "more": more,
+                "jobs": jobs,
+                "last_output": sched.last_output,
+            }),
+        );
     }
 
     fn automations_list(&self, w: &mut ResponseWriter, r: &Request) {
@@ -395,8 +460,46 @@ fn schedule_json(s: &Schedule) -> Value {
             "origin_path".into(),
             json!(origin_path(&s.origin).unwrap_or("")),
         );
+        m.insert("script_outside".into(), json!(s.script_outside()));
+        m.insert(
+            "script_home".into(),
+            json!(if s.script_outside() {
+                schedules::script_home(
+                    manifest::origin_name(&s.origin).unwrap_or(&slug_of(&s.title, &s.id)),
+                )
+            } else {
+                String::new()
+            }),
+        );
     }
     v
+}
+
+/// A file-name-shaped stem for a hand-set schedule: its title as a slug,
+/// or its id.
+fn slug_of(title: &str, id: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in title.trim().to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    let out = out
+        .trim_end_matches('-')
+        .chars()
+        .take(64)
+        .collect::<String>();
+    let out = out.trim_end_matches('-').to_string();
+    if out.is_empty() {
+        id.to_lowercase()
+    } else {
+        out
+    }
 }
 
 /// The file path in a schedule's `origin` (`repo:<path>#<name>`).
@@ -876,7 +979,10 @@ fn check_draft(
             if !draft.in_repo {
                 input.origin = String::new();
             }
-            match schedules::check(store, &input) {
+            // An edit may keep the script it already runs, even outside
+            // .pulse/; a new automation and a moved script follow the rule.
+            let kept = kept_script(store, &p.slug, draft);
+            match schedules::check_update(store, &input, &kept) {
                 Ok(w) => warning = w,
                 Err(err) => problems.push(first_line(&err.to_string())),
             }
@@ -891,6 +997,29 @@ fn check_draft(
         view,
         repo,
     })
+}
+
+/// The script the automation a draft edits already runs, or "" for a new
+/// one: a store edit names its id, a repository edit the entry it replaces
+/// (whose live row carries `origin repo:<path>#<name>`).
+fn kept_script(store: &pulse_store::Store, slug: &str, draft: &Draft) -> String {
+    if let Some(id) = &draft.id
+        && let Ok(s) = schedules::get(store, id)
+        && s.project == slug
+    {
+        return s.script;
+    }
+    if let Some(old) = &draft.replace
+        && let Ok(rows) = schedules::list(store, slug, "")
+    {
+        return rows
+            .into_iter()
+            .filter(|s| s.status != "ended")
+            .find(|s| manifest::origin_name(&s.origin) == Some(old.as_str()))
+            .map(|s| s.script)
+            .unwrap_or_default();
+    }
+    String::new()
 }
 
 /// A static problem without its "schedule `name`: " label: the console
@@ -1169,11 +1298,17 @@ const YAML_WORDS: &[&str] = &[
     "true", "false", "yes", "no", "on", "off", "null", "y", "n", "~",
 ];
 
-/// A scalar as YAML: bare when it is plainly a word or a sentence, else a
-/// double-quoted string (JSON's quoting is valid YAML).
+/// A scalar as YAML: bare when it is plainly a word, a sentence or a path
+/// (`.pulse/automations/check.sh` included), else a double-quoted string
+/// (JSON's quoting is valid YAML).
 pub(crate) fn yaml_scalar(s: &str) -> String {
-    let plain = !s.is_empty()
-        && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+    let mut chars = s.chars();
+    let starts_plain = match (chars.next(), chars.next()) {
+        (Some(c), _) if c.is_ascii_alphanumeric() => true,
+        (Some('.'), Some(c)) => c.is_ascii_alphabetic(),
+        _ => false,
+    };
+    let plain = starts_plain
         && !s.ends_with(' ')
         && s.chars().any(|c| c.is_ascii_alphabetic())
         && s.chars().all(|c| {
@@ -1787,7 +1922,14 @@ mod tests {
             yaml_scalar("Audit the dependencies"),
             "Audit the dependencies"
         );
-        assert_eq!(yaml_scalar("scripts/check.sh"), "scripts/check.sh");
+        assert_eq!(
+            yaml_scalar(".pulse/automations/check.sh"),
+            ".pulse/automations/check.sh"
+        );
+        assert_eq!(yaml_scalar(".inf"), "\".inf\"");
+        assert_eq!(yaml_scalar(".5"), "\".5\"");
+        assert_eq!(yaml_scalar(". a"), "\". a\"");
+        assert_eq!(yaml_scalar("."), "\".\"");
         assert_eq!(yaml_scalar("09:00"), "\"09:00\"");
         assert_eq!(yaml_scalar("yes"), "\"yes\"");
         assert_eq!(yaml_scalar("1e5"), "\"1e5\"");
@@ -1803,7 +1945,7 @@ mod tests {
     fn yaml_item_leaves_defaults_out_and_reads_back_as_the_same_entry() {
         let e = Entry {
             kind: "check".to_string(),
-            script: "scripts/check.sh".to_string(),
+            script: ".pulse/automations/check.sh".to_string(),
             job_kind: "improve".to_string(),
             tier: 0,
             priority: 2,
@@ -1817,7 +1959,7 @@ mod tests {
         let item = yaml_item(&e, 2);
         assert_eq!(
             item,
-            "  - name: nightly\n    title: Audit the dependencies\n    every: 1d\n    at: \"02:00\"\n    kind: check\n    brief: |-\n      First line.\n\n        indented second\n      third: with colon\n    script: scripts/check.sh\n    job_kind: improve\n    tier: 0\n    priority: 2\n    run_as: release-manager\n    times: 5\n    paused: true\n"
+            "  - name: nightly\n    title: Audit the dependencies\n    every: 1d\n    at: \"02:00\"\n    kind: check\n    brief: |-\n      First line.\n\n        indented second\n      third: with colon\n    script: .pulse/automations/check.sh\n    job_kind: improve\n    tier: 0\n    priority: 2\n    run_as: release-manager\n    times: 5\n    paused: true\n"
         );
         let m = manifest::parse(&format!("schedules:\n{item}")).unwrap();
         assert_eq!(m.schedules, vec![e]);
@@ -1912,9 +2054,9 @@ mod tests {
     fn project_with_repo(store: &pulse_store::Store, slug: &str) -> String {
         http::additions_project(store, slug);
         let dir = Path::new(&store.home).join(slug).display().to_string();
-        std::fs::create_dir_all(Path::new(&dir).join("scripts")).unwrap();
+        std::fs::create_dir_all(Path::new(&dir).join(".pulse/automations")).unwrap();
         std::fs::write(
-            Path::new(&dir).join("scripts/check.sh"),
+            Path::new(&dir).join(".pulse/automations/check.sh"),
             "#!/bin/sh\nexit 0\n",
         )
         .unwrap();
@@ -1997,11 +2139,13 @@ mod tests {
         let (_, body) = post(
             s,
             "/api/v1/automations/check",
-            json!({"project": "demo", "entry": {"name": "missing", "every": "1d", "kind": "check", "script": "scripts/nope.sh"}}),
+            json!({"project": "demo", "entry": {"name": "missing", "every": "1d", "kind": "check", "script": ".pulse/automations/nope.sh"}}),
         );
         let problems: Vec<String> = serde_json::from_value(body["problems"].clone()).unwrap();
         assert!(
-            problems.iter().any(|p| p.contains("scripts/nope.sh")),
+            problems
+                .iter()
+                .any(|p| p.contains(".pulse/automations/nope.sh")),
             "{problems:?}"
         );
 
@@ -2018,6 +2162,184 @@ mod tests {
             json!({"project": "demo", "entry": {"name": "x"}, "where": "cloud"}),
         );
         assert_eq!(code, 400);
+    }
+
+    /// A new check's script lives under .pulse/; a check set before the
+    /// rule is listed with `script_outside` and the place its script
+    /// belongs, keeps running, and may be edited as long as the script
+    /// stays put - a move anywhere else outside .pulse/ is refused.
+    #[test]
+    fn scripts_outside_pulse_are_refused_for_new_automations_and_flagged_on_old_ones() {
+        let _serial = crate::test_helpers::serial();
+        let t = http::additions_store(false);
+        let s = &t.store;
+        let dir = project_with_repo(s, "demo");
+        std::fs::create_dir_all(Path::new(&dir).join("scripts")).unwrap();
+        std::fs::write(
+            Path::new(&dir).join("scripts/site.sh"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "old script"]);
+        let (_, body) = post(
+            s,
+            "/api/v1/automations/check",
+            json!({"project": "demo", "entry": {"name": "site", "every": "1d", "kind": "check", "script": "scripts/site.sh"}}),
+        );
+        let problems: Vec<String> = serde_json::from_value(body["problems"].clone()).unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("\"scripts/site.sh\" is outside .pulse/"),
+            "{problems:?}"
+        );
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "where": "store", "entry": {"name": "site", "every": "1d", "kind": "check", "script": "scripts/site.sh"}}),
+        );
+        assert_eq!(code, 400, "{body}");
+        assert!(
+            body["why"].as_str().unwrap().contains("is outside .pulse/"),
+            "{body}"
+        );
+
+        // A row from before the rule.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "where": "store", "entry": {"name": "site", "title": "Check the site", "every": "1d", "kind": "check", "script": ".pulse/automations/check.sh"}}),
+        );
+        assert_eq!(code, 201, "{body}");
+        let id = body["schedule"]["id"].as_str().unwrap().to_string();
+        assert_eq!(body["schedule"]["script_outside"], false);
+        assert_eq!(body["schedule"]["script_home"], "");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE schedules SET script = 'scripts/site.sh' WHERE id = ?",
+                [&id],
+            )
+            .unwrap();
+        let (_, body) = get(s, "/api/v1/automations");
+        let row = body["projects"][0]["schedules"][0].clone();
+        assert_eq!(row["id"], id);
+        assert_eq!(row["script_outside"], true);
+        assert_eq!(row["script_home"], ".pulse/automations/check-the-site.sh");
+
+        // An edit that keeps the script passes the check and the write.
+        let edit = json!({"project": "demo", "where": "store", "id": id, "entry": {"name": "site", "title": "Check the site", "every": "2d", "kind": "check", "script": "scripts/site.sh"}});
+        let (code, body) = post(s, "/api/v1/automations/check", edit.clone());
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["problems"], json!([]));
+        let (code, body) = post(s, "/api/v1/automations", edit);
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["schedule"]["every"], "2d");
+        assert_eq!(body["schedule"]["script_outside"], true);
+        // Another path outside .pulse/ does not.
+        let (_, body) = post(
+            s,
+            "/api/v1/automations/check",
+            json!({"project": "demo", "where": "store", "id": id, "entry": {"name": "site", "title": "Check the site", "every": "2d", "kind": "check", "script": "scripts/other.sh"}}),
+        );
+        let problems: Vec<String> = serde_json::from_value(body["problems"].clone()).unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("is outside .pulse/"), "{problems:?}");
+    }
+
+    /// The history of one automation: its runs, the jobs it queued (with
+    /// their status now), its turns and the changes by hand, newest first,
+    /// paged by `before`, with the last output in full.
+    #[test]
+    fn history_lists_what_happened_to_one_automation_newest_first() {
+        let _serial = crate::test_helpers::serial();
+        let t = http::additions_store(false);
+        let s = &t.store;
+        project_with_repo(s, "demo");
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "where": "store", "entry": {"name": "site", "title": "Check the site", "every": "1d", "kind": "check", "script": ".pulse/automations/check.sh"}}),
+        );
+        assert_eq!(code, 201, "{body}");
+        let id = body["schedule"]["id"].as_str().unwrap().to_string();
+        let sched = schedules::get(s, &id).unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at, created_by, lease_agent, finished_at) VALUES ('job-site-1', 'demo', 'task', 'Fix the site', 'fix', ?, 'done', ?, 'daemon', 'demo-dev', ?)",
+                [&format!("{}{id}", schedules::SOURCE_PREFIX), &s.now(), &s.now()],
+            )
+            .unwrap();
+        let run = schedules::ScriptRun {
+            rc: Some(1),
+            seconds: 2.0,
+            output: "curl: (7) Failed to connect\n".into(),
+            verdict: schedules::verdict(&sched, 1, ""),
+            job: "job-site-1".into(),
+            queued: true,
+            post: "POST-7".into(),
+            ..Default::default()
+        };
+        schedules::record_script_run(s, &sched, &s.now(), "daemon", &run).unwrap();
+        let (code, body) = post(
+            s,
+            &format!("/api/v1/automations/{id}/pause"),
+            json!({"note": "known"}),
+        );
+        assert_eq!(code, 200, "{body}");
+
+        let (code, body) = get(s, &format!("/api/v1/automations/{id}/history"));
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["schedule"]["id"], id);
+        assert_eq!(body["schedule"]["status"], "paused");
+        assert_eq!(body["last_output"], "curl: (7) Failed to connect\n");
+        assert_eq!(body["more"], false);
+        let entries = body["entries"].as_array().unwrap();
+        let whats: Vec<&str> = entries
+            .iter()
+            .map(|e| e["what"].as_str().unwrap())
+            .collect();
+        assert_eq!(whats, vec!["paused", "fired", "red", "ran", "added"]);
+        assert_eq!(entries[0]["note"], "known");
+        assert_eq!(entries[0]["actor"], "human");
+        assert_eq!(entries[1]["job"], "job-site-1");
+        assert_eq!(entries[1]["job_status"], "done");
+        assert_eq!(entries[1]["job_agent"], "demo-dev");
+        assert_eq!(entries[1]["queued"], true);
+        assert_eq!(entries[2]["previous"], "");
+        assert_eq!(entries[2]["state"], "red");
+        assert_eq!(entries[2]["note"], "POST-7");
+        assert_eq!(entries[3]["rc"], 1);
+        assert_eq!(entries[3]["seconds"], 2.0);
+        assert_eq!(entries[3]["run"], 1);
+        assert_eq!(entries[4]["actor"], "human");
+        assert_eq!(entries[4]["origin"], "", "a hand-set row names no file");
+        let jobs = body["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["id"], "job-site-1");
+
+        // Paging: two at a time, then the rest from the oldest seen.
+        let (_, body) = get(s, &format!("/api/v1/automations/{id}/history?limit=2"));
+        assert_eq!(body["more"], true);
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        let before = entries[1]["seq"].as_i64().unwrap();
+        let (_, body) = get(
+            s,
+            &format!("/api/v1/automations/{id}/history?limit=50&before={before}"),
+        );
+        assert_eq!(body["more"], false);
+        let whats: Vec<&str> = body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["what"].as_str().unwrap())
+            .collect();
+        assert_eq!(whats, vec!["red", "ran", "added"]);
+
+        let (code, _) = post(s, &format!("/api/v1/automations/{id}/history"), json!({}));
+        assert_eq!(code, 405);
     }
 
     fn read(dir: &str, path: &str) -> String {
@@ -2087,12 +2409,12 @@ mod tests {
         let (code, body) = post(
             s,
             "/api/v1/automations",
-            json!({"project": "demo", "entry": {"name": "nightly", "kind": "check", "script": "scripts/check.sh", "every": "daily", "job_kind": "improve", "paused": true}}),
+            json!({"project": "demo", "entry": {"name": "nightly", "kind": "check", "script": ".pulse/automations/check.sh", "every": "daily", "job_kind": "improve", "paused": true}}),
         );
         assert_eq!(code, 201, "{body}");
         assert_eq!(
             read(&dir, ".pulse/automations/nightly.yaml"),
-            "every: daily\nkind: check\nscript: scripts/check.sh\njob_kind: improve\npaused: true\n"
+            "every: daily\nkind: check\nscript: .pulse/automations/check.sh\njob_kind: improve\npaused: true\n"
         );
         assert_eq!(body["schedule"]["status"], "paused");
 
@@ -2210,7 +2532,13 @@ mod tests {
             json!({"project": "demo", "name": "nightly"}),
         );
         assert_eq!(code, 200, "{body}");
-        assert!(!Path::new(&dir).join(".pulse/automations").exists());
+        // The folder stays for the script that lives beside the files.
+        assert!(
+            !Path::new(&dir)
+                .join(".pulse/automations/nightly.yaml")
+                .exists()
+        );
+        assert!(Path::new(&dir).join(".pulse/automations/check.sh").exists());
         assert_eq!(git_in(&dir, &["status", "--porcelain"]).trim(), "");
         let (code, body) = post(
             s,
@@ -2470,7 +2798,11 @@ mod tests {
             git_in(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
             "feature"
         );
-        assert!(!Path::new(&dir).join(".pulse").exists());
+        assert!(
+            !Path::new(&dir)
+                .join(".pulse/automations/deps-audit.yaml")
+                .exists()
+        );
         assert_eq!(
             git_in(&dir, &["status", "--porcelain"]).trim(),
             "?? wip.txt"
@@ -2498,7 +2830,11 @@ mod tests {
         assert_eq!(sched["created_by"], "human");
         assert_eq!(sched["every"], "1w");
         let id = sched["id"].as_str().unwrap().to_string();
-        assert!(!Path::new(&dir).join(".pulse").exists());
+        assert!(
+            !Path::new(&dir)
+                .join(".pulse/automations/sweep.yaml")
+                .exists()
+        );
 
         let (code, body) = post(
             s,
@@ -2549,7 +2885,7 @@ mod tests {
 
         let (code, _) = post(s, "/api/v1/automations/SCHED-999/pause", json!({}));
         assert_eq!(code, 404);
-        let (code, _) = get(s, "/api/v1/automations/SCHED-1/history");
+        let (code, _) = get(s, "/api/v1/automations/SCHED-999/history");
         assert_eq!(code, 404);
     }
 

@@ -9,6 +9,7 @@ import {
   CopyIcon,
   FileCode2Icon,
   FolderGit2Icon,
+  HistoryIcon,
   Loader2Icon,
   PauseIcon,
   PencilIcon,
@@ -17,6 +18,7 @@ import {
   ShieldCheckIcon,
   SquareIcon,
   TimerIcon,
+  TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -61,9 +63,13 @@ import {
 import { Mono, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
 import {
   ApiError,
+  api,
+  automationHistoryPath,
   query,
   writes,
   type AutomationEntry,
+  type AutomationHistory,
+  type AutomationHistoryEntry,
   type AutomationPlace,
   type AutomationProject,
   type AutomationRepoFile,
@@ -84,10 +90,15 @@ import {
   fileEntryOf,
   fileProblems,
   fileState,
+  historySummary,
+  historyWords,
   inFolder,
   isScriptKind,
   isSlug,
   keptWords,
+  scriptHome,
+  scriptInPulse,
+  scriptOutside,
   slugify,
   sortRows,
   stateWords,
@@ -600,8 +611,10 @@ function ScheduleCard({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [history, setHistory] = useState(false);
   const live = s.status !== "ended";
   const script = isScriptKind(s.kind);
+  const outside = scriptOutside(s);
   const fromFile = !!s.origin_path;
   const fileEntry = fromFile ? fileEntryOf(p, s) : null;
   const state = stateWords(s);
@@ -698,6 +711,21 @@ function ScheduleCard({
         <div className="flex shrink-0 flex-col items-end gap-1">
           <StatusBadge status={s.status} className="mt-0.5" />
           {state ? <ToneBadge tone={state.tone}>{state.text}</ToneBadge> : null}
+          {outside ? (
+            <ToneBadge
+              tone="warn"
+              title={
+                "Its script " +
+                s.script +
+                " sits outside .pulse/. It keeps running from there; the place for it is " +
+                (s.script_home || scriptHome(s.origin_name || s.id)) +
+                "."
+              }
+            >
+              <TriangleAlertIcon className="size-3" aria-hidden />
+              script outside .pulse
+            </ToneBadge>
+          ) : null}
         </div>
       </div>
       <ItemCardBody clamp={2} className="text-muted-foreground">
@@ -711,6 +739,13 @@ function ScheduleCard({
                 s.job_kind +
                 " job."
               : "."}
+            {outside ? (
+              <>
+                {" Move the script to "}
+                <Mono>{s.script_home || scriptHome(s.origin_name || s.id)}</Mono>
+                {" so everything PULSE adds to the repository stays under .pulse/."}
+              </>
+            ) : null}
           </>
         ) : s.skill ? (
           <>
@@ -755,6 +790,11 @@ function ScheduleCard({
               (s.max_runs ? " of " + num(s.max_runs) : "")
             : "not run yet"}
         </span>
+        {s.last_at ? (
+          <span>
+            last <When d={s.last_at} />
+          </span>
+        ) : null}
         {s.last_job ? (
           <Link href={hrefs.task(s.last_job)} className="hover:underline">
             last job <Mono className="text-[11px]">{s.last_job}</Mono>
@@ -766,78 +806,93 @@ function ScheduleCard({
           </span>
         ) : null}
       </ItemCardMeta>
-      {live ? (
-        <ItemCardActions>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void act("run")}
-            disabled={!!busy}
-            title="Queue one job now, without waiting for the cadence"
-          >
-            {busy === "run" ? (
-              <Loader2Icon className="animate-spin" />
-            ) : (
-              <PlayIcon />
-            )}{" "}
-            Run now
-          </Button>
-          {s.status === "paused" ? (
+      <ItemCardActions>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setHistory(true)}
+          title="Every run, job and change of this automation, newest first"
+        >
+          <HistoryIcon /> History
+        </Button>
+        {live ? (
+          <>
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void act("resume")}
+              onClick={() => void act("run")}
               disabled={!!busy}
+              title="Queue one job now, without waiting for the cadence"
             >
-              {busy === "resume" ? (
+              {busy === "run" ? (
                 <Loader2Icon className="animate-spin" />
               ) : (
                 <PlayIcon />
               )}{" "}
-              Resume
+              Run now
             </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void act("pause")}
-              disabled={!!busy}
-            >
-              {busy === "pause" ? (
-                <Loader2Icon className="animate-spin" />
-              ) : (
-                <PauseIcon />
-              )}{" "}
-              Pause
-            </Button>
-          )}
-          {!fromFile || fileEntry ? (
-            <Button size="sm" variant="ghost" onClick={edit} disabled={!!busy}>
-              <PencilIcon /> Edit
-            </Button>
-          ) : null}
-          {!fromFile && p.repo ? (
+            {s.status === "paused" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void act("resume")}
+                disabled={!!busy}
+              >
+                {busy === "resume" ? (
+                  <Loader2Icon className="animate-spin" />
+                ) : (
+                  <PlayIcon />
+                )}{" "}
+                Resume
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void act("pause")}
+                disabled={!!busy}
+              >
+                {busy === "pause" ? (
+                  <Loader2Icon className="animate-spin" />
+                ) : (
+                  <PauseIcon />
+                )}{" "}
+                Pause
+              </Button>
+            )}
+            {!fromFile || fileEntry ? (
+              <Button size="sm" variant="ghost" onClick={edit} disabled={!!busy}>
+                <PencilIcon /> Edit
+              </Button>
+            ) : null}
+            {!fromFile && p.repo ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={move}
+                disabled={!!busy}
+                title="Write it into the project's repository as its own file, so it travels with the code"
+              >
+                <FileCode2Icon /> Into the repository
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
-              onClick={move}
+              className="text-destructive hover:text-destructive"
+              onClick={() => setEnding(true)}
               disabled={!!busy}
-              title="Write it into the project's repository as its own file, so it travels with the code"
             >
-              <FileCode2Icon /> Into the repository
+              <SquareIcon /> End
             </Button>
-          ) : null}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setEnding(true)}
-            disabled={!!busy}
-          >
-            <SquareIcon /> End
-          </Button>
-        </ItemCardActions>
-      ) : null}
+          </>
+        ) : null}
+      </ItemCardActions>
+      <HistoryDialog
+        open={history}
+        onOpenChange={setHistory}
+        s={s}
+      />
       <ConfirmDialog
         open={ending}
         onOpenChange={setEnding}
@@ -869,6 +924,256 @@ function ScheduleCard({
         }
       />
     </ItemCard>
+  );
+}
+
+// ----- history ------------------------------------------------------------
+
+const HISTORY_PAGE = 50;
+
+// What happened to one automation, newest first: each run of its script
+// (exit code, time, state), the job it queued or found open and where that
+// job stands now, its red/green turns, and every change by hand or by the
+// file. The last output sits at the top, as it is the thing most often
+// wanted. Older pages load on demand.
+function HistoryDialog({
+  open,
+  onOpenChange,
+  s,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  s: AutomationSchedule;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-3xl">
+        {open ? <HistoryPanel s={s} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function HistoryPanel({ s }: { s: AutomationSchedule }) {
+  const q = useApi<AutomationHistory>(
+    automationHistoryPath(s.id, { limit: HISTORY_PAGE }),
+    { refresh: 15000 },
+  );
+  // Older pages, fetched once each and kept below the live first page.
+  const [older, setOlder] = useState<AutomationHistoryEntry[]>([]);
+  const [olderMore, setOlderMore] = useState<boolean | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState("");
+  const first = q.data?.entries ?? [];
+  const seen = new Set(first.map((e) => e.seq));
+  const entries = [...first, ...older.filter((e) => !seen.has(e.seq))];
+  const more = olderMore ?? q.data?.more ?? false;
+  const kind = q.data?.schedule.kind ?? s.kind;
+  const loadOlder = async () => {
+    const last = entries[entries.length - 1];
+    if (!last) return;
+    setLoadingOlder(true);
+    setOlderError("");
+    try {
+      const r = await api<AutomationHistory>(
+        automationHistoryPath(s.id, { before: last.seq, limit: HISTORY_PAGE }),
+      );
+      setOlder((cur) => [...cur, ...r.entries]);
+      setOlderMore(r.more);
+    } catch (e) {
+      setOlderError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+  const row = q.data?.schedule ?? s;
+  const script = isScriptKind(row.kind);
+  const state = stateWords(row);
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="flex flex-wrap items-center gap-2">
+          <HistoryIcon className="size-4" aria-hidden />
+          {row.title}
+          <StatusBadge status={row.status} />
+          {state ? <ToneBadge tone={state.tone}>{state.text}</ToneBadge> : null}
+        </DialogTitle>
+        <DialogDescription className="anywhere">
+          <Mono className="text-[11px]">{row.id}</Mono>{" "}
+          {row.every_words || cadenceWords(row.every, row.at_time)}
+          {" · " + (KIND_WORDS[row.kind]?.label ?? row.kind)}
+          {script ? (
+            <>
+              {" · runs "}
+              <Mono className="text-[11px]">{row.script}</Mono>
+            </>
+          ) : null}
+          {" · " + keptWords(row)}
+          {row.runs
+            ? " · " +
+              plural(row.runs, "run") +
+              (row.max_runs ? " of " + num(row.max_runs) : "") +
+              " in all"
+            : " · not run yet"}
+        </DialogDescription>
+      </DialogHeader>
+      {q.error && !q.data ? (
+        <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
+          {"The history didn't load (" + q.error + ")."}
+        </ErrorNotice>
+      ) : !q.data ? (
+        <SkeletonRows n={5} />
+      ) : (
+        <div className="grid gap-4 text-sm">
+          {script && q.data.last_output ? (
+            <section className="grid gap-1.5" aria-label="Last output">
+              <p className="text-xs font-medium text-muted-foreground">
+                Last output
+                {row.last_rc !== null && row.last_rc !== undefined
+                  ? " · exit " + row.last_rc
+                  : ""}
+                {row.last_at ? (
+                  <>
+                    {" · "}
+                    <When d={row.last_at} />
+                  </>
+                ) : null}
+              </p>
+              <pre className="max-h-48 overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap anywhere">
+                {q.data.last_output}
+              </pre>
+            </section>
+          ) : null}
+          <section className="grid gap-1.5" aria-label="What happened">
+            <p className="text-xs font-medium text-muted-foreground">
+              What happened · {historySummary(entries, kind)}
+            </p>
+            {entries.length === 0 ? (
+              <p className="text-muted-foreground">
+                Nothing yet. The first run shows here when its time comes.
+              </p>
+            ) : (
+              <ol className="divide-y rounded-lg border">
+                {entries.map((e) => (
+                  <HistoryLine key={e.seq} e={e} kind={kind} />
+                ))}
+              </ol>
+            )}
+            {more ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void loadOlder()}
+                  disabled={loadingOlder}
+                >
+                  {loadingOlder ? (
+                    <Loader2Icon className="animate-spin" />
+                  ) : null}{" "}
+                  Older
+                </Button>
+                {olderError ? (
+                  <span className="text-xs text-bad anywhere">{olderError}</span>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+          {q.data.jobs.length ? (
+            <section className="grid gap-1.5" aria-label="Jobs">
+              <p className="text-xs font-medium text-muted-foreground">
+                Jobs it queued · {plural(q.data.jobs.length, "job")}
+              </p>
+              <ul className="divide-y rounded-lg border">
+                {q.data.jobs.slice(0, 20).map((j) => (
+                  <li
+                    key={j.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5"
+                  >
+                    <Link
+                      href={hrefs.task(j.id)}
+                      className="hover:underline"
+                      title={j.title}
+                    >
+                      <Mono className="text-[11px]">{j.id}</Mono>
+                    </Link>
+                    <StatusBadge status={j.status} />
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                      {j.title}
+                    </span>
+                    {j.agent ? (
+                      <Mono className="text-[11px]">{j.agent}</Mono>
+                    ) : null}
+                    {j.finished_at || j.created_at ? (
+                      <When d={j.finished_at || j.created_at} className="text-xs text-muted-foreground" />
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+              {q.data.jobs.length > 20 ? (
+                <p className="text-xs text-muted-foreground">
+                  The newest 20 of {num(q.data.jobs.length)}; the rest are
+                  under Tasks.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+        </div>
+      )}
+    </>
+  );
+}
+
+const HISTORY_MARK: Record<string, string> = {
+  ok: "bg-ok",
+  bad: "bg-bad",
+  warn: "bg-warn",
+  info: "bg-info",
+  neutral: "bg-muted-foreground/40",
+};
+
+function HistoryLine({
+  e,
+  kind,
+}: {
+  e: AutomationHistoryEntry;
+  kind: string;
+}) {
+  const w = historyWords(e, kind);
+  return (
+    <li className="grid gap-0.5 px-3 py-2 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-start sm:gap-x-3">
+      <span
+        className={cn(
+          "mt-1.5 inline-block size-2 shrink-0 rounded-full",
+          HISTORY_MARK[w.tone],
+        )}
+        aria-hidden
+      />
+      <div className="min-w-0">
+        <p className="font-medium">{w.title}</p>
+        {w.detail ? (
+          <p className="text-muted-foreground anywhere">{w.detail}</p>
+        ) : null}
+        {e.job && (e.what === "fired" || e.what === "skipped" || e.what === "ran") ? (
+          <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+            <Link href={hrefs.task(e.job)} className="hover:underline">
+              <Mono className="text-[11px]">{e.job}</Mono>
+            </Link>
+            {e.job_status ? <StatusBadge status={e.job_status} /> : null}
+            {e.job_agent ? (
+              <span>
+                by <Mono className="text-[11px]">{e.job_agent}</Mono>
+              </span>
+            ) : null}
+            {e.job_finished_at ? (
+              <span>
+                finished <When d={e.job_finished_at} />
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+      </div>
+      <When d={e.at} className="text-xs text-muted-foreground" />
+    </li>
   );
 }
 
@@ -972,7 +1277,10 @@ function AutomationForm({
         ? "store"
         : null;
   const clean = useMemo(() => cleanEntry(e), [e]);
-  const hints = entryHints(clean, data.limits.min_minutes);
+  // The script the automation already runs: an edit may keep it where it
+  // is, even outside .pulse/.
+  const keptScript = target?.schedule?.script ?? target?.entry.script ?? "";
+  const hints = entryHints(clean, data.limits.min_minutes, keptScript);
   const minutes = everyMinutes(clean.every);
   const daily = minutes !== null && minutes % 1440 === 0;
   const script = isScriptKind(clean.kind);
@@ -1306,15 +1614,29 @@ function AutomationForm({
                   id="auto-script"
                   value={e.script}
                   onChange={(ev) => set("script", ev.target.value)}
-                  placeholder="scripts/check-site.sh"
+                  placeholder={scriptHome(clean.name || "check-site")}
                   className="font-mono text-[13px]"
                   spellCheck={false}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {e.kind === "check"
-                    ? "Relative to the repository root. Exit 0 is green; anything else is red and queues a job with its output."
-                    : "Relative to the repository root. Output means it fired; a job is queued with what it said."}
+                  {"Under .pulse/ in the repository, beside the automation's file (" +
+                    scriptHome(clean.name) +
+                    "), committed on " +
+                    (p?.repo?.branch || "the default branch") +
+                    ". " +
+                    (e.kind === "check"
+                      ? "Exit 0 is green; anything else is red and queues a job with its output."
+                      : "Output means it fired; a job is queued with what it said.")}
                 </p>
+                {keptScript && !scriptInPulse(keptScript) ? (
+                  <p className="text-xs text-warn">
+                    It runs <Mono className="text-[11px]">{keptScript}</Mono>{" "}
+                    from outside .pulse/ today; that keeps working. To move it,
+                    commit the script at{" "}
+                    <Mono className="text-[11px]">{scriptHome(clean.name)}</Mono>{" "}
+                    first, then name that path here.
+                  </p>
+                ) : null}
               </div>
               <div className="grid content-start gap-1.5">
                 <Label htmlFor="auto-job-kind">Then queue</Label>

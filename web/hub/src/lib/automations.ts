@@ -1,5 +1,6 @@
 import type {
   AutomationEntry,
+  AutomationHistoryEntry,
   AutomationProject,
   AutomationRepoFile,
   AutomationSchedule,
@@ -124,7 +125,13 @@ export function cadenceWords(every: string, at = ""): string {
 
 // The hints the form shows while the owner types; the hub's check adds the
 // rest (the cadence floor, the skill, the agent, the script on the branch).
-export function entryHints(e: AutomationEntry, minMinutes = 30): string[] {
+export function entryHints(
+  e: AutomationEntry,
+  minMinutes = 30,
+  // The script the automation already runs (an edit): it may stay where it
+  // is, even outside .pulse/.
+  keptScript = "",
+): string[] {
   const out: string[] = [];
   if (!e.name.trim())
     out.push("Give it a name: lowercase letters, digits and dashes.");
@@ -153,11 +160,19 @@ export function entryHints(e: AutomationEntry, minMinutes = 30): string[] {
       out.push(
         "A " +
           e.kind +
-          " needs the script to run, relative to the repository root.",
+          " needs the script to run, relative to the repository root: " +
+          scriptHome(e.name) +
+          " is the place for it.",
       );
     else if (e.script.trim().startsWith("/") || e.script.includes(".."))
       out.push(
         "The script path is relative to the repository root, without a leading slash or ..",
+      );
+    else if (!scriptInPulse(e.script) && e.script.trim() !== keptScript.trim())
+      out.push(
+        "The script lives under .pulse/ so everything PULSE adds to the repository stays in one place: " +
+          scriptHome(e.name) +
+          ", or anywhere under .pulse/.",
       );
   } else if (!e.brief.trim() && !e.skill.trim())
     out.push("Say what each job does (a brief), or name the skill it follows.");
@@ -240,6 +255,18 @@ export function fileEntryOf(
 export const inFolder = (path: string): boolean =>
   path.startsWith(".pulse/automations/");
 
+// Whether a script path is under the project's .pulse/ folder - the rule a
+// new check's or watch's script meets (`schedules::script_in_pulse`).
+export const scriptInPulse = (path: string): boolean => {
+  const t = path.trim().replace(/^\.\//, "");
+  return t.startsWith(".pulse/") && t.length > ".pulse/".length;
+};
+
+// The place a check's or watch's script belongs: beside its automation
+// file, `.pulse/automations/<name>.sh`.
+export const scriptHome = (name: string): string =>
+  ".pulse/automations/" + (name.trim() || "<name>") + ".sh";
+
 // The label the daemon puts before a problem of one automation.
 const LABEL = /^schedule `([^`]*)`: /;
 
@@ -286,7 +313,9 @@ export function fileState(
 // The daemon's problems that no file of the page already shows: what it
 // said about the list file and about each automation file sits beside
 // them, so only the rest (a file it could not read, a name it found twice
-// in the list) needs its own notice.
+// in the list) needs its own notice. What it said about a skill folder
+// (`skill .github/skills/x/SKILL.md: ...`) is the Skills page's business:
+// the same pass reads both, but this page is about automations alone.
 export function daemonProblems(p: AutomationProject): string[] {
   const shown = new Set<string>(p.file?.problems ?? []);
   const names = new Set<string>();
@@ -295,10 +324,191 @@ export function daemonProblems(p: AutomationProject): string[] {
     for (const x of f.problems) shown.add(x);
   }
   return (p.applied?.problems ?? []).filter((x) => {
+    if (SKILL_PROBLEM.test(x)) return false;
     if (shown.has(x) || shown.has(x.replace(LABEL, ""))) return false;
     const m = LABEL.exec(x);
     return !(m && names.has(m[1]));
   });
+}
+
+// The label the daemon puts before a problem of one skill folder.
+const SKILL_PROBLEM = /^skill \S+\/SKILL\.md: /;
+
+// A schedule whose script sits outside .pulse/ (set before the rule), with
+// the place the script belongs.
+export function scriptOutside(
+  s: Pick<AutomationSchedule, "kind" | "script" | "script_outside">,
+): boolean {
+  if (!isScriptKind(s.kind) || !s.script) return false;
+  return s.script_outside ?? !scriptInPulse(s.script);
+}
+
+// ----- history -------------------------------------------------------------
+
+export type HistoryTone = "ok" | "bad" | "warn" | "info" | "neutral";
+
+// One history entry in the owner's words: the headline, a detail line and
+// the tone of its mark. `kind` is the schedule's (a check says red/green, a
+// watch says broken/quiet).
+export function historyWords(
+  e: AutomationHistoryEntry,
+  kind: string,
+): { title: string; detail: string; tone: HistoryTone } {
+  // The owner acts as "human"; the daemon's own pass (a file it applied, a
+  // run it made) as "daemon"; a lead or an agent by its name.
+  const who =
+    e.actor === "human"
+      ? "you"
+      : e.actor === "daemon" || !e.actor
+        ? "the daemon"
+        : e.actor;
+  // A file-kept schedule is added and changed by its file, through the
+  // daemon's pass: name the file rather than the daemon.
+  const fromFile =
+    (e.what === "added" || e.what === "updated") && e.actor !== "human"
+      ? originFile(e.origin)
+      : "";
+  const secs =
+    e.seconds >= 10
+      ? Math.round(e.seconds) + "s"
+      : e.seconds > 0
+        ? e.seconds.toFixed(1).replace(/\.0$/, "") + "s"
+        : "";
+  const stateWord = (st: string) =>
+    st === "green" || st === "ok"
+      ? kind === "watch"
+        ? "quiet"
+        : "green"
+      : st === "red" || st === "broken"
+        ? kind === "watch"
+          ? "broken"
+          : "red"
+        : st || "unknown";
+  switch (e.what) {
+    case "ran": {
+      if (e.rc === null)
+        return {
+          title: "Run " + e.run + " could not start",
+          detail: "The script never ran; see the output below.",
+          tone: "warn",
+        };
+      const good = e.state === "green" || e.state === "ok";
+      return {
+        title:
+          "Run " +
+          e.run +
+          ": exit " +
+          e.rc +
+          (e.timeout ? " (timed out)" : "") +
+          (secs ? " in " + secs : ""),
+        detail:
+          (good
+            ? kind === "watch"
+              ? "Nothing to report."
+              : "The check passed."
+            : kind === "watch"
+              ? "The watch fired."
+              : "The check failed.") +
+          (e.job
+            ? e.queued
+              ? " Queued " + e.job + "."
+              : " " + e.job + " was still open, so nothing new was queued."
+            : ""),
+        tone: good ? "ok" : e.timeout ? "warn" : "bad",
+      };
+    }
+    case "fired":
+      return {
+        title: "Queued " + (e.job || "a job"),
+        detail: e.why || "The script asked for a job.",
+        tone: "info",
+      };
+    case "skipped":
+      return {
+        title: "Nothing new queued",
+        detail:
+          (e.job ? e.job + " was still open" : "A job was still open") +
+          (e.why ? "; " + e.why : "") +
+          ".",
+        tone: "neutral",
+      };
+    case "red":
+    case "green": {
+      const bad = e.what === "red";
+      return {
+        title:
+          "Turned " +
+          stateWord(e.state) +
+          (e.previous ? " from " + stateWord(e.previous) : ""),
+        detail: e.note ? "Posted " + e.note + " on the board." : "",
+        tone: bad ? "bad" : "ok",
+      };
+    }
+    case "added":
+      return {
+        title: fromFile ? "Added from " + fromFile : "Added by " + who,
+        detail: "",
+        tone: "neutral",
+      };
+    case "updated":
+      return {
+        title: fromFile ? "Changed by " + fromFile : "Changed by " + who,
+        detail: e.changed.length ? e.changed.join(", ") + " changed." : "",
+        tone: "neutral",
+      };
+    case "paused":
+      return {
+        title: "Paused by " + who,
+        detail: e.note,
+        tone: "warn",
+      };
+    case "resumed":
+      return { title: "Resumed by " + who, detail: "", tone: "ok" };
+    case "ended":
+      return { title: "Ended", detail: e.note, tone: "neutral" };
+    case "run":
+      return {
+        title: "Run now, asked by " + who,
+        detail: "The next pass runs it without waiting for the cadence.",
+        tone: "info",
+      };
+    default:
+      return { title: e.what, detail: e.note, tone: "neutral" };
+  }
+}
+
+// The file in a schedule's origin (`repo:<path>#<name>`), "" when hand-set.
+const originFile = (origin: string | undefined): string => {
+  const m = /^repo:([^#]+)/.exec(origin ?? "");
+  return m ? m[1] : "";
+};
+
+// A one-line summary of the history: how many runs, how many red, when the
+// last run was.
+export function historySummary(
+  entries: AutomationHistoryEntry[],
+  kind: string,
+): string {
+  const runs = entries.filter((e) => e.what === "ran");
+  if (!runs.length) {
+    const acts = entries.filter((e) => e.what !== "added");
+    return acts.length
+      ? "No runs yet; " + acts.length + (acts.length === 1 ? " change." : " changes.")
+      : "Nothing has happened yet.";
+  }
+  const bad = runs.filter(
+    (e) => e.rc !== null && e.state !== "green" && e.state !== "ok",
+  ).length;
+  const failed = runs.filter((e) => e.rc === null).length;
+  const parts = [runs.length + (runs.length === 1 ? " run" : " runs")];
+  if (bad)
+    parts.push(
+      bad + (kind === "watch" ? (bad === 1 ? " firing" : " firings") : " red"),
+    );
+  if (failed) parts.push(failed + " could not start");
+  const queued = entries.filter((e) => e.what === "fired").length;
+  if (queued) parts.push(queued + (queued === 1 ? " job queued" : " jobs queued"));
+  return parts.join(", ") + " on this page.";
 }
 
 // Where a schedule is kept, in the owner's words.
