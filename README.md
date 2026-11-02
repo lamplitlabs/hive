@@ -3652,7 +3652,13 @@ DeepSeek, xAI, Together, Fireworks, Cerebras, GitHub Models, Ollama, LM
 Studio, vLLM); the others print each reply when it is whole. Streaming
 needs `stream_options`/`stream` in the API; a provider that rejects either
 is asked again without it, then without streaming, and stays there for the
-session.
+session. A run's model calls stream the same way with nobody watching: a
+streamed reply opens at once and keeps bytes coming while the model works,
+so the transport timeout (two minutes between bytes) tells a dead connection
+from a model that thinks for five. A whole reply had to be finished inside
+that timeout, so a run whose model took longer over an answer was cut off
+and asked again, up to five times, and then stopped with `provider_error:
+error sending request` - the gateway finishing replies nobody read.
 
 Calls that **change things are shown first**: an `edit` or `write` (with the
 blocks or the file's head), a command that would change the clone or that

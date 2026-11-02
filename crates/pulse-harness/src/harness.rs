@@ -1442,7 +1442,9 @@ impl Agent {
     /// provider that streams; the Assistant step still carries it whole.
     /// When the stream breaks part way the reply is asked for again (up
     /// to [`STREAM_RETRIES`] times) and `f` hears
-    /// [`StreamSink::restart`] first.
+    /// [`StreamSink::restart`] first. Every model call streams whether or
+    /// not a sink is set (see the loop in `drive`); the sink only decides
+    /// who hears the text as it arrives.
     pub fn set_stream(&mut self, f: Box<dyn StreamSink>) {
         self.stream = Some(f);
     }
@@ -2260,11 +2262,20 @@ impl Agent {
             let asked_at = Instant::now();
             let resp = loop {
                 let attempt = req.clone();
+                // Every call streams, whether or not anyone watches the
+                // text: a streamed reply opens at once and keeps bytes
+                // coming while the model works, so the transport timeout
+                // (two minutes between bytes) tells a dead connection from
+                // a model that thinks for five. A whole reply had to be
+                // finished inside that timeout; a run whose model took
+                // longer was cut off and asked again, five times, then
+                // stopped with `error sending request` - the gateway
+                // meanwhile finishing replies nobody read.
                 let resp = match self.stream.as_mut() {
                     Some(f) => self
                         .p
                         .chat_stream(cancel, attempt, &mut |text| f.text(text)),
-                    None => self.p.chat(cancel, attempt),
+                    None => self.p.chat_stream(cancel, attempt, &mut |_| {}),
                 };
                 self.result.calls += 1;
                 match resp {
@@ -9845,6 +9856,107 @@ mod tests {
         assert_eq!(got.exit_status, EXIT_PROVIDER_ERROR);
         assert!(got.error.contains("stopped part way"), "{}", got.error);
         assert_eq!(*p.calls.lock().unwrap(), STREAM_RETRIES + 1);
+    }
+
+    /// Answers streamed calls only: a `chat` call is the bug.
+    struct StreamOnly {
+        calls: Mutex<u32>,
+        shown: Mutex<String>,
+    }
+
+    struct SharedStreamOnly(Arc<StreamOnly>);
+
+    impl Provider for SharedStreamOnly {
+        fn name(&self) -> &str {
+            "stream-only"
+        }
+        fn label(&self) -> &str {
+            "Stream only"
+        }
+        fn chat(
+            &self,
+            _cancel: &CancelToken,
+            _req: Request,
+        ) -> anyhow::Result<pulse_provider::Response> {
+            Err(anyhow!(
+                "a whole reply was asked for: it has to finish inside the transport timeout"
+            ))
+        }
+        fn chat_stream(
+            &self,
+            _cancel: &CancelToken,
+            _req: Request,
+            on_text: &mut dyn FnMut(&str),
+        ) -> anyhow::Result<pulse_provider::Response> {
+            let mut calls = self.0.calls.lock().unwrap();
+            *calls += 1;
+            if *calls == 1 {
+                return Ok(resp(tool("true")));
+            }
+            on_text("SUMMARY: done");
+            self.0.shown.lock().unwrap().push_str("SUMMARY: done");
+            Ok(resp(msg("SUMMARY: done")))
+        }
+        fn models(&self, _cancel: &CancelToken) -> anyhow::Result<Vec<Model>> {
+            Ok(Vec::new())
+        }
+        fn status(&self, _cancel: &CancelToken) -> anyhow::Result<Login> {
+            Ok(Login::default())
+        }
+    }
+
+    #[test]
+    fn a_run_without_a_stream_sink_still_streams_its_model_calls() {
+        let _serial = crate::test_helpers::serial();
+        // A job run shows its replies to nobody, yet every call is a
+        // streamed one: a whole reply would have to finish inside the HTTP
+        // client's timeout, and a model that thinks for longer was cut off
+        // and asked again until the run stopped with `error sending
+        // request`. The streamed reply is folded the same, the text going
+        // nowhere.
+        let p = Arc::new(StreamOnly {
+            calls: Mutex::new(0),
+            shown: Mutex::new(String::new()),
+        });
+        let mut h = new(
+            Box::new(SharedStreamOnly(p.clone())),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            base_config(),
+            Vec::new(),
+        );
+        assert!(h.stream.is_none(), "no sink: a job run");
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(got.submission, "SUMMARY: done");
+        assert_eq!(*p.calls.lock().unwrap(), 2);
+        assert_eq!(got.calls, 2);
+        let replies: Vec<&Step> = h
+            .steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Assistant)
+            .collect();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[1].content, "SUMMARY: done");
+
+        // A stream that breaks part way is asked for again without a
+        // sink too; there is nothing to tell to start over.
+        let p = BrokenStream::breaking(1);
+        let mut h = new(
+            Box::new(SharedBrokenStream(p.clone())),
+            Box::new(Arc::new(Mutex::new(FakeEnv::default()))),
+            base_config(),
+            Vec::new(),
+        );
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        assert_eq!(*p.calls.lock().unwrap(), 3, "one break, then two replies");
+        assert!(
+            note_texts(&h)
+                .iter()
+                .any(|n| n.contains("asking again (1 of 2)")),
+            "{:?}",
+            note_texts(&h)
+        );
     }
 
     #[test]
