@@ -1750,7 +1750,40 @@ pub(crate) fn local_work_root(s: &pulse_store::Store) -> std::path::PathBuf {
     std::path::Path::new(&s.home).join("work")
 }
 
+// What `free_mb` reports on a thread that pinned it: a disk test passes the same
+// way on a host 5% or 95% full, or where `df` fails. Per thread, not
+// process-wide: tests without the `serial()` lock (bulk detach, diskroom) read
+// the real `df` on their own threads while a pinned test runs beside them.
+#[cfg(test)]
+thread_local! {
+    static FREE_MB_PIN: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pins what `free_mb` reports on this thread until the returned guard drops,
+/// which restores the pin before it (none, or an outer test's).
+#[cfg(test)]
+pub(crate) fn pin_free_mb(mb: i32) -> FreeMbPin {
+    FreeMbPin(FREE_MB_PIN.with(|pin| pin.replace(Some(mb))))
+}
+
+#[cfg(test)]
+#[must_use = "the pin holds only while its guard lives"]
+pub(crate) struct FreeMbPin(Option<i32>);
+
+#[cfg(test)]
+impl Drop for FreeMbPin {
+    fn drop(&mut self) {
+        FREE_MB_PIN.with(|pin| pin.set(self.0));
+    }
+}
+
 pub(crate) fn free_mb(path: &std::path::Path) -> i32 {
+    #[cfg(test)]
+    {
+        if let Some(mb) = FREE_MB_PIN.with(std::cell::Cell::get) {
+            return mb;
+        }
+    }
     std::process::Command::new("df")
         .args(["-Pm", &path.display().to_string()])
         .output()
@@ -2207,4 +2240,36 @@ pub(crate) fn login_expiry(s: &pulse_store::Store, name: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+#[cfg(test)]
+mod free_mb_pin_tests {
+    use super::{FREE_MB_PIN, free_mb, pin_free_mb};
+
+    #[test]
+    fn a_free_mb_pin_holds_on_its_own_thread_until_its_guard_drops() {
+        let dir = std::env::temp_dir();
+        let outer = pin_free_mb(4096);
+        assert_eq!(free_mb(&dir), 4096, "the pin answers, not df");
+        {
+            let _inner = pin_free_mb(0);
+            assert_eq!(
+                free_mb(&dir),
+                0,
+                "a nested pin wins: what a failed df reads"
+            );
+        }
+        assert_eq!(
+            free_mb(&dir),
+            4096,
+            "the inner guard restored the outer pin"
+        );
+        // A test beside this one reads its own disk: the pin never leaks.
+        let beside = std::thread::spawn(|| FREE_MB_PIN.with(std::cell::Cell::get))
+            .join()
+            .expect("reader thread");
+        assert_eq!(beside, None);
+        drop(outer);
+        assert_eq!(FREE_MB_PIN.with(std::cell::Cell::get), None);
+    }
 }

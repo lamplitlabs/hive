@@ -3102,6 +3102,8 @@ mod tests {
     fn daemon_disk_floor_pauses_dispatch_before_lease() {
         let _serial = crate::test_helpers::serial();
         let _login = with_closed_login_gate();
+        // The host's disk does not decide the hold: the dispatch reads 512 MB.
+        let _free = crate::executor::pin_free_mb(512);
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
@@ -3131,7 +3133,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(out.contains("idle: disk under floor:"), "{out}");
+        assert!(
+            out.contains("idle: disk under floor: 512 MB free on "),
+            "{out}"
+        );
         assert_eq!(
             count(
                 &s,
@@ -3209,6 +3214,8 @@ mod tests {
     fn daemon_disk_floor_zero_leases_as_before() {
         let _serial = crate::test_helpers::serial();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        // What a failed `df` reads: with the floor off the run still leases.
+        let _free = crate::executor::pin_free_mb(0);
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
@@ -3249,6 +3256,7 @@ mod tests {
     fn daemon_disk_headroom_admits_one_local_run_and_measures_its_work_dir() {
         let _serial = crate::test_helpers::serial();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _free = crate::executor::pin_free_mb(5000);
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
@@ -3876,6 +3884,9 @@ mod tests {
     fn daemon_disk_headroom_starts_the_project_that_fits_while_the_larger_one_waits() {
         let _serial = crate::test_helpers::serial();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        // Room for the 1 MB project, not the large one, whatever the host has
+        // free: a failed `df` (0 MB) used to start the large one instead.
+        let _free = crate::executor::pin_free_mb(5000);
         let s = new_store();
         new_bare_repo(&s);
         let small = std::path::Path::new(&s.home).join("small");
