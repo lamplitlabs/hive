@@ -6145,7 +6145,10 @@ mod tests {
         }
         // The first pass writes the sweep note on its way to the finish; a
         // moment later it has ended and the daemon is back in its idle wait.
-        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(10));
+        // The sweep walks the machine's runner session dirs and asks each
+        // runner for its version (up to 8s), so the note gets the same 30s
+        // as the other tests that wait on it, not 10s.
+        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(30));
         loop {
             let (_, exists) = s.meta("hygiene").unwrap();
             if exists {
@@ -6194,11 +6197,23 @@ mod tests {
             "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND resolution = 'dropped'";
         let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(20));
         // The pass retires the cards in the store before its lines reach the
-        // daemon log, so the wait covers both: the count and the log line.
-        let line = "retired 5 stale suggestion(s) for proj";
+        // daemon log, so the wait covers both: the count and the log lines.
+        // The cards go in one at a time while the daemon is idle, so a pass
+        // can start between two of them and retire them in two lines ("2"
+        // then "3"); the lines must add up to all five, whatever the split.
+        let logged = |out: &str| -> i64 {
+            out.lines()
+                .filter_map(|l| {
+                    l.strip_prefix("retired ")?
+                        .strip_suffix(" stale suggestion(s) for proj")?
+                        .parse::<i64>()
+                        .ok()
+                })
+                .sum()
+        };
         let retired = loop {
             let n = crate::test_helpers::count(&s, dropped, &[]);
-            if (n >= 5 && out.string().contains(line)) || std::time::Instant::now() > deadline {
+            if (n >= 5 && logged(&out.string()) >= 5) || std::time::Instant::now() > deadline {
                 break n;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -6213,7 +6228,7 @@ mod tests {
             retired, 5,
             "no second maintenance pass ran while the fleet was idle ({result}); last lines: {tail:#?}"
         );
-        assert!(out.contains(line), "pass lines were lost:\n{out}");
+        assert_eq!(logged(&out), 5, "pass lines were lost:\n{out}");
     }
 
     #[test]

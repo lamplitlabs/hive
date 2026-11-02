@@ -411,7 +411,7 @@ pub(crate) fn research_brief(s: &pulse_store::Store, slug: String, focus: Resear
         )
     } else {
         format!(
-            "Post one to three `SUGGESTION:` cards, each one variable a worker could change in one job and measure with the project's own checks, the fields on the one line separated by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>; Hypothesis: <which check moves, and how>; Tier: 0|1; Signal: <path in the clone | post id | check:NAME>`. For this focus a good product card names {}. A card whose File: is a test, fixture, CI or tooling path is operating-layer whatever it declares, and operating-layer improve jobs are capped by plan.operating_layer_per_day.",
+            "Post one to three `SUGGESTION:` cards, each one variable a worker could change in one job and measure with the project's own checks, the fields on the one line separated by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>; Hypothesis: <which check moves, and how>; Tier: 0|1; Signal: <path in the clone | post id | check:COMMAND>`, where a `check:` is the shell command the measurement runs on both trees (`check:cargo test -p app parser`), never a check's name or prose, which fails on both and leaves the hypothesis unmeasured. For this focus a good product card names {}. A card whose File: is a test, fixture, CI or tooling path is operating-layer whatever it declares, and operating-layer improve jobs are capped by plan.operating_layer_per_day.",
             focus.card
         )
     };
