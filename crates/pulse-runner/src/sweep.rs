@@ -2517,7 +2517,7 @@ fn nonempty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-fn cargo_target_dir_from_verify(cmd: &str) -> Option<String> {
+pub(crate) fn cargo_target_dir_from_verify(cmd: &str) -> Option<String> {
     let needle = "CARGO_TARGET_DIR=";
     let mut rest = cmd;
     loop {
