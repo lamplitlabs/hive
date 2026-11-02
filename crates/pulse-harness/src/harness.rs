@@ -1,6 +1,6 @@
 use crate::agents::{AgentDef, describe_for_tool, model_allowed, withheld_tools};
 use crate::background::{
-    BACKGROUND_LIMIT, BACKGROUND_WAIT_DEFAULT, BACKGROUND_WAIT_LIMIT, PROCESS_TOOL,
+    BACKGROUND_LIMIT, BACKGROUND_WAIT_DEFAULT, BACKGROUND_WAIT_LIMIT, Managed, PROCESS_TOOL,
     PROCESS_WAIT_DEFAULT, Process, ProcessAction, Procs, dropped_marker, fmt_dur, process_tool,
 };
 use crate::compact::{
@@ -840,7 +840,23 @@ pub trait Ui: Send {
     fn chat(&mut self, _request: &ChatRequest) -> Option<ChatReply> {
         None
     }
+    /// The model hands a background process over (`process notify`): the
+    /// conversation keeps it running past the end of this turn and wakes
+    /// the agent with a note when it ends. `Ok` is what the model reads
+    /// back; `Err` gives the process back with the reason, for a Ui with
+    /// nothing to keep it in (a terminal chat, a script).
+    fn keep(&mut self, proc: Managed) -> KeepResult {
+        Err(Box::new((
+            proc,
+            "nothing here outlives the turn to keep it; use wait instead".to_string(),
+        )))
+    }
 }
+
+/// What a [`Ui::keep`] answers: the line the model reads back, or the
+/// process handed back with the reason it was not kept (boxed: a
+/// `Managed` is large and the refusal is the rare path).
+pub type KeepResult = std::result::Result<String, Box<(Managed, String)>>;
 
 /// What the hub answers a `chat` tool call with: what the model reads
 /// back, or why the hub refused.
@@ -4653,7 +4669,7 @@ impl Agent {
             };
         }
         let line = format!(
-            "[{id} is running in the background (pid {pid}) after {}. process {{\"action\":\"output\",\"id\":\"{id}\"}} reads what it writes next, \"wait\" waits for it to end, \"stop\" ends it. Stop it when you are done with it.]",
+            "[{id} is running in the background (pid {pid}) after {}. process {{\"action\":\"output\",\"id\":\"{id}\"}} reads what it writes next, \"wait\" waits for it to end, \"stop\" ends it, \"notify\" hands it to the conversation so it outlives this turn and a note wakes you when it ends. Stop it when you are done with it.]",
             fmt_dur(wait)
         );
         Observation {
@@ -4811,6 +4827,68 @@ impl Agent {
                     exit_code: 0,
                     duration: start.elapsed(),
                     ..Observation::default()
+                }
+            }
+            ProcessAction::Notify { id } => {
+                let Some(m) = self.procs.get(id) else {
+                    return unknown(&mut self.procs, id, start);
+                };
+                if let Some(code) = m.exit() {
+                    // Nothing to wait for: read it out like `output` would.
+                    let (output, dropped) = m.take_output();
+                    let elapsed = fmt_dur(m.elapsed());
+                    let command = one_line(&m.command, 100);
+                    self.procs.remove(id);
+                    let head = format!(
+                        "[{id} `{command}`: had already ended with exit {code} after {elapsed}; nothing to notify, removed from the list{}]",
+                        if output.is_empty() {
+                            ""
+                        } else {
+                            "; its last output follows"
+                        }
+                    );
+                    let mut text = head;
+                    if dropped > 0 {
+                        text = join_lines(&text, &dropped_marker(dropped));
+                    }
+                    return Observation {
+                        output: join_lines(&text, &output),
+                        exit_code: 0,
+                        duration: start.elapsed(),
+                        ..Observation::default()
+                    };
+                }
+                let Some(ui) = self.ui.clone() else {
+                    return Observation {
+                        output: format!(
+                            "[{id}: nothing here outlives the turn to keep it; use wait (up to {}s per call) instead]",
+                            self.step_cap().as_secs()
+                        ),
+                        exit_code: 1,
+                        duration: start.elapsed(),
+                        ..Observation::default()
+                    };
+                };
+                let m = self.procs.remove(id).expect("looked up above");
+                let kept = ui.lock().unwrap_or_else(|e| e.into_inner()).keep(m);
+                match kept {
+                    Ok(text) => Observation {
+                        output: text,
+                        exit_code: 0,
+                        duration: start.elapsed(),
+                        ..Observation::default()
+                    },
+                    Err(refused) => {
+                        let (m, why) = *refused;
+                        let id = m.id.clone();
+                        self.procs.put_back(m);
+                        Observation {
+                            output: format!("[{id}: {why}]"),
+                            exit_code: 1,
+                            duration: start.elapsed(),
+                            ..Observation::default()
+                        }
+                    }
                 }
             }
         }
@@ -5632,7 +5710,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "```edit\nsrc/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n",
     "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
-    "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done.\n",
+    "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done. A run too long to wait for (a benchmark, a soak, a build of hours or days) is handed over with process notify: it keeps running after your turn ends and its exit wakes you with a note, so end the turn rather than poll.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
     "Commands time out after {{.StepTimeout}}.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",
@@ -5675,7 +5753,7 @@ pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
     "The working directory is {{.Info.cwd}}; it may have uncommitted work of the user's in it. Leave what you did not touch as it was, and never discard changes you did not make.\n",
     "Each shell command runs in a fresh non-interactive {{.Info.shell}} in the working directory.\n",
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
-    "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done.\n",
+    "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done. A run too long to wait for (a benchmark, a soak, a build of hours or days) is handed over with process notify: it keeps running after your turn ends and its exit wakes you with a note, so end the turn rather than poll.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
     "Commands time out after {{.StepTimeout}}.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",
@@ -12760,9 +12838,22 @@ mod tests {
         /// Summaries the agent finished with; `finishes` false refuses them.
         finished: Vec<String>,
         finishes: bool,
+        /// Processes handed over with `process notify`; `keeps` false gives
+        /// them back the way a terminal chat does.
+        kept: Vec<Managed>,
+        keeps: bool,
     }
 
     impl Ui for Arc<Mutex<ScriptUi>> {
+        fn keep(&mut self, proc: Managed) -> KeepResult {
+            let mut ui = self.lock().unwrap();
+            if !ui.keeps {
+                return Err(Box::new((proc, "this script keeps nothing".to_string())));
+            }
+            let text = format!("[{} `{}` now runs past this turn]", proc.id, proc.command);
+            ui.kept.push(proc);
+            Ok(text)
+        }
         fn finish(&mut self, summary: &str) -> bool {
             let mut ui = self.lock().unwrap();
             ui.finished.push(summary.to_string());
@@ -13399,6 +13490,191 @@ mod tests {
             .expect("the run end stops what is left");
         assert!(note.content.contains("bg-3 pid"), "{}", note.content);
         assert!(note.content.contains("sleep 300"), "{}", note.content);
+        assert!(h.procs().is_empty());
+    }
+
+    #[test]
+    fn process_notify_hands_a_background_run_to_the_conversation_or_says_why_not() {
+        let _serial = crate::test_helpers::serial();
+        let dir = chat_dir();
+        let long = "echo started; sleep 300";
+        let p = Arc::new(FakeProvider::new(vec![
+            // Turn 1: a long run handed over, a finished one (nothing to
+            // keep), an unknown id, and a notify without an id.
+            resp(calls(&[(
+                "c1",
+                "bash",
+                json!({"command": long, "background": true, "wait": 1}),
+            )])),
+            resp(calls(&[(
+                "c2",
+                "bash",
+                json!({"command": "echo quick; exit 3", "background": true, "wait": 0}),
+            )])),
+            resp(calls(&[(
+                "c3",
+                "process",
+                json!({"action": "wait", "id": "bg-2", "seconds": 5}),
+            )])),
+            resp(calls(&[(
+                "c4",
+                "process",
+                json!({"action": "notify", "id": "bg-1"}),
+            )])),
+            resp(calls(&[(
+                "c5",
+                "process",
+                json!({"action": "notify", "id": "bg-2"}),
+            )])),
+            resp(calls(&[(
+                "c6",
+                "process",
+                json!({"action": "notify", "id": "bg-1"}),
+            )])),
+            resp(calls(&[("c7", "process", json!({"action": "notify"}))])),
+            resp(calls(&[("c8", "process", json!({"action": "list"}))])),
+            resp(msg("handed over")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi {
+            keeps: true,
+            ..ScriptUi::default()
+        }));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p.clone(), Some(ui.clone()), steps.clone());
+        let tools = h.tools();
+        let process = tools.iter().find(|t| t.name == PROCESS_TOOL).unwrap();
+        assert!(
+            process.description.contains("notify hands a long run"),
+            "{}",
+            process.description
+        );
+        assert!(
+            process.parameters["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "notify")
+        );
+        let cancel = CancelToken::new();
+        let turn = h.turn(&cancel, "run the soak").unwrap();
+        assert!(
+            matches!(&turn, Turn::Reply(t) if t == "handed over"),
+            "{turn:?}"
+        );
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        let kept = &replies["c4"];
+        assert!(
+            kept.contains("[bg-1 `echo started; sleep 300` now runs past this turn]"),
+            "{kept}"
+        );
+        let ended = &replies["c5"];
+        assert!(
+            ended.contains("[bg-2 `echo quick; exit 3`: had already ended with exit 3 after"),
+            "{ended}"
+        );
+        assert!(
+            ended.contains("nothing to notify, removed from the list"),
+            "{ended}"
+        );
+        let gone = &replies["c6"];
+        assert!(
+            gone.contains("bg-1: no such background process"),
+            "a kept process leaves the session's list: {gone}"
+        );
+        assert!(
+            replies["c7"].contains("action notify needs the id bash returned (bg-1)"),
+            "{}",
+            replies["c7"]
+        );
+        assert!(
+            replies["c8"].contains("no background processes"),
+            "{}",
+            replies["c8"]
+        );
+        {
+            let mut ui = ui.lock().unwrap();
+            assert_eq!(ui.kept.len(), 1);
+            let m = &mut ui.kept[0];
+            assert_eq!(m.id, "bg-1");
+            assert!(m.running(), "the kept process is still alive");
+            assert!(m.stop());
+        }
+        assert!(h.procs().is_empty());
+        let notify_step = steps
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.kind == StepKind::Process && s.command == "notify bg-1")
+            .is_some();
+        assert!(notify_step, "the hand-over is a process step");
+
+        // A Ui that keeps nothing (a terminal chat) gives the process back:
+        // it stays in the list and the model is told.
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "bash",
+                json!({"command": long, "background": true, "wait": 0}),
+            )])),
+            resp(calls(&[(
+                "c2",
+                "process",
+                json!({"action": "notify", "id": "bg-1"}),
+            )])),
+            resp(calls(&[("c3", "process", json!({"action": "list"}))])),
+            resp(msg("kept here")),
+        ]));
+        let ui = Arc::new(Mutex::new(ScriptUi::default()));
+        let steps = Arc::new(Mutex::new(Vec::new()));
+        let mut h = chat_agent(dir.path(), p, Some(ui.clone()), steps);
+        let turn = h.turn(&cancel, "run the soak").unwrap();
+        assert!(
+            matches!(&turn, Turn::Reply(t) if t == "kept here"),
+            "{turn:?}"
+        );
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["c2"].contains("[bg-1: this script keeps nothing]"),
+            "{}",
+            replies["c2"]
+        );
+        assert!(
+            replies["c3"].contains("bg-1 running for"),
+            "{}",
+            replies["c3"]
+        );
+        assert!(ui.lock().unwrap().kept.is_empty());
+        assert_eq!(h.procs().len(), 1);
+        h.end("done");
+        assert!(
+            h.procs().is_empty(),
+            "the session end stops what was kept here"
+        );
+
+        // No Ui at all (a job's run): notify says what to do instead.
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(calls(&[(
+                "c1",
+                "bash",
+                json!({"command": long, "background": true, "wait": 0}),
+            )])),
+            resp(calls(&[(
+                "c2",
+                "process",
+                json!({"action": "notify", "id": "bg-1"}),
+            )])),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let mut h = local_agent(dir.path(), p);
+        let got = h.run().unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED, "{}", got.error);
+        let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
+        assert!(
+            replies["c2"]
+                .contains("[bg-1: nothing here outlives the turn to keep it; use wait (up to "),
+            "{}",
+            replies["c2"]
+        );
         assert!(h.procs().is_empty());
     }
 

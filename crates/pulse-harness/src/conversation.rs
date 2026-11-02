@@ -19,10 +19,11 @@
 //! how to pick one (`pulse chat attach SLUG`), queue tasks for the fleet, or
 //! answer outright. Files for the owner's eyes go in `$PULSE_ARTIFACTS`,
 //! which the hub serves beside the conversation.
+use crate::background::{Managed, fmt_dur};
 use crate::commands::{PrepareOpts, Prepared, add_agent_flags, prepare_agent_with};
 use crate::harness::{
-    Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, Sink, Step, StreamSink,
-    Trajectory, Turn, Ui, trim_dangling_tool_calls,
+    Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, KeepResult, Sink, Step,
+    StreamSink, Trajectory, Turn, Ui, trim_dangling_tool_calls,
 };
 use crate::repair::repair_tool_arguments;
 use crate::retitle;
@@ -56,6 +57,16 @@ pub const SHARED_MEMORY_KEY: &str = "conversations";
 /// How long a parked question or approval waits between checks of the
 /// cancel flag.
 const PARK_TICK: Duration = Duration::from_millis(250);
+/// How much of a `pulse chat wake` message reaches the agent: a script's
+/// "done" line with a result, not its whole log (that stays in a file the
+/// agent reads).
+const WAKE_CHARS: usize = 4_000;
+/// The bus action `pulse chat wake` publishes; the hub's wake loop turns
+/// it into a turn of the named conversation.
+pub const WAKE_ACTION: &str = "chat.wake";
+/// The meta key under which the hub's wake loop keeps the bus sequence it
+/// has delivered up to, so a wake sent while no hub ran is not lost.
+pub const WAKE_CURSOR_KEY: &str = "chat.wake.cursor";
 /// The row note a turn leaves when PULSE itself stopped it (a hub restart,
 /// a shutdown, a crash) rather than the owner or the agent: the next turn
 /// tells the agent so it checks the workspace before redoing work.
@@ -501,6 +512,9 @@ struct WebUi {
     id: String,
     /// The manager, for the sub-conversations this agent starts and reads.
     manager: Weak<ManagerInner>,
+    /// The runtime, which keeps the background processes the agent hands
+    /// over with `process notify` past the end of its turn.
+    runtime: Weak<Runtime>,
 }
 
 impl WebUi {
@@ -567,6 +581,16 @@ impl Ui for WebUi {
         }
         self.shared.bump(&mut st);
         true
+    }
+
+    fn keep(&mut self, proc: Managed) -> KeepResult {
+        match self.runtime.upgrade() {
+            Some(rt) => rt.keep(proc),
+            None => Err(Box::new((
+                proc,
+                "this conversation is closing; nothing outlives the turn".into(),
+            ))),
+        }
     }
 
     fn approve(&mut self, req: &ApprovalRequest) -> Approval {
@@ -805,7 +829,23 @@ pub struct Runtime {
     /// The manager this runtime belongs to, for the sub-conversations its
     /// agent starts and the reports it sends up to its parent.
     manager: Weak<ManagerInner>,
+    /// Background processes the agent handed over with `process notify`:
+    /// they run past the turn that started them, and a watcher thread
+    /// wakes the conversation with the exit and the last output of each
+    /// when it ends ([`Runtime::keep`]).
+    kept: Mutex<Kept>,
 }
+
+/// The kept background processes of a conversation and whether a watcher
+/// thread is looking after them.
+#[derive(Default)]
+struct Kept {
+    list: Vec<Managed>,
+    watching: bool,
+}
+
+/// How many lines of a kept process's output its wake carries.
+const KEPT_TAIL_LINES: usize = 40;
 
 impl Runtime {
     fn new(
@@ -827,12 +867,197 @@ impl Runtime {
             shared,
             started: Mutex::new(None),
             manager,
+            kept: Mutex::new(Kept::default()),
         })
     }
 
     /// The manager, while the hub holds it.
     fn manager(&self) -> Option<Manager> {
         self.manager.upgrade().map(Manager::from_inner)
+    }
+
+    /// Takes a background process off the agent's hands so it runs past
+    /// the turn: the conversation is woken with its exit and last output
+    /// when it ends, however long that takes. Refused (the process handed
+    /// back) once the conversation is closing.
+    fn keep(self: &Arc<Self>, mut proc: Managed) -> KeepResult {
+        if self.shared.lock().closed {
+            return Err(Box::new((
+                proc,
+                "this conversation is closing; nothing outlives the turn".into(),
+            )));
+        }
+        if let Some(code) = proc.exit() {
+            return Err(Box::new((
+                proc,
+                format!("it already ended with exit {code}; read its output with `output`"),
+            )));
+        }
+        let line = format!(
+            "{} `{}` now runs past this turn (pid {}, running for {}); the conversation is woken with its exit and last output when it ends. Reply or end the turn; you are not blocked on it.",
+            proc.id,
+            one_line(&proc.command),
+            proc.pid(),
+            fmt_dur(proc.elapsed())
+        );
+        let _ = self.store.chat_add_message(
+            &self.id,
+            "note",
+            &format!(
+                "Background process {} keeps running past this turn: `{}` (pid {}).",
+                proc.id,
+                one_line(&proc.command),
+                proc.pid()
+            ),
+            &json!({"kept": {"id": proc.id, "command": proc.command, "pid": proc.pid()}}),
+        );
+        let spawn = {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            kept.list.push(proc);
+            let spawn = !kept.watching;
+            kept.watching = true;
+            spawn
+        };
+        if spawn {
+            let me = self.clone();
+            thread::Builder::new()
+                .name(format!("chat-kept-{}", self.id))
+                .spawn(move || me.watch_kept())
+                .expect("spawn conversation process watcher");
+        }
+        Ok(line)
+    }
+
+    /// Looks at the kept processes every [`PARK_TICK`] until none is
+    /// left; each one that ends wakes the conversation with a message the
+    /// agent reads as the owner's, carrying the exit and the last lines.
+    fn watch_kept(self: Arc<Self>) {
+        loop {
+            let ended: Vec<Managed> = {
+                let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+                if kept.list.is_empty() {
+                    kept.watching = false;
+                    return;
+                }
+                let mut done = Vec::new();
+                let mut i = 0;
+                while i < kept.list.len() {
+                    if kept.list[i].exit().is_some() {
+                        done.push(kept.list.remove(i));
+                    } else {
+                        i += 1;
+                    }
+                }
+                done
+            };
+            for mut m in ended {
+                let _ = m.take_output();
+                self.wake_for(&mut m);
+            }
+            thread::sleep(PARK_TICK);
+        }
+    }
+
+    /// Wakes the conversation for a kept process that ended: a note in the
+    /// transcript and a turn on it, after the turn in flight if there is
+    /// one. Nothing reaches a conversation that is closing; the
+    /// transcript still says the process ended.
+    fn wake_for(self: &Arc<Self>, m: &mut Managed) {
+        let code = m.exit().unwrap_or(-1);
+        let elapsed = fmt_dur(m.elapsed());
+        let tail = m.peek_tail(KEPT_TAIL_LINES);
+        let command = one_line(&m.command);
+        let shown = format!(
+            "Background process {} `{}` ended with exit {code} after {elapsed}.",
+            m.id, command
+        );
+        let extra = json!({"process": {
+            "id": m.id,
+            "command": m.command,
+            "pid": m.pid(),
+            "exit": code,
+            "elapsed": elapsed,
+            "tail": tail,
+        }});
+        if self.shared.lock().closed {
+            let _ = self
+                .store
+                .chat_add_message(&self.id, "note", &shown, &extra);
+            return;
+        }
+        let mut text = format!(
+            "{shown}\nIt was started in an earlier turn with the bash tool and handed over with `process notify`; its id is not valid any more. The last lines it wrote:"
+        );
+        if tail.trim().is_empty() {
+            text.push_str("\n(no output)");
+        } else {
+            text.push('\n');
+            text.push_str(&tail);
+        }
+        text.push_str("\nCarry on with what waited for it.");
+        self.enqueue(Queued {
+            text,
+            images: Vec::new(),
+            row: Some((shown, extra)),
+            report: true,
+        });
+    }
+
+    /// Stops every kept background process (a close, a shutdown): the
+    /// transcript names each one that was still running.
+    fn stop_kept(&self, shutdown: bool) {
+        let list: Vec<Managed> = {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut kept.list)
+        };
+        for mut m in list {
+            let was_running = m.stop();
+            let exit = m.exit();
+            let why = if shutdown {
+                "PULSE stopped it to go down"
+            } else {
+                "the conversation was closed"
+            };
+            let line = if was_running {
+                format!(
+                    "Background process {} `{}` was stopped after {}: {why}.",
+                    m.id,
+                    one_line(&m.command),
+                    fmt_dur(m.elapsed())
+                )
+            } else {
+                format!(
+                    "Background process {} `{}` ended with exit {} after {}; {why} before the wake reached the agent.",
+                    m.id,
+                    one_line(&m.command),
+                    exit.unwrap_or(-1),
+                    fmt_dur(m.elapsed())
+                )
+            };
+            let _ = self.store.chat_add_message(
+                &self.id,
+                "note",
+                &line,
+                &json!({"process": {
+                    "id": m.id,
+                    "command": m.command,
+                    "pid": m.pid(),
+                    "exit": exit,
+                    "elapsed": fmt_dur(m.elapsed()),
+                    "stopped": was_running,
+                    "shutdown": shutdown,
+                }}),
+            );
+        }
+    }
+
+    /// How many kept background processes the conversation is watching.
+    pub fn kept_count(&self) -> usize {
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .list
+            .len()
     }
 
     pub fn live(&self) -> Live {
@@ -1398,6 +1623,7 @@ impl Runtime {
                 store: self.store.clone(),
                 id: row.id.clone(),
                 manager: self.manager.clone(),
+                runtime: Arc::downgrade(self),
             })));
             a.offer_finish(true);
             a.offer_chat(true);
@@ -1659,7 +1885,7 @@ impl Runtime {
     /// [`Runtime::close`] for a hub going down: the stopped turn's note
     /// says PULSE stopped it, not the owner.
     fn stop(self: &Arc<Self>, shutdown: bool) -> thread::JoinHandle<()> {
-        let worker = {
+        let (worker, shutdown) = {
             let mut st = self.shared.lock();
             st.closed = true;
             st.shutdown |= shutdown;
@@ -1673,12 +1899,14 @@ impl Runtime {
                 c.cancel();
             }
             self.shared.bump(&mut st);
-            st.worker
+            (st.worker, st.shutdown)
         };
         let me = self.clone();
         thread::Builder::new()
             .name(format!("chat-close-{}", self.id))
             .spawn(move || {
+                // Kept background processes go with the conversation.
+                me.stop_kept(shutdown);
                 // An active worker ends the session itself once its turn
                 // has returned ([`Runtime::work`]); ending it from here
                 // would cut the turn off before its note is written.
@@ -2234,6 +2462,32 @@ impl Manager {
             images: Vec::new(),
             row: Some((text, extra)),
             report: false,
+        });
+        Ok(())
+    }
+
+    /// Wakes the agent of a conversation with a note from outside it: a
+    /// script the agent started (or anything else on this machine) says
+    /// "I am done" through `pulse chat wake`, and the agent gets a turn on
+    /// the text, after the one running when there is one. `from` names the
+    /// sender (the actor of the event) and is kept on the transcript row.
+    pub fn wake(&self, id: &str, text: &str, from: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the wake message is empty");
+        }
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        let text: String = text.chars().take(WAKE_CHARS).collect();
+        let line = format!("Wake from {from}: {text}");
+        let rt = self.runtime(&row);
+        rt.enqueue(Queued {
+            text: line.clone(),
+            images: Vec::new(),
+            row: Some((line, json!({"wake": {"from": from}}))),
+            report: true,
         });
         Ok(())
     }
@@ -3339,6 +3593,12 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         artifacts.display()
     ));
     b.push_str("The `pulse` command is on PATH.\n");
+    b.push_str(
+        "Work that runs for hours or days (a benchmark, a soak, a long build, a job on another machine) is not waited for inside a turn. \
+         Two ways to be woken when it ends. A command you started with bash background:true is handed over with process notify ID: it keeps running after your turn ends and a note with its exit code and last output starts your next turn. \
+         Anything else - a script you wrote, a cron job, a hook at the end of a pipeline - runs `pulse chat wake \"what ended and how\"` when it is done (the conversation's id comes from $PULSE_CONVERSATION, set in every shell you start, or --id), and that message starts your next turn. \
+         Either way end your turn after starting the work and say so; do not poll with process wait or sleep.\n",
+    );
     if row.lockdown {
         b.push_str(
             "LOCKDOWN (sandbox) MODE. This conversation runs inside a sandbox and nothing reaches outside this machine: the network is off (only localhost answers), writes land only in your worktree and the temp and build folders, credentials and private keys cannot be read, and there is no fetch, web_search or MCP tool. \
@@ -3621,6 +3881,234 @@ mod tests {
         m.archive(&row.id).expect("archive");
         assert_eq!(m.row(&row.id).unwrap().status, "archived");
         assert!(m.send(&row.id, "more").is_err());
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_kept_background_process_wakes_the_conversation_when_it_ends() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let flag = home.path().join("go");
+        let flag_s = flag.display().to_string();
+        // The soak waits for a flag file, prints and exits 7; the agent
+        // hands it over and ends its turn, then answers the wake.
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "bash", "args": {"command": format!("while [ ! -e '{flag_s}' ]; do sleep 0.1; done; echo soak finished; exit 7"), "background": true, "wait": 0}},
+                {"tool": "process", "args": {"action": "notify", "id": "bg-1"}},
+                {"content": "Started the soak; I will carry on when it ends."},
+                {"content": "The soak ended, exit 7 as expected."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "run the soak and tell me", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.turns, 1);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "note", "assistant"], "{msgs:?}");
+        assert!(
+            msgs[1]
+                .content
+                .starts_with("Background process bg-1 keeps running past this turn:"),
+            "{}",
+            msgs[1].content
+        );
+        assert_eq!(msgs[1].extra["kept"]["id"], "bg-1");
+        let pid = msgs[1].extra["kept"]["pid"].as_i64().expect("pid") as i32;
+        assert!(pid > 0);
+        let (_, steps) = s.harness_session(&row.session_id).unwrap();
+        let notify = steps
+            .iter()
+            .position(|st| st.kind == "process" && st.command == "notify bg-1")
+            .expect("the hand-over is a step");
+        assert!(
+            steps[notify + 1]
+                .content
+                .contains("now runs past this turn"),
+            "{}",
+            steps[notify + 1].content
+        );
+        // Idle for a while: nothing happens until the process ends.
+        thread::sleep(PARK_TICK * 3);
+        assert_eq!(s.chat_messages(&row.id, 0).unwrap().len(), 3);
+        assert!(
+            unsafe { libc::kill(pid, 0) } == 0,
+            "the kept process is still alive"
+        );
+        std::fs::write(&flag, "").unwrap();
+        // The watcher sees the exit and the agent gets a turn on it.
+        let row = {
+            let mut got = None;
+            for _ in 0..400 {
+                let row = m.row(&row.id).expect("row");
+                if row.turns >= 2 && m.live(&row).status == "idle" {
+                    got = Some(row);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            got.expect("the wake turn ran")
+        };
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "note", "assistant", "note", "assistant"],
+            "{msgs:?}"
+        );
+        assert_eq!(
+            msgs[3].content,
+            format!(
+                "Background process bg-1 `while [ ! -e '{flag_s}' ]; do sleep 0.1; done; echo soak finished; exit 7` ended with exit 7 after {}.",
+                msgs[3].extra["process"]["elapsed"].as_str().unwrap()
+            )
+        );
+        assert_eq!(msgs[3].extra["process"]["exit"], 7);
+        assert_eq!(msgs[3].extra["process"]["tail"], "soak finished");
+        assert_eq!(msgs[4].content, "The soak ended, exit 7 as expected.");
+        // The agent read the wake with the tail and the hand-off reminder.
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let wake = traj
+            .messages
+            .iter()
+            .rfind(|m| m.role == pulse_provider::Role::User)
+            .expect("the wake is the last user message");
+        assert!(
+            wake.content.contains("ended with exit 7"),
+            "{}",
+            wake.content
+        );
+        assert!(wake.content.contains("soak finished"), "{}", wake.content);
+        assert!(
+            wake.content.contains("handed over with `process notify`"),
+            "{}",
+            wake.content
+        );
+        m.archive(&row.id).expect("archive");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn closing_a_conversation_stops_what_it_kept() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "bash", "args": {"command": "sleep 300", "background": true, "wait": 0}},
+                {"tool": "process", "args": {"action": "notify", "id": "bg-1"}},
+                {"content": "Sleeping for a while."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "sleep", "owner").expect("create");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let pid = msgs[1].extra["kept"]["pid"].as_i64().expect("pid") as i32;
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "alive after the turn");
+        m.archive(&row.id).expect("archive");
+        // The archive closes the runtime: the sleep is stopped and the
+        // transcript says so.
+        let mut stopped = None;
+        for _ in 0..400 {
+            let msgs = s.chat_messages(&row.id, 0).unwrap();
+            if let Some(n) = msgs
+                .iter()
+                .find(|m| m.role == "note" && m.content.contains("was stopped after"))
+            {
+                stopped = Some(n.content.clone());
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let stopped = stopped.expect("the stop is on the transcript");
+        assert!(
+            stopped.starts_with("Background process bg-1 `sleep 300` was stopped after"),
+            "{stopped}"
+        );
+        assert!(stopped.contains("the conversation was closed"), "{stopped}");
+        for _ in 0..200 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the sleep is gone");
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_wake_from_outside_gives_the_agent_a_turn_on_the_message() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "Waiting for the build."},
+                {"content": "The build passed; moving on."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "wait for the build", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        assert!(
+            m.wake(&row.id, "   ", "build.sh").is_err(),
+            "empty wakes are refused"
+        );
+        m.wake(&row.id, "build passed: 212 tests ok", "build.sh")
+            .expect("wake");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.turns, 2);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant", "note", "assistant"],
+            "{msgs:?}"
+        );
+        assert_eq!(
+            msgs[2].content,
+            "Wake from build.sh: build passed: 212 tests ok"
+        );
+        assert_eq!(msgs[2].extra["wake"]["from"], "build.sh");
+        assert_eq!(msgs[3].content, "The build passed; moving on.");
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let wake = traj
+            .messages
+            .iter()
+            .rfind(|m| m.role == pulse_provider::Role::User)
+            .expect("the wake reached the agent");
+        assert_eq!(
+            wake.content,
+            "Wake from build.sh: build passed: 212 tests ok"
+        );
+        m.archive(&row.id).expect("archive");
+        assert!(
+            m.wake(&row.id, "late", "build.sh").is_err(),
+            "an archived conversation takes no wake"
+        );
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }

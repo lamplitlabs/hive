@@ -58,6 +58,76 @@ pub(crate) fn idle_release_loop(ctx: &pulse_bus::CancellationToken, chats: &Chat
     }
 }
 
+/// How long the wake loop waits on the bus between checks of the stop flag.
+const WAKE_RECV: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Turns every `chat.wake` event (`pulse chat wake`, run by a script an
+/// agent left running) into a turn of the conversation it names
+/// ([`Manager::wake`]), until the hub stops. The bus sequence delivered up
+/// to is kept in the store (`chat.wake.cursor`), so a wake sent while no
+/// hub ran reaches its agent when the next hub starts.
+pub(crate) fn wake_loop(
+    ctx: &pulse_bus::CancellationToken,
+    store: &pulse_store::Store,
+    chats: &Chats,
+) {
+    use pulse_harness::conversation::{WAKE_ACTION, WAKE_CURSOR_KEY};
+    let since = match store
+        .meta(WAKE_CURSOR_KEY)
+        .ok()
+        .filter(|(_, found)| *found)
+        .and_then(|(v, _)| v.trim().parse::<i64>().ok())
+    {
+        Some(seq) => seq,
+        None => {
+            // First hub with the feature: nothing could have woken a
+            // conversation before now, so start here and say so, so the
+            // next start has a cursor to resume from.
+            let seq = pulse_bus::last_id(store).unwrap_or(0);
+            let _ = store.set_meta(WAKE_CURSOR_KEY, &seq.to_string());
+            seq
+        }
+    };
+    let tail = pulse_bus::tail(
+        ctx.clone(),
+        store.clone(),
+        since,
+        pulse_bus::Filter {
+            actions: vec![WAKE_ACTION.to_string()],
+            ..Default::default()
+        },
+        std::time::Duration::from_secs(1),
+    );
+    loop {
+        if ctx.is_cancelled() {
+            return;
+        }
+        let event = match tail.recv_timeout(WAKE_RECV) {
+            Ok(event) => event,
+            Err(err) if err.is_timeout() => continue,
+            Err(_) => return,
+        };
+        let manager = chats.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(m) = manager {
+            deliver_wake(&m, &event);
+        }
+        let _ = store.set_meta(WAKE_CURSOR_KEY, &event.id.to_string());
+    }
+}
+
+/// Hands one `chat.wake` event to its conversation; a wake for a
+/// conversation that is gone or archived is dropped with a log line, not
+/// an error that stops the loop.
+pub(crate) fn deliver_wake(m: &Manager, event: &pulse_bus::Event) {
+    let text = serde_json::from_str::<Value>(&event.detail)
+        .ok()
+        .and_then(|d| d.get("text").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| event.detail.clone());
+    if let Err(err) = m.wake(&event.subject, &text, &event.actor) {
+        eprintln!("chat wake {}: {err:#}", event.subject);
+    }
+}
+
 impl Handler {
     pub(crate) fn chats(&self) -> Option<Arc<Manager>> {
         self.open_chats().map(|(m, _, _)| m)
@@ -931,6 +1001,115 @@ mod tests {
         );
         assert_eq!(code, 409, "an archived conversation takes no messages");
         std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// Polls the conversation until its last message is `content` (the
+    /// agent's reply to a turn it was given from outside), returning the
+    /// full view.
+    fn wait_last(h: &Handler, id: &str, content: &str) -> JsonMap {
+        for _ in 0..400 {
+            let (code, body, _) = call(h, "GET", &format!("/api/v1/chat/{id}"), Value::Null);
+            assert_eq!(code, 200);
+            let last = body["messages"]
+                .as_array()
+                .and_then(|m| m.last())
+                .map(|m| m["content"].clone());
+            if last.as_ref().and_then(Value::as_str) == Some(content) {
+                return body;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("conversation {id} never answered {content:?}");
+    }
+
+    #[test]
+    fn a_chat_wake_event_on_the_bus_gives_the_agent_a_turn() {
+        use pulse_harness::conversation::{WAKE_ACTION, WAKE_CURSOR_KEY};
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(
+            &ts,
+            json!([
+                {"content": "Started the soak; I will hear from it."},
+                {"content": "The soak passed; closing."},
+                {"content": "Second wake seen."}
+            ]),
+        );
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            "/api/v1/chat",
+            json!({"text": "run the soak", "title": ""}),
+        );
+        assert_eq!(code, 201, "{raw}");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        wait_status(&h, &id, &["idle"]);
+
+        // A wake written while no loop ran (the hub was down) is picked up
+        // from where the last hub's loop left its cursor.
+        let stopped_at = pulse_bus::last_id(&ts).expect("last id");
+        ts.set_meta(WAKE_CURSOR_KEY, &stopped_at.to_string())
+            .expect("cursor");
+        ts.event(
+            "soak.sh",
+            WAKE_ACTION,
+            &id,
+            json!({"text": "soak passed: 0 errors"}),
+        )
+        .expect("event");
+        let ctx = pulse_bus::CancellationToken::new();
+        let loop_ctx = ctx.clone();
+        let loop_store = ts.store.clone();
+        let loop_chats = h.chats.clone();
+        let worker = std::thread::spawn(move || wake_loop(&loop_ctx, &loop_store, &loop_chats));
+        let shown = wait_last(&h, &id, "The soak passed; closing.");
+        let msgs = shown["messages"].as_array().unwrap();
+        let note = msgs
+            .iter()
+            .find(|m| m["role"] == "note" && m["extra"]["wake"].is_object())
+            .unwrap_or_else(|| panic!("no wake note in {msgs:?}"));
+        assert_eq!(note["extra"]["wake"]["from"], "soak.sh");
+        assert!(
+            note["content"]
+                .as_str()
+                .unwrap()
+                .contains("soak passed: 0 errors"),
+            "{note}"
+        );
+        for _ in 0..200 {
+            if ts
+                .meta(WAKE_CURSOR_KEY)
+                .ok()
+                .is_some_and(|(_, found)| found)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (cursor, found) = ts.meta(WAKE_CURSOR_KEY).expect("meta");
+        assert!(found, "the loop keeps where it got to");
+        let cursor: i64 = cursor.parse().expect("cursor is a sequence number");
+        assert!(cursor > 0);
+
+        // A second wake while the loop runs: delivered too, the cursor moves.
+        ts.event(
+            "soak.sh",
+            WAKE_ACTION,
+            &id,
+            json!({"text": "report written"}),
+        )
+        .expect("event");
+        wait_last(&h, &id, "Second wake seen.");
+        let (after, _) = ts.meta(WAKE_CURSOR_KEY).expect("meta");
+        assert!(after.parse::<i64>().unwrap() > cursor);
+
+        // A wake for a conversation that is not there is logged, not fatal:
+        // the loop goes on and stops with the token.
+        ts.event("x", WAKE_ACTION, "chat-nowhere", json!({"text": "hello?"}))
+            .expect("event");
+        std::thread::sleep(Duration::from_millis(50));
+        ctx.cancel();
+        worker.join().expect("the wake loop ends with the token");
     }
 
     #[test]

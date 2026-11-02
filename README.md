@@ -789,8 +789,8 @@ history on that refusal and sends the request again, saying so in a note.
 leaves its branch and folder where they are; `pulse remove project <slug>
 --forget` drops its rows with the project's.
 
-Everything is yours to script: `pulse chat list [--all]` and `pulse chat show
-<id>` print what the page shows, and `/api/v1/chat` (`GET` for the
+Everything is yours to script: `pulse chat list [--all]`, `pulse chat show
+<id>` and `pulse chat wake [--id <id>] <message>` print or do what the page shows, and `/api/v1/chat` (`GET` for the
 list - `conversations`, and `tasks` with each task's thread summed up and one
 entry per job with its latest harness session, the tasks in progress plus a
 week of finished ones, every one with `?all=1` - `POST` to start (`parent` with
@@ -816,6 +816,21 @@ object body (400 when empty; send `{}` to `/archive`, `/close`, `/restart`,
 the hub ends their turns, and the conversation picks up from its transcript on
 the next message. A conversation needs a signed-in model (**Settings →
 Harness**); without one the first turn says so instead of working.
+
+A conversation's agent does not sit through work that runs for hours or days;
+it hands the wait over and is woken. A command it started with `bash
+background:true` goes past the turn with `process notify ID`: the agent ends
+its turn, the process keeps running inside the hub, and when it ends a note
+with its exit code and last output starts the next turn (closing or archiving
+the conversation stops what it kept; a hub restart ends it with a note saying
+so). Anything the agent cannot hold - a script it wrote, a cron job, a hook at
+the end of a pipeline, a job on another machine - says "I am done" with `pulse
+chat wake "what ended and how"`: the conversation's id comes from
+`$PULSE_CONVERSATION` (set in every shell the agent starts) or `--id`, the
+command publishes a `chat.wake` event on the bus, and the hub turns it into a
+turn of that conversation (a wake sent while no hub runs is delivered when the
+next one starts; the hub keeps its place in `chat.wake.cursor`). The transcript
+shows both as notes.
 
 ### Votes
 

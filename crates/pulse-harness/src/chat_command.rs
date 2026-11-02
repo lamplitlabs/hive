@@ -1,7 +1,8 @@
 //! `pulse chat`: the hub's conversations from the command line - list
-//! them, read one, and `attach` a project from inside a conversation's own
-//! agent (the brief tells it to).
-use crate::conversation::{CONVERSATION_ENV, attach_workspace};
+//! them, read one, `attach` a project from inside a conversation's own
+//! agent (the brief tells it to), and `wake` a conversation's agent from a
+//! script it left running (the "I am done" signal of a long job).
+use crate::conversation::{CONVERSATION_ENV, WAKE_ACTION, attach_workspace};
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, register as cli_register, write_json};
 use serde_json::json;
@@ -10,7 +11,7 @@ use std::sync::Once;
 
 static REGISTER: Once = Once::new();
 
-const USAGE: &str = "pulse chat list [--all] [--json]\n       pulse chat show ID [--json]\n       pulse chat attach SLUG [--id ID]";
+const USAGE: &str = "pulse chat list [--all] [--json]\n       pulse chat show ID [--json]\n       pulse chat attach SLUG [--id ID]\n       pulse chat wake [--id ID] MESSAGE...";
 
 pub fn register() {
     REGISTER.call_once(|| {
@@ -18,7 +19,7 @@ pub fn register() {
             name: "chat".into(),
             group: "human".into(),
             summary:
-                "the hub's conversations: list them, read one, attach a project from inside one"
+                "the hub's conversations: list them, read one, attach a project from inside one, wake one's agent from a script"
                     .into(),
             usage: USAGE.into(),
             aliases: vec![],
@@ -36,8 +37,27 @@ fn flags(fs: &mut FlagSet) {
     fs.string_var(
         "id",
         "",
-        &format!("the conversation to attach (default: ${CONVERSATION_ENV}, set inside a conversation's agent)"),
+        &format!("the conversation to attach or wake (default: ${CONVERSATION_ENV}, set inside a conversation's agent and in the shells it starts)"),
     );
+}
+
+/// The conversation a verb run from inside an agent's shell means: `--id`,
+/// else the environment the harness sets there.
+fn conversation_id(fs: &FlagSet, verb: &str) -> Result<String> {
+    let mut id = fs.get_string("id");
+    if id.is_empty() {
+        id = std::env::var(CONVERSATION_ENV).unwrap_or_default();
+    }
+    if id.is_empty() {
+        return Err(errorf(
+            2,
+            &format!("pulse chat {verb}: which conversation?"),
+            &format!("Run it from inside a conversation's agent (${CONVERSATION_ENV} is set there, and in the scripts it starts) or pass --id."),
+            &format!("pulse chat {verb} --id chat-... ..."),
+        )
+        .into());
+    }
+    Ok(id)
 }
 
 fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
@@ -132,21 +152,50 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             }
             Ok(())
         }
-        ("attach", 2) => {
-            let slug = &args[1];
-            let mut id = fs.get_string("id");
-            if id.is_empty() {
-                id = std::env::var(CONVERSATION_ENV).unwrap_or_default();
-            }
-            if id.is_empty() {
+        ("wake", n) if n >= 2 => {
+            let id = conversation_id(fs, "wake")?;
+            let text = args[1..].join(" ");
+            if text.trim().is_empty() {
                 return Err(errorf(
                     2,
-                    "pulse chat attach: which conversation?",
-                    &format!("Run it from inside a conversation's agent (${CONVERSATION_ENV} is set there) or pass --id."),
-                    "pulse chat attach SLUG --id chat-...",
+                    "pulse chat wake: the message is empty",
+                    "Say what ended and how, in one line; the agent reads the rest from your log file.",
+                    "pulse chat wake \"benchmark done: exit 0, results in /tmp/bench.csv\"",
                 )
                 .into());
             }
+            let Some(row) = s.chat_get(&id)? else {
+                return Err(errorf(
+                    2,
+                    &format!("pulse chat wake: no conversation {id}"),
+                    "",
+                    "pulse chat list --all",
+                )
+                .into());
+            };
+            if row.status == "archived" {
+                return Err(errorf(
+                    2,
+                    &format!("pulse chat wake: conversation {id} is archived"),
+                    "Nothing listens there any more.",
+                    "pulse chat list",
+                )
+                .into());
+            }
+            let actor = crate::commands::actor_of(c);
+            s.event(&actor, WAKE_ACTION, &id, json!({"text": text}))?;
+            if c.json {
+                return write_json(c.out.as_mut(), &json!({"id": id, "text": text}));
+            }
+            writeln!(
+                c.out,
+                "Woke conversation {id}: the hub gives its agent a turn on your message."
+            )?;
+            Ok(())
+        }
+        ("attach", 2) => {
+            let slug = &args[1];
+            let id = conversation_id(fs, "attach")?;
             let home = s.home.clone();
             let attached = attach_workspace(&s, &home, &id, slug)?;
             if c.json {
@@ -173,5 +222,138 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             USAGE,
         )
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pulse_cli::Buffer;
+    use pulse_store::{Options, Store};
+
+    fn store(home: &std::path::Path) -> Store {
+        pulse_testutil::neutralize_runner_environment();
+        Store::open(Options {
+            home: home.display().to_string(),
+            create: true,
+            now: "2026-11-02T03:00:00Z".into(),
+            ..Options::default()
+        })
+        .expect("store")
+    }
+
+    fn invoke(s: &Store, flags: &[(&str, &str)], args: &[&str]) -> (String, String, i32) {
+        register();
+        let out = Buffer::new();
+        let err = Buffer::new();
+        let mut c = Context {
+            store: Some(s.clone()),
+            home: s.home.clone(),
+            out: Box::new(out.clone()),
+            err: Box::new(err.clone()),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: "build.sh".into(),
+            project: "".into(),
+            session: "".into(),
+            now: "2026-11-02T03:00:00Z".into(),
+            args: Vec::new(),
+        };
+        let cmd = pulse_cli::lookup("chat").unwrap();
+        let mut fs = FlagSet::new("chat");
+        (cmd.flags.unwrap())(&mut fs);
+        for (name, value) in flags {
+            fs.set(name, value).expect("flag");
+        }
+        let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let code = match (cmd.run)(&mut c, &fs, &argv) {
+            Ok(()) => 0,
+            Err(e) => {
+                if let Some(ce) = e.downcast_ref::<pulse_cli::Error>() {
+                    let _ = write!(c.err, "{ce}");
+                    ce.exit_code()
+                } else {
+                    let _ = write!(c.err, "{e}");
+                    1
+                }
+            }
+        };
+        (out.string(), err.string(), code)
+    }
+
+    fn conversation(s: &Store, id: &str, status: &str) {
+        s.chat_create(&pulse_store::Conversation {
+            id: id.into(),
+            title: "soak".into(),
+            status: status.into(),
+            created_by: "owner".into(),
+            ..Default::default()
+        })
+        .expect("conversation");
+    }
+
+    fn wakes(s: &Store) -> Vec<pulse_bus::Event> {
+        pulse_bus::since(
+            s,
+            0,
+            pulse_bus::Filter {
+                actions: vec![WAKE_ACTION.to_string()],
+                ..Default::default()
+            },
+            0,
+        )
+        .expect("events")
+    }
+
+    #[test]
+    fn wake_writes_the_bus_event_for_the_conversation_the_shell_belongs_to() {
+        let _env = pulse_testutil::env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let s = store(home.path());
+        conversation(&s, "chat-1", "idle");
+        conversation(&s, "chat-2", "archived");
+
+        // Without --id, the conversation is the one the harness named in
+        // the shell's environment.
+        let _guard = pulse_testutil::setenv(CONVERSATION_ENV, "chat-1");
+        let (out, err, code) = invoke(&s, &[], &["wake", "build", "passed:", "212 tests ok"]);
+        assert_eq!(code, 0, "{err}");
+        assert!(out.starts_with("Woke conversation chat-1:"), "{out}");
+        let events = wakes(&s);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].subject, "chat-1");
+        assert_eq!(events[0].actor, "build.sh");
+        let detail: serde_json::Value = serde_json::from_str(&events[0].detail).unwrap();
+        assert_eq!(detail["text"], "build passed: 212 tests ok");
+
+        // --id wins over the environment; an archived conversation and an
+        // unknown one are refused, and so is an empty message.
+        let (_, err, code) = invoke(&s, &[("id", "chat-2")], &["wake", "done"]);
+        assert_eq!(code, 2);
+        assert!(err.contains("chat-2 is archived"), "{err}");
+        let (_, err, code) = invoke(&s, &[("id", "chat-9")], &["wake", "done"]);
+        assert_eq!(code, 2);
+        assert!(err.contains("no conversation chat-9"), "{err}");
+        let (_, err, code) = invoke(&s, &[], &["wake", "  "]);
+        assert_eq!(code, 2);
+        assert!(err.contains("the message is empty"), "{err}");
+        let (_, err, code) = invoke(&s, &[], &["wake"]);
+        assert_eq!(code, 2);
+        assert!(err.contains("unknown or incomplete"), "{err}");
+        assert_eq!(wakes(&s).len(), 1, "refusals write nothing");
+    }
+
+    #[test]
+    fn wake_outside_a_conversation_says_which_one_it_needs() {
+        let _env = pulse_testutil::env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let s = store(home.path());
+        let _guard = pulse_testutil::setenv(CONVERSATION_ENV, "");
+        let (_, err, code) = invoke(&s, &[], &["wake", "done"]);
+        assert_eq!(code, 2);
+        assert!(err.contains("which conversation?"), "{err}");
+        assert!(err.contains("--id"), "{err}");
+        assert!(wakes(&s).is_empty());
     }
 }

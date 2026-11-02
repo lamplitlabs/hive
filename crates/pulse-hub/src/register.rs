@@ -359,6 +359,15 @@ fn run_command(
             .name("hub-chat-idle".into())
             .spawn(move || crate::chat::idle_release_loop(&idle_ctx, &chats))?;
     }
+    // A script an agent left running says "I am done" with `pulse chat
+    // wake`; the loop turns the bus event into a turn of that conversation.
+    if let Some(store) = h.store.clone() {
+        let chats = chats.clone();
+        let wake_ctx = ctx.clone();
+        std::thread::Builder::new()
+            .name("hub-chat-wake".into())
+            .spawn(move || crate::chat::wake_loop(&wake_ctx, &store, &chats))?;
+    }
     // The watcher and handover threads only flag what happened; their report
     // lines are written once `serve` returns, the first point at which
     // `c.out`/`c.err` are used again.
