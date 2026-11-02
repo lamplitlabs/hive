@@ -158,22 +158,12 @@ export function AutomationsPageClient() {
     });
   const all = q.data?.projects ?? [];
   const shown = project ? all.filter((p) => p.slug === project) : all;
-  const total = shown.reduce(
-    (n, p) => n + p.schedules.filter((s) => s.status !== "ended").length,
-    0,
-  );
-  const inFile = shown.reduce(
-    (n, p) =>
-      n +
-      p.schedules.filter((s) => s.status !== "ended" && s.origin_path).length,
-    0,
-  );
 
   return (
     <div className="min-w-0">
       <PageTitle
         icon={CalendarClockIcon}
-        sub="Standing jobs: a task, a check or a watch that runs on a schedule. Each is a file in the project's .pulse/automations folder, so it travels with the code, or set by hand here."
+        sub="Standing jobs that run on a schedule: a file in the project's .pulse/automations folder, or set by hand here."
         actions={
           <Button onClick={() => setAdding(project || "")}>
             <PlusIcon /> New automation
@@ -219,57 +209,33 @@ export function AutomationsPageClient() {
         {!q.data && !q.error ? (
           <SkeletonRows n={4} />
         ) : q.data && shown.length === 0 ? (
-          <>
-            <EmptyState
-              title={
-                project
-                  ? "Nothing scheduled for " + project
-                  : "Nothing scheduled yet"
-              }
-              icon={<CalendarClockIcon className="size-[18px]" />}
-              action={
-                <Button size="sm" onClick={() => setAdding(project || "")}>
-                  <PlusIcon /> New automation
-                </Button>
-              }
-            >
-              {project
-                ? "This project has no standing jobs and no checkout on this machine to keep them in. Register a checkout, or add one that lives in the store."
-                : "A standing job runs on a cadence without anyone asking: a nightly audit, a weekly dependency check, a watch on a page that must stay up. Add one and it is written into the project's repository as .pulse/automations/<name>.yaml."}
-            </EmptyState>
-            <Terminal />
-          </>
+          <EmptyState
+            title={
+              project
+                ? "Nothing scheduled for " + project
+                : "Nothing scheduled yet"
+            }
+            icon={<CalendarClockIcon className="size-[18px]" />}
+            action={
+              <Button size="sm" onClick={() => setAdding(project || "")}>
+                <PlusIcon /> New automation
+              </Button>
+            }
+          >
+            {project
+              ? "This project has no standing jobs and no checkout on this machine to keep them in. Register a checkout, or add one that lives in the store."
+              : "A standing job runs on a cadence without anyone asking: a nightly audit, a weekly dependency check, a watch on a page that must stay up. Add one and it is written into the project's repository as .pulse/automations/<name>.yaml."}
+          </EmptyState>
         ) : q.data ? (
-          <>
-            <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-              {total === 0
-                ? "Nothing is live right now."
-                : plural(total, "live automation") +
-                  (inFile === total
-                    ? total === 1
-                      ? ", kept in the project's repository."
-                      : ", all kept in the projects' repositories."
-                    : inFile === 0
-                      ? ", all set by hand."
-                      : ", " +
-                        num(inFile) +
-                        " kept in a repository and " +
-                        num(total - inFile) +
-                        " set by hand.")}{" "}
-              The daemon starts each job when its time comes and shows it under
-              Tasks.
-            </p>
-            {shown.map((p) => (
-              <ProjectGroup
-                key={p.slug}
-                p={p}
-                single={shown.length === 1}
-                onAdd={() => setAdding(p.slug)}
-                onEdit={setEditing}
-              />
-            ))}
-            <Terminal />
-          </>
+          shown.map((p) => (
+            <ProjectGroup
+              key={p.slug}
+              p={p}
+              single={shown.length === 1}
+              onAdd={() => setAdding(p.slug)}
+              onEdit={setEditing}
+            />
+          ))
         ) : null}
       </div>
 
@@ -294,35 +260,11 @@ export function AutomationsPageClient() {
   );
 }
 
-// The terminal side of it, and where the files sit.
-function Terminal() {
-  return (
-    <Disclosure
-      summary="Prefer the terminal, or the files themselves?"
-      contentClassName="grid max-w-3xl gap-2 text-sm leading-relaxed text-muted-foreground anywhere"
-    >
-      <p>
-        Every automation is a file{" "}
-        <Mono>.pulse/automations/&lt;name&gt;.yaml</Mono> on the project&apos;s
-        default branch, its fields at the top level; the file&apos;s name is the
-        automation&apos;s. Older projects may also keep a{" "}
-        <Mono>schedules:</Mono> list in <Mono>.pulse/pulse.yaml</Mono>, which
-        still works. Edit a file and commit; the daemon applies it on its next
-        pass, and <Mono>pulse manifest check</Mono> says what it would refuse.
-      </p>
-      <p>
-        From a shell on this machine, a schedule that lives in the store alone:{" "}
-        <Mono className="block w-fit max-w-full">
-          pulse schedule add --project P --title &apos;Nightly audit&apos;
-          --every 1d --at 02:00 --brief &apos;Audit the dependencies.&apos;
-        </Mono>
-      </p>
-    </Disclosure>
-  );
-}
-
 // ----- one project --------------------------------------------------------
 
+// A project's automations, one card each: the live and paused schedules,
+// then the files the daemon holds back (they have no schedule row, so the
+// file is the card), with the ended ones folded away at the end.
 function ProjectGroup({
   p,
   single,
@@ -342,6 +284,10 @@ function ProjectGroup({
   const otherProblems = daemonProblems(p);
   const files = p.automations?.files ?? [];
   const dir = p.automations?.dir ?? ".pulse/automations";
+  // Files without a live schedule: held (the daemon refused them) or not
+  // applied yet. Each gets a card of its own; a file a schedule runs from is
+  // the schedule's card, which names the file.
+  const loose = files.filter((f) => fileState(p, f).row === null);
   return (
     <section className="grid min-w-0 gap-3" aria-label={p.name || p.slug}>
       <SectionHeading
@@ -388,10 +334,7 @@ function ProjectGroup({
           </ul>
         </Notice>
       ) : null}
-      {files.length ? (
-        <RepoFiles p={p} dir={dir} files={files} onEdit={onEdit} />
-      ) : null}
-      {live.length === 0 ? (
+      {live.length === 0 && loose.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {p.repo
             ? "Nothing live. Add one and it goes into " +
@@ -405,6 +348,9 @@ function ProjectGroup({
         <CardGrid cols={2}>
           {live.map((s) => (
             <ScheduleCard key={s.id} p={p} s={s} onEdit={onEdit} />
+          ))}
+          {loose.map((f) => (
+            <FileCard key={f.path} p={p} f={f} onEdit={onEdit} />
           ))}
         </CardGrid>
       )}
@@ -426,8 +372,9 @@ function ProjectGroup({
   );
 }
 
-// Where the repository stands, in a line: the folder and how many files,
-// the list file if there is one, when the daemon last applied them.
+// Where the project keeps its automations, in a line: the folder (how many
+// files), the older list file if there is one, when the daemon last read
+// them. Nothing when there is no checkout here.
 function FileLine({ p }: { p: AutomationProject }) {
   if (!p.repo) return <span>No checkout on this machine</span>;
   const files = p.automations?.files ?? [];
@@ -459,12 +406,11 @@ function FileLine({ p }: { p: AutomationProject }) {
           </span>
         </>
       ) : null}
-      <span>on {p.repo.branch}</span>
       {p.applied?.at ? (
         <>
           <span aria-hidden>·</span>
           <span>
-            applied <When d={p.applied.at} />
+            read <When d={p.applied.at} />
           </span>
         </>
       ) : null}
@@ -472,117 +418,88 @@ function FileLine({ p }: { p: AutomationProject }) {
   );
 }
 
-// The project's automation files, one line each: what the file says, where
-// it stands, and a way into the form. A held file (one the daemon leaves
-// alone) has no card below, so this is where its problems show.
-function RepoFiles({
+// A file of `.pulse/automations/` that no schedule runs from: the daemon
+// holds it (something is wrong) or has not applied it yet. Its problems
+// show here, and the form opens on it.
+function FileCard({
   p,
-  dir,
-  files,
+  f,
   onEdit,
 }: {
   p: AutomationProject;
-  dir: string;
-  files: AutomationRepoFile[];
+  f: AutomationRepoFile;
   onEdit: (t: EditTarget) => void;
 }) {
+  const st = fileState(p, f);
+  const problems = fileProblems(p, f);
+  const e = f.entry;
+  const kind = e ? (KIND_WORDS[e.kind || "task"]?.label ?? e.kind) : "";
   return (
-    <div className="rounded-xl border bg-muted/20 text-sm">
-      <p className="flex items-center gap-1.5 border-b px-3 py-2 text-xs text-muted-foreground">
-        <FolderGit2Icon className="size-3.5" aria-hidden />
-        <Mono>{dir}/</Mono>
-        <span>
-          on {p.repo?.branch ?? "the default branch"} · one file per automation
-        </span>
-      </p>
-      <ul className="divide-y">
-        {files.map((f) => {
-          const st = fileState(p, f);
-          const problems = fileProblems(p, f);
-          const e = f.entry;
-          const tone =
-            st.state === "live"
-              ? "ok"
-              : st.state === "held"
-                ? "bad"
-                : st.state === "paused"
-                  ? "warn"
-                  : "neutral";
-          return (
-            <li
-              key={f.path}
-              className="grid gap-1 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
-            >
-              <div className="min-w-0">
-                <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                  <span title={f.path}>
-                    <Mono className="text-[13px]">{f.name}.yaml</Mono>
-                  </span>
-                  <ToneBadge
-                    tone={tone}
-                    dot
-                    title={"The daemon's view of " + f.path}
-                  >
-                    {st.words}
-                  </ToneBadge>
-                  {e ? (
-                    <span className="text-xs text-muted-foreground">
-                      {cadenceWords(e.every, e.at)}
-                      {" · " + (KIND_WORDS[e.kind || "task"]?.label ?? e.kind)}
-                      {e.skill ? (
-                        <>
-                          {" · skill "}
-                          <Mono className="text-[11px]">{e.skill}</Mono>
-                        </>
-                      ) : e.script ? (
-                        <>
-                          {" · runs "}
-                          <Mono className="text-[11px]">{e.script}</Mono>
-                        </>
-                      ) : null}
-                    </span>
-                  ) : null}
-                </p>
-                {e?.title && e.title !== f.name ? (
-                  <p className="truncate text-xs text-muted-foreground">
-                    {e.title}
-                  </p>
-                ) : null}
-                {problems.length ? (
-                  <ul className="mt-1 list-disc pl-4 text-xs text-warn">
-                    {problems.map((x) => (
-                      <li key={x} className="anywhere">
-                        {x}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-              {e ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="justify-self-end"
-                  onClick={() =>
-                    onEdit({
-                      project: p,
-                      entry: entryFromFile(e),
-                      mode: "repo",
-                      replace: f.name,
-                      schedule: st.row,
-                      title: e.title || f.name,
-                    })
-                  }
-                  title={"Edit " + f.path}
-                >
-                  <PencilIcon /> Edit
-                </Button>
-              ) : null}
+    <ItemCard ariaLabel={e?.title || f.name}>
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"
+            aria-hidden
+          >
+            <FileCode2Icon className="size-[18px]" />
+          </span>
+          <div className="min-w-0">
+            <ItemCardTitle>{e?.title || f.name}</ItemCardTitle>
+            <p className="text-xs text-muted-foreground">
+              {e ? cadenceWords(e.every, e.at) + " · " + kind : "unreadable"}
+            </p>
+          </div>
+        </div>
+        <ToneBadge
+          tone={st.state === "held" ? "bad" : "neutral"}
+          dot
+          className="mt-0.5 shrink-0"
+          title={"The daemon's view of " + f.path}
+        >
+          {st.words}
+        </ToneBadge>
+      </div>
+      {problems.length ? (
+        <ul className="list-disc pl-4 text-xs text-warn">
+          {problems.map((x) => (
+            <li key={x} className="anywhere">
+              {x}
             </li>
-          );
-        })}
-      </ul>
-    </div>
+          ))}
+        </ul>
+      ) : null}
+      <ItemCardMeta>
+        <span className="inline-flex items-center gap-1" title={f.path}>
+          <FileCode2Icon className="size-3.5" aria-hidden />
+          in {f.path}
+        </span>
+        {st.state === "pending" ? (
+          <span>the daemon applies it on its next pass</span>
+        ) : null}
+      </ItemCardMeta>
+      {e ? (
+        <ItemCardActions>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              onEdit({
+                project: p,
+                entry: entryFromFile(e),
+                mode: "repo",
+                replace: f.name,
+                schedule: null,
+                title: e.title || f.name,
+              })
+            }
+            title={"Edit " + f.path}
+          >
+            <PencilIcon /> Edit
+          </Button>
+        </ItemCardActions>
+      ) : null}
+    </ItemCard>
   );
 }
 
@@ -794,11 +711,6 @@ function ScheduleCard({
           <span>
             last <When d={s.last_at} />
           </span>
-        ) : null}
-        {s.last_job ? (
-          <Link href={hrefs.task(s.last_job)} className="hover:underline">
-            last job <Mono className="text-[11px]">{s.last_job}</Mono>
-          </Link>
         ) : null}
         {s.agent ? (
           <span>
