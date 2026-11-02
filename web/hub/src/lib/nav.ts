@@ -119,5 +119,8 @@ export const hrefs = {
   // Standing jobs and the `.pulse/pulse.yaml` entries that keep them; `project` narrows to one.
   automations: (f: { project?: string } = {}) =>
     "/automations/" + qs({ project: f.project }),
+  // What agents remembered across runs; `key` opens one file, `q` searches.
+  memory: (f: { key?: string; q?: string } = {}) =>
+    "/memory/" + qs({ key: f.key, q: f.q }),
   tasks: (f: { project?: string; status?: string } = {}) => "/tasks/" + qs(f),
 };

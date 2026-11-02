@@ -99,25 +99,99 @@ pub(crate) fn score_line(sc: &pulse_evolve::api::Scores) -> String {
     )
 }
 
+/// The base recorded for a run (`runs.base`): the commit its clone was made from.
+/// Empty when the run is unknown or recorded none.
+pub(crate) fn run_base(s: &pulse_store::Store, run_id: &str) -> String {
+    if run_id.is_empty() {
+        return String::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return String::new();
+    };
+    crate::util::must_one(&conn, "SELECT base FROM runs WHERE id = ?", &[&run_id])
+        .str("base")
+        .trim()
+        .to_string()
+}
+
+/// The run's recorded base as a stand-in merge base for `branch`, used when `def` and the
+/// branch share no commit at all - `def` was squashed to a new root commit after the
+/// branch forked, so `git merge-base` finds nothing and a two-way merge conflicts on
+/// every file. The run base qualifies only while it is still a commit in the repository
+/// and an ancestor of the branch; otherwise this is empty and the caller keeps its
+/// old behaviour.
+pub(crate) fn run_base_fork(root: &str, branch: &str, run_base: &str) -> String {
+    let run_base = run_base.trim();
+    if run_base.is_empty() {
+        return String::new();
+    }
+    let short = Duration::from_secs(30);
+    let commit = crate::util::git_timeout(
+        root,
+        short,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{run_base}^{{commit}}"),
+        ],
+    );
+    let sha = commit.stdout.trim().to_string();
+    if !commit.ok() || sha.len() < 40 {
+        return String::new();
+    }
+    if !crate::util::git_timeout(root, short, &["merge-base", "--is-ancestor", &sha, branch]).ok() {
+        return String::new();
+    }
+    sha
+}
+
+/// Where `branch` forked from `def`: their merge base, or - when they share no history
+/// (`def` squashed after the branch forked) - the run's base as `run_base_fork` accepts
+/// it. Empty when neither is known.
+pub(crate) fn fork_point(root: &str, def: &str, branch: &str, run_base: &str) -> String {
+    let base = merge_base(root, def, branch);
+    if base.is_empty() {
+        run_base_fork(root, branch, run_base)
+    } else {
+        base
+    }
+}
+
 /// The revision the lane measures for `branch`: the branch merged onto `def` the way
 /// landing merges it, built from objects alone (`git merge-tree --write-tree` and
 /// `commit-tree`) so neither the checkout nor the branch moves. A variant measured on its
 /// own stale base would be compared against a baseline it never contained and would miss
 /// every fix `def` gained since the branch forked. A branch that already contains `def`
 /// is measured as it is; a conflicting one too, so that landing reports the conflict
-/// itself. Returns the revision and a note for the log (empty when the branch is measured
-/// as it is).
-pub(crate) fn measured_variant(root: &str, def: &str, branch: &str) -> (String, String) {
+/// itself. A branch that shares no commit with `def` (it forked before `def` was squashed
+/// to a new root) is merged three-way from `run_base`, the commit its run's clone was made
+/// from, so the measured tree is `def` plus the card's change rather than the branch's
+/// whole stale tree. Returns the revision and a note for the log (empty when the branch
+/// is measured as it is).
+pub(crate) fn measured_variant(
+    root: &str,
+    def: &str,
+    branch: &str,
+    run_base: &str,
+) -> (String, String) {
     let short = Duration::from_secs(30);
     if crate::util::git_timeout(root, short, &["merge-base", "--is-ancestor", def, branch]).ok() {
         return (branch.to_string(), String::new());
     }
 
-    let tree = crate::util::git_timeout(
-        root,
-        Duration::from_secs(120),
-        &["merge-tree", "--write-tree", def, branch],
-    );
+    let fork = if merge_base(root, def, branch).is_empty() {
+        run_base_fork(root, branch, run_base)
+    } else {
+        String::new()
+    };
+    let merge_base_flag = format!("--merge-base={fork}");
+    let mut args = vec!["merge-tree", "--write-tree"];
+    if !fork.is_empty() {
+        args.push(&merge_base_flag);
+    }
+    args.extend([def, branch]);
+    let tree = crate::util::git_timeout(root, Duration::from_secs(120), &args);
     if !tree.ok() {
         return (branch.to_string(), String::new());
     }
@@ -155,9 +229,20 @@ pub(crate) fn measured_variant(root: &str, def: &str, branch: &str) -> (String, 
     if !commit.ok() || sha.len() < 40 {
         return (branch.to_string(), String::new());
     }
+    let from = if fork.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " from its run base {} ({def} shares no history with it)",
+            &fork[..12]
+        )
+    };
     (
         sha.clone(),
-        format!("measured as {branch} merged onto {def} ({})", &sha[..12]),
+        format!(
+            "measured as {branch} merged onto {def}{from} ({})",
+            &sha[..12]
+        ),
     )
 }
 
@@ -208,16 +293,18 @@ fn merge_base(root: &str, def: &str, branch: &str) -> String {
     }
 }
 
+/// Saves the experiment's diff - from `base`, where the branch forked (`fork_point`), to
+/// the branch tip - as the archive's patch. Returns the patch path (empty when none was
+/// written) and the base.
 fn save_experiment_patch(
     s: &pulse_store::Store,
     root: &str,
     slug: &str,
-    def: &str,
+    base: String,
     branch: &str,
     archive_id: &str,
     log: (&str, &str),
 ) -> (String, String) {
-    let base = merge_base(root, def, branch);
     if base.is_empty() || archive_id.is_empty() {
         return (String::new(), base);
     }
@@ -659,7 +746,10 @@ pub(crate) fn land_experiment_context(
     {
         return ("stopped".into(), why);
     }
-    let (variant_rev, merged_note) = measured_variant(&root, &def, &branch);
+    // A branch that forked before `def` was squashed shares no commit with it: the
+    // commit the run's clone was made from stands in for the merge base.
+    let run_base = run_base(s, &run_id);
+    let (variant_rev, merged_note) = measured_variant(&root, &def, &branch, &run_base);
     // The variant and its base are measured in the card's diff scope: the
     // whole-tree baseline stays the cached one, the fixtures the card scopes
     // (and its own check) are measured again on the base and laid over it.
@@ -774,7 +864,7 @@ pub(crate) fn land_experiment_context(
         s,
         &root,
         &slug,
-        &def,
+        fork_point(&root, &def, &branch, &run_base),
         &branch,
         &expected_archive_id,
         (&actor, &now),
@@ -1071,6 +1161,166 @@ mod tests {
         );
     }
 
+    /// Rewrites `main` in the checkout at `root` as a new root commit: main's tree plus
+    /// `squash.txt`, with no parent, the way an owner's "Squash project history" leaves it.
+    /// Returns the new main.
+    fn squash_main_to_a_new_root(root: &str) -> String {
+        std::fs::write(
+            std::path::Path::new(root).join("squash.txt"),
+            "added with the squash\n",
+        )
+        .unwrap();
+        run(root, &["git", "add", "squash.txt"]);
+        let tree = run(root, &["git", "write-tree"]).trim().to_string();
+        let squashed = run(
+            root,
+            &["git", "commit-tree", &tree, "-m", "Squash project history"],
+        )
+        .trim()
+        .to_string();
+        run(root, &["git", "reset", "-q", "--hard", &squashed]);
+        squashed
+    }
+
+    fn changed_files(root: &str, from: &str, to: &str) -> Vec<String> {
+        run(root, &["git", "diff", "--name-only", from, to])
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_branch_forked_before_main_was_squashed_is_measured_and_saved_from_its_run_base() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, _project, job, root, _calls) = measured_keep_fixture();
+        let branch = job.str("branch");
+        let fork = ref_of(&root, "main");
+        let branch_tip = ref_of(&root, &branch);
+        let main = squash_main_to_a_new_root(&root);
+        assert_eq!(
+            merge_base(&root, "main", &branch),
+            "",
+            "histories still meet"
+        );
+        let run_id = last_run_id(&s, job.str("id"));
+        exec1(
+            &s,
+            "UPDATE runs SET base = ? WHERE id = ?",
+            &[&fork, &run_id],
+        );
+        assert_eq!(run_base(&s, &run_id), fork);
+
+        // No run base, or one the repository no longer has: today's behaviour, the
+        // bare branch is measured and no patch base is known.
+        let gone = "0123456789abcdef0123456789abcdef01234567";
+        for base in ["", gone] {
+            let (rev, note) = measured_variant(&root, "main", &branch, base);
+            assert_eq!(
+                (rev.as_str(), note.as_str()),
+                (branch.as_str(), ""),
+                "{base}"
+            );
+            assert_eq!(fork_point(&root, "main", &branch, base), "", "{base}");
+        }
+        // A commit that is not on the branch is no fork point either.
+        assert_eq!(run_base_fork(&root, &branch, &main), "");
+
+        // With the run base: the branch's one change merged onto the squashed main.
+        let (rev, note) = measured_variant(&root, "main", &branch, &fork);
+        assert!(rev.len() >= 40 && rev != branch_tip, "{rev}: {note}");
+        assert!(note.contains("from its run base"), "{note}");
+        assert_eq!(changed_files(&root, &main, &rev), ["README.md"]);
+        assert_eq!(
+            run(&root, &["git", "show", &format!("{rev}:README.md")]),
+            "# measured variant\n"
+        );
+        assert_eq!(
+            run(&root, &["git", "show", &format!("{rev}:squash.txt")]),
+            "added with the squash\n"
+        );
+        assert_eq!(
+            run(&root, &["git", "status", "--porcelain"]).trim(),
+            "",
+            "merge-tree touched the checkout"
+        );
+
+        // The archive's patch holds the card's change alone, diffed from the run base.
+        let base = fork_point(&root, "main", &branch, &fork);
+        assert_eq!(base, fork);
+        let (patch, base_commit) = save_experiment_patch(
+            &s,
+            &root,
+            "proj",
+            base,
+            &branch,
+            "B-900",
+            ("daemon", TEST_NOW),
+        );
+        assert_eq!(base_commit, fork);
+        let text = std::fs::read_to_string(&patch).expect("patch written");
+        let touched = text
+            .lines()
+            .filter(|l| l.starts_with("diff --git "))
+            .collect::<Vec<_>>();
+        assert_eq!(touched, ["diff --git a/README.md b/README.md"], "{text}");
+    }
+
+    #[test]
+    fn a_branch_forked_before_main_was_squashed_lands_its_own_commits() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        let branch = job.str("branch");
+        let fork = ref_of(&root, "main");
+        let branch_tip = ref_of(&root, &branch);
+        let main = squash_main_to_a_new_root(&root);
+        exec1(
+            &s,
+            "UPDATE runs SET base = ? WHERE id = ?",
+            &[&fork, &last_run_id(&s, job.str("id"))],
+        );
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "landed", "{note}");
+        assert!(note.contains("replayed from its run base"), "{note}");
+        let landed = ref_of(&root, "main");
+        assert_eq!(changed_files(&root, &main, &landed), ["README.md"]);
+        assert_eq!(
+            run(&root, &["git", "show", "main:README.md"]),
+            "# measured variant\n"
+        );
+        // The squashed-away history stays out of main: neither the fork nor the
+        // branch's original commit is reachable, only the copy of the latter.
+        for gone in [&fork, &branch_tip] {
+            let reachable = std::process::Command::new("git")
+                .args(["-C", &root, "merge-base", "--is-ancestor", gone, "main"])
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap()
+                .success();
+            assert!(!reachable, "{gone} came back into main");
+        }
+        let log = run(&root, &["git", "log", "--format=%an %s%n%b", "main"]);
+        assert!(
+            log.contains("t fake experiment variant")
+                && log.contains(&format!("(cherry picked from commit {branch_tip})")),
+            "{log}"
+        );
+        assert!(
+            run(&root, &["git", "branch", "--list", &branch])
+                .trim()
+                .is_empty(),
+            "the landed branch was kept"
+        );
+    }
+
     #[test]
     fn measured_variant_keeps_the_branch_when_it_contains_main_or_conflicts() {
         let _serial = crate::test_helpers::serial();
@@ -1078,7 +1328,7 @@ mod tests {
         let (_s, _project, job, root, _calls) = measured_keep_fixture();
         let branch = job.str("branch");
         // The branch forked from the current main: nothing to merge.
-        let (rev, note) = measured_variant(&root, "main", &branch);
+        let (rev, note) = measured_variant(&root, "main", &branch, "");
         assert_eq!((rev.as_str(), note.as_str()), (branch.as_str(), ""));
         // main edits the same file the branch edited: the merge conflicts; landing reports it.
         std::fs::write(
@@ -1087,7 +1337,7 @@ mod tests {
         )
         .unwrap();
         run(&root, &["git", "commit", "-q", "-am", "conflict on main"]);
-        let (rev, note) = measured_variant(&root, "main", &branch);
+        let (rev, note) = measured_variant(&root, "main", &branch, "");
         assert_eq!((rev.as_str(), note.as_str()), (branch.as_str(), ""));
         assert_eq!(
             run(&root, &["git", "status", "--porcelain"]).trim(),

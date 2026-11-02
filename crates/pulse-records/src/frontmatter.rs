@@ -395,7 +395,7 @@ mod tests {
     const FIXTURE_REF: &str = "02691f8";
 
     fn source_repo() -> Option<PathBuf> {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let repo = pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .ok()?;

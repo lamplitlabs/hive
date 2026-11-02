@@ -15,6 +15,7 @@ pub struct CommandResult {
 pub fn temporary_store() -> (tempfile::TempDir, pulse_store::Store) {
     crate::register();
     pulse_testutil::neutralize_runner_environment();
+    hide_machine_logins();
     let dir = tempfile::tempdir().unwrap();
     let s = pulse_store::Store::open(pulse_store::Options {
         home: dir.path().display().to_string(),
@@ -24,6 +25,37 @@ pub fn temporary_store() -> (tempfile::TempDir, pulse_store::Store) {
     })
     .unwrap();
     (dir, s)
+}
+
+/// `pulse status` renders the harness login (`status::harness_line`), and
+/// the default provider, GitHub Copilot, looks for one in the environment,
+/// the editor login under `XDG_CONFIG_HOME` and the Copilot CLI config under
+/// `COPILOT_HOME` before asking api.github.com about what it found. A test
+/// must not depend on who runs it or on the network: one call answered
+/// "stale" and the next "status unknown (error sending request ...)", and
+/// `settings::tests::snapshot_json_stable` turned main red. Blank the token
+/// variables and point both config homes at a directory that is never
+/// created, once per test process, so the check answers "not signed in"
+/// without leaving the machine.
+fn hide_machine_logins() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let _guard = pulse_testutil::env_lock();
+    ONCE.call_once(|| {
+        let nowhere = std::env::temp_dir().join(format!(
+            "pulse-inspect-tests-no-login-{}",
+            std::process::id()
+        ));
+        // SAFETY: done once per process, behind env_lock, before any test in
+        // this crate opens a store or a provider.
+        unsafe {
+            for name in ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
+                std::env::set_var(name, "");
+            }
+            for name in ["XDG_CONFIG_HOME", "COPILOT_HOME"] {
+                std::env::set_var(name, &nowhere);
+            }
+        }
+    });
 }
 
 pub fn invoke(

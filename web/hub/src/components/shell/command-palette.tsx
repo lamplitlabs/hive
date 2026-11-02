@@ -15,6 +15,7 @@ import {
   BookOpenIcon,
   BotIcon,
   BotMessageSquareIcon,
+  BrainIcon,
   CalendarClockIcon,
   CornerDownLeftIcon,
   FolderIcon,
@@ -353,6 +354,13 @@ export function CommandPaletteHost() {
             >
               <CalendarClockIcon aria-hidden="true" className={itemIcon} />{" "}
               Automations
+            </CommandItem>
+            <CommandItem
+              value="page memory remembered facts notes"
+              className={itemStyle}
+              onSelect={() => go(hrefs.memory())}
+            >
+              <BrainIcon aria-hidden="true" className={itemIcon} /> Memory
             </CommandItem>
             <CommandItem
               value="page settings"

@@ -418,6 +418,7 @@ pub(crate) fn retire_executor(
         if !crate::compute::release_compute(
             s,
             &actor,
+            "",
             req,
             &format!("its login was refused ({refused})"),
             |_| {},

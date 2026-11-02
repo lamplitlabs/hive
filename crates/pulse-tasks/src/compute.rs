@@ -29,6 +29,9 @@ pub struct ComputeRequest {
     pub executor: String,
     pub words: String,
     pub proposal_post: String,
+    /// The daemon's last word on the request: the provisioning step in progress, the reason it
+    /// failed, or why its machine was released. Empty while nothing has happened and once it is ready.
+    pub note: String,
     pub at: String,
     pub updated_at: String,
 }
@@ -45,7 +48,11 @@ pub struct Caps {
     pub login_source: bool,
 }
 
-const COMPUTE_COLS: &str = "id, project, requested_by, size, hours, reason, status, decided_by, executor, words, proposal_post, at, updated_at";
+const COMPUTE_COLS: &str = "id, project, requested_by, size, hours, reason, status, decided_by, executor, words, proposal_post, note, at, updated_at";
+
+/// How much of the daemon's note on a request is kept: a probe note and the step that failed,
+/// not a transcript.
+pub const COMPUTE_NOTE_CHARS: usize = 500;
 
 fn scan_compute(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComputeRequest> {
     Ok(ComputeRequest {
@@ -60,8 +67,9 @@ fn scan_compute(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComputeRequest> {
         executor: row.get(8)?,
         words: row.get(9)?,
         proposal_post: row.get(10)?,
-        at: row.get(11)?,
-        updated_at: row.get(12)?,
+        note: row.get(11)?,
+        at: row.get(12)?,
+        updated_at: row.get(13)?,
     })
 }
 
@@ -373,6 +381,35 @@ pub fn set_compute_status(
     )?;
     tx.commit()?;
     get_compute(s, id)
+}
+
+/// Records the daemon's last word on a request - the provisioning step in progress, the reason
+/// it failed or was released - for the Machines page and `pulse compute list --json`. One line,
+/// at most `COMPUTE_NOTE_CHARS`; an empty note clears it (a request that came up ready has
+/// nothing to explain).
+pub fn note_compute(s: &pulse_store::Store, id: &str, note: &str) -> Result<()> {
+    let mut note = clean(note);
+    if note.chars().count() > COMPUTE_NOTE_CHARS {
+        note = note
+            .chars()
+            .take(COMPUTE_NOTE_CHARS - 1)
+            .collect::<String>()
+            + "~";
+    }
+    let conn = s.conn()?;
+    let changed = conn.execute(
+        "UPDATE compute_requests SET note = ? WHERE id = ?",
+        params![note, id],
+    )?;
+    if changed == 0 {
+        return Err(input(
+            2,
+            format!("No compute request {id:?}"),
+            "the id is not in this store",
+            "pulse compute list",
+        ));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

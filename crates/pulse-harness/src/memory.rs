@@ -479,10 +479,26 @@ fn entry_of(line: &str) -> Option<&str> {
 
 /// The text of an entry without the `[YYYY-MM-DD] ` the tool put first.
 fn strip_date(entry: &str) -> &str {
-    if entry.len() > 12 && entry.starts_with('[') && entry.as_bytes()[11] == b']' {
-        entry[12..].trim_start()
+    split_date(entry).1
+}
+
+/// An entry as the day it was remembered (when the tool wrote it with one)
+/// and its text: `[2026-01-02] use rg` is `(Some("2026-01-02"), "use rg")`,
+/// a hand-written `use rg` is `(None, "use rg")`.
+pub fn split_date(entry: &str) -> (Option<&str>, &str) {
+    if entry.len() > 12
+        && entry.starts_with('[')
+        && entry.as_bytes()[11] == b']'
+        && entry.as_bytes()[5] == b'-'
+        && entry.as_bytes()[8] == b'-'
+        && entry[1..11]
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| matches!(i, 4 | 7) || b.is_ascii_digit())
+    {
+        (Some(&entry[1..11]), entry[12..].trim_start())
     } else {
-        entry
+        (None, entry)
     }
 }
 
@@ -697,6 +713,25 @@ mod tests {
                 .unwrap_err()
                 .contains("JSON object")
         );
+    }
+
+    #[test]
+    fn split_date_takes_the_tools_day_prefix_and_leaves_other_brackets() {
+        assert_eq!(
+            split_date("[2026-01-02] use rg"),
+            (Some("2026-01-02"), "use rg")
+        );
+        assert_eq!(
+            split_date("[2026-01-02]  spaced"),
+            (Some("2026-01-02"), "spaced")
+        );
+        assert_eq!(split_date("use rg"), (None, "use rg"));
+        assert_eq!(
+            split_date("[TODO-12345] not a date"),
+            (None, "[TODO-12345] not a date")
+        );
+        assert_eq!(split_date("[2026-01-02]"), (None, "[2026-01-02]"));
+        assert_eq!(strip_date("[2026-01-02] x"), "x");
     }
 
     #[test]

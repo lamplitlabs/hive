@@ -22,8 +22,9 @@
 use crate::commands::{PrepareOpts, Prepared, add_agent_flags, prepare_agent_with};
 use crate::harness::{
     Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, Sink, Step, StreamSink,
-    Trajectory, Turn, Ui,
+    Trajectory, Turn, Ui, trim_dangling_tool_calls,
 };
+use crate::repair::repair_tool_arguments;
 use crate::retitle;
 use anyhow::{Context as _, Result, anyhow, bail};
 use pulse_cli::{Context, FlagSet};
@@ -1717,6 +1718,36 @@ impl Runtime {
         true
     }
 
+    /// Ends the in-memory session on the owner's say-so, so the next
+    /// message starts a fresh one from the saved transcript (the trajectory
+    /// on disk, written here) and repairs it on the way in
+    /// ([`Agent::resume_messages`]): the way out of a session whose memory
+    /// holds something the provider refuses, without a hub restart. Says
+    /// whether a session was open. A turn in flight, or a message waiting
+    /// behind one, is a refusal: the owner stops it or waits.
+    fn restart_session(&self) -> Result<bool> {
+        let mut guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let st = self.shared.lock();
+            if st.worker || !st.queued.is_empty() {
+                bail!(
+                    "a turn is running in this conversation; stop it (or wait for it to finish), then restart the session"
+                );
+            }
+        }
+        let Some(mut s) = guard.take() else {
+            return Ok(false);
+        };
+        s.end();
+        let mut st = self.shared.lock();
+        if matches!(st.status, Status::Ended) {
+            st.status = Status::Idle;
+            st.note.clear();
+        }
+        self.shared.bump(&mut st);
+        Ok(true)
+    }
+
     /// True once no worker thread holds a turn (or a queued message) and,
     /// after a close, the session has ended.
     fn settled(&self) -> bool {
@@ -2507,6 +2538,53 @@ impl Manager {
                 .chat_set_status(id, "closed", &Finished::Owner.note())?;
             self.deliver_report(&row, REPORT_FINISHED, "The owner finished it.");
         }
+        Ok(())
+    }
+
+    /// Starts the conversation's session over from its saved transcript,
+    /// on the owner's say-so: the in-memory session ends (its trajectory
+    /// written), the row keeps its session id, and the next message loads
+    /// the conversation back from that file through [`Runtime::ensure_started`],
+    /// repairing on the way in any tool call whose arguments are not JSON
+    /// (the harness used to keep one when a reply was cut mid-stream, and
+    /// the provider then refused every request carrying it). The
+    /// transcript and the workspace stay. The way out of a stuck session
+    /// without a hub restart; a turn in flight has to stop first.
+    pub fn restart_session(&self, id: &str) -> Result<()> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        let had_session = match self.running(id) {
+            Some(rt) => rt.restart_session()?,
+            None => false,
+        };
+        // What the next message will repair as it loads the transcript.
+        let repaired = read_trajectory(&self.home, &row.session_id)
+            .map(|traj| {
+                let mut msgs = trim_dangling_tool_calls(traj.messages);
+                repair_tool_arguments(&mut msgs).len()
+            })
+            .unwrap_or(0);
+        let line = format!(
+            "The session was restarted from the transcript{}. Your next message starts a new one with this conversation carried over{}.",
+            if had_session {
+                ""
+            } else {
+                " (none was open in memory)"
+            },
+            match repaired {
+                0 => String::new(),
+                1 => "; it repairs 1 tool call whose arguments are not JSON".to_string(),
+                n => format!("; it repairs {n} tool calls whose arguments are not JSON"),
+            }
+        );
+        self.store.chat_add_message(
+            id,
+            "note",
+            &line,
+            &json!({"restarted": "owner", "repaired": repaired, "session": row.session_id}),
+        )?;
         Ok(())
     }
 
@@ -3801,6 +3879,140 @@ mod tests {
                 "{carried:?} carried into the new session: {traj:?}"
             );
         }
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_restarted_session_reloads_the_conversation_from_its_transcript_repaired() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "Hello, I am here."},
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"content": "Blue it is."},
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let home_s = home.path().display().to_string();
+        let m = Manager::new(&home_s, s.clone()).with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "say hello please", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let first_session = row.session_id.clone();
+        let rt = m.running(&row.id).expect("runtime");
+        for _ in 0..400 {
+            if !rt.shared.lock().worker {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!rt.shared.lock().worker, "the worker stood down");
+
+        // A turn in flight (the agent waits on a question) refuses the
+        // restart; the owner stops it or answers first.
+        m.send(&row.id, "pick one").expect("send");
+        let pending = wait_pending(&m, &row.id);
+        assert!(matches!(pending, Pending::Question { .. }), "{pending:?}");
+        let err = m.restart_session(&row.id).expect_err("a turn is running");
+        assert!(
+            err.to_string()
+                .starts_with("a turn is running in this conversation"),
+            "{err}"
+        );
+        m.answer(&row.id, "blue").expect("answer");
+        let row = wait_idle(&m, &row.id);
+        for _ in 0..400 {
+            if !rt.shared.lock().worker {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(row.session_id, first_session, "the same session answered");
+        assert!(rt.started.lock().unwrap().is_some());
+
+        // Idle: the session ends in memory, its trajectory on disk, and the
+        // transcript says so. The row keeps the session id, so the next
+        // message loads the conversation back from that file.
+        m.restart_session(&row.id).expect("restart");
+        assert!(rt.started.lock().unwrap().is_none(), "the session ended");
+        let row = m.row(&row.id).unwrap();
+        assert_eq!(row.status, "idle");
+        assert_eq!(m.live(&row).status, "idle");
+        assert_eq!(row.session_id, first_session);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let note = msgs.last().unwrap();
+        assert_eq!(note.role, "note");
+        assert_eq!(
+            note.content,
+            "The session was restarted from the transcript. Your next message starts a new one with this conversation carried over."
+        );
+        assert_eq!(note.extra["restarted"], "owner");
+        assert_eq!(note.extra["repaired"], 0);
+        assert_eq!(note.extra["session"], first_session);
+
+        // The stuck conversation's shape: the saved transcript carries a
+        // tool call whose arguments the gateway cut mid-stream, with the
+        // result the old harness gave it (what a session's memory held is
+        // what its trajectory holds). Restarting again, with no session
+        // open, counts what the next load repairs.
+        let path = Path::new(&home_s)
+            .join("harness")
+            .join(format!("{first_session}.json"));
+        let mut traj: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let cut = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
+        let messages = traj["messages"].as_array_mut().unwrap();
+        messages.push(json!({"role": "assistant", "tool_calls": [{"id": "toolu_01D9XWUQtuVBTWixzvum3zYd", "name": "edit", "arguments": cut}]}));
+        messages.push(json!({"role": "tool", "content": "edit: arguments are not JSON: EOF while parsing an object at line 1 column 93", "tool_call_id": "toolu_01D9XWUQtuVBTWixzvum3zYd", "name": "edit"}));
+        std::fs::write(&path, serde_json::to_vec(&traj).unwrap()).unwrap();
+        m.restart_session(&row.id).expect("restart again");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let note = msgs.last().unwrap();
+        assert_eq!(
+            note.content,
+            "The session was restarted from the transcript (none was open in memory). Your next message starts a new one with this conversation carried over; it repairs 1 tool call whose arguments are not JSON."
+        );
+        assert_eq!(note.extra["repaired"], 1);
+
+        // The next message runs in a new session (whose fake provider
+        // starts the script over): the cut call went in as `{}`, the
+        // harness said so, and the provider answered.
+        m.send(&row.id, "land it").expect("send");
+        let row = wait_idle(&m, &row.id);
+        assert_ne!(row.session_id, first_session, "a new session was opened");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        assert_eq!(msgs.last().unwrap().role, "assistant");
+        assert_eq!(msgs.last().unwrap().content, "Hello, I am here.");
+        let traj = read_trajectory(&home_s, &row.session_id).expect("trajectory");
+        let call = traj
+            .messages
+            .iter()
+            .find(|m| {
+                m.tool_calls
+                    .iter()
+                    .any(|c| c.id == "toolu_01D9XWUQtuVBTWixzvum3zYd")
+            })
+            .expect("the cut call is carried over");
+        assert_eq!(call.tool_calls[0].arguments, "{}");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content.starts_with(
+                    "repaired 1 carried-over tool call whose arguments were not JSON (edit toolu_01D9XWUQtuVBTWixzvum3zYd)"
+                )),
+            "{steps:?}"
+        );
+
+        // An archived conversation has nothing to restart.
+        m.archive(&row.id).expect("archive");
+        let err = m.restart_session(&row.id).expect_err("archived");
+        assert!(err.to_string().contains("is archived"), "{err}");
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }

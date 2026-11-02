@@ -80,6 +80,8 @@ const VERB: Record<string, string> = {
   "project.removed": "removed the project",
   "project.restored": "restored the project",
   "settings.set": "changed a setting",
+  "memory.remembered": "kept a memory for later runs",
+  "memory.forgotten": "forgot a memory",
   "agent.cleanup": "cleaned up after a run",
   "daemon.sweep": "ran the runner's cleanup",
 };

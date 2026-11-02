@@ -931,6 +931,8 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
         crate::test_helpers::new_bare_repo(&s);
+        // the worker buys nothing without a login source; this test is about what comes after
+        crate::test_helpers_hands::write_executor_token(&s);
         let old = set_run_aws(Box::new(|_, args, _| {
             let cmd = args.join(" ");
             if cmd.starts_with("sts get-caller-identity") {

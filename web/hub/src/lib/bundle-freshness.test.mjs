@@ -27,11 +27,16 @@ test("the committed out/ bundle is built from the committed src/", () => {
 
   if (stamp.startsWith("src-tree ")) {
     // The build recorded the src/ tree it was made from; the commit must be
-    // carrying exactly that src/.
-    assert.equal(
-      stamp.slice("src-tree ".length),
-      git(["rev-parse", "HEAD^{tree}:./src"]),
-      "the committed out/ was built from a different src/ than the commit carries - rebuild with `npm run build` and commit out/",
+    // carrying exactly that src/. Before the commit lands (the pre-commit
+    // verify, a `npm test` with src/ and out/ staged together) HEAD still
+    // lags the index, so the staged src/ tree is the one the commit is
+    // about to carry; crates/pulse-hub/src/server.rs accepts the same.
+    const tree = stamp.slice("src-tree ".length);
+    const committed = git(["rev-parse", "HEAD^{tree}:./src"]);
+    const staged = git(["write-tree", "--prefix=" + git(["rev-parse", "--show-prefix"]) + "src"]);
+    assert.ok(
+      tree === committed || tree === staged,
+      `the committed out/ was built from a different src/ (${tree}) than the commit carries (${committed}) - rebuild with \`npm run build\` and commit out/`,
     );
   } else {
     // A build of a dirty src/ names no tree: fall back to the stamp being

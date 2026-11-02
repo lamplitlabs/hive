@@ -55,10 +55,15 @@ const LIVE = new Set(["approved", "provisioning", "ready"]);
 // One request as a card: who asked for what and why, with Approve / Deny in
 // reach while it is pending and your answer once made. There is no detail
 // page, so the card is a plain article; the request id sits in tooltips.
-// `compact` clamps the reason; `caps` adds the limits to a pending card.
+// `compact` clamps the reason; `caps` adds the limits to a pending card. The
+// daemon's note - the step a provisioning is at, why a request failed or its
+// machine was released - sits under the reason, so a failed request says what
+// went wrong where it is, not only in the daemon log.
 export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; compact?: boolean; caps?: ComputeCaps }) {
   const pending = r.status === "pending";
   const decider = r.decided_by === "human" || r.decided_by === "owner" ? "you" : r.decided_by;
+  const note = (r.note ?? "").trim();
+  const noteLead = r.status === "failed" ? "Failed: " : r.status === "released" ? "Released: " : r.status === "provisioning" ? "Starting: " : "";
   return (
     <ItemCard highlight={pending} ariaLabel={"Request " + r.id + ": " + statusWord(r.status)}>
       <ItemCardHeader right={<When d={r.at} />}>
@@ -73,6 +78,12 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
         </span>
       </ItemCardTitle>
       {r.reason ? <ItemCardBody clamp={compact ? 3 : 0}>{"\u201c" + r.reason.trim() + "\u201d"}</ItemCardBody> : null}
+      {note ? (
+        <ItemCardBody clamp={compact ? 3 : 0} className={r.status === "failed" ? "text-bad" : undefined}>
+          {noteLead ? <span className="font-medium">{noteLead}</span> : null}
+          {note}
+        </ItemCardBody>
+      ) : null}
       <ItemCardMeta>
         <StatusBadge status={r.status} />
         {decider && !pending ? <span>{(r.status === "denied" ? "Denied" : "Approved") + " by " + decider}</span> : null}
