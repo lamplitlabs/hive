@@ -53,7 +53,7 @@ export function taskMoodOf(t: TaskState): Mood {
   if (t.status === "done") return { word: "Done", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (t.status === "cancelled") return { word: "Cancelled", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
   if (t.working) return { word: "Working", tone: "run", pip: "busy", dot: "bg-primary" };
-  if (t.status === "open") return { word: t.lead ? "Waiting for the lead agent" : "New", tone: "ok", pip: "curious", dot: "bg-ok" };
+  if (t.status === "open") return { word: t.lead ? "Lead agent starting" : "New", tone: "ok", pip: "curious", dot: "bg-ok" };
   if (t.status === "planned") return { word: "Planned", tone: "ok", pip: "curious", dot: "bg-ok" };
   return { word: "In progress", tone: "ok", pip: "happy", dot: "bg-ok" };
 }

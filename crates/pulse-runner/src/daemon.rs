@@ -47,6 +47,34 @@ pub(crate) static DAEMON_WAKE: &[&str] = &[
     RESTART_ACTION,
 ];
 
+/// The owner's own writes among [`DAEMON_WAKE`]: a task filed, amended or
+/// answered, a message sent. These do not wait out `daemon.pass_seconds`:
+/// the tick they wake runs the planning pass, so the lead takes the work
+/// up at once - the way a chat message starts its agent at once - instead
+/// of up to a minute later. The event's actor must be the owner
+/// ([`pulse_store::HUMAN_AGENT`]): an agent's own task or message is
+/// ordinary work for the next pass.
+pub(crate) static OWNER_WAKE: &[&str] = &[
+    "message.sent",
+    "task.created",
+    "task.amended",
+    "task.status",
+];
+
+/// Whether the owner wrote (a task, a message) after the event `after`.
+/// Read once per tick, so a wake that came through the bus is seen even
+/// when the bridge dropped it (`sleep` seams) or the owner wrote while the
+/// previous tick ran.
+pub(crate) fn owner_wrote_after(s: &pulse_store::Store, after: i64) -> bool {
+    let filter = pulse_bus::Filter {
+        actions: OWNER_WAKE.iter().map(|a| a.to_string()).collect(),
+        ..Default::default()
+    };
+    pulse_bus::since(s, after, filter, 0)
+        .map(|events| events.iter().any(|e| e.actor == pulse_store::HUMAN_AGENT))
+        .unwrap_or(false)
+}
+
 /// The event the owner writes (Settings, Running, "Restart") to have the
 /// daemon restart. By default it drains like a self-update: new runs stop
 /// starting and the daemon exits with code 3 once the runs in flight have
@@ -1271,6 +1299,10 @@ pub(crate) fn daemon(
     // When the last planning pass began (`pass_spacing`); None before the
     // first, which plans at once.
     let mut last_pass: Option<std::time::Instant> = None;
+    // The bus position the last planning pass read up to: an owner's write
+    // (OWNER_WAKE) after it makes the next tick a planning pass whatever
+    // the spacing says, so a task the owner files is planned at once.
+    let mut planned_through = pulse_bus::last_id(s).unwrap_or(0);
     let mut prev_idle: BTreeMap<String, String> = BTreeMap::new();
     let mut idle_log = crate::idle_log::IdleLog::default();
     // Set when the binary changed on disk or the owner asked for a restart
@@ -1819,12 +1851,23 @@ pub(crate) fn daemon(
         // loop: its loops are the passes it was asked for. An interval shorter
         // than the spacing caps it: the owner asked to plan that often.
         let spacing = pass_spacing(s).min(Duration::from_secs(interval as u64));
-        let full_pass = o.max_loops > 0 || last_pass.is_none_or(|began| began.elapsed() >= spacing);
+        // The owner wrote since the last pass: plan now, not when the
+        // spacing is up. The lead's job for a fresh task (lead_due) is the
+        // whole point of the wake; a tick that only refilled slots would
+        // leave the task "waiting for the lead" for up to a minute.
+        let bus_now = pulse_bus::last_id(s).unwrap_or(planned_through);
+        let owner_wrote = bus_now > planned_through && owner_wrote_after(s, planned_through);
+        let full_pass = o.max_loops > 0
+            || owner_wrote
+            || last_pass.is_none_or(|began| began.elapsed() >= spacing);
         if full_pass {
             last_pass = Some(std::time::Instant::now());
             passes += 1;
             passes_shared.store(passes, std::sync::atomic::Ordering::SeqCst);
         }
+        // Read up to here either way: a range with no owner write in it is
+        // not read again next tick.
+        planned_through = bus_now;
         heartbeat(loops, passes, &beat_note, restart_record);
         let mut started: Vec<Dispatch> = Vec::new();
         let mut reason = String::new();
@@ -4735,6 +4778,119 @@ mod tests {
             2,
             "{text}"
         );
+    }
+
+    /// A task the owner files inside `daemon.pass_seconds` does not wait
+    /// the spacing out: the wake it causes is a planning pass, so the lead's
+    /// job for it is queued at once - the task starts the way a chat
+    /// message does. An agent's own write stays a tick.
+    #[test]
+    fn owner_task_inside_the_pass_spacing_plans_at_once() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.pass_seconds", "3600")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.sweep", "off")
+            .unwrap();
+        let out = OutBuf::new();
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(out.writer()),
+            // No run ever finishes on its own: the loop's wakes are the bus's.
+            worker_cmd: "sh -c 'sleep 30; echo SUMMARY: ok'".into(),
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let passes = || -> i64 {
+            s.meta("daemon")
+                .ok()
+                .and_then(|(raw, _)| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|beat| beat.get("passes").and_then(|v| v.as_i64()))
+                .unwrap_or(0)
+        };
+        let wait_for = |what: &str, ok: &dyn Fn() -> bool| {
+            let since = std::time::Instant::now();
+            while !ok() {
+                assert!(
+                    since.elapsed() < test_wait(Duration::from_secs(30)),
+                    "{what} never came:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // The first pass: nothing to plan, the loop sleeps the interval.
+            wait_for("the first planning pass", &|| passes() >= 1);
+            // An agent's job inside the spacing wakes a tick, not a pass.
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                "An agent's job".into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                "aurora".into(),
+                false,
+            )
+            .unwrap();
+            wait_for("the tick for the agent's job", &|| {
+                out.string().contains("leased job-")
+            });
+            assert_eq!(
+                passes(),
+                1,
+                "an agent's write planned early:\n{}",
+                out.string()
+            );
+            // The owner files a task: the wake is a planning pass and the
+            // lead's job for the task is queued by it.
+            let task = pulse_tasks::new(
+                &s,
+                "proj",
+                "Fix the footer",
+                "the brief",
+                50,
+                pulse_store::HUMAN_AGENT,
+            )
+            .unwrap();
+            wait_for("the planning pass for the owner's task", &|| passes() >= 2);
+            wait_for("the lead job for the owner's task", &|| {
+                count(
+                    &s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'lead' AND project = 'proj'",
+                    &[],
+                ) >= 1
+            });
+            let lead_jobs = crate::util::must_rows(
+                &*s.conn().unwrap(),
+                "SELECT brief FROM jobs WHERE kind = 'lead' AND project = 'proj'",
+                &[],
+            );
+            assert!(
+                lead_jobs.iter().any(|j| j.str("brief").contains(&task.id)),
+                "the lead job does not name {}: {lead_jobs:?}\n{}",
+                task.id,
+                out.string()
+            );
+        }));
+        cancel.cancel();
+        let _ = done_rx.recv_timeout(test_wait(Duration::from_secs(60)));
+        if let Err(panic) = result {
+            panic!("{}\n{}", panic_message(&panic), out.string());
+        }
     }
 
     #[test]

@@ -20,8 +20,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // "As an owner I would like to use the web UI and give a task." One dialog:
 // project, what to do (the title), the details (a Markdown brief) and how
-// urgent it is. The hub creates TASK-NNN,
-// logs task.created, and the project's lead picks it up on its next wake.
+// urgent it is. The hub creates TASK-NNN and logs task.created; the daemon
+// wakes on the owner's write and plans at once, so the project's lead
+// starts on it right away, the way a chat message starts its agent.
 // The priority levels (PRIORITIES) in the words the owner thinks in.
 const URGENCY: Record<number, [string, string]> = {
   0: ["Low", "When nothing else is waiting"],
@@ -60,7 +61,7 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
     const id = toast.loading("Giving the task…");
     try {
       const r = await writes.newTask({ project: chosen, title: title.trim(), brief: brief.trim(), priority: Number(priority) });
-      toast.success("Task given. " + sentenceCase(lead(chosen)) + " picks it up shortly and replies in its chat.", { id, description: r.task.id });
+      toast.success("Task given. " + sentenceCase(lead(chosen)) + " is starting on it now and replies in its chat.", { id, description: r.task.id });
       invalidate((p) => p.startsWith("tasks") || p.startsWith("events") || p.startsWith("projects/"));
       onOpenChange(false);
       setTitle("");

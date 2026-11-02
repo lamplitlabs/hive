@@ -134,6 +134,13 @@ import {
 } from "@/lib/api";
 import { num, plural, sentence, span } from "@/lib/format";
 import { messageStatus, type MessageStatus } from "@/lib/message-status";
+import {
+  queuedBesides,
+  reconcileSent,
+  sentMessage,
+  sentShowsNow,
+  type SentMessage,
+} from "@/lib/sent-messages";
 import { hrefs } from "@/lib/nav";
 import {
   GROUP_ORDER,
@@ -1652,7 +1659,7 @@ function NewConversation({
           priority: 10,
         });
         toast.success(
-          `Started. The ${project} lead agent picks it up shortly and replies in the conversation.`,
+          `Started. The ${project} lead agent is on it now and replies in the conversation.`,
           { id, description: r.task.id },
         );
         invalidate(
@@ -1949,6 +1956,9 @@ interface Loaded {
   live: ConversationLive;
   sessionId: string;
   messages: ConversationMessage[];
+  // What the owner sent that the transcript does not hold yet: shown at
+  // once, taken out when its row arrives (sent-messages.ts).
+  sent: SentMessage[];
   steps: Record<string, HarnessStep[]>;
   artifacts: ChatArtifact[];
   changes: ChatChanges | null;
@@ -1989,6 +1999,7 @@ function ConversationView({
     inflight.current = true;
     try {
       const cur = dRef.current;
+      const requestedAt = Date.now();
       const since = cur ? Math.max(0, maxN(cur.messages)) : 0;
       const after =
         cur && cur.sessionId ? maxN(cur.steps[cur.sessionId] ?? []) : -1;
@@ -2007,6 +2018,12 @@ function ConversationView({
       }
       const prev = dRef.current;
       const messages = mergeMessages(prev?.messages ?? [], r.messages);
+      const sent = reconcileSent(
+        prev?.sent ?? [],
+        r.messages,
+        r.live,
+        requestedAt,
+      );
       const steps = { ...(prev?.steps ?? {}) };
       if (r.session_id)
         steps[r.session_id] = mergeSteps(steps[r.session_id] ?? [], r.steps);
@@ -2015,6 +2032,7 @@ function ConversationView({
         live: r.live,
         sessionId: r.session_id,
         messages,
+        sent,
         steps,
         artifacts: r.artifacts,
         changes: r.changes,
@@ -2083,15 +2101,20 @@ function ConversationView({
     };
   }, [pull, fast]);
 
-  // Any write answers with the row; take it and pull right away.
+  // Any write answers with the row; take it and pull right away. A send
+  // also names what was sent, so the transcript shows it now rather than
+  // when the poll brings its row: until then the page showed the old
+  // transcript and a bare "Working…", as if the message had gone nowhere.
   const apply = useCallback(
-    (r: { conversation: Conversation }) => {
+    (r: { conversation: Conversation }, sent?: SentMessage) => {
       const cur = dRef.current;
       if (cur) {
+        const live = r.conversation.live ?? cur.live;
         const next = {
           ...cur,
           conversation: r.conversation,
-          live: r.conversation.live ?? cur.live,
+          live,
+          sent: sent ? [...cur.sent, sent] : cur.sent,
         };
         dRef.current = next;
         setD(next);
@@ -2164,7 +2187,7 @@ function ConversationBody({
   d: Loaded;
   projects?: ProjectsPayload;
   onBack: () => void;
-  apply: (r: { conversation: Conversation }) => void;
+  apply: (r: { conversation: Conversation }, sent?: SentMessage) => void;
   pull: () => Promise<void>;
   loadSession: (sid: string) => Promise<void>;
   error: string;
@@ -2174,6 +2197,9 @@ function ConversationBody({
   const mood = moodOf(c, live);
   const running = live.status === "running";
   const waiting = live.status === "waiting" && !!live.pending;
+  // What waits behind the turn, less what the transcript already shows as
+  // just sent.
+  const queued = queuedBesides(live.queued, d.sent);
   const archived = c.status === "archived";
   // Lockdown (sandbox) mode: the live word follows a flip at once.
   const sealed = lockdownOf(c, live);
@@ -2226,9 +2252,12 @@ function ConversationBody({
   );
 
   // Follow the transcript while the reader sits at the bottom; stop when
-  // they scroll up to read something, like a terminal.
+  // they scroll up to read something, like a terminal. A message just sent
+  // counts too, so it comes into view at once.
   const lastKey =
     (d.messages.length ? d.messages[d.messages.length - 1].n : 0) +
+    ":" +
+    d.sent.length +
     ":" +
     live.stream.length +
     ":" +
@@ -2688,12 +2717,12 @@ function ConversationBody({
               act={act}
             />
           ) : null}
-          {live.queued.length ? (
+          {queued.length ? (
             <ul
               className="mx-auto mt-3 grid w-full max-w-3xl gap-1"
               aria-label="Queued messages"
             >
-              {live.queued.map((q, i) => (
+              {queued.map((q, i) => (
                 <li
                   key={i}
                   className="flex min-w-0 items-center gap-2 rounded-lg border border-dashed px-2.5 py-1.5 text-xs text-muted-foreground"
@@ -2724,7 +2753,7 @@ function ConversationBody({
         disabled={archived}
         closed={closed}
         tools={tools}
-        onSent={(r) => apply(r)}
+        onSent={(r, sent) => apply(r, sent)}
       />
     </section>
   );
@@ -2806,7 +2835,7 @@ function Transcript({
   d: Loaded;
   loadSession: (sid: string) => Promise<void>;
 }) {
-  if (!d.messages.length) {
+  if (!d.messages.length && !d.sent.length) {
     return (
       <EmptyState
         icon={<PulseMascot mood="busy" size={56} decorative />}
@@ -2821,6 +2850,7 @@ function Transcript({
   const last = d.messages[d.messages.length - 1];
   const pending = d.live.pending;
   const rows =
+    last &&
     pending?.kind === "question" &&
     last.role === "question" &&
     last.content === pending.question
@@ -2837,7 +2867,28 @@ function Transcript({
           loadSession={loadSession}
         />
       ))}
+      {d.sent.map((s) => (
+        <SentRow key={s.key} s={s} id={d.conversation.id} />
+      ))}
     </ol>
+  );
+}
+
+// What the owner just sent, in its place at the end of the transcript
+// until the poll brings its row (then MessageRow takes over). Same bubble
+// as a user row; the line under it says the hub has it.
+function SentRow({ s, id }: { s: SentMessage; id: string }) {
+  return (
+    <li
+      className="enter group/msg grid min-w-0 justify-items-end gap-1"
+      aria-label="Sent, awaiting the agent"
+    >
+      <div className="grid min-w-0 max-w-[85%] gap-2 rounded-2xl rounded-br-md bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+        <div className="whitespace-pre-wrap anywhere">{s.text}</div>
+        <AttachmentChips id={id} list={s.attachments} onUser={false} />
+      </div>
+      <p className="text-[11px] text-muted-foreground">Sent</p>
+    </li>
   );
 }
 
@@ -3436,7 +3487,7 @@ function Composer({
   disabled: boolean;
   closed?: boolean;
   tools?: ReactNode;
-  onSent: (r: { conversation: Conversation }) => void;
+  onSent: (r: { conversation: Conversation }, sent?: SentMessage) => void;
 }) {
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<Picked[]>([]);
@@ -3453,24 +3504,35 @@ function Composer({
   };
 
   // Files go up one at a time, then the message names what the hub kept
-  // (a name the hub renumbered comes back renumbered).
+  // (a name the hub renumbered comes back renumbered). The sent message
+  // goes up with the answer so the transcript shows it at once.
   const send = async () => {
     if (!canSend) return;
     const t = text.trim();
     const files = picked;
     setBusy(files.length ? "upload" : "send");
     try {
-      const names: string[] = [];
+      const kept: ChatAttachment[] = [];
       for (let i = 0; i < files.length; i++) {
         setBusy("upload " + (i + 1) + "/" + files.length);
-        const a = await chatUpload(conversation.id, files[i].file);
-        names.push(a.name);
+        kept.push(await chatUpload(conversation.id, files[i].file));
       }
       setBusy("send");
-      const r = await writes.chatSend(conversation.id, t, names);
+      const sentAt = Date.now();
+      const r = await writes.chatSend(
+        conversation.id,
+        t,
+        kept.map((a) => a.name),
+      );
       setText("");
       setPicked([]);
-      onSent(r);
+      // Behind a running turn the hub's answer already lists the message
+      // as queued; sent to an idle agent it has no place yet, so the
+      // transcript shows it.
+      onSent(
+        r,
+        sentShowsNow(live.status) ? sentMessage(t, kept, sentAt) : undefined,
+      );
     } catch (e) {
       fail(e, "The message did not send");
     } finally {
@@ -3845,7 +3907,7 @@ function ChangesPanel({
   ctl: CanvasControl;
   busy: string;
   setBusy: (s: string) => void;
-  apply: (r: { conversation: Conversation }) => void;
+  apply: (r: { conversation: Conversation }, sent?: SentMessage) => void;
 }) {
   const c = d.conversation;
   const ch = d.changes;
@@ -3861,15 +3923,17 @@ function ChangesPanel({
     if (!ch || busy) return;
     setBusy("land");
     try {
+      const text =
+        "Please land this branch now: run `pulse land --project " +
+        ch.project +
+        " --branch " +
+        ch.branch +
+        "` and tell me what happened. If the verify step fails, fix it first and try again.";
+      const sentAt = Date.now();
+      const shows = sentShowsNow(d.live.status);
       apply(
-        await writes.chatSend(
-          c.id,
-          "Please land this branch now: run `pulse land --project " +
-            ch.project +
-            " --branch " +
-            ch.branch +
-            "` and tell me what happened. If the verify step fails, fix it first and try again.",
-        ),
+        await writes.chatSend(c.id, text),
+        shows ? sentMessage(text, [], sentAt) : undefined,
       );
       toast.success("Asked the agent to land the branch.");
     } catch (e) {
