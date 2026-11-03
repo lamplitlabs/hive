@@ -369,7 +369,7 @@ impl Handler {
         let job_id = addition_row_string(&task, "job_id");
         // A task's jobs carry `task:ID` or `task:ID:label` (one task, several jobs).
         let (exact, like) = pulse_store::task_source_params(&parts[1]);
-        let jobs = match self.addition_rows(
+        let mut jobs = match self.addition_rows(
             r,
             &format!(
                 "SELECT id,project,kind,tier,title,brief,source,priority,status,created_at,created_by,\
@@ -392,6 +392,24 @@ impl Handler {
                 return;
             }
         };
+        // How many files each job's worker left for the owner (one read_dir
+        // per job), so the task view can offer the evidence without a
+        // second request.
+        if let Some(store) = self.store.as_deref() {
+            for job in &mut jobs {
+                let count = job
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| {
+                        pulse_harness::artifacts::list(
+                            &pulse_harness::artifacts::job_artifacts_dir(&store.home, id),
+                        )
+                        .len()
+                    })
+                    .unwrap_or(0);
+                job.insert("artifacts".to_string(), json!(count));
+            }
+        }
         let lead_work = match self.addition_lead_work(&project) {
             Ok(v) => v,
             Err(e) => {
@@ -2297,6 +2315,12 @@ mod tests {
                 )
                 .unwrap();
         }
+        // The evidence a job's worker left: counted per job for the task view.
+        let evidence = pulse_harness::artifacts::job_artifacts_dir(&s.store.home, "job-plain");
+        std::fs::create_dir_all(&evidence).unwrap();
+        std::fs::write(evidence.join("shot.png"), b"png").unwrap();
+        std::fs::write(evidence.join("report.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(evidence.join(".hidden"), "x").unwrap();
         let (status, result) =
             http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
         assert_eq!(status, 200);
@@ -2307,6 +2331,8 @@ mod tests {
             .map(|j| j["id"].as_str().unwrap_or_default().to_string())
             .collect::<Vec<_>>();
         assert_eq!(jobs, vec!["job-plain", "job-ui"], "{result:?}");
+        assert_eq!(arr(&result, "jobs")[0]["artifacts"], 2, "{result:?}");
+        assert_eq!(arr(&result, "jobs")[1]["artifacts"], 0, "{result:?}");
         // Where the lead is, for the status line under the owner's message:
         // idle until its answer job is queued, then in line.
         assert_eq!(result["lead_work"]["state"], "idle", "{result:?}");

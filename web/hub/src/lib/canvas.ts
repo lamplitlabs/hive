@@ -20,13 +20,14 @@ export type CanvasKind =
   | "project"
   | "links"
   | "steps"
-  | "brief";
+  | "brief"
+  | "evidence";
 
 export interface CanvasTab {
-  /** `kind` alone, or `kind:key` for a file, a page or an artifact. */
+  /** `kind` alone, or `kind:key` for a file, a page, an artifact or a job's evidence. */
   id: string;
   kind: CanvasKind;
-  /** The path, URL, query or artifact name; empty for the one-of-a-kind tabs. */
+  /** The path, URL, query, artifact name or job id; empty for the one-of-a-kind tabs. */
   key: string;
   label: string;
 }
@@ -39,6 +40,7 @@ export const WIDE_KINDS: ReadonlySet<CanvasKind> = new Set<CanvasKind>([
   "page",
   "diff",
   "artifact",
+  "evidence",
 ]);
 
 export const KIND_LABEL: Record<CanvasKind, string> = {
@@ -55,6 +57,7 @@ export const KIND_LABEL: Record<CanvasKind, string> = {
   links: "Links",
   steps: "Steps",
   brief: "Brief",
+  evidence: "Evidence",
 };
 
 export const tabId = (kind: CanvasKind, key = ""): string =>

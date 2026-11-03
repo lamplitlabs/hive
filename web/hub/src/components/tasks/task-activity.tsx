@@ -14,6 +14,7 @@ import { BotIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CornerDownRightI
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { DeliveryLine, reportLanding } from "@/components/chat/chat-pane";
+import { JobEvidence } from "@/components/chat/job-evidence";
 import { Markdown } from "@/components/pulse/markdown";
 import { Disclosure, EmptyState, ErrorNotice, SkeletonRows } from "@/components/pulse/panel";
 import { Avatar, Mono, ToneBadge, When } from "@/components/pulse/who";
@@ -43,6 +44,8 @@ export interface TaskChat {
   pick: (c: MessageChoice) => Promise<void>;
   busy: boolean;
   newBefore?: string | null;
+  /** Opens a job's evidence (its artifacts) on the canvas; without it the report links to the newest file. */
+  onEvidence?: (j: TaskJob) => void;
 }
 
 export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { task: Task; chat: TaskChat; footer?: ReactNode; className?: string; jumpOn?: number }) {
@@ -250,8 +253,9 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
   if (report) {
     note = "reported back on " + (job?.title ? "\u201c" + sentence(job.title) + "\u201d" : jobId ? "job " + jobId : "a step");
     const landing = reportLanding(job);
+    const evidence = job?.artifacts ? <JobEvidence job={job} onOpen={chat.onEvidence} variant="link" /> : null;
     meta =
-      landing || job?.harness_session ? (
+      landing || job?.harness_session || evidence ? (
         <>
           {landing ? (
             <ToneBadge tone={landing.tone} dot title={"Job " + jobId + (job?.branch ? ", branch " + job.branch : "")}>
@@ -263,6 +267,7 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
               See the run
             </Link>
           ) : null}
+          {evidence}
         </>
       ) : undefined;
   }

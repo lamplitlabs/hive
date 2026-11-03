@@ -2185,6 +2185,18 @@ pub(crate) fn land_branch_with_registry(
         effective_before.clone(),
         effective_after.clone(),
     );
+    // What the owner can look at: the job's artifacts folder against the UI
+    // files the branch changed (`files` was read before the merge). A sync
+    // landing or a branch without a job has no folder; it says nothing.
+    let ui = if job.0.is_empty() {
+        None
+    } else {
+        Some(crate::ui_evidence::UiEvidence::collect(
+            &home,
+            &job.str("id"),
+            &files,
+        ))
+    };
     let mut detail = BTreeMap::from([
         ("sha".into(), serde_json::json!(sha)),
         ("before".into(), serde_json::json!(effective_before)),
@@ -2197,6 +2209,9 @@ pub(crate) fn land_branch_with_registry(
     ]);
     if let Some(note) = stash_note.as_ref() {
         detail.insert("auto_stash".into(), serde_json::json!(note));
+    }
+    if let Some(ui) = ui.as_ref().filter(|u| u.touches_ui() || u.shown()) {
+        detail.insert("ui_evidence".into(), ui.json());
     }
     if !replay_note.is_empty() {
         detail.insert("replayed".into(), serde_json::json!(replay_note));
@@ -2262,6 +2277,12 @@ pub(crate) fn land_branch_with_registry(
     } else {
         format!(", {replay_note}")
     };
+    let shown = ui
+        .as_ref()
+        .map(|u| u.landing_sentence())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!(" {s}"))
+        .unwrap_or_default();
     // The landing already happened; a result post that fails must not undo it, but
     // it must not vanish either: owners read the board for "what landed", so the
     // miss goes to stderr, which the daemon log captures.
@@ -2281,7 +2302,7 @@ pub(crate) fn land_branch_with_registry(
                 230,
             ),
             body: format!(
-                "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing): merged in a throwaway worktree{replayed}, `{vc_shown}` on the merged result ({verify_note}), then {landed_how}. The branch is removed; the commits are on {def}.\n"
+                "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing): merged in a throwaway worktree{replayed}, `{vc_shown}` on the merged result ({verify_note}), then {landed_how}. The branch is removed; the commits are on {def}.{shown}\n"
             ),
             agent: crate::board::actor_agent(s, actor),
             branch: Some(Box::new(def_copy)),

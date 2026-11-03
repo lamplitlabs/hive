@@ -45,6 +45,14 @@ pub(crate) trait Executor {
         ))
     }
     fn owner_paths_touched(&self, base: &str) -> Vec<String>;
+    /// Every file the worker's commits changed since `base`, sorted; an
+    /// executor that cannot say reports none. The run's evidence line and
+    /// the landing use it to tell a change with a face (a page, a view)
+    /// from one without.
+    fn changed_files(&self, base: &str) -> Vec<String> {
+        let _ = base;
+        Vec::new()
+    }
     /// The run's own `TMPDIR` when the executor gives it one: a sibling of
     /// the clone (`work/<job>.tmp`) that the worker, the pre-commit check
     /// and the run's verification write their temporary files to, and that
@@ -509,6 +517,9 @@ impl Executor for LocalExec {
     fn owner_paths_touched(&self, base: &str) -> Vec<String> {
         crate::brief::owner_paths_touched(self.clone_dir.clone(), base.to_string())
     }
+    fn changed_files(&self, base: &str) -> Vec<String> {
+        crate::brief::changed_files(self.clone_dir.clone(), base.to_string())
+    }
     fn run_tmp_dir(&self) -> String {
         format!("{}.tmp", self.clone_dir)
     }
@@ -929,6 +940,15 @@ impl Executor for SshExec {
         }
     }
     fn owner_paths_touched(&self, base: &str) -> Vec<String> {
+        let mut hit = self.changed_files(base);
+        hit.retain(|f| {
+            crate::keys::OWNER_PATHS
+                .iter()
+                .any(|p| f == p || f.starts_with(p))
+        });
+        hit
+    }
+    fn changed_files(&self, base: &str) -> Vec<String> {
         let Ok((0, out, _)) = self.call(
             &["changed".into(), self.local.job.str("id"), base.into()],
             &[],
@@ -936,17 +956,9 @@ impl Executor for SshExec {
         ) else {
             return Vec::new();
         };
-        let mut hit = Vec::new();
-        for f in out.split_whitespace() {
-            if crate::keys::OWNER_PATHS
-                .iter()
-                .any(|p| f == *p || f.starts_with(p))
-            {
-                hit.push(f.to_string());
-            }
-        }
-        hit.sort();
-        hit
+        let mut files: Vec<String> = out.split_whitespace().map(ToOwned::to_owned).collect();
+        files.sort();
+        files
     }
     fn verify(
         &self,

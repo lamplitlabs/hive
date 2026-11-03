@@ -70,6 +70,9 @@ pub(crate) struct BriefOpts {
     pub lessons: Vec<String>,
     pub store: Option<pulse_store::Store>,
     pub now: String,
+    /// The job's artifacts folder (`$PULSE_ARTIFACTS`), when the executor
+    /// gives it one: where screenshots and reports for the owner go.
+    pub artifacts_dir: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -132,6 +135,17 @@ pub(crate) struct Report {
 }
 
 pub(crate) fn owner_paths_touched(clone: String, base: String) -> Vec<String> {
+    let mut files = changed_files(clone, base);
+    files.retain(|f| {
+        pulse_store::OWNER_PATHS
+            .iter()
+            .any(|p| f == p || f.starts_with(p))
+    });
+    files
+}
+
+/// Every file the commits since `base` changed in `clone`, sorted.
+pub(crate) fn changed_files(clone: String, base: String) -> Vec<String> {
     let out = crate::util::git(&clone, &["diff", "--name-only", &format!("{base}..HEAD")]);
     let mut files = if out.ok() {
         out.stdout
@@ -141,11 +155,6 @@ pub(crate) fn owner_paths_touched(clone: String, base: String) -> Vec<String> {
     } else {
         Vec::new()
     };
-    files.retain(|f| {
-        pulse_store::OWNER_PATHS
-            .iter()
-            .any(|p| f == p || f.starts_with(p))
-    });
     files.sort();
     files
 }
@@ -197,6 +206,15 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         agent,
         jid
     );
+    if !o.artifacts_dir.is_empty() {
+        w!(
+            "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in $PULSE_ARTIFACTS ({});",
+            o.artifacts_dir
+        );
+        w!(
+            "the hub shows that folder beside this job and it outlives the clone (rule 10). Never commit them into the branch."
+        );
+    }
     w!("");
     w!(
         "This is your only run: nobody reads your chat output and there is no second turn. Do not stop after a"
@@ -615,6 +633,7 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "   clone, removes whatever you left behind, and writes it down against your name (`agent.cleanup` on the"
     );
     w!("   hub's Hygiene panel) - a clean finish leaves nothing to write down.");
+    write_evidence_rule(&mut b, &o.artifacts_dir, o.remote);
     if o.has_ball {
         w!("");
         w!("## Ballot (cards still needing votes; answer with `VOTE:` lines in your report)");
@@ -650,6 +669,56 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         }
     }
     Ok(b.join("\n") + "\n")
+}
+
+/// Rule 10: a change with a face comes with something to look at. The
+/// owner reads the hub, not the diff; a page, a view or a stylesheet that
+/// changed and left no screenshot or report is landed unshown, and the
+/// result post says so. A remote hand has no folder the hub serves, so the
+/// evidence goes into the report instead.
+pub(crate) fn write_evidence_rule(b: &mut Vec<String>, artifacts_dir: &str, remote: bool) {
+    if remote || artifacts_dir.is_empty() {
+        b.push(
+            "10. Show your work when it has a face: when the change touches anything a person sees (a page, a view, a"
+                .into(),
+        );
+        b.push(
+            "    stylesheet, a native screen), describe in your SUMMARY what the screen now shows and how you checked"
+                .into(),
+        );
+        b.push(
+            "    it (which page you opened, what you compared), since this machine has no folder the hub serves."
+                .into(),
+        );
+        return;
+    }
+    b.push(
+        "10. Show your work when it has a face: when the change touches anything a person sees (a page, a view, a"
+            .into(),
+    );
+    b.push(format!(
+        "    stylesheet, a native screen), leave evidence in $PULSE_ARTIFACTS ({artifacts_dir}) before you finish: a"
+    ));
+    b.push(
+        "    screenshot of the changed screen (a browser tool's screenshot lands there by itself when it is set up to; otherwise"
+            .into(),
+    );
+    b.push(
+        "    render the page with the project's own dev server or test harness and save a PNG), or an HTML/Markdown report"
+            .into(),
+    );
+    b.push(
+        "    with the before/after when a screenshot is out of reach. Name each file in your SUMMARY. The owner reads the hub,"
+            .into(),
+    );
+    b.push(
+        "    not the diff: a UI change with nothing in that folder is landed unshown and the result post says so. Work"
+            .into(),
+    );
+    b.push(
+        "    without a face (a library, a daemon, a migration) needs none; a benchmark table or a report is still welcome there."
+            .into(),
+    );
 }
 
 /// The earlier attempt of a job the daemon requeued after its branch
@@ -1550,6 +1619,61 @@ mod tests {
         job.insert("title", serde_json::json!("Read the issues"));
         job.insert("brief", serde_json::json!("do it"));
         job
+    }
+
+    #[test]
+    fn brief_asks_for_ui_evidence_in_the_artifacts_folder() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        let local = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            artifacts_dir: "/h/work/jobs/job-mcp/artifacts".into(),
+            ..Default::default()
+        });
+        // The folder is named up front and in rule 10, with the words the
+        // hub and the result post use: the worker knows the owner sees it.
+        assert!(
+            local.contains("go in $PULSE_ARTIFACTS (/h/work/jobs/job-mcp/artifacts);"),
+            "{local}"
+        );
+        assert!(
+            local.contains("10. Show your work when it has a face"),
+            "{local}"
+        );
+        assert!(
+            local.contains("leave evidence in $PULSE_ARTIFACTS (/h/work/jobs/job-mcp/artifacts) before you finish"),
+            "{local}"
+        );
+        assert!(local.contains("landed unshown"), "{local}");
+        assert!(local.contains("Name each file in your SUMMARY"), "{local}");
+        // A remote hand has no served folder: the evidence goes in the report.
+        let remote = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            remote: true,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        assert!(
+            remote.contains("10. Show your work when it has a face"),
+            "{remote}"
+        );
+        assert!(!remote.contains("$PULSE_ARTIFACTS"), "{remote}");
+        assert!(
+            remote.contains("describe in your SUMMARY what the screen now shows"),
+            "{remote}"
+        );
     }
 
     #[test]

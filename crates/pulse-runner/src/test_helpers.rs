@@ -468,7 +468,10 @@ pub(crate) fn count(s: &pulse_store::Store, sql: &str, args: &[&dyn rusqlite::To
 /// (`retention::discard_dir`). That background delete can outlast any fixed
 /// poll budget on a loaded disk, so a test that wants "nothing left" empties
 /// the trash itself - it asserts what the run left behind, not how fast the
-/// background thread is. The trash folder itself never counts as a leftover.
+/// background thread is. The trash folder itself never counts as a leftover,
+/// nor does the durable `work/jobs` root (pulse_harness::artifacts) - but a
+/// job's folder under it does, so a run that kept an empty artifacts folder
+/// is caught while one that left evidence names it.
 pub(crate) fn work_leftovers(home: &str) -> Vec<String> {
     let home = Path::new(home);
     let trash = crate::retention::trash_dir(home);
@@ -477,11 +480,21 @@ pub(crate) fn work_leftovers(home: &str) -> Vec<String> {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
+    let jobs = home.join("work").join("jobs");
     let mut left: Vec<String> = std::fs::read_dir(home.join("work"))
         .map(|rd| {
             rd.flatten()
                 .map(|e| e.path())
                 .filter(|p| *p != trash || crate::retention::trash_entries(home) != 0)
+                .flat_map(|p| {
+                    if p == jobs {
+                        std::fs::read_dir(&p)
+                            .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
+                            .unwrap_or_default()
+                    } else {
+                        vec![p]
+                    }
+                })
                 .map(|p| p.display().to_string())
                 .collect()
         })

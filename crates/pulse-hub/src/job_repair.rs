@@ -1,11 +1,26 @@
 use crate::httpx::{Request, ResponseWriter};
 use crate::server::{Handler, JsonMap};
-use serde_json::Value;
+use rusqlite::types::Value as SqlValue;
+use serde_json::{Value, json};
 
 pub(crate) const JOB_REPAIR_HEADER: &str = "X-Pulse-Job-Repair";
 
+/// A job id as the hub accepts it in a path: one plain token, so it can
+/// name a folder under `work/jobs/` without ever reaching outside it.
+fn plain_job_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 impl Handler {
     pub(crate) fn addition_jobs(&self, w: &mut ResponseWriter, r: &Request, parts: Vec<String>) {
+        if (parts.len() == 3 || parts.len() == 4) && parts[0] == "jobs" && parts[2] == "artifacts" {
+            self.addition_job_artifacts(w, r, &parts);
+            return;
+        }
         if parts.len() != 2 || parts[0] != "jobs" || (parts[1] != "failed" && parts[1] != "repair")
         {
             crate::addition_not_found(w);
@@ -222,6 +237,67 @@ impl Handler {
             return (body, true);
         }
         (query, true)
+    }
+
+    /// `GET /api/v1/jobs/{id}/artifacts`: the files a job's worker left for
+    /// the owner under `PULSE_HOME/work/jobs/{id}/artifacts`, newest first
+    /// (an empty list when the job never made one);
+    /// `GET /api/v1/jobs/{id}/artifacts/{name}`: one of them, served the way
+    /// a conversation's artifacts are. An id that is not a job answers 404.
+    fn addition_job_artifacts(&self, w: &mut ResponseWriter, r: &Request, parts: &[String]) {
+        let id = parts[1].as_str();
+        if !plain_job_id(id) {
+            crate::addition_not_found(w);
+            return;
+        }
+        if !crate::addition_method(w, r, vec!["GET".to_string()])
+            || !self.addition_available(w, r, vec!["jobs".to_string()])
+        {
+            return;
+        }
+        let Some(store) = self.store.as_deref() else {
+            crate::addition_failure(w, anyhow::anyhow!("store is not available"));
+            return;
+        };
+        let rows = match self.addition_rows(
+            r,
+            "SELECT id FROM jobs WHERE id=?",
+            vec![SqlValue::Text(id.to_string())],
+        ) {
+            Ok(rows) => rows,
+            Err(err) => {
+                crate::addition_failure(w, err);
+                return;
+            }
+        };
+        if rows.is_empty() {
+            crate::write_error(
+                w,
+                404,
+                "No such job".to_string(),
+                format!("No job {id:?} is known to this hub."),
+                "Open a job from a task or the failed-job list.".to_string(),
+            );
+            return;
+        }
+        let dir = pulse_harness::artifacts::job_artifacts_dir(&store.home, id);
+        if parts.len() == 3 {
+            let artifacts = pulse_harness::artifacts::list(&dir);
+            crate::write_json(w, 200, json!({"job": id, "artifacts": artifacts}));
+            return;
+        }
+        let name = parts[3].as_str();
+        let Some(path) = pulse_harness::artifacts::file(&dir, name) else {
+            crate::write_error(
+                w,
+                404,
+                "No such artifact".to_string(),
+                format!("{name} is not a file in this job's artifacts folder."),
+                "Open the job and pick a file from its evidence list.".to_string(),
+            );
+            return;
+        };
+        crate::chat::serve_artifact_file(w, r, name, &path);
     }
 }
 
@@ -558,5 +634,166 @@ mod tests {
             r#"{"job_ids":["job-one"]}"#,
         );
         assert_eq!(status, 409);
+    }
+
+    #[test]
+    fn job_artifacts_are_listed_per_job() {
+        let _serial = crate::test_helpers::serial();
+        let s = job_repair_store();
+        let h = crate::test_helpers_http::handler(&s);
+        let (status, _, raw) = crate::test_helpers_http::request(
+            h.clone(),
+            "GET",
+            "/api/v1/jobs/job-unknown/artifacts",
+            "",
+            &[],
+        );
+        assert_eq!(status, 404, "unknown job: {raw}");
+        for bad in ["..", "a%2Fb", "job%20one", "x%00y"] {
+            let (status, _, raw) = crate::test_helpers_http::request(
+                h.clone(),
+                "GET",
+                &format!("/api/v1/jobs/{bad}/artifacts"),
+                "",
+                &[],
+            );
+            assert_eq!(status, 404, "{bad}: {raw}");
+        }
+        let (status, body, raw) = crate::test_helpers_http::request(
+            h.clone(),
+            "GET",
+            "/api/v1/jobs/job-one/artifacts",
+            "",
+            &[],
+        );
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(body["job"], "job-one");
+        assert_eq!(body["artifacts"], serde_json::json!([]), "no folder yet");
+        let dir = pulse_harness::artifacts::job_artifacts_dir(&s.home, "job-one");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shot.png"), b"png").unwrap();
+        std::fs::write(dir.join("report.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(dir.join(".hidden"), "x").unwrap();
+        let (status, body, raw) = crate::test_helpers_http::request(
+            h.clone(),
+            "GET",
+            "/api/v1/jobs/job-one/artifacts",
+            "",
+            &[],
+        );
+        assert_eq!(status, 200, "{raw}");
+        let mut names: Vec<&str> = body["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["report.html", "shot.png"]);
+        let report = body["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "report.html")
+            .unwrap();
+        assert_eq!(report["size"], 11);
+        assert!(report["modified"].as_str().unwrap().ends_with('Z'));
+        // The other job's folder is its own.
+        let (status, body, raw) =
+            crate::test_helpers_http::request(h, "GET", "/api/v1/jobs/job-two/artifacts", "", &[]);
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(body["artifacts"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn job_artifact_files_are_served_safely() {
+        let _serial = crate::test_helpers::serial();
+        let s = job_repair_store();
+        let dir = pulse_harness::artifacts::job_artifacts_dir(&s.home, "job-one");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(dir.join("data.bin"), [0u8, 1, 2, 3]).unwrap();
+        std::fs::write(dir.join(".hidden"), "secret").unwrap();
+        let srv = crate::test_helpers_http::server(crate::test_helpers_http::handler(&s));
+        let client = crate::test_helpers::client();
+        let resp = client
+            .get(format!(
+                "{}/api/v1/jobs/job-one/artifacts/report.html",
+                srv.url
+            ))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert!(
+            resp.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
+        assert!(
+            resp.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("sandbox")
+        );
+        assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(resp.headers()["cache-control"], "no-store");
+        assert_eq!(resp.headers()["x-frame-options"], "SAMEORIGIN");
+        assert_eq!(resp.text().unwrap(), "<h1>hi</h1>");
+        let resp = client
+            .get(format!(
+                "{}/api/v1/jobs/job-one/artifacts/data.bin",
+                srv.url
+            ))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.headers()["content-type"], "application/octet-stream");
+        assert_eq!(
+            resp.headers()["content-security-policy"],
+            "default-src 'none'; style-src 'unsafe-inline'"
+        );
+        for name in [
+            "..%2F..%2Fetc%2Fpasswd",
+            "..%5Cetc%5Cpasswd",
+            ".hidden",
+            "missing.txt",
+        ] {
+            let resp = client
+                .get(format!("{}/api/v1/jobs/job-one/artifacts/{name}", srv.url))
+                .send()
+                .unwrap();
+            assert_eq!(resp.status().as_u16(), 404, "{name}");
+        }
+        // A file of an unknown job is never looked up.
+        let resp = client
+            .get(format!(
+                "{}/api/v1/jobs/job-missing/artifacts/report.html",
+                srv.url
+            ))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+        for path in [
+            "/api/v1/jobs/job-one/artifacts",
+            "/api/v1/jobs/job-one/artifacts/report.html",
+        ] {
+            let resp = client
+                .post(format!("{}{path}", srv.url))
+                .header("Content-Type", "application/json")
+                .body("{}")
+                .send()
+                .unwrap();
+            assert_eq!(resp.status().as_u16(), 405, "POST {path}");
+            assert_eq!(resp.headers()["allow"], "GET");
+        }
+        let resp = client
+            .get(format!(
+                "{}/api/v1/jobs/job-one/artifacts/report.html/extra",
+                srv.url
+            ))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 404, "too many path parts");
     }
 }

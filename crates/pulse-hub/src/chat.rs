@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) type Chats = Arc<Mutex<Option<Arc<Manager>>>>;
 
 /// The most bytes one artifact may be served at.
-const ARTIFACT_LIMIT: u64 = 20 * 1024 * 1024;
+pub(crate) const ARTIFACT_LIMIT: u64 = 20 * 1024 * 1024;
 /// How many conversations a list returns.
 const LIST_LIMIT: i64 = 200;
 /// How large a `/message` body may be: every inline image a message may
@@ -604,63 +604,7 @@ impl Handler {
             );
             return;
         };
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if size > ARTIFACT_LIMIT {
-            write_error(
-                w,
-                413,
-                "Artifact too large".to_string(),
-                format!(
-                    "{name} is {size} bytes; the hub serves files up to {ARTIFACT_LIMIT} bytes."
-                ),
-                format!("Open it from disk: {}", path.display()),
-            );
-            return;
-        }
-        let Ok(data) = std::fs::read(&path) else {
-            addition_not_found(w);
-            return;
-        };
-        let ext = path
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-        let mut mime = crate::httpx::mime_type_by_extension(&ext);
-        if mime.is_empty() {
-            mime = if looks_like_text(&data) {
-                "text/plain; charset=utf-8".to_string()
-            } else {
-                "application/octet-stream".to_string()
-            };
-        }
-        if let Ok(v) = HeaderValue::from_str(&mime) {
-            w.header_mut().insert(header::CONTENT_TYPE, v);
-        }
-        w.header_mut().insert(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        );
-        w.header_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        // The chat page frames artifacts (an HTML page in a sandboxed
-        // iframe, a PDF in the browser's viewer), so the hub's blanket
-        // "never frame" headers give way to same-origin framing here. A page
-        // an agent wrote still runs with no access to the hub's origin; a
-        // PDF keeps its viewer (CSP `sandbox` would switch plugins off).
-        w.header_mut().insert(
-            header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("SAMEORIGIN"),
-        );
-        let csp = if mime.starts_with("text/html") || mime.contains("svg") {
-            "sandbox allow-scripts"
-        } else {
-            "default-src 'none'; style-src 'unsafe-inline'"
-        };
-        w.header_mut().insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(csp),
-        );
-        crate::httpx::serve_content(w, r, name, &data);
+        serve_artifact_file(w, r, name, &path);
     }
 
     /// One image of one message: `GET /api/v1/chat/{id}/image/{n}/{i}` is
@@ -863,6 +807,73 @@ fn query_int(
 pub(crate) fn looks_like_text(data: &[u8]) -> bool {
     let head = &data[..data.len().min(4096)];
     !head.contains(&0) && std::str::from_utf8(head).is_ok()
+}
+
+/// Serve one artifact file (a conversation's or a job's) at `path`, already
+/// resolved inside its folder: 413 above [`ARTIFACT_LIMIT`], the mime by
+/// extension (text/plain or octet-stream when unknown) and the headers that
+/// let the hub page frame it without the file reaching the hub's origin.
+pub(crate) fn serve_artifact_file(
+    w: &mut ResponseWriter,
+    r: &Request,
+    name: &str,
+    path: &std::path::Path,
+) {
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size > ARTIFACT_LIMIT {
+        write_error(
+            w,
+            413,
+            "Artifact too large".to_string(),
+            format!("{name} is {size} bytes; the hub serves files up to {ARTIFACT_LIMIT} bytes."),
+            format!("Open it from disk: {}", path.display()),
+        );
+        return;
+    }
+    let Ok(data) = std::fs::read(path) else {
+        addition_not_found(w);
+        return;
+    };
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mut mime = crate::httpx::mime_type_by_extension(&ext);
+    if mime.is_empty() {
+        mime = if looks_like_text(&data) {
+            "text/plain; charset=utf-8".to_string()
+        } else {
+            "application/octet-stream".to_string()
+        };
+    }
+    if let Ok(v) = HeaderValue::from_str(&mime) {
+        w.header_mut().insert(header::CONTENT_TYPE, v);
+    }
+    w.header_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    w.header_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // The chat page frames artifacts (an HTML page in a sandboxed
+    // iframe, a PDF in the browser's viewer), so the hub's blanket
+    // "never frame" headers give way to same-origin framing here. A page
+    // an agent wrote still runs with no access to the hub's origin; a
+    // PDF keeps its viewer (CSP `sandbox` would switch plugins off).
+    w.header_mut().insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    let csp = if mime.starts_with("text/html") || mime.contains("svg") {
+        "sandbox allow-scripts"
+    } else {
+        "default-src 'none'; style-src 'unsafe-inline'"
+    };
+    w.header_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
+    );
+    crate::httpx::serve_content(w, r, name, &data);
 }
 
 #[cfg(test)]

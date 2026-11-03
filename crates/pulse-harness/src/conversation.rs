@@ -48,7 +48,7 @@ pub const BRANCH_PREFIX: &str = "pulse/chat-";
 /// commands (`pulse chat attach` reads it).
 pub const CONVERSATION_ENV: &str = "PULSE_CONVERSATION";
 /// The environment variable that names the artifacts folder.
-pub const ARTIFACTS_ENV: &str = "PULSE_ARTIFACTS";
+pub use crate::artifacts::ARTIFACTS_ENV;
 /// The memory key conversations without a project share
 /// (`~/.pulse/memory/conversations.md`): one of them learning a thing is
 /// enough for the next. A conversation attached to a project reads and
@@ -199,12 +199,7 @@ pub struct Live {
 }
 
 /// One file in the artifacts folder.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Artifact {
-    pub name: String,
-    pub size: u64,
-    pub modified: String,
-}
+pub use crate::artifacts::Artifact;
 
 /// A file the owner handed the agent with a message. It lives in the
 /// conversation's attachments folder, never in the branch; the agent gets
@@ -2995,6 +2990,19 @@ impl Manager {
         path.is_file().then_some(path)
     }
 
+    /// A job's artifacts folder (`PULSE_HOME/work/jobs/<job>/artifacts`),
+    /// listed and served the same way as a conversation's.
+    pub fn job_artifacts(&self, job_id: &str) -> Vec<Artifact> {
+        crate::artifacts::list(&crate::artifacts::job_artifacts_dir(&self.home, job_id))
+    }
+
+    pub fn job_artifact_path(&self, job_id: &str, name: &str) -> Option<PathBuf> {
+        crate::artifacts::file(
+            &crate::artifacts::job_artifacts_dir(&self.home, job_id),
+            name,
+        )
+    }
+
     /// What the branch holds, when the conversation has one.
     pub fn changes(&self, row: &Row) -> Option<Changes> {
         if row.branch.is_empty() || row.cwd.is_empty() || !Path::new(&row.cwd).is_dir() {
@@ -3383,14 +3391,7 @@ pub fn attachments_dir(home: &str, id: &str) -> PathBuf {
 
 /// Whether `name` names a file in a folder and nothing more: no path
 /// separators, no `.`/`..`, no control characters.
-fn plain_file_name(name: &str) -> bool {
-    !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.chars().any(|c| c.is_control())
-}
+use crate::artifacts::plain_file_name;
 
 /// The file name an upload is kept under: the browser's name trimmed to a
 /// plain file name of at most 120 characters, spaces kept, path parts and
@@ -3639,34 +3640,7 @@ fn changes_in(cwd: &str, project: &str, branch: &str, base: &str) -> Changes {
 }
 
 fn list_artifacts(dir: &Path) -> Vec<Artifact> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<(std::time::SystemTime, Artifact)> = entries
-        .flatten()
-        .filter_map(|e| {
-            let meta = e.metadata().ok()?;
-            if !meta.is_file() {
-                return None;
-            }
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                return None;
-            }
-            let modified = meta.modified().ok()?;
-            let when: chrono::DateTime<chrono::Utc> = modified.into();
-            Some((
-                modified,
-                Artifact {
-                    name,
-                    size: meta.len(),
-                    modified: when.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                },
-            ))
-        })
-        .collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
-    out.into_iter().map(|(_, a)| a).collect()
+    crate::artifacts::list(dir)
 }
 
 /// The brief the agent reads with the first message of each session.

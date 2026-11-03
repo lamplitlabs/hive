@@ -5806,7 +5806,12 @@ once its job is in an end state (`done`, `failed`, `cancelled`), in the same
 5,000-row batches; the run and job rows stay, a running run's brief and the
 briefs of a job still waiting for another run are never taken, and the sweep
 reports them as `swept brief 712 worker briefs (run finished more than 30d
-ago, 9.8 MB)`. Run logs and `daemon-stall-*`/`daemon-signal-*` logs go after
+ago, 9.8 MB)`. A job's artifacts folder (`~/.pulse/work/jobs/<job>/artifacts`:
+the screenshots and reports its worker left for the owner, which the hub shows
+beside the job) goes `daemon.artifact_keep_days` (default 30; 0 keeps them)
+after the job finished, an empty one at once, and one of a job the store does
+not know after `daemon.sweep_keep_days` untouched; disk pressure never shortens
+this window. Run logs and `daemon-stall-*`/`daemon-signal-*` logs go after
 `daemon.log_keep_days` (default 14); `daemon.log` and `hub.log`, which the
 launcher opens in append mode, are copied to `<name>.1` and truncated in place
 once over `daemon.log_max_mb` (default 32; 0 never). Under `~/.pulse/bin` only

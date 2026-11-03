@@ -25,6 +25,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Canvas, useCanvas } from "@/components/chat/canvas";
 import { useSeen } from "@/components/chat/chat-pane";
+import { JobEvidence } from "@/components/chat/job-evidence";
+import { jobEvidenceTab } from "@/components/chat/job-evidence-state";
 import { BackButton, Pane } from "@/components/chat/split";
 import {
   TONE_TEXT,
@@ -450,6 +452,7 @@ function TaskBody({
             pick,
             busy: !!busy,
             newBefore,
+            onEvidence: (j) => ctl.openTab(jobEvidenceTab(j)),
           }}
           className="max-h-[calc(100dvh-24rem)] min-h-[20rem] lg:max-h-none lg:min-h-0"
           jumpOn={jump}
@@ -534,11 +537,18 @@ function TaskBody({
       steps={runSteps}
       live={working}
       texts={texts}
+      jobs={d.jobs}
       menu={["terminal", "plan", "steps", "brief", "links"]}
       counts={{ steps: d.jobs.length }}
       panels={{
         steps: (
-          <StepsPanel d={d} progress={progress} closed={closed} run={run} />
+          <StepsPanel
+            d={d}
+            progress={progress}
+            closed={closed}
+            run={run}
+            onEvidence={(j) => ctl.openTab(jobEvidenceTab(j))}
+          />
         ),
         brief: (
           <BriefPanel d={d} closed={closed} onEdit={() => setAmend(true)} />
@@ -727,11 +737,13 @@ function StepsPanel({
   progress,
   closed,
   run,
+  onEvidence,
 }: {
   d: TaskDetail;
   progress: ReturnType<typeof taskProgress>;
   closed: boolean;
   run: string;
+  onEvidence: (j: TaskJob) => void;
 }) {
   const t = d.task;
   const idle = idleLine(t);
@@ -743,6 +755,7 @@ function StepsPanel({
         progress={progress}
         closed={closed}
         run={run}
+        onEvidence={onEvidence}
       />
       {progress.total ? <TaskProgressBar t={t} className="px-1" /> : null}
       {idle ? (
@@ -907,19 +920,23 @@ function History({
 }
 
 // The steps the lead planned, each one a row like a sub-conversation's: who
-// is on it, its word, when it moved; a step with a run opens it.
+// is on it, its word, when it moved; a step with a run opens it. A step
+// that left files (screenshots, reports) shows how many; that opens them
+// on the canvas as its evidence.
 function StepList({
   jobs,
   t,
   progress,
   closed,
   run: shown,
+  onEvidence,
 }: {
   jobs: TaskJob[];
   t: Task;
   progress: ReturnType<typeof taskProgress>;
   closed: boolean;
   run: string;
+  onEvidence: (j: TaskJob) => void;
 }) {
   const now = useNow(15000);
   return (
@@ -1000,17 +1017,21 @@ function StepList({
               </>
             );
             const cls =
-              "flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs";
+              "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left text-xs";
+            // The evidence control sits beside the row, not inside its
+            // link: a button inside an anchor is not a thing.
             return (
-              <li key={j.id} className="min-w-0">
+              <li
+                key={j.id}
+                className={cn(
+                  "flex min-w-0 items-center",
+                  run === shown && "bg-primary/[0.06]",
+                )}
+              >
                 {run ? (
                   <Link
                     href={hrefs.harness({ id: run })}
-                    className={cn(
-                      cls,
-                      "transition-colors hover:bg-muted/50",
-                      run === shown && "bg-primary/[0.06]",
-                    )}
+                    className={cn(cls, "transition-colors hover:bg-muted/50")}
                     title={
                       tip +
                       (run === shown
@@ -1025,6 +1046,7 @@ function StepList({
                     {row}
                   </div>
                 )}
+                <JobEvidence job={j} onOpen={onEvidence} className="mr-1.5" />
               </li>
             );
           })}

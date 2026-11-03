@@ -1814,6 +1814,41 @@ export function chatArtifactHref(id: string, name: string): string {
   return apiHref("chat/" + enc(id) + "/artifacts/" + enc(name));
 }
 
+// Where an artifact's bytes come from: a conversation's folder or a fleet
+// job's. The artifact components take one of these so a job's evidence
+// shows the way a conversation's does.
+export type ArtifactSource =
+  | { kind: "chat"; id: string }
+  | { kind: "job"; id: string };
+
+export function artifactHref(src: ArtifactSource, name: string): string {
+  return src.kind === "job"
+    ? jobArtifactHref(src.id, name)
+    : chatArtifactHref(src.id, name);
+}
+
+// GET jobs/{id}/artifacts/{name}: the file with its mime, like a chat's.
+export function jobArtifactHref(jobId: string, name: string): string {
+  return apiHref("jobs/" + enc(jobId) + "/artifacts/" + enc(name));
+}
+
+export const jobArtifactsPath = (jobId: string): string =>
+  "jobs/" + enc(jobId) + "/artifacts";
+
+// GET jobs/{id}/artifacts -> { job, artifacts: ChatArtifact[] } newest first.
+export interface JobArtifactsResponse {
+  job: string;
+  artifacts: ChatArtifact[];
+}
+
+// The files a fleet job left in its artifacts folder, newest first.
+export async function fetchJobArtifacts(
+  jobId: string,
+): Promise<ChatArtifact[]> {
+  const r = await api<JobArtifactsResponse>(jobArtifactsPath(jobId));
+  return Array.isArray(r.artifacts) ? r.artifacts : [];
+}
+
 export function chatAttachmentHref(id: string, name: string): string {
   return apiHref("chat/" + enc(id) + "/attachments/" + enc(name));
 }
@@ -2404,6 +2439,10 @@ export interface TaskJob {
   finished_at?: string;
   harness_session?: string;
   needs?: string; // the machine words this job waited for, "" when any machine would do
+  // How many files the job's artifacts folder holds (screenshots, reports
+  // the agent left as evidence): 0 or absent when none. GET
+  // jobs/{id}/artifacts lists them.
+  artifacts?: number;
 }
 
 // An answer the owner can pick under an agent's message instead of writing:

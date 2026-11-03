@@ -1112,6 +1112,10 @@ pub(crate) fn run_job(
     let mut recipe_invalid = false;
     let mut pubkey = String::new();
     let mut worker_reported = String::new();
+    // The files the worker's commits changed, read once the commits are
+    // counted: the evidence line of the result post tells a change with a
+    // face (a page, a view) from one without.
+    let mut changed_files: Vec<String> = Vec::new();
     // The ballot the brief showed; `VOTE:` lines may only name these cards.
     let mut run_ballot: Vec<BallotItem> = Vec::new();
     // The shared Cargo build-cache lane this run builds into, held until the
@@ -1213,6 +1217,13 @@ pub(crate) fn run_job(
             }
         }
         run_ballot = ballot.clone();
+        // The job's artifacts folder outlives the clone: the hub shows what
+        // the worker leaves there (screenshots, reports) beside the job.
+        let artifacts_dir = if ex.remote() {
+            None
+        } else {
+            crate::ui_evidence::prepare_dir(&home, &job.str("id"))
+        };
         let brief_text = crate::brief::write_brief(crate::brief::BriefOpts {
             job: job.clone(),
             project: project.clone(),
@@ -1232,6 +1243,10 @@ pub(crate) fn run_job(
             ),
             store: Some(s.clone()),
             now: now.to_string(),
+            artifacts_dir: artifacts_dir
+                .as_ref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default(),
         })?;
         crate::util::exec1(
             &c,
@@ -1305,6 +1320,12 @@ pub(crate) fn run_job(
             ),
             ("PULSE_EXECUTOR".to_string(), ex.name()),
         ]);
+        if let Some(dir) = &artifacts_dir {
+            env.insert(
+                pulse_harness::artifacts::ARTIFACTS_ENV.to_string(),
+                dir.display().to_string(),
+            );
+        }
         if ex.remote()
             && !custom_worker
             && let Some(dir) = ex.worker_dirs().first()
@@ -1589,6 +1610,9 @@ pub(crate) fn run_job(
         // did is held against the job, which is done again.
         if (status != "timeout" && status != "lost") || rescued {
             commits = ex.commit_count(&base);
+            if commits > 0 {
+                changed_files = ex.changed_files(&base);
+            }
             let dirty = ex.dirty();
             // The worker finished its change and ran `git commit`, and the
             // harness killed the commit at the step deadline while the
@@ -2106,6 +2130,11 @@ pub(crate) fn run_job(
     // A held run keeps its clone for the run that carries on.
     let held_clone = status == "held" && !ex.remote();
     let left = if held_clone { ex.hold() } else { ex.cleanup() };
+    if !ex.remote() {
+        // Evidence stays for the hub; a folder with nothing in it goes with
+        // the clone (a held run's next pass makes it again).
+        crate::ui_evidence::drop_empty_dir(&home, &job.str("id"));
+    }
     drop(build_cache);
     if ex.started() {
         let clone_text = if held_clone {
@@ -2322,6 +2351,15 @@ pub(crate) fn run_job(
             lines.push(format!("- Verify: {verify_note}"));
         }
         lines.push(format!("- Log: {log_path}"));
+        // What there is to look at: the files the worker left in the job's
+        // artifacts folder, or the plain word that a UI change left none.
+        if !ex.remote() {
+            let evidence =
+                crate::ui_evidence::UiEvidence::collect(&home, &job.str("id"), &changed_files);
+            if let Some(line) = evidence.result_line() {
+                lines.push(line);
+            }
+        }
         for f in &parsed.findings {
             lines.push(format!("- Finding: {f}"));
         }
@@ -3624,6 +3662,162 @@ mod tests {
             vec![crate::recipe::SETUP_MINUTES, crate::recipe::SETUP_MINUTES],
             "{}",
             log.text()
+        );
+    }
+
+    #[test]
+    fn run_job_gives_the_worker_an_artifacts_folder_that_outlives_the_clone_and_names_it() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "evidence".into(),
+            "change a screen and show it".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        let want = pulse_harness::artifacts::job_artifacts_dir(&s.home, &job_id);
+        // The worker changes a page, leaves a screenshot where the brief
+        // says, and never commits it.
+        let worker = "test -d \"$PULSE_ARTIFACTS\" && printf '%s\\n' \"$PULSE_ARTIFACTS\" > \"$PULSE_ARTIFACTS/where.txt\" \
+             && mkdir -p web/src && printf '<p/>\\n' > web/src/page.tsx && git add web/src/page.tsx && git commit -q -m page \
+             && printf 'png\\n' > \"$PULSE_ARTIFACTS/after.png\" && echo 'SUMMARY: page changed, after.png shows it'";
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        // The brief named the folder the environment carried.
+        let c = s.conn().unwrap();
+        let brief =
+            crate::util::must_one(&c, "SELECT text FROM briefs WHERE job_id = ?", &[&job_id])
+                .str("text");
+        assert!(
+            brief.contains(&format!("$PULSE_ARTIFACTS ({})", want.display())),
+            "{brief}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(want.join("where.txt"))
+                .unwrap()
+                .trim(),
+            want.display().to_string()
+        );
+        // The clone is gone; the evidence stays for the hub.
+        crate::retention::empty_trash(std::path::Path::new(&s.home));
+        assert!(
+            !std::path::Path::new(&s.home)
+                .join("work")
+                .join(&job_id)
+                .exists()
+        );
+        assert!(want.join("after.png").is_file());
+        let mut names = pulse_harness::artifacts::names(&want);
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["after.png".to_string(), "where.txt".to_string()]
+        );
+        // The result post names what there is to look at.
+        let body = crate::util::must_one(
+            &c,
+            "SELECT body FROM posts WHERE project = 'proj' AND kind = 'result' AND agent = 'aurora' ORDER BY created_at DESC LIMIT 1",
+            &[],
+        )
+        .str("body");
+        assert!(
+            body.contains("- Evidence: ")
+                && body.contains("`after.png`")
+                && body.contains("`where.txt`"),
+            "{body}"
+        );
+        assert!(body.contains(&want.display().to_string()), "{body}");
+    }
+
+    #[test]
+    fn run_job_result_says_when_a_ui_change_left_no_evidence() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "quiet ui".into(),
+            "change a screen".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let worker = "mkdir -p web/src && printf 'body{}\\n' > web/src/app.css && git add web/src/app.css && git commit -q -m css && echo 'SUMMARY: css'";
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        let body = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT body FROM posts WHERE project = 'proj' AND kind = 'result' AND agent = 'aurora' ORDER BY created_at DESC LIMIT 1",
+            &[],
+        )
+        .str("body");
+        assert!(
+            body.contains("- Evidence: none - 1 UI file changed and nothing was left in $PULSE_ARTIFACTS (rule 10)"),
+            "{body}"
         );
     }
 

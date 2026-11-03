@@ -11,11 +11,14 @@ import { fileURLToPath } from "node:url";
 import { rosterScenarios } from "./roster.mjs";
 import { taskDetailScenario, taskScenarios, taskWorkFocus } from "./tasks.mjs";
 import { createJobRepairMock } from "./job-repair.mjs";
+import { createJobArtifactsMock } from "./job-artifacts.mjs";
 import { createSuggestedMock } from "./suggested.mjs";
 import { createCodeDeliveryMock } from "./code-deliveries.mjs";
 import { createAutomationsMock } from "./automations.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
+// The job artifact folders under root/jobs/<id>/artifacts, read on demand.
+const jobArtifacts = createJobArtifactsMock({ root });
 const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
 const delay = Number(process.env.MOCK_DELAY_MS ?? 120);
 // MOCK_STATIC=out serves the static export next to the API the way the pulse
@@ -1228,13 +1231,54 @@ async function handle(req, res) {
   if (delay) await new Promise((r) => setTimeout(r, delay));
 
   if (segs[0] === "jobs") {
+    // A job's artifacts folder: GET jobs/<id>/artifacts lists it, GET
+    // jobs/<id>/artifacts/<name> serves one file with its mime (the same
+    // shape as a conversation's artifacts), so the task view's evidence
+    // tab works offline. The folders live in mock/api/jobs/<id>/artifacts/.
+    if (segs.length >= 3 && segs[2] === "artifacts" && segs.length <= 4) {
+      if (req.method !== "GET")
+        return fail(
+          res,
+          405,
+          "Method not allowed",
+          "Use GET for a job's artifacts.",
+          "Open the task's step.",
+        );
+      if (segs.length === 3) {
+        const l = await jobArtifacts.list(segs[1]);
+        if (!l)
+          return fail(
+            res,
+            404,
+            "no such job",
+            segs[1] + " is not in the store",
+            "open it from the task",
+          );
+        return send(res, 200, l);
+      }
+      const f = await jobArtifacts.file(segs[1], segs[3]);
+      if (!f)
+        return fail(
+          res,
+          404,
+          "no such artifact",
+          segs[3] + " is not in the job's folder",
+          "open the listing",
+        );
+      res.writeHead(200, {
+        "content-type": f.type,
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*",
+      });
+      return res.end(f.bytes);
+    }
     const method = segs[1] === "repair" ? "POST" : "GET";
     if (segs.length !== 2 || !["failed", "repair"].includes(segs[1]))
       return fail(
         res,
         404,
         "Unknown jobs route",
-        "Use failed or repair.",
+        "Use failed, repair or <id>/artifacts.",
         "Open Failed job repair.",
       );
     if (req.method !== method)
@@ -4057,6 +4101,9 @@ async function handle(req, res) {
     const detail = taskDetailScenario(t._detail, now());
     return send(res, 200, {
       ...detail,
+      // Each job says how many files its artifacts folder holds, so the
+      // task view can offer them as evidence.
+      jobs: await jobArtifacts.decorate(detail.jobs),
       task: strip(detail.task),
       messages: state.messages.filter((m) => m.task_id === t.id),
     });

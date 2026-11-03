@@ -1110,6 +1110,18 @@
       "value": "30"
     },
     {
+      "choices": null,
+      "default": "30",
+      "description": "days a finished job's artifacts folder (PULSE_HOME/work/jobs/<job>/artifacts: the screenshots and reports its worker left for the owner, shown in the hub beside the job) is kept after the job finishes before the sweep removes it; an empty folder of a finished job goes at once, a folder of a job the store does not know goes after daemon.sweep_keep_days; 0 keeps every folder",
+      "kind": "count",
+      "min": 0,
+      "name": "daemon.artifact_keep_days",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "30"
+    },
+    {
       "choices": [
         "off",
         "main",

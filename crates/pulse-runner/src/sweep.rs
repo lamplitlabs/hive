@@ -45,6 +45,7 @@ pub(crate) static SWEEP_KINDS: &[&str] = &[
     "scratch",
     "log",
     "transcript",
+    "artifact",
     "trajectory",
     "session",
     "brief",
@@ -154,6 +155,8 @@ pub(crate) struct Sweeper {
     pub(crate) keep: std::time::Duration,
     /// `daemon.transcript_keep_days`; zero keeps every transcript.
     pub(crate) transcripts: std::time::Duration,
+    /// `daemon.artifact_keep_days`; zero keeps every folder.
+    pub(crate) artifacts_keep: std::time::Duration,
     /// `daemon.log_keep_days`.
     pub(crate) logs_keep: std::time::Duration,
     /// `daemon.log_max_mb` in bytes; zero never caps.
@@ -215,6 +218,7 @@ impl Sweeper {
             branches: days("daemon.sweep_branch_days", 0),
             keep: days("daemon.sweep_keep_days", 0),
             transcripts: days("daemon.transcript_keep_days", 0),
+            artifacts_keep: days("daemon.artifact_keep_days", 0),
             logs_keep: days("daemon.log_keep_days", 1),
             log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
             vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
@@ -236,6 +240,9 @@ impl Sweeper {
             if !w.transcripts.is_zero() {
                 w.transcripts = w.transcripts.min(PRESSURE_KEEP);
             }
+            // A job's artifacts folder keeps its window under pressure: it
+            // holds the owner's evidence (screenshots, reports), not a
+            // disposable leftover - the same reasoning as runner sessions.
             w.logs_keep = w.logs_keep.min(PRESSURE_KEEP);
             w.cache_keep = w.cache_keep.min(PRESSURE_CACHE_KEEP);
             if w.vacuum_free > 0 {
@@ -274,6 +281,7 @@ impl Sweeper {
     pub(crate) fn sweep_all(&mut self) {
         self.sweep_orphan_jobs();
         self.sweep_work();
+        self.sweep_job_artifacts();
         self.sweep_push_keys();
         self.sweep_cargo_targets();
         self.sweep_measure_roots();
@@ -546,6 +554,7 @@ pub(crate) fn sweep_lines(rep: Option<SweepReport>) -> Vec<String> {
                 "log" => "run log",
                 "patch" => "patch",
                 "trajectory" => "trajectory file",
+                "artifact" => "job artifacts folder",
                 "session" => "agent session",
                 _ => kind,
             };
@@ -1062,6 +1071,147 @@ impl Sweeper {
                         round_duration(keep)
                     ),
                 );
+            }
+        }
+    }
+    /// The durable job folders under `PULSE_HOME/work/jobs/<job-id>`
+    /// (pulse_harness::artifacts): each holds the `artifacts` subfolder a
+    /// worker fills for the owner - screenshots, reports - which the hub shows
+    /// beside the job long after the run's clone is swept. A folder goes
+    /// `daemon.artifact_keep_days` after its job finished (zero keeps every
+    /// one), an empty one of a finished job at once, and one of a job this
+    /// store does not know after `daemon.sweep_keep_days` untouched; a job
+    /// still queued, leased or with a run in flight holds its folder. Disk
+    /// pressure never shortens the window: these are the owner's evidence.
+    pub(crate) fn sweep_job_artifacts(&mut self) {
+        let jobs = Path::new(&self.home).join("work").join("jobs");
+        let Ok(entries) = std::fs::read_dir(jobs) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let path = e.path().display().to_string();
+            let Some(c) = SWEEP_JOB_ENTRY_RE.captures(&name) else {
+                continue;
+            };
+            if c.get(2).is_some() || !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let job_id = c[1].to_string();
+            if let Some(why) = nonempty(self.job_hold(job_id.clone())) {
+                self.held("artifact".into(), path, String::new(), why);
+                continue;
+            }
+            let (known, _lost) = self.job_known(job_id.clone());
+            if !known {
+                let (age, ok) = self.age(path.clone());
+                if !ok {
+                    continue;
+                }
+                if age >= self.keep {
+                    self.remove(
+                        "artifact".into(),
+                        path,
+                        String::new(),
+                        format!(
+                            "job unknown to this store, untouched for {}",
+                            round_duration(age)
+                        ),
+                    );
+                } else {
+                    self.held(
+                        "artifact".into(),
+                        path,
+                        String::new(),
+                        format!(
+                            "job unknown to this store, younger than {}",
+                            round_duration(self.keep)
+                        ),
+                    );
+                }
+                continue;
+            }
+            let job = self.job_row(&job_id);
+            let status = job.str("status");
+            if !matches!(status.as_str(), "done" | "failed" | "cancelled") {
+                self.held(
+                    "artifact".into(),
+                    path,
+                    String::new(),
+                    format!("job {status}"),
+                );
+                continue;
+            }
+            if count_files_under(&e.path().join("artifacts")) == 0 {
+                self.remove(
+                    "artifact".into(),
+                    path,
+                    String::new(),
+                    format!("{job_id} finished, no artifacts left"),
+                );
+                continue;
+            }
+            if self.artifacts_keep.is_zero() {
+                self.held(
+                    "artifact".into(),
+                    path,
+                    String::new(),
+                    "kept for good (daemon.artifact_keep_days 0)".into(),
+                );
+                continue;
+            }
+            // Measured against the store's clock (`self.now`), as
+            // finished_work_due does: finished_at is a store timestamp.
+            let since_finished = chrono::NaiveDateTime::parse_from_str(
+                &job.str("finished_at"),
+                crate::util::ISO_LAYOUT,
+            )
+            .ok()
+            .map(|finished| {
+                crate::util::must_iso(&self.now).signed_duration_since(finished.and_utc())
+            })
+            .and_then(|d| d.to_std().ok());
+            let keep = round_duration(self.artifacts_keep);
+            match since_finished {
+                Some(ago) if ago >= self.artifacts_keep => {
+                    self.remove(
+                        "artifact".into(),
+                        path,
+                        String::new(),
+                        format!("{job_id} finished over {keep} ago"),
+                    );
+                }
+                Some(ago) => {
+                    self.held(
+                        "artifact".into(),
+                        path,
+                        String::new(),
+                        format!("{job_id} finished {} ago, kept {keep}", round_duration(ago)),
+                    );
+                }
+                None => {
+                    // A finished job with no readable finished_at: the age of
+                    // the folder itself stands in, so it still goes one day.
+                    let (age, ok) = self.age(path.clone());
+                    if ok && age >= self.artifacts_keep {
+                        self.remove(
+                            "artifact".into(),
+                            path,
+                            String::new(),
+                            format!(
+                                "{job_id} finished, folder untouched for {}",
+                                round_duration(age)
+                            ),
+                        );
+                    } else {
+                        self.held(
+                            "artifact".into(),
+                            path,
+                            String::new(),
+                            format!("{job_id} finished at an unknown time, kept {keep} untouched"),
+                        );
+                    }
+                }
             }
         }
     }
@@ -2517,6 +2667,23 @@ fn nonempty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Regular files under `dir`, recursively, dotfiles included (a worker's
+/// `.playwright-report/` is still evidence); a missing or unreadable folder
+/// counts none. Symlinks are not followed.
+fn count_files_under(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => count_files_under(&e.path()),
+            Ok(t) if t.is_file() => 1,
+            _ => 0,
+        })
+        .sum()
+}
+
 pub(crate) fn cargo_target_dir_from_verify(cmd: &str) -> Option<String> {
     let needle = "CARGO_TARGET_DIR=";
     let mut rest = cmd;
@@ -3235,6 +3402,142 @@ mod tests {
         )
         .unwrap();
         assert_eq!(held_why(&rep.held, work.join(&finished)), "run in flight");
+    }
+
+    #[test]
+    fn sweep_job_artifacts_windows() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let jobs = Path::new(&s.home).join("work").join("jobs");
+        let folder = |job: &str| jobs.join(job);
+        // (a) finished 40 days ago, with evidence: past the 30-day default.
+        let old = sweep_job(&s, "done", "");
+        sweep_run(&s, &old, "done");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET finished_at = ? WHERE id = ?",
+                params![crate::util::plus_hours(TEST_NOW, -40.0 * 24.0), old],
+            )
+            .unwrap();
+        mkdir_file(folder(&old).join("artifacts/shot.png"), "png");
+        // (b) finished two hours ago (sweep_job's default), with evidence.
+        let fresh = sweep_job(&s, "done", "");
+        sweep_run(&s, &fresh, "done");
+        mkdir_file(folder(&fresh).join("artifacts/report.html"), "<h1>ok</h1>");
+        // (c) finished two hours ago, nothing left in the folder.
+        let empty = sweep_job(&s, "failed", "");
+        sweep_run(&s, &empty, "failed");
+        std::fs::create_dir_all(folder(&empty).join("artifacts/nested")).unwrap();
+        // (d) still running, with evidence.
+        let running = sweep_job(&s, "leased", "");
+        sweep_run(&s, &running, "running");
+        mkdir_file(folder(&running).join("artifacts/.hidden.png"), "png");
+        // Not a job folder: never touched.
+        mkdir_file(jobs.join("mine.txt"), "not the runner's");
+
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        let removed = swept_paths(&rep.removed, "artifact");
+        assert_eq!(removed.len(), 2, "{removed:?}");
+        assert!(removed.contains(&folder(&old).display().to_string()));
+        assert!(removed.contains(&folder(&empty).display().to_string()));
+        let why_of = |job: &str| {
+            rep.removed
+                .iter()
+                .find(|x| x.path == folder(job).display().to_string())
+                .map(|x| x.why.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(why_of(&old), format!("{old} finished over 30d ago"));
+        assert_eq!(
+            why_of(&empty),
+            format!("{empty} finished, no artifacts left")
+        );
+        assert!(!crate::util::file_exists(
+            &folder(&old).display().to_string()
+        ));
+        assert!(!crate::util::file_exists(
+            &folder(&empty).display().to_string()
+        ));
+        for job in [&fresh, &running] {
+            assert!(
+                crate::util::file_exists(&folder(job).display().to_string()),
+                "{job} folder stays"
+            );
+        }
+        let fresh_why = held_why(&rep.held, folder(&fresh));
+        assert_eq!(fresh_why, format!("{fresh} finished 2h ago, kept 30d"));
+        assert!(
+            held_why(&rep.held, folder(&running)).contains("in progress"),
+            "{:?}",
+            rep.held
+        );
+        assert!(
+            rep.held
+                .iter()
+                .all(|x| x.path != jobs.join("mine.txt").display().to_string())
+        );
+        assert!(crate::util::file_exists(
+            &jobs.join("mine.txt").display().to_string()
+        ));
+        let lines = sweep_lines(Some(rep));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("swept artifact ") && l.contains("finished over 30d ago")),
+            "{lines:?}"
+        );
+
+        // (e) zero keeps every folder, however old.
+        set_setting(&s, "daemon.artifact_keep_days", "0");
+        let older = sweep_job(&s, "done", "");
+        sweep_run(&s, &older, "done");
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET finished_at = ? WHERE id = ?",
+                params![crate::util::plus_hours(TEST_NOW, -400.0 * 24.0), older],
+            )
+            .unwrap();
+        mkdir_file(folder(&older).join("artifacts/shot.png"), "png");
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(swept_paths(&rep.removed, "artifact").is_empty());
+        assert_eq!(
+            held_why(&rep.held, folder(&older)),
+            "kept for good (daemon.artifact_keep_days 0)"
+        );
+        assert!(crate::util::file_exists(
+            &folder(&older).display().to_string()
+        ));
+
+        // A folder of a job this store never heard of waits daemon.sweep_keep_days.
+        set_setting(&s, "daemon.artifact_keep_days", "30");
+        let unknown = crate::util::new_id("job", TEST_NOW);
+        mkdir_file(folder(&unknown).join("artifacts/shot.png"), "png");
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        let why = held_why(&rep.held, folder(&unknown));
+        assert!(
+            why.contains("unknown to this store") && why.contains("30d"),
+            "unknown why = {why:?}"
+        );
+        let stale = FileTime::from_unix_time(
+            crate::util::must_iso(TEST_NOW).timestamp() - 31 * 24 * 3600,
+            0,
+        );
+        filetime::set_file_mtime(folder(&unknown), stale).unwrap();
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        assert!(
+            swept_paths(&rep.removed, "artifact").contains(&folder(&unknown).display().to_string()),
+            "{:?}",
+            rep.removed
+        );
+        assert!(!crate::util::file_exists(
+            &folder(&unknown).display().to_string()
+        ));
     }
 
     #[test]

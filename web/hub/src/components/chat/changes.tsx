@@ -31,7 +31,7 @@ import { Markdown } from "@/components/pulse/markdown";
 import { SkeletonRows } from "@/components/pulse/panel";
 import { When } from "@/components/pulse/who";
 import type { ChatArtifact, ChatChanges } from "@/lib/api";
-import { chatArtifactHref, enc } from "@/lib/api";
+import { artifactHref, enc, type ArtifactSource } from "@/lib/api";
 import {
   type DiffFile,
   type DiffLineKind,
@@ -624,17 +624,26 @@ function DiffRow({ l }: { l: NumberedLine }) {
 
 // ----- main area: one artifact ----------------------------------------------
 
+// Whose files these are: `id` names a conversation (the usual case);
+// `source` names a conversation or a fleet job and wins when given, so a
+// job's evidence lists and shows the same way.
+const sourceOf = (id: string, source?: ArtifactSource): ArtifactSource =>
+  source ?? { kind: "chat", id };
+
 export function ArtifactList({
   id,
+  source,
   artifacts,
   view,
   onView,
 }: {
   id: string;
+  source?: ArtifactSource;
   artifacts: ChatArtifact[];
   view: ChatView | null;
   onView: (v: ChatView) => void;
 }) {
+  const src = sourceOf(id, source);
   return (
     <ul className="grid min-w-0 gap-px" role="list" aria-label="Artifacts">
       {artifacts.map((a) => {
@@ -660,7 +669,7 @@ export function ArtifactList({
               </span>
             </button>
             <a
-              href={chatArtifactHref(id, a.name)}
+              href={artifactHref(src, a.name)}
               download={a.name}
               className="rounded-md p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
               aria-label={"Download " + a.name}
@@ -677,15 +686,17 @@ export function ArtifactList({
 
 export function ArtifactViewer({
   id,
+  source,
   artifact,
   onClose,
 }: {
   id: string;
+  source?: ArtifactSource;
   artifact: ChatArtifact;
   onClose: () => void;
 }) {
   const kind = fileKind(artifact.name);
-  const href = chatArtifactHref(id, artifact.name);
+  const href = artifactHref(sourceOf(id, source), artifact.name);
   return (
     <div
       className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1"

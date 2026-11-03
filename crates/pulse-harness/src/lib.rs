@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod agents_command;
+pub mod artifacts;
 pub mod background;
 pub(crate) mod buildenv;
 pub mod chat;

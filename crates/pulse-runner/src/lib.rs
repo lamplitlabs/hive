@@ -92,6 +92,7 @@ pub mod tidy;
 pub mod tmpspace;
 pub mod token;
 pub mod toolkit;
+pub(crate) mod ui_evidence;
 pub mod util;
 pub mod verify_lock;
 pub mod verify_memo;

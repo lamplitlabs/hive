@@ -12,6 +12,7 @@ import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState } from "@/components/pulse/panel";
 import { Avatar, ToneBadge, When } from "@/components/pulse/who";
 import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
+import { JobEvidence } from "@/components/chat/job-evidence";
 import { cn } from "@/lib/utils";
 import { fmtDate, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -118,9 +119,11 @@ export function reportLanding(j: TaskJob | undefined): { word: string; tone: Ton
 }
 
 // A worker's report on one step of the task, nested under the conversation:
-// who ran the step, what they found, and where the step's code is now.
+// who ran the step, what they found, and where the step's code is now - and
+// the files it left (screenshots, reports), a link to the newest one.
 function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameAuthor: boolean }) {
   const landing = reportLanding(job);
+  const evidence = !!job?.artifacts;
   return (
     <div className="flex min-w-0 items-start gap-2 pl-4 sm:pl-9" data-report={m.job_id}>
       <GitForkIcon className="mt-2 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -135,7 +138,7 @@ function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameA
         <div title={sameAuthor ? fmtDate(m.at) : undefined} className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-dashed bg-muted/30 px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground anywhere">
           <Markdown source={m.body} className="[&>:last-child]:mb-0" />
         </div>
-        {landing || job?.harness_session ? (
+        {landing || job?.harness_session || evidence ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
             {landing ? (
               <ToneBadge tone={landing.tone} dot title={"Job " + (job?.id ?? m.job_id) + (job?.branch ? ", branch " + job.branch : "")}>
@@ -147,6 +150,7 @@ function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameA
                 See the run
               </Link>
             ) : null}
+            {evidence ? <JobEvidence job={job} variant="link" /> : null}
           </div>
         ) : null}
       </div>

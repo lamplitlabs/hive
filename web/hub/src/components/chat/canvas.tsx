@@ -21,6 +21,7 @@ import {
   FolderGitIcon,
   GitBranchIcon,
   GlobeIcon,
+  ImagesIcon,
   LinkIcon,
   ListChecksIcon,
   ListTodoIcon,
@@ -50,6 +51,7 @@ import {
 import { useWidth } from "@/components/chat/split";
 import {
   ArtifactBody,
+  ArtifactList,
   ChangesBody,
   DiffTable,
   FileKindIcon,
@@ -57,16 +59,25 @@ import {
   fileKind,
   type ChatDiff,
 } from "@/components/chat/changes";
+import {
+  evidenceEmptyText,
+  jobEvidenceLabel,
+  keepSelection,
+} from "@/components/chat/job-evidence-state";
 import { exitWords, planItems } from "@/components/harness/harness";
 import { EmptyState, Notice, SkeletonRows } from "@/components/pulse/panel";
 import { When } from "@/components/pulse/who";
 import {
-  chatArtifactHref,
+  artifactHref,
   harnessFilePath,
+  jobArtifactsPath,
+  type ArtifactSource,
   type ChatArtifact,
   type ChatChanges,
   type HarnessFileResponse,
   type HarnessStep,
+  type JobArtifactsResponse,
+  type TaskJob,
 } from "@/lib/api";
 import {
   KIND_LABEL,
@@ -102,6 +113,8 @@ export interface CanvasControl {
   wide: boolean;
   /** Opens a tab (or brings it forward) because you asked. */
   open: (kind: CanvasKind, key?: string) => void;
+  /** The same for a tab made elsewhere (a job's evidence, labelled by its step). */
+  openTab: (tab: CanvasTab) => void;
   select: (id: string) => void;
   close: (id: string) => void;
   setWide: (wide: boolean) => void;
@@ -173,17 +186,19 @@ export function useCanvas({
   const activeTab = tabs.find((t) => t.id === active) ?? tabs[0];
   const wide = userWide ?? (!!activeTab && WIDE_KINDS.has(activeTab.kind));
 
+  const openTab = (t: CanvasTab) => {
+    setTabs((cur) => addTabs(cur, [t]));
+    setActive(t.id);
+    hold();
+    setUserWide(null);
+  };
+
   return {
     tabs,
     active: activeTab?.id ?? "",
     wide,
-    open: (kind, key = "") => {
-      const t = makeTab(kind, key);
-      setTabs((cur) => addTabs(cur, [t]));
-      setActive(t.id);
-      hold();
-      setUserWide(null);
-    },
+    open: (kind, key = "") => openTab(makeTab(kind, key)),
+    openTab,
     select: (id) => {
       setActive(id);
       hold();
@@ -216,6 +231,7 @@ const KIND_ICON: Record<CanvasKind, typeof TerminalIcon> = {
   links: LinkIcon,
   steps: ListTodoIcon,
   brief: ScrollTextIcon,
+  evidence: ImagesIcon,
 };
 
 export function Canvas({
@@ -228,6 +244,7 @@ export function Canvas({
   changes,
   chatId,
   artifacts = [],
+  jobs = [],
   texts = [],
   panels,
   menu,
@@ -244,6 +261,8 @@ export function Canvas({
   /** The conversation whose artifacts the artifact tabs show. */
   chatId?: string;
   artifacts?: ChatArtifact[];
+  /** The task's steps, for the evidence tabs (a job's artifacts folder). */
+  jobs?: TaskJob[];
   /** What the Links tab reads: messages and observations. */
   texts?: string[];
   /** Tab bodies the page supplies (changes, artifacts, project, subs, steps, brief). */
@@ -413,9 +432,15 @@ export function Canvas({
           )
         ) : active.kind === "artifact" ? (
           <ArtifactTab
-            chatId={chatId ?? ""}
+            source={{ kind: "chat", id: chatId ?? "" }}
             artifact={artifacts.find((a) => a.name === active.key)}
             name={active.key}
+          />
+        ) : active.kind === "evidence" ? (
+          <EvidenceTab
+            key={active.key}
+            jobId={active.key}
+            job={jobs.find((j) => j.id === active.key)}
           />
         ) : active.kind === "links" ? (
           <Links texts={texts} />
@@ -1034,26 +1059,30 @@ function PlanTab({ steps }: { steps: HarnessStep[] }) {
 
 // ----- artifact -----------------------------------------------------------------
 
+// One file of a conversation's or a job's folder, with its bar.
 function ArtifactTab({
-  chatId,
+  source,
   artifact,
   name,
 }: {
-  chatId: string;
+  source: ArtifactSource;
   artifact?: ChatArtifact;
   name: string;
 }) {
-  if (!artifact || !chatId) {
+  if (!artifact || !source.id) {
     return (
       <Pane>
         <p className="text-[13px] text-muted-foreground">
-          {name} is not in this conversation&apos;s artifacts any more.
+          {name +
+            " is not in " +
+            (source.kind === "job" ? "this step's" : "this conversation's") +
+            " artifacts any more."}
         </p>
       </Pane>
     );
   }
   const kind = fileKind(artifact.name);
-  const href = chatArtifactHref(chatId, artifact.name);
+  const href = artifactHref(source, artifact.name);
   return (
     <>
       <div className="flex min-w-0 items-center gap-2 border-b px-3 py-1.5 text-xs">
@@ -1091,6 +1120,94 @@ function ArtifactTab({
         <ArtifactBody key={href} href={href} name={artifact.name} kind={kind} />
       </div>
     </>
+  );
+}
+
+// ----- evidence -----------------------------------------------------------------
+
+// The files a fleet job left in its artifacts folder - the screenshots and
+// reports that show what it did - listed the way a conversation's Artifacts
+// panel lists its own, with the chosen one shown below: an image inline, a
+// page in a sandboxed frame, text as text. The listing comes from GET
+// jobs/{id}/artifacts and refreshes while the tab is open, so a running
+// step's new screenshot appears on its own; the newest image opens first.
+function EvidenceTab({ jobId, job }: { jobId: string; job?: TaskJob }) {
+  const { data, error, loading, reload } = useApi<JobArtifactsResponse>(
+    jobId ? jobArtifactsPath(jobId) : null,
+    { refresh: job?.status === "leased" ? 10000 : 60000 },
+  );
+  const artifacts = useMemo(() => data?.artifacts ?? [], [data]);
+  const [picked, setPicked] = useState("");
+  const selected = keepSelection(picked, artifacts);
+  const source = useMemo<ArtifactSource>(
+    () => ({ kind: "job", id: jobId }),
+    [jobId],
+  );
+  const title = jobEvidenceLabel(job?.title ?? "");
+  if (!data && loading) return <SkeletonRows n={3} className="p-3" />;
+  if (!artifacts.length) {
+    return (
+      <Pane>
+        <EmptyState
+          icon={<ImagesIcon className="size-[18px]" />}
+          hint={"Job " + jobId + ". It knows the folder as $PULSE_ARTIFACTS."}
+        >
+          {evidenceEmptyText(error)}
+        </EmptyState>
+        {error ? (
+          <div>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => void reload()}
+            >
+              <RefreshCwIcon /> Try again
+            </Button>
+          </div>
+        ) : null}
+      </Pane>
+    );
+  }
+  return (
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
+      aria-label={title}
+      data-evidence={jobId}
+    >
+      <div className="scroll-thin max-h-[30dvh] shrink-0 overflow-y-auto border-b px-1.5 py-1.5 lg:max-h-[14rem]">
+        <p
+          className="flex items-center gap-1.5 px-1.5 pb-1 text-[11px] text-muted-foreground"
+          title={"Job " + jobId}
+        >
+          <ImagesIcon className="size-3" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">
+            {plural(artifacts.length, "file") +
+              " this step left" +
+              (job?.title ? " for \u201c" + job.title + "\u201d" : "")}
+          </span>
+          {error ? (
+            <span className="shrink-0 text-warn" title={error}>
+              stale
+            </span>
+          ) : null}
+        </p>
+        <ArtifactList
+          id={jobId}
+          source={source}
+          artifacts={artifacts}
+          view={selected ? { kind: "artifact", name: selected } : null}
+          onView={(v) => {
+            if (v.kind === "artifact") setPicked(v.name);
+          }}
+        />
+      </div>
+      <ArtifactTab
+        source={source}
+        artifact={artifacts.find((a) => a.name === selected)}
+        name={selected}
+      />
+    </div>
   );
 }
 
