@@ -441,13 +441,20 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     /// Whether a frame's origin is the console's own (served by the hub).
     private func isConsoleOrigin(_ origin: WKSecurityOrigin) -> Bool {
-        guard let policy, !origin.host.isEmpty else { return false }
+        guard let policy, let url = Self.url(of: origin) else { return false }
+        return policy.isConsole(url)
+    }
+
+    /// A frame's origin as a URL the link policy can judge; nil for an
+    /// opaque origin (a sandboxed frame, about:blank), which is nobody's.
+    private static func url(of origin: WKSecurityOrigin) -> URL? {
+        guard !origin.host.isEmpty else { return nil }
         var parts = URLComponents()
         parts.scheme = origin.protocol
         parts.host = origin.host
         parts.port = origin.port == 0 ? nil : origin.port
         parts.path = "/"
-        return parts.url.map(policy.isConsole) ?? false
+        return parts.url
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -608,6 +615,11 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         present(alert) { completionHandler($0 == .alertFirstButtonReturn ? input.stringValue : nil) }
     }
 
+    /// The console's own page may use the microphone: the chat's dictation
+    /// button records there and posts the sound to the hub's own transcribe
+    /// route on this machine (nothing said leaves it). A camera, a framed
+    /// file and any other origin are refused; the answer is the app's, so
+    /// WebKit asks nothing more and macOS asks once for the app itself.
     func webView(
         _ webView: WKWebView,
         requestMediaCapturePermissionFor origin: WKSecurityOrigin,
@@ -615,7 +627,22 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         type: WKMediaCaptureType,
         decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
     ) {
-        decisionHandler(.deny)
+        let capture: MediaCapture
+        switch type {
+        case .microphone: capture = .microphone
+        case .camera: capture = .camera
+        case .cameraAndMicrophone: capture = .cameraAndMicrophone
+        @unknown default:
+            decisionHandler(.deny)
+            return
+        }
+        guard let policy, let url = Self.url(of: origin),
+              policy.allowsCapture(capture, from: url, mainFrame: frame.isMainFrame) else {
+            log.notice("refused \(String(describing: capture), privacy: .public) capture for \(origin.host, privacy: .public):\(origin.port, privacy: .public)")
+            decisionHandler(.deny)
+            return
+        }
+        decisionHandler(.grant)
     }
 
     private func present(_ alert: NSAlert, then done: @escaping @MainActor (NSApplication.ModalResponse) -> Void) {

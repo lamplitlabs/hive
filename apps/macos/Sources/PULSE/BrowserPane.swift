@@ -438,6 +438,9 @@ final class BrowserPane: NSView, WKNavigationDelegate, WKUIDelegate, NSTextField
         present(alert) { completionHandler($0 == .alertFirstButtonReturn ? input.stringValue : nil) }
     }
 
+    /// The panel shows other people's pages: none of them gets a microphone
+    /// or camera here (the console's own page, which does dictate, is the
+    /// console window's; see ConsoleWindowController). Keep this a deny.
     func webView(
         _ webView: WKWebView,
         requestMediaCapturePermissionFor origin: WKSecurityOrigin,

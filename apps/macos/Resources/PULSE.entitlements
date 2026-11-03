@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The app is signed with the hardened runtime (build.sh); under it the
+       microphone needs this, or the chat's dictation gets silence. The
+       console records only for its own transcribe route on this Mac. -->
+  <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>

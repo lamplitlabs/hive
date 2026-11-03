@@ -1,9 +1,11 @@
 #!/bin/sh
 # Builds PULSE.app: the Swift package in apps/macos, the console's own fonts
 # (web/hub/public/fonts), the icon (Resources/AppIcon.svg), an Info.plist, and
-# a signature whose requirement every build meets, so macOS keeps its answers
-# (folder access, notifications) across rebuilds - the same idea as the
-# `identifier "pulse"` signature `pulse service install` gives pulse (ADR-035).
+# a signature (hardened runtime, Resources/PULSE.entitlements for the
+# microphone the chat's dictation uses) whose requirement every build meets,
+# so macOS keeps its answers (folder access, microphone, notifications)
+# across rebuilds - the same idea as the `identifier "pulse"` signature
+# `pulse service install` gives pulse (ADR-035).
 #
 #   apps/macos/scripts/build.sh              build apps/macos/build/PULSE.app (release)
 #   apps/macos/scripts/build.sh --install    and copy it to /Applications (~/Applications when not writable)
@@ -132,6 +134,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>NSSupportsSuddenTermination</key><false/>
   <key>NSHumanReadableCopyright</key><string>PULSE, MIT licence.</string>
   <key>NSDownloadsFolderUsageDescription</key><string>PULSE saves what you download from the console (chat files, run transcripts) in your Downloads folder.</string>
+  <key>NSMicrophoneUsageDescription</key><string>PULSE listens while you dictate a message in chat; the words are transcribed on this Mac and nothing you say leaves it.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <!-- The console is plain HTTP on 127.0.0.1. -->
@@ -142,14 +145,22 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
+# The hardened runtime (--options runtime, below) gives the microphone only
+# to an app entitled to it; without the entitlement the chat's dictation
+# records silence. Resources/PULSE.entitlements asks for audio input alone.
+entitlements="$here/Resources/PULSE.entitlements"
+plutil -lint "$entitlements" >/dev/null
+
 # Ad hoc by default: no certificate, and a requirement every build meets.
 if [ -n "${SIGN_IDENTITY:-}" ]; then
-  codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$app"
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp --entitlements "$entitlements" "$app"
 else
   codesign --force --sign - --identifier "$bundle_id" \
-    --requirements "=designated => identifier \"$bundle_id\"" --options runtime "$app"
+    --requirements "=designated => identifier \"$bundle_id\"" --options runtime --entitlements "$entitlements" "$app"
 fi
 codesign --verify --strict "$app"
+codesign --display --entitlements - "$app" 2>/dev/null | grep -q 'com.apple.security.device.audio-input' \
+  || { say "build.sh: the signature carries no audio-input entitlement"; exit 1; }
 say "Built $app"
 
 target="$app"
