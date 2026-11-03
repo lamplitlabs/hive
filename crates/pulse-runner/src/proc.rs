@@ -176,6 +176,115 @@ impl std::fmt::Debug for ProcessObserver {
     }
 }
 
+/// What [`output_within`] saw: the exit status (none when the timeout ended
+/// the command and its status never came), the output so far, and whether
+/// the timeout ended it.
+#[derive(Debug)]
+pub(crate) struct BoundedOutput {
+    pub(crate) status: Option<std::process::ExitStatus>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) timed_out: bool,
+}
+
+/// How long a command ended at its timeout gets between SIGTERM and SIGKILL.
+pub(crate) const TIMEOUT_KILL_GRACE: Duration = Duration::from_secs(2);
+
+/// The process groups [`output_within`] has running: the group, the thread
+/// that waits on it, and what it runs. A shutdown that gives up on a thread
+/// (a landing worker past its drain) ends what that thread is blocked on
+/// through [`end_groups_of`] instead of leaving it to run on.
+static BOUNDED_GROUPS: LazyLock<Mutex<Vec<(i32, std::thread::ThreadId, String)>>> =
+    LazyLock::new(Default::default);
+
+/// One entry of [`BOUNDED_GROUPS`], removed when the wait for it is over.
+struct Tracked(i32);
+
+impl Tracked {
+    fn new(pgid: i32, label: String) -> Self {
+        BOUNDED_GROUPS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((pgid, std::thread::current().id(), label));
+        Tracked(pgid)
+    }
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        BOUNDED_GROUPS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(pgid, _, _)| *pgid != self.0);
+    }
+}
+
+/// Ends every process group `thread` is waiting on in [`output_within`]
+/// (SIGTERM, `grace`, SIGKILL) and names each one ("git ... (pid N)"). The
+/// waiting thread then sees its command exit and carries on.
+pub(crate) fn end_groups_of(thread: std::thread::ThreadId, grace: Duration) -> Vec<String> {
+    let groups: Vec<(i32, String)> = BOUNDED_GROUPS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, t, _)| *t == thread)
+        .map(|(pgid, _, label)| (*pgid, label.clone()))
+        .collect();
+    groups
+        .into_iter()
+        .map(|(pgid, label)| {
+            ProcessGroup::with_grace(pgid, grace).terminate();
+            format!("{label} (pid {pgid})")
+        })
+        .collect()
+}
+
+/// `Command::output` that honours a timeout (zero: none). The command leads
+/// its own process group; when `timeout` passes before it exits, the whole
+/// group - hooks and helpers it started included - is ended, so the caller
+/// never blocks past the budget it asked for. A child the command left
+/// behind that still holds the pipes delays the output by at most
+/// `OUTPUT_DRAIN`. stdin is closed, as with `output`.
+pub(crate) fn output_within(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<BoundedOutput> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    own_process_group(cmd);
+    let label = crate::util::trunc(
+        &std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" "),
+        200,
+    );
+    let mut child = cmd.spawn()?;
+    let _tracked = Tracked::new(child.id() as i32, label);
+    let (out_buf, out_done) = drain(child.stdout.take().expect("stdout piped"));
+    let (err_buf, err_done) = drain(child.stderr.take().expect("stderr piped"));
+    let started = Instant::now();
+    let reaper = Reaper::start(child);
+    let never = pulse_bus::CancellationToken::new();
+    let (status, timed_out) = match reaper.await_exit::<()>(&never, started, timeout, None, None) {
+        Waited::Exited(Ok(status)) => (Some(status), false),
+        Waited::Exited(Err(e)) => return Err(e),
+        Waited::Interrupted => {
+            reaper.end_group(TIMEOUT_KILL_GRACE);
+            (reaper.status(OUTPUT_DRAIN).and_then(Result::ok), true)
+        }
+    };
+    let deadline = Instant::now() + OUTPUT_DRAIN;
+    Ok(BoundedOutput {
+        status,
+        stdout: collect(&out_buf, &out_done, deadline),
+        stderr: collect(&err_buf, &err_done, deadline),
+        timed_out,
+    })
+}
+
 /// Runs argv in its own child process group so cancellation can kill the whole tree (`killpg`).
 pub(crate) fn run_group(
     cancel: &pulse_bus::CancellationToken,

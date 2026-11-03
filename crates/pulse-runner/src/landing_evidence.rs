@@ -540,7 +540,11 @@ mod tests {
             std::fs::write(
                 &script,
                 r#"#!/bin/sh
-if [ "$1" = "-C" ] && [ "$2" = "$PULSE_DELIVERY_ROOT" ] && [ "$3" = "merge" ] && [ "$4" = "--ff-only" ]; then
+ff_merge_of_root() {
+  while [ "$1" = "-c" ]; do shift 2; done
+  [ "$1" = "-C" ] && [ "$2" = "$PULSE_DELIVERY_ROOT" ] && [ "$3" = "merge" ] && [ "$4" = "--ff-only" ]
+}
+if ff_merge_of_root "$@"; then
   GIT_REFLOG_ACTION=external-writer "$PULSE_REAL_GIT" -C "$PULSE_DELIVERY_ROOT" merge --ff-only "$PULSE_DELIVERY_ADVANCE" >/dev/null || exit 1
 fi
 exec "$PULSE_REAL_GIT" "$@"
