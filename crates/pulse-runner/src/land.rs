@@ -2648,24 +2648,151 @@ pub(crate) fn land_job_context_with_registry(
     if state != "held" {
         clear_held_branch(s, &project.str("slug"), &job.str("branch"));
     }
-    if state == "missing"
-        && let Ok(conn) = s.conn()
-    {
-        crate::util::exec1(
-            &conn,
-            "UPDATE jobs SET branch = '' WHERE id = ?",
-            &[&job.str("id")],
+    let mut note = note;
+    if state == "missing" {
+        let outcome = forget_missing_branch(s, job, actor, now);
+        if !outcome.is_empty() {
+            note = format!("{note}; {outcome}");
+        }
+    }
+    LandResult { state, note }
+}
+
+/// Why a branch a lost run never copied back is re-queued.
+pub(crate) const UNDELIVERED_BRANCH_WHY: &str =
+    "branch never delivered: the runner stopped before copying the clone's commits";
+
+/// A done job whose branch is gone from the checkout. When the job's latest
+/// run was lost, the worker finished but its runner died before copying the
+/// clone's commits: the job goes back to the queue (up to `MAX_ATTEMPTS`
+/// leases) instead of reading "done" with nothing delivered. Any other
+/// missing branch gets a finding on the job's thread so the loss is seen.
+/// Either way the branch is forgotten with a `land.missing` event. Returns
+/// what happened, for the landing note.
+pub(crate) fn forget_missing_branch(
+    s: &pulse_store::Store,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+) -> String {
+    let Ok(conn) = s.conn() else {
+        return String::new();
+    };
+    let id = job.str("id");
+    let branch = job.str("branch");
+    let latest = crate::util::must_one(
+        &conn,
+        "SELECT id, status FROM runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        &[&id],
+    );
+    let lost = !latest.0.is_empty() && latest.str("status") == "lost";
+    let current = crate::util::must_one(&conn, "SELECT * FROM jobs WHERE id = ?", &[&id]);
+    let attempts = if current.0.is_empty() {
+        job.int("attempts")
+    } else {
+        current.int("attempts")
+    };
+    let (outcome, said) = if !lost {
+        ("posted", post_missing_branch_finding(s, job, actor, now))
+    } else if attempts < crate::run::MAX_ATTEMPTS {
+        let _ = crate::jobs::finish_job(
+            s,
+            id.clone(),
+            actor.to_string(),
+            "queued".into(),
+            format!("requeued: {UNDELIVERED_BRANCH_WHY}"),
+            String::new(),
+            -1,
         );
         crate::util::event_at(
             &conn,
             now,
             actor,
-            "land.missing",
-            &job.str("branch"),
-            serde_json::json!({"job": job.str("id")}),
+            "job.requeue",
+            &id,
+            serde_json::Value::String(UNDELIVERED_BRANCH_WHY.into()),
         );
+        (
+            "requeued",
+            format!("job {id} requeued: {UNDELIVERED_BRANCH_WHY}"),
+        )
+    } else {
+        let result = format!("failed: {UNDELIVERED_BRANCH_WHY}, after {attempts} attempts");
+        let _ = crate::jobs::finish_job(
+            s,
+            id.clone(),
+            actor.to_string(),
+            "failed".into(),
+            result.clone(),
+            String::new(),
+            -1,
+        );
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "job.failed",
+            &id,
+            serde_json::Value::String(result),
+        );
+        post_missing_branch_finding(s, job, actor, now);
+        (
+            "failed",
+            format!("job {id} failed: {UNDELIVERED_BRANCH_WHY}"),
+        )
+    };
+    crate::util::exec1(&conn, "UPDATE jobs SET branch = '' WHERE id = ?", &[&id]);
+    crate::util::event_at(
+        &conn,
+        now,
+        actor,
+        "land.missing",
+        &branch,
+        serde_json::json!({"job": id, "run": latest.str("id"), "outcome": outcome}),
+    );
+    said
+}
+
+/// Says on the job's thread that its branch is gone, so the lead and the
+/// owner see the loss instead of a job that reads "done" with nothing landed.
+fn post_missing_branch_finding(
+    s: &pulse_store::Store,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+) -> String {
+    let id = job.str("id");
+    let branch = job.str("branch");
+    let body = format!(
+        "Job `{id}` ({}) finished with branch `{branch}`, but the branch is not in the project's checkout, so nothing of it can land. The job is no longer pending a landing.\n\nIf the work is still wanted, re-queue it: `pulse job retry {id} --as-new`.\n",
+        job.str("title")
+    );
+    match crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "finding".into(),
+            project: job.str("project"),
+            area: "jobs".into(),
+            thread: id.clone(),
+            summary: crate::util::trunc(
+                &format!("branch never landed: {branch} is missing from the checkout"),
+                230,
+            ),
+            body,
+            agent: crate::board::actor_agent(s, actor.to_string()),
+            ..Default::default()
+        },
+    ) {
+        Ok(_) => format!("finding posted on jobs/{id}"),
+        Err(e) => {
+            eprintln!(
+                "land: job {id}: branch {branch} missing; finding not posted: {}",
+                crate::run::err_message(&e)
+            );
+            String::new()
+        }
     }
-    LandResult { state, note }
 }
 
 pub(crate) fn branch_exists(root: String, branch: String) -> (bool, String) {
@@ -5015,6 +5142,154 @@ mod tests {
         assert!(
             exists && why.is_empty(),
             "eligible artifact missing: {exists} {why}"
+        );
+    }
+
+    /// A done job with a missing branch, its checkout readable, and its latest
+    /// run in the given status: returns the store, the project and the job id.
+    fn done_job_with_missing_branch(
+        run_status: &str,
+    ) -> (test_helpers::TestStore, crate::util::Row, String) {
+        let s = test_helpers::new_store();
+        let (proj, _dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "undelivered work".into(),
+            "do it".into(),
+            1,
+            30,
+            "src-undelivered".into(),
+            "aurora".into(),
+            true,
+        )
+        .unwrap();
+        let id = job.str("id");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, attempts = 1, branch = ? WHERE id = ?",
+            &[&TEST_NOW, &format!("pulse/aurora/{id}"), &id],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status) VALUES ('run-undelivered', ?, 'aurora', 'proj', ?, ?, ?)",
+            &[&id, &TEST_NOW, &TEST_NOW, &run_status],
+        );
+        (s, proj, id)
+    }
+
+    #[test]
+    fn missing_branch_of_a_lost_run_requeues_the_job() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, proj, id) = done_job_with_missing_branch("lost");
+        let res = super::land_pending(&s, proj.clone(), "daemon", TEST_NOW, true, 0, false);
+        assert_eq!(res.len(), 1, "{res:?}");
+        assert_eq!(res[0].state, "missing");
+        assert!(res[0].note.contains("requeued"), "note {}", res[0].note);
+        let job = job_row(&s, &id);
+        assert_eq!(job.str("status"), "queued");
+        assert_eq!(job.str("branch"), "");
+        assert!(
+            job.str("result").contains(super::UNDELIVERED_BRANCH_WHY),
+            "result {}",
+            job.str("result")
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'job.requeue' AND subject = ? AND detail LIKE ?",
+                &[
+                    &id,
+                    &"%branch never delivered: the runner stopped before copying the clone's commits%"
+                ],
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.missing'",
+                &[]
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding'",
+                &[]
+            ),
+            0,
+            "a requeued job needs no finding"
+        );
+        assert!(super::pending_landings(&s.conn().unwrap(), "proj").is_empty());
+
+        // Out of attempts, the same loss fails the job and says so on its thread.
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', attempts = ?, branch = ? WHERE id = ?",
+            &[
+                &crate::run::MAX_ATTEMPTS,
+                &format!("pulse/aurora/{id}"),
+                &id,
+            ],
+        );
+        let res = super::land_pending(&s, proj, "daemon", TEST_NOW, true, 0, false);
+        assert_eq!(res.len(), 1, "{res:?}");
+        assert_eq!(job_row(&s, &id).str("status"), "failed");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'jobs' AND thread = ?",
+                &[&pulse_board::normalize_thread(&id)],
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_branch_of_a_finished_run_posts_a_finding() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, proj, id) = done_job_with_missing_branch("done");
+        let res = super::land_pending(&s, proj, "daemon", TEST_NOW, true, 0, false);
+        assert_eq!(res.len(), 1, "{res:?}");
+        assert_eq!(res[0].state, "missing");
+        assert!(
+            res[0].note.contains("finding posted"),
+            "note {}",
+            res[0].note
+        );
+        let job = job_row(&s, &id);
+        assert_eq!(job.str("status"), "done", "only a lost run is re-queued");
+        assert_eq!(job.str("branch"), "");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'job.requeue'",
+                &[]
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND area = 'jobs' AND thread = ? AND summary LIKE 'branch never landed:%'",
+                &[&pulse_board::normalize_thread(&id)],
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.missing'",
+                &[]
+            ),
+            1
         );
     }
 
