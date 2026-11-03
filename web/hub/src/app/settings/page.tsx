@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRightIcon, CirclePauseIcon, GaugeIcon, MonitorIcon, PlugIcon, SearchIcon, ServerIcon, SettingsIcon, SlidersHorizontalIcon, SparklesIcon, TerminalIcon, UserRoundIcon } from "lucide-react";
+import { BellIcon, ChevronRightIcon, CirclePauseIcon, GaugeIcon, MonitorIcon, PlugIcon, SearchIcon, ServerIcon, SettingsIcon, SlidersHorizontalIcon, SparklesIcon, TerminalIcon, UserRoundIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SectionHeading } from "@/components/pulse/item-card";
@@ -9,6 +9,7 @@ import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/comp
 import { RunningStrip } from "@/components/settings/running";
 import { CredentialRow } from "@/components/settings/credential";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
+import { NotificationsCard } from "@/components/settings/notifications";
 import { PauseCard, SettingRow } from "@/components/settings/setting-row";
 import type { Setting, SettingsPayload } from "@/lib/api";
 import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
@@ -38,11 +39,11 @@ interface Group {
   strip?: () => React.ReactNode;
 }
 
-// The sections, in the order the owner needs them: the brake, you, the
-// harness, then the caps (Limits), machines, self-improvement, this machine
+// The sections, in the order the owner needs them: the brake, you, your
+// notifications, the harness, then the caps (Limits), machines, self-improvement, this machine
 // and the advanced provider addresses. Keys the store knows that no section
 // claims fall into "Other", so a new cap the runner learns never disappears
-// from the owner's view. Anchors (#stop #owner #harness #runner #compute
+// from the owner's view. Anchors (#stop #owner #notify #harness #runner #compute
 // #evolve #daemon #provider #other) are linked from other pages.
 const RUNNER_CLUSTERS: Cluster[] = [
   { title: "How much work runs", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
@@ -148,6 +149,7 @@ const OTHER: Group = { id: "other", title: "Other", note: "Settings this page do
 const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "stop", title: "Pause all work", icon: CirclePauseIcon },
   { id: "owner", title: "You", icon: UserRoundIcon },
+  { id: "notify", title: "Notifications", icon: BellIcon },
   { id: "harness", title: "Harness", icon: TerminalIcon },
   { id: "runner", title: "Limits", icon: GaugeIcon },
   { id: "compute", title: "Machines", icon: ServerIcon },
@@ -160,6 +162,10 @@ const ICON: Record<string, Icon> = Object.fromEntries(NAV.map((n) => [n.id, n.ic
 
 // What the Harness section answers to in the search box besides its own
 // settings (matched like every other row): the card's headings and words.
+// The same for the Notifications card, which keeps its choices in this
+// browser rather than in PULSE's settings.
+const NOTIFY_WORDS = "notifications notify notification alerts alert sound chime bell desktop browser mac question waits for you finished done reply";
+
 const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in github microsoft entra tenant device code copilot token api key openai anthropic claude gemini google azure openrouter groq mistral deepseek xai grok together fireworks cerebras ollama lmstudio vllm model models model provider limits per run run mode and transcript size built-in native copilot cli credits cost system prompt preview context window 1m million tokens reasoning effort thinking";
 
 // Mirrors ModelSettings, ComputeSettings, EvolveSettings and DaemonSettings in the store (crates/pulse-store).
@@ -459,16 +465,17 @@ export default function SettingsPage() {
   const harnessRows = HARNESS_SETTING_KEYS.map((k) => everything.find((s) => s.name === k)).filter((s): s is Setting => !!s);
   const harnessHits = harnessRows.filter(match).length;
   const harnessShown = !needle || harnessHits > 0 || HARNESS_WORDS.includes(needle);
+  const notifyShown = !needle || NOTIFY_WORDS.includes(needle);
   // The kill switch has its own card at the top, so it leaves the Limits section.
   const killShown = !!stop && (match(stop) || "pause stop kill switch emergency brake resume".includes(needle));
   const base = groups.map(({ g, rows }) => ({ g, rows: rows.filter((s) => (!stop || s.name !== "stop") && awake(s)) }));
   const total = base.reduce((n, x) => n + x.rows.length, 0) + (stop ? 1 : 0) + harnessRows.length;
   const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
   const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0) + harnessHits;
-  const present = new Set<string>(["harness", ...groups.map((x) => x.g.id), ...(stop ? ["stop"] : [])]);
+  const present = new Set<string>(["harness", "notify", ...groups.map((x) => x.g.id), ...(stop ? ["stop"] : [])]);
   const hits: Record<string, number> = { ...Object.fromEntries(shown.map((x) => [x.g.id, x.rows.length])), harness: harnessHits };
   const navItems = NAV.filter((n) => present.has(n.id)).map((n) => {
-    const hit = n.id === "stop" ? killShown : n.id === "harness" ? harnessShown : !!hits[n.id];
+    const hit = n.id === "stop" ? killShown : n.id === "harness" ? harnessShown : n.id === "notify" ? notifyShown : !!hits[n.id];
     return { ...n, hit, count: needle && n.id !== "stop" && hit && hits[n.id] ? hits[n.id] : undefined };
   });
   const order = navItems.filter((n) => n.hit).map((n) => n.id).join(" ");
@@ -549,12 +556,12 @@ export default function SettingsPage() {
         </div>
         <p id="settings-search-hint" className="text-[13px] text-muted-foreground" aria-live="polite">
           {needle ? (
-            matched || !harnessShown ? (
+            matched || (!harnessShown && !notifyShown) ? (
               <span className="tnum">
                 {matched} of {total} settings match
               </span>
             ) : (
-              "No single setting matches, but the Harness section does."
+              "No single setting matches, but the " + [notifyShown ? "Notifications" : "", harnessShown ? "Harness" : ""].filter(Boolean).join(" and ") + (notifyShown && harnessShown ? " sections do." : " section does.")
             )
           ) : (
             "Search by name, by what it does, or by its key."
@@ -591,6 +598,12 @@ export default function SettingsPage() {
               </Section>
             ))}
 
+          {notifyShown ? (
+            <Section id="notify" title="Notifications" note="Hear about it when something waits for you, or when a task or conversation finishes. For this browser only.">
+              <NotificationsCard />
+            </Section>
+          ) : null}
+
           {harnessShown ? (
             <Section id="harness" title="Harness" note="Sign-in, models and limits for agent runs." count={needle && harnessHits ? harnessHits + " of " + harnessRows.length : undefined}>
               <HarnessSettingsCard />
@@ -607,7 +620,7 @@ export default function SettingsPage() {
               </Section>
             ))}
 
-          {needle && !matched && !harnessShown ? (
+          {needle && !matched && !harnessShown && !notifyShown ? (
             <EmptyState
               icon={<SearchIcon className="size-[18px]" />}
               title={<>No setting matches &ldquo;{find.trim()}&rdquo;</>}

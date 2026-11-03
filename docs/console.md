@@ -59,6 +59,8 @@ clears the planner's failed-gate and owner-review stops on the daemon's next
 tick, and a yes clears an instruction-shaped stop too. The same cards sit on
 the project's **For you** tab, and the **Self-improvement** tab puts the
 buttons next to the planning reason when the loop waits on one.
+[Notifications](#notifications) can tell you, with a sound, the moment a
+new one arrives.
 
 The two private held-out fixtures that open a project's self-improvement loop
 need no step of yours: the daemon writes them itself, sealed (one model call
@@ -677,6 +679,49 @@ project's lead decide board proposals with its best judgement - see [When the ow
 is away](recovery.md#when-the-owner-is-away)). Secret-shaped values are stored but
 never echoed; the held-out evaluator directory is owner-private and is masked
 in every agent-facing view and event.
+
+### Notifications
+
+**Settings → Notifications** (`/settings/#notify`) has three switches, all
+off until you turn them on:
+
+- **When something waits for you**: every item **For you** counts (a
+  proposed decision, a proposal, a question only you can answer or a
+  loop stop, a compute request, suggested work the agents could not settle,
+  a drafted constitution or evaluators, a gate step), a task whose lead waits
+  for your reply, and a conversation whose agent asks you something or asks
+  to run a tool.
+- **When a task or conversation finishes**: a task done, a conversation its
+  agent finished, and an agent's reply that ended its turn. A sub-conversation
+  reports to its parent, not to you; a conversation you closed yourself and
+  the conversation or task you are looking at stay quiet.
+- **Play a sound**: a short two-note chime the page makes itself (no sound
+  file). Browsers start sound only after a click or a key press on the page,
+  so the chime waits for your first one after a reload; until then the
+  browser's own notification sound stands in. **Play the sound** tries it.
+
+While the console tab is in front, a note appears at the bottom right with
+**Open**; in the background the browser shows a notification, and a click
+opens the page it is about (the conversation, the task, the project's **For
+you** tab, the record, **Machines**). Turning a switch on asks the browser
+for permission; a browser that blocks the console still gets the note on the
+page and the chime, and the card says how to allow it. More than three things
+at once become one notification ("5 things wait for you").
+
+The choices and what has been told live in this browser's localStorage
+(`pulse.notify`, `pulse.notify.seen`), not in PULSE's settings: another
+browser, or another person on the console, decides for itself, and nothing
+reaches agents. Each thing notifies once - by its id (a question's post, a
+conversation's pending question, a task's latest lead message, a
+conversation's turn count), kept across reloads and shared by every tab, with
+one tab at a time doing the telling. Turning notifications on starts from
+now: what already waits is taken as seen, never replayed. They come only
+while a console tab is open: a hidden tab checks the few lists it needs every
+30 seconds while notifications are on (browsers slow a background tab's
+timers to about once a minute). The rules are in
+`web/hub/src/lib/owner-notify.ts` (tested in `owner-notify.test.mjs`); the
+shell's `OwnerNotifier` delivers them. In [the Mac app](mac-app.md) they are
+Mac notifications.
 
 ## Automations
 

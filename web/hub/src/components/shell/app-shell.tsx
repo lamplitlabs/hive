@@ -51,6 +51,7 @@ import { AwakeStatus, AwakeTheme } from "./awake";
 import { useSidebarCollapsed } from "./use-sidebar";
 import { sidebarToggleLabel } from "./sidebar-state";
 import { RailTip } from "./rail-tip";
+import { OwnerNotifier } from "./owner-notifier";
 
 type NavItem = {
   href: string;
@@ -621,6 +622,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <AskHost />
         <DocumentTitle />
         <AwakeTheme />
+        <OwnerNotifier />
       </Suspense>
       <a
         href="#main"

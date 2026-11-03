@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     let supervisor = HubSupervisor(world: LiveWorld())
     let downloads = Downloads()
+    /// The console's notifications, shown as Mac notifications.
+    let notifications = Notifications()
     private(set) var windows: [ConsoleWindowController] = []
     private let defaults = UserDefaults.standard
     /// `-EphemeralRun YES` (scripts/check.sh): remember nothing, and keep the
@@ -31,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Fonts.register()
         NSApp.mainMenu = MainMenu.build()
         NSWindow.allowsAutomaticWindowTabbing = true
+        // Before launch finishes, so a click on a notification that starts
+        // PULSE finds its page.
+        notifications.open = { [weak self] path in self?.openFromNotification(path) }
+        notifications.start()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -106,6 +112,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     // MARK: - Windows
+
+    /// A click on one of the console's notifications: its page in the window
+    /// in front (or the first one, or a new one), PULSE in front.
+    func openFromNotification(_ path: String) {
+        let target = windows.first(where: { $0.window?.isKeyWindow == true })
+            ?? windows.first(where: { $0.window?.isVisible == true })
+            ?? windows.first
+        if let target {
+            target.showWindow(nil)
+            target.navigate(to: path)
+        } else {
+            openWindow(path: path)
+        }
+        if #available(macOS 14, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
 
     @discardableResult
     func openWindow(path: String? = nil, url: URL? = nil, tabbedWith host: ConsoleWindowController? = nil, background: Bool = false) -> ConsoleWindowController {

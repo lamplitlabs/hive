@@ -127,8 +127,11 @@ export function inboxBreakdown(items: InboxItems, empty = "nothing waits"): stri
 }
 
 // Every path below is shared through useApi's cache, so a second caller on
-// the same screen costs no extra request.
-export function useInbox(): Inbox {
+// the same screen costs no extra request. The owner's notifications
+// (components/shell/owner-notifier.tsx) read the sources too: an item only
+// counts as news once the source it comes from has loaded.
+
+export function useInboxSources(): InboxSources {
   const org = useApi<Org>("org");
   const proposed = useApi<RecordsPayload>("records?kind=adr&status=Proposed", { refresh: 60000 });
   const reg = useApi<ProjectsPayload>("projects", { refresh: 60000 });
@@ -137,5 +140,10 @@ export function useInbox(): Inbox {
   const runner = useApi<Runner>("runner");
   const service = useApi<ServicePayload>("service", { refresh: 60000 });
   const settings = useApi<SettingsPayload>("settings");
-  return useMemo(() => buildInbox({ org, proposed, reg, compute, suggested, runner, service, settings }), [org, proposed, reg, compute, suggested, runner, service, settings]);
+  return useMemo(() => ({ org, proposed, reg, compute, suggested, runner, service, settings }), [org, proposed, reg, compute, suggested, runner, service, settings]);
+}
+
+export function useInbox(): Inbox {
+  const sources = useInboxSources();
+  return useMemo(() => buildInbox(sources), [sources]);
 }

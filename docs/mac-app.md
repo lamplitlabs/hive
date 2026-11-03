@@ -95,6 +95,21 @@ log under `io.github.manishtiwari25.pulse` (`/usr/bin/log show --predicate
 log. There is no Dock badge for the **For you** count yet: that count is
 worked out in the page, which stops refreshing while its window is hidden.
 
+The console's notifications ([Settings → Notifications](console.md#notifications))
+are Mac notifications in the app: the page decides what is news and hands
+it to the app (the `pulseNotify` message handler, which answers only the
+console's own origin in the main frame), and the app posts it through
+Notification Center with the Mac's notification sound. macOS asks once,
+when you turn a switch on, whether PULSE may notify you; **System Settings →
+Notifications → PULSE** decides after that, and the card in the console says
+what macOS allows. A click opens the page it is about in the window in front
+and brings PULSE forward. While a PULSE window has focus the page shows its
+own note and the app adds only the sound. When macOS does not let PULSE
+notify, the page plays its own chime instead. A copy run outside PULSE.app
+(`swift run`) has no bundle for Notification Center, so it only gets the
+notes on the page. The request's parsing (and the rule that a click only
+opens a console path) is `PulseKit/Notify.swift`, tested in `NotifyTests`.
+
 `build.sh` signs ad hoc with a requirement every build meets (`designated =>
 identifier "io.github.manishtiwari25.pulse"`), the idea pulse's own signature
 follows (ADR-035), so macOS keeps the app's answers across rebuilds, and it

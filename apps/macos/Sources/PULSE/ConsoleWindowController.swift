@@ -7,7 +7,7 @@ import os
 /// with a native screen over it only while the console cannot be shown.
 @MainActor
 final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation,
-    WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply {
     let webView: ConsoleWebView
     /// The web page beside the console (BrowserPane), hidden until a link asks for it.
     let beside: BrowserPane
@@ -81,6 +81,11 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
 
         configuration.userContentController.add(
             WeakScriptHandler(self), contentWorld: PageBridge.world, name: PageBridge.handlerName
+        )
+        // The console's notifier (web/hub/src/components/shell/owner-notifier.tsx)
+        // posts from the page's own world; only the console's main frame is heard.
+        configuration.userContentController.addScriptMessageHandler(
+            WeakReplyHandler(self), contentWorld: .page, name: NotifyRequest.handlerName
         )
         setUpWindow(window)
         setUpWebView()
@@ -666,6 +671,31 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
             log.notice("the page is \(chrome.visible ? "visible" : "hidden", privacy: .public)")
         }
         apply(chrome)
+    }
+
+    /// The page's notifier: what macOS allows, and a notification to show.
+    /// Only the console's own page in the main frame; anything else is refused.
+    func userContentController(
+        _ controller: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void
+    ) {
+        guard message.frameInfo.isMainFrame, let policy,
+              let origin = Self.url(of: message.frameInfo.securityOrigin), policy.isConsole(origin) else {
+            replyHandler(nil, "not the console")
+            return
+        }
+        guard let request = NotifyRequest(message.body) else {
+            replyHandler(nil, "not a notification request")
+            return
+        }
+        switch request {
+        case .permission(let ask):
+            Task { @MainActor in replyHandler(await self.app.notifications.permission(ask: ask), nil) }
+        case .notify(let note):
+            app.notifications.post(note)
+            replyHandler(true, nil)
+        }
     }
 
     private func apply(_ chrome: PageChrome) {
