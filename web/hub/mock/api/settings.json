@@ -981,6 +981,117 @@
       "value": "0.03"
     },
     {
+      "choices": [
+        "fixtures",
+        "variants"
+      ],
+      "default": "fixtures",
+      "description": "what the self-improvement loop evolves (ADR-049): fixtures keeps the measured experiment loop on product cards, as before; variants evolves the agent program instead - overlays of agent specs, skills, instructions and allowlisted settings canary on a share of real task and improve jobs, the store's own records of kept landings, tokens, failures and owner interventions are their fitness, and a sequential test promotes or retires them; every variant path is off under fixtures",
+      "kind": "choice",
+      "min": null,
+      "name": "evolve.mode",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "fixtures"
+    },
+    {
+      "choices": null,
+      "default": "20",
+      "description": "percent of the trials on a project with live canary variants that the router hands to a canary instead of the incumbent, under evolve.mode=variants; 0 routes every job to the incumbent",
+      "kind": "count",
+      "min": 0,
+      "name": "evolve.canary_share",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "20"
+    },
+    {
+      "choices": null,
+      "default": "3",
+      "description": "live canary variants one project (an island) may carry at once under evolve.mode=variants; 0 lets none canary",
+      "kind": "count",
+      "min": 0,
+      "name": "evolve.canaries_per_island",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": null,
+      "default": "7",
+      "description": "days after a landing before it counts as kept: a landed commit no later commit on the default branch has reverted by then is kept, the primary fitness of a variant (kept landings per million tokens); the revert scan looks back twice this far",
+      "kind": "count",
+      "min": 1,
+      "name": "evolve.keep_days",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "7"
+    },
+    {
+      "choices": null,
+      "default": "10",
+      "description": "percent, relative, by which a variant may worsen a guard - failed-job rate, owner interventions per kept landing, verify flake rate - against the incumbent before it cannot be promoted, and a replay worse than the incumbent's by more than this retires it",
+      "kind": "count",
+      "min": 0,
+      "name": "evolve.guard_margin",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "10"
+    },
+    {
+      "choices": null,
+      "default": "40",
+      "description": "trials with a known kept status a canary variant needs before the promotion test may promote or retire it",
+      "kind": "count",
+      "min": 1,
+      "name": "evolve.min_trials",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "40"
+    },
+    {
+      "choices": null,
+      "default": "0.95",
+      "description": "posterior probability, between 0 and 1, that a canary's kept landings per million tokens beat the incumbent's before it is promoted, such as 0.95",
+      "kind": "decimal",
+      "min": null,
+      "name": "evolve.promote_confidence",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "0.95"
+    },
+    {
+      "choices": null,
+      "default": "20",
+      "description": "recorded past trials of a project a new variant replays in throwaway clones (verify, no merge) before it may canary, scored against the incumbent's replay of the same set; 0 skips replay",
+      "kind": "count",
+      "min": 0,
+      "name": "evolve.replay_set",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "20"
+    },
+    {
+      "choices": null,
+      "default": "5",
+      "description": "trials on one project failing for the same cause within 7 days before the daemon queues a job that proposes a variant to fix it, under evolve.mode=variants",
+      "kind": "count",
+      "min": 1,
+      "name": "evolve.trigger_failures",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "5"
+    },
+    {
       "choices": null,
       "default": "1024",
       "description": "megabytes an executor's workdir filesystem must have free for its probe to pass; under it the probe note says `under N free on <workdir>` and the hand takes no job until space returns; 0 turns the check off",

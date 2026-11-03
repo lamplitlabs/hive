@@ -69,4 +69,12 @@ pub const RUNNER_COLUMNS: &[Column] = &[
         name: r####"work_mb"####,
         ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
     },
+    // ADR-049: the agent-program variant a run ran under (a `variants.id`);
+    // empty while `evolve.mode=fixtures`, which is every run until the owner
+    // turns variants on.
+    Column {
+        table: r####"runs"####,
+        name: r####"variant"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
 ];

@@ -15,7 +15,7 @@ function actionTone(a: string): Tone {
   if (a === "mention" || a === "post.question" || a === "post.handoff") return "warn";
   if (a === "hook.failed") return "bad";
   if (a === "land.pushed" || a === "land.landed") return "ok";
-  if (a === "land.held") return "warn";
+  if (a === "land.held" || a === "land.reverted") return "warn";
   // Housekeeping: a run's own cleanup, a worker retiring once its run is over
   // and the daemon's sweep are routine, not failures.
   if (a === "agent.cleanup" || a === "agent.retire" || a === "daemon.sweep" || a.endsWith(".swept")) return "neutral";
@@ -76,6 +76,7 @@ const VERB: Record<string, string> = {
   "land.landed": "merged finished work",
   "land.pushed": "pushed merged work",
   "land.held": "held back a merge",
+  "land.reverted": "saw merged work reverted",
   "hook.failed": "had a check fail",
   "project.add": "added the project",
   "project.removed": "removed the project",
