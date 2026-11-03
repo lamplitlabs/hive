@@ -1516,14 +1516,18 @@ mod tests {
                 rusqlite::params![repo, s.now()],
             )
             .unwrap();
+        // The brain is a project like any other: the console removes it the
+        // same way (the flag only tells the daemon where self-update builds).
         let (status, result) = http::additions_request(
             h.clone(),
             "POST",
             "/api/v1/projects/brain/remove",
-            r#"{"dry_run":false}"#,
+            r#"{"dry_run":true}"#,
         );
-        assert_eq!(status, 400);
-        assert!(result["error"].as_str().unwrap().contains("brain"));
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["kind"], "project");
+        assert_eq!(result["dry_run"], true);
+        assert_eq!(result["applied"], false);
         let (status, _) = raw_request(
             h.clone(),
             "POST",

@@ -2486,16 +2486,6 @@ async function handle(req, res) {
           store: "/home/owner/.pulse/pulse.sqlite",
         });
       }
-      if (p.brain)
-        return fail(
-          res,
-          400,
-          "Refusing to remove " +
-            p.slug +
-            ": the brain is the framework checkout; deactivate with pulse settings, not remove",
-          "the brain holds the constitution, the guide and the framework's own board",
-          "pulse settings set stop 1  (pauses every runner)",
-        );
       if (p.status !== "active")
         return fail(
           res,

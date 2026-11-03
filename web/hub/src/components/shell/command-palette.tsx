@@ -391,9 +391,7 @@ export function CommandPaletteHost() {
                     <CommandShortcut className={shortcutStyle}>
                       {p.slug === org?.commons?.slug
                         ? "Shared board"
-                        : p.brain
-                          ? "PULSE itself"
-                          : "Project"}
+                        : "Project"}
                     </CommandShortcut>
                   </CommandItem>
                 ))}

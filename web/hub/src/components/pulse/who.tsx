@@ -127,15 +127,10 @@ export function AuthorBadge({ author }: { author: string }) {
   );
 }
 
-export function ProjectLink({ slug, brain, className }: { slug: string; brain?: boolean; className?: string }) {
+export function ProjectLink({ slug, className }: { slug: string; className?: string }) {
   return (
     <Link href={hrefs.project(slug)} className={cn("inline-flex items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline", className)}>
       {slug}
-      {brain ? (
-        <Badge variant="secondary" className="h-4 px-1.5 text-[10.5px]" title="PULSE's own source code">
-          PULSE
-        </Badge>
-      ) : null}
     </Link>
   );
 }

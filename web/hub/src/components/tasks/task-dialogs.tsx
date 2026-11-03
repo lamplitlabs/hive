@@ -97,7 +97,6 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
                     {projects.map((p) => (
                       <SelectItem key={p.slug} value={p.slug}>
                         {p.slug}
-                        {p.brain ? " (PULSE's own source)" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>

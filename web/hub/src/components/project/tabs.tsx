@@ -934,7 +934,7 @@ export function NoticesTab({ slug }: { slug: string }) {
                 rows={n.ballot}
                 rowKey={(b) => b.slug}
                 columns={[
-                  { key: "slug", label: "Project", render: (b) => <ProjectLink slug={b.slug} brain={b.brain} /> },
+                  { key: "slug", label: "Project", render: (b) => <ProjectLink slug={b.slug} /> },
                   { key: "suggestions", label: "Suggestions", align: "right", render: (b) => num(b.suggestions) },
                   { key: "amendments", label: "Rule changes", align: "right", render: (b) => num(b.amendments) },
                   { key: "proposals", label: "Proposals", align: "right", render: (b) => num(b.proposals) },
