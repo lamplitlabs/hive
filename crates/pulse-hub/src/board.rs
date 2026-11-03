@@ -576,6 +576,12 @@ impl crate::server::Handler {
                 d.meta.insert(k, v);
             }
         }
+        // The project's id and the name the owner gave it (the folder name
+        // until `pulse init --name` or the console's Rename), so a view built
+        // from the snapshot alone can still name the project.
+        d.meta.insert("slug".into(), json!(p.slug));
+        d.meta
+            .insert("name".into(), json!(crate::read::project_name(&p, &d.meta)));
         Ok(d)
     }
 
@@ -1031,16 +1037,25 @@ impl BoardData {
             .filter(|a| !str_key(a, "status").starts_with("closed:"))
             .count() as i64;
         let proposals = count_status(&self.proposals, &["awaiting"]);
-        let name = str_key(&self.meta, "repo_name");
+        let slug = str_key(&self.meta, "slug");
+        let name = str_key(&self.meta, "name");
+        let (slug, name) = match (slug.is_empty(), name.is_empty()) {
+            (false, false) => (slug, name),
+            (false, true) => (slug.clone(), slug),
+            _ => {
+                let repo = str_key(&self.meta, "repo_name");
+                (repo.clone(), repo)
+            }
+        };
         object(
             "ballot votes_open proposals_awaiting brain brains commons_present commons_base commons_questions",
             vec![
                 json!([object(
                     "slug base name brain suggestions amendments proposals",
                     vec![
-                        json!(name),
+                        json!(slug),
                         json!(""),
-                        json!(str_key(&self.meta, "repo_name")),
+                        json!(name),
                         json!(false),
                         json!(suggestions),
                         json!(amendments),

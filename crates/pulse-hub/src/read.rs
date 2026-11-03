@@ -10,6 +10,26 @@ use std::sync::Arc;
 
 pub(crate) type JsonMap = BTreeMap<String, Value>;
 
+/// The name a project row shows: the display name the owner gave it
+/// (`pulse init --name`, the console's Rename), falling back to the checkout
+/// folder's name the snapshot recorded, then the slug. The store row is read
+/// first so a rename shows at once, whatever the snapshot said.
+pub(crate) fn project_name(p: &pulse_store::Project, meta: &JsonMap) -> String {
+    let own = p.name.trim();
+    if !own.is_empty() {
+        return own.to_string();
+    }
+    let repo = meta
+        .get("repo_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !repo.is_empty() {
+        return repo.to_string();
+    }
+    p.slug.clone()
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectView {
     pub(crate) project: pulse_store::Project,
@@ -503,13 +523,14 @@ impl Handler {
         };
         let Some(d) = &view.data else {
             return object(
-                "slug kind brain base path present missing error",
+                "slug kind brain base path name present missing error",
                 vec![
                     json!(p.slug),
                     json!(kind),
                     json!(p.brain),
                     json!(base_for(&p.slug)),
                     json!(p.path),
+                    json!(project_name(p, &JsonMap::new())),
                     json!(false),
                     json!(!view.present),
                     json!(view.error),
@@ -591,7 +612,7 @@ impl Handler {
                 json!(base_for(&p.slug)),
                 json!(p.path),
                 json!(p.remote),
-                d.meta.get("repo_name").cloned().unwrap_or(Value::Null),
+                json!(project_name(p, &d.meta)),
                 d.meta.get("branch").cloned().unwrap_or(Value::Null),
                 d.meta.get("head").cloned().unwrap_or(Value::Null),
                 json!(str_map(&d.meta, "dirty") == "1"),

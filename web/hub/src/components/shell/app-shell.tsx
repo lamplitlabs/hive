@@ -40,7 +40,7 @@ import {
 import { cn } from "@/lib/utils";
 import { hrefs } from "@/lib/nav";
 import { useApi, useEventStream } from "@/lib/use-api";
-import { COMMONS_HINT, type Org } from "@/lib/api";
+import { COMMONS_HINT, projectLabel, type Org } from "@/lib/api";
 import { useInbox } from "@/components/pulse/inbox";
 import { ProjectMascot } from "@/components/pulse/mascots";
 import { AskHost, AskTrigger } from "@/components/ask/ask-panel";
@@ -356,22 +356,23 @@ function SidebarProjects() {
         {projects.map((p) => {
           const forYou = inbox.forProject(p.slug).total;
           const active = current === p.slug;
-          const missing = p.present ? "" : p.slug + " is missing on disk";
+          const label = projectLabel(p);
+          const missing = p.present ? "" : label + " is missing on disk";
           return (
             <li key={p.slug}>
               <RailTip
-                label={p.slug}
-                hint={missing || undefined}
+                label={label}
+                hint={missing || (label !== p.slug ? p.slug : undefined)}
               >
                 <Link
                   href={hrefs.project(p.slug)}
                   aria-current={active ? "page" : undefined}
                   className={cn(row, focusRing, active && on)}
-                  title={collapsed ? undefined : missing || p.slug}
+                  title={collapsed ? undefined : missing || (label !== p.slug ? label + " (" + p.slug + ")" : p.slug)}
                 >
                   <ProjectDot slug={p.slug} />
                   <span className={cn("min-w-0 flex-1 truncate", railName)}>
-                    {p.slug}
+                    {label}
                   </span>
                   {!p.present ? (
                     <span
@@ -434,7 +435,7 @@ function DocumentTitle() {
   const name = slug
     ? slug === data?.commons?.slug
       ? "Shared board"
-      : slug
+      : projectLabel(data?.projects.find((p) => p.slug === slug) ?? { slug })
     : pathname.startsWith("/code-deliveries")
       ? "Code delivered"
       : page && page.href !== "/"
@@ -465,7 +466,9 @@ function ProjectMenu() {
   const currentLabel =
     current && current === commons?.slug
       ? "Shared board"
-      : current || "Projects";
+      : current
+        ? projectLabel(projects.find((p) => p.slug === current) ?? { slug: current })
+        : "Projects";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -531,9 +534,10 @@ function ProjectMenu() {
             <Link
               href={hrefs.project(p.slug)}
               aria-current={current === p.slug ? "page" : undefined}
+              title={projectLabel(p) !== p.slug ? p.slug : undefined}
             >
               <ProjectDot slug={p.slug} />
-              <span className="min-w-0 flex-1 truncate">{p.slug}</span>
+              <span className="min-w-0 flex-1 truncate">{projectLabel(p)}</span>
               {!p.present ? (
                 <span className="text-xs text-bad">missing</span>
               ) : null}

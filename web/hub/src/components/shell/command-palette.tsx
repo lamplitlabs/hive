@@ -48,7 +48,7 @@ import { hrefs, PROJECT_TABS, type ProjectCanonicalTab } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
 import { recordKindWord } from "@/lib/words";
 import { cn } from "@/lib/utils";
-import type { Org, RecordsPayload, TasksPayload } from "@/lib/api";
+import { projectLabel, type Org, type RecordsPayload, type TasksPayload } from "@/lib/api";
 
 const itemIcon = "size-4 text-muted-foreground";
 const groupStyle =
@@ -377,7 +377,7 @@ export function CommandPaletteHost() {
                 {projects.map((p) => (
                   <CommandItem
                     key={p.slug}
-                    value={"project " + p.slug}
+                    value={"project " + p.slug + " " + projectLabel(p)}
                     keywords={
                       p.slug === org?.commons?.slug
                         ? ["commons", "shared board"]
@@ -387,11 +387,15 @@ export function CommandPaletteHost() {
                     onSelect={() => go(hrefs.project(p.slug))}
                   >
                     <FolderIcon aria-hidden="true" className={itemIcon} />{" "}
-                    <span className="truncate">{p.slug}</span>
+                    <span className="truncate">
+                      {p.slug === org?.commons?.slug ? p.slug : projectLabel(p)}
+                    </span>
                     <CommandShortcut className={shortcutStyle}>
                       {p.slug === org?.commons?.slug
                         ? "Shared board"
-                        : "Project"}
+                        : projectLabel(p) !== p.slug
+                          ? p.slug
+                          : "Project"}
                     </CommandShortcut>
                   </CommandItem>
                 ))}
@@ -404,7 +408,7 @@ export function CommandPaletteHost() {
                     return (
                       <CommandItem
                         key={p.slug + t.id}
-                        value={p.slug + " " + t.label}
+                        value={p.slug + " " + projectLabel(p) + " " + t.label}
                         className={itemStyle}
                         onSelect={() => go(hrefs.project(p.slug, t.id))}
                       >
@@ -412,7 +416,7 @@ export function CommandPaletteHost() {
                         <span className="truncate">
                           {(p.slug === org?.commons?.slug
                             ? "Shared board"
-                            : p.slug) +
+                            : projectLabel(p)) +
                             ": " +
                             t.label}
                         </span>

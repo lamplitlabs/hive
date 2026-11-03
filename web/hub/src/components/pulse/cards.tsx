@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { firstSentence, plural, rel, sentence, statusTone, truncate } from "@/lib/format";
 import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
-import { COMMONS_HINT, evolveGate, taskProgress, writes, type Claim, type EvolveGate, type OwnerQuestion, type PostRef, type ProjectCardData, type Proposal, type Task, type TaskWorker } from "@/lib/api";
+import { COMMONS_HINT, evolveGate, projectLabel, taskProgress, writes, type Claim, type EvolveGate, type OwnerQuestion, type PostRef, type ProjectCardData, type Proposal, type Task, type TaskWorker } from "@/lib/api";
 import { gateStep, type GateStep } from "./evolve";
 import { askTitle, decisionLabels } from "@/lib/owner-questions";
 
@@ -36,14 +36,17 @@ export function ProjectCard({ p, spark, gate, forYou: forYouCount }: { p: Projec
   const last = p.last_post?.date || p.built_at;
   const status = projectStatus(p, step, forYou);
   const facts = [plural(p.agents, "agent"), plural(p.threads_open, "open thread"), last ? "Active " + rel(last) : "No activity yet"];
+  // The name the owner gave the project leads; its slug - the id in every
+  // link, job and post - stands under it once the two differ.
+  const label = projectLabel(p);
   return (
-    <ItemCard href={hrefs.project(p.slug)} highlight={forYou > 0} ariaLabel={"Project " + p.slug + ": " + status.line} className="@container/project gap-3.5">
+    <ItemCard href={hrefs.project(p.slug)} highlight={forYou > 0} ariaLabel={"Project " + label + ": " + status.line} className="@container/project gap-3.5">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <ProjectAvatar slug={p.slug} />
           <div className="min-w-0 flex-1">
-            <h3 title={p.slug} className="truncate text-[17px] font-semibold leading-tight tracking-tight">{p.slug}</h3>
-            <p className="mt-0.5 truncate text-[13px] text-muted-foreground">{p.name && p.name !== p.slug ? p.name : "Software project"}</p>
+            <h3 title={label !== p.slug ? label + " (" + p.slug + ")" : p.slug} className="truncate text-[17px] font-semibold leading-tight tracking-tight">{label}</h3>
+            <p className="mt-0.5 truncate text-[13px] text-muted-foreground">{label !== p.slug ? <span className="font-mono text-[12.5px]">{p.slug}</span> : "Software project"}</p>
           </div>
         </div>
         <ChevronRightIcon className="mt-2.5 size-4 shrink-0 text-muted-foreground opacity-60 transition-[transform,opacity] group-hover/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />

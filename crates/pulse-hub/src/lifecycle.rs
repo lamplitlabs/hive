@@ -812,6 +812,27 @@ mod tests {
         let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/projects", "");
         assert_eq!(status, 200);
         assert_eq!(result["projects"][0]["name"], "Distillery (prod)");
+        // The console's cards, project page and notices read the org view
+        // and the snapshot, not the project list: the new name is there too,
+        // at once, with the old folder name nowhere.
+        let (status, org) = http::additions_request(h.clone(), "GET", "/api/v1/org", "");
+        assert_eq!(status, 200, "org: {org:?}");
+        let card = org["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["slug"] == slug)
+            .expect("the renamed project is on the org view");
+        assert_eq!(card["name"], "Distillery (prod)", "{card:?}");
+        let (status, notices) = http::additions_request(
+            h.clone(),
+            "GET",
+            &format!("/api/v1/projects/{slug}/notices"),
+            "",
+        );
+        assert_eq!(status, 200, "notices: {notices:?}");
+        assert_eq!(notices["ballot"][0]["slug"], slug);
+        assert_eq!(notices["ballot"][0]["name"], "Distillery (prod)");
         let noted: i64 = s
             .conn()
             .unwrap()

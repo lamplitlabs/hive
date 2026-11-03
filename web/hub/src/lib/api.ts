@@ -139,6 +139,13 @@ export function allProjects(o: Org | undefined | null): ProjectCardData[] {
   return [...(o.projects ?? []), ...(o.commons ? [o.commons] : [])];
 }
 
+// What the console calls a project: the name the owner gave it (Rename,
+// `pulse init --name`), else its slug. The slug stays the id in every link.
+export function projectLabel(p: { slug: string; name?: string | null }): string {
+  const name = (p.name || "").trim();
+  return name || p.slug;
+}
+
 export function query(
   params: Record<string, string | number | undefined | null>,
 ): string {
