@@ -104,9 +104,9 @@ const GROUPS: Group[] = [
     id: "evolve",
     title: "Self-improvement",
     note: "Experiments where agents try changes and keep the ones that score better on tests. Your private tests stay hidden from agents.",
-    keys: ["evolve.loop", "evolve.heldout", "evolve.tolerance", "evolve.limits", "evolve.heldout_dir", "evolve.draft_hours"],
+    keys: ["evolve.mode", "evolve.loop", "evolve.heldout", "evolve.tolerance", "evolve.limits", "evolve.heldout_dir", "evolve.draft_hours"],
     match: (n) => n.startsWith("evolve.") || n.startsWith("baseline.") || n.startsWith("lane."),
-    primary: ["evolve.loop", "evolve.heldout", "evolve.tolerance"],
+    primary: ["evolve.mode", "evolve.loop", "evolve.heldout", "evolve.tolerance"],
   },
   {
     id: "daemon",

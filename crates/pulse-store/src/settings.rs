@@ -204,7 +204,7 @@ pub static COMPUTE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
     m
 });
 pub static EVOLVE_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.heal"=>"on","evolve.flat_wait_hours"=>"24","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
+    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.heal"=>"on","evolve.flat_wait_hours"=>"24","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","evolve.mode"=>"fixtures","evolve.canary_share"=>"20","evolve.canaries_per_island"=>"3","evolve.keep_days"=>"7","evolve.guard_margin"=>"10","evolve.min_trials"=>"40","evolve.promote_confidence"=>"0.95","evolve.replay_set"=>"20","evolve.trigger_failures"=>"5","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
 );
 pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -221,6 +221,15 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "evolve.baseline_ttl_hours"=>("count",Some(0),[],None,"hours an experiment lane may reuse a measured default-branch baseline for the same commit and fixture hash; 0 means cached baselines never expire"),
         "evolve.parent_rate"=>("decimal",None,[],Some(1.0),"share of experiments the planner builds on an archived variant (a discarded branch's patch, chosen by its lineage's productivity) instead of the default branch; 0 keeps every experiment on the default branch, 1 always builds on the archive when it has a candidate"),
         "evolve.outcome_hours"=>("count",Some(1),[],None,"hours after a landing that changed the improver's own crates before the daemon measures its outcome - landings per worker-hour, first pass, lead time across all projects - against the same window before it, and posts the delta as a result on the landing's thread"),
+        "evolve.mode"=>("choice",None,["fixtures","variants"],None,"what the self-improvement loop evolves (ADR-049): fixtures keeps the measured experiment loop on product cards, as before; variants evolves the agent program instead - overlays of agent specs, skills, instructions and allowlisted settings canary on a share of real task and improve jobs, the store's own records of kept landings, tokens, failures and owner interventions are their fitness, and a sequential test promotes or retires them; every variant path is off under fixtures"),
+        "evolve.canary_share"=>("count",Some(0),[],Some(100.0),"percent of the trials on a project with live canary variants that the router hands to a canary instead of the incumbent, under evolve.mode=variants; 0 routes every job to the incumbent"),
+        "evolve.canaries_per_island"=>("count",Some(0),[],None,"live canary variants one project (an island) may carry at once under evolve.mode=variants; 0 lets none canary"),
+        "evolve.keep_days"=>("count",Some(1),[],None,"days after a landing before it counts as kept: a landed commit no later commit on the default branch has reverted by then is kept, the primary fitness of a variant (kept landings per million tokens); the revert scan looks back twice this far"),
+        "evolve.guard_margin"=>("count",Some(0),[],Some(100.0),"percent, relative, by which a variant may worsen a guard - failed-job rate, owner interventions per kept landing, verify flake rate - against the incumbent before it cannot be promoted, and a replay worse than the incumbent's by more than this retires it"),
+        "evolve.min_trials"=>("count",Some(1),[],None,"trials with a known kept status a canary variant needs before the promotion test may promote or retire it"),
+        "evolve.promote_confidence"=>("decimal",None,[],Some(1.0),"posterior probability, between 0 and 1, that a canary's kept landings per million tokens beat the incumbent's before it is promoted, such as 0.95"),
+        "evolve.replay_set"=>("count",Some(0),[],None,"recorded past trials of a project a new variant replays in throwaway clones (verify, no merge) before it may canary, scored against the incumbent's replay of the same set; 0 skips replay"),
+        "evolve.trigger_failures"=>("count",Some(1),[],None,"trials on one project failing for the same cause within 7 days before the daemon queues a job that proposes a variant to fix it, under evolve.mode=variants"),
         "lane.retry_minutes"=>("count",Some(1),[],None,"minutes the experiment lane waits before retrying a failed or deferred measured experiment"),
         "lane.short_retry_minutes"=>("count",Some(1),[],None,"minutes the experiment lane waits before retrying a transient lane failure, lock or STOP hold"),
         "baseline.retry_hours"=>("count",Some(1),[],None,"hours the daemon waits before planning another baseline measurement after a failed non-transient baseline job"),
@@ -334,6 +343,10 @@ pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(
     }
 });
 pub const NONE_WORDS: &[&str] = &["none", "off", "unlimited"];
+/// Count settings that are a percent: their rule's max is enforced. (Other
+/// count rules carry a max as documentation only, and enforcing it there
+/// would refuse values stores already hold.)
+const PERCENT_SETTINGS: &[&str] = &["evolve.canary_share", "evolve.guard_margin"];
 
 pub fn default_settings() -> BTreeMap<String, String> {
     DEFAULT_SETTINGS.clone()
@@ -395,7 +408,39 @@ fn rule_sorted_keys(m: &BTreeMap<String, SettingRule>) -> Vec<String> {
     m.keys().cloned().collect()
 }
 
+/// The per-project incumbent pointer of the agent-program loop (ADR-049):
+/// `evolve.incumbent.<slug>` names the variant every job of that project runs
+/// unless the router picks a canary; unset or empty means `base`, the empty
+/// overlay. It is a family keyed by project like `project.goal.<slug>`, so it
+/// is not in the listed catalogue; promotion and rollback move it.
+pub const INCUMBENT_PREFIX: &str = "evolve.incumbent.";
+/// The variant a project runs while its incumbent pointer is unset.
+pub const BASE_VARIANT: &str = "base";
+/// The incumbent pointer setting of `slug`.
+pub fn incumbent_setting(slug: &str) -> String {
+    format!("{INCUMBENT_PREFIX}{slug}")
+}
+static INCUMBENT_SLUG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9._-]{0,127}$").unwrap());
+static VARIANT_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$").unwrap());
+fn incumbent_rule(name: &str) -> Option<SettingRule> {
+    let slug = name.strip_prefix(INCUMBENT_PREFIX)?;
+    INCUMBENT_SLUG.is_match(slug).then(|| {
+        SettingRule::new(
+            "variant",
+            None,
+            &[],
+            None,
+            "the variant of the agent program this project's jobs run unless the router picks a canary (ADR-049); empty means base, the empty overlay; promotion and rollback move it",
+        )
+    })
+}
+
 fn known_setting(name: &str) -> Option<SettingRule> {
+    if let Some(rule) = incumbent_rule(name) {
+        return Some(rule);
+    }
     if DEFAULT_SETTINGS.contains_key(name) {
         Some(
             SETTING_RULES
@@ -547,9 +592,14 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
                 py_repr(name),
                 rule_sorted_keys(&HARNESS_RULES).join(", ")
             )
+        } else if name.starts_with(INCUMBENT_PREFIX) {
+            format!(
+                "Unknown setting {}. The incumbent pointer is {INCUMBENT_PREFIX}<project slug>, the slug in lower case",
+                py_repr(name)
+            )
         } else if name.starts_with("evolve.") {
             format!(
-                "Unknown setting {}. Evolve settings: {}",
+                "Unknown setting {}. Evolve settings: {}, {INCUMBENT_PREFIX}<project slug>",
                 py_repr(name),
                 evolve_setting_names().join(", ")
             )
@@ -620,6 +670,12 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
                 return Err(input_err(format!(
                     "{name} must be at least {}, not {n}",
                     rule.min
+                )));
+            }
+            if PERCENT_SETTINGS.contains(&name) && rule.has_max && n as f64 > rule.max {
+                return Err(input_err(format!(
+                    "{name} is a percent: it cannot exceed {}, not {n}",
+                    trim_float(rule.max)
                 )));
             }
             if name == "evolve.flat_cycles" && n == 1 {
@@ -693,6 +749,16 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
                 Err(input_err(format!(
                     "{name} takes one of {}, not {}",
                     choices.join(", "),
+                    py_repr(text)
+                )))
+            }
+        }
+        "variant" => {
+            if text.is_empty() || VARIANT_ID.is_match(text) {
+                Ok(text.into())
+            } else {
+                Err(input_err(format!(
+                    "{name} takes a variant id such as base or one `pulse evolve variant list` shows, or empty for base; not {}",
                     py_repr(text)
                 )))
             }

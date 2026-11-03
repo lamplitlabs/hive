@@ -28,6 +28,7 @@ pub mod skills;
 pub mod store;
 pub mod task_source;
 pub mod tasks_ddl;
+pub mod variants;
 
 pub use chat::*;
 pub use chat_ddl::CHAT_DDL;
@@ -53,6 +54,7 @@ pub use skills::*;
 pub use store::*;
 pub use task_source::{TASK_SOURCE_PREFIX, task_source_clause, task_source_id, task_source_params};
 pub use tasks_ddl::{COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASK_COLUMNS, TASKS_DDL};
+pub use variants::*;
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

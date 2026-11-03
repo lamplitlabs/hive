@@ -6,7 +6,8 @@
 //! Its registry row and every row it left - posts, jobs, runs, briefs, decisions,
 //! records with their revisions and drafts, harness sessions with their steps,
 //! tasks, messages, schedules, compute requests and machines, the evolution
-//! tables, hooks and their deliveries, its owner goal, the ledger events about
+//! tables, its island of variant outcomes and its incumbent pointer, hooks and
+//! their deliveries, its owner goal, the ledger events about
 //! those rows and, when nothing outside the project names it, its lead agent -
 //! go in one transaction, children before the rows they refer to, and one
 //! `project.forgotten` event records what went. The delete guards on the tables
@@ -105,7 +106,13 @@ const CASCADE: &[(&str, &str)] = &[
     ("evolution_baselines", "project = ?1"),
     ("evolution_fleets", "project = ?1"),
     ("evolution_cycle_leases", "project = ?1"),
-    ("settings", "name = 'project.goal.' || ?1"),
+    // A variant belongs to no one project (its scope is a list), so it stays;
+    // the project's island of outcomes and its incumbent pointer go.
+    ("variant_outcomes", "island = ?1"),
+    (
+        "settings",
+        "name = 'project.goal.' || ?1 OR name = 'evolve.incumbent.' || ?1",
+    ),
     (
         "meta",
         "?2 != '' AND key IN ('agent-beat:' || ?2, 'agent-heartbeat:' || ?2)",
@@ -576,6 +583,18 @@ mod tests {
             &[&slug, &NOW],
         );
         x(
+            "INSERT OR IGNORE INTO variants (id, project_scope, hypothesis, state, created_at) VALUES ('base', '[]', 'the empty overlay', 'promoted', ?)",
+            &[&NOW],
+        );
+        x(
+            "INSERT INTO variant_outcomes (variant, island, kind, trials, computed_at) VALUES ('base', ?, 'task', 3, ?)",
+            &[&slug, &NOW],
+        );
+        x(
+            "INSERT INTO settings (name, value, updated_at) VALUES ('evolve.incumbent.' || ?, 'base', ?)",
+            &[&slug, &NOW],
+        );
+        x(
             "INSERT INTO hooks (event, kind, target, project, created_by, created_at) VALUES ('post.*', 'script', '/bin/true', ?, 'tester', ?)",
             &[&slug, &NOW],
         );
@@ -654,6 +673,8 @@ mod tests {
             let want = match t.table.as_str() {
                 // the project lead and the role lead
                 "posts" | "meta" | "agents" => 2,
+                // the owner goal and the incumbent pointer
+                "settings" => 2,
                 // the project, its lead and one per row seeded with an event
                 "events" => 16,
                 _ => 1,
