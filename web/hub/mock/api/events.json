@@ -1229,6 +1229,14 @@
         "project": "demo-app",
         "title": "Answer the open governance question"
       }
+    },
+    {
+      "id": 144,
+      "at": "2026-09-01T21:50:00Z",
+      "actor": "daemon",
+      "action": "agent.retire",
+      "subject": "basalt",
+      "detail": "retired after its run; workers are not kept idle"
     }
   ]
 }

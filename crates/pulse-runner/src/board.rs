@@ -260,6 +260,18 @@ pub(crate) fn prune_agents(
     pulse_board::prune_agents(s, &now, days as i64, &actor, dry_run)
 }
 
+/// Retires the workers whose work is over (`pulse_board::retire_idle_workers`):
+/// a worker is not kept idle once its run ends. `keep` names the workers the
+/// daemon still supervises or is about to dispatch.
+pub(crate) fn retire_idle_workers(
+    s: &pulse_store::Store,
+    now: &str,
+    actor: &str,
+    keep: &[String],
+) -> anyhow::Result<Vec<String>> {
+    pulse_board::retire_idle_workers(s, now, actor, keep)
+}
+
 pub(crate) fn actor_agent(s: &pulse_store::Store, name: String) -> Option<Box<pulse_store::Agent>> {
     if let Ok(Some(a)) = s.agent(&name) {
         return Some(Box::new(a));

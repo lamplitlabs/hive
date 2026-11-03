@@ -14,6 +14,7 @@ import { EmptyState, ErrorNotice, PageTitle, Panel, SkeletonPage } from "@/compo
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Avatar, ProjectLink, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
 import type { AgentPresence, RosterRow, Runner } from "@/lib/api";
+import { prunedText, prunedWord, workersLine } from "@/lib/agents";
 import { num, plural, rel, truncate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
@@ -115,6 +116,7 @@ const PRESENCE: Record<AgentPresence, { word: string; tone: "ok" | "info" | "bad
   dead: { word: "Offline", tone: "bad", dot: "bg-bad" },
   unknown: { word: "Not checked in", tone: "neutral", dot: "bg-muted-foreground/50" },
   legacy: { word: "Older identity", tone: "neutral", dot: "bg-muted-foreground/50" },
+  // A pruned row reads "Retired" when its run ended (lib/agents.ts prunedWord).
   pruned: { word: "Removed", tone: "neutral", dot: "bg-muted-foreground/50" },
 };
 
@@ -159,18 +161,15 @@ function checkInText(g: AgentGroup, now: number): string {
   return g.presence === "online" ? "Checked in " + when : "Last check-in " + when;
 }
 
-// "no useful output since … (limit 14 days)" reads "Removed after 14 days without useful output".
-function prunedText(reason: string): string {
-  const days = /limit\s+(\d+)\s+days?/i.exec(reason);
-  if (days && /useful/i.test(reason)) return "Removed after " + days[1] + " days without useful output";
-  return "Removed: " + reason;
-}
-
+// "no useful output since … (limit 14 days)" reads "Removed after 14 days
+// without useful output"; a worker retired when its run ended reads "Retired
+// after its run" (lib/agents.ts). A pruned row's badge says which it was.
 function PresenceBadge({ g }: { g: AgentGroup }) {
   const p = PRESENCE[g.presence] ?? PRESENCE.unknown;
+  const word = g.presence === "pruned" ? prunedWord(g.primary.pruned_reason) : p.word;
   return (
     <ToneBadge dot tone={p.tone} title={g.presence_reason}>
-      {p.word}
+      {word}
     </ToneBadge>
   );
 }
@@ -319,9 +318,10 @@ function AgentCard({ g, now }: { g: AgentGroup; now: number }) {
   const name = p.agent || p.name || g.agent;
   const human = isHuman(g);
   const presence = PRESENCE[g.presence] ?? PRESENCE.unknown;
+  const presenceWord = g.presence === "pruned" ? prunedWord(p.pruned_reason) : presence.word;
   const useful = g.last_useful_at ? ago(g.last_useful_at, now) : "";
   return (
-    <ItemCard ariaLabel={(human ? "You" : name) + ", " + presence.word.toLowerCase()} className="min-w-0">
+    <ItemCard ariaLabel={(human ? "You" : name) + ", " + presenceWord.toLowerCase()} className="min-w-0">
       <div className="flex min-w-0 items-start gap-3">
         <span className="relative shrink-0">
           <Avatar seed={name} size={40} human={human} />
@@ -403,7 +403,8 @@ export default function AgentsPage() {
   const runs = r?.available ? (r.jobs.cap ? num(r.jobs.runs_today) + " of " + plural(r.jobs.cap, "run") + " used today." : plural(r.jobs.runs_today, "run") + " today, no daily limit.") : "";
   const offline = rows.filter((g) => g.presence === "dead").length;
   const failed = rows.reduce((a, g) => a + g.jobs_failed, 0);
-  const pool = r?.available && r.workers?.pool ? plural(r.workers.pool, "worker") + " in the pool, " + num(r.workers.idle) + " idle." : "";
+  // Workers live for one run; the sentence counts the ones that exist now.
+  const pool = workersLine(r);
   const summary = rows.length
     ? [plural(rows.length, "agent") + ": " + num(online) + " online" + (offline ? ", " + num(offline) + " offline" : "") + (leads ? ", " + plural(leads, "project lead") : "") + ".", failed ? plural(failed, "job") + " failed." : "", pool, runs].filter(Boolean).join(" ")
     : "";
@@ -431,7 +432,7 @@ export default function AgentsPage() {
             <SelectItem value="all">All statuses</SelectItem>
             {statuses.map((s) => (
               <SelectItem key={s} value={s}>
-                {PRESENCE[s].word}
+                {s === "pruned" ? "Retired or removed" : PRESENCE[s].word}
               </SelectItem>
             ))}
           </SelectContent>

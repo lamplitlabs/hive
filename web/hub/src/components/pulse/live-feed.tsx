@@ -16,8 +16,9 @@ function actionTone(a: string): Tone {
   if (a === "hook.failed") return "bad";
   if (a === "land.pushed" || a === "land.landed") return "ok";
   if (a === "land.held") return "warn";
-  // Housekeeping: a run's own cleanup and the daemon's sweep are routine, not failures.
-  if (a === "agent.cleanup" || a === "daemon.sweep" || a.endsWith(".swept")) return "neutral";
+  // Housekeeping: a run's own cleanup, a worker retiring once its run is over
+  // and the daemon's sweep are routine, not failures.
+  if (a === "agent.cleanup" || a === "agent.retire" || a === "daemon.sweep" || a.endsWith(".swept")) return "neutral";
   if (a === "post" || a.startsWith("post.")) return "neutral";
   if (/\.(fail|failed|stop|stopped|deny|denied|cancelled|removed|pruned)$/.test(a)) return "bad";
   if (/\.(add|added|create|created)$/.test(a)) return "ok";
@@ -83,6 +84,7 @@ const VERB: Record<string, string> = {
   "memory.remembered": "kept a memory for later runs",
   "memory.forgotten": "forgot a memory",
   "agent.cleanup": "cleaned up after a run",
+  "agent.retire": "retired a worker after its run",
   "daemon.sweep": "ran the runner's cleanup",
 };
 
@@ -130,6 +132,8 @@ function verb(e: StoreEvent): string {
     return "changed \u201c" + settingLabel(e.subject) + "\u201d" + (value && !hidden(value) ? " to " + value : "");
   }
   if (isMachine(a) && VERB[a] && e.subject) return VERB[a].replace(/a machine$/, "the machine " + e.subject);
+  // The subject is the worker's name: "retired the worker cinder after its run".
+  if (a === "agent.retire" && e.subject) return VERB[a].replace(/a worker/, "the worker " + e.subject);
   if (VERB[a]) return VERB[a];
   return a
     .replace(/[._-]+/g, " ")
@@ -174,7 +178,7 @@ function detailText(e: StoreEvent, project?: string): string {
 function subjectText(e: StoreEvent, project?: string): string {
   const s = (e.subject || "").trim();
   if (!s || s === project) return "";
-  if (e.action === "mention" || e.action === "decide" || e.action === "message.sent" || isSetting(e.action) || isMachine(e.action)) return "";
+  if (e.action === "mention" || e.action === "decide" || e.action === "message.sent" || e.action === "agent.retire" || isSetting(e.action) || isMachine(e.action)) return "";
   if (/^\d{8}T\d{6}Z/.test(s) || /^(job|msg)-/i.test(s) || /^[0-9a-f]{12,}$/i.test(s)) return "";
   return s;
 }

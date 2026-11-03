@@ -694,5 +694,62 @@
     "heartbeat_source": "",
     "heartbeat_age_seconds": null,
     "dead_after_seconds": 300
+  },
+  {
+    "agent": "basalt",
+    "name": "basalt",
+    "names": [
+      "basalt"
+    ],
+    "kind": "worker",
+    "status": "pruned",
+    "agent_status": "pruned",
+    "runner": "pulse",
+    "model": "gpt-6-astra",
+    "session": "",
+    "sessions": [
+      "run-basalt"
+    ],
+    "session_count": 1,
+    "jobs_done": 1,
+    "jobs_failed": 0,
+    "posts": 1,
+    "store_posts": 1,
+    "votes": 0,
+    "claims": 0,
+    "questions": 0,
+    "answers": 0,
+    "first_seen": "2026-09-06T08:00:00Z",
+    "last_seen": "2026-09-06T08:40:00Z",
+    "last_useful_at": "2026-09-06T08:40:00Z",
+    "pruned_at": "2026-09-06T08:41:00Z",
+    "pruned_reason": "retired after its run; workers are not kept idle",
+    "projects": [
+      "demo-app"
+    ],
+    "active_claims": [],
+    "days_since": 1,
+    "approximate": false,
+    "name_shared": false,
+    "shared_with": [],
+    "current_job": "",
+    "current_job_kind": "",
+    "current_job_title": "",
+    "current_thread": "",
+    "executor": "",
+    "focus_since": "",
+    "current_task": "",
+    "current_task_title": "",
+    "current_project": "",
+    "current_source": "",
+    "presence": "pruned",
+    "presence_reason": "no supervised heartbeat evidence",
+    "presence_checked_at": "2026-09-07T09:00:00.000Z",
+    "presence_session": "",
+    "last_heartbeat_at": "",
+    "presence_expires_at": "",
+    "heartbeat_source": "",
+    "heartbeat_age_seconds": null,
+    "dead_after_seconds": 300
   }
 ]

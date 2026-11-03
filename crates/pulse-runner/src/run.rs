@@ -3091,6 +3091,13 @@ pub(crate) fn cast_result_votes(
     cast
 }
 
+/// The worker a job runs as: the `--agent` name when given; else a free
+/// active worker - the holder of held work waiting in the queue first, then
+/// the one that leased least recently - and when none is free, a fresh name
+/// from `spawn_agent`. Workers are not kept in a pool: a worker whose run is
+/// over retires (`pulse_board::retire_idle_workers`, each daemon tick), so a
+/// free one here is a worker between its dispatch and its run, a holder
+/// waiting for its held work, or a worker joined by hand.
 pub(crate) fn pick_worker(
     s: &pulse_store::Store,
     _now: &str,
@@ -3102,23 +3109,9 @@ pub(crate) fn pick_worker(
             .map(|a| a.name)
             .unwrap_or_default());
     }
-    let mut pool = crate::util::setting_int(s, "quorum") + 1;
-    if pool < 1 {
-        pool = 1;
-    }
     let runner = pulse_store::HARNESS_RUNNER.to_string();
     let model = s.setting("worker_model", "");
     let c = conn(s);
-    let mut active = crate::util::must_one(
-        &c,
-        "SELECT COUNT(*) AS n FROM agents a WHERE a.status = 'active' AND a.kind = 'worker'",
-        &[],
-    )
-    .int("n");
-    while active < pool {
-        crate::board::spawn_agent(s, runner.clone(), model.clone(), "worker".into())?;
-        active += 1;
-    }
     let mut q = format!(
         "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker' AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.lease_agent = a.name AND {}) ",
         crate::jobs::OCCUPIED_JOB_SQL

@@ -15,7 +15,7 @@ export function rosterScenarios(rows, at, returned = true, focus = null) {
     presence_expires_at: state === "online" ? stamp(offset + 300_000) : "",
   });
   const baseFocus = { current_task: "", current_task_title: "", current_project: "", current_source: "" };
-  const result = rows.filter((r) => r.agent !== "granite" && !(r.agent === "delta" && r.session === "run-delta-current")).map((r) => {
+  const result = rows.filter((r) => r.agent !== "granite" && r.agent !== "basalt" && !(r.agent === "delta" && r.session === "run-delta-current")).map((r) => {
     const base = { ...baseFocus, ...r, ...observation("unknown"), session: "", sessions: r.sessions || [] };
     switch (r.agent) {
       case "aurora":
@@ -62,6 +62,19 @@ export function rosterScenarios(rows, at, returned = true, focus = null) {
     first_seen: "2026-08-01T00:00:00Z", last_seen: "2026-08-20T00:00:00Z", last_useful_at: "2026-08-20T00:00:00Z",
     pruned_at: "2026-09-07T09:00:00Z", pruned_reason: "no useful output since 2026-08-20T00:00:00Z (limit 14 days)",
     projects: ["demo-app"], active_claims: [], days_since: 18, approximate: false, name_shared: false, shared_with: [],
+    current_job: "", current_job_kind: "", current_job_title: "", current_thread: "", executor: "", focus_since: "",
+    current_task: "", current_task_title: "", current_project: "", current_source: "",
+    ...observation("pruned"),
+  });
+  // A worker retired the moment its run ended (pulse_board::RETIRE_REASON):
+  // workers are not kept idle, so its row stays in History under "Retired".
+  result.push({
+    agent: "basalt", name: "basalt", names: ["basalt"], kind: "worker", status: "pruned", agent_status: "pruned",
+    runner: "pulse", model: "gpt-6-astra", session: "", sessions: ["run-basalt"], session_count: 1,
+    jobs_done: 1, jobs_failed: 0, posts: 1, store_posts: 1, votes: 0, claims: 0, questions: 0, answers: 0,
+    first_seen: "2026-09-06T08:00:00Z", last_seen: "2026-09-06T08:40:00Z", last_useful_at: "2026-09-06T08:40:00Z",
+    pruned_at: "2026-09-06T08:41:00Z", pruned_reason: "retired after its run; workers are not kept idle",
+    projects: ["demo-app"], active_claims: [], days_since: 1, approximate: false, name_shared: false, shared_with: [],
     current_job: "", current_job_kind: "", current_job_title: "", current_thread: "", executor: "", focus_since: "",
     current_task: "", current_task_title: "", current_project: "", current_source: "",
     ...observation("pruned"),

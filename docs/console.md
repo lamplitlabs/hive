@@ -811,8 +811,10 @@ would answer and whether the provider is signed in.
 ## Agents
 
 The **Agents** roster defaults to **Live**: online agents (a heartbeat within
-`heartbeat.dead_after`, five minutes by default) and idle reusable
-workers/leads. **History** shows dead, unknown, legacy and pruned identities;
+`heartbeat.dead_after`, five minutes by default), leads and the workers
+between their dispatch and their run. **History** shows dead, unknown,
+legacy and pruned identities - every worker that ever ran is there, retired
+the tick its run ended, since workers are not kept idle;
 **All** restores the whole roster. Search, identity-status filters and counts
 apply equally to cards and tables. Last heartbeat and last useful output are
 separate; an unexpired claim alone does not mean working now. Each card and
