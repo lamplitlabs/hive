@@ -11,6 +11,7 @@ export type CanvasKind =
   | "terminal"
   | "file"
   | "page"
+  | "browser"
   | "plan"
   | "changes"
   | "diff"
@@ -24,10 +25,10 @@ export type CanvasKind =
   | "evidence";
 
 export interface CanvasTab {
-  /** `kind` alone, or `kind:key` for a file, a page, an artifact or a job's evidence. */
+  /** `kind` alone, or `kind:key` for a file, a page, a browser, an artifact or a job's evidence. */
   id: string;
   kind: CanvasKind;
-  /** The path, URL, query, artifact name or job id; empty for the one-of-a-kind tabs. */
+  /** The path, URL, query, artifact name or job id; empty for the one-of-a-kind tabs (and a blank browser). */
   key: string;
   label: string;
 }
@@ -38,6 +39,7 @@ export const WIDE_KINDS: ReadonlySet<CanvasKind> = new Set<CanvasKind>([
   "terminal",
   "file",
   "page",
+  "browser",
   "diff",
   "artifact",
   "evidence",
@@ -47,6 +49,7 @@ export const KIND_LABEL: Record<CanvasKind, string> = {
   terminal: "Terminal",
   file: "File",
   page: "Page",
+  browser: "Browser",
   plan: "Plan",
   changes: "Changes",
   diff: "All changes",
@@ -81,15 +84,30 @@ export function pageLabel(key: string): string {
   }
 }
 
+// "localhost:3000/settings" - the browser tab keeps the port, which is
+// what tells two dev servers apart.
+export function browserLabel(key: string): string {
+  if (!key) return KIND_LABEL.browser;
+  try {
+    const u = new URL(key);
+    const first = u.pathname.split("/").filter(Boolean)[0];
+    return first ? u.host + "/" + first : u.host;
+  } catch {
+    return key;
+  }
+}
+
 export function makeTab(kind: CanvasKind, key = ""): CanvasTab {
   const label =
     kind === "file"
       ? fileName(key)
       : kind === "page"
         ? pageLabel(key)
-        : kind === "artifact"
-          ? key
-          : KIND_LABEL[kind];
+        : kind === "browser"
+          ? browserLabel(key)
+          : kind === "artifact"
+            ? key
+            : KIND_LABEL[kind];
   return { id: tabId(kind, key), kind, key, label };
 }
 
@@ -138,6 +156,73 @@ export function browserPage(s: HarnessStep): string {
   } catch {
     return "";
   }
+}
+
+// ----- the live browser -------------------------------------------------------
+
+// A page the hub can show live in its Browser tab: one served from this
+// machine - the agent's dev server, a preview build - rather than a site on
+// the web, which rarely lets itself be framed and is the Page tab's to show
+// as text.
+const LOCAL_HOST_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[\w-]+\.local|[\w-]+\.localhost)$/i;
+
+export function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) && LOCAL_HOST_RE.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// The address the frame loads: 0.0.0.0 is where a server listens, not a
+// place a browser goes.
+export function browserAddress(url: string): string {
+  return url.replace(/^(https?:\/\/)0\.0\.0\.0(?=[:/]|$)/i, "$1localhost");
+}
+
+const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[\w-]+\.local(?:host)?)(?::\d+)?(?:\/[^\s"'<>)\]`]*)?/gi;
+// The words a server prints beside its address when it is up ("Local:",
+// "listening on", "ready", vite's arrow): a URL quoted in a test's output
+// or a JSON body has none of them.
+const SERVER_LINE_RE = /local:|listen|ready|running|serv|start|available|➜|→/i;
+
+// The address a dev server announced in a command's output, if one did.
+export function devServerUrl(text: string): string {
+  for (const line of text.split("\n")) {
+    if (!SERVER_LINE_RE.test(line)) continue;
+    const m = line.match(LOCAL_URL_RE);
+    if (m && m[0]) return browserAddress(m[0].replace(/[.,;:!?]+$/, ""));
+  }
+  return "";
+}
+
+// The live page a step points at: a browser tool sent to a local page, or
+// a command whose output announced a server. `prev` is the step before.
+export function stepBrowser(s: HarnessStep, prev: HarnessStep | null): string {
+  if (s.kind === "mcp") {
+    const p = browserPage(s);
+    return p && isLocalUrl(p) ? browserAddress(p) : "";
+  }
+  if (
+    s.kind === "observation" &&
+    prev &&
+    (prev.kind === "command" || prev.kind === "process") &&
+    (s.exit_code === null || s.exit_code === 0)
+  )
+    return devServerUrl(s.content || "");
+  return "";
+}
+
+// Local pages the run opened or served, newest first.
+export function localPages(steps: HarnessStep[]): string[] {
+  const out: string[] = [];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (!ownStep(steps[i])) continue;
+    const p = stepBrowser(steps[i], i > 0 ? steps[i - 1] : null);
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
 }
 
 // Edits and writes, newest first, one entry per path.
@@ -272,12 +357,14 @@ const FIRST_PAGES = 1;
 
 // Which tabs steps after `after` (a step number) open. Edits and writes
 // open the file, commands the terminal, fetches, searches and a browser
-// tool's navigations the page, a plan the plan; the newest such step is the
-// one brought to the front. On
-// the first pass over a run (`after` 0) only the last few files and pages
-// open, so an old run does not greet you with twenty tabs.
+// tool's navigations the page, a plan the plan; a browser tool sent to a
+// local page, or a dev server announcing itself in a command's output,
+// opens the live Browser; the newest such step is the one brought to the
+// front. On the first pass over a run (`after` 0) only the last few files
+// and pages open, so an old run does not greet you with twenty tabs.
 export function autoOpen(steps: HarnessStep[], after: number): AutoOpen {
-  const fresh = steps.filter((s) => s.n > after && ownStep(s));
+  const own = steps.filter(ownStep);
+  const fresh = own.filter((s) => s.n > after);
   const first = after === 0;
   const open: CanvasTab[] = [];
   let front: string | null = null;
@@ -289,7 +376,13 @@ export function autoOpen(steps: HarnessStep[], after: number): AutoOpen {
   for (let i = fresh.length - 1; i >= 0; i--) {
     const s = fresh[i];
     let tab: CanvasTab | null = null;
-    if (s.kind === "edit" || s.kind === "write") {
+    const live = stepBrowser(s, own[own.indexOf(s) - 1] ?? null);
+    if (live) {
+      const isNew = !open.some((o) => o.id === tabId("browser", live));
+      if (first && isNew && pages >= FIRST_PAGES) continue;
+      if (isNew) pages++;
+      tab = makeTab("browser", live);
+    } else if (s.kind === "edit" || s.kind === "write") {
       const p = stepPath(s);
       if (!p) continue;
       const isNew = !open.some((o) => o.id === tabId("file", p));

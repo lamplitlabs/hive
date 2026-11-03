@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addTabs, afterClose, autoOpen, browserPage, changedNewLines, editBlocks, extractLinks, fileName, latestPlanStep, linkLabel, makeTab, pageLabel, pageText, readPaths, stepPage, stepPath, tabId, terminalEntries, touchedFiles, visitedPages } from "./canvas.ts";
+import { addTabs, afterClose, autoOpen, browserAddress, browserLabel, browserPage, changedNewLines, devServerUrl, editBlocks, extractLinks, fileName, isLocalUrl, latestPlanStep, linkLabel, localPages, makeTab, pageLabel, pageText, readPaths, stepBrowser, stepPage, stepPath, tabId, terminalEntries, touchedFiles, visitedPages } from "./canvas.ts";
 
 let n = 0;
 const step = (kind, content, over = {}) => ({ n: ++n, at: "2026-10-27T10:0" + (n % 10) + ":00Z", kind, content, command: "", exit_code: null, duration_ms: 0, prompt_tokens: 0, completion_tokens: 0, model: "", ...over });
@@ -40,21 +40,76 @@ test("a browser tool's navigation is a page; its other calls are not", () => {
   assert.equal(stepPage(step("mcp", 'mcp__playwright__browser_navigate {"url":"https://x.org/a\\u0026b=1"}', { command: "mcp__playwright__browser_navigate" })), "https://x.org/a&b=1");
 });
 
-test("a browser tool's page opens as a tab with its snapshot behind it", () => {
+test("a browser tool's local page opens live in the Browser tab, a web page as a Page with its snapshot", () => {
   reset();
   const steps = [step("command", "npm run dev &", { command: "npm run dev &" }), step("observation", "started"), navigate("http://127.0.0.1:3000/"), step("observation", "- Page URL: http://127.0.0.1:3000/\n- Page Title: Blog\n- Page Snapshot:\n```yaml\n- heading \"Hello\"\n```", { exit_code: 0 })];
   const opened = autoOpen(steps, 0);
   assert.deepEqual(
     opened.open.map((t) => t.id),
-    ["terminal", "page:http://127.0.0.1:3000/"],
+    ["terminal", "browser:http://127.0.0.1:3000/"],
   );
-  assert.equal(opened.front, "page:http://127.0.0.1:3000/");
+  assert.equal(opened.front, "browser:http://127.0.0.1:3000/");
   assert.equal(makeTab("page", "http://127.0.0.1:3000/").label, "127.0.0.1");
+  assert.equal(makeTab("browser", "http://127.0.0.1:3000/").label, "127.0.0.1:3000");
+  assert.equal(makeTab("browser", "http://localhost:3000/settings/x").label, "localhost:3000/settings");
+  assert.equal(makeTab("browser").label, "Browser");
+  // The snapshot stays a page away in the Pages menu.
   assert.deepEqual(visitedPages(steps), ["http://127.0.0.1:3000/"]);
+  assert.deepEqual(localPages(steps), ["http://127.0.0.1:3000/"]);
   assert.equal(pageText(steps, "http://127.0.0.1:3000/").text, steps[3].content);
+  // A web page is not framed: it opens as a Page.
+  const web = autoOpen([navigate("https://docs.rs/reqwest/"), step("observation", "- Page URL: https://docs.rs/reqwest/", { exit_code: 0 })], 0);
+  assert.deepEqual(
+    web.open.map((t) => t.id),
+    ["page:https://docs.rs/reqwest/"],
+  );
   // A navigation that failed still shows what came back.
   const broken = [navigate("http://localhost:3123/"), step("observation", "mcp__playwright__browser_navigate: npx closed its stdin: Broken pipe", { exit_code: 1 })];
   assert.equal(pageText(broken, "http://localhost:3123/").exit_code, 1);
+});
+
+test("local addresses are the Browser tab's; 0.0.0.0 is where a server listens, not where a browser goes", () => {
+  for (const u of ["http://localhost:3000/", "http://127.0.0.1:8787/x", "http://[::1]:3000/", "http://0.0.0.0:5173/", "https://app.localhost/", "http://mymac.local:3000/"]) assert.equal(isLocalUrl(u), true, u);
+  for (const u of ["https://docs.rs/", "http://example.com/", "file:///etc/hosts", "not a url", "http://localhost.evil.com/"]) assert.equal(isLocalUrl(u), false, u);
+  assert.equal(browserAddress("http://0.0.0.0:5173/app"), "http://localhost:5173/app");
+  assert.equal(browserAddress("http://127.0.0.1:5173/"), "http://127.0.0.1:5173/");
+  assert.equal(browserLabel("http://0.0.0.0:5173/"), "0.0.0.0:5173");
+});
+
+test("a dev server announcing itself in a command's output opens the Browser tab", () => {
+  reset();
+  assert.equal(devServerUrl("\n  VITE v5.4.2  ready in 300 ms\n\n  \u279c  Local:   http://localhost:5173/\n  \u279c  Network: use --host"), "http://localhost:5173/");
+  assert.equal(devServerUrl("   \u25b2 Next.js 16.0.0\n   - Local:        http://localhost:3000\n   - Network:      http://192.168.1.4:3000"), "http://localhost:3000");
+  assert.equal(devServerUrl("Listening on http://0.0.0.0:8080"), "http://localhost:8080");
+  assert.equal(devServerUrl("Server running at http://127.0.0.1:8787/."), "http://127.0.0.1:8787/");
+  // A local URL quoted in passing - a test's fixture, an error - is not a server.
+  assert.equal(devServerUrl('assert.equal(url, "http://localhost:8765/chat/")'), "");
+  assert.equal(devServerUrl("curl: (7) Failed to connect to localhost port 3000"), "");
+  assert.equal(devServerUrl("PASS src/a.test.ts"), "");
+  // A web address is never one.
+  assert.equal(devServerUrl("Local: https://docs.rs/"), "");
+
+  const start = step("command", "npm run dev", { command: "npm run dev" });
+  const up = step("observation", "  \u279c  Local:   http://localhost:5173/", { exit_code: null });
+  assert.equal(stepBrowser(up, start), "http://localhost:5173/");
+  // The same words after a failed command, or without a command before them, open nothing.
+  assert.equal(stepBrowser(step("observation", "Local: http://localhost:5173/", { exit_code: 1 }), start), "");
+  assert.equal(stepBrowser(up, step("assistant", "hi")), "");
+  assert.equal(stepBrowser(up, null), "");
+
+  reset();
+  const steps = [step("command", "npm run dev", { command: "npm run dev" }), step("observation", "  \u279c  Local:   http://localhost:5173/", { exit_code: null }), step("edit", "src/App.tsx\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE")];
+  const opened = autoOpen(steps, 0);
+  assert.deepEqual(
+    opened.open.map((t) => t.id),
+    ["terminal", "browser:http://localhost:5173/", "file:src/App.tsx"],
+  );
+  assert.equal(opened.front, "file:src/App.tsx");
+  // Only the newest step counts for the front: the server coming up after the edit brings the browser forward.
+  const later = autoOpen([...steps, step("command", "npm run dev", { command: "npm run dev" }), step("observation", "Local: http://localhost:5173/", { exit_code: null })], 3);
+  assert.equal(later.front, "browser:http://localhost:5173/");
+  // A subagent's server is its own story.
+  assert.deepEqual(localPages([step("command", "npm run dev", { command: "npm run dev", depth: 1 }), step("observation", "Local: http://localhost:5173/", { depth: 1 })]), []);
 });
 
 test("labels: file names, page hosts, search queries", () => {

@@ -45,6 +45,7 @@ import {
   ShieldCheckIcon,
   ShieldQuestionIcon,
   SparklesIcon,
+  SquareDashedMousePointerIcon,
   UsersIcon,
   XIcon,
   ZapIcon,
@@ -178,6 +179,13 @@ import {
   type Mood,
 } from "@/components/chat/task-groups";
 import { makeTab } from "@/lib/canvas";
+import {
+  pickLabel,
+  pickPlace,
+  splitPicks,
+  withPicks,
+  type ElementPick,
+} from "@/lib/pick";
 import {
   ACTION_KINDS,
   beatsOf,
@@ -2278,6 +2286,24 @@ function ConversationBody({
     [d.messages, steps],
   );
 
+  // Pick & Polish: elements picked in the canvas's Browser tab wait in the
+  // composer as chips and go with the next message, so "make this teal"
+  // names exactly which this. The Browser tab can also put words into the
+  // composer (its ask for the pick helper); `asked.n` makes each ask new.
+  const [picks, setPicks] = useState<ElementPick[]>([]);
+  const [asked, setAsked] = useState({ text: "", n: 0 });
+  const pickSink = {
+    picks,
+    add: (p: ElementPick) =>
+      setPicks((cur) =>
+        cur.some((x) => x.url === p.url && x.selector === p.selector)
+          ? cur
+          : [...cur, p],
+      ),
+    remove: (key: string) =>
+      setPicks((cur) => cur.filter((x) => x.key !== key)),
+  };
+
   // Follow the transcript while the reader sits at the bottom; stop when
   // they scroll up to read something, like a terminal. A message just sent
   // counts too, so it comes into view at once.
@@ -2801,7 +2827,13 @@ function ConversationBody({
         disabled={archived}
         closed={closed}
         tools={tools}
-        onSent={(r, sent) => apply(r, sent)}
+        picks={picks}
+        onRemovePick={pickSink.remove}
+        insert={asked}
+        onSent={(r, sent) => {
+          setPicks([]);
+          apply(r, sent);
+        }}
       />
     </section>
   );
@@ -2818,8 +2850,11 @@ function ConversationBody({
       chatId={c.id}
       artifacts={d.artifacts}
       texts={texts}
+      picks={archived ? undefined : pickSink}
+      onAsk={(text) => setAsked((a) => ({ text, n: a.n + 1 }))}
       menu={[
         "terminal",
+        "browser",
         "plan",
         "changes",
         "artifacts",
@@ -2926,6 +2961,7 @@ function Transcript({
 // until the poll brings its row (then MessageRow takes over). Same bubble
 // as a user row; the line under it says the hub has it.
 function SentRow({ s, id }: { s: SentMessage; id: string }) {
+  const said = splitPicks(s.text);
   return (
     <li
       className="enter group/msg grid min-w-0 justify-items-end gap-1"
@@ -2934,7 +2970,8 @@ function SentRow({ s, id }: { s: SentMessage; id: string }) {
       }
     >
       <div className="grid min-w-0 max-w-[85%] gap-2 rounded-2xl rounded-br-md bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
-        <div className="whitespace-pre-wrap anywhere">{s.text}</div>
+        <div className="whitespace-pre-wrap anywhere">{said.text}</div>
+        <PickChips picks={said.picks} />
         <AttachmentChips id={id} list={s.attachments} onUser={false} />
       </div>
       <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -2944,6 +2981,38 @@ function SentRow({ s, id }: { s: SentMessage; id: string }) {
         {sentLabel("sent", !!s.steered)}
       </p>
     </li>
+  );
+}
+
+// The elements a message picked on a page (Pick & Polish), as chips under
+// the words: the element's name and what it said, the page on hover.
+function PickChips({
+  picks,
+}: {
+  picks: { url: string; element: string; text: string; selector: string }[];
+}) {
+  if (!picks.length) return null;
+  return (
+    <ul className="flex min-w-0 flex-wrap gap-1.5" aria-label="Picked elements">
+      {picks.map((p, i) => (
+        <li
+          key={i}
+          className="flex min-w-0 max-w-72 items-center gap-1.5 rounded-lg border border-primary/30 bg-card/70 px-2 py-0.5 text-xs"
+          title={[p.selector, pickPlace(p.url)].filter(Boolean).join("\n")}
+        >
+          <SquareDashedMousePointerIcon
+            className="size-3.5 shrink-0 text-primary"
+            aria-hidden
+          />
+          <span className="min-w-0 truncate font-mono">{p.element}</span>
+          {p.text ? (
+            <span className="min-w-0 truncate text-muted-foreground">
+              “{p.text.length > 40 ? p.text.slice(0, 39) + "…" : p.text}”
+            </span>
+          ) : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -2972,6 +3041,9 @@ function MessageRow({
     // Steered in mid-turn (the composer's Steer while the agent ran): the
     // agent read it before its next step rather than starting a turn on it.
     const steered = m.extra?.steered === true;
+    // Picks made in the Browser tab travel as blocks in the text; the
+    // row shows them as the chips they were.
+    const said = splitPicks(m.content);
     return (
       <li className="enter group/msg grid min-w-0 justify-items-end gap-1">
         <div
@@ -2988,8 +3060,9 @@ function MessageRow({
                 You answered:
               </span>
             ) : null}
-            {m.content}
+            {said.text}
           </div>
+          <PickChips picks={said.picks} />
           <AttachmentChips id={d.conversation.id} list={files} onUser={false} />
         </div>
         {when}
@@ -3541,6 +3614,9 @@ function Composer({
   disabled,
   closed = false,
   tools,
+  picks = [],
+  onRemovePick,
+  insert,
   onSent,
 }: {
   conversation: Conversation;
@@ -3548,6 +3624,11 @@ function Composer({
   disabled: boolean;
   closed?: boolean;
   tools?: ReactNode;
+  /** Elements picked in the Browser tab, sent with the next message. */
+  picks?: ElementPick[];
+  onRemovePick?: (key: string) => void;
+  /** Words another part of the page puts into the box; a new `n` is a new insertion. */
+  insert?: { text: string; n: number };
   onSent: (r: { conversation: Conversation }, sent?: SentMessage) => void;
 }) {
   const [text, setText] = useState("");
@@ -3560,7 +3641,22 @@ function Composer({
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const running = turnOpen(live.status);
   const sealed = lockdownOf(conversation, live);
-  const canSend = (!!text.trim() || picked.length > 0) && !busy && !disabled;
+  const canSend =
+    (!!text.trim() || picked.length > 0 || picks.length > 0) &&
+    !busy &&
+    !disabled;
+
+  // Words put in from outside (the Browser tab's ask for its helper) join
+  // what is there, and the box takes focus so Enter sends them.
+  const [inserted, setInserted] = useState(0);
+  if (insert && insert.n !== inserted) {
+    setInserted(insert.n);
+    if (insert.text)
+      setText((cur) => (cur.trim() ? cur.replace(/\s*$/, "\n\n") : "") + insert.text);
+  }
+  useEffect(() => {
+    if (insert?.n) textarea.current?.focus();
+  }, [insert?.n]);
 
   // Dictated words go where the caret is (or over the selection), and the
   // caret moves past them so the next take follows on.
@@ -3580,7 +3676,9 @@ function Composer({
   // its next step; queue holds it for after. Idle, there is only send.
   const send = async (mode: ComposeMode = composeMode(live.status, false)) => {
     if (!canSend) return;
-    const t = text.trim();
+    // The picked elements ride inside the text as blocks the agent reads
+    // and the transcript folds back into chips (lib/pick.ts).
+    const t = withPicks(text.trim(), picks);
     const files = picked;
     setSending(mode);
     setBusy(files.length ? "upload" : mode);
@@ -3653,6 +3751,37 @@ function Composer({
             "border-lock focus-within:border-lock focus-within:ring-lock/20",
         )}
       >
+        {picks.length ? (
+          <ul
+            className="flex min-w-0 flex-wrap items-center gap-1.5 px-1 pt-1"
+            aria-label="Picked elements"
+          >
+            {picks.map((p) => (
+              <li
+                key={p.key}
+                className="pop flex min-w-0 max-w-72 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/[0.06] py-1 pr-1 pl-2 text-xs"
+                title={[p.selector, pickPlace(p.url)].filter(Boolean).join("\n")}
+              >
+                <SquareDashedMousePointerIcon
+                  className="size-3.5 shrink-0 text-primary"
+                  aria-hidden
+                />
+                <span className="min-w-0 truncate font-mono text-foreground">
+                  {pickLabel(p)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRemovePick?.(p.key)}
+                  disabled={!!busy}
+                  className="rounded-md p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label={"Remove " + pickLabel(p)}
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {picked.length ? (
           <ul
             className="flex min-w-0 flex-wrap gap-1.5 px-1 pt-1"
@@ -3723,9 +3852,11 @@ function Composer({
                 ? composePlaceholder(true)
                 : closed
                   ? "Write to reopen this conversation…"
-                  : picked.length
-                    ? "Say what to do with the files, or just send them."
-                    : composePlaceholder(false)
+                  : picks.length
+                    ? "Say what to change about what you picked, or just send it."
+                    : picked.length
+                      ? "Say what to do with the files, or just send them."
+                      : composePlaceholder(false)
           }
           disabled={disabled}
           rows={1}

@@ -58,6 +58,13 @@ pub trait UiFs: Send + Sync {
 #[folder = "../../web/hub/out"]
 pub struct Dist;
 
+/// The hub's pages keep to their own origin, except for what the chat
+/// canvas's Browser tab frames: a page served from this machine - the
+/// agent's dev server on any port (`localhost`, `127.0.0.1`, a `*.localhost`
+/// name) - alongside the hub's own artifacts (`'self'`). A site on the web
+/// is never framed; the Page tab shows what the agent fetched as text.
+pub(crate) const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self' http://localhost:* https://localhost:* http://127.0.0.1:* https://127.0.0.1:* http://*.localhost:* https://*.localhost:*; base-uri 'none'; frame-ancestors 'none'";
+
 impl UiFs for Dist {
     fn read_file(&self, name: &str) -> std::io::Result<Vec<u8>> {
         Dist::get(name)
@@ -85,11 +92,12 @@ impl Handler {
             .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
         w.header_mut()
             .insert("x-frame-options", HeaderValue::from_static("DENY"));
+        // The chat canvas's Browser tab frames a page served from this
+        // machine (the agent's dev server), so `frame-src` names the local
+        // hosts on any port; everything else keeps to the hub's own origin.
         w.header_mut().insert(
             "content-security-policy",
-            HeaderValue::from_static(
-                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
-            ),
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         );
 
         let p = r.path();
@@ -837,8 +845,36 @@ mod tests {
                     .contains("application/json")
             );
         }
-        let (status, text, _) = handler_response(h, "HEAD", "/", "");
+        let (status, text, _) = handler_response(h.clone_for_test(), "HEAD", "/", "");
         assert_eq!((status, text.as_str()), (200, ""));
+        // The page's policy frames local dev servers (the canvas's Browser
+        // tab) and the hub's own files, and nothing else; the hub itself
+        // is framed by no one.
+        let (_, _, headers) = handler_response(h, "GET", "/", "");
+        let csp = headers["content-security-policy"].to_str().unwrap();
+        assert_eq!(csp, CONTENT_SECURITY_POLICY);
+        let frame = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("frame-src "))
+            .expect("a frame-src directive");
+        for src in [
+            "'self'",
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+            "http://*.localhost:*",
+        ] {
+            assert!(frame.split(' ').any(|s| s == src), "{frame} lacks {src}");
+        }
+        // No bare scheme or wildcard: a page on the web stays out.
+        for loose in ["http:", "https:", "*"] {
+            assert!(
+                !frame.split(' ').any(|s| s == loose),
+                "{frame} allows {loose}"
+            );
+        }
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert_eq!(headers["x-frame-options"].to_str().unwrap(), "DENY");
     }
 
     #[test]

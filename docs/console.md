@@ -409,6 +409,31 @@ the session's worktree through `GET
 (no `..`, nothing under `.git` or the hub's private folder, symlinks that
 leave it refused), the first 512 KiB as text, binaries named as such.
 
+The **Browser** tab is the page itself, live, the way the Copilot app's
+browser panel shows the app an agent is building: a dev server the agent
+starts (a command whose output announces a local address - `localhost:3000`,
+`127.0.0.1:5173`, a `*.localhost` host) or a local page it drives with its
+browser tool opens there by itself, **+ → Browser** opens it for the newest
+local page it saw (or lists them when there are several), and the address bar
+takes any other address served on this machine - web addresses are refused,
+since most sites will not be framed and the hub's frame policy allows only
+local origins. Reload, open in a new tab, and **Pick**: press it, point at
+an element on the page and click, and the element becomes a chip in the
+composer - `button#save.btn.primary “Save changes”` - that goes with your next
+message, so "make this teal" names exactly which this (**Polish**). Several
+picks stack; × takes one back; a message of picks and no words asks the
+agent to polish them. Each pick travels inside the message as a fenced
+```` ```pick ```` block - the page's URL, the element as a selector-shaped
+name, its text, label and role, the nearest React components in a dev build,
+a CSS path that finds it again, its box and its outer HTML - which the agent
+reads as it is and the transcript folds back into chips. The frame is another
+origin, so picking needs a one-line helper in the app's development pages:
+`<script src="http://HUB/pick.js"></script>` (the hub serves it; plain
+script, no dependencies, it only speaks to the window framing it, inert when
+not framed - keep it out of production). Press Pick on a page without it and
+the tab shows the line with **Copy** and **Ask the agent to add it**, which
+puts the ask into the composer.
+
 Attach files with the paper clip, by dropping them on the composer or by
 pasting them: up to 8 MB each and twelve per message, kept outside the branch
 under the conversation's own folder, named in the message with their paths so

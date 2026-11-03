@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  AppWindowIcon,
   CircleCheckIcon,
   CircleIcon,
   CornerDownRightIcon,
@@ -49,6 +50,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWidth } from "@/components/chat/split";
+import { BrowserTab, type PickSink } from "@/components/chat/browser";
 import {
   ArtifactBody,
   ArtifactList,
@@ -89,6 +91,7 @@ import {
   editBlocks,
   extractLinks,
   latestPlanStep,
+  localPages,
   makeTab,
   pageText,
   stepPath,
@@ -221,6 +224,7 @@ const KIND_ICON: Record<CanvasKind, typeof TerminalIcon> = {
   terminal: TerminalIcon,
   file: FileTextIcon,
   page: GlobeIcon,
+  browser: AppWindowIcon,
   plan: ListChecksIcon,
   changes: GitBranchIcon,
   diff: FileDiffIcon,
@@ -249,6 +253,8 @@ export function Canvas({
   panels,
   menu,
   counts = {},
+  picks,
+  onAsk,
 }: {
   ctl: CanvasControl;
   label: string;
@@ -271,6 +277,10 @@ export function Canvas({
   menu: CanvasKind[];
   /** A number beside a menu entry (changed files, artifacts, sub-conversations). */
   counts?: Partial<Record<CanvasKind, number>>;
+  /** The composer's picked elements, for the Browser tab's Pick; absent where there is no composer. */
+  picks?: PickSink;
+  /** Puts words into the composer (the Browser tab's ask for its helper). */
+  onAsk?: (text: string) => void;
 }) {
   const entries = useMemo(() => terminalEntries(steps, live), [steps, live]);
   const running = entries.some((e) => e.running);
@@ -281,6 +291,7 @@ export function Canvas({
     return out;
   }, [steps, diff]);
   const pages = useMemo(() => visitedPages(steps), [steps]);
+  const local = useMemo(() => localPages(steps), [steps]);
   const active = ctl.tabs.find((t) => t.id === ctl.active);
   const strip = useRef<HTMLDivElement | null>(null);
   // When the tabs would not all fit with their names, the ones behind keep
@@ -378,6 +389,7 @@ export function Canvas({
           menu={menu}
           files={files}
           pages={pages}
+          local={local}
           counts={counts}
         />
         <Button
@@ -417,6 +429,20 @@ export function Canvas({
           />
         ) : active.kind === "page" ? (
           <PageTab key={active.key} steps={steps} page={active.key} />
+        ) : active.kind === "browser" ? (
+          <BrowserTab
+            key={active.id}
+            url={active.key}
+            sink={picks}
+            onAsk={onAsk}
+            onNavigate={(url) => {
+              // The tab is named after its address: a new address is a new
+              // tab in the old one's place.
+              if (url === active.key) return;
+              ctl.close(active.id);
+              ctl.open("browser", url);
+            }}
+          />
         ) : active.kind === "plan" ? (
           <PlanTab steps={steps} />
         ) : active.kind === "diff" ? (
@@ -484,12 +510,15 @@ function OpenMenu({
   menu,
   files,
   pages,
+  local,
   counts,
 }: {
   ctl: CanvasControl;
   menu: CanvasKind[];
   files: string[];
   pages: string[];
+  /** Pages served on this machine the run visited or announced, newest first. */
+  local: string[];
   counts: Partial<Record<CanvasKind, number>>;
 }) {
   return (
@@ -513,10 +542,50 @@ function OpenMenu({
         {menu.map((kind) => {
           const Icon = KIND_ICON[kind];
           const n = counts[kind];
+          if (kind === "browser" && local.length > 1) {
+            return (
+              <DropdownMenuSub key={kind}>
+                <DropdownMenuSubTrigger>
+                  <Icon /> {KIND_LABEL[kind]}
+                  <span className="ml-auto text-xs text-muted-foreground tnum">
+                    {num(local.length)}
+                  </span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="scroll-thin max-h-80 w-72 overflow-y-auto">
+                  {local.slice(0, 20).map((u) => (
+                    <DropdownMenuItem
+                      key={u}
+                      onSelect={() => ctl.open("browser", u)}
+                      title={u}
+                    >
+                      <AppWindowIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 truncate font-mono text-xs">
+                        {makeTab("browser", u).label}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => ctl.open("browser")}>
+                    <PlusIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="text-xs">Another address…</span>
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            );
+          }
           return (
-            <DropdownMenuItem key={kind} onSelect={() => ctl.open(kind)}>
+            <DropdownMenuItem
+              key={kind}
+              onSelect={() =>
+                ctl.open(kind, kind === "browser" ? (local[0] ?? "") : "")
+              }
+            >
               <Icon /> {KIND_LABEL[kind]}
-              {n ? (
+              {kind === "browser" && local[0] ? (
+                <span className="ml-auto min-w-0 max-w-28 truncate font-mono text-[11px] text-muted-foreground">
+                  {makeTab("browser", local[0]).label}
+                </span>
+              ) : n ? (
                 <span className="ml-auto text-xs text-muted-foreground tnum">
                   {num(n)}
                 </span>

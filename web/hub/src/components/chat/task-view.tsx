@@ -539,7 +539,7 @@ function TaskBody({
       live={working}
       texts={texts}
       jobs={d.jobs}
-      menu={["terminal", "plan", "steps", "brief", "links"]}
+      menu={["terminal", "browser", "plan", "steps", "brief", "links"]}
       counts={{ steps: d.jobs.length }}
       panels={{
         steps: (
