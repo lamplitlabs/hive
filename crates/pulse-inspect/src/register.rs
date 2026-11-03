@@ -25,7 +25,7 @@ pub fn register() {
                 name: "projects".into(),
                 group: "inspect".into(),
                 summary: "registered projects, including inactive projects".into(),
-                usage: "pulse projects [--json]".into(),
+                usage: "pulse projects [--json]\n       (to deactivate one: pulse remove project <name>)".into(),
                 aliases: vec![],
                 no_store: false,
                 read_only: true,
@@ -379,6 +379,17 @@ mod tests {
             let cmd = pulse_cli::lookup(name).unwrap();
             assert_eq!(cmd.group, "human");
         }
+    }
+
+    #[test]
+    fn projects_help_names_the_removal_path() {
+        crate::register();
+        let cmd = pulse_cli::lookup("projects").unwrap();
+        assert!(
+            cmd.usage.contains("pulse remove project <name>"),
+            "pulse projects --help must point at the removal command: {}",
+            cmd.usage
+        );
     }
 
     #[test]
