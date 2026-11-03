@@ -1922,6 +1922,32 @@ pub(crate) fn daemon(
                 for line in crate::yield_lane::yield_lanes_to_owner(s, &now, &actor) {
                     say(&o, line);
                 }
+                // A worker is not kept idle: once its run has ended and
+                // nothing waits for it (no lease, no held conversation), it
+                // retires for good and the next job gets a fresh name. The
+                // workers still in flight here, and the one a `--agent`
+                // daemon runs as, stay.
+                let mut keep = inflight
+                    .values()
+                    .map(|d| d.worker.clone())
+                    .collect::<Vec<_>>();
+                if !o.agent.is_empty() {
+                    keep.push(actor.clone());
+                }
+                match crate::board::retire_idle_workers(s, &now, &actor, &keep) {
+                    Ok(retired) => {
+                        for name in retired {
+                            say(
+                                &o,
+                                format!("retired {name}: {}", pulse_board::RETIRE_REASON),
+                            );
+                        }
+                    }
+                    Err(e) => say(
+                        &o,
+                        format!("retire skipped: {}", crate::run::err_message(&e)),
+                    ),
+                }
             }
             let conn = match s.conn() {
                 Ok(c) => Some(c),
@@ -2945,6 +2971,30 @@ pub(crate) fn daemon(
                     timer = None;
                 },
             }
+        }
+    }
+    // The runs that ended in the drain leave their workers with nothing to
+    // do: retire them now rather than at the next daemon's first tick. A
+    // holder of held work (a restart's hold) stays for the daemon to come.
+    if !o.dry_run {
+        let keep = if o.agent.is_empty() {
+            Vec::new()
+        } else {
+            vec![actor.clone()]
+        };
+        match crate::board::retire_idle_workers(s, &s.now(), &actor, &keep) {
+            Ok(retired) => {
+                for name in retired {
+                    say(
+                        &o,
+                        format!("retired {name}: {}", pulse_board::RETIRE_REASON),
+                    );
+                }
+            }
+            Err(e) => say(
+                &o,
+                format!("retire skipped: {}", crate::run::err_message(&e)),
+            ),
         }
     }
     if maintenance.done.is_some() || maintenance.lane.is_some() || maintenance.landing_busy() > 0 {
@@ -5651,6 +5701,91 @@ mod tests {
                 out.string()
             );
         }
+    }
+
+    /// A worker is not kept idle: the tick after its run ends it retires for
+    /// good (`agent.retire`, status pruned, name never reused) and the next
+    /// job runs under a fresh name.
+    #[test]
+    fn daemon_retires_a_worker_once_its_run_ends_and_spawns_a_fresh_one() {
+        let _serial = crate::test_helpers::serial();
+        let (s, first) = daemon_retry_fixture();
+        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "1")
+            .unwrap();
+        let (second, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "next".into(),
+            "exercise a fresh worker".into(),
+            1,
+            90,
+            "next-test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let out = OutBuf::new();
+        let result = daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            DaemonOpts {
+                interval: 7,
+                max_loops: 3,
+                out: Some(out.writer()),
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                sleep: Some(std::sync::Arc::new(|_| true)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result, "done", "{}", out.string());
+        let conn = s.conn().unwrap();
+        let run_agent = |job: &crate::util::Row| {
+            crate::util::must_one(
+                &conn,
+                "SELECT agent FROM runs WHERE job_id = ? AND status = 'done'",
+                &[&job.str("id")],
+            )
+            .str("agent")
+        };
+        let (a, b) = (run_agent(&first), run_agent(&second));
+        assert!(
+            !a.is_empty() && !b.is_empty(),
+            "runs: {a:?} {b:?}\n{}",
+            out.string()
+        );
+        assert_ne!(a, b, "the second job reused {a}\n{}", out.string());
+        for name in [&a, &b] {
+            let row = s.agent(name).unwrap().expect(name);
+            assert_eq!(row.status, "pruned", "{name}\n{}", out.string());
+            assert_eq!(row.pruned_reason, pulse_board::RETIRE_REASON, "{name}");
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'agent.retire' AND actor = 'daemon'",
+                &[]
+            ),
+            2,
+            "{}",
+            out.string()
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM agents WHERE kind = 'worker' AND status = 'active'",
+                &[]
+            ),
+            0,
+            "{}",
+            out.string()
+        );
+        assert!(
+            out.string()
+                .contains(&format!("retired {a}: {}", pulse_board::RETIRE_REASON)),
+            "{}",
+            out.string()
+        );
     }
 
     #[test]

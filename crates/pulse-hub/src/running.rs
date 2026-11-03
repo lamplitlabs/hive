@@ -894,6 +894,50 @@ mod tests {
         );
     }
 
+    // Workers live for one run and retire when it ends (pulse_board::
+    // retire_idle_workers), so the summary counts what exists now - the
+    // active workers, split by whether a lease holds them - and names no
+    // target: nothing is kept ready. A retired worker is a pruned row with
+    // the retire reason and is not an active worker any more.
+    #[test]
+    fn runner_view_counts_workers_without_a_target() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        for (name, kind) in [("busy", "worker"), ("between", "worker"), ("lead", "lead")] {
+            pulse_board::join_agent(
+                &s,
+                pulse_board::JoinInput {
+                    name: name.into(),
+                    kind: kind.into(),
+                    session: format!("run-{name}"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        s.conn().unwrap().execute(
+            "INSERT INTO jobs(id,project,kind,title,source,created_at,status,lease_agent,generation) VALUES('job-busy','commons','task','t','',?,'leased','busy',1)",
+            [s.now()],
+        ).unwrap();
+        s.conn().unwrap().execute(
+            "INSERT INTO agents(name,kind,status,created_at,pruned_at,pruned_reason) VALUES('retired','worker','pruned',?,?,?)",
+            [s.now(), s.now(), pulse_board::RETIRE_REASON.to_string()],
+        ).unwrap();
+        let (code, body) = http::additions_request(h, "GET", "/api/v1/runner", "");
+        assert_eq!(code, 200);
+        let workers = body["workers"].as_object().unwrap();
+        assert_eq!(workers["pool"], 2);
+        assert_eq!(workers["busy"], 1);
+        assert_eq!(workers["idle"], 1);
+        assert_eq!(workers["idle_names"], json!(["between"]));
+        assert!(
+            !workers.contains_key("target"),
+            "workers are not kept idle, so the summary has no target: {workers:?}"
+        );
+        assert!(workers.contains_key("prune_after_days"));
+    }
+
     #[test]
     fn runner_view_carries_capacity_hold() {
         let _serial = crate::test_helpers::serial();

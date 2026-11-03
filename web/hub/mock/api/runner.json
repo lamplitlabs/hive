@@ -59,7 +59,6 @@
     "idle": 0,
     "idle_names": [],
     "pool": 0,
-    "prune_after_days": 14,
-    "target": 3
+    "prune_after_days": 14
   }
 }

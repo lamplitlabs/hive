@@ -501,10 +501,6 @@ impl Handler {
                     ("pool", json!(workers.len())),
                     ("idle", json!(idle.len())),
                     ("busy", json!(workers.len().saturating_sub(idle.len()))),
-                    (
-                        "target",
-                        json!(std::cmp::max(1, store.setting_int("quorum") + 1))
-                    ),
                     ("idle_names", json!(idle)),
                     (
                         "prune_after_days",

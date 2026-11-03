@@ -30,8 +30,14 @@ The heartbeat the hub shows counts `loops` and `passes` apart.
 
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
-slot until its controller run ends. Idle workers are reused instead of
-repeatedly selecting a busy identity. A lease takes the owner's work first -
+slot until its controller run ends. Workers are not kept idle: a dispatch
+takes a free active worker when one exists (the holder of held work waiting
+in the queue first) and otherwise spawns a fresh name, and each tick the
+daemon retires every worker whose run has ended and that holds no lease, no
+running run and no held conversation - its row turns `pruned` with the
+reason `retired after its run; workers are not kept idle` and an
+`agent.retire` event; the name is never reused. Leads and sessions are never
+retired. A lease takes the owner's work first -
 lead runs, answers and the jobs planned from owner tasks (source `task:...`) -
 and only then the project that waited longest, by priority and age within it.
 Project fairness includes lease reservations before the worker's run thread

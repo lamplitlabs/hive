@@ -309,6 +309,60 @@ pub fn prune_agents(
     Ok(out)
 }
 
+/// The reason a retired worker's row carries (`pruned_reason`).
+pub const RETIRE_REASON: &str = "retired after its run; workers are not kept idle";
+
+/// Retires the workers whose work is over: an active `worker` agent with a
+/// run that has ended, no lease, no run in flight and no held conversation
+/// waiting to be carried on is marked `pruned` with [`RETIRE_REASON`] and an
+/// `agent.retire` event by `actor`. A retired name is never reused - the next
+/// job gets a fresh worker from `spawn_agent` - so the roster's History shows
+/// every worker that ever ran. A worker that has not run yet (joined by hand,
+/// or picked and not yet started) stays, as do the `keep` names - the workers
+/// the caller still supervises or is about to use. Leads, sessions and the
+/// human are never retired. Returns the names retired.
+pub fn retire_idle_workers(
+    s: &pulse_store::Store,
+    now: &str,
+    actor: &str,
+    keep: &[String],
+) -> Result<Vec<String>> {
+    let now = if now.is_empty() {
+        s.now()
+    } else {
+        now.to_string()
+    };
+    let actor = if actor.is_empty() { "daemon" } else { actor };
+    let conn = s.conn()?;
+    let mut stmt = conn.prepare(
+        "SELECT a.name FROM agents a WHERE a.status = 'active' AND a.kind = 'worker'
+         AND EXISTS (SELECT 1 FROM runs r WHERE r.agent = a.name AND r.status != 'running')
+         AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.lease_agent = a.name AND j.status = 'leased')
+         AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.agent = a.name AND r.status = 'running')
+         AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN jobs j ON j.id = h.job_id WHERE h.agent = a.name AND h.status = 'held' AND j.status IN ('queued', 'leased'))
+         ORDER BY a.name",
+    )?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for name in names {
+        if keep.iter().any(|k| k == &name) {
+            continue;
+        }
+        let changed = conn.execute(
+            "UPDATE agents SET status = 'pruned', pruned_at = ?, pruned_reason = ? WHERE name = ? AND status = 'active'",
+            params![now, RETIRE_REASON, name],
+        )?;
+        if changed == 0 {
+            continue;
+        }
+        event(s, actor, "agent.retire", &name, RETIRE_REASON)?;
+        out.push(name);
+    }
+    Ok(out)
+}
+
 /// An agent's row with its presence and post counts. The agent and presence
 /// fields are flattened into the serialized card; in code, `card.name` reads
 /// through [`Deref`] to the agent and presence fields through
@@ -590,5 +644,128 @@ mod tests {
         assert_eq!(pruned[0].name, "stale-worker");
         assert_eq!(s.agent("proj-lead").unwrap().unwrap().status, "active");
         assert_eq!(s.agent("stale-worker").unwrap().unwrap().status, "pruned");
+    }
+
+    #[test]
+    fn retire_idle_workers_retires_only_free_workers_for_good() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, _home, s) = new_home();
+        for (name, kind) in [
+            ("proj-lead", "lead"),
+            ("hand", "session"),
+            ("fresh", "worker"),
+            ("free", "worker"),
+            ("leased", "worker"),
+            ("running", "worker"),
+            ("holder", "worker"),
+            ("kept", "worker"),
+        ] {
+            join_agent(
+                &s,
+                JoinInput {
+                    name: name.into(),
+                    kind: kind.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "INSERT INTO projects (slug, name, path, status, added_at) VALUES ('proj', 'proj', '/tmp/proj', 'active', ?)",
+            params![TEST_NOW],
+        )
+        .unwrap();
+        for (id, status, agent) in [
+            ("J-free", "done", "free"),
+            ("J-kept", "done", "kept"),
+            ("J-leased", "leased", "leased"),
+            ("J-running", "done", "running"),
+            ("J-held", "done", "holder"),
+            ("J-queued-held", "queued", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO jobs (id, project, kind, title, brief, status, created_at, created_by, lease_agent) VALUES (?, 'proj', 'task', ?, '', ?, ?, 'human', ?)",
+                params![id, id, status, TEST_NOW, agent],
+            )
+            .unwrap();
+        }
+        // Every worker but `fresh` has run; `leased` holds a lease, `running`
+        // a run in flight, `holder` a held conversation whose job is queued.
+        for (id, job, agent, status) in [
+            ("R-free", "J-free", "free", "done"),
+            ("R-kept", "J-kept", "kept", "done"),
+            ("R-leased", "J-leased", "leased", "failed"),
+            ("R-running-1", "J-running", "running", "done"),
+            ("R-running", "J-running", "running", "running"),
+            ("R-held", "J-held", "holder", "held"),
+        ] {
+            conn.execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, ?, 'proj', ?, ?)",
+                params![id, job, agent, TEST_NOW, status],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO harness_sessions (id, job_id, agent, status, started_at, updated_at) VALUES ('H-held', 'J-queued-held', 'holder', 'held', ?, ?)",
+            params![TEST_NOW, TEST_NOW],
+        )
+        .unwrap();
+        drop(conn);
+
+        let retired = retire_idle_workers(&s, TEST_NOW, "daemon", &["kept".to_string()]).unwrap();
+        assert_eq!(retired, vec!["free".to_string()]);
+        for name in [
+            "proj-lead",
+            "hand",
+            "fresh",
+            "leased",
+            "running",
+            "holder",
+            "kept",
+        ] {
+            assert_eq!(s.agent(name).unwrap().unwrap().status, "active", "{name}");
+        }
+        let free = s.agent("free").unwrap().unwrap();
+        assert_eq!(free.status, "pruned");
+        assert_eq!(free.pruned_at, TEST_NOW);
+        assert_eq!(free.pruned_reason, RETIRE_REASON);
+        assert_eq!(
+            count_rows(
+                &s,
+                "events",
+                "action = 'agent.retire' AND actor = 'daemon' AND subject = 'free'",
+                &[]
+            ),
+            1
+        );
+        // Retired for good: the name is not reused and a second sweep is quiet.
+        let err = join_agent(
+            &s,
+            JoinInput {
+                name: "free".into(),
+                kind: "worker".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("never reused"), "{err}");
+        assert!(
+            retire_idle_workers(&s, TEST_NOW, "daemon", &["kept".to_string()])
+                .unwrap()
+                .is_empty()
+        );
+        // Once its work is over, the kept worker goes too.
+        assert_eq!(
+            retire_idle_workers(&s, TEST_NOW, "", &[]).unwrap(),
+            vec!["kept".to_string()]
+        );
+        // A fresh worker gets a new name.
+        let fresh = spawn_agent(&s, "pulse", "", "worker").unwrap();
+        assert!(
+            !["free", "kept"].contains(&fresh.name.as_str()),
+            "fresh worker {}",
+            fresh.name
+        );
     }
 }

@@ -976,11 +976,13 @@ export interface Runner {
     any_project: boolean;
   };
   executors: Executor[];
+  // Workers live for one run: `pool` counts the active ones, `idle` those
+  // without a lease (between dispatch and the run's start, or holding held
+  // work). There is no standing pool and nothing is kept ready.
   workers: {
     pool: number;
     idle: number;
     busy: number;
-    target: number;
     idle_names: string[];
     prune_after_days: number;
   };
