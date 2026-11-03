@@ -1223,6 +1223,104 @@ pub(crate) fn idle_wait(
     }
 }
 
+/// How many times one experiment goes back in the queue after a provider
+/// outage before its failure stands: an outage that outlasts the retries is
+/// left to the loop's own provider-stop rule (pulse-tally).
+pub(crate) const OUTAGE_REQUEUE_LIMIT: i32 = 2;
+/// The `job.requeue` detail an outage requeue carries, so its count stays
+/// apart from the landing requeues (land.rs `LAND_REQUEUE_LIMIT`).
+const OUTAGE_REQUEUE_WHY: &str = "provider outage before any command";
+/// Words of a provider error that never reached the model: the request did
+/// not go through, so the experiment's idea was never tried.
+const TRANSPORT_MARKS: &[&str] = &[
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "timed out",
+    "no such host",
+    "dns error",
+    "network is unreachable",
+    "unexpected eof",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    " 502",
+    " 503",
+    " 504",
+];
+
+/// Whether a finished run is an experiment cycle lost to a provider outage:
+/// the run failed with no commit, its harness stopped on `provider_error`
+/// before a single command, and the error is a transport one.
+pub(crate) fn outage_lost_cycle(job: &Row, run: &Row) -> bool {
+    let summary = run.str("summary").to_lowercase();
+    job.str("kind") == "experiment"
+        && run.str("status") == "failed"
+        && run.int("commits") == 0
+        && summary.contains("harness stopped: provider_error after ")
+        && summary.contains(" model calls and 0 commands")
+        && TRANSPORT_MARKS.iter().any(|m| summary.contains(m))
+}
+
+/// Puts an experiment whose cycle a provider outage lost back in the queue,
+/// so it is run again instead of counting as a tried card or a failed cycle;
+/// returns the line to log. After `OUTAGE_REQUEUE_LIMIT` such requeues the
+/// failure stands.
+pub(crate) fn requeue_outage_experiment(
+    s: &pulse_store::Store,
+    run: &Row,
+    actor: &str,
+) -> Option<String> {
+    let conn = s.conn().ok()?;
+    let job = crate::jobs::job_row(&conn, run.str("job_id"));
+    if job.0.is_empty() || job.str("status") != "failed" || !outage_lost_cycle(&job, run) {
+        return None;
+    }
+    let earlier = crate::util::must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM events WHERE action = 'job.requeue' AND subject = ? AND detail LIKE ?",
+        &[&job.str("id"), &format!("%{OUTAGE_REQUEUE_WHY}%")],
+    )
+    .int("n");
+    if earlier >= OUTAGE_REQUEUE_LIMIT {
+        return None;
+    }
+    let now = s.now();
+    crate::jobs::finish_job(
+        s,
+        job.str("id"),
+        actor.to_string(),
+        "queued".into(),
+        format!(
+            "requeued: {OUTAGE_REQUEUE_WHY}: {}",
+            crate::util::trunc(&run.str("summary"), 300)
+        ),
+        String::new(),
+        -1,
+    )
+    .ok()?;
+    crate::util::exec1(
+        &conn,
+        "UPDATE jobs SET attempts = 0, branch = '' WHERE id = ?",
+        &[&job.str("id")],
+    );
+    crate::util::event_at(
+        &conn,
+        &now,
+        actor,
+        "job.requeue",
+        &job.str("id"),
+        serde_json::json!({"why": OUTAGE_REQUEUE_WHY, "patch": "", "run": run.str("id")}),
+    );
+    Some(format!(
+        "requeued {}: {OUTAGE_REQUEUE_WHY} ({} of {OUTAGE_REQUEUE_LIMIT}); the cycle runs again instead of counting as tried",
+        job.str("id"),
+        earlier + 1
+    ))
+}
+
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
     s.conn()
         .ok()
@@ -2556,6 +2654,7 @@ pub(crate) fn daemon(
                         let s_run = s.clone();
                         let o_run = o.clone();
                         let now_run = now.clone();
+                        let actor_run = actor.clone();
                         let run_parent = run_ctx.child();
                         std::thread::Builder::new()
                             .name("daemon-run".into())
@@ -2578,7 +2677,16 @@ pub(crate) fn daemon(
                                                 cancel: dctx,
                                             },
                                         ) {
-                                            Ok(run) => d.run = run,
+                                            Ok(run) => {
+                                                if !o_run.dry_run
+                                                    && let Some(line) = requeue_outage_experiment(
+                                                        &s_run, &run, &actor_run,
+                                                    )
+                                                {
+                                                    say(&o_run, line);
+                                                }
+                                                d.run = run;
+                                            }
                                             Err(e) => {
                                                 d.reason = format!(
                                                     "daemon error on {}: {}",
@@ -5025,6 +5133,7 @@ mod tests {
         crate::test_helpers_daemon::set_setting(&s, "landing", "agents");
         crate::test_helpers_daemon::set_setting(&s, "daemon.hold_seconds", "1");
         crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_daemon::set_setting(&s, "jobs_per_day", "10");
         crate::test_helpers_daemon::push_branch(&s, &project, &repo, "pulse/stuck/1");
         // Every checkout and merge in the landing's worktree now blocks.
         let started = std::path::Path::new(&s.home).join("hook-started");
@@ -5646,6 +5755,109 @@ mod tests {
         );
     }
 
+    const OUTAGE: &str = "worker exited 3: harness stopped: provider_error after 1 model calls and 0 commands; copilot: error sending request for url (https://api.business.githubcopilot.com/chat/completions)";
+
+    fn outage_run(job: &Row, summary: &str, commits: i64) -> Row {
+        let mut run = Row::new();
+        for (k, v) in [
+            ("id", "run-outage".to_string()),
+            ("job_id", job.str("id")),
+            ("status", "failed".to_string()),
+            ("summary", summary.to_string()),
+        ] {
+            run.insert(k, serde_json::Value::String(v));
+        }
+        run.insert("commits", serde_json::json!(commits));
+        run
+    }
+
+    /// Only an experiment that failed on a provider transport error before
+    /// any command, with no commit, is a cycle the outage lost.
+    #[test]
+    fn outage_lost_cycle_names_only_transport_stops_before_any_command() {
+        let mut job = Row::new();
+        job.insert("id", serde_json::json!("job-x"));
+        job.insert("kind", serde_json::json!("experiment"));
+        assert!(outage_lost_cycle(&job, &outage_run(&job, OUTAGE, 0)));
+        // A commit means the cycle ran: its failure is the experiment's.
+        assert!(!outage_lost_cycle(&job, &outage_run(&job, OUTAGE, 1)));
+        // Commands ran: the provider stopped mid-work, the idea was tried.
+        let mid = OUTAGE.replace("0 commands", "4 commands");
+        assert!(!outage_lost_cycle(&job, &outage_run(&job, &mid, 0)));
+        // A refused model setting is not an outage: retrying it changes nothing.
+        let refused = "worker exited 3: harness stopped: provider_error after 1 model calls and 0 commands; error: model gpt-x does not support reasoning";
+        assert!(!outage_lost_cycle(&job, &outage_run(&job, refused, 0)));
+        let mut task = job.clone();
+        task.insert("kind", serde_json::json!("task"));
+        assert!(!outage_lost_cycle(&task, &outage_run(&task, OUTAGE, 0)));
+    }
+
+    /// The daemon puts an experiment the provider outage stopped back in the
+    /// queue (twice at most) instead of leaving it failed, where the loop's
+    /// tally would score its card tried.
+    #[test]
+    fn daemon_requeues_an_experiment_lost_to_a_provider_outage() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_daemon::set_setting(&s, "jobs_per_day", "10");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "experiment".into(),
+            "Experiment: outage".into(),
+            "Experiment card\nHypothesis: x\nBranch: evolve/outage\n".into(),
+            1,
+            100,
+            "suggestion:S-outage".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let worker = format!("sh -c 'echo \"SUMMARY: {OUTAGE}\"; exit 3'");
+        let status = |s: &pulse_store::Store| {
+            crate::jobs::job_row(&*s.conn().unwrap(), job.str("id")).str("status")
+        };
+        for n in 1..=OUTAGE_REQUEUE_LIMIT {
+            let out = once_daemon(
+                &s,
+                DaemonOpts {
+                    worker_cmd: worker.clone(),
+                    ..Default::default()
+                },
+            );
+            assert!(
+                out.contains(&format!(
+                    "requeued {}: {OUTAGE_REQUEUE_WHY} ({n} of {OUTAGE_REQUEUE_LIMIT})",
+                    job.str("id")
+                )),
+                "pass {n}: {out}"
+            );
+            assert_eq!(status(&s), "queued", "pass {n}: {out}");
+        }
+        // The outage outlasts the retries: the failure stands.
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: worker,
+                ..Default::default()
+            },
+        );
+        assert!(!out.contains("requeued "), "{out}");
+        assert_eq!(status(&s), "failed", "{out}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ?",
+                &[&job.str("id")]
+            ),
+            OUTAGE_REQUEUE_LIMIT + 1
+        );
+    }
+
     #[test]
     fn daemon_successful_runs_do_not_back_off() {
         let _serial = crate::test_helpers::serial();
@@ -6196,6 +6408,7 @@ mod tests {
         join(&s, "aurora");
         crate::test_helpers_daemon::set_setting(&s, "landing", "agents");
         crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_daemon::set_setting(&s, "jobs_per_day", "10");
         crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "1000");
         run(&root, &["git", "branch", "evolve/slow-measurement"]);
         exec1(&s,
