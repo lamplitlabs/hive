@@ -4,9 +4,28 @@ use std::time::{Duration, Instant};
 
 use crate::util::Row;
 
+/// How long workers the shutdown cancelled get to stop on their own before
+/// the commands they wait in are ended; a daemon restart that waited on a
+/// landing's git for three hours had no such bound.
+pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(30);
+/// How long a worker gets to return once its commands were ended, at most;
+/// what still runs after it is left behind.
+pub(crate) const DETACH_SETTLE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Default)]
 pub(crate) struct LandingWorkers {
-    workers: HashMap<String, JoinHandle<LandingWorkerResult>>,
+    workers: HashMap<String, Worker>,
+    /// Overrides `CANCEL_GRACE` (the daemon gives a short forced drain a
+    /// short grace; tests use milliseconds).
+    pub(crate) cancel_grace: Option<Duration>,
+}
+
+/// One project's landing thread, with the stage it is at and when it began.
+#[derive(Debug)]
+struct Worker {
+    handle: JoinHandle<LandingWorkerResult>,
+    stage: crate::daemon_maintenance::Stage,
+    started: Instant,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -16,6 +35,9 @@ pub(crate) struct LandingWorkerResult {
     pub(crate) hold: Option<String>,
     pub(crate) seconds: f64,
     pub(crate) start_seq: i32,
+    /// The worker did not return by the end of the shutdown and was left
+    /// behind: its hold and timing are unknown, so they stay as they were.
+    pub(crate) detached: bool,
 }
 
 impl LandingWorkers {
@@ -23,30 +45,23 @@ impl LandingWorkers {
         self.workers.len()
     }
 
+    /// The grace cancelled workers get before their commands are ended.
+    pub(crate) fn cancel_grace(&self) -> Duration {
+        self.cancel_grace.unwrap_or(CANCEL_GRACE)
+    }
+
     pub(crate) fn drain(&mut self) -> Vec<LandingWorkerResult> {
         let done = self
             .workers
             .iter()
-            .filter_map(|(slug, handle)| handle.is_finished().then_some(slug.clone()))
+            .filter_map(|(slug, w)| w.handle.is_finished().then_some(slug.clone()))
             .collect::<Vec<_>>();
         let mut out = Vec::new();
         for slug in done {
-            let Some(handle) = self.workers.remove(&slug) else {
+            let Some(w) = self.workers.remove(&slug) else {
                 continue;
             };
-            match handle.join() {
-                Ok(result) => out.push(result),
-                Err(panic) => out.push(LandingWorkerResult {
-                    slug: slug.clone(),
-                    lines: vec![format!(
-                        "landing {slug}: worker error: {}",
-                        panic_text(&panic)
-                    )],
-                    hold: None,
-                    seconds: 0.0,
-                    start_seq: 0,
-                }),
-            }
+            out.push(joined(&slug, w.handle));
         }
         out
     }
@@ -60,7 +75,6 @@ impl LandingWorkers {
         actor: &str,
         now: &str,
         held: &BTreeMap<String, String>,
-        stage: &crate::daemon_maintenance::Stage,
     ) -> Vec<String> {
         let limit = landing_parallel(s);
         let mut lines = Vec::new();
@@ -104,53 +118,204 @@ impl LandingWorkers {
             let actor = actor.to_string();
             let now = now.to_string();
             let prev = held.get(&slug).cloned();
-            let stage = stage.clone();
             lines.push(format!("landing {slug}: started ({why})"));
-            let thread_slug = slug.clone();
-            let handle = std::thread::Builder::new()
-                .name(format!("landing-{thread_slug}"))
-                .spawn(move || worker(ctx, store, project, actor, now, prev, stage))
-                .expect("spawn landing worker");
-            self.workers.insert(slug, handle);
+            self.spawn(&slug, move |stage| {
+                worker(ctx, store, project, actor, now, prev, stage)
+            });
         }
         lines
     }
 
+    /// Runs `work` as the landing worker of `slug`, on a thread of its own;
+    /// `work` notes where it is in the stage it is handed.
+    pub(crate) fn spawn(
+        &mut self,
+        slug: &str,
+        work: impl FnOnce(crate::daemon_maintenance::Stage) -> LandingWorkerResult + Send + 'static,
+    ) {
+        let stage: crate::daemon_maintenance::Stage =
+            std::sync::Arc::new(std::sync::Mutex::new(format!("starting {slug}")));
+        let worker_stage = stage.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("landing-{slug}"))
+            .spawn(move || work(worker_stage))
+            .expect("spawn landing worker");
+        self.workers.insert(
+            slug.to_string(),
+            Worker {
+                handle,
+                stage,
+                started: Instant::now(),
+            },
+        );
+    }
+
+    /// Waits for the workers, and never for good. Without a deadline and
+    /// with `ctx` live they finish on their own; past `deadline` `ctx` is
+    /// cancelled (the flag says so). Once `ctx` is cancelled - here or by
+    /// the caller - the workers get `cancel_grace` to stop, then the
+    /// commands they still wait in are ended (proc::end_groups_of), and a
+    /// worker that has not returned soon after is left behind with a line
+    /// naming its project and stage: a git that ignores its kill, or a call
+    /// no budget reaches, cannot hold a daemon restart (it did for 3h17m).
+    #[cfg(test)]
     pub(crate) fn finish(
         &mut self,
         ctx: &pulse_bus::CancellationToken,
         deadline: Option<Instant>,
     ) -> (Vec<LandingWorkerResult>, bool) {
-        let mut out = Vec::new();
+        let mut settle = Settle::new(self.cancel_grace());
+        self.finish_settling(ctx, deadline, &mut settle, &|| {})
+    }
+
+    /// [`finish`](Self::finish) with the grace shared with the rest of a
+    /// shutdown (the maintenance pass, the experiment lane); `beat` is
+    /// called about once a second while the workers run uncancelled, so the
+    /// daemon's watchdog does not take a wait it allows for a wedge.
+    pub(crate) fn finish_settling(
+        &mut self,
+        ctx: &pulse_bus::CancellationToken,
+        deadline: Option<Instant>,
+        settle: &mut Settle,
+        beat: &dyn Fn(),
+    ) -> (Vec<LandingWorkerResult>, bool) {
         let mut cut = false;
         let workers = std::mem::take(&mut self.workers);
-        for (slug, handle) in workers {
+        let all_done = |ws: &HashMap<String, Worker>| ws.values().all(|w| w.handle.is_finished());
+        let mut beat_at = Instant::now();
+        while !all_done(&workers) && !ctx.is_cancelled() {
             if let Some(deadline) = deadline
-                && !ctx.is_cancelled()
+                && Instant::now() >= deadline
             {
-                while !handle.is_finished() && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                if !handle.is_finished() {
-                    ctx.cancel();
-                    cut = true;
-                }
+                ctx.cancel();
+                cut = true;
+                break;
             }
-            match handle.join() {
-                Ok(result) => out.push(result),
-                Err(panic) => out.push(LandingWorkerResult {
-                    slug: slug.clone(),
-                    lines: vec![format!(
-                        "landing {slug}: worker error: {}",
-                        panic_text(&panic)
-                    )],
-                    hold: None,
-                    seconds: 0.0,
-                    start_seq: 0,
-                }),
+            if beat_at.elapsed() >= Duration::from_secs(1) {
+                beat();
+                beat_at = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut ended: HashMap<String, Vec<String>> = HashMap::new();
+        if !all_done(&workers) {
+            wait_until(|| all_done(&workers), settle.until());
+            for (slug, w) in workers.iter().filter(|(_, w)| !w.handle.is_finished()) {
+                ended.insert(slug.clone(), settle.end_groups_of(w.handle.thread()));
+            }
+            if ended.values().any(|killed| !killed.is_empty()) {
+                wait_until(|| all_done(&workers), settle.after_kill());
             }
         }
+        let mut out = Vec::new();
+        for (slug, w) in workers {
+            if w.handle.is_finished() {
+                let mut result = joined(&slug, w.handle);
+                if let Some(killed) = ended.remove(&slug).filter(|k| !k.is_empty()) {
+                    result.lines.insert(
+                        0,
+                        format!(
+                            "landing {slug}: ended {} after its cancellation so the daemon can go",
+                            killed.join(", ")
+                        ),
+                    );
+                }
+                out.push(result);
+                continue;
+            }
+            cut = true;
+            let stage = w.stage.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let killed = ended.remove(&slug).unwrap_or_default();
+            out.push(LandingWorkerResult {
+                lines: vec![format!(
+                    "{} - the landing runs again on the next daemon",
+                    left_behind_line(
+                        &format!("landing {slug}: worker"),
+                        &stage,
+                        w.started.elapsed(),
+                        &killed
+                    )
+                )],
+                slug,
+                detached: true,
+                ..Default::default()
+            });
+        }
         (out, cut)
+    }
+}
+
+/// Waits until `until` for `done`.
+pub(crate) fn wait_until(done: impl Fn() -> bool, until: Instant) {
+    while !done() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The grace a shutdown gives what it cancelled, shared by every part of
+/// it: counted once from when the cancellation was first seen, so a pass, a
+/// worker and the lane stuck together cost one grace, not three.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Settle {
+    grace: Duration,
+    since: Option<Instant>,
+}
+
+impl Settle {
+    pub(crate) fn new(grace: Duration) -> Self {
+        Settle { grace, since: None }
+    }
+
+    /// When the grace ends; the first call notes the cancellation.
+    pub(crate) fn until(&mut self) -> Instant {
+        *self.since.get_or_insert_with(Instant::now) + self.grace
+    }
+
+    /// How long a thread gets to return once its commands were ended.
+    pub(crate) fn after_kill(&self) -> Instant {
+        Instant::now() + self.grace.clamp(Duration::from_millis(500), DETACH_SETTLE)
+    }
+
+    /// Ends the commands `thread` waits in (see [`crate::proc::end_groups_of`]).
+    pub(crate) fn end_groups_of(&self, thread: &std::thread::Thread) -> Vec<String> {
+        crate::proc::end_groups_of(
+            thread.id(),
+            crate::proc::TIMEOUT_KILL_GRACE.min(self.grace.max(Duration::from_millis(100))),
+        )
+    }
+}
+
+/// The line for a thread a shutdown leaves behind: what, where it was, how
+/// long it ran and which of its commands were ended.
+pub(crate) fn left_behind_line(
+    what: &str,
+    stage: &str,
+    ran: Duration,
+    killed: &[String],
+) -> String {
+    let killed = if killed.is_empty() {
+        String::new()
+    } else {
+        format!(" (ended: {})", killed.join(", "))
+    };
+    format!(
+        "{what}: still at {stage} after {} and its cancellation{killed}; left behind so the daemon can go",
+        pulse_cli::format_duration(Duration::from_secs(ran.as_secs()))
+    )
+}
+
+/// A finished worker's result; a panic becomes an error line.
+fn joined(slug: &str, handle: JoinHandle<LandingWorkerResult>) -> LandingWorkerResult {
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => LandingWorkerResult {
+            slug: slug.to_string(),
+            lines: vec![format!(
+                "landing {slug}: worker error: {}",
+                panic_text(&panic)
+            )],
+            ..Default::default()
+        },
     }
 }
 
@@ -215,6 +380,7 @@ fn worker(
                 hold: outcome.hold,
                 seconds,
                 start_seq,
+                detached: false,
             }
         }
         Err(panic) => LandingWorkerResult {
@@ -226,6 +392,7 @@ fn worker(
             hold: None,
             seconds,
             start_seq,
+            detached: false,
         },
     }
 }
@@ -338,10 +505,6 @@ rm -f "{active}/$$"
         (script.display().to_string(), overlap.display().to_string())
     }
 
-    fn stage() -> crate::daemon_maintenance::Stage {
-        std::sync::Arc::new(std::sync::Mutex::new(String::new()))
-    }
-
     fn set_landing_parallel(s: &pulse_store::Store, value: &str) {
         exec1(
             s,
@@ -377,15 +540,8 @@ rm -f "{active}/$$"
         let cancel = pulse_bus::CancellationToken::new();
         let mut workers = LandingWorkers::default();
         let started = std::time::Instant::now();
-        let lines = workers.start_projects(
-            &cancel,
-            &s,
-            &[p1, p2],
-            "daemon",
-            TEST_NOW,
-            &BTreeMap::new(),
-            &stage(),
-        );
+        let lines =
+            workers.start_projects(&cancel, &s, &[p1, p2], "daemon", TEST_NOW, &BTreeMap::new());
         assert_eq!(lines.len(), 2, "started lines = {lines:?}");
         let (results, cut) = workers.finish(&cancel, None);
         assert!(!cut, "finish cut workers");
@@ -442,7 +598,6 @@ rm -f "{active}/$$"
             "daemon",
             TEST_NOW,
             &BTreeMap::new(),
-            &stage(),
         );
         assert_eq!(
             lines,
@@ -467,7 +622,6 @@ rm -f "{active}/$$"
                     "daemon",
                     TEST_NOW,
                     &BTreeMap::new(),
-                    &stage(),
                 )
                 .is_empty(),
             "a project with nothing to do got a worker"
@@ -495,7 +649,6 @@ rm -f "{active}/$$"
             "daemon",
             TEST_NOW,
             &held,
-            &stage(),
         );
         assert_eq!(
             lines,
@@ -526,7 +679,6 @@ rm -f "{active}/$$"
             "daemon",
             TEST_NOW,
             &BTreeMap::new(),
-            &stage(),
         );
         assert_eq!(
             lines,
@@ -565,7 +717,6 @@ rm -f "{active}/$$"
                     "daemon",
                     TEST_NOW,
                     &BTreeMap::new(),
-                    &stage(),
                 )
                 .len(),
             1
@@ -579,7 +730,6 @@ rm -f "{active}/$$"
                     "daemon",
                     TEST_NOW,
                     &BTreeMap::new(),
-                    &stage(),
                 )
                 .is_empty(),
             "busy project was started again"
@@ -606,7 +756,6 @@ rm -f "{active}/$$"
             "daemon",
             TEST_NOW,
             &BTreeMap::new(),
-            &stage(),
         );
         assert!(lines.is_empty(), "parallel=1 spawned workers: {lines:?}");
         assert_eq!(workers.busy(), 0);
@@ -632,7 +781,6 @@ rm -f "{active}/$$"
             "daemon",
             TEST_NOW,
             &BTreeMap::new(),
-            &stage(),
         );
         assert_eq!(lines.len(), 1, "worker did not start: {lines:?}");
         let lock = Path::new(&repo).join(".git").join("pulse-land.lock");
@@ -686,7 +834,6 @@ rm -f "{active}/$$"
             "daemon",
             TEST_NOW,
             &BTreeMap::new(),
-            &stage(),
         );
         let (results, cut) = workers.finish(&cancel, None);
         assert!(!cut, "finish cut workers: {results:?}");
@@ -698,5 +845,124 @@ rm -f "{active}/$$"
             ),
             1
         );
+    }
+
+    // A worker stuck where no cancellation reaches (a channel nobody sends
+    // on) is left behind at the deadline, named with its stage, instead of
+    // joined: a daemon restart once waited 3h17m on such a join.
+    #[test]
+    fn finish_leaves_a_stuck_worker_behind_at_its_deadline() {
+        let (_never_tx, never_rx) = crossbeam_channel::bounded::<()>(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
+        let mut workers = LandingWorkers {
+            cancel_grace: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        workers.spawn("stuck-proj", move |stage| {
+            crate::daemon_maintenance::set_stage(Some(&stage), "pushing stuck-proj");
+            let _ = never_rx.recv();
+            let _ = release_rx.recv();
+            LandingWorkerResult::default()
+        });
+        workers.spawn("quick-proj", |stage| {
+            crate::daemon_maintenance::set_stage(Some(&stage), "landing quick-proj");
+            LandingWorkerResult {
+                slug: "quick-proj".into(),
+                lines: vec!["landing quick-proj: finished in 0.0s".into()],
+                ..Default::default()
+            }
+        });
+        let ctx = pulse_bus::CancellationToken::new();
+        let started = Instant::now();
+        let (results, cut) =
+            workers.finish(&ctx, Some(Instant::now() + Duration::from_millis(100)));
+        let took = started.elapsed();
+        drop(release_tx);
+        assert!(
+            took < Duration::from_secs(1),
+            "finish took {took:?}: {results:?}"
+        );
+        assert!(cut, "a worker left behind is a cut: {results:?}");
+        assert!(
+            ctx.is_cancelled(),
+            "the deadline did not cancel the workers"
+        );
+        assert_eq!(workers.busy(), 0);
+        let stuck = results
+            .iter()
+            .find(|r| r.slug == "stuck-proj")
+            .expect("no result for the stuck worker");
+        assert!(stuck.detached, "{stuck:?}");
+        assert!(stuck.hold.is_none() && stuck.lines.len() == 1, "{stuck:?}");
+        assert!(
+            stuck.lines[0]
+                .starts_with("landing stuck-proj: worker: still at pushing stuck-proj after ")
+                && stuck.lines[0].contains("left behind so the daemon can go"),
+            "{:?}",
+            stuck.lines
+        );
+        let quick = results
+            .iter()
+            .find(|r| r.slug == "quick-proj")
+            .expect("no result for the quick worker");
+        assert!(!quick.detached, "{quick:?}");
+    }
+
+    // Once cancelled, a worker waiting in a git that hangs gets its git
+    // ended through the process registry and returns on its own; nothing is
+    // left behind.
+    #[test]
+    fn finish_ends_the_git_a_cancelled_worker_waits_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo").display().to_string();
+        pulse_testutil::git(&["init", "-q", "-b", "main", &root]).unwrap();
+        let hang = dir.path().join("hang.sh");
+        std::fs::write(&hang, "#!/bin/sh\nsleep 120\n").unwrap();
+        run(".", &["chmod", "+x", &hang.display().to_string()]);
+        let fsmonitor = format!("core.fsmonitor={}", hang.display());
+        let mut workers = LandingWorkers {
+            cancel_grace: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        workers.spawn("git-proj", move |stage| {
+            crate::daemon_maintenance::set_stage(Some(&stage), "landing git-proj");
+            // An hour of budget: only the shutdown can end it in time.
+            let r = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(3600),
+                &["-c", &fsmonitor, "status", "--porcelain"],
+            );
+            LandingWorkerResult {
+                slug: "git-proj".into(),
+                lines: vec![format!("landing git-proj: git ok={}", r.ok())],
+                ..Default::default()
+            }
+        });
+        // Let the git start and block on its fsmonitor.
+        std::thread::sleep(Duration::from_millis(300));
+        let ctx = pulse_bus::CancellationToken::new();
+        ctx.cancel();
+        let started = Instant::now();
+        let (results, cut) = workers.finish(&ctx, None);
+        let took = started.elapsed();
+        assert!(
+            took < test_wait(Duration::from_secs(10)),
+            "finish took {took:?}: {results:?}"
+        );
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(
+            !results[0].detached,
+            "the worker was left behind: {results:?}"
+        );
+        assert!(!cut, "a worker that returned is no cut: {results:?}");
+        let lines = &results[0].lines;
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with("landing git-proj: ended git -c core.fsmonitor=false ")
+                && lines[0].contains(" (pid ")
+                && lines[0].ends_with("after its cancellation so the daemon can go"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "landing git-proj: git ok=false");
     }
 }
