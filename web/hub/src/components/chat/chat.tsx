@@ -1835,7 +1835,6 @@ function NewConversation({
                     {list.map((p) => (
                       <SelectItem key={p.slug} value={p.slug}>
                         {p.slug}
-                        {p.brain ? " (brain)" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>

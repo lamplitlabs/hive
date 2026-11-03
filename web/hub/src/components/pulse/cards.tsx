@@ -43,7 +43,7 @@ export function ProjectCard({ p, spark, gate, forYou: forYouCount }: { p: Projec
           <ProjectAvatar slug={p.slug} />
           <div className="min-w-0 flex-1">
             <h3 title={p.slug} className="truncate text-[17px] font-semibold leading-tight tracking-tight">{p.slug}</h3>
-            <p className="mt-0.5 truncate text-[13px] text-muted-foreground">{p.brain ? "PULSE's own source" : p.name && p.name !== p.slug ? p.name : "Software project"}</p>
+            <p className="mt-0.5 truncate text-[13px] text-muted-foreground">{p.name && p.name !== p.slug ? p.name : "Software project"}</p>
           </div>
         </div>
         <ChevronRightIcon className="mt-2.5 size-4 shrink-0 text-muted-foreground opacity-60 transition-[transform,opacity] group-hover/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />

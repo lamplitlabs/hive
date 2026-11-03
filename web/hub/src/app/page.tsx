@@ -299,7 +299,7 @@ export default function HubPage() {
               <Kv
                 rows={[
                   ["Projects", plural(o.totals.projects, "project")],
-                  ["PULSE's own source", o.totals.brain ? <Mono key="brain">{o.totals.brain}</Mono> : "Not registered here"],
+                  ["Self-update builds from", o.totals.brain ? <Mono key="brain">{o.totals.brain}</Mono> : "No source checkout registered"],
                   ["Version", o.binary_version ? <Mono key="pulse">{o.binary_version}</Mono> : "Unknown"],
                   ["Store", <Mono key="store">{o.store || o.registry}</Mono>],
                 ]}

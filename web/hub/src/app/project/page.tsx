@@ -168,9 +168,7 @@ function ProjectScreen() {
     ? "The shared board is for work that touches more than one project. Agents from every project post, ask and vote here."
     : card && !card.present
       ? "Its folder " + card.path + " is not on this disk, so agents cannot work on it. If it moved or was cloned again, point PULSE to the new folder."
-      : card?.brain
-        ? goalText || "PULSE's own source code. Agents here improve PULSE itself."
-        : goalText || (card?.path ? "Software project at " + card.path : card?.name && card.name !== card.slug ? card.name : "A software project PULSE works on.");
+      : goalText || (card?.path ? "Software project at " + card.path : card?.name && card.name !== card.slug ? card.name : "A software project PULSE works on.");
   const counts: Partial<Record<ProjectCanonicalTab, number>> = card ? { "for-you": forYou, work: openTasks, board: card.threads_open } : {};
   const removed = () => setParams({ slug: null, tab: null, sub: null, thread: null, post: null, task: null });
 
@@ -181,8 +179,6 @@ function ProjectScreen() {
         badge={
           card && !card.present ? (
             <span className="rounded-full bg-bad/10 px-2.5 py-0.5 text-[13px] font-medium text-bad">Missing on disk</span>
-          ) : card?.brain ? (
-            <span className="rounded-full bg-muted px-2.5 py-0.5 text-[13px] font-medium text-muted-foreground" title="PULSE's own source code">PULSE&apos;s own source</span>
           ) : undefined
         }
         sub={
@@ -200,34 +196,30 @@ function ProjectScreen() {
         actions={
           isCommons || !card ? null : (
             <>
-              {card.brain ? null : (
-                <>
-                  {card.present ? null : (
-                    <Button onClick={() => setMoving(true)}>
-                      <FolderInputIcon /> Point to its folder
-                    </Button>
-                  )}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="icon" aria-label={"More actions for " + slug}>
-                        <MoreHorizontalIcon />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                      <DropdownMenuItem onSelect={() => setRenaming(true)}>
-                        <PencilLineIcon /> Rename project…
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setMoving(true)}>
-                        <FolderInputIcon /> Change folder…
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(true)}>
-                        <Trash2Icon /> Remove project…
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </>
+              {card.present ? null : (
+                <Button onClick={() => setMoving(true)}>
+                  <FolderInputIcon /> Point to its folder
+                </Button>
               )}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" aria-label={"More actions for " + slug}>
+                    <MoreHorizontalIcon />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuItem onSelect={() => setRenaming(true)}>
+                    <PencilLineIcon /> Rename project…
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setMoving(true)}>
+                    <FolderInputIcon /> Change folder…
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(true)}>
+                    <Trash2Icon /> Remove project…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <NewTaskButton size="default" variant={card.present ? "default" : "outline"} project={slug} onCreated={(t) => setParams({ tab: "work", task: t.id })} />
             </>
           )
@@ -260,9 +252,9 @@ function ProjectScreen() {
 
       <ThreadSheet slug={slug} threadKey={thread} onClose={() => setParams({ thread: null })} />
       <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
-      {card && !card.brain && !isCommons ? <RemoveDialog open={removing} onOpenChange={setRemoving} kind="project" name={slug} onApplied={removed} /> : null}
-      {card && !card.brain && !isCommons ? <RenameDialog open={renaming} onOpenChange={setRenaming} slug={slug} name={card.name || slug} /> : null}
-      {card && !card.brain && !isCommons ? <MoveDialog open={moving} onOpenChange={setMoving} slug={slug} name={card.name || slug} path={card.path} present={card.present} /> : null}
+      {card && !isCommons ? <RemoveDialog open={removing} onOpenChange={setRemoving} kind="project" name={slug} onApplied={removed} /> : null}
+      {card && !isCommons ? <RenameDialog open={renaming} onOpenChange={setRenaming} slug={slug} name={card.name || slug} /> : null}
+      {card && !isCommons ? <MoveDialog open={moving} onOpenChange={setMoving} slug={slug} name={card.name || slug} path={card.path} present={card.present} /> : null}
     </Tabs>
   );
 }

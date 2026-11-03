@@ -298,16 +298,6 @@ pub fn remove_project(
             "pulse projects",
         )
     })?;
-    if p.brain {
-        return Err(refuse_fix(
-            2,
-            format!(
-                "Refusing to remove {slug}: the brain is the framework checkout; deactivate with pulse settings, not remove"
-            ),
-            "the brain holds the constitution, the guide and the framework's own board",
-            "pulse settings set stop 1  (pauses every runner)",
-        ));
-    }
     if p.status != "active" {
         return Err(refuse_fix(
             2,
@@ -575,14 +565,6 @@ pub fn forget_project(
             "pulse projects",
         )
     })?;
-    if p.brain {
-        return Err(refuse_fix(
-            2,
-            format!("Refusing to forget {slug}: the brain is the framework checkout"),
-            "the brain holds the constitution, the guide and the framework's own board",
-            "pulse settings set stop 1  (pauses every runner)",
-        ));
-    }
     if p.status == "active" {
         return Err(refuse_fix(
             2,
