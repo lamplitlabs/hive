@@ -692,6 +692,42 @@ fn git_tree(root: &str, rev: &str) -> String {
     .to_string()
 }
 
+/// The project's check `vc` as a landing runs it in `worktree`: when the
+/// check builds into a Cargo target dir outside the worktree - the one the
+/// command names (`env CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/shared/land} ...`)
+/// or the one the landing's own environment exports - the merged tree's
+/// tracked sources are touched first, the same freshening a job's check gets
+/// (`exec::freshen_sources_for_check`). The touch is part of the command, so
+/// the verify lock's wrapper runs it after the lock is taken, right before
+/// the build: a tree that built into the shared dir while this landing set up
+/// or waited for the lock still left artifacts newer than the worktree's
+/// checkout, and Cargo, whose freshness is mtime-based and blind to the
+/// source's path, served them as fresh for the merged tree - a newer main's
+/// crates failed tests the branch never touched. A failed touch never blocks
+/// the check: one stderr line says so and the check runs as it is. Pure apart
+/// from the `${VAR:-default}` expansion the verify command's dir resolves with.
+pub(crate) fn landing_check_cmd(vc: &str, worktree: &str, env_target_dir: Option<&str>) -> String {
+    if !crate::exec::check_shares_cargo_target_dir(env_target_dir, vc, worktree) {
+        return vc.to_string();
+    }
+    format!(
+        "{} 2>/dev/null || echo \"pulse: could not touch the merged tree's tracked sources; the check runs as it is\" >&2\n{vc}",
+        landing_freshen_cmd(worktree)
+    )
+}
+
+/// The touch `landing_check_cmd` puts before the check: the tracked sources
+/// `exec::freshen_sources_cmd` touches in a job's clone, in a subshell so its
+/// `cd` never moves the check, and with `touch -c` so a tracked file the
+/// landing removed for its check (`run_base_check_files`) is not recreated
+/// empty.
+fn landing_freshen_cmd(worktree: &str) -> String {
+    format!(
+        "(cd {} && git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 -r touch -c)",
+        crate::util::shell_quote(worktree)
+    )
+}
+
 fn verify_memo_now(now: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(now)
         .map(|t| t.with_timezone(&chrono::Utc))
@@ -1579,7 +1615,18 @@ pub(crate) fn land_branch_with_registry(
     let mut verify_seconds: Option<u64> = None;
     let vc = project.str("verify_cmd");
     if o.verify && !vc.is_empty() {
+        // `vc_run` names the check in the verify memo; `vc_check` is what runs, the
+        // shared-target-dir freshening inside the lock included.
         let vc_run = crate::verify_lock::wrap(s, &slug, &vc);
+        let vc_check = crate::verify_lock::wrap(
+            s,
+            &slug,
+            &landing_check_cmd(
+                &vc,
+                &worktree,
+                std::env::var("CARGO_TARGET_DIR").ok().as_deref(),
+            ),
+        );
         let merged_tree = git_tree(&worktree, "HEAD");
         if let Some(memo) = find_verify_memo(s, &slug, &merged_tree, &vc_run, &now) {
             verify_note = crate::verify_memo::note(&memo, &merged_tree);
@@ -1728,7 +1775,7 @@ pub(crate) fn land_branch_with_registry(
             let (rc, so, se) = crate::landing_context::sh_with_context(
                 &cancel,
                 worktree.clone(),
-                vc_run.clone(),
+                vc_check.clone(),
                 budget,
             );
             let verify_took = verify_started.elapsed();
@@ -1794,6 +1841,7 @@ pub(crate) fn land_branch_with_registry(
                         &worktree,
                         &before,
                         &vc_run,
+                        &vc_check,
                         base_budget,
                         &slug,
                         &branch,
@@ -1868,6 +1916,7 @@ pub(crate) fn land_branch_with_registry(
                         &worktree,
                         &o.upstream,
                         &vc_run,
+                        &vc_check,
                         base_budget,
                         &slug,
                         &branch,
@@ -2742,12 +2791,16 @@ fn check_files() -> Vec<String> {
 /// it. `Some(true)` when the default branch fails the command as well, `Some(false)` when
 /// it passes, `None` when there is no answer (the worktree could not be reset, or the
 /// command did not finish within `budget`). The second value is the tail of that run.
+/// `verify_cmd` keys the verify memo; `run_cmd` is the same check as the landing runs it
+/// (`landing_check_cmd`), so {def}'s tree is freshened too: the merged verify's lock was
+/// released before this one, and another tree may have built in between.
 fn base_verify_red(
     s: &pulse_store::Store,
     cancel: &pulse_bus::CancellationToken,
     worktree: &str,
     before: &str,
     verify_cmd: &str,
+    run_cmd: &str,
     budget: Duration,
     slug: &str,
     branch: &str,
@@ -2771,7 +2824,7 @@ fn base_verify_red(
     let (rc, so, se) = crate::landing_context::sh_with_context(
         cancel,
         worktree.to_string(),
-        verify_cmd.to_string(),
+        run_cmd.to_string(),
         budget,
     );
     let tail = format!(
@@ -4443,6 +4496,119 @@ mod tests {
         assert_eq!(recorded[0]["verdict"], "ready");
         assert_eq!(recorded[0]["min_days"], 0);
         assert_eq!(recorded[0]["pins"][0]["version"], "16.4.2");
+    }
+
+    #[test]
+    fn landing_check_cmd_freshens_only_for_a_target_dir_outside_the_worktree() {
+        let worktree = "/h/.pulse/work/land-proj-7";
+        let land = "env CARGO_TARGET_DIR=${PULSE_TEST_LAND_FRESHEN_UNSET:-/h/.pulse/cache/cargo-target-land/p} sh -c 'cargo test --workspace'";
+        // The registered check names the shared land dir: touch, then check.
+        let cmd = super::landing_check_cmd(land, worktree, None);
+        assert_eq!(
+            cmd,
+            format!(
+                "(cd /h/.pulse/work/land-proj-7 && git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 -r touch -c) 2>/dev/null || echo \"pulse: could not touch the merged tree's tracked sources; the check runs as it is\" >&2\n{land}"
+            )
+        );
+        // The landing's own environment can share one too.
+        assert!(
+            super::landing_check_cmd("cargo test", worktree, Some("/h/target"))
+                .ends_with("touch -c) 2>/dev/null || echo \"pulse: could not touch the merged tree's tracked sources; the check runs as it is\" >&2\ncargo test")
+        );
+        // A worktree path with a space is quoted for the `cd`.
+        assert!(
+            super::landing_check_cmd(land, "/h/with space/land-proj-7", None)
+                .starts_with("(cd '/h/with space/land-proj-7' && git ls-files -z")
+        );
+        // Inside the worktree, relative, or not named at all: the check as it is.
+        assert_eq!(
+            super::landing_check_cmd("cargo test", worktree, None),
+            "cargo test"
+        );
+        assert_eq!(
+            super::landing_check_cmd("cargo test", worktree, Some("target")),
+            "cargo test"
+        );
+        let inside = "env CARGO_TARGET_DIR=/h/.pulse/work/land-proj-7/target cargo test";
+        assert_eq!(super::landing_check_cmd(inside, worktree, None), inside);
+    }
+
+    /// A landing's check that builds into a target dir shared with other trees
+    /// rebuilds the merged tree's crates instead of serving what another tree
+    /// built there after the worktree was checked out. `check.sh` stands in for
+    /// Cargo: it reuses `$CARGO_TARGET_DIR/artifact` unless a tracked source is
+    /// newer, and passes only when what it ran was built from this tree. main's
+    /// recipe setup stands in for the other tree (a newer main landing beside
+    /// this one): it builds into the shared dir after the checkout. Without the
+    /// freshening the merged result and main itself both fail, main is held red
+    /// and the docs-only branch waits; with it the branch lands.
+    #[test]
+    fn landing_check_rebuilds_what_another_tree_built_into_a_shared_target_dir() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        let dir = std::path::Path::new(&root);
+        let shared = std::path::Path::new(&s.home).join("cargo-target-land");
+        std::fs::create_dir_all(&shared).unwrap();
+        let artifact = shared.join("artifact");
+        std::fs::write(dir.join("lib.rs"), "// this tree\n").unwrap();
+        std::fs::write(
+            dir.join("check.sh"),
+            "t=\"$CARGO_TARGET_DIR/artifact\"\nif [ ! -f \"$t\" ] || [ -n \"$(find lib.rs -newer \"$t\")\" ]; then cp lib.rs \"$t\"; fi\ncmp -s lib.rs \"$t\"\n",
+        )
+        .unwrap();
+        let recipe = dir.join(crate::recipe::RECIPE_PATH);
+        std::fs::create_dir_all(recipe.parent().unwrap()).unwrap();
+        std::fs::write(
+            &recipe,
+            format!(
+                "---\nrecipe: 1\nsetup:\n  - printf newer-main > {} && sleep 1\n---\n",
+                crate::util::shell_quote(&artifact.display().to_string())
+            ),
+        )
+        .unwrap();
+        run(&root, &["git", "add", "-A"]);
+        run(
+            &root,
+            &["git", "commit", "-q", "-m", "a crate and its check"],
+        );
+        let verify_cmd = format!(
+            "env CARGO_TARGET_DIR=${{PULSE_TEST_SHARED_TARGET_UNSET:-{}}} sh check.sh",
+            shared.display()
+        );
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&verify_cmd],
+        );
+        let branch = "pulse/aurora/shared-target";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(dir.join("notes.txt"), "docs only\n").unwrap();
+        run(&root, &["git", "add", "notes.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "docs only"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+
+        let (state, note) = super::land_branch(
+            &s,
+            project,
+            branch.into(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                verify: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        run(&root, &["git", "cat-file", "-e", "main:notes.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(&artifact).unwrap(),
+            "// this tree\n",
+            "the check served the other tree's build"
+        );
     }
 
     #[test]
