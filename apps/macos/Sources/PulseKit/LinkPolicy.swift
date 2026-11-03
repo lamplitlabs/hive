@@ -24,6 +24,13 @@ public enum LinkTarget: Equatable, Sendable {
     case refuse
 }
 
+/// What a page asks to record (WebKit's WKMediaCaptureType, without WebKit).
+public enum MediaCapture: Equatable, Sendable {
+    case microphone
+    case camera
+    case cameraAndMicrophone
+}
+
 /// Decides where main-frame navigations and new-window requests go; subframes
 /// (the chat's artifact viewer) are the console's own business, except that
 /// a link clicked in one goes where a clicked link goes.
@@ -91,6 +98,15 @@ public struct LinkPolicy: Equatable, Sendable {
         parts.host = consoleParts.host
         parts.port = consoleParts.port
         return parts.url ?? console
+    }
+
+    /// Whether a page may record. Only the console's own page, in the main
+    /// frame, gets the microphone alone: the chat's dictation button records
+    /// and posts the sound to the hub's own transcribe route on this machine.
+    /// A camera, a framed file (an artifact in the chat's viewer) and any
+    /// other origin get nothing.
+    public func allowsCapture(_ capture: MediaCapture, from origin: URL, mainFrame: Bool) -> Bool {
+        capture == .microphone && mainFrame && isConsole(origin)
     }
 
     func port(of url: URL) -> Int {

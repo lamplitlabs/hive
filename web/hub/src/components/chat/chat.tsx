@@ -94,7 +94,7 @@ import {
 } from "@/components/pulse/panel";
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
 import { BackButton, Pane, Split } from "@/components/chat/split";
-import { MicButton } from "@/components/chat/mic";
+import { MicButton, useDictation } from "@/components/chat/mic";
 import { TaskView } from "@/components/chat/task-view";
 import {
   LOCKDOWN_BADGE,
@@ -189,7 +189,6 @@ import {
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { insertSpoken, type Transcript } from "@/lib/voice";
 
 // ----- words ----------------------------------------------------------------
 
@@ -1655,6 +1654,8 @@ function NewConversation({
   const [auto, setAuto] = useState(true);
   const [lockdown, setLockdown] = useState(false);
   const [busy, setBusy] = useState(false);
+  const textarea = useRef<HTMLTextAreaElement | null>(null);
+  const insertSpokenText = useDictation(textarea, text, setText);
   const list = (projects?.projects ?? []).filter(
     (p) => p.status !== "inactive",
   );
@@ -1745,6 +1746,7 @@ function NewConversation({
               </p>
             </div>
             <Textarea
+              ref={textarea}
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
@@ -1758,7 +1760,8 @@ function NewConversation({
               autoFocus
               aria-label="What should the agent do"
             />
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <MicButton disabled={busy} onText={insertSpokenText} />
               {STARTERS.map((s) => (
                 <button
                   key={s}
@@ -3562,19 +3565,7 @@ function Composer({
 
   // Dictated words go where the caret is (or over the selection), and the
   // caret moves past them so the next take follows on.
-  const insertSpokenText = (t: Transcript) => {
-    const el = textarea.current;
-    const start = el?.selectionStart ?? text.length;
-    const end = el?.selectionEnd ?? text.length;
-    const next = insertSpoken(text, start, end, t.text);
-    setText(next.text);
-    requestAnimationFrame(() => {
-      const node = textarea.current;
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(next.caret, next.caret);
-    });
-  };
+  const insertSpokenText = useDictation(textarea, text, setText);
 
   const addFiles = (files: FileList | File[] | null | undefined) => {
     if (disabled) return;
@@ -3859,6 +3850,8 @@ function SubConversations({
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
+  const brief = useRef<HTMLTextAreaElement | null>(null);
+  const insertSpokenText = useDictation(brief, text, setText);
   const archived = c.status === "archived";
   const kids = d.children;
   if (!kids.length && archived) return null;
@@ -3972,6 +3965,7 @@ function SubConversations({
             className="h-8"
           />
           <Textarea
+            ref={brief}
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="What should it do? It works in this conversation's workspace and reports back here."
@@ -3979,19 +3973,22 @@ function SubConversations({
             rows={3}
             className="min-h-16 text-[13px]"
           />
-          <Button
-            type="submit"
-            size="sm"
-            disabled={!text.trim() || !!busy}
-            className="justify-self-end"
-          >
-            {busy === "sub" ? (
-              <LoaderCircleIcon className="animate-spin" />
-            ) : (
-              <MessageSquarePlusIcon />
-            )}{" "}
-            Start
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <MicButton disabled={!!busy} onText={insertSpokenText} />
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!text.trim() || !!busy}
+              className="ml-auto"
+            >
+              {busy === "sub" ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <MessageSquarePlusIcon />
+              )}{" "}
+              Start
+            </Button>
+          </div>
         </form>
       ) : null}
     </section>

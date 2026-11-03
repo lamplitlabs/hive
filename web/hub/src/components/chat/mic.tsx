@@ -7,7 +7,7 @@
 // download the dialog here shows and can stop. Nothing recorded leaves
 // the computer: the hub transcribes in its own process.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   LoaderCircleIcon,
   MicIcon,
@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 import {
   VOICE_SAMPLE_RATE,
   gigs,
+  insertSpoken,
   micState,
   micTitle,
   pcm16,
@@ -51,6 +52,30 @@ import {
 } from "@/lib/voice";
 
 const VOICE_PATH = "voice";
+
+// What a composer needs to take dictation: the transcript lands where the
+// caret is (or over the selection) and the caret moves past it, so the
+// next take follows on. Every text box that sends to an agent uses this
+// with a MicButton beside it, so dictating works the same everywhere.
+export function useDictation(
+  textarea: RefObject<HTMLTextAreaElement | null>,
+  text: string,
+  setText: (next: string) => void,
+): (t: Transcript) => void {
+  return (t: Transcript) => {
+    const el = textarea.current;
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    const next = insertSpoken(text, start, end, t.text);
+    setText(next.text);
+    requestAnimationFrame(() => {
+      const node = textarea.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(next.caret, next.caret);
+    });
+  };
+}
 
 // The recorder: the microphone through an AudioContext, mono float frames
 // gathered until stop, then 16 kHz PCM. A ScriptProcessor is used because
