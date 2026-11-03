@@ -440,12 +440,21 @@ pub(crate) fn lease_job(
         if o.reserved {
             sql.push_str(" AND j.needs != ''");
         }
+        // The owner lane marker and the kinds that fit are both honoured
+        // when both are there (a full daily cap inside a restart window):
+        // the owner's work, and of it only the kinds the window has room for.
         if is_owner_lane(&o.fits) {
             sql.push_str(&format!(" AND {OWNER_DRIVEN_SQL}"));
-        } else if !o.fits.is_empty() {
-            let marks = vec!["?"; o.fits.len()].join(",");
+        }
+        let kinds: Vec<&(String, String)> = o
+            .fits
+            .iter()
+            .filter(|(project, kind)| !(project == OWNER_LANE.0 && kind == OWNER_LANE.1))
+            .collect();
+        if !kinds.is_empty() {
+            let marks = vec!["?"; kinds.len()].join(",");
             sql.push_str(&format!(" AND (j.project || '/' || j.kind) IN ({marks})"));
-            for (project, kind) in &o.fits {
+            for (project, kind) in kinds {
                 vals.push(Box::new(format!("{project}/{kind}")));
             }
         }

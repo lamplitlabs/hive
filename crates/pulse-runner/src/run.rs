@@ -278,17 +278,38 @@ pub(crate) fn runner_stopped(s: &pulse_store::Store) -> String {
     String::new()
 }
 
+/// What the daily cap (`jobs_per_day`) has counted today: the distinct
+/// jobs that ran, not the runs (`pulse_store::DAILY_CAP_COUNT_SQL`). A run
+/// the daemon asked to hold - for the owner's work (yield_lane) or its own
+/// restart - is the same job carried on later, and a run lost to a restart
+/// never started its work; on 2026-11-03 sixty-six held runs of three jobs
+/// filled a cap of ten by noon and the fleet stood until the owner found
+/// out.
 pub(crate) fn runs_today(s: &pulse_store::Store, now: &str) -> i32 {
     let c = conn(s);
     let day = now.get(..10).unwrap_or(now);
-    crate::util::must_one(&c, "SELECT COUNT(*) AS n FROM runs WHERE mode != 'dry-run' AND status != 'error' AND substr(started_at, 1, 10) = ?", &[&day]).int("n")
+    c.query_row(pulse_store::DAILY_CAP_COUNT_SQL, [day], |r| {
+        r.get::<_, i64>(0)
+    })
+    .unwrap_or(0) as i32
 }
 
 pub(crate) fn daily_cap(s: &pulse_store::Store) -> i32 {
-    match s.setting("jobs_per_day", "").trim().to_lowercase().as_str() {
-        "" | "0" | "none" | "off" | "unlimited" => 0,
-        raw => raw.parse::<i32>().map(|n| n.max(0)).unwrap_or(2),
-    }
+    pulse_store::daily_cap_of(&s.setting("jobs_per_day", ""), 2) as i32
+}
+
+/// The idle reason a full cap leaves; the daemon reads it back
+/// (`daily_cap_hold`) to tell the owner once.
+pub(crate) const DAILY_CAP_REASON: &str = "daily cap reached";
+
+/// What a full cap stops: the fleet's own work. The owner's jobs
+/// (`OWNER_DRIVEN_SQL`: the lead's sittings, answers, task jobs, security
+/// updates) go on past it - the cap is the owner's budget for the fleet,
+/// not a lock on the owner's own asks - so the slot leases those alone.
+pub(crate) fn daily_cap_reason(done: i32, cap: i32) -> String {
+    format!(
+        "{DAILY_CAP_REASON}: {done} of {cap} jobs today (setting jobs_per_day; 0 lifts it); only the owner's own tasks, answers and lead sittings start until midnight UTC"
+    )
 }
 
 /// `held` names projects this call may not lease, with the unfit reason each
@@ -336,17 +357,22 @@ pub(crate) fn take_job_first(
     {
         return Ok((Row::new(), Row::new(), why));
     }
+    // Past the cap the slot still takes the owner's own work (the owner
+    // lane, jobs.rs OWNER_DRIVEN_SQL); the fleet's waits for midnight. The
+    // lease honours the lane marker beside a restart window's kinds.
+    let mut fits = fits.to_vec();
+    let mut cap_note = String::new();
     if !dry_run {
         let cap = daily_cap(s);
         let done = runs_today(s, now) + taken;
         if cap > 0 && done >= cap {
-            return Ok((
-                Row::new(),
-                Row::new(),
-                format!("daily cap reached: {done} of {cap} jobs today (setting jobs_per_day)"),
-            ));
+            cap_note = daily_cap_reason(done, cap);
+            if !crate::jobs::is_owner_lane(&fits) {
+                fits.extend(crate::jobs::owner_lane_fits());
+            }
         }
     }
+    let fits = fits.as_slice();
     let mut ex_name = executor.to_string();
     if ex_name.is_empty() {
         ex_name = crate::executor::LOCAL_EXECUTOR.to_string();
@@ -510,6 +536,11 @@ pub(crate) fn take_job_first(
         },
     )?;
     if is_nil(&job) {
+        // The cap is full and no owner work waits: the reason is the cap,
+        // whatever else the queue holds.
+        if !cap_note.is_empty() {
+            return Ok((Row::new(), exrow, cap_note));
+        }
         // A project frozen here by a repeated setup failure passed the gate
         // above for its repair job alone; with none queued the wait reason
         // still names the mark, not an empty queue.

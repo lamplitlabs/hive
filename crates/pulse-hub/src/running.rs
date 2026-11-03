@@ -938,6 +938,37 @@ mod tests {
         assert!(workers.contains_key("prune_after_days"));
     }
 
+    // runs_today is what the daily cap (jobs_per_day) stops at: distinct jobs
+    // that ran today, so a job whose run was held or lost and ran again is one
+    // job, an errored run is none, a dry run is none and yesterday is gone.
+    #[test]
+    fn runner_view_counts_the_distinct_jobs_the_daily_cap_counts() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        let exec = |sql: &str| s.conn().unwrap().execute(sql, []).unwrap();
+        for (id, job, status, started, mode) in [
+            ("r1", "job-a", "done", "2026-09-06T08:00:00Z", "real"),
+            ("r2", "job-a", "done", "2026-09-06T09:00:00Z", "real"),
+            ("r3", "job-b", "held", "2026-09-06T09:10:00Z", "real"),
+            ("r4", "job-b", "running", "2026-09-06T09:20:00Z", "real"),
+            ("r5", "job-c", "lost", "2026-09-06T10:00:00Z", "real"),
+            ("r6", "job-d", "error", "2026-09-06T10:30:00Z", "real"),
+            ("r7", "job-e", "done", "2026-09-06T11:00:00Z", "dry-run"),
+            ("r8", "job-f", "done", "2026-09-05T23:59:00Z", "real"),
+        ] {
+            exec(&format!(
+                "INSERT INTO runs(id,job_id,agent,project,started_at,status,mode) VALUES('{id}','{job}','w','commons','{started}','{status}','{mode}')"
+            ));
+        }
+        s.set_setting("human", "jobs_per_day", "10").unwrap();
+        let (code, body) = http::additions_request(h, "GET", "/api/v1/runner", "");
+        assert_eq!(code, 200);
+        let jobs = body["jobs"].as_object().unwrap();
+        assert_eq!(jobs["runs_today"], 2, "job-a once, job-b once: {jobs:?}");
+        assert_eq!(jobs["cap"], 10);
+    }
+
     #[test]
     fn runner_view_carries_capacity_hold() {
         let _serial = crate::test_helpers::serial();

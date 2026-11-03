@@ -21,6 +21,7 @@ pub mod daemon;
 pub(crate) mod daemon_load;
 pub mod daemon_maintenance;
 pub mod daemon_watchdog;
+pub(crate) mod daily_cap;
 pub mod db;
 pub mod diskroom;
 pub mod env;

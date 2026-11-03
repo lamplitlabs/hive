@@ -116,7 +116,7 @@ type SettingLabels = { on?: string; off?: string; choices?: Record<string, strin
 const INVALIDATES = (p: string) => p.startsWith("settings") || p.startsWith("runner") || p.startsWith("compute") || p.startsWith("events") || p.startsWith("org");
 const SAVED_NOTE = "PULSE saves it right away and records that you changed it. The runner uses the new value from its next pass.";
 
-export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit: boolean; labels?: SettingLabels; title?: React.ReactNode }) {
+export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; canEdit: boolean; labels?: SettingLabels; title?: React.ReactNode; warn?: (value: string) => string }) {
   const [draftState, setDraftState] = useState({ name: s.name, value: s.value, draft: s.value });
   const [pending, setPending] = useState<string | null>(null);
   let draft = draftState.draft;
@@ -138,6 +138,11 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
   const named = typeof label === "string" ? label : settingLabel(s.name);
   const h = hint(s);
   const show = (v: string) => labels?.choices?.[v] ?? (v || "empty");
+  // A value that stops work today (jobs_per_day at or under today's count)
+  // says so under the editor - for the draft while the owner types, for the
+  // saved value otherwise - and again in the confirm dialog.
+  const warning = warn ? warn(dirty ? draft : s.value) : "";
+  const pendingWarning = warn && pending !== null ? warn(pending) : "";
   return (
     <div className="grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-x-8">
       <RowHead s={s} title={label} />
@@ -202,6 +207,11 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
           )}
         </div>
         {h && (dirty || secret) ? <p className="text-xs leading-snug text-muted-foreground anywhere md:text-right">{h}</p> : null}
+        {warning ? (
+          <p role="status" className="text-xs leading-snug text-warn anywhere md:text-right">
+            {warning}
+          </p>
+        ) : null}
       </div>
       <ConfirmDialog
         open={pending !== null}
@@ -220,6 +230,7 @@ export function SettingRow({ s, canEdit, labels, title }: { s: Setting; canEdit:
                 </>
               )}
             </span>
+            {pendingWarning ? <span className="block text-warn">{pendingWarning}</span> : null}
             <span className="block">{SAVED_NOTE}</span>
             <span className="block text-xs text-muted-foreground">
               Setting <span className="font-mono">{s.name}</span>

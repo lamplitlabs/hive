@@ -1498,6 +1498,11 @@ pub(crate) fn daemon(
     // Whether the last pass found the bulk volume away (bulk.rs), so its
     // return is said once.
     let mut bulk_was_away = false;
+    // Whether the last tick found the daily cap holding queued work (the
+    // owner heard once; daily_cap.rs), so its lifting is said once too;
+    // unknown on the first tick, when a question from before a restart may
+    // be open.
+    let mut cap_was_holding: Option<bool> = None;
     // When the last disk-floor finding was posted; a re-crossing inside
     // DISK_FLOOR_REPOST_MINUTES keeps pausing but does not post again.
     let mut disk_floor_last_post = String::new();
@@ -1919,9 +1924,8 @@ pub(crate) fn daemon(
                 {
                     say(&o, line);
                 }
-                for line in crate::yield_lane::yield_lanes_to_owner(s, &now, &actor) {
-                    say(&o, line);
-                }
+                // (The owner's lanes are yielded further down, once the
+                // restart window says which runs may still start.)
                 // A worker is not kept idle: once its run has ended and
                 // nothing waits for it (no lease, no held conversation), it
                 // retires for good and the next job gets a fresh name. The
@@ -2269,6 +2273,17 @@ pub(crate) fn daemon(
                 restart_kinds = kinds;
                 Some(line)
             });
+            // The owner's work goes first in its project (yield_lane): a fleet
+            // run in the way of a queued owner job is asked to hold - but not
+            // for a job the restart window has no room to start, and not at
+            // all while the window starts nothing.
+            let restart_starts_nothing = restart_hold.is_some() && restart_kinds.is_empty();
+            if !o.dry_run && !restart_starts_nothing {
+                for line in crate::yield_lane::yield_lanes_to_owner(s, &now, &actor, &restart_kinds)
+                {
+                    say(&o, line);
+                }
+            }
             let disk_floor = crate::executor::disk_floor_hold(s);
             // The console's daemon line: empty while the disk pays for runs,
             // otherwise the hold in the copy the Overview prints in red.
@@ -2704,6 +2719,56 @@ pub(crate) fn daemon(
                 if !post.0.is_empty() {
                     say(&o, post.str("summary"));
                 }
+            }
+            // The daily cap: the owner hears the first tick it holds queued
+            // work, on the board and in the log without the hourly dedupe,
+            // and hears again when it lifts (daily_cap.rs).
+            if !o.dry_run
+                && let Some(c) = conn.as_ref()
+            {
+                let cap = crate::run::daily_cap(s);
+                let done = crate::run::runs_today(s, &now);
+                let holding = cap > 0 && done >= cap && queued > 0;
+                if holding && cap_was_holding != Some(true) {
+                    let post = crate::daily_cap::post_cap_reached(
+                        s,
+                        crate::board::brain_project(c),
+                        done,
+                        cap,
+                        queued,
+                        now.clone(),
+                        actor.clone(),
+                    );
+                    say(
+                        &o,
+                        format!(
+                            "{}; {} job(s) wait; set jobs_per_day higher or to 0 to let them start{}",
+                            crate::run::daily_cap_reason(done, cap),
+                            queued,
+                            if post.0.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (asked the owner: {})", post.str("id"))
+                            }
+                        ),
+                    );
+                } else if !holding && cap_was_holding != Some(false) {
+                    let why = crate::daily_cap::lift_reason(s, &now);
+                    let closed = crate::daily_cap::close_cap_notices(
+                        s,
+                        &crate::board::brain_project(c),
+                        &why,
+                        &now,
+                        &actor,
+                    );
+                    if closed > 0 {
+                        say(
+                            &o,
+                            format!("daily cap lifted: {why}; {closed} owner question(s) answered"),
+                        );
+                    }
+                }
+                cap_was_holding = Some(holding);
             }
             if !disk_floor_since.is_empty()
                 && !disk_floor_posted

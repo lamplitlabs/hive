@@ -3,6 +3,7 @@
 pub mod chat;
 pub mod chat_ddl;
 pub mod ctx;
+pub mod daily_cap;
 pub mod ddl;
 pub mod evolve_ddl;
 pub mod filepath;
@@ -31,6 +32,7 @@ pub mod tasks_ddl;
 pub use chat::*;
 pub use chat_ddl::CHAT_DDL;
 pub use ctx::{CancellationToken, ContextError};
+pub use daily_cap::{DAILY_CAP_COUNT_SQL, daily_cap_of};
 pub use ddl::{DDL, JOB_COLUMNS};
 pub use evolve_ddl::EVOLVE_DDL;
 pub use forget::*;

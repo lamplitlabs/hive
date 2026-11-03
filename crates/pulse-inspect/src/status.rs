@@ -121,16 +121,19 @@ pub fn setting_int(values: &BTreeMap<String, String>, name: &str) -> i64 {
     })
 }
 
+/// The daily cap as the runner reads it (`pulse_store::daily_cap_of`): 0
+/// for none; an unparsable value falls back to the shipped default.
 pub fn daily_cap(values: &BTreeMap<String, String>) -> i64 {
     let raw = values
         .get("jobs_per_day")
         .cloned()
         .or_else(|| pulse_store::DEFAULT_SETTINGS.get("jobs_per_day").cloned())
         .unwrap_or_default();
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" | "0" | "none" | "off" | "unlimited" => 0,
-        _ => setting_int(values, "jobs_per_day").max(0),
-    }
+    let fallback = pulse_store::DEFAULT_SETTINGS
+        .get("jobs_per_day")
+        .and_then(|d| d.parse::<i64>().ok())
+        .unwrap_or(0);
+    pulse_store::daily_cap_of(&raw, fallback)
 }
 
 pub fn runner_stopped(s: &pulse_store::Store) -> Result<String> {
@@ -636,12 +639,10 @@ pub fn status(s: &pulse_store::Store) -> Result<StatusReport> {
     let conn = s.conn()?;
     r.posts = conn.query_row("SELECT COUNT(*) FROM posts", [], |row| row.get(0))?;
     let today = parse_utc(&s.now())?.format("%Y-%m-%d").to_string();
-    r.runs_today = conn.query_row(
-        "SELECT COUNT(*) FROM runs WHERE mode != 'dry-run' AND status != 'error'
-		AND substr(started_at, 1, 10) = ?",
-        [&today],
-        |row| row.get(0),
-    )?;
+    // What the daily cap counts (pulse_store::DAILY_CAP_COUNT_SQL): the same
+    // number the runner holds against jobs_per_day, so "N of M" here is the
+    // runner's own arithmetic.
+    r.runs_today = conn.query_row(pulse_store::DAILY_CAP_COUNT_SQL, [&today], |row| row.get(0))?;
     r.settings = s.setting_rows()?;
     let mut values = BTreeMap::new();
     for setting in &mut r.settings {
@@ -951,19 +952,42 @@ mod tests {
             &s,
             "INSERT INTO projects(slug,name,path,status,brain,added_at) VALUES ('active','Active','/missing-active','active',0,'2026-09-06T19:00:00Z'),('inactive','Inactive','/missing-inactive','inactive',0,'2026-09-06T19:00:00Z')",
         );
-        for (id, mode, status, at) in [
-            ("today", "real", "done", TEST_NOW),
-            ("dry", "dry-run", "done", TEST_NOW),
-            ("error", "real", "error", TEST_NOW),
-            ("yesterday", "real", "done", "2026-09-05T23:59:59Z"),
-            ("running", "real", "running", "2026-09-06T18:50:00Z"),
-            ("stale-running", "real", "running", "2026-09-06T01:00:00Z"),
+        // Each run its own job but the two of `again`: the cap counts
+        // distinct jobs (a held run carried on later is the same work).
+        for (id, job, mode, status, at) in [
+            ("today", "job-today", "real", "done", TEST_NOW),
+            ("dry", "job-dry", "dry-run", "done", TEST_NOW),
+            ("error", "job-error", "real", "error", TEST_NOW),
+            (
+                "yesterday",
+                "job-yesterday",
+                "real",
+                "done",
+                "2026-09-05T23:59:59Z",
+            ),
+            (
+                "running",
+                "job-running",
+                "real",
+                "running",
+                "2026-09-06T18:50:00Z",
+            ),
+            (
+                "stale-running",
+                "job-stale",
+                "real",
+                "running",
+                "2026-09-06T01:00:00Z",
+            ),
+            ("held", "job-today", "real", "held", "2026-09-06T00:30:00Z"),
+            ("again", "job-today", "real", "done", "2026-09-06T00:40:00Z"),
+            ("lost", "job-lost", "real", "lost", "2026-09-06T00:50:00Z"),
         ] {
             s.conn()
                 .unwrap()
                 .execute(
-                    "INSERT INTO runs(id,job_id,agent,project,started_at,status,mode) VALUES (?,'job','worker','active',?,?,?)",
-                    (id, at, status, mode),
+                    "INSERT INTO runs(id,job_id,agent,project,started_at,status,mode) VALUES (?,?,'worker','active',?,?,?)",
+                    (id, job, at, status, mode),
                 )
                 .unwrap();
         }

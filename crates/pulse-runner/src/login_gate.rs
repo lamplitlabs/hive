@@ -37,6 +37,11 @@ impl Drop for LoginGateGuard {
 pub(crate) fn swap_login_gate(
     f: Box<dyn Fn(&pulse_store::Store) -> String + Send + Sync>,
 ) -> LoginGateGuard {
+    // The process-wide test setup stubs the gate once; running it first means
+    // the gate this guard restores is that stub, not the real provider probe,
+    // whatever test happens to run first in the process.
+    #[cfg(test)]
+    crate::test_helpers::test_main_setup();
     LoginGateGuard(Some(set_login_gate(f)))
 }
 

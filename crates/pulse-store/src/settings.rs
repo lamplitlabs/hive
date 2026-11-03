@@ -55,7 +55,7 @@ pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-        "jobs_per_day"=>("count-or-none",Some(0),[],None,"worker runs the runner may start per UTC day on every executor together; 0 or none means no daily cap"),
+        "jobs_per_day"=>("count-or-none",Some(0),[],None,"distinct jobs the fleet may start per UTC day on every executor together, a hard stop until midnight once reached; the owner's own tasks, answers and lead sittings run past it; 0 or none means no daily cap"),
         "chat.idle_release_minutes"=>("count",Some(0),[],None,"minutes a conversation may sit idle (no turn running, nothing queued, no question open) before the hub lets its agent go: the session's provider and MCP connections and their child processes close, its trajectory stays on disk and the next message resumes the conversation from it; 0 keeps every agent for as long as the hub runs"),
         "chat.resume_after_provider_error_secs"=>("count",Some(0),[],None,"seconds a conversation waits before it resumes a turn a transport provider_error (a failed send or a broken reply body) cut short, once per failure; 0 leaves the conversation idle for the next message as before"),
         "chat.sub_depth"=>("count",Some(0),[],None,"levels deep a conversation may start sub-conversations: at 2 a conversation's sub-conversations may start their own and those may not; 0 sets no depth limit (each level is a session of its own, and a brief that tells its sub-conversation to delegate the same way runs on until a step or cost budget stops it)"),

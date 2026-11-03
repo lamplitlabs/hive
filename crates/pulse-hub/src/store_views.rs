@@ -388,20 +388,20 @@ impl Handler {
                 );
             }
         }
+        // What the daily cap (jobs_per_day) counts and means, from the one
+        // definition the runner enforces (pulse_store::daily_cap), so the
+        // console's "N of M used today" is the number the runner stops at.
         let runs_today: i64 = store.conn()?.query_row(
-            "SELECT count(*) FROM runs WHERE mode!='dry-run' AND status!='error' AND substr(started_at,1,10)=?",
+            pulse_store::DAILY_CAP_COUNT_SQL,
             [store.now().chars().take(10).collect::<String>()],
             |r| r.get(0),
         )?;
         jobs.insert("runs_today".into(), json!(runs_today));
         jobs.insert(
             "cap".into(),
-            json!(std::cmp::max(
-                0,
-                store
-                    .setting("jobs_per_day", "")
-                    .parse::<i64>()
-                    .unwrap_or(0)
+            json!(pulse_store::daily_cap_of(
+                &store.setting("jobs_per_day", ""),
+                0
             )),
         );
         let text = pulse_inspect::daemon_status(store)?;

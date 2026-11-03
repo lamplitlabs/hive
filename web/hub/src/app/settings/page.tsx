@@ -11,7 +11,8 @@ import { CredentialRow } from "@/components/settings/credential";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { NotificationsCard } from "@/components/settings/notifications";
 import { PauseCard, SettingRow } from "@/components/settings/setting-row";
-import type { Setting, SettingsPayload } from "@/lib/api";
+import type { Runner, Setting, SettingsPayload } from "@/lib/api";
+import { capWarning, runsTodayOf } from "@/lib/cap-warning-state";
 import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -259,9 +260,13 @@ const ANCHOR = "scroll-mt-16 lg:scroll-mt-4";
 // The rows of one section. The push key has its own row (a picker, not a
 // text field). Only the chosen compute provider's details show - unless the
 // owner is searching, when every match counts. Big sections show their
-// common rows first and fold the rest behind "Show N more".
-function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle }: { g: Group; rows: Setting[]; canEdit: boolean; provider: string; searching: boolean; expanded: boolean; onToggle: () => void }) {
-  const row = (s: Setting) => (s.name === "push.credential" ? <CredentialRow key={s.name} s={s} canEdit={canEdit} /> : <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} />);
+// common rows first and fold the rest behind "Show N more". `warnings`
+// names the rows whose value can stop work today (jobs_per_day) and what
+// to say about a value.
+type Warnings = Record<string, (value: string) => string>;
+
+function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle, warnings }: { g: Group; rows: Setting[]; canEdit: boolean; provider: string; searching: boolean; expanded: boolean; onToggle: () => void; warnings?: Warnings }) {
+  const row = (s: Setting) => (s.name === "push.credential" ? <CredentialRow key={s.name} s={s} canEdit={canEdit} /> : <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} warn={warnings?.[s.name]} />);
   const primary = g.primary;
   const folded = rows.filter((s) => primary && !primary.includes(s.name)).length;
   // Folding one row away saves nothing; show it.
@@ -395,6 +400,12 @@ function SectionNav({ items, active, stopped, onPick }: { items: { id: string; t
 
 export default function SettingsPage() {
   const q = useApi<SettingsPayload>("settings", { refresh: 30000 });
+  // Today's run count, for the daily-cap row: a jobs_per_day at or under it
+  // stops every new run until midnight UTC, and the row must say so rather
+  // than let the fleet idle in silence. Same payload the Agents page reads.
+  const runner = useApi<Runner>("runner", { refresh: 30000 });
+  const runsToday = runsTodayOf(runner.data);
+  const warnings = useMemo<Warnings>(() => ({ jobs_per_day: (value) => capWarning(value, runsToday) }), [runsToday]);
   const [find, setFind] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [active, setActive] = useState("stop");
@@ -593,7 +604,7 @@ export default function SettingsPage() {
             .map(({ g, rows, all }) => (
               <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
                 <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
-                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} />
+                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} warnings={warnings} />
                 </div>
               </Section>
             ))}
@@ -615,7 +626,7 @@ export default function SettingsPage() {
             .map(({ g, rows, all }) => (
               <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
                 <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
-                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} />
+                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} warnings={warnings} />
                 </div>
               </Section>
             ))}
