@@ -27,6 +27,7 @@ import { Canvas, useCanvas } from "@/components/chat/canvas";
 import { useSeen } from "@/components/chat/chat-pane";
 import { JobEvidence } from "@/components/chat/job-evidence";
 import { jobEvidenceTab } from "@/components/chat/job-evidence-state";
+import { MicButton, useDictation } from "@/components/chat/mic";
 import { BackButton, Pane } from "@/components/chat/split";
 import {
   TONE_TEXT,
@@ -644,6 +645,8 @@ function TaskComposer({
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const textarea = useRef<HTMLTextAreaElement | null>(null);
+  const insertSpokenText = useDictation(textarea, text, setText);
   const leadName = t.lead || "the lead agent";
   const canSend = !!text.trim() && !busy && !closed;
   const send = async () => {
@@ -674,6 +677,7 @@ function TaskComposer({
         )}
       >
         <Textarea
+          ref={textarea}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -699,6 +703,7 @@ function TaskComposer({
           aria-label={"Message " + leadName + " about " + t.id}
         />
         <div className="flex min-w-0 items-center gap-1.5">
+          <MicButton disabled={closed || busy} onText={insertSpokenText} />
           <span className="min-w-0 flex-1 truncate px-2 text-xs text-muted-foreground">
             {closed
               ? ""
@@ -724,7 +729,7 @@ function TaskComposer({
       <p className="px-2 text-[11px] text-muted-foreground">
         {closed
           ? "A finished task takes no more messages."
-          : "Enter sends, Shift+Enter for a new line. Your message is about this task; the lead agent reads it on its next turn."}
+          : "Enter sends, Shift+Enter for a new line. Press the microphone to dictate. Your message is about this task; the lead agent reads it on its next turn."}
       </p>
     </form>
   );

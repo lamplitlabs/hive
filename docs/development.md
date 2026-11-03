@@ -1,0 +1,120 @@
+# Development
+
+The binary is a Cargo workspace: one crate per package under `crates/`, with
+`crates/pulse` the `pulse` binary itself.
+
+```bash
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+```
+
+The console is a Next.js 16 + Tailwind 4 + shadcn/ui app in `web/hub/`:
+
+```bash
+cd web/hub && npm install
+npm run dev                                  # http://localhost:3000, talks to the `pulse hub` API
+pulse hub --no-browser --port 8787           # the API (PULSE_HUB_PORT overrides the dev proxy target)
+npm run dev:mock                             # or the mock API alone
+npm run build                                # regenerates out/, which crates/pulse-hub embeds (rust-embed)
+npm run check                                # typecheck + lint + a scratch build (.next/check-out); leaves out/ untouched
+```
+
+Commit `web/hub/out/` together with the source change that produced it.
+The Mac app has its own check, `apps/macos/scripts/check.sh` (see
+[The Mac app](mac-app.md#the-mac-app)); it is outside the Cargo workspace and the verify
+command.
+Popups are panels, not modals (`src/components/ui/panel.tsx`): every dialog
+and sheet docks at the right edge under the header without dimming or
+locking the page, so you can keep reading, scrolling and clicking while you
+decide; decision and form panels stay open until you close them, read-only
+sheets close on an outside click, and opening a second top-level panel
+closes the first (a confirm inside a sheet stacks on it).
+When a framework record changes in the brain (a guide, skill, workflow,
+prompt or template), run `pulse seed export` and commit
+`crates/pulse-records/seed/bundle.json` with it: that file is what a fresh copy
+seeds from, and `pulse seed status` names the records that drifted
+(`framework_bundle_carries_the_framework` checks the file is in export form).
+The existing mock includes live, idle, dead, legacy, pruned and multi-session
+roster cases. `MOCK_AGENT_RETURN_MS=12000` exercises a returning worker twelve
+seconds after the first roster read; use a free loopback port via
+`PULSE_HUB_PORT`. `MOCK_ROSTER_ONLY=1 npm run mock:generate`
+refreshes only the roster fixture rather than unrelated console fixtures.
+
+The hub builds a project's board snapshot (a slim row per post, the tally,
+the plan gates - a post's body and frontmatter stay in the store and the post
+route reads them on request) once and shares it between requests until the
+store rows it reads change or a minute passes; at most three builds run at once.
+A snapshot past that minute cannot be served again, so a timer drops it: the
+hub holds the boards the console asked for in the last minute or two, not
+every project and area ever opened, and an idle hub's heap empties on its own.
+A row is one fixed array of its 26 values rather than a map - a map of
+owned keys cost about 3 KB per post over the values, close to 200 MB for a
+60k-post organization whose every board the console keeps warm - and it
+serializes to the same JSON.
+
+```text
+crates/pulse/                  the binary (registers every command crate)
+crates/pulse-cli               command registry, context, errors, JSON output
+crates/pulse-store             SQLite store: schema, additive DDL, records, settings, events, transactions
+crates/pulse-board             posts, agents, projects, jobs, decide, init, export, remove
+crates/pulse-tally             board digest, ballot, proposals, queue, amendments, constitution
+crates/pulse-records           typed records, Markdown import, guide, export, lead time, the seed bundle
+crates/pulse-tasks             owner tasks, messages, compute requests and caps
+crates/pulse-goals*            shared project goals and the `pulse goal` command
+crates/pulse-cred*             push credential references, the `pulse cred` command and setup
+crates/pulse-codedelivery      code delivery signals for the tally
+crates/pulse-bus               in-process event bus, redaction, tail/bridge for other processes
+crates/pulse-hooks             store hooks (scripts, webhooks) and harness hooks (copilot, claude)
+crates/pulse-gitenv            git environment scrubbing for child git commands
+crates/pulse-provider          the model-provider contract (chat, models, status, device/token login) and its registry
+crates/pulse-provider-copilot  GitHub Copilot (device login); pulse-provider-openai every OpenAI-compatible vendor as one Vendor entry each: OpenAI, Azure OpenAI (key or Microsoft device login), OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, GitHub Models (token or GitHub device login), Ollama, LM Studio, vLLM; pulse-provider-anthropic Anthropic Claude (Messages API); pulse-provider-gemini Google Gemini (generateContent); pulse-provider-fake the scripted test provider
+crates/pulse-harness           the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs
+crates/pulse-runner            daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep
+crates/pulse-evolve            the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
+crates/pulse-inspect           status, projects, jobs, agents, events, settings, schema, verify, signers
+crates/pulse-hub               the HTTP API and SSE the console uses; embeds web/hub/out
+crates/pulse-testutil          shared test helpers
+web/hub/                       the console (source, mock API, committed static export, rust-embed)
+apps/macos/                    the Mac app: a Swift package (PulseKit decides, the AppKit shell shows), build.sh, check.sh
+docs/                          the reference, one file per part (the README's Documentation table lists them)
+docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)
+```
+
+## Upgrading from older PULSE
+
+A machine that ran an earlier, script-based PULSE moves over in three commands:
+
+```bash
+pulse migrate --records --repo . --ref <sha>   # import the last committed Markdown records; the docs/ tree can go afterwards
+pulse service install                          # replaces the earlier launchd/systemd unit in place
+pulse hooks install copilot|claude             # replaces the earlier shell hooks
+```
+
+The store schema is additive: new tables are created on first open and
+`schema_version` is never bumped.
+
+## Share PULSE
+
+A copy of PULSE is the binary. The framework's records - the operating guide
+agents read (`pulse guide`), the skills, workflows and prompts, the templates
+every ADR, plan and constitution is copied from - travel inside it
+(`crates/pulse-records/seed/bundle.json`, embedded at build; ADR-038). The first
+`pulse hub`, `pulse daemon` or `pulse init` on a machine writes the records
+the store lacks under the commons, once; a record already there, whatever
+its text, is kept. So someone who clones this repository and builds it has a
+working PULSE with no checkout of PULSE registered: their projects onboard,
+their loops seed a constitution from the bundled template, their agents read
+the same guide.
+
+```bash
+git clone https://github.com/manishtiwari25/pulse.git && cd pulse
+cargo install --path crates/pulse --root ~/.pulse --locked
+pulse hub                # add a project, click Keep PULSE running - that is the whole setup
+pulse seed status        # what this build carries against what the store has
+pulse seed apply         # write what is missing by hand (the hub and the daemon do it on start)
+```
+
+The brain - a registered PULSE checkout (`pulse init PATH --brain`) - is for
+developing PULSE itself: with one, the daemon rebuilds from its `main`
+(ADR-035) and `pulse seed export` refreshes the bundle from its records so
+the next build carries them. Without one, **Settings → Running** says *as
+built* and nothing waits.

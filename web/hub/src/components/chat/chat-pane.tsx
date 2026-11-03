@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import { MicButton, useDictation } from "@/components/chat/mic";
 import { showApiError } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState } from "@/components/pulse/panel";
@@ -178,6 +179,8 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
   const [amending, setAmending] = useState<Task | null>(null);
   const hintId = useId();
   const list = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLTextAreaElement | null>(null);
+  const insertSpokenText = useDictation(box, draft, setDraft);
   // Whether the owner is at (or near) the newest message; starts true so the
   // list opens on the latest message.
   const stick = useRef(true);
@@ -396,6 +399,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
       >
         <div className="flex items-end gap-2 rounded-xl border bg-background/40 p-1.5 pl-3 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/25">
           <Textarea
+            ref={box}
             aria-label={taskId ? "Message the lead agent about " + taskId : "Message the lead agent of " + project}
             aria-describedby={hintId}
             value={draft}
@@ -412,13 +416,14 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
             className="max-h-40 min-h-10 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
             disabled={busy}
           />
+          <MicButton disabled={busy} onText={insertSpokenText} className="mb-0.5" />
           <Button type="submit" disabled={busy || !draft.trim()}>
             {busy ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
             Send
           </Button>
         </div>
         <p id={hintId} className="mt-1.5 px-1 text-xs text-muted-foreground">
-          {coarse ? (taskId ? "This message is about this task." : "Tap Send when your message is ready.") : "Enter sends, Shift+Enter starts a new line." + (taskId ? " This message is about this task." : "")}
+          {coarse ? (taskId ? "This message is about this task." : "Tap Send when your message is ready.") : "Enter sends, Shift+Enter starts a new line. Press the microphone to dictate." + (taskId ? " This message is about this task." : "")}
         </p>
       </form>
     </div>

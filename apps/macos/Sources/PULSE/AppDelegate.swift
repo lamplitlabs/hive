@@ -351,7 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func showPulseHelp(_ sender: Any?) {
-        if let url = URL(string: "https://github.com/manishtiwari25/pulse#the-mac-app") {
+        if let url = URL(string: "https://github.com/manishtiwari25/pulse/blob/main/docs/mac-app.md") {
             NSWorkspace.shared.open(url)
         }
     }

@@ -1,5 +1,5 @@
-:HL["/_next/static/chunks/0c9n2ty4i6529.css","style"]
+:HL["/_next/static/chunks/0fw0wms6acmgo.css","style"]
 :HL["/fonts/atkinson-next-latin.woff2","font",{"crossOrigin":"anonymous","type":"font/woff2"}]
 2:[["children",{"s":"__PAGE__","h":160}]]
 1:[["children",{"s":"settings","h":64,"c":"$Q2"}]]
-0:{"b":"ZtYV1-AHueF9yzfR6y7tS","t":{"t":{"s":"","h":16,"c":"$Q1"}}}
+0:{"b":"H6rx2E8tIYK7k6jmD1sz4","t":{"t":{"s":"","h":16,"c":"$Q1"}}}

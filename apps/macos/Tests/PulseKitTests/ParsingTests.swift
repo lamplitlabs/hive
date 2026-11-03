@@ -264,6 +264,32 @@ import Testing
         #expect(moved.isConsole(URL(string: "http://localhost:50123/x")!))
         #expect(!moved.isConsole(URL(string: "http://127.0.0.1:8765/x")!))
     }
+
+    @Test func onlyTheConsolesOwnPageMayDictate() {
+        let console = URL(string: "http://127.0.0.1:8765")!
+        #expect(policy.allowsCapture(.microphone, from: console, mainFrame: true))
+        // The console spelled as localhost is the same hub.
+        #expect(policy.allowsCapture(.microphone, from: URL(string: "http://localhost:8765")!, mainFrame: true))
+        // A framed file (an artifact in the chat's viewer) is not the page.
+        #expect(!policy.allowsCapture(.microphone, from: console, mainFrame: false))
+        // Nothing records pictures.
+        #expect(!policy.allowsCapture(.camera, from: console, mainFrame: true))
+        #expect(!policy.allowsCapture(.cameraAndMicrophone, from: console, mainFrame: true))
+        // Another origin: another port on this host, a web page, https on the same port.
+        for other in ["http://127.0.0.1:3000", "https://github.com", "https://127.0.0.1:8765", "http://example.test:8765"] {
+            #expect(!policy.allowsCapture(.microphone, from: URL(string: other)!, mainFrame: true), "\(other)")
+        }
+    }
+
+    @Test func aConsoleShownFromHubURLMayDictateToo() {
+        // HubURL (the mock on 8787, or a console on another machine) is the console then.
+        let overridden = LinkPolicy(console: URL(string: "http://127.0.0.1:8787/")!)
+        #expect(overridden.allowsCapture(.microphone, from: URL(string: "http://127.0.0.1:8787")!, mainFrame: true))
+        #expect(!overridden.allowsCapture(.microphone, from: URL(string: "http://127.0.0.1:8765")!, mainFrame: true))
+        let remote = LinkPolicy(console: URL(string: "https://pulse.example.test/")!)
+        #expect(remote.allowsCapture(.microphone, from: URL(string: "https://pulse.example.test")!, mainFrame: true))
+        #expect(!remote.allowsCapture(.microphone, from: URL(string: "http://pulse.example.test")!, mainFrame: true))
+    }
 }
 
 @Suite struct TypedAddressTests {

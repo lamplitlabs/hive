@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 // The PULSE Mac app: a native window around the console the hub serves, the
 // same pages the browser shows. `scripts/build.sh` turns the executable into
-// PULSE.app; README.md ("The Mac app") is the documentation.
+// PULSE.app; docs/mac-app.md is the documentation.
 import PackageDescription
 
 let package = Package(
