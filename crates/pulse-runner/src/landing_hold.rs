@@ -728,10 +728,10 @@ pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> boo
         return false;
     }
     let msg = format!("Land {branch}: rebuild web/hub/out from the merged src");
-    let committed = std::process::Command::new("git")
-        .args([
-            "-C",
-            worktree,
+    let committed = crate::util::git_timeout(
+        worktree,
+        Duration::from_secs(120),
+        &[
             "-c",
             "user.name=pulse",
             "-c",
@@ -742,11 +742,9 @@ pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> boo
             "--no-verify",
             "-m",
             &msg,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|st| st.success());
+        ],
+    )
+    .ok();
     if !committed {
         crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
         return false;

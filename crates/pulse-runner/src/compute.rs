@@ -370,13 +370,32 @@ impl ComputeWorker {
             .expect("spawn compute worker");
     }
     pub(crate) fn wait(&self, grace: Duration) {
+        self.wait_beating(grace, &|| {});
+    }
+    /// [`wait`](Self::wait), calling `beat` about once a minute while
+    /// operations still run inside their own budgets
+    /// (`COMPUTE_PROVISION_BUDGET`, `COMPUTE_RELEASE_BUDGET`): the daemon's
+    /// watchdog takes the wait for a wedge only once it outlasts them.
+    pub(crate) fn wait_beating(&self, grace: Duration, beat: &dyn Fn()) {
+        let budget = COMPUTE_PROVISION_BUDGET.max(COMPUTE_RELEASE_BUDGET);
+        let started = std::time::Instant::now();
+        let until = (!grace.is_zero()).then(|| started + grace);
         let (mu, cv) = &*self.wg;
-        let n = mu.lock().unwrap();
-        if grace.is_zero() {
-            drop(cv.wait_while(n, |n| *n > 0).unwrap());
-            return;
+        let mut n = mu.lock().unwrap();
+        while *n > 0 {
+            let now = std::time::Instant::now();
+            if until.is_some_and(|at| now >= at) {
+                return;
+            }
+            let step = until
+                .map(|at| at - now)
+                .unwrap_or(Duration::MAX)
+                .min(Duration::from_secs(60));
+            n = cv.wait_timeout_while(n, step, |n| *n > 0).unwrap().0;
+            if *n > 0 && started.elapsed() < budget {
+                beat();
+            }
         }
-        let _ = cv.wait_timeout_while(n, grace, |n| *n > 0).unwrap();
     }
     pub(crate) fn tick(&self, cancel: &pulse_bus::CancellationToken, now: &str) -> Vec<String> {
         if cancel.is_cancelled() {

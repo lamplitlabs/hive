@@ -1370,6 +1370,8 @@ pub(crate) fn daemon(
     // The stalled note reads `loops` from the watchdog thread, so it is shared.
     let loops_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let passes_shared = Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let dog_stop = pulse_bus::CancellationToken::new();
+    let _dog_stop = CancelOnDrop(dog_stop.clone());
     let dog = (!o.no_watchdog).then(|| {
         let s_note = s.clone();
         let actor_note = actor.clone();
@@ -1402,7 +1404,9 @@ pub(crate) fn daemon(
             Some(Arc::new(move || kill.cancel())),
         ));
         let dog_run = Arc::clone(&dog);
-        let dog_ctx = loop_ctx.clone();
+        // The watchdog outlives the loop: it watches the shutdown wait too
+        // (`DaemonWatchdog::enter`) and stops when daemon() returns.
+        let dog_ctx = dog_stop.clone();
         std::thread::Builder::new()
             .name("daemon-watchdog".into())
             .spawn(move || dog_run.run(&dog_ctx, Duration::from_secs(60)))
@@ -2856,6 +2860,14 @@ pub(crate) fn daemon(
     }
     let (mut result, note) = leave;
     loop_ctx.cancel();
+    // From here the daemon waits to go; each wait is named to the watchdog,
+    // which restarts a daemon wedged in one (exit 3) as it does a loop that
+    // stops beating.
+    let enter = |phase: String| {
+        if let Some(dog) = &dog {
+            dog.enter(phase);
+        }
+    };
     let grace_for = |result: &str| -> Duration {
         if result != "interrupted" && result != "stopped" {
             return Duration::ZERO;
@@ -2936,10 +2948,9 @@ pub(crate) fn daemon(
         }
     }
     if maintenance.done.is_some() || maintenance.lane.is_some() || maintenance.landing_busy() > 0 {
-        say(
-            &o,
-            format!("{note}: waiting for landing maintenance to finish"),
-        );
+        let waiting = format!("{note}: waiting for landing maintenance to finish");
+        say(&o, &waiting);
+        enter(waiting.clone());
         // A restart (the binary changed on disk, or the owner's ask)
         // cancels the experiment under measurement at once - the next daemon
         // measures it again - and gives the plain landings RESTART_DRAIN
@@ -2957,7 +2968,34 @@ pub(crate) fn daemon(
             maintenance.cancel_lane();
             std::time::Instant::now() + drain
         });
-        let (lines, cut) = maintenance.finish(s, &maintenance_ctx, deadline);
+        // Once cancelled, what still runs gets this long to stop before the
+        // commands it waits in are ended and it is left behind; a restart
+        // the owner asked for now gets no more than its hold cap.
+        maintenance.landings.cancel_grace = Some(crate::landing_workers::CANCEL_GRACE.min(drain));
+        // While maintenance is waited for uncancelled it beats the watchdog
+        // and watches for the owner: a restart asked during this wait (the
+        // hub's "Restart now", pressed because the daemon seems stuck)
+        // cancels the landings at once instead of going unheard. Once
+        // cancelled the wait is bounded and the watchdog stands behind it.
+        let asks_after = pulse_bus::last_id(s).unwrap_or(0);
+        let escalated = std::cell::Cell::new(false);
+        let (lines, cut) = maintenance.finish_beating(s, &maintenance_ctx, deadline, &|| {
+            enter(waiting.clone());
+            if escalated.get() {
+                return;
+            }
+            if let Some(ask) = restart_asked(s, asks_after) {
+                escalated.set(true);
+                say(
+                    &o,
+                    format!(
+                        "restart asked by {} at {} while landing maintenance drains: cancelling it now; every landing done so far stays landed, the rest run on the next daemon",
+                        ask.actor, ask.at
+                    ),
+                );
+                maintenance_ctx.cancel();
+            }
+        });
         for line in lines {
             say(&o, line);
         }
@@ -2985,11 +3023,19 @@ pub(crate) fn daemon(
             ),
         );
     }
-    compute.wait(grace);
+    let computing = format!(
+        "{note}: waiting for {} compute operation(s) in flight",
+        compute.busy()
+    );
+    enter(computing.clone());
+    compute.wait_beating(grace, &|| enter(computing.clone()));
     compute_ctx.cancel();
     for line in compute.drain() {
         say(&o, line);
     }
+    enter(format!(
+        "{note}: waiting for the bus bridge and the hooks to stop"
+    ));
     let _ = bridge_done.recv();
     let _ = hooks_done_rx.recv();
     let beat = if result == "restart" {
@@ -3006,6 +3052,16 @@ pub(crate) fn daemon(
     cancel_wake();
     crate::checkout::hold_checkouts(BTreeMap::new());
     result.into()
+}
+
+/// Cancels its token when dropped: the daemon's watchdog thread stops on
+/// every way out of daemon().
+struct CancelOnDrop(pulse_bus::CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
@@ -4902,6 +4958,89 @@ mod tests {
         if let Err(panic) = result {
             panic!("{}\n{}", panic_message(&panic), out.string());
         }
+    }
+
+    // A landing stuck in a git that never returns (here a hook that sleeps;
+    // on 2026-11-03 an fsmonitor that never answered) no longer holds a
+    // restart: the drain cancels it, its git is ended and the daemon exits
+    // with code 3 within seconds instead of waiting on it for hours.
+    #[test]
+    fn restart_drain_is_not_held_by_a_landing_stuck_in_git() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let _env = pulse_testutil::env_lock();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        let (project, repo) = new_bare_repo(&s);
+        crate::test_helpers_daemon::set_setting(&s, "landing", "agents");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.hold_seconds", "1");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_daemon::push_branch(&s, &project, &repo, "pulse/stuck/1");
+        // Every checkout and merge in the landing's worktree now blocks.
+        let started = std::path::Path::new(&s.home).join("hook-started");
+        let hook = format!("#!/bin/sh\ntouch '{}'\nexec sleep 600\n", started.display());
+        for name in ["post-checkout", "post-merge"] {
+            let path = std::path::Path::new(&repo).join(".git/hooks").join(name);
+            std::fs::write(&path, &hook).unwrap();
+            run(".", &["chmod", "+x", &path.display().to_string()]);
+        }
+        let out = OutBuf::new();
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(out.writer()),
+            worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let began = std::time::Instant::now();
+            while !started.exists() {
+                assert!(
+                    began.elapsed() < test_wait(Duration::from_secs(60)),
+                    "the landing never reached its git:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            ask_restart(
+                &s,
+                "owner",
+                serde_json::json!({"from": "settings", "now": true}),
+            )
+            .unwrap();
+            let asked = std::time::Instant::now();
+            let result = done_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the daemon did not exit while a landing hung in git");
+            (result, asked.elapsed())
+        }));
+        cancel.cancel();
+        let (result, took) = match result {
+            Ok(got) => got,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        let out = out.string();
+        assert_eq!(result, "restart", "{out}");
+        // The landing's own git budget is 120s; the restart does not wait
+        // for it.
+        assert!(took < Duration::from_secs(60), "exit took {took:?}\n{out}");
+        assert!(
+            out.contains("restarting now, as asked: waiting for landing maintenance to finish")
+                && out.contains("restarting now, as asked: landing maintenance cancelled after 1s"),
+            "{out}"
+        );
+        assert!(
+            out.contains("landing proj: ended git ")
+                || out.contains("landing proj: worker: still at "),
+            "the stuck landing was not named:\n{out}"
+        );
     }
 
     #[test]

@@ -55,6 +55,9 @@ pub(crate) struct DaemonWatchdog {
     pub(crate) dump: DumpFn,
     /// the runs' time to see their cancelled context before exit
     pub(crate) grace: Duration,
+    /// Where the daemon is once its loop has ended (the shutdown wait it is
+    /// in); empty while the loop runs. The stall line names it.
+    pub(crate) phase: parking_lot::Mutex<String>,
 }
 
 pub(crate) fn new_daemon_watchdog(
@@ -78,6 +81,7 @@ pub(crate) fn new_daemon_watchdog(
         now: Arc::new(chrono::Utc::now),
         dump: Arc::new(goroutine_dump),
         grace: WATCHDOG_KILL_GRACE,
+        phase: parking_lot::Mutex::new(String::new()),
     }
 }
 
@@ -85,6 +89,16 @@ impl DaemonWatchdog {
     /// beat is called by the loop each time it writes its heartbeat.
     pub(crate) fn beat(&self) {
         self.state.lock().beat_at = (self.now)();
+    }
+
+    /// Notes the shutdown wait the daemon has entered and beats: the
+    /// watchdog outlives the loop, so a wait that wedges (a landing, a
+    /// compute operation, the bus bridge) is restarted like a loop that
+    /// hangs instead of holding the daemon - and every owner's task - for
+    /// hours.
+    pub(crate) fn enter(&self, phase: impl Into<String>) {
+        *self.phase.lock() = phase.into();
+        self.beat();
     }
 
     /// stalled reports how long the loop has been silent past its bound, or 0.
@@ -136,8 +150,14 @@ impl DaemonWatchdog {
             Err(err) => (String::new(), format!("no dump: {err}")),
         };
         let rounded = pulse_cli::format_duration(round_seconds(since));
+        let phase = self.phase.lock().clone();
+        let at = if phase.is_empty() {
+            String::new()
+        } else {
+            format!("; at: {phase}")
+        };
         let line = format!(
-            "watchdog: the loop has not beaten for {rounded} (bound {}); stack dump at {where_}; cancelling runs and exiting 3 so the service restarts the daemon",
+            "watchdog: the loop has not beaten for {rounded} (bound {}{at}); stack dump at {where_}; cancelling runs and exiting 3 so the service restarts the daemon",
             pulse_cli::format_duration(self.bound)
         );
         (self.say)(line);
@@ -455,6 +475,55 @@ mod tests {
         );
         let got = calls.lock().unwrap().join(",");
         assert!(got.ends_with("kill,exit"), "calls = {got}");
+    }
+
+    // The shutdown wait is watched like the loop: a daemon that stops
+    // beating while it waits to go is restarted (exit 3), and the line says
+    // which wait it stalled in.
+    #[test]
+    fn watchdog_covers_the_shutdown_wait_and_names_it() {
+        let _serial = crate::test_helpers::serial();
+        let (mut w, calls, clock, _dir) = new_test_watchdog(Duration::from_secs(30 * 60));
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let said = lines.clone();
+        Arc::get_mut(&mut w).expect("one owner").say =
+            Arc::new(move |line| said.lock().unwrap().push(line));
+        *clock.lock().unwrap() += chrono::TimeDelta::minutes(29);
+        w.enter("restarting: waiting for landing maintenance to finish");
+        *clock.lock().unwrap() += chrono::TimeDelta::minutes(29);
+        assert_eq!(
+            w.stalled(),
+            Duration::ZERO,
+            "entering the wait beats: 29m since is within the bound"
+        );
+        *clock.lock().unwrap() += chrono::TimeDelta::minutes(2);
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let run = Arc::clone(&w);
+        std::thread::spawn(move || {
+            run.run(
+                &pulse_bus::CancellationToken::new(),
+                Duration::from_millis(1),
+            );
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx
+                .recv_timeout(test_wait(Duration::from_secs(20)))
+                .is_ok(),
+            "run did not fire on a stalled shutdown wait"
+        );
+        assert!(
+            calls.lock().unwrap().join(",").ends_with("kill,exit"),
+            "calls = {:?}",
+            calls.lock().unwrap()
+        );
+        let lines = lines.lock().unwrap();
+        assert!(
+            lines.len() == 1
+                && lines[0].starts_with("watchdog: the loop has not beaten for 31m0s (bound 30m0s; at: restarting: waiting for landing maintenance to finish); stack dump at ")
+                && lines[0].ends_with("exiting 3 so the service restarts the daemon"),
+            "{lines:?}"
+        );
     }
 
     #[test]

@@ -78,6 +78,11 @@ pub(crate) struct DaemonMaintenance {
     pub(crate) pass_started: Option<Instant>,
     pub(crate) pass_ctx: Option<pulse_bus::CancellationToken>,
     pub(crate) pass_stage: Stage,
+    /// The pass's and the lane's threads, so a shutdown that gives up on
+    /// them can end the commands they wait in (`finish`).
+    pub(crate) pass_thread: Option<std::thread::Thread>,
+    pub(crate) lane_thread: Option<std::thread::Thread>,
+    pub(crate) lane_started: Option<Instant>,
     pub(crate) pass_noted: bool,
     pub(crate) pass_restart_noted: bool,
     pub(crate) lane_disk_floor: bool,
@@ -268,15 +273,10 @@ impl DaemonMaintenance {
         let parallel = crate::landing_workers::landing_parallel(s);
         let bulk_away = crate::bulk::state(std::path::Path::new(&s.home)).is_missing();
         if !dry && parallel > 1 && !bulk_away {
-            self.lines.extend(self.landings.start_projects(
-                cancel,
-                s,
-                &projects,
-                &actor,
-                &now,
-                &self.held,
-                &self.pass_stage,
-            ));
+            self.lines.extend(
+                self.landings
+                    .start_projects(cancel, s, &projects, &actor, &now, &self.held),
+            );
         }
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.done = Some(rx);
@@ -291,7 +291,7 @@ impl DaemonMaintenance {
         let held = self.held.clone();
         let last_sweep = self.last_sweep.clone();
         let last_reclaim = self.last_reclaim.clone();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("landing-maintenance".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -397,6 +397,7 @@ impl DaemonMaintenance {
                 let _ = tx.send(result);
             })
             .expect("spawn landing maintenance thread");
+        self.pass_thread = Some(handle.thread().clone());
     }
     /// The next experiment the lane may measure: the first pending one over
     /// the projects, skipping projects under a landing retry hold and
@@ -488,7 +489,7 @@ impl DaemonMaintenance {
         let s = s.clone();
         let actor = actor.to_string();
         let now = now.to_string();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("landing-experiments".into())
             .spawn(move || {
                 let lr = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -509,6 +510,8 @@ impl DaemonMaintenance {
                 let _ = tx.send(result);
             })
             .expect("spawn experiment lane thread");
+        self.lane_thread = Some(handle.thread().clone());
+        self.lane_started = Some(Instant::now());
         Some(line)
     }
     /// Cancels the experiment under measurement; the lane reports it as
@@ -527,6 +530,8 @@ impl DaemonMaintenance {
             Ok(result) => {
                 self.lane = None;
                 self.lane_ctx = None;
+                self.lane_thread = None;
+                self.lane_started = None;
                 self.lane_job.clear();
                 let retry = experiment_retry(s, &result.state, &result.note);
                 self.lane_tried
@@ -548,6 +553,7 @@ impl DaemonMaintenance {
         self.done = None;
         self.pass_started = None;
         self.pass_ctx = None;
+        self.pass_thread = None;
         match msg {
             Ok((pass, held)) => {
                 if let Some(held) = held {
@@ -618,40 +624,111 @@ impl DaemonMaintenance {
             pulse_cli::format_duration(ran)
         )))
     }
-    /// Waits for the pass and the lane to finish. Past `deadline` whatever
-    /// still runs is cancelled through `ctx` and awaited; the flag says so.
+    /// Waits for the pass, the landing workers and the lane to finish, and
+    /// never for good. Past `deadline` whatever still runs is cancelled
+    /// through `ctx` (the flag says so). Once `ctx` is cancelled - here or
+    /// by the caller - they share one grace (the workers' `cancel_grace`) to
+    /// stop; then the commands each still waits in are ended, and what has
+    /// not returned soon after is left behind with a line naming where it
+    /// was. A restart once sat 3h17m in this wait on a git nothing killed.
+    #[cfg(test)]
     pub(crate) fn finish(
         &mut self,
         s: &pulse_store::Store,
         ctx: &pulse_bus::CancellationToken,
         deadline: Option<Instant>,
     ) -> (Vec<String>, bool) {
+        self.finish_beating(s, ctx, deadline, &|| {})
+    }
+
+    /// [`finish`](Self::finish), calling `beat` about once a second while
+    /// it waits on work still uncancelled (the daemon's watchdog beat): a
+    /// wait the daemon allows is not taken for a wedge; past the
+    /// cancellation the wait is bounded and does not beat.
+    pub(crate) fn finish_beating(
+        &mut self,
+        s: &pulse_store::Store,
+        ctx: &pulse_bus::CancellationToken,
+        deadline: Option<Instant>,
+        beat: &dyn Fn(),
+    ) -> (Vec<String>, bool) {
         let mut lines = std::mem::take(&mut self.lines);
         let mut cut = false;
+        let mut settle = crate::landing_workers::Settle::new(self.landings.cancel_grace());
         if let Some(rx) = self.done.take() {
-            self.pass_started = None;
+            let started = self.pass_started.take();
             self.pass_ctx = None;
-            if let Some((pass, held)) = recv_by(&rx, ctx, deadline, &mut cut) {
-                if let Some(held) = held {
-                    self.held = held;
+            let thread = self.pass_thread.take();
+            match recv_by(
+                &rx,
+                ctx,
+                deadline,
+                &mut cut,
+                &mut settle,
+                thread.as_ref(),
+                beat,
+            ) {
+                Received::Got((pass, held)) => {
+                    if let Some(held) = held {
+                        self.held = held;
+                    }
+                    lines.extend(pass);
                 }
-                lines.extend(pass);
+                Received::Closed => {}
+                Received::LeftBehind(killed) => {
+                    let stage = self
+                        .pass_stage
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    lines.push(crate::landing_workers::left_behind_line(
+                        "landing maintenance",
+                        &stage,
+                        started.map(|at| at.elapsed()).unwrap_or_default(),
+                        &killed,
+                    ));
+                }
             }
         }
-        let (worker_results, worker_cut) = self.landings.finish(ctx, deadline);
+        let (worker_results, worker_cut) =
+            self.landings
+                .finish_settling(ctx, deadline, &mut settle, beat);
         cut |= worker_cut;
         for result in worker_results {
-            self.apply_landing_worker(s, result, &mut lines);
+            if result.detached {
+                lines.extend(result.lines);
+            } else {
+                self.apply_landing_worker(s, result, &mut lines);
+            }
         }
         if let Some(rx) = self.lane.take() {
-            let got = recv_by(&rx, ctx, deadline, &mut cut);
+            let thread = self.lane_thread.take();
+            let got = recv_by(
+                &rx,
+                ctx,
+                deadline,
+                &mut cut,
+                &mut settle,
+                thread.as_ref(),
+                beat,
+            );
             self.lane_ctx = None;
-            self.lane_job.clear();
-            if let Some(result) = got {
-                lines.push(Self::lane_result_line(
+            let job = std::mem::take(&mut self.lane_job);
+            let started = self.lane_started.take();
+            match got {
+                Received::Got(result) => lines.push(Self::lane_result_line(
                     &result,
                     experiment_retry(s, &result.state, &result.note),
-                ));
+                )),
+                Received::Closed => {}
+                Received::LeftBehind(killed) => {
+                    lines.push(crate::landing_workers::left_behind_line(
+                        &format!("landing experiment {job}"),
+                        "measuring on the experiment lane",
+                        started.map(|at| at.elapsed()).unwrap_or_default(),
+                        &killed,
+                    ));
+                }
             }
         }
         (lines, cut)
@@ -704,26 +781,64 @@ impl DaemonMaintenance {
     }
 }
 
-/// Receives one message; when `deadline` passes first, cancels `ctx`, notes
-/// the cut and waits for the message the cancellation produces.
-fn recv_by<T>(
+/// What a bounded receive got.
+#[derive(Debug)]
+pub(crate) enum Received<T> {
+    Got(T),
+    /// The thread ended without sending.
+    Closed,
+    /// The thread did not answer by the end of the shutdown's grace and was
+    /// left behind; the commands it waited in that were ended.
+    LeftBehind(Vec<String>),
+}
+
+/// Receives one message, never waiting for good. While `ctx` is live and
+/// there is no `deadline` it waits for the message; when `deadline` passes
+/// first it cancels `ctx` and notes the cut. Once `ctx` is cancelled the
+/// sender has until the shutdown's grace (`settle`) to answer; then the
+/// commands `thread` waits in are ended and it gets a moment more before it
+/// is left behind.
+pub(crate) fn recv_by<T>(
     rx: &crossbeam_channel::Receiver<T>,
     ctx: &pulse_bus::CancellationToken,
     deadline: Option<Instant>,
     cut: &mut bool,
-) -> Option<T> {
-    match deadline {
-        Some(deadline) if !ctx.is_cancelled() => match rx.recv_deadline(deadline) {
-            Ok(v) => Some(v),
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+    settle: &mut crate::landing_workers::Settle,
+    thread: Option<&std::thread::Thread>,
+    beat: &dyn Fn(),
+) -> Received<T> {
+    let done = ctx.done();
+    let timer = match deadline {
+        Some(at) => crossbeam_channel::at(at),
+        None => crossbeam_channel::never(),
+    };
+    let ticks = crossbeam_channel::tick(Duration::from_secs(1));
+    while !ctx.is_cancelled() {
+        crossbeam_channel::select! {
+            recv(rx) -> msg => return msg.map_or(Received::Closed, Received::Got),
+            recv(timer) -> _ => {
                 ctx.cancel();
                 *cut = true;
-                rx.recv().ok()
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => None,
-        },
-        _ => rx.recv().ok(),
+            },
+            recv(done) -> _ => {},
+            recv(ticks) -> _ => beat(),
+        }
     }
+    match rx.recv_deadline(settle.until()) {
+        Ok(v) => return Received::Got(v),
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return Received::Closed,
+        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+    }
+    let killed = thread.map(|t| settle.end_groups_of(t)).unwrap_or_default();
+    if !killed.is_empty() {
+        match rx.recv_deadline(settle.after_kill()) {
+            Ok(v) => return Received::Got(v),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return Received::Closed,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    *cut = true;
+    Received::LeftBehind(killed)
 }
 
 /// How long the lane keeps retrying a deferred experiment.

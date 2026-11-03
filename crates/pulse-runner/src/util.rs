@@ -148,17 +148,39 @@ pub(crate) fn git_timeout(repo: &str, timeout: Duration, args: &[&str]) -> GitRe
     git_timeout_env(repo, timeout, &[], args)
 }
 
+/// Settings every git the runner spawns through [`git_timeout_env`] runs
+/// with, as `-c` pairs ahead of `-C` and the subcommand. `core.fsmonitor`
+/// is off so an owner's repo-local `core.fsmonitor = true` cannot stall
+/// PULSE on a filesystem monitor daemon that never answers its cookie
+/// (refresh_fsmonitor -> fsmonitor_ipc__send_query hung a landing's
+/// `merge --ff-only` for three hours). Command-line `-c`, not
+/// GIT_CONFIG_COUNT: the harness lockdown already exports
+/// GIT_CONFIG_COUNT/KEY_n/VALUE_n for the signing settings, and a second
+/// writer of that list would overwrite them. A caller's own `-c` comes
+/// later on the line and still wins.
+pub(crate) const GIT_FORCED_CONFIG: &[&str] = &["-c", "core.fsmonitor=false"];
+
+/// The argv (without the program) [`git_timeout_env`] runs.
+pub(crate) fn git_argv(repo: &str, args: &[&str]) -> Vec<String> {
+    let mut full: Vec<String> = GIT_FORCED_CONFIG.iter().map(|s| s.to_string()).collect();
+    if !repo.is_empty() {
+        full.extend(["-C".into(), repo.into()]);
+    }
+    full.extend(args.iter().map(|s| s.to_string()));
+    full
+}
+
+/// Runs git with the hermetic environment plus `env`, bounded by `timeout`
+/// (zero: unbounded). Past the timeout git and everything it started (hooks,
+/// helpers, an fsmonitor client) is killed by process group and the result
+/// carries `err` naming the timeout, so a caller's budget is a real one.
 pub(crate) fn git_timeout_env(
     repo: &str,
     timeout: Duration,
     env: &[String],
     args: &[&str],
 ) -> GitResult {
-    let mut full: Vec<String> = Vec::new();
-    if !repo.is_empty() {
-        full.extend(["-C".into(), repo.into()]);
-    }
-    full.extend(args.iter().map(|s| s.to_string()));
+    let full = git_argv(repo, args);
     let mut cmd = Command::new("git");
     cmd.args(&full);
     // Strip the hook-exported variables that redirect this command at the
@@ -173,17 +195,26 @@ pub(crate) fn git_timeout_env(
             cmd.env_remove(var);
         }
     }
-    let out = cmd
-        .envs(git_env(env).into_iter().filter_map(|kv| {
-            kv.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        }))
-        .output();
-    match out {
+    cmd.envs(git_env(env).into_iter().filter_map(|kv| {
+        kv.split_once('=')
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+    }));
+    match crate::proc::output_within(&mut cmd, timeout) {
+        Ok(o) if o.timed_out => GitResult {
+            code: o.status.and_then(|st| st.code()).unwrap_or(-1),
+            stdout: o.stdout,
+            stderr: o.stderr,
+            err: Some(format!(
+                "git {} timed out after {} in {}; killed",
+                trunc(&args.join(" "), 120),
+                pulse_cli::format_duration(timeout),
+                if repo.is_empty() { "." } else { repo }
+            )),
+        },
         Ok(o) => GitResult {
-            code: o.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&o.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&o.stderr).to_string(),
+            code: o.status.and_then(|st| st.code()).unwrap_or(-1),
+            stdout: o.stdout,
+            stderr: o.stderr,
             err: None,
         },
         Err(e) => GitResult {
@@ -589,5 +620,137 @@ mod tests {
             "git rev-parse was redirected by inherited hook GIT_DIR: {:?}",
             r.err
         );
+    }
+
+    /// A repository with one commit and an fsmonitor hook script that never
+    /// answers: it notes its pid and its background child's, then waits.
+    fn repo_with_hanging_fsmonitor() -> (tempfile::TempDir, String, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let root = repo.display().to_string();
+        pulse_testutil::git(&["init", "-q", "-b", "main", &root]).unwrap();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        pulse_testutil::git(&["-C", &root, "add", "a.txt"]).unwrap();
+        pulse_testutil::git(&["-C", &root, "commit", "-q", "-m", "a"]).unwrap();
+        let pids = dir.path().join("pids");
+        let script = dir.path().join("fsmonitor.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ >> '{pids}'\nsleep 60 &\necho $! >> '{pids}'\nwait $!\n",
+                pids = pids.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Repo-local, like the owner's checkout that hung the landing.
+        pulse_testutil::git(&[
+            "-C",
+            &root,
+            "config",
+            "core.fsmonitor",
+            &script.display().to_string(),
+        ])
+        .unwrap();
+        (dir, root, pids)
+    }
+
+    fn pid_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the pid exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn git_timeout_kills_a_git_that_hangs_and_everything_it_started() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, root, pids) = repo_with_hanging_fsmonitor();
+        let script = format!("{}/fsmonitor.sh", _dir.path().display());
+        let fsmonitor = format!("core.fsmonitor={script}");
+        let started = std::time::Instant::now();
+        // The caller's own `-c` comes after the forced one and wins, so the
+        // hanging fsmonitor runs: git blocks on it until the timeout.
+        let r = git_timeout(
+            &root,
+            Duration::from_secs(1),
+            &["-c", &fsmonitor, "status", "--porcelain"],
+        );
+        let took = started.elapsed();
+        assert!(
+            took < crate::test_helpers_daemon::test_wait(Duration::from_secs(6)),
+            "git_timeout of 1s returned after {took:?}: {r:?}"
+        );
+        assert!(!r.ok(), "a hung git reported success: {r:?}");
+        let err = r.err.clone().unwrap_or_default();
+        assert!(
+            err.contains("timed out after 1s") && err.contains("status --porcelain"),
+            "err = {err:?}"
+        );
+        // Neither the hook nor its background child outlives the timeout.
+        let left: Vec<i32> = std::fs::read_to_string(&pids)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        assert!(
+            !left.is_empty(),
+            "the hanging fsmonitor never ran, so nothing hung: {r:?}"
+        );
+        let settle = std::time::Instant::now() + Duration::from_secs(3);
+        while left.iter().any(|p| pid_alive(*p)) && std::time::Instant::now() < settle {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for pid in &left {
+            assert!(!pid_alive(*pid), "pid {pid} outlived the git timeout");
+        }
+    }
+
+    #[test]
+    fn git_runs_with_fsmonitor_off_beside_the_lockdown_config() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(
+            git_argv("/r", &["status"]),
+            ["-c", "core.fsmonitor=false", "-C", "/r", "status"],
+        );
+        assert_eq!(
+            git_argv("", &["--version"]),
+            ["-c", "core.fsmonitor=false", "--version"],
+        );
+        let (_dir, root, pids) = repo_with_hanging_fsmonitor();
+        // The repo says fsmonitor = <a script that never answers>; the
+        // runner's git does not consult it, so status answers at once.
+        let started = std::time::Instant::now();
+        let r = git_timeout(&root, Duration::from_secs(30), &["status", "--porcelain"]);
+        assert!(r.ok(), "status with a hanging repo fsmonitor: {r:?}");
+        assert!(
+            started.elapsed() < crate::test_helpers_daemon::test_wait(Duration::from_secs(10)),
+            "status took {:?}",
+            started.elapsed()
+        );
+        assert!(!pids.exists(), "the repo's fsmonitor hook ran");
+        // The harness lockdown's GIT_CONFIG_COUNT list still applies next
+        // to the forced `-c`.
+        let lockdown = [
+            "GIT_CONFIG_COUNT=2".to_string(),
+            "GIT_CONFIG_KEY_0=commit.gpgsign".to_string(),
+            "GIT_CONFIG_VALUE_0=false".to_string(),
+            "GIT_CONFIG_KEY_1=tag.gpgsign".to_string(),
+            "GIT_CONFIG_VALUE_1=false".to_string(),
+        ];
+        for (key, want) in [
+            ("commit.gpgsign", "false"),
+            ("tag.gpgsign", "false"),
+            ("core.fsmonitor", "false"),
+        ] {
+            let got = git_timeout_env(
+                &root,
+                Duration::from_secs(10),
+                &lockdown,
+                &["config", "--get", key],
+            );
+            assert_eq!(got.stdout.trim(), want, "{key}: {got:?}");
+        }
     }
 }
