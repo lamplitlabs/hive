@@ -43,6 +43,27 @@ prints after the slowest time (`slowest 31000ms: plan 14000ms, pipeline
 9000ms`): the number alone said that seven passes after one restart took
 29-33 s each and nothing about which of the twenty tenders took them.
 
+The pipeline stage reads GitHub as whichever gh account on the machine can
+see the project's repository. `gh` keeps one login active per host and
+ignores the others, and a machine whose active login was a fine-grained
+token that saw none of three watched repositories, beside an account that
+saw them all, spent 7.3 s of one tick on 404s and told the owner the
+pipelines were unreadable. So when the active login's read of a push's
+runs or of the branch head answers 401, 403, 404 or a repository name
+GitHub cannot resolve, the stage tries each other account `gh auth status`
+lists - read once and kept ten minutes, since the status check reaches
+GitHub for every account (1.8 s measured) - running `gh` with that
+account's token in `GH_TOKEN`. The first that answers is remembered for
+the project (`gh_user` in its watch), read as first from then on, and named
+once in the log (`pipeline <slug>: reading <repo> as <account>, since the
+active gh login <name> cannot see it`); a remembered account that fails the
+same way is forgotten and the accounts tried again. When none can see the
+repository the stage leaves it alone for an hour (`unreadable_until` in the
+watch), tells the owner once with the accounts it tried, and tries them
+again when the hour is over. A branch that is not there is a 404 too but
+says so, and no other account is tried for it. The tokens stay in the
+process and never reach the log, the board or an event.
+
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
 slot until its controller run ends. Workers are not kept idle: a dispatch

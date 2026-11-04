@@ -639,9 +639,12 @@ reason outside the code (a secret that expired, a runner that is off) does
 not turn into a day of workers. When several pushes of one project are
 waiting for a verdict, only the newest gets the finding and the job; the
 older ones are recorded as superseded. `watch` keeps the findings and skips
-the jobs; `off` reads nothing. A repository whose runs the login cannot read
-(HTTP 403 or 404) is reported once, as `pipeline.unreadable`; the daemon
-keeps trying and says nothing more until the runs can be read again.
+the jobs; `off` reads nothing. A repository the active gh login cannot read
+(HTTP 403 or 404) is read as another account `gh auth status` lists when
+one can see it, and that account is remembered for the project; when none
+can, it is reported once as `pipeline.unreadable` with the accounts tried,
+left alone for an hour and tried again after it ([the
+runner](runner.md#the-daemon-loop) has the detail).
 
 The branch head is read every ten minutes (`gh api
 repos/<owner>/<repo>/branches/<branch>`, the branch the local default branch
