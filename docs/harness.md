@@ -57,6 +57,24 @@ file, a search that matched twice) is an ordinary observation with a
 non-zero return code. The fenced blocks below are still accepted for models
 without tool calling - the typed tools are the same operations.
 
+### Step timeouts
+
+A command that is still running after `harness.step_timeout` seconds
+(300; `--step-timeout N` for one run) is killed with its whole process
+group and comes back with return code -1, what it had printed by then -
+cut with the tail favoured past `harness.output_limit`, since where a
+stuck command got to is in its last lines - and a closing line that says
+so and what to do instead: narrow the command, wrap it in `timeout <secs>`,
+pipe long output through `head` rather than `tail` (which prints nothing
+until its input ends; a `... | tail -40` that timed out used to come back
+empty), or start it with `bash background:true` and read it with the
+`process` tool. The system prompt says the same up front, with the scope
+rule that `grep`, `find` and `ls` stay in the project tree and never scan
+`~/.pulse` or the home directory: in three days of owner task runs, 22
+commands ran the full 900-second live timeout, among them `grep -rl`
+over `~/.pulse` and long measurements piped through `tail`, for three
+hours of wall time that returned nothing.
+
 ### Background processes
 
 A command runs to completion and whatever it
@@ -566,11 +584,43 @@ reason).
 A stop with nothing in the clone, under a custom worker command or on a
 remote executor is judged as it stands.
 
+### Trimming older results
+
+Command output is what fills a context window, and most of it is output
+the model is no longer working from: measured over three days of owner
+task runs (36 sessions, 2,513 model calls, 79,000 prompt tokens a call on
+average), tool results made up about 124,000 characters of an average
+request and 84% of those sat in results older than the eight most recent,
+while the prompt grew by about a thousand tokens a call until the
+request-size compaction at 164,000 tokens. So every request sends the
+last `harness.trim_keep_recent` (8; `0` turns it off) tool results whole
+and any older one longer than `harness.trim_over` characters (4,000, about
+the 80th percentile of measured results; `0` turns it off) as its first
+and last 750 characters around a marker
+(`[... trimmed 41,200 of 48,000 characters of this older result; run the
+command again if you need them ...]`). Only the request is trimmed: the
+conversation the run keeps, the trajectory and the session's steps hold
+every output in full, so a compaction summary is written from the whole
+transcript and the console shows what the command printed. The system
+prompt, the task, user and assistant messages, the compaction summary and
+the latest results never change, nothing moves, and each result still
+follows the call it answers, so every provider accepts the request; the
+byte budget of `provider.max_request_mb` is measured on the trimmed
+request. The first request a session trims gets a `note` step (`sending
+older command outputs trimmed to their first and last lines from here on:
+this request carries 61,000 of the conversation's 131,000 result
+characters ...`). On the measured sessions the defaults take 45% of the
+result characters out of an average request - about 14,000 tokens a call
+at four characters a token, 18,000 at the three the measured results
+tokenise to - and replaying five real sessions through the rule cut a
+quarter of the estimated request size over the whole run.
+
 ### Context discipline
 
-Command output is what fills a context window. While the prompt is under
-the compaction threshold and the request under its byte budget nothing is
-touched; once it is past either and **Compaction** (above) is off, waiting
+Trimming (above) is the everyday measure; what follows is for a window
+that fills anyway. While the prompt is under
+the compaction threshold and the request under its byte budget nothing
+else is touched; once it is past either and **Compaction** (above) is off, waiting
 out its three-call gap or has not made enough room, the harness keeps only the last
 `harness.keep_observations` (5; Settings → Harness **Transcript limits**,
 next to `step_timeout` and `output_limit`) outputs verbatim and older

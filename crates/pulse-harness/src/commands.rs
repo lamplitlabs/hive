@@ -11,6 +11,7 @@ use crate::permissions::{Rule, Rules};
 use crate::search::WebSearch;
 use crate::skills::{Skill, load_skills};
 use crate::tasks_tool::TaskDesk;
+use crate::trim::{DEFAULT_TRIM_KEEP_RECENT, DEFAULT_TRIM_OVER};
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, table, write_json};
 use pulse_provider::{CancelToken, Login, Options as ProviderOptions, Provider};
@@ -804,6 +805,15 @@ pub(crate) fn prepare_agent_with(
             flag
         }
     };
+    // Settings only, no flags: a run without a store takes the defaults,
+    // so a remote hand trims the way the hub does; the store's default
+    // stands in when the owner has not set them, and 0 turns trimming off.
+    let trim_keep_recent = st.as_ref().map_or(DEFAULT_TRIM_KEEP_RECENT, |s| {
+        s.setting_int("harness.trim_keep_recent").max(0) as usize
+    });
+    let trim_over = st.as_ref().map_or(DEFAULT_TRIM_OVER, |s| {
+        s.setting_int("harness.trim_over").max(0) as usize
+    });
     let read_only = fs.get_bool("read-only") || agent_spec.as_ref().is_some_and(|a| a.read_only);
     let reasoning = {
         let flag = fs.get_string("reasoning").trim().to_lowercase();
@@ -857,6 +867,8 @@ pub(crate) fn prepare_agent_with(
         subagents,
         compact_at,
         max_request_bytes,
+        trim_keep_recent,
+        trim_over,
         compact_model,
         read_only,
         reasoning,

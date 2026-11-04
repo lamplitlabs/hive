@@ -28,6 +28,7 @@ pub mod skills;
 pub mod tasks_tool;
 #[cfg(test)]
 pub(crate) mod test_helpers;
+pub mod trim;
 
 pub use commands::*;
 pub use compact::*;
@@ -38,6 +39,7 @@ pub use localenv::*;
 pub use readonly::{TreeSnapshot, read_only_refusal};
 pub use repair::*;
 pub use skills::*;
+pub use trim::*;
 
 pub fn register() {
     commands::register();
