@@ -248,6 +248,74 @@ pub(crate) fn decide(
     }
 }
 
+/// The owner reservation (docs/owner-reservation.md): while an owner-driven
+/// job this machine could run is queued, one local slot is kept that the
+/// fleet's work cannot take. Under the cap it is one of the verdict's
+/// `room`; over it - the cap full, the load over `daemon.max_load` at any
+/// height, free memory under the floor - it is the owner's one run over the
+/// line, while no owner-driven run is in flight here. Only the kernel's
+/// critical memory pressure (the machine swapping) keeps it shut. Returns
+/// the local slots the fleet may still take beside it, or None when no slot
+/// is kept and the verdict stands as it is.
+pub(crate) fn reserve_for_owner(
+    verdict: &Verdict,
+    pressure: &Pressure,
+    owner_queued: bool,
+    owner_running: usize,
+) -> Option<usize> {
+    if !owner_queued || pressure.mem_critical {
+        return None;
+    }
+    if verdict.room > 0 {
+        return Some(verdict.room - 1);
+    }
+    (owner_running == 0).then_some(0)
+}
+
+/// Why the owner's next run could not start on this machine once a fleet
+/// run yielded its lane, or None when it could: the yield (yield_lane.rs)
+/// asks a fleet run to hold only then. It is the governor's own answer for
+/// the tick after the yield - [`decide`] with the yielding run gone, plus
+/// the reservation ([`reserve_for_owner`]) - so the yield and the dispatch
+/// never disagree. The kernel's critical memory pressure refuses the owner;
+/// so does a load or memory hold while the owner's one run over the line is
+/// already in flight here and the cap leaves no express slot. A full cap
+/// alone does not: the run that yields frees its slot.
+pub(crate) fn owner_refusal(
+    limits: &Limits,
+    pressure: &Pressure,
+    running: usize,
+    measuring: usize,
+    reserved: usize,
+    owner_running: usize,
+) -> Option<String> {
+    let after = decide(
+        limits,
+        pressure,
+        running.saturating_sub(1),
+        measuring,
+        reserved,
+        owner_running,
+    );
+    if after.room > 0
+        || after.express
+        || reserve_for_owner(&after, pressure, true, owner_running).is_some()
+    {
+        return None;
+    }
+    Some(match after.hold {
+        Some(hold) if owner_running > 0 => {
+            format!("{hold}, and the owner's one run over the line is already in flight")
+        }
+        Some(hold) => hold,
+        None => format!(
+            "{} local slot(s) taken of this machine's {}",
+            running + measuring + reserved,
+            limits.max_jobs
+        ),
+    })
+}
+
 /// The prefix every hold line carries, so a lane that was held can tell
 /// the hold from a failure and retry soon rather than in twenty minutes.
 pub(crate) const HOLD_PREFIX: &str = "machine saturated: ";
@@ -1044,6 +1112,88 @@ mod tests {
         assert!(
             !decide(&l, &calm(), 0, 0, 0, 0).express,
             "no hold, room under the cap: no lane needed"
+        );
+    }
+
+    #[test]
+    fn the_owner_reservation_keeps_one_slot_and_runs_over_the_load_line() {
+        let l = limits(4, 24.0, 1024);
+        let owner =
+            |v: &Verdict, p: &Pressure, owner_running| reserve_for_owner(v, p, true, owner_running);
+        // Room under the cap: one of it is the owner's, the fleet the rest.
+        let v = decide(&l, &calm(), 1, 0, 0, 0);
+        assert_eq!(owner(&v, &calm(), 0), Some(2));
+        assert_eq!(
+            reserve_for_owner(&v, &calm(), false, 0),
+            None,
+            "nothing queued"
+        );
+        // The fleet fills the cap: the owner's one run goes over it.
+        let full = decide(&l, &calm(), 4, 0, 0, 0);
+        assert_eq!(owner(&full, &calm(), 0), Some(0));
+        // Load far over daemon.max_load (past the express lane's twice) and
+        // memory under the floor: the owner's one run still starts...
+        for p in [
+            Pressure {
+                load1: Some(60.0),
+                ..calm()
+            },
+            Pressure {
+                free_mem_mb: Some(300),
+                ..calm()
+            },
+        ] {
+            let v = decide(&l, &p, 4, 0, 0, 0);
+            assert!(v.hold.is_some() && !v.express, "{v:?}");
+            assert_eq!(owner(&v, &p, 0), Some(0), "{p:?}");
+            // ...one only: with it in flight the line holds the owner too.
+            assert_eq!(owner(&v, &p, 1), None, "{p:?}");
+        }
+        // The kernel's critical pressure is the machine swapping: nobody.
+        let critical = Pressure {
+            mem_critical: true,
+            ..calm()
+        };
+        assert_eq!(
+            owner(&decide(&l, &critical, 0, 0, 0, 0), &critical, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn the_owner_is_refused_only_where_the_governor_would_refuse_it_after_a_yield() {
+        let l = limits(4, 24.0, 1024);
+        // A full cap alone is no refusal: the yielding run frees its slot.
+        assert_eq!(owner_refusal(&l, &calm(), 4, 0, 0, 0), None);
+        let loaded = Pressure {
+            load1: Some(30.0),
+            ..calm()
+        };
+        // Over the line with no owner run in flight: the reservation admits
+        // the owner's one run over it.
+        assert_eq!(owner_refusal(&l, &loaded, 4, 0, 0, 0), None);
+        // Under twice the line the express lane takes a second under the
+        // cap, as the governor itself would.
+        assert_eq!(owner_refusal(&l, &loaded, 4, 0, 0, 1), None);
+        // Past twice the line, with the owner's one run already over it,
+        // the load refuses the next, and the reason names both.
+        let swamped = Pressure {
+            load1: Some(60.0),
+            ..calm()
+        };
+        assert_eq!(owner_refusal(&l, &swamped, 4, 0, 0, 0), None);
+        let why = owner_refusal(&l, &swamped, 4, 0, 0, 1).expect("refused");
+        assert!(
+            why.contains("load 60.0") && why.contains("already in flight"),
+            "{why}"
+        );
+        let critical = Pressure {
+            mem_critical: true,
+            ..calm()
+        };
+        assert!(
+            owner_refusal(&l, &critical, 1, 0, 0, 0)
+                .is_some_and(|why| why.contains("critical memory pressure"))
         );
     }
 

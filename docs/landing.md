@@ -617,6 +617,14 @@ the daemon lends one slot over the cap to the owner's work alone - one at a
 time, never while an owner run is already in flight - with the line `every slot of this machine is busy
 with the fleet's work; one express slot stays open for the owner's work`.
 
+On top of that, while owner-driven work this machine could run is queued,
+one local slot is held for it. Under the cap the fleet's work cannot take
+that slot. Over the cap, the load line at any height or the memory floor, the
+owner's one run starts there anyway, and only the kernel's critical memory
+pressure keeps it shut. A fleet run is asked to yield only when the owner's job
+could then start. [owner-reservation.md](owner-reservation.md) explains how
+this works and why.
+
 A free slot is not a free lane, though: a project's own work lanes
 (the fleet's per-project share, narrowed to what fits the commit cap while its checks
 take turns) count the fleet's runs and the owner's alike, so an owner's task

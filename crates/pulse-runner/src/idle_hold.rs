@@ -871,9 +871,12 @@ mod tests {
     fn a_load_hold_asks_the_owner_once_and_answers_when_it_lifts() {
         let _serial = crate::test_helpers::serial();
         let d = Daemon::new(0);
-        // Over twice the line: not even the owner's express slot opens.
+        // A load hold alone lets the owner's one run start over the line
+        // (docs/owner-reservation.md); with the machine swapping as well
+        // not even that slot opens, and the hold names the load.
         let pin = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             load1: Some(1000.0),
+            mem_critical: true,
             ..crate::daemon_load::CALM
         });
         d.held_twice(&LOAD, "lower `capacity`");
@@ -885,8 +888,12 @@ mod tests {
     fn a_memory_hold_asks_the_owner_once_and_answers_when_it_lifts() {
         let _serial = crate::test_helpers::serial();
         let d = Daemon::new(0);
+        // Memory under the floor alone lets the owner's one run start
+        // (docs/owner-reservation.md); the kernel's critical pressure, the
+        // machine swapping, keeps even that slot shut.
         let pin = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             free_mem_mb: Some(100),
+            mem_critical: true,
             ..crate::daemon_load::CALM
         });
         d.held_twice(&MEMORY, "Close what holds the memory");

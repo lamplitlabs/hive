@@ -1669,6 +1669,12 @@ pub(crate) fn daemon(
         // Whether the one slot left open is the owner's express slot: the
         // fleet's queued work could not have had it.
         let mut express_slot = false;
+        // While owner-driven work is queued and the cap has room, the one
+        // local slot reserved for it (docs/owner-reservation.md); and
+        // whether that slot leased nothing this tick, so the fleet's queue
+        // could not have had it either.
+        let mut owner_reserved = false;
+        let mut owner_slot_idle = false;
         // The daemon-wide holds this tick's dispatch saw (idle_hold.rs).
         let mut holds_seen: Vec<crate::idle_hold::Hold> = Vec::new();
         // A panic in the tick body becomes the idle reason, not the daemon's end.
@@ -2043,12 +2049,17 @@ pub(crate) fn daemon(
             // restart window, since the owner's work starts in any - but not
             // during a console drain, which starts nothing.
             let restart_starts_nothing = restart_hold.is_some() && restart_kinds.is_empty();
-            if !o.dry_run && !restart_starts_nothing {
-                for line in crate::yield_lane::yield_lanes_to_owner(s, &now, &actor, &restart_kinds)
-                {
-                    say(&o, line);
-                }
-            }
+            // The machine as the governor sees it this tick, read once: the
+            // yield below asks only what the governor would then admit.
+            let pressure = crate::daemon_load::pressure();
+            let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
+            let owner_running_local = inflight
+                .values()
+                .filter(|d| {
+                    d.slot == crate::executor::LOCAL_EXECUTOR
+                        && crate::jobs::is_owner_driven(&d.job)
+                })
+                .count();
             let disk_floor = crate::executor::disk_floor_hold(s);
             // The console's daemon line: empty while the disk pays for runs,
             // otherwise the hold in the copy the Overview prints in red.
@@ -2069,6 +2080,57 @@ pub(crate) fn daemon(
             }
             bulk_was_away = bulk_hold.is_some();
             let bulk_line = bulk_hold.clone().unwrap_or_default();
+            // A fleet run in the way of the owner's queued job is asked to
+            // hold only when that job could start once its lane is free
+            // (docs/owner-reservation.md): not during a console drain, which
+            // starts nothing, nor while the disk, the login or the machine
+            // would refuse it anyway - a yield then only throws away the
+            // fleet run's step and leases it straight back.
+            if !o.dry_run {
+                let everywhere = if restart_starts_nothing {
+                    restart_hold.clone()
+                } else if let Some(hold) = &bulk_hold {
+                    Some(hold.clone())
+                } else if disk_floor.is_some() {
+                    crate::executor::disk_floor_note(s)
+                } else {
+                    None
+                };
+                let running_local = inflight
+                    .values()
+                    .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
+                    .count();
+                let local = if !gate.is_empty() {
+                    Some(gate.clone())
+                } else {
+                    crate::daemon_load::owner_refusal(
+                        &limits,
+                        &pressure,
+                        running_local,
+                        crate::daemon_load::measuring(&s.home),
+                        usize::from(crate::selfupdate::update_pending()),
+                        owner_running_local,
+                    )
+                };
+                let pass = crate::yield_lane::yield_lanes_if_admitted(
+                    s,
+                    &now,
+                    &actor,
+                    &crate::yield_lane::OwnerAdmission { everywhere, local },
+                );
+                for line in pass.asked {
+                    say(&o, line);
+                }
+                // Said once per change, not per tick: the hold that refuses
+                // the owner's job stands for hours at a time.
+                if pass.refused.is_empty() {
+                    idle_log.clear("yield");
+                } else if let Some(line) =
+                    idle_log.line("yield", &pass.refused.join("; "), std::time::Instant::now())
+                {
+                    say(&o, line);
+                }
+            }
             if let Some(hold) = &restart_hold
                 && let Some(line) = idle_log.line("restart", hold, std::time::Instant::now())
             {
@@ -2156,25 +2218,31 @@ pub(crate) fn daemon(
                 // the fleet's own work fills the machine, one local slot
                 // stays open to the owner's work (jobs.rs OWNER_DRIVEN_SQL):
                 // the owner should not wait behind the fleet's own builds.
+                // And while owner-driven work this machine could run is
+                // queued, one local slot is the owner's reservation
+                // (docs/owner-reservation.md): under the cap the fleet
+                // cannot take it, over the cap or the load or memory line
+                // the owner's one run starts there all the same.
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
-                    let local = inflight
+                    let running_local = inflight
                         .values()
                         .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
-                        .collect::<Vec<_>>();
-                    let running_local = local.len();
-                    let owner_running = local
-                        .iter()
-                        .filter(|d| crate::jobs::is_owner_driven(&d.job))
                         .count();
+                    let owner_running = owner_running_local;
                     let reserved = usize::from(crate::selfupdate::update_pending());
-                    let limits = crate::daemon_load::limits(s, &machine, o.max_jobs);
                     work_reserve = (limits.max_jobs.max(0) as usize).div_ceil(2);
                     let verdict = crate::daemon_load::decide(
                         &limits,
-                        &crate::daemon_load::pressure(),
+                        &pressure,
                         running_local,
                         crate::daemon_load::measuring(&s.home),
                         reserved,
+                        owner_running,
+                    );
+                    let reservation = crate::daemon_load::reserve_for_owner(
+                        &verdict,
+                        &pressure,
+                        crate::jobs::owner_work_queued_here(s, &now),
                         owner_running,
                     );
                     if let Some(hold) = verdict.hold {
@@ -2185,7 +2253,7 @@ pub(crate) fn daemon(
                         // Inside a restart window too: the owner's work
                         // starts in any window, and its run anchors the
                         // window rather than outlast it (anchors_restart).
-                        if verdict.express {
+                        if verdict.express || reservation.is_some() {
                             // The slot kept is restricted, so the tick still
                             // counts as held: an empty lane is not starvation.
                             load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
@@ -2197,7 +2265,7 @@ pub(crate) fn daemon(
                             load_held = crate::daemon_load::trim_local_slots(&mut slots, 0);
                             load_hold = Some(hold);
                         }
-                    } else if verdict.express {
+                    } else if verdict.express || (verdict.room == 0 && reservation.is_some()) {
                         // The cap is full of the fleet's work and none of it
                         // is the owner's: one slot over the capacity takes
                         // owner-driven jobs alone, so an answer to the owner
@@ -2217,6 +2285,9 @@ pub(crate) fn daemon(
                         // Over the cap is capacity the owner chose not to use, not
                         // a hold: those slots are simply not there this tick.
                         crate::daemon_load::trim_local_slots(&mut slots, verdict.room);
+                        // The owner's reservation under the cap: the first
+                        // local slot offered takes owner-driven work alone.
+                        owner_reserved = reservation.is_some();
                     }
                 }
                 match &load_hold {
@@ -2270,9 +2341,15 @@ pub(crate) fn daemon(
                         .filter(|n| *n == crate::executor::LOCAL_EXECUTOR)
                         .count();
                     let mut local_leased = 0usize;
+                    // The owner's reservation: the first local slot offered
+                    // leases owner-driven work alone (lease_job takes it
+                    // first anyway); the fleet's work takes the rest.
+                    let mut owner_slot_pending = owner_reserved;
                     for i in order {
                         let slot = &slots[i];
-                        let fits = if express_slot && slot == crate::executor::LOCAL_EXECUTOR {
+                        let owner_only = slot == crate::executor::LOCAL_EXECUTOR
+                            && (express_slot || owner_slot_pending);
+                        let fits = if owner_only {
                             &owner_lane
                         } else {
                             &restart_kinds
@@ -2294,6 +2371,12 @@ pub(crate) fn daemon(
                                     continue;
                                 }
                             }
+                        }
+                        // The disk paid for this slot: it is the owner's
+                        // reservation, offered to owner-driven work alone.
+                        if slot == crate::executor::LOCAL_EXECUTOR && owner_slot_pending {
+                            owner_slot_pending = false;
+                            owner_slot_idle = true;
                         }
                         // The jobs this tick leased already: their run rows
                         // land from their own threads, so the cap takes
@@ -2342,6 +2425,9 @@ pub(crate) fn daemon(
                         };
                         if slot == crate::executor::LOCAL_EXECUTOR {
                             local_leased += 1;
+                            if owner_only {
+                                owner_slot_idle = false;
+                            }
                             if let Some(adm) = admission.as_mut() {
                                 adm.claim(&job.str("project"));
                             }
@@ -2452,7 +2538,9 @@ pub(crate) fn daemon(
             // offered to the fleet's work either.
             let offered = slots.len() - disk_trimmed;
             let total_slots = inflight.len() as i32 + offered as i32 - started.len() as i32;
-            let usable = offered - usize::from(express_slot && started.is_empty());
+            let usable = offered
+                .saturating_sub(usize::from(express_slot && started.is_empty()))
+                .saturating_sub(usize::from(owner_slot_idle));
             // Starved: work queued and nothing could start, whether every
             // slot is busy or the governor or the disk held them. Why this
             // machine is short does not change what would help - hands
@@ -3910,6 +3998,271 @@ mod tests {
         if let Err(panic) = result {
             panic!("{}\n{}", panic_message(&panic), out.string());
         }
+    }
+
+    /// A daemon left running on `s` with capacity 2 and calm pressure until
+    /// the test pins another; each queued job wakes it for one tick. The
+    /// fake worker runs `seconds` long.
+    struct LiveGovernor {
+        s: crate::test_helpers::TestStore,
+        out: OutBuf,
+        cancel: pulse_bus::CancellationToken,
+        done: crossbeam_channel::Receiver<String>,
+    }
+
+    impl LiveGovernor {
+        /// The fake worker runs until the test ends (`finish` drops the gate
+        /// file), five minutes at most.
+        fn start() -> Self {
+            pulse_bus::reset_default();
+            let s = new_store();
+            new_bare_repo(&s);
+            for name in ["aurora", "borealis", "cirrus", "drizzle"] {
+                join(&s, name);
+            }
+            for (k, v) in [
+                ("capacity", "2"),
+                ("daemon.pass_seconds", "3600"),
+                ("daemon.min_free_mb", "0"),
+                ("daemon.setup_mb", "0"),
+                ("daemon.sweep", "off"),
+                ("jobs_per_day", "none"),
+            ] {
+                s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+            }
+            crate::capacity::pin_per_project(&s, 4);
+            let out = OutBuf::new();
+            let opts = DaemonOpts {
+                interval: 300,
+                out: Some(out.writer()),
+                worker_cmd: format!(
+                    "sh -c 'i=0; while [ ! -f {gate} ] && [ $i -lt 1500 ]; do sleep 0.2; i=$((i+1)); done; echo SUMMARY: ok'",
+                    gate = Self::gate_of(&s).display()
+                ),
+                ..Default::default()
+            };
+            let s_daemon = s.clone();
+            let cancel = pulse_bus::CancellationToken::new();
+            let cancel_daemon = cancel.clone();
+            let (done_tx, done) = crossbeam_channel::bounded(1);
+            std::thread::spawn(move || {
+                let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+            });
+            Self {
+                s,
+                out,
+                cancel,
+                done,
+            }
+        }
+
+        fn gate_of(s: &pulse_store::Store) -> std::path::PathBuf {
+            std::path::Path::new(&s.home).join("live-governor-gate")
+        }
+
+        fn add(&self, title: &str, source: &str) -> String {
+            crate::jobs::add_job(
+                &self.s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                source.into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+            .str("id")
+        }
+
+        fn wait_for(&self, want: &dyn Fn(&str) -> bool, what: &str) -> String {
+            let since = std::time::Instant::now();
+            loop {
+                let text = self.out.string();
+                if want(&text) {
+                    return text;
+                }
+                assert!(
+                    since.elapsed() < test_wait(Duration::from_secs(60)),
+                    "{what} never came:\n{text}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        fn yields(&self) -> i32 {
+            count(
+                &self.s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&crate::yield_lane::YIELD_ACTION],
+            )
+        }
+
+        /// Stops the daemon; re-raises the test's panic with what it said.
+        fn finish(self, result: std::thread::Result<()>) {
+            let _ = std::fs::write(Self::gate_of(&self.s), "");
+            self.cancel.cancel();
+            let _ = self.done.recv_timeout(test_wait(Duration::from_secs(30)));
+            if let Err(panic) = result {
+                panic!("{}\n{}", panic_message(&panic), self.out.string());
+            }
+        }
+    }
+
+    #[test]
+    fn daemon_starts_the_owners_job_over_the_load_line_while_the_fleets_stays_queued() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start();
+        live.add("Fleet one", "test");
+        live.add("Fleet two", "test");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.wait_for(
+                &|t| t.matches("leased job-").count() >= 2,
+                "the fleet's two runs",
+            );
+            // The fleet fills every slot and pushes the machine past twice
+            // daemon.max_load (24 on the test machine's 12 CPUs), where
+            // even the express lane used to shut. The owner's task and one
+            // more of the fleet's arrive.
+            let _loaded = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+                load1: Some(60.0),
+                ..crate::daemon_load::CALM
+            });
+            let fleet_three = live.add("Fleet three", "test");
+            let owners = live.add("Owner's task", "task:TASK-001");
+            let text = live.wait_for(
+                &|t| t.contains(&format!("leased {owners}")),
+                "the owner's job on its reserved slot",
+            );
+            assert!(
+                text.contains("one express slot stays open for the owner's work"),
+                "{text}"
+            );
+            assert!(!text.contains(&format!("leased {fleet_three}")), "{text}");
+            assert_eq!(
+                count(
+                    &live.s,
+                    "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND source = 'test'",
+                    &[]
+                ),
+                1,
+                "the fleet's stays queued:\n{text}"
+            );
+            // One run over the line, not two: the owner's next step waits
+            // while the first is in flight, as does the fleet's.
+            let owners_next = live.add("Owner's next step", "task:TASK-001:next");
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = live.out.string();
+            assert!(!text.contains(&format!("leased {owners_next}")), "{text}");
+            assert!(!text.contains(&format!("leased {fleet_three}")), "{text}");
+        }));
+        live.finish(result);
+    }
+
+    #[test]
+    fn daemon_asks_no_fleet_run_to_yield_while_the_load_would_refuse_the_owners_job() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start();
+        // The owner's first task and the fleet's run fill both slots.
+        let owners = live.add("Owner's task", "task:TASK-001");
+        let fleet = live.add("Fleet one", "test");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.wait_for(
+                &|t| {
+                    t.contains(&format!("leased {owners}"))
+                        && t.contains(&format!("leased {fleet}"))
+                },
+                "the owner's and the fleet's runs",
+            );
+            // Then the project's checks take turns and one lane fits the
+            // commit cap: the fleet's run holds the lane the owner's next
+            // task needs, inside its harness, so it could be asked to hold.
+            live.s
+                .set_setting(
+                    pulse_store::HUMAN_AGENT,
+                    crate::verify_lock::SETTING,
+                    crate::verify_lock::PROJECT,
+                )
+                .unwrap();
+            for (k, v) in [
+                ("harness.commit_timeout", "900"),
+                ("harness.step_timeout", "900"),
+            ] {
+                live.s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+            }
+            {
+                let conn = live.s.conn().unwrap();
+                crate::util::event_at(
+                    &*conn,
+                    "2026-09-01T00:00:00Z",
+                    "daemon",
+                    "land.landed",
+                    "pulse/x/1",
+                    serde_json::json!({"project": "proj", "sha": "abc", "verify": "verify exit 0", "verify_seconds": 600}),
+                );
+            }
+            assert_eq!(crate::jobs::project_lanes(&live.s, "proj").lanes, 1);
+            let run = crate::util::must_one(
+                &*live.s.conn().unwrap(),
+                "SELECT id, agent FROM runs WHERE job_id = ? AND status = 'running'",
+                &[&fleet],
+            );
+            live.s
+                .begin_harness_session(pulse_store::HarnessSession {
+                    id: format!("h-{fleet}"),
+                    run_id: run.str("id"),
+                    job_id: fleet.clone(),
+                    agent: run.str("agent"),
+                    project: "proj".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            // Past twice the load line with the owner's one run over it in
+            // flight, the governor would refuse the owner's next task even
+            // with the fleet's lane free: no run is asked to hold.
+            let loaded = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+                load1: Some(60.0),
+                ..crate::daemon_load::CALM
+            });
+            let next = live.add("Owner's next task", "task:TASK-002");
+            let text = live.wait_for(
+                &|t| t.contains("no fleet run is asked to hold"),
+                "the refused yield",
+            );
+            assert!(
+                text.contains(&format!("the owner's {next} waits for a lane"))
+                    && text.contains("load 60.0 on 12 CPUs is over the line 24, and the owner's one run over the line is already in flight"),
+                "{text}"
+            );
+            assert_eq!(live.yields(), 0, "no job.yield:\n{text}");
+            assert!(!text.contains("holds after its current step"), "{text}");
+            assert!(!text.contains(&format!("leased {next}")), "{text}");
+            // Once the machine would admit the owner's job (the load back under
+            // the line: the fleet's slot would go to the owner's), the
+            // fleet's run is asked to hold, once.
+            drop(loaded);
+            let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+            live.add("Fleet wake", "test");
+            let text = live.wait_for(
+                &|t| t.contains("holds after its current step"),
+                "the yield once the owner's job could start",
+            );
+            assert!(
+                text.contains(&format!(
+                    "{fleet} (task) holds after its current step so the owner's {next} can start"
+                )),
+                "{text}"
+            );
+            assert_eq!(live.yields(), 1, "{text}");
+        }));
+        live.finish(result);
     }
 
     #[test]

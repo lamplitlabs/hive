@@ -187,6 +187,36 @@ pub(crate) fn owner_driven_sql(alias: &str) -> String {
     OWNER_DRIVEN_SQL.replace("j.", &format!("{alias}."))
 }
 
+/// Whether owner-driven work this machine could run is queued: an
+/// [`OWNER_DRIVEN_SQL`] job of an active project that is not unfit here,
+/// whose needs the local executor offers (and, while the machine is kept
+/// for the work that needs it, that needs something). A project lead's job
+/// queued while its lead sits already reserves nothing: the one lead takes
+/// it after, and a slot kept for it would idle. The load governor
+/// keeps one local slot for it (docs/owner-reservation.md); work only a
+/// paired machine can run reserves nothing here.
+pub(crate) fn owner_work_queued_here(s: &pulse_store::Store, now: &str) -> bool {
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    let local = crate::executor::local_executor_row(s);
+    let unfit = crate::recipe::unfit_projects(&*conn, crate::executor::LOCAL_EXECUTOR, now);
+    let (fit, words) = pulse_store::needs::sql_fit("j.needs", &crate::executor::caps(&local));
+    let mut sql = format!(
+        "SELECT j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND {OWNER_DRIVEN_SQL} AND {fit} AND NOT (j.kind = 'lead' AND EXISTS (SELECT 1 FROM jobs k WHERE k.project = j.project AND k.kind = 'lead' AND k.source NOT LIKE 'lead-role:%' AND {OCCUPIED_JOB_SQL}))"
+    );
+    if crate::executor::reserved(&local) {
+        sql.push_str(" AND j.needs != ''");
+    }
+    let vals = words
+        .iter()
+        .map(|w| w as &dyn rusqlite::ToSql)
+        .collect::<Vec<_>>();
+    crate::util::must_rows(&conn, &sql, &vals)
+        .iter()
+        .any(|r| !unfit.contains_key(&r.str("project")))
+}
+
 /// [`OWNER_DRIVEN_SQL`] over a job row already in hand (a run in flight).
 pub(crate) fn is_owner_driven(job: &Row) -> bool {
     let kind = job.str("kind");
