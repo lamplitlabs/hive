@@ -612,7 +612,7 @@ export default function SettingsPage() {
             ))}
 
           {notifyShown ? (
-            <Section id="notify" title="Notifications" note="Hear about it when something waits for you, or when a task or conversation finishes. For this browser only.">
+            <Section id="notify" title="Notifications" note="Hear about it when something waits for you, or when a task or session finishes. For this browser only.">
               <NotificationsCard />
             </Section>
           ) : null}

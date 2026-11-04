@@ -306,7 +306,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
         className="scroll-thin min-h-0 flex-1 overflow-y-auto bg-background/60 px-4 py-4 sm:px-5"
         role="log"
         aria-live="polite"
-        aria-label="Conversation"
+        aria-label="Session"
       >
         {messages.length === 0 ? (
           <EmptyState className="mx-auto mt-6 max-w-lg" title="No messages yet" icon={<MessagesSquareIcon className="size-[18px]" />}>

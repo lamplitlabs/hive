@@ -157,7 +157,7 @@ export function Split({
           <aside
             ref={setSlot}
             className={cn(side, "order-3 lg:pl-1", panelBox)}
-            aria-label="Work of this conversation"
+            aria-label="Work of this session"
           />
         ) : null}
       </div>
@@ -209,7 +209,7 @@ export function BackButton({ onBack }: { onBack: () => void }) {
       className="-ml-2 justify-self-start lg:hidden"
       onClick={onBack}
     >
-      <ArrowLeftIcon /> All conversations
+      <ArrowLeftIcon /> All sessions
     </Button>
   );
 }

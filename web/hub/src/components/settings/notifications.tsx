@@ -15,8 +15,8 @@ import { cn } from "@/lib/utils";
 // itself. The notifier in the shell reads the same choices.
 
 const ROWS: { key: keyof NotifyPrefs; title: string; help: string }[] = [
-  { key: "waits", title: "When something waits for you", help: "A question, a decision, a proposal, a machine request or suggested work that needs your call; a task whose lead waits for your reply; an agent in a conversation that asks you something or asks to run a tool." },
-  { key: "finished", title: "When a task or conversation finishes", help: "A task done, a conversation its agent finished, and an agent's reply that ended its turn. Not the conversation you are looking at, and not one you closed yourself." },
+  { key: "waits", title: "When something waits for you", help: "A question, a decision, a proposal, a machine request or suggested work that needs your call; a task whose lead waits for your reply; an agent in a session that asks you something or asks to run a tool." },
+  { key: "finished", title: "When a task or session finishes", help: "A task done, a session its agent finished, and an agent's reply that ended its turn. Not the session you are looking at, and not one you closed yourself." },
   { key: "sound", title: "Play a sound", help: "A short chime with each notification. In PULSE.app, the Mac's notification sound." },
 ];
 

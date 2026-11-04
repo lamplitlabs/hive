@@ -73,7 +73,7 @@ const WORK: NavItem[] = [
   },
   {
     href: "/chat/",
-    label: "Chat",
+    label: "Sessions",
     hint: "Ask an agent to work, watch it, answer its questions",
     icon: MessageSquareIcon,
     match: (p) => p.startsWith("/chat"),

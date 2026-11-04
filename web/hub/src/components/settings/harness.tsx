@@ -465,8 +465,8 @@ function ChoiceSelect({ s, onSave, labels, note }: { s: Setting; onSave: (name: 
 }
 
 const WEB_SEARCH_LABELS: Record<string, string> = {
-  chat: "Conversations only",
-  on: "Conversations and jobs",
+  chat: "Sessions only",
+  on: "Sessions and jobs",
   off: "Nowhere",
 };
 
