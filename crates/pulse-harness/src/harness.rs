@@ -22,6 +22,7 @@ use crate::rewind::{self, Rewind};
 use crate::search::{SEARCH_TIMEOUT, WEB_SEARCH_TOOL, WebSearch, web_search_tool};
 use crate::skills::{SKILL_TOOL, Skill, load_skill, skill_tool};
 use crate::tasks_tool::{TASK_TOOL, TaskAction, TaskDesk, task_tool};
+use crate::trim::{result_chars, trim_for_request};
 use anyhow::anyhow;
 use pulse_provider::{
     CancelToken, ImageContent, Message, Provider, Request, Role, Tool, ToolCall, Usage,
@@ -360,6 +361,14 @@ pub struct Config {
     /// times out on a body long before a 1M-token window is full. 0
     /// leaves the decision to the tokens alone.
     pub max_request_bytes: usize,
+    /// Tool results that always travel whole in a request, counting back
+    /// from the latest (the `harness.trim_keep_recent` setting, see
+    /// [`crate::trim`]); older ones longer than `trim_over` characters
+    /// are sent as their first and last lines. 0 turns trimming off.
+    pub trim_keep_recent: usize,
+    /// Characters an older tool result may hold before the request trims
+    /// it (the `harness.trim_over` setting); 0 turns trimming off.
+    pub trim_over: usize,
     /// The model that writes the compaction summaries (the
     /// `harness.compact_model` setting); empty means the run's own.
     pub compact_model: String,
@@ -823,6 +832,9 @@ struct LoopState {
     last_prune_level: i32,
     budget_notice_sent: bool,
     emitted_prune_notes: BTreeSet<String>,
+    /// Set once the session noted that it sends older results trimmed,
+    /// so the owner reads it once and not on every call.
+    trim_note_sent: bool,
     calls_at_compaction: i32,
     /// `result.calls` when the current turn began; the step budget of an
     /// interactive session counts from here.
@@ -2143,14 +2155,27 @@ impl Agent {
                 .last_prompt_tokens
                 .saturating_add(estimate_tokens(&self.msgs[since..]))
         } else {
-            estimate_tokens(&self.msgs)
+            estimate_tokens(&self.request_messages())
         }
     }
 
+    /// The conversation as the next request sends it: tool results older
+    /// than the `trim_keep_recent` most recent and longer than `trim_over`
+    /// characters go as their first and last lines around a marker
+    /// ([`trim_for_request`]). The conversation itself, the trajectory and
+    /// the session's steps keep them whole, so the compaction summariser
+    /// and the owner's console still see everything; only the wire does
+    /// not, and the model is told to run a command again when it needs a
+    /// trimmed result.
+    fn request_messages(&self) -> Vec<Message> {
+        trim_for_request(&self.msgs, self.cfg.trim_keep_recent, self.cfg.trim_over)
+    }
+
     /// About how many bytes the next request takes on the wire
-    /// ([`estimate_request_bytes`]), given the tools it will offer.
+    /// ([`estimate_request_bytes`]), given the tools it will offer and
+    /// the trimming of older results it will have.
     fn request_bytes(&self, tools: &[Tool]) -> usize {
-        estimate_request_bytes(&self.msgs, tools)
+        estimate_request_bytes(&self.request_messages(), tools)
     }
 
     /// Whether the next request is past the byte budget
@@ -2379,12 +2404,27 @@ impl Agent {
             let sent_messages = self.msgs.len();
             let req = Request {
                 model: self.cfg.model.clone(),
-                messages: clone_messages(&self.msgs),
+                messages: self.request_messages(),
                 tools,
                 initiator: self.state.initiator.clone(),
                 reasoning: self.cfg.reasoning.clone(),
                 ..Request::default()
             };
+            if !self.state.trim_note_sent {
+                let whole = result_chars(&self.msgs);
+                let sent = result_chars(&req.messages);
+                if sent < whole {
+                    self.emit(Step {
+                        kind: StepKind::Note,
+                        content: format!(
+                            "sending older command outputs trimmed to their first and last lines from here on: this request carries {} of the conversation's {} result characters (the last {} results travel whole, older ones over {} characters are trimmed); the session's steps keep every output in full",
+                            sent, whole, self.cfg.trim_keep_recent, self.cfg.trim_over
+                        ),
+                        ..Step::default()
+                    });
+                    self.state.trim_note_sent = true;
+                }
+            }
             let mut stream_retries = 0u32;
             let asked_at = Instant::now();
             let resp = loop {
@@ -5797,10 +5837,11 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
     "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done. A run too long to wait for (a benchmark, a soak, a build of hours or days) is handed over with process notify: it keeps running after your turn ends and its exit wakes you with a note, so end the turn rather than poll.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
-    "Commands time out after {{.StepTimeout}}.\n",
+    "Commands time out after {{.StepTimeout}}. A command that does is killed and you get what it printed by then, so wrap anything that may run long in timeout <secs>, prefer targeted test filters, pipe a long-running command through head rather than tail (tail prints nothing until its input ends), and put a long build or soak in the background instead of waiting on it.\n",
+    "Scope grep, find and ls to the project tree, never ~/.pulse or the home directory.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",
-    "Output over {{.OutputLimit}} characters is cut in the middle.\n",
-    "As the conversation nears the context window its older part is compacted into a summary you write, and only when that is not enough are older command outputs shortened to their first and last lines; rerun a command if you need a shortened output again.\n",
+    "Output over {{.OutputLimit}} characters is cut in the middle, and a command output older than the last few reaches you trimmed to its first and last lines; rerun a command if you need its output whole.\n",
+    "As the conversation nears the context window its older part is compacted into a summary you write.\n",
     "Never run interactive programs: editors, pagers, or anything that waits for a keyboard; a server or a watch mode goes in the background.\n",
     "To edit files, prefer the edit tool (or ```edit blocks); shell heredocs, sed -i, or python3 -c are still available when needed.\n",
     "For work of several steps, keep a plan: call plan with the whole checklist and update it as steps finish.\n",
@@ -5840,10 +5881,11 @@ pub const CHAT_PROMPT_TEMPLATE: &str = concat!(
     "No state survives between commands: cd, exports, aliases, and shell variables are lost.\n",
     "Background children a command leaves (cmd &, nohup) are killed when the command ends. For a server, a watcher or a check that outlasts a command, call bash with background:true: it returns at once with an id, and the process tool reads its output, waits for it or stops it; stop what you started when you are done. A run too long to wait for (a benchmark, a soak, a build of hours or days) is handed over with process notify: it keeps running after your turn ends and its exit wakes you with a note, so end the turn rather than poll.\n",
     "Chain setup and use with &&, or use absolute paths.\n",
-    "Commands time out after {{.StepTimeout}}.\n",
+    "Commands time out after {{.StepTimeout}}. A command that does is killed and you get what it printed by then, so wrap anything that may run long in timeout <secs>, prefer targeted test filters, pipe a long-running command through head rather than tail (tail prints nothing until its input ends), and put a long build or soak in the background instead of waiting on it.\n",
+    "Scope grep, find and ls to the project tree, never ~/.pulse or the home directory.\n",
     "Keep outputs small with head, tail, grep, and focused test selectors.\n",
-    "Output over {{.OutputLimit}} characters is cut in the middle.\n",
-    "As the conversation nears the context window its older part is compacted into a summary you write, and only when that is not enough are older command outputs shortened to their first and last lines; rerun a command if you need a shortened output again.\n",
+    "Output over {{.OutputLimit}} characters is cut in the middle, and a command output older than the last few reaches you trimmed to its first and last lines; rerun a command if you need its output whole.\n",
+    "As the conversation nears the context window its older part is compacted into a summary you write.\n",
     "Never run interactive programs: editors, pagers, or anything that waits for a keyboard; a server or a watch mode goes in the background.\n",
     "To edit files, prefer the edit tool; shell heredocs, sed -i, or python3 -c are still available when needed.\n",
     "For work of several steps, keep a plan: call plan with the whole checklist and update it as steps finish.\n",
@@ -6966,9 +7008,10 @@ fn verify_cmd_from_hook(hook: &str) -> String {
 }
 
 /// Observation text for a gated commit that hit its deadline: names the
-/// verify gate and the lock wait instead of the generic "smaller scope" hint.
+/// verify gate and the lock wait instead of the generic narrow-the-command
+/// hint.
 pub fn format_commit_timeout(obs: &Observation, limit: usize, gate: &VerifyGate) -> String {
-    let mut out = truncate(&obs.output, limit);
+    let mut out = truncate_keeping(&obs.output, limit, limit / 4);
     let secs = (obs.duration.as_secs_f64().round() as i64).max(1);
     let lock_wait = lock_wait_from_output(&obs.output);
     let which = if gate.verify_cmd.is_empty() {
@@ -7028,15 +7071,26 @@ pub fn format_interrupted_observation(obs: &Observation, limit: usize, holding: 
     )
 }
 
+/// The observation of a command as the model sees it. A command that hit
+/// the step timeout was killed with its process group, and what it had
+/// printed by then comes back cut with the tail favoured, under a line
+/// that says so and what to do instead: of the 22 owner-task commands
+/// that timed out in three days, most had printed something useful that
+/// only the last lines showed, and several printed nothing because they
+/// were piped through tail, which prints nothing until its input ends.
 pub fn format_observation(obs: &Observation, limit: usize) -> String {
-    let mut out = truncate(&obs.output, limit);
+    let mut out = if obs.timed_out {
+        truncate_keeping(&obs.output, limit, limit / 4)
+    } else {
+        truncate(&obs.output, limit)
+    };
     if obs.timed_out {
         let mut secs = (obs.duration.as_secs_f64()).round() as i64;
         if secs <= 0 {
             secs = 1;
         }
         let line = format!(
-            "The command timed out after {secs}s and was killed; inspect partial output and retry only with a smaller scope or a different safe approach, within the run's remaining budget. Do not leave unsupervised background work."
+            "[timed out after {secs} s and was killed; the output above is what arrived before that. Narrow the command, wrap it in timeout <secs>, pipe long output through head rather than tail (tail prints nothing until its input ends), or start it with bash background:true and read it with the process tool, within the run's remaining budget. Do not leave unsupervised background work.]"
         );
         if out.is_empty() {
             out = line;
@@ -7067,14 +7121,23 @@ pub fn stored_observation(output: &str, limit: usize) -> String {
 }
 
 pub fn truncate(s: &str, limit: usize) -> String {
+    truncate_keeping(s, limit, limit / 2)
+}
+
+/// `s` cut to about `limit` characters, `head` of them from the start and
+/// the rest from the end, with a line between naming what went. The
+/// middle cut keeps half and half; a timed-out command keeps a quarter at
+/// the head, since where it got to is in its last lines.
+pub fn truncate_keeping(s: &str, limit: usize, head: usize) -> String {
     if limit == 0 || s.len() <= limit {
         return s.to_string();
     }
-    let half = limit / 2;
+    let head = head.min(limit);
+    let tail = limit - head;
     // Byte offsets clamped to char boundaries: tool output with multi-byte
     // text (box drawing, Arabic, emoji) at the cut used to panic the worker.
-    let head_end = s.floor_char_boundary(half);
-    let tail_start = s.ceil_char_boundary(s.len() - half);
+    let head_end = s.floor_char_boundary(head);
+    let tail_start = s.ceil_char_boundary(s.len() - tail);
     let omitted = tail_start - head_end;
     format!(
         "{}\n[... {omitted} characters omitted ...]\n{}",
@@ -10712,11 +10775,221 @@ mod tests {
         for want in [
             "partial failure",
             "<returncode>124</returncode>",
+            "[timed out after 1 s and was killed; the output above is what arrived before that.",
+            "wrap it in timeout <secs>",
+            "head rather than tail",
+            "bash background:true",
             "remaining budget",
             "Do not leave unsupervised background work",
         ] {
             assert!(out.contains(want), "lost {want}: {out}");
         }
+    }
+
+    #[test]
+    fn older_results_reach_the_provider_trimmed_while_the_run_keeps_them_whole() {
+        let _serial = crate::test_helpers::serial();
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool("one")),
+            resp(tool("two")),
+            resp(tool("three")),
+            resp(tool("four")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let big = |c: char| format!("{}\n", c.to_string().repeat(3000));
+        let env = Arc::new(Mutex::new(FakeEnv {
+            observations: vec![
+                Observation {
+                    output: big('a'),
+                    exit_code: 0,
+                    ..Observation::default()
+                },
+                Observation {
+                    output: "short\n".into(),
+                    exit_code: 0,
+                    ..Observation::default()
+                },
+                Observation {
+                    output: big('c'),
+                    exit_code: 0,
+                    ..Observation::default()
+                },
+                Observation {
+                    output: big('d'),
+                    exit_code: 0,
+                    ..Observation::default()
+                },
+            ],
+            ..FakeEnv::default()
+        }));
+        let mut cfg = base_config();
+        cfg.trim_keep_recent = 2;
+        cfg.trim_over = 2000;
+        let (h, got) = run_agent(p.clone(), env, cfg).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        let reqs = p.requests();
+        assert_eq!(reqs.len(), 5);
+        let results = |req: &Request| -> Vec<String> {
+            req.messages
+                .iter()
+                .filter(|m| m.role == Role::Tool)
+                .map(|m| m.content.clone())
+                .collect()
+        };
+        let third = results(&reqs[3]);
+        assert_eq!(third.len(), 3, "{third:?}");
+        assert!(
+            third[0].contains("[... trimmed 1,547 of 3,047 characters of this older result; run the command again if you need them ...]"),
+            "the oldest long result is trimmed once two newer ones exist: {}",
+            third[0]
+        );
+        assert!(third[1].contains("short") && !third[1].contains("trimmed"));
+        assert!(third[2].len() > 3000, "the latest results travel whole");
+        let second = results(&reqs[2]);
+        assert!(
+            second[0].len() > 3000,
+            "with only one newer result the first still travels whole"
+        );
+        let last = results(&reqs[4]);
+        assert!(last[0].contains("trimmed") && !last[1].contains("trimmed"));
+        assert!(last[2].len() > 3000 && last[3].len() > 3000);
+        let kept: Vec<Message> = h
+            .messages()
+            .into_iter()
+            .filter(|m| m.role == Role::Tool)
+            .collect();
+        assert!(
+            kept.iter().all(|m| !m.content.contains("trimmed")),
+            "the conversation keeps every result whole"
+        );
+        assert!(kept[0].content.len() > 3000);
+        let steps = h.trajectory().steps;
+        let notes: Vec<&Step> = steps
+            .iter()
+            .filter(|s| {
+                s.kind == StepKind::Note
+                    && s.content
+                        .starts_with("sending older command outputs trimmed")
+            })
+            .collect();
+        assert_eq!(notes.len(), 1, "the note is written once: {notes:?}");
+        assert!(
+            notes[0].content.contains(
+                "(the last 2 results travel whole, older ones over 2000 characters are trimmed)"
+            ),
+            "{}",
+            notes[0].content
+        );
+        assert!(
+            steps
+                .iter()
+                .filter(|s| s.kind == StepKind::Observation)
+                .all(|s| !s.content.contains("trimmed")),
+            "the stored steps are whole"
+        );
+    }
+
+    #[test]
+    fn a_timed_out_command_returns_its_tail_under_the_timeout_line() {
+        let mut output = String::new();
+        for n in 1..=400 {
+            output.push_str(&format!("line {n:03} of the build log\n"));
+        }
+        let obs = Observation {
+            output: output.clone(),
+            exit_code: -1,
+            timed_out: true,
+            duration: Duration::from_secs(900),
+        };
+        let out = format_observation(&obs, 2000);
+        assert!(
+            out.starts_with("<returncode>-1</returncode>\n<output>\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("Do not leave unsupervised background work.]\n</output>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("line 001 of the build log"),
+            "the head is kept"
+        );
+        assert!(
+            out.contains("line 400 of the build log"),
+            "the last line is kept"
+        );
+        assert!(
+            out.contains("line 350 of the build log"),
+            "the tail gets most of the room"
+        );
+        assert!(
+            !out.contains("line 100 of the build log"),
+            "the middle is cut"
+        );
+        assert!(out.contains("[timed out after 900 s and was killed; the output above is what arrived before that."), "{out}");
+        let marker_at = out.find("characters omitted").unwrap();
+        let head_at = out.find("line 001").unwrap();
+        let tail_at = out.find("line 400").unwrap();
+        assert!(
+            head_at < marker_at && marker_at < tail_at,
+            "head, cut, tail, in that order"
+        );
+        let whole = format_observation(&obs, 0);
+        assert!(whole.contains(&output), "no limit keeps everything");
+        let silent = format_observation(
+            &Observation {
+                output: String::new(),
+                exit_code: -1,
+                timed_out: true,
+                duration: Duration::from_millis(900_400),
+            },
+            2000,
+        );
+        assert_eq!(
+            silent
+                .lines()
+                .nth(2)
+                .map(|l| l.starts_with("[timed out after 900 s")),
+            Some(true),
+            "{silent}"
+        );
+        let finished = format_observation(
+            &Observation {
+                output: output.clone(),
+                exit_code: 0,
+                ..Observation::default()
+            },
+            2000,
+        );
+        assert!(!finished.contains("timed out"));
+        assert!(
+            finished.contains("line 030 of the build log")
+                && finished.contains("line 370 of the build log"),
+            "a finished command keeps half and half"
+        );
+    }
+
+    #[test]
+    fn truncate_keeping_splits_the_room_as_asked() {
+        let s: String = (0..1000).map(|_| 'a').collect();
+        let even = truncate_keeping(&s, 200, 100);
+        assert_eq!(even, truncate(&s, 200));
+        assert!(even.starts_with(&"a".repeat(100)) && even.ends_with(&"a".repeat(100)));
+        assert!(even.contains("[... 800 characters omitted ...]"), "{even}");
+        let tail = truncate_keeping(&s, 200, 50);
+        let (head_part, rest) = tail.split_once('\n').unwrap();
+        assert_eq!(head_part.len(), 50);
+        assert!(rest.ends_with(&"a".repeat(150)));
+        assert!(tail.contains("[... 800 characters omitted ...]"), "{tail}");
+        assert_eq!(
+            truncate_keeping(&s, 1000, 250),
+            s,
+            "within the limit nothing changes"
+        );
+        let multi: String = (0..600).map(|_| 'é').collect();
+        let cut = truncate_keeping(&multi, 300, 75);
+        assert!(cut.contains("characters omitted"));
+        assert!(cut.chars().all(|c| c == 'é' || c.is_ascii()));
     }
 
     fn obs(content: String) -> Message {
