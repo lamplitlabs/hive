@@ -56,7 +56,7 @@ function Entry({ file, entry }: { file: MemoryFile; entry: MemoryEntry }) {
         title="Forget this memory?"
         description={
           <>
-            It is removed from <Mono>{file.path}</Mono>; later runs {file.kind === "user" ? "on every project" : file.kind === "conversations" ? "of chats without a project" : "on " + fileTitle(file)} no longer read it.
+            It is removed from <Mono>{file.path}</Mono>; later runs {file.kind === "user" ? "on every project" : file.kind === "conversations" ? "of sessions without a project" : "on " + fileTitle(file)} no longer read it.
           </>
         }
         action="Forget"
@@ -305,7 +305,7 @@ export function MemoryPageClient() {
               Each file is plain Markdown; every line that starts with <Mono>- </Mono> is one memory, and the <Mono>[date]</Mono> in front is the day it was kept. You may edit the files by hand too.
             </p>
             <p>
-              A run on a project reads that project&apos;s file and yours into its system prompt (up to 16 KB of each), and may call its <Mono>memory</Mono> tool to remember, forget or list. A chat not attached to a project shares the conversations file. The <Mono>harness.memory</Mono> setting turns all of it off.
+              A run on a project reads that project&apos;s file and yours into its system prompt (up to 16 KB of each), and may call its <Mono>memory</Mono> tool to remember, forget or list. A chat not attached to a project shares the sessions file. The <Mono>harness.memory</Mono> setting turns all of it off.
             </p>
             <p>
               In a terminal: <Mono>/memory</Mono> inside <Mono>pulse chat</Mono> lists, adds and forgets the same way.

@@ -74,7 +74,7 @@ export function RunningStrip() {
       <span key="u" className="grid gap-1.5">
         <span className="leading-relaxed">
           {update ? daemonUpdateText(update) + "." : ""}
-          {d.hub.restart_pending ? (update ? " " : "") + "This console has a newer build and waits for the conversations working." : ""}
+          {d.hub.restart_pending ? (update ? " " : "") + "This console has a newer build and waits for the sessions working." : ""}
         </span>
         <RestartNow ask={d.restart_ask} inflight={update?.inflight} />
       </span>,

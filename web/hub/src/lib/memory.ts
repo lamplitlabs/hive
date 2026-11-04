@@ -8,7 +8,7 @@ import type { MemoryFile, MemoryPayload } from "@/lib/api";
 // user's file, "Conversations" for the shared one, the project's slug else.
 export function fileTitle(f: Pick<MemoryFile, "key" | "kind" | "project">): string {
   if (f.kind === "user") return "You, in every project";
-  if (f.kind === "conversations") return "Conversations without a project";
+  if (f.kind === "conversations") return "Sessions without a project";
   return f.project || f.key;
 }
 
@@ -18,9 +18,9 @@ export function fileHint(f: Pick<MemoryFile, "kind" | "project">): string {
     case "user":
       return "Read by every run on every project: how you like things done.";
     case "conversations":
-      return "Shared by chats that are not attached to a project.";
+      return "Shared by sessions that are not attached to a project.";
     default:
-      return f.project ? "Read by every run and chat on this project." : "No project goes by this key any more; the file is still on disk.";
+      return f.project ? "Read by every run and session on this project." : "No project goes by this key any more; the file is still on disk.";
   }
 }
 

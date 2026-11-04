@@ -43,12 +43,12 @@ export function restartDrainDetail(): string {
 // it is and the new runner picks it back up; what cannot hold is stopped and
 // its job goes back to the queue.
 export function restartHoldDetail(): string {
-  return "Each is asked to hold: it saves where it is, and the new runner picks it back up with the same agent, workspace and conversation. Anything that can't hold within two minutes is stopped and its job goes back to the queue.";
+  return "Each is asked to hold: it saves where it is, and the new runner picks it back up with the same agent, workspace and session. Anything that can't hold within two minutes is stopped and its job goes back to the queue.";
 }
 
 // The console's own conversations never ride on the restart.
 export function restartConsoleDetail(): string {
-  return "Conversations in this console carry on by themselves once the new console is up.";
+  return "Sessions in this console carry on by themselves once the new console is up.";
 }
 
 // A runner older than this console may not hear the ask at all; then the

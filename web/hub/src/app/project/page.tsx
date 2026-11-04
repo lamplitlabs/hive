@@ -351,8 +351,8 @@ function WorkTab({ slug, task, setParams }: { slug: string; task: string | null;
         <SectionHeading note="What you asked for, and how far each task has come.">Tasks</SectionHeading>
         <TasksTab slug={slug} onOpen={(id) => setParams({ task: id })} activeId={task} />
       </section>
-      <section aria-label="Chat" className="min-h-[520px] min-w-0">
-        <SectionHeading note="Talk with the lead agent about the project or one task.">Chat</SectionHeading>
+      <section aria-label="Sessions" className="min-h-[520px] min-w-0">
+        <SectionHeading note="Talk with the lead agent about the project or one task.">Sessions</SectionHeading>
         <ChatTab slug={slug} taskId={task} onPickTask={(id) => setParams({ task: id })} />
       </section>
     </div>

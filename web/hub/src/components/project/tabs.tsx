@@ -453,7 +453,7 @@ export function ChatTab({ slug, taskId, onPickTask }: { slug: string; taskId: st
           <span className="font-medium anywhere">{lead}</span>
         </span>
         <Select value={taskId || "__all"} onValueChange={(v) => onPickTask(v === "__all" ? null : v)}>
-          <SelectTrigger aria-label="What the chat is about" className="h-9 w-full sm:w-72">
+          <SelectTrigger aria-label="What the session is about" className="h-9 w-full sm:w-72">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

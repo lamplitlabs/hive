@@ -60,8 +60,8 @@ export function TaskQuickActions({ t, onOpen, size = "xs", showOpen, chat = true
       ) : null}
       {chat ? (
         <Button size={size} variant="outline" asChild>
-          <Link href={hrefs.task(t.id)} aria-label={"Chat with the lead agent about " + t.title}>
-            <MessagesSquareIcon /> Chat
+          <Link href={hrefs.task(t.id)} aria-label={"Session with the lead agent about " + t.title}>
+            <MessagesSquareIcon /> Session
           </Link>
         </Button>
       ) : null}
@@ -111,16 +111,16 @@ export function TaskNeedsYou({ t, className, onChat }: { t: Task; className?: st
     <div className={cn("surface-you flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-3.5 py-3", className)}>
       <p className="flex min-w-0 flex-1 basis-52 items-start gap-2 text-sm leading-relaxed text-foreground">
         <MessageCircleQuestionIcon className="mt-0.5 size-4 shrink-0 text-you-ink" aria-hidden />
-        <span className="min-w-0 anywhere">The lead agent stopped and waits for your decision. Pick an answer in the chat, or write one.</span>
+        <span className="min-w-0 anywhere">The lead agent stopped and waits for your decision. Pick an answer in the session, or write one.</span>
       </p>
       {onChat ? (
         <Button size="sm" onClick={onChat}>
-          <MessagesSquareIcon /> Open the chat
+          <MessagesSquareIcon /> Open the session
         </Button>
       ) : (
         <Button size="sm" asChild>
           <Link href={hrefs.task(t.id)}>
-            <MessagesSquareIcon /> Open the chat
+            <MessagesSquareIcon /> Open the session
           </Link>
         </Button>
       )}

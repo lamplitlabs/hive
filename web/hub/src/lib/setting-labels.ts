@@ -175,17 +175,17 @@ const LABELS: Record<string, string> = {
   "provider.custom.api_key_header": "Header the custom server reads the key from",
   "provider.retry_after_cap_s": "Longest wait when the provider asks to retry (seconds)",
   "provider.max_body_mb": "Largest provider reply to read (MiB)",
-  "provider.max_request_mb": "Summarise the conversation before a request passes this size (MiB, 0 = off)",
+  "provider.max_request_mb": "Summarise the session before a request passes this size (MiB, 0 = off)",
   provider: "Model provider",
   "harness.max_steps": "Steps per run",
   "harness.task_max_steps": "Steps per task run",
   "harness.format_retries": "Free retries for replies in the wrong format",
   "chat.idle_release_minutes":
-    "Let an idle conversation's agent go after (minutes, 0 = never; it resumes on the next message)",
+    "Let an idle session's agent go after (minutes, 0 = never; it resumes on the next message)",
   "chat.resume_after_provider_error_secs":
-    "Resume a conversation once after a network provider error (seconds, 0 = off)",
-  "chat.sub_depth": "Levels deep a conversation may start sub-conversations (0 = no limit)",
-  "chat.sub_open": "Sub-conversations one conversation may have open at a time (0 = no limit)",
+    "Resume a session once after a network provider error (seconds, 0 = off)",
+  "chat.sub_depth": "Levels deep a session may start sub-sessions (0 = no limit)",
+  "chat.sub_open": "Sub-sessions one session may have open at a time (0 = no limit)",
   "harness.max_cost": "Model credits per run",
   "harness.keep_observations": "Recent command results kept in full",
   "harness.context_window": "Context window the model takes (tokens, 0 = from the model list)",
@@ -201,10 +201,10 @@ const LABELS: Record<string, string> = {
   "harness.tasks": "Let an agent file tasks on the board for the lead to plan",
   "harness.fetch_allow": "Hosts the fetch tool may read web pages from",
   "harness.deny_tools": "Tool calls a run refuses outright",
-  "harness.allow_tools": "Tool calls a chat session runs without asking",
+  "harness.allow_tools": "Tool calls a session runs without asking",
   "models.allowed": "Models a custom agent file may ask for",
-  "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
-  "harness.compact_model": "Model that writes the conversation summaries (empty = the run's own)",
+  "harness.compact_at": "Summarise the session past this share of the context window (%)",
+  "harness.compact_model": "Model that writes the session summaries (empty = the run's own)",
   "harness.trim_keep_recent": "Latest command results every request carries whole",
   "harness.trim_over": "Older command results longer than this are sent as head and tail (characters)",
   "harness.reasoning": "Reasoning effort asked of the model",
@@ -344,7 +344,7 @@ const HELP: Record<string, string> = {
   "provider.vllm.base_url": "Where your vLLM server listens. A local server needs no API key.",
   provider: "Which model provider the built-in harness talks to.",
   "harness.max_steps":
-    "How many model calls one run, or one chat turn, may make before it stops. none lifts the cap: the run goes on until it finishes, its time or credit budget ends, and the conversation is compacted whenever it nears the context window.",
+    "How many model calls one run, or one session turn, may make before it stops. none lifts the cap: the run goes on until it finishes, its time or credit budget ends, and the session is compacted whenever it nears the context window.",
   "harness.task_max_steps":
     "How many model calls a task, improve or experiment run may make before it stops. Empty keeps these on the steps-per-run budget, which still covers every other kind.",
   "harness.max_cost": "How many model credits one run may spend. 0 means no limit.",
@@ -361,15 +361,15 @@ const HELP: Record<string, string> = {
   "harness.hooks":
     "On: your hooks from the clone's .pulse/hooks.json and ~/.pulse/hooks.json run around the run: run_start output joins the prompt, a pre_tool hook can block a call (exit 2), post_tool output is appended to the result, run_end hears the outcome. Off: no hooks run.",
   "harness.memory":
-    "On: a run reads what earlier runs and chats remembered - ~/.pulse/memory/<project>.md for the project, ~/.pulse/memory/user.md for you - into its prompt, and the model can remember, forget and list facts for later; a read-only run reads but cannot write. Off: nothing is read or offered.",
+    "On: a run reads what earlier runs and sessions remembered - ~/.pulse/memory/<project>.md for the project, ~/.pulse/memory/user.md for you - into its prompt, and the model can remember, forget and list facts for later; a read-only run reads but cannot write. Off: nothing is read or offered.",
   "harness.teach":
     "On: the agent still does the work, but says what it chose, the alternative it passed over and why whenever it makes a design or coding choice worth learning from; a job reports LESSON: lines that become lesson posts on the board, in the job's thread. Off: no commentary.",
   "harness.web_search":
-    "Chat: conversations offer the web_search tool (DuckDuckGo without a key, Brave Search when BRAVE_SEARCH_API_KEY is set on the machine) and jobs do not. On: jobs too. Off: nowhere. The query goes to the engine; result pages are read with fetch where its hosts allow.",
+    "Sessions: sessions offer the web_search tool (DuckDuckGo without a key, Brave Search when BRAVE_SEARCH_API_KEY is set on the machine) and jobs do not. On: jobs too. Off: nowhere. The query goes to the engine; result pages are read with fetch where its hosts allow.",
   "harness.subagents":
     "On: a run can hand a self-contained sub-task to a helper that works in the same clone with the same budget and returns a report; its steps show indented in the session. Off: the tool is not offered.",
   "harness.tasks":
-    "On: a conversation's agent, a job's worker or an RSI run can file a task on the board under its own name, the way you do - with the conversation or job it came from as its origin - and the project's lead plans it on its next pass. An agent's task needs a brief, cannot repeat an open title, and each agent may have 10 open per project; a read-only run can list and read tasks but files none. Off: the tool is not offered.",
+    "On: a session's agent, a job's worker or an RSI run can file a task on the board under its own name, the way you do - with the session or job it came from as its origin - and the project's lead plans it on its next pass. An agent's task needs a brief, cannot repeat an open title, and each agent may have 10 open per project; a read-only run can list and read tasks but files none. Off: the tool is not offered.",
   "harness.fetch_allow":
     "The hosts a run may read web pages from, comma-separated - docs.rs, *.rust-lang.org, or * for any. Pages come back as text (2 MB, 30 s). Empty turns the fetch tool off.",
   "harness.deny_tools":
@@ -379,15 +379,15 @@ const HELP: Record<string, string> = {
   "models.allowed":
     "The models an agent file (.pulse/agents/<name>.md, .claude/agents, .github/agents, an agent record) may choose with its model key, comma-separated, * for a run of characters - kimi-k3, claude-*. Empty lets any model the provider accepts through. A model outside the list is ignored with a note and the run keeps its routing.",
   "harness.compact_at":
-    "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. It happens again each time the conversation grows back to the threshold, carrying the earlier summary forward, and whatever the share when a request would pass its size budget. The summary call is free of the step cap. 0 leaves compaction to the size budget alone.",
+    "When the session fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. It happens again each time the session grows back to the threshold, carrying the earlier summary forward, and whatever the share when a request would pass its size budget. The summary call is free of the step cap. 0 leaves compaction to the size budget alone.",
   "harness.compact_model":
-    "The model that writes the summaries. A cheaper one saves money where the provider bills per token (OpenAI, Anthropic, Gemini and the OpenAI-compatible vendors); Copilot bills per request, so there it only saves time. Empty uses the conversation's own model.",
+    "The model that writes the summaries. A cheaper one saves money where the provider bills per token (OpenAI, Anthropic, Gemini and the OpenAI-compatible vendors); Copilot bills per request, so there it only saves time. Empty uses the session's own model.",
   "harness.trim_keep_recent":
-    "How many of the latest command results each request sends whole, counting back from the most recent. Results older than these and longer than harness.trim_over travel as their first and last 750 characters around a line saying how much was left out; the conversation the run keeps, its trajectory and the session's steps stay whole, so the compaction summary and the console still read everything. Measured over three days of task runs, results older than the eight most recent held 84% of the result text in an average request. 0 turns the trimming off.",
+    "How many of the latest command results each request sends whole, counting back from the most recent. Results older than these and longer than harness.trim_over travel as their first and last 750 characters around a line saying how much was left out; the transcript the run keeps, its trajectory and the session's steps stay whole, so the compaction summary and the console still read everything. Measured over three days of task runs, results older than the eight most recent held 84% of the result text in an average request. 0 turns the trimming off.",
   "harness.trim_over":
     "Characters an older command result may hold before a request sends it trimmed. Results above 4,000 were a fifth of those measured and held two thirds of the result text, so that threshold takes most of the bulk while short results the model refers back to - a file listing, a test summary - go as they were. 0 turns the trimming off.",
   "provider.max_request_mb":
-    "How big one request may grow - the conversation, its tool results and images, the tool schemas - before the older conversation is summarised, whatever the token count. Copilot's gateway gives up reading a body of about 1.5 MiB long before a 1M-token window is full; a request it still refuses is summarised and sent again before the turn stops. 0 leaves compaction to the context-window share alone.",
+    "How big one request may grow - the session, its tool results and images, the tool schemas - before the older session is summarised, whatever the token count. Copilot's gateway gives up reading a body of about 1.5 MiB long before a 1M-token window is full; a request it still refuses is summarised and sent again before the turn stops. 0 leaves compaction to the context-window share alone.",
   "harness.reasoning":
     "How hard the model thinks before it answers, sent as reasoning_effort to the OpenAI-compatible providers and to Copilot for the models that take it. Model default sends nothing. A model that does not take the field rejects the call, so choose with your model in mind.",
   "harness.step_timeout": "How long one command may run before it is stopped.",
@@ -395,7 +395,7 @@ const HELP: Record<string, string> = {
     "How long a git commit that runs the pre-commit verify gate may take before it is stopped; never below the per-command limit.",
   "harness.output_limit": "How much of one command's output the model sees.",
   "voice.model":
-    "The speech model behind the microphone button in chat. It runs on this machine through ONNX Runtime, so no audio leaves it. The multilingual model understands 25+ languages and picks the one spoken; the English one is a little lighter. Either is about 2.5 GB, fetched once on the microphone's first use.",
+    "The speech model behind the microphone button in sessions. It runs on this machine through ONNX Runtime, so no audio leaves it. The multilingual model understands 25+ languages and picks the one spoken; the English one is a little lighter. Either is about 2.5 GB, fetched once on the microphone's first use.",
   "voice.language":
     "What the multilingual model should expect to hear: auto detects it, or a tag like en-US, de-DE or ja-JP pins it. The English-only model ignores this.",
 };

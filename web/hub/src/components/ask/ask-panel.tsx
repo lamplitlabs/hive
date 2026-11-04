@@ -286,7 +286,7 @@ function AskThread({ project, scope, signedOut, draft, setDraft }: { project: st
           <ol className="grid gap-4">
             <li className="-mb-2 flex justify-end">
               <Button type="button" variant="ghost" size="xs" className="text-muted-foreground" onClick={clear} disabled={busy}>
-                <EraserIcon /> Clear this conversation
+                <EraserIcon /> Clear this session
               </Button>
             </li>
             {messages.map((m, i) => (

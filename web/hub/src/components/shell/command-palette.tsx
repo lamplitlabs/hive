@@ -272,7 +272,7 @@ export function CommandPaletteHost() {
           <CommandGroup heading="Ask" className={groupStyle}>
             <CommandItem
               value={"ask a question " + query}
-              keywords={["chat", "answer", "help"]}
+              keywords={["chat", "session", "answer", "help"]}
               className={itemStyle}
               onSelect={ask}
             >
