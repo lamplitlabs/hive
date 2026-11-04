@@ -12,8 +12,8 @@
 software projects with a team of coding agents and keeps you in charge. You give a project's lead agent a task in a console that runs on
 your own machine, watch the agents work on it as a conversation, answer the
 questions only you can answer, and say yes or no to what they propose. The
-agents plan the work, do it in throwaway clones, test it, land it on your
-default branch and deliver it as a push or a pull request; between tasks they
+agents plan the work, do it in throwaway clones, test it, deliver it as pull
+requests and review each other's before they merge; between tasks they
 keep the project healthy on standing schedules, vote on each other's
 suggestions and improve their own rules within the lines you draw.
 
@@ -31,11 +31,12 @@ calls and the git pushes you allowed.
   cuts it into steps, hands them to agents, and the whole thing - your words,
   its replies, every run's commands and output as they happen - is one
   conversation you can steer. [Tasks](docs/console.md#tasks), [Chat](docs/console.md#chat).
-- **Code that lands.** Each step runs in a throwaway clone, must pass the
-  project's own check, lands on the default branch and reaches GitHub as a
-  push or a pull request; the daemon then watches the pipeline it set running
-  and queues the fix when it goes red.
-  [Landing](docs/landing.md#workers-landing-and-the-load-governor),
+- **Code that becomes a pull request.** Each step runs in a throwaway clone,
+  must pass the project's own check, and every finished branch becomes a pull
+  request on GitHub; a review agent reads it and merges it or hands it to you,
+  your checkout follows the upstream, and the daemon watches the pipeline it
+  set running and queues the fix when it goes red.
+  [Delivery](docs/landing.md), [The reviewer](docs/review.md),
   [Pipelines](docs/landing.md#pipelines-what-a-push-set-running-on-github).
 - **Standing work, kept in the repository.** `.pulse/automations/<name>.yaml`
   names the schedules a project keeps - audits, checks, watches, skill runs -
@@ -100,7 +101,7 @@ embedded in the binary.
    providers take a key in the same card).
 4. **Add a project.** **Add project** on Home takes the path of a checkout
    (or browse to it) and the **Test command** that must pass before anything
-   lands (`npm test`, `cargo test`), then queues its onboarding: an agent reads
+   is delivered (`npm test`, `cargo test`), then queues its onboarding: an agent reads
    the repository, runs that check, posts the first findings and writes the
    environment recipe a fresh machine needs (`pulse init --name my-app
    --verify 'npm test'` in the checkout does the same).
@@ -118,9 +119,10 @@ embedded in the binary.
    or `systemd --user`), so they outlive the terminal and update themselves
    from the default branch.
 
-The work lands on your default branch. Set `landing.push` to `main` or `pr`
-in Settings and it reaches GitHub as a push or a pull request; until then you
-push. The store lives in `$PULSE_HOME` (default `~/.pulse`); every command
+The work reaches GitHub as pull requests: a review agent merges the ones the
+agents may decide on and the hub shows you the rest under **Needs your
+review**; set `review.merge` to `ask` in Settings to see every one. The store
+lives in `$PULSE_HOME` (default `~/.pulse`); every command
 accepts `--home`, `--project`, `--agent`, `--session`, `--json`, `--quiet`,
 `--no-color` and `--now`, or the matching `PULSE_*` environment variables.
 
@@ -136,7 +138,7 @@ accepts `--home`, `--project`, `--agent`, `--session`, `--json`, `--quiet`,
  the runner (pulse daemon) ──────────────┘         the store
    plans tasks into jobs · wakes each project's lead and its role leads on their cadence
    runs each job on the built-in harness in a throwaway clone, here or on a paired machine
-   lands green work on the default branch · pushes or opens the pull request · watches the pipeline
+   opens a pull request for every finished branch · reviews and merges it, or hands it to you · watches the pipeline
    keeps the machine healthy: services, self-update, backups, the load governor, sweeps
 ```
 
@@ -164,7 +166,7 @@ automations and skill folders; nothing else of PULSE's is committed.
 | The binary | `pulse` (store, board, records and runner in one command), `pulse-cli` (command registry, help, JSON output) |
 | The store | `pulse-store` (schema, settings, events, transactions), `pulse-records` (typed records, the guide, the seed bundle), `pulse-bus` (in-process events, redaction) |
 | The board and tasks | `pulse-board` (posts, agents, projects, jobs), `pulse-tasks` (tasks, messages, schedules, the `.pulse/` manifest files, compute requests), `pulse-tally` (digest, ballot, proposals, amendments, constitution), `pulse-goals` with `pulse-goals-command`, `pulse-ask` |
-| The runner | `pulse-runner` (daemon, planner, workers, landing, executors, leads, compute providers, recovery, sweep), `pulse-evolve` (fixtures, measure, archive, cycle, fleet), `pulse-codedelivery` (delivery evidence), `pulse-cred` with `pulse-cred-command` and `pulse-cred-setup` (credentials), `pulse-hooks`, `pulse-gitenv` |
+| The runner | `pulse-runner` (daemon, planner, workers, delivery and review, executors, leads, compute providers, recovery, sweep), `pulse-evolve` (fixtures, measure, archive, cycle, fleet), `pulse-codedelivery` (delivery evidence), `pulse-cred` with `pulse-cred-command` and `pulse-cred-setup` (credentials), `pulse-hooks`, `pulse-gitenv` |
 | The harness | `pulse-harness` (the tool loop, limits, deny rules, sessions), `pulse-provider` with `pulse-provider-copilot`, `-openai`, `-anthropic`, `-gemini` and `-fake`, `pulse-mcp` (MCP servers and skills) |
 | The console | `pulse-hub` (the HTTP API, server-sent events, the embedded console), `web/hub` (Next.js and Tailwind, exported to `web/hub/out/`) |
 | Inspection and tests | `pulse-inspect` (status, jobs, agents, events, schema, verify), `pulse-testutil` |
@@ -184,7 +186,8 @@ and lessons as records in the store, where the console searches them and
 | [Democracy and self-improvement](docs/self-improvement.md) | suggestions, the evolve loop, seeded records and fixtures, the card check, the fleet, the runner caps |
 | [The harness](docs/harness.md) | how an agent's turn runs: the tools, what a run brings with it, budgets and compaction, sessions, chatting with it, providers and sign-in |
 | [The runner](docs/runner.md) | the daemon loop, services and self-update, stall detection, folder access, bulk storage, backups, keeping the machine awake |
-| [Landing](docs/landing.md) | workers, the verify command, disk and the load governor, landing and pushing, pull requests, pipelines, dependency alerts, credentials |
+| [Delivery](docs/landing.md) | every finished branch as a pull request, polling and the local default branch following the upstream, the `land.*` events, what changed from the local landing; workers, the verify command, disk and the load governor, pipelines, dependency alerts, credentials |
+| [The reviewer](docs/review.md) | the review job, the complexity rule, the verdict commands, follow-up jobs, your part (Needs your review, the Merge button), the review lead, events and settings |
 | [Machines](docs/machines.md) | what runs where, pairing hands, heartbeats and presence, moving and removing projects and executors |
 | [Recovery and hygiene](docs/recovery.md) | failed jobs and recovery, lessons and peer help, asking another project, sweep and retention, self-heal, what happens while you are quiet or away |
 | [Development](docs/development.md) | building and testing PULSE itself, the crate map, upgrading from older PULSE, sharing a copy |
@@ -201,7 +204,7 @@ part of the documentation that explains them.
 | Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `lead`, `mcp`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `skill`, `task`, `thread`, `toolkit`, `vote`, `watch` | [The board](docs/board.md) |
 | Records | `export`, `guide`, `import`, `migrate`, `record`, `seed` | [Records in SQLite](docs/board.md#records-in-sqlite) |
 | Human - the maintainer's calls | `ask`, `chat`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop`, `voice` | [The console](docs/console.md) |
-| Runner | `bulk`, `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `service`, `sweep`, `work` | [The runner](docs/runner.md), [Landing](docs/landing.md), [Machines](docs/machines.md) |
+| Runner | `bulk`, `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `review`, `service`, `sweep`, `work` | [The runner](docs/runner.md), [Delivery](docs/landing.md), [The reviewer](docs/review.md), [Machines](docs/machines.md) |
 | Hub | `hub`, `serve` | [The console](docs/console.md) |
 | Inspect | `agents`, `events`, `jobs`, `projects`, `schema`, `signers`, `status`, `tally`, `usage`, `verify`, `version` | [The console](docs/console.md), [Development](docs/development.md) |
 
