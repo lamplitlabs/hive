@@ -301,6 +301,10 @@ impl DaemonMaintenance {
                         set_stage(Some(&stage), "task pull requests");
                         crate::task_pr::tend_task_prs(&s, &projects, &now)
                     };
+                    if !(bulk_away || dry) {
+                        set_stage(Some(&stage), "pull request reviews");
+                        lines.extend(crate::review::tend_reviews(&s, &projects, &now));
+                    }
                     if !dry && !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                         if !bulk_away {
                             set_stage(Some(&stage), "sweep");

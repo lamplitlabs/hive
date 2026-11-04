@@ -78,6 +78,8 @@ pub(crate) mod restart;
 pub mod retention;
 pub mod retire;
 pub(crate) mod revert_scan;
+pub(crate) mod review;
+pub(crate) mod review_cli;
 pub mod run;
 pub mod runners;
 pub mod schedule;
