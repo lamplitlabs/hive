@@ -219,9 +219,17 @@ impl Handler {
             }
         };
         let waiting = chats.waiting_to_land(&rows);
+        let reviewing = chats.reviewing(&rows);
         let items: Vec<Value> = rows
             .iter()
-            .map(|row| conversation_json(row, chats, waiting.contains(&row.id)))
+            .map(|row| {
+                conversation_json(
+                    row,
+                    chats,
+                    waiting.contains(&row.id),
+                    reviewing.contains(&row.id),
+                )
+            })
             .collect();
         // The tasks the page groups conversations under (chat_tasks); an
         // older store without the task tables lists none.
@@ -369,15 +377,22 @@ impl Handler {
         let mut family = children.clone();
         family.push(row.clone());
         let waiting = chats.waiting_to_land(&family);
+        let reviewing = chats.reviewing(&family);
         let children: Vec<Value> = children
             .iter()
-            .map(|c| conversation_json(c, chats, waiting.contains(&c.id)))
+            .map(|c| {
+                conversation_json(c, chats, waiting.contains(&c.id), reviewing.contains(&c.id))
+            })
             .collect();
         let mut conversation = serde_json::to_value(&row).unwrap_or(Value::Null);
         if let Value::Object(map) = &mut conversation {
             map.insert(
                 "waiting_to_land".to_string(),
                 Value::Bool(waiting.contains(&row.id)),
+            );
+            map.insert(
+                "reviewing".to_string(),
+                Value::Bool(reviewing.contains(&row.id)),
             );
         }
         write_json(
@@ -687,7 +702,13 @@ impl Handler {
 /// A row with its live state folded in.
 /// The row with its live state and whether its branch waits to land
 /// (commits the project's default branch lacks; `Manager::waiting_to_land`).
-fn conversation_json(row: &Conversation, chats: &Manager, waiting_to_land: bool) -> Value {
+/// `reviewing` says a landing is merging and checking its branch now.
+fn conversation_json(
+    row: &Conversation,
+    chats: &Manager,
+    waiting_to_land: bool,
+    reviewing: bool,
+) -> Value {
     let live = chats.live(row);
     let mut v = serde_json::to_value(row).unwrap_or(Value::Null);
     if let Value::Object(map) = &mut v {
@@ -696,14 +717,22 @@ fn conversation_json(row: &Conversation, chats: &Manager, waiting_to_land: bool)
             serde_json::to_value(&live).unwrap_or(Value::Null),
         );
         map.insert("waiting_to_land".to_string(), Value::Bool(waiting_to_land));
+        map.insert("reviewing".to_string(), Value::Bool(reviewing));
     }
     v
 }
 
 /// `conversation_json` for one row, asking git about its branch.
 fn conversation_json_one(row: &Conversation, chats: &Manager) -> Value {
-    let waiting = chats.waiting_to_land(std::slice::from_ref(row));
-    conversation_json(row, chats, waiting.contains(&row.id))
+    let one = std::slice::from_ref(row);
+    let waiting = chats.waiting_to_land(one);
+    let reviewing = chats.reviewing(one);
+    conversation_json(
+        row,
+        chats,
+        waiting.contains(&row.id),
+        reviewing.contains(&row.id),
+    )
 }
 
 fn payload_bool(

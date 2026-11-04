@@ -204,3 +204,13 @@ test("a report note says what the sub-conversation did", () => {
   assert.equal(reportVerb("asks"), "asks you");
   assert.equal(reportVerb("odd"), "reports");
 });
+
+test("a branch a landing is checking reads Reviewing, after waiting to land", () => {
+  assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: true, reviewing: true }), "landing");
+  assert.equal(groupOf({ id: "c", status: "idle", reviewing: true, live: { status: "running" } }), "working");
+  assert.equal(stepWords("done", false, "pulse/x", true).word, "Reviewing");
+  assert.equal(stepWords("done", true, "pulse/x", true).word, "Working");
+  assert.equal(stepWords("done", false, "pulse/x", false).word, "Waiting to land");
+  assert.equal(taskMoodOf({ status: "done", lead: "", needs_you: false, working: false, landing: true, reviewing: true }).word, "Reviewing");
+  assert.equal(taskGroupOf({ status: "done", lead: "", needs_you: false, working: false, reviewing: true }), "landing");
+});

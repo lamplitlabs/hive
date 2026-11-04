@@ -409,6 +409,18 @@ impl Handler {
                     .unwrap_or(0);
                 job.insert("artifacts".to_string(), json!(count));
             }
+            // The step whose branch a landing is checking now reads
+            // "Reviewing" (pulse-land.lock names the branch).
+            let landing = store
+                .project(&project)
+                .ok()
+                .flatten()
+                .and_then(|p| pulse_harness::conversation::landing_branch(&p.path));
+            for job in &mut jobs {
+                let branch = job.get("branch").and_then(Value::as_str).unwrap_or("");
+                let reviewing = !branch.is_empty() && landing.as_deref() == Some(branch);
+                job.insert("reviewing".to_string(), json!(reviewing));
+            }
         }
         let lead_work = match self.addition_lead_work(&project) {
             Ok(v) => v,

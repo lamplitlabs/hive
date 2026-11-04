@@ -3072,6 +3072,27 @@ impl Manager {
         out
     }
 
+    /// The ids of the conversations among `rows` whose branch a landing is
+    /// merging and checking right now (`landing_branch`): the Chat page's
+    /// "Reviewing", after "Waiting to land" and before the work is on main.
+    pub fn reviewing(&self, rows: &[Row]) -> BTreeSet<String> {
+        let mut landing: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let mut out = BTreeSet::new();
+        for row in rows {
+            if row.branch.is_empty() || row.project.is_empty() {
+                continue;
+            }
+            let branch = landing.entry(row.project.clone()).or_insert_with(|| {
+                let p = self.store.project(&row.project).ok().flatten()?;
+                landing_branch(&p.path)
+            });
+            if branch.as_deref() == Some(row.branch.as_str()) {
+                out.insert(row.id.clone());
+            }
+        }
+        out
+    }
+
     /// The project's local branches with commits its default branch lacks.
     fn unmerged_branches(&self, project: &str) -> Unmerged {
         let Some(p) = self.store.project(project).ok().flatten() else {
@@ -3581,6 +3602,29 @@ struct Unmerged {
     path: String,
     default_branch: String,
     branches: BTreeSet<String>,
+}
+
+/// The branch a landing of the project at `path` is merging and checking
+/// now: the third field of its `.git/pulse-land.lock` ("pid time branch",
+/// pulse-runner land.rs landing_lock). A lock older than the landing's own
+/// 30-minute limit is stale and names nothing.
+pub fn landing_branch(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let lock = Path::new(path).join(".git").join("pulse-land.lock");
+    let age = std::fs::metadata(&lock)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .unwrap_or_default();
+    if age > Duration::from_secs(30 * 60) {
+        return None;
+    }
+    let text = std::fs::read_to_string(&lock).ok()?;
+    let branch = text.split_whitespace().nth(2)?;
+    Some(branch.to_string())
 }
 
 fn read_trajectory(home: &str, session_id: &str) -> Option<Trajectory> {
@@ -4973,6 +5017,20 @@ mod tests {
             std::fs::read(&index).unwrap() == before,
             "reading the changes rewrote the index"
         );
+    }
+
+    #[test]
+    fn landing_branch_reads_the_branch_off_the_land_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        assert_eq!(landing_branch(&root), None);
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let lock = dir.path().join(".git").join("pulse-land.lock");
+        std::fs::write(&lock, "42 2026-11-04T05:00:00Z\n").unwrap();
+        assert_eq!(landing_branch(&root), None, "an older lock names no branch");
+        std::fs::write(&lock, "42 2026-11-04T05:00:00Z pulse/chat-x\n").unwrap();
+        assert_eq!(landing_branch(&root).as_deref(), Some("pulse/chat-x"));
+        assert_eq!(landing_branch(""), None);
     }
 
     #[test]

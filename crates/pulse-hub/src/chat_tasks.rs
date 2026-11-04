@@ -111,6 +111,16 @@ fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
     if last_message_at > last_at {
         last_at = last_message_at.clone();
     }
+    // The branch a landing of the task's project is checking now: that
+    // step is "Reviewing" rather than waiting to land.
+    let landing: Option<String> = conn
+        .query_row(
+            "SELECT path FROM projects WHERE slug = ?",
+            [&t.project],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|path| pulse_harness::conversation::landing_branch(&path));
     let mut sessions = Vec::with_capacity(jobs.len());
     for (job, kind, title, job_status, agent, created_at, finished_at, session, branch) in jobs {
         // The branch stays on a done job until its landing clears it, so a
@@ -121,6 +131,7 @@ fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
             "kind": kind,
             "title": title,
             "job_status": job_status,
+            "reviewing": !branch.is_empty() && landing.as_deref() == Some(branch.as_str()),
             "branch": branch,
             "agent": agent,
             "session": session,

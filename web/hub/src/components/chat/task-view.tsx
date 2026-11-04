@@ -198,6 +198,7 @@ function TaskBody({
     needs_you: review,
     working,
     landing: d.jobs.some((j) => jobWaitingToLand(j.status, j.branch)),
+    reviewing: d.jobs.some((j) => !!j.reviewing),
   });
   // The run the canvas follows: the step being worked on now, else the
   // latest one that ran.
@@ -962,7 +963,7 @@ function StepList({
         >
           {jobs.map((j) => {
             const w = progress.working.find((x) => x.job === j.id);
-            const s = stepWords(j.status, !!w, j.branch);
+            const s = stepWords(j.status, !!w, j.branch, j.reviewing);
             const at =
               j.finished_at ||
               j.leased_at ||

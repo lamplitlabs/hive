@@ -234,7 +234,9 @@ pub(crate) fn checkout_state(root: String, default_branch: String) -> Option<boo
     )
 }
 
-pub(crate) fn landing_lock(root: String, now: String) -> String {
+/// The lock holds "pid time branch": the hub reads the branch to word the
+/// conversation or task whose landing is under way "Reviewing".
+pub(crate) fn landing_lock(root: String, now: String, branch: &str) -> String {
     let path = Path::new(&root).join(".git").join("pulse-land.lock");
     for _ in 0..2 {
         match std::fs::OpenOptions::new()
@@ -243,7 +245,7 @@ pub(crate) fn landing_lock(root: String, now: String) -> String {
             .open(&path)
         {
             Ok(mut f) => {
-                let _ = writeln!(f, "{} {}", std::process::id(), now);
+                let _ = writeln!(f, "{} {} {}", std::process::id(), now, branch);
                 return path.display().to_string();
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1398,7 +1400,7 @@ pub(crate) fn land_branch_with_registry(
             format!("the checkout of {root} has uncommitted changes"),
         ));
     }
-    let lock = landing_lock(root.clone(), now.clone());
+    let lock = landing_lock(root.clone(), now.clone(), &branch);
     if lock.is_empty() {
         return Ok((
             "locked".into(),

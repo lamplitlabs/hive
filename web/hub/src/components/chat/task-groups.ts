@@ -42,6 +42,12 @@ export function relShort(d: string, now: number): string {
 // and a conversation, so the section reads as one thing.
 export const WAITING_TO_LAND: Mood = { word: "Waiting to land", tone: "wait", pip: "waiting", dot: "bg-warn" };
 
+// The step after waiting: a landing has taken the branch and is merging and
+// running the project's checks on it (its pulse-land.lock names the branch).
+// "Working" is an agent at it, "Waiting to land" is the branch asking to
+// land, "Reviewing" is the landing checking it.
+export const REVIEWING: Mood = { word: "Reviewing", tone: "run", pip: "busy", dot: "bg-primary" };
+
 // A step waits to land once its job is done and its branch is still on the
 // job: the landing clears the branch when the commits reach the default
 // branch (the runner's pending landings are exactly these jobs).
@@ -59,6 +65,7 @@ export interface TaskState {
   needs_you: boolean;
   working: boolean;
   landing?: boolean;
+  reviewing?: boolean;
 }
 
 function taskClosed(status: string): boolean {
@@ -71,6 +78,7 @@ function taskClosed(status: string): boolean {
 // still at another step.
 export function taskMoodOf(t: TaskState): Mood {
   if (t.needs_you) return { word: "Asked you", tone: "wait", pip: "waiting", dot: "bg-warn" };
+  if (t.reviewing) return REVIEWING;
   if (taskClosed(t.status) && t.landing) return WAITING_TO_LAND;
   if (t.status === "done") return { word: "Done", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (t.status === "cancelled") return { word: "Cancelled", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
@@ -88,6 +96,7 @@ export function taskStateOf(t: ChatTask): TaskState {
     needs_you: t.needs_you,
     working: t.sessions.some((s) => s.status === "running" || s.job_status === "leased"),
     landing: t.sessions.some((s) => jobWaitingToLand(s.job_status, s.branch)),
+    reviewing: t.sessions.some((s) => !!s.reviewing),
   };
 }
 
@@ -105,7 +114,7 @@ export function taskFinished(t: ChatTask): boolean {
 // planned, finished once done or cancelled (a task is never archived).
 export function taskGroupOf(t: TaskState): ListGroup {
   if (t.needs_you || (!taskClosed(t.status) && t.working)) return "working";
-  if (t.landing) return "landing";
+  if (t.landing || t.reviewing) return "landing";
   if (taskClosed(t.status)) return "finished";
   return "open";
 }
@@ -116,8 +125,9 @@ export function taskGroup(t: ChatTask): ListGroup {
 
 // A step's state: the job's word, except while an agent's session runs it;
 // a done step with its branch still on it waits to land.
-export function stepWords(jobStatus: string, running: boolean, branch?: string): { word: string; tone: Tone } {
+export function stepWords(jobStatus: string, running: boolean, branch?: string, reviewing?: boolean): { word: string; tone: Tone } {
   if (running) return { word: "Working", tone: "run" };
+  if (reviewing) return { word: REVIEWING.word, tone: REVIEWING.tone };
   if (jobWaitingToLand(jobStatus, branch)) return { word: WAITING_TO_LAND.word, tone: WAITING_TO_LAND.tone };
   switch (jobStatus) {
     case "queued":
@@ -139,7 +149,7 @@ export function stepWords(jobStatus: string, running: boolean, branch?: string):
 }
 
 export function sessionWords(s: ChatTaskSession): { word: string; tone: Tone } {
-  return stepWords(s.job_status, s.status === "running", s.branch);
+  return stepWords(s.job_status, s.status === "running", s.branch, s.reviewing);
 }
 
 // The task's name from what the owner typed: its first line without list or
@@ -179,13 +189,15 @@ export interface Grouped {
   live?: { status: string } | null;
   // The hub's answer (GET /chat): commits on the branch that main lacks.
   waiting_to_land?: boolean;
+  // A landing is checking the branch now (GET /chat).
+  reviewing?: boolean;
 }
 
 export function groupOf(c: Grouped): ListGroup {
   const status = c.live?.status || c.status;
   if (status === "running" || status === "waiting") return "working";
   if (status === "archived") return "archived";
-  if (c.waiting_to_land) return "landing";
+  if (c.waiting_to_land || c.reviewing) return "landing";
   if (status === "closed") return "finished";
   return "open";
 }
