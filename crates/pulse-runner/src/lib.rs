@@ -42,6 +42,7 @@ pub mod inbox;
 pub mod jobs;
 pub mod keys;
 pub mod land;
+pub mod land_batch;
 pub mod land_lock;
 pub mod landing_context;
 pub mod landing_evidence;

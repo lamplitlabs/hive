@@ -238,8 +238,9 @@ pub(crate) struct Lanes {
 /// `harness.commit_timeout`, never below `harness.step_timeout`. The lanes that
 /// fit are `cap / verify_seconds` (never below 1, never above
 /// `parallel_per_project`), with the check's own run time from the last landings
-/// (`land.landed`, `verify_seconds`). A project with no lock, no recorded landing,
-/// or a quick check keeps every lane.
+/// (`verify_seconds` on `land.landed`, and on `land.batch`, whose one check of
+/// several branches merged runs as long as any). A project with no lock, no
+/// recorded landing, or a quick check keeps every lane.
 pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     let base = parallel_per_project(s);
     let open = Lanes {
@@ -267,7 +268,7 @@ pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     };
     let mut secs: Vec<i64> = query_rows_dyn(
         &conn,
-        "SELECT CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action = 'land.landed' AND json_extract(detail, '$.project') = ? AND json_extract(detail, '$.verify_seconds') IS NOT NULL ORDER BY at DESC, seq DESC LIMIT ?",
+        "SELECT CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action IN ('land.landed', 'land.batch') AND json_extract(detail, '$.project') = ? AND json_extract(detail, '$.verify_seconds') IS NOT NULL ORDER BY at DESC, seq DESC LIMIT ?",
         &[&slug, &(LANE_SAMPLE as i64)],
     )
     .unwrap_or_default()

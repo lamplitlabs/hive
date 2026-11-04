@@ -92,6 +92,12 @@ pub(crate) struct LandOpts {
     /// checkout that holds its head lets the pipeline fix start (pipeline.rs).
     #[serde(default)]
     pub upstream: String,
+    /// The batch this landing belongs to (land_batch.rs). Landing the batch's
+    /// own chain branch verifies the members as one and records `land.batch`;
+    /// landing a member afterwards finds it contained in the default branch
+    /// and says it landed in the batch, checked once as the merged whole.
+    #[serde(default)]
+    pub batch: Option<crate::land_batch::LandBatch>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1177,6 +1183,13 @@ pub(crate) fn land_branch_with_registry(
     let sync_landing = o.sync;
     let job = o.job.clone();
     let cancel = o.ctx.clone().unwrap_or_default();
+    // The chain of a batch lands as one branch; a member of a landed batch is
+    // found below already contained in {def} and only marked.
+    let batch_chain = o.batch.as_ref().is_some_and(|b| b.chain == branch);
+    let batch_member = o
+        .batch
+        .clone()
+        .filter(|b| b.chain != branch && b.is_member(&branch));
     if let why = crate::landing_context::landing_stop(&cancel, s, root.clone())
         && !why.is_empty()
     {
@@ -1218,6 +1231,9 @@ pub(crate) fn land_branch_with_registry(
     )
     .ok()
     {
+        if let Some(b) = batch_member.as_ref() {
+            return land_batch_member(s, project, branch, actor, now, o, b, &def);
+        }
         crate::landing_evidence::record_landing(
             s,
             project.clone(),
@@ -1258,6 +1274,21 @@ pub(crate) fn land_branch_with_registry(
     }
     let files = branch_files(root.clone(), base.clone(), branch.clone());
     let slug = project.str("slug");
+    // A batch's chain is the union of members that each passed these checks
+    // alone, so it should pass them too; should it not, the batch is given up
+    // without the refusal's side effects (there is no job to fail, no branch
+    // of an agent to remove) and the members land one by one.
+    if batch_chain && let Some(why) = crate::land_batch::member_refusal(&files, &branch) {
+        return Ok(crate::land_batch::fail_batch(
+            s,
+            &now,
+            &actor,
+            &slug,
+            o.batch.as_ref().expect("batch chain"),
+            &format!("the merged whole {why}"),
+            "",
+        ));
+    }
     let refused = if o.sync {
         Vec::new()
     } else {
@@ -1543,6 +1574,17 @@ pub(crate) fn land_branch_with_registry(
     }
     if !merged.ok() {
         crate::util::git_timeout(&worktree, Duration::from_secs(60), &["merge", "--abort"]);
+        if batch_chain {
+            return Ok(crate::land_batch::fail_batch(
+                s,
+                &now,
+                &actor,
+                &slug,
+                o.batch.as_ref().expect("batch chain"),
+                &format!("the merged whole conflicts with {def}"),
+                "",
+            ));
+        }
         let patch = save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
         let conflict = if replay_failed.is_empty() {
             format!("{branch} conflicts with {def}")
@@ -1703,6 +1745,20 @@ pub(crate) fn land_branch_with_registry(
                 };
                 if rc.as_deref() != Some(&0) {
                     let from = setup_files.join(", ");
+                    // A batch owes the project no repair job and no retry hold
+                    // for its setup: the first member landed alone meets the
+                    // same failure and plans both.
+                    if batch_chain {
+                        return Ok(crate::land_batch::fail_batch(
+                            s,
+                            &now,
+                            &actor,
+                            &slug,
+                            o.batch.as_ref().expect("batch chain"),
+                            &format!("setup from {from} failed on this machine ({prep_tail})"),
+                            "",
+                        ));
+                    }
                     // The fault is the project's own (a recipe naming moved
                     // paths, a lockfile behind its manifest): one repair job
                     // fixes it where it is, the retry below only waits.
@@ -1963,10 +2019,27 @@ pub(crate) fn land_branch_with_registry(
                 }
             }
             if !ok {
+                let failures = verify_failures(&tail_text);
+                // The chain failed where {def} alone passes: one of the members
+                // is at fault, and which one only its own landing can say. The
+                // batch is given up with no member charged for it.
+                if batch_chain {
+                    return Ok(crate::land_batch::fail_batch(
+                        s,
+                        &now,
+                        &actor,
+                        &slug,
+                        o.batch.as_ref().expect("batch chain"),
+                        &format!(
+                            "{verify_note} on the merged whole{}",
+                            failures_phrase(&failures)
+                        ),
+                        &tail_text,
+                    ));
+                }
                 let patch =
                     save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
                 let log = save_verify_log(&patch, &vc, &so, &se);
-                let failures = verify_failures(&tail_text);
                 let failure_note = if failures.is_empty() {
                     String::new()
                 } else {
@@ -2252,12 +2325,24 @@ pub(crate) fn land_branch_with_registry(
             serde_json::to_value(work).unwrap_or(Value::Null),
         );
     }
+    // A batch's chain is recorded as `land.batch`, named by the batch, with
+    // the members it carried; each member gets its own record and post when
+    // the pass marks it next, so the chain posts nothing itself.
+    let batch = if batch_chain { o.batch.clone() } else { None };
+    let action = match batch.as_ref() {
+        Some(b) => {
+            detail.insert("batch".into(), serde_json::json!(b.id));
+            detail.insert("members".into(), b.members_json());
+            "land.batch"
+        }
+        None => "land.landed",
+    };
     crate::landing_evidence::record_landing(
         s,
         project.clone(),
         branch.clone(),
         actor.clone(),
-        "land.landed".into(),
+        action.into(),
         format!(
             " | landed {} from {branch}{}",
             crate::recipe::short(&sha, 12),
@@ -2270,6 +2355,18 @@ pub(crate) fn land_branch_with_registry(
         detail,
     )?;
     crate::util::git_timeout(&root, Duration::from_secs(30), &["branch", "-D", &branch]);
+    if let Some(b) = batch.as_ref() {
+        drop(cleanup);
+        return Ok((
+            "landed".into(),
+            format!(
+                "{} ({}) landed on {def} as {} ({verify_note}, {commits} commit(s)), checked once as the merged whole",
+                b.describe(),
+                b.branches().join(", "),
+                crate::recipe::short(&sha, 12)
+            ),
+        ));
+    }
     let mut area = "evolution".to_string();
     let mut thread = crate::util::slugify(branch.rsplit('/').next().unwrap_or(&branch), 40);
     if !job.0.is_empty() {
@@ -2334,6 +2431,159 @@ pub(crate) fn land_branch_with_registry(
         format!(
             "{branch} landed on {def} as {} ({verify_note}, {commits} commit(s){replayed})",
             crate::recipe::short(&sha, 12)
+        ),
+    ))
+}
+
+/// Marks a member of a batch that just landed: the chain carried `branch` onto
+/// `def`, so the job gets the record a single landing would have given it - a
+/// `land.landed` event with the commits it added to the chain (`sha`,
+/// `before`, the code-delivery evidence) and a result post on its thread -
+/// with the batch named and the check described as run once on the merged
+/// whole. It is `land.landed`, not the "already contained" `land.merged`,
+/// because that is the event the task's delivery, the pull request text, the
+/// revert scan and the landing outcomes read: a job landed in a batch has
+/// landed. The job leaves the landing queue exactly as an individually landed
+/// one does (`record_landing` clears its branch).
+fn land_batch_member(
+    s: &pulse_store::Store,
+    project: crate::util::Row,
+    branch: String,
+    actor: String,
+    now: String,
+    o: LandOpts,
+    b: &crate::land_batch::LandBatch,
+    def: &str,
+) -> anyhow::Result<(String, String)> {
+    let root = project.str("path");
+    let slug = project.str("slug");
+    let home = s.home.clone();
+    let job = o.job.clone();
+    let cancel = o.ctx.clone().unwrap_or_default();
+    let described = b.describe();
+    let (before, sha) = b
+        .transition(&branch)
+        .unwrap_or((b.before.clone(), b.head.clone()));
+    let short = crate::recipe::short(&sha, 12);
+    let commits = {
+        let c = crate::util::git_timeout(
+            &root,
+            Duration::from_secs(30),
+            &["rev-list", "--count", &format!("{before}..{sha}")],
+        );
+        if c.ok() {
+            c.stdout.trim().to_string()
+        } else {
+            "?".to_string()
+        }
+    };
+    let chain_verify = crate::land_batch::chain_verify_note(s, b);
+    let verify_note = if chain_verify.is_empty() {
+        format!("checked once as the merged whole of {described}")
+    } else {
+        format!("{chain_verify}, checked once as the merged whole of {described}")
+    };
+    let evidence = crate::landing_evidence::landing_code_delivery_evidence(
+        &cancel,
+        root.clone(),
+        before.clone(),
+        sha.clone(),
+    );
+    let mut detail = BTreeMap::from([
+        ("sha".into(), serde_json::json!(sha)),
+        ("before".into(), serde_json::json!(before)),
+        ("commits".into(), serde_json::json!(commits)),
+        ("verify".into(), serde_json::json!(verify_note)),
+        (
+            "code_delivery".into(),
+            serde_json::to_value(evidence).unwrap_or(Value::Null),
+        ),
+        ("batch".into(), serde_json::json!(b.id)),
+        ("members".into(), b.members_json()),
+    ]);
+    if !job.0.is_empty() {
+        let changed = crate::util::git_timeout(
+            &root,
+            Duration::from_secs(30),
+            &["diff", "--name-only", &before, &sha],
+        )
+        .stdout
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>();
+        let ui = crate::ui_evidence::UiEvidence::collect(&home, &job.str("id"), &changed);
+        if ui.touches_ui() || ui.shown() {
+            detail.insert("ui_evidence".into(), ui.json());
+        }
+    }
+    let work =
+        crate::landing_evidence::landing_work_snapshot(s, project.clone(), job.clone(), o.clone());
+    if work.job.is_some() || work.worker.is_some() {
+        detail.insert(
+            "work".into(),
+            serde_json::to_value(work).unwrap_or(Value::Null),
+        );
+    }
+    crate::landing_evidence::record_landing(
+        s,
+        project.clone(),
+        branch.clone(),
+        actor.clone(),
+        "land.landed".into(),
+        format!(" | landed {short} from {branch} in {described}"),
+        o,
+        detail,
+    )?;
+    crate::util::git_timeout(&root, Duration::from_secs(30), &["branch", "-D", &branch]);
+    if !job.0.is_empty() {
+        let title = if job.str("title").is_empty() {
+            branch.clone()
+        } else {
+            job.str("title")
+        };
+        let vc_shown = if project.str("verify_cmd").is_empty() {
+            "no verify command".to_string()
+        } else {
+            project.str("verify_cmd")
+        };
+        let others = b
+            .branches()
+            .into_iter()
+            .filter(|m| *m != branch)
+            .collect::<Vec<_>>()
+            .join(", ");
+        // As with a single landing, a post that fails must not undo what landed.
+        if let Err(e) = crate::board::create_post(
+            s,
+            now,
+            crate::board::PostOpts {
+                kind: "result".into(),
+                project: slug,
+                area: "jobs".into(),
+                thread: job.str("id"),
+                summary: crate::util::trunc(
+                    &format!(
+                        "landed on {def} as {short} in {described} ({commits} commit(s), checked once as the merged whole): {title}"
+                    ),
+                    230,
+                ),
+                body: format!(
+                    "Branch `{branch}` landed on `{def}` by {actor} under ADR-024 (agent-driven landing) in {described}: merged with {others} into one chain in a throwaway worktree, `{vc_shown}` run once on the merged whole ({verify_note}), then the chain fast-forwarded onto {def}. The branch is removed; the commits are on {def}.\n"
+                ),
+                agent: crate::board::actor_agent(s, actor),
+                branch: Some(Box::new(def.to_string())),
+                resolution: "proceeded".into(),
+                ..Default::default()
+            },
+        ) {
+            eprintln!("{}", result_post_failed_warning(&branch, def, &sha, &e));
+        }
+    }
+    Ok((
+        "landed".into(),
+        format!(
+            "{branch} landed on {def} as {short} in {described} ({commits} commit(s), checked once as the merged whole)"
         ),
     ))
 }
@@ -2575,17 +2825,91 @@ pub(crate) fn land_pending_pass_with_registry(
     let (plain, measured): (Vec<_>, Vec<_>) = pending
         .into_iter()
         .partition(|job| job.str("kind") != "experiment");
+    // Several plain branches waiting with a check to run are landed as one
+    // batch when they can be (land_batch.rs): one verify for all of them,
+    // which counts once against `limit`. The members are then marked landed
+    // by the loop below, where each is found contained in the default branch;
+    // a batch that could not be built or did not land leaves the loop to
+    // land them one by one, as before.
+    let mut batch: Option<crate::land_batch::LandBatch> = None;
+    let mut spent = 0usize;
+    if verify && !project.str("verify_cmd").is_empty() && crate::land_batch::batch_on(s) {
+        crate::land_batch::drop_stale_chains(&project.str("path"));
+        let candidates = plain
+            .iter()
+            .filter(|job| {
+                force || !held_branch_waits(s, &project.str("slug"), &job.str("branch"), &now)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidates.len() >= 2
+            && let Ok(built) = crate::land_batch::build_batch(s, &project, &candidates, &actor)
+        {
+            let (state, note) = match land_branch_with_registry(
+                s,
+                project.clone(),
+                built.chain.clone(),
+                actor.clone(),
+                now.clone(),
+                LandOpts {
+                    verify,
+                    ctx: Some(ctx.clone()),
+                    title: built.title(),
+                    batch: Some(built.clone()),
+                    ..Default::default()
+                },
+                reg,
+            ) {
+                Ok(v) => v,
+                Err(e) => crate::land_batch::fail_batch(
+                    s,
+                    &now,
+                    &actor,
+                    &project.str("slug"),
+                    &built,
+                    &crate::run::err_message(&e),
+                    "",
+                ),
+            };
+            crate::land_batch::drop_chain(&project.str("path"), &built.chain);
+            spent += 1;
+            let held = crate::landing_hold::landing_held(state.clone());
+            if state == "landed" {
+                clear_landing_retry(s, &project.str("slug"));
+                batch = Some(built);
+            }
+            out.push(LandResult { state, note });
+            if held {
+                return out;
+            }
+        }
+    }
     let queue = plain
         .into_iter()
         .chain(experiments.then_some(measured).into_iter().flatten());
     for job in queue {
-        if limit > 0 && out.len() >= limit as usize {
-            break;
-        }
-        if !force && held_branch_waits(s, &project.str("slug"), &job.str("branch"), &now) {
+        let member = batch.as_ref().filter(|b| b.is_member(&job.str("branch")));
+        // A member of the landed batch is always marked, whatever `limit` and
+        // the held-branch rule say: its commits are on the default branch
+        // already, and only the marking takes it off the queue.
+        if member.is_none() && limit > 0 && spent >= limit as usize {
+            if batch.is_none() {
+                break;
+            }
             continue;
         }
-        let lr = land_job_context_with_registry(ctx, s, &project, &job, &actor, &now, verify, reg);
+        if member.is_none()
+            && !force
+            && held_branch_waits(s, &project.str("slug"), &job.str("branch"), &now)
+        {
+            continue;
+        }
+        let lr = land_job_context_with_registry(
+            ctx, s, &project, &job, &actor, &now, verify, member, reg,
+        );
+        if member.is_none() {
+            spent += 1;
+        }
         let held = crate::landing_hold::landing_held(lr.state.clone());
         out.push(lr);
         if held {
@@ -2615,10 +2939,14 @@ pub(crate) fn land_job_context(
         actor,
         now,
         verify,
+        None,
         &crate::release_age::HttpRegistry::default(),
     )
 }
 
+/// `land_job_context` with the registry chosen by the caller and, for a job
+/// whose branch a batch just carried onto the default branch, that batch
+/// (`land_pending_pass_with_registry`), so the job is marked landed in it.
 pub(crate) fn land_job_context_with_registry(
     ctx: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
@@ -2627,6 +2955,7 @@ pub(crate) fn land_job_context_with_registry(
     actor: &str,
     now: &str,
     verify: bool,
+    batch: Option<&crate::land_batch::LandBatch>,
     reg: &dyn crate::release_age::Registry,
 ) -> LandResult {
     let (state, note) = if job.str("kind") == "experiment" {
@@ -2650,6 +2979,7 @@ pub(crate) fn land_job_context_with_registry(
                 job: job.clone(),
                 verify,
                 ctx: Some(ctx.clone()),
+                batch: batch.cloned(),
                 ..Default::default()
             },
             reg,
@@ -5926,6 +6256,439 @@ mod tests {
             job_row(&s, &job.str("id")).str("status"),
             "done",
             "the job was not requeued"
+        );
+    }
+
+    /// A finished job whose branch `pulse/aurora/<name>` adds `file` with
+    /// `content` on top of main, done at `finished`: what the batch tests
+    /// queue. Returns the job id and the branch.
+    fn finished_branch(
+        s: &pulse_store::Store,
+        root: &str,
+        name: &str,
+        file: &str,
+        content: &str,
+        finished: &str,
+    ) -> (String, String) {
+        let branch = format!("pulse/aurora/{name}");
+        run(root, &["git", "switch", "-q", "-c", &branch, "main"]);
+        std::fs::write(std::path::Path::new(root).join(file), content).unwrap();
+        run(root, &["git", "add", file]);
+        run(root, &["git", "commit", "-q", "-m", name]);
+        run(root, &["git", "switch", "-q", "main"]);
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            format!("job {name}"),
+            "b".into(),
+            1,
+            30,
+            format!("src-{name}"),
+            "aurora".into(),
+            true,
+        )
+        .unwrap();
+        exec1(
+            s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = ? WHERE id = ?",
+            &[&finished, &branch, &job.str("id")],
+        );
+        (job.str("id"), branch)
+    }
+
+    /// A project whose check appends a line to `log` on every run and fails
+    /// when the tree holds a file named BAD, with landing by agents on.
+    fn batch_project() -> (test_helpers::TestStore, crate::util::Row, String, String) {
+        let s = test_helpers::new_store();
+        let (mut project, root) = crate::test_helpers::new_repo(&s);
+        join(&s, "aurora");
+        set_setting(&s, "landing", "agents");
+        let log = std::path::Path::new(&s.home)
+            .join("verify-runs.log")
+            .display()
+            .to_string();
+        let verify_cmd = format!(
+            "sh -c 'echo ran >> {} && test ! -e BAD'",
+            crate::util::shell_quote(&log)
+        );
+        project.insert("verify_cmd", serde_json::json!(verify_cmd));
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&verify_cmd],
+        );
+        (s, project, root, log)
+    }
+
+    fn verify_runs(log: &str) -> usize {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    #[test]
+    fn landing_batches_pending_branches_into_one_verify() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, root, log) = batch_project();
+        let jobs = ["one", "two", "three"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let file = format!("{name}.txt");
+                let finished = format!("2026-09-06T09:0{i}:00Z");
+                finished_branch(&s, &root, name, &file, name, &finished)
+            })
+            .collect::<Vec<_>>();
+
+        let before = ref_of(&root, "main");
+        // A limit of one lands the batch as the pass's one landing and still
+        // marks every member: their commits are on main by then.
+        let res = super::land_pending(&s, project, "daemon", TEST_NOW, true, 1, false);
+        assert_eq!(res.len(), 4, "{res:?}");
+        assert_eq!(res[0].state, "landed", "{}", res[0].note);
+        assert!(
+            res[0].note.starts_with("batch ") && res[0].note.contains("with 3 branches"),
+            "{}",
+            res[0].note
+        );
+        for r in &res[1..] {
+            assert_eq!(r.state, "landed", "{}", r.note);
+            assert!(
+                r.note.contains("landed on main as ")
+                    && r.note.contains(" in batch ")
+                    && r.note
+                        .contains(" commit(s), checked once as the merged whole)"),
+                "{}",
+                r.note
+            );
+        }
+        assert_eq!(verify_runs(&log), 1, "the chain is checked once");
+
+        let batches = must_rows(
+            &s,
+            "SELECT subject, detail FROM events WHERE action = 'land.batch'",
+            &[],
+        );
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        let detail: serde_json::Value = serde_json::from_str(&batches[0].str("detail")).unwrap();
+        let id = detail["batch"].as_str().unwrap().to_string();
+        assert_eq!(batches[0].str("subject"), format!("pulse/batch/{id}"));
+        let members = detail["members"].as_array().unwrap();
+        assert_eq!(members.len(), 3, "{detail}");
+        for ((job, branch), m) in jobs.iter().zip(members) {
+            assert_eq!(m["branch"], *branch, "{detail}");
+            assert_eq!(m["job"], *job, "{detail}");
+        }
+        assert_eq!(detail["project"], "proj");
+        assert_eq!(detail["verify"], "verify exit 0");
+        assert_eq!(detail["before"], before, "{detail}");
+        assert_eq!(detail["sha"], ref_of(&root, "main"), "{detail}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.merged'",
+                &[]
+            ),
+            0,
+            "a member is a landing of its own, not an already-contained branch"
+        );
+        // Each member's own record names the commits it added to the chain,
+        // which the task's delivery, the pull request text and the revert scan
+        // read as they read any landing; the chain's check covers it.
+        let landed = must_rows(
+            &s,
+            "SELECT subject, detail FROM events WHERE action = 'land.landed' ORDER BY seq",
+            &[],
+        );
+        assert_eq!(landed.len(), 3, "{landed:?}");
+        let mut prev = before.clone();
+        for ((job, branch), row) in jobs.iter().zip(&landed) {
+            assert_eq!(row.str("subject"), *branch);
+            let d: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
+            assert_eq!(d["batch"], id, "{d}");
+            assert_eq!(d["job"], *job, "{d}");
+            assert_eq!(d["before"], prev, "{d}");
+            let sha = d["sha"].as_str().unwrap().to_string();
+            assert_ne!(sha, prev);
+            // The first member fast-forwards; the others need a merge commit,
+            // counted as a single landing counts it.
+            assert_eq!(
+                d["commits"],
+                run(
+                    &root,
+                    &["git", "rev-list", "--count", &format!("{prev}..{sha}")]
+                )
+                .trim(),
+                "{d}"
+            );
+            assert!(
+                run(&root, &["git", "merge-base", "--is-ancestor", &sha, "main"]).is_empty(),
+                "{sha} is not on main"
+            );
+            assert!(
+                d["verify"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("verify exit 0, checked once as the merged whole of batch "),
+                "{d}"
+            );
+            assert_eq!(d["code_delivery"]["after"], sha, "{d}");
+            assert_eq!(d["code_delivery"]["files_changed"], 1, "{d}");
+            assert_eq!(d["work"]["job"]["id"], *job, "{d}");
+            prev = sha;
+        }
+        assert_eq!(prev, ref_of(&root, "main"));
+        for (job, branch) in &jobs {
+            let j = job_row(&s, job);
+            assert_eq!(j.str("status"), "done");
+            assert_eq!(j.str("branch"), "", "{branch} still waits to land");
+            assert!(
+                j.str("result")
+                    .contains(&format!("in batch {id} with 3 branches")),
+                "{}",
+                j.str("result")
+            );
+            let posts = must_rows(
+                &s,
+                "SELECT summary, body FROM posts WHERE kind = 'result' AND area = 'jobs' AND thread = ?",
+                &[&pulse_board::normalize_thread(job)],
+            );
+            assert_eq!(posts.len(), 1, "{branch}: {posts:?}");
+            assert!(
+                posts[0]
+                    .str("summary")
+                    .contains(&format!("in batch {id} with 3 branches")),
+                "{}",
+                posts[0].str("summary")
+            );
+            assert!(
+                posts[0]
+                    .str("body")
+                    .contains("run once on the merged whole"),
+                "{}",
+                posts[0].str("body")
+            );
+            assert!(
+                !super::branch_exists(root.clone(), branch.clone()).0,
+                "{branch} was not removed"
+            );
+        }
+        assert!(super::pending_landings(&s.conn().unwrap(), "proj").is_empty());
+        assert_eq!(
+            run(&root, &["git", "for-each-ref", "refs/heads/pulse/batch/"]).trim(),
+            "",
+            "the synthetic branch outlived the pass"
+        );
+        for name in ["one", "two", "three"] {
+            assert_eq!(
+                run(&root, &["git", "show", &format!("main:{name}.txt")]),
+                name,
+                "{name} is not on main"
+            );
+        }
+        assert_eq!(
+            run(&root, &["git", "rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+            "main"
+        );
+        assert!(
+            crate::landing_hold::push_owed(&s, "proj".into()),
+            "a batch landing owes a push like any other"
+        );
+    }
+
+    #[test]
+    fn failed_batch_falls_back_to_landing_one_by_one() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, root, log) = batch_project();
+        let (good1, _) = finished_branch(
+            &s,
+            &root,
+            "good1",
+            "good1.txt",
+            "good1",
+            "2026-09-06T09:00:00Z",
+        );
+        let (bad, bad_branch) =
+            finished_branch(&s, &root, "bad", "BAD", "bad", "2026-09-06T09:01:00Z");
+        let (good2, _) = finished_branch(
+            &s,
+            &root,
+            "good2",
+            "good2.txt",
+            "good2",
+            "2026-09-06T09:02:00Z",
+        );
+
+        let res = super::land_pending(&s, project, "daemon", TEST_NOW, true, 0, false);
+        let states = res.iter().map(|r| r.state.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            ["batch-failed", "landed", "failed-verify", "landed"],
+            "{res:?}"
+        );
+        assert!(
+            res[0].note.contains("did not land as one")
+                && res[0].note.contains("land one by one now"),
+            "{}",
+            res[0].note
+        );
+        let failed = must_rows(
+            &s,
+            "SELECT subject, detail FROM events WHERE action = 'land.batch-failed'",
+            &[],
+        );
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        let detail: serde_json::Value = serde_json::from_str(&failed[0].str("detail")).unwrap();
+        assert_eq!(detail["members"].as_array().unwrap().len(), 3, "{detail}");
+        assert!(
+            detail["why"].as_str().unwrap().contains("verify exit 1"),
+            "{detail}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.batch'",
+                &[]
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.landed'",
+                &[]
+            ),
+            2
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.failed-verify' AND subject = ?",
+                &[&bad_branch],
+            ),
+            1,
+            "the bad branch alone is charged"
+        );
+        for id in [&good1, &good2] {
+            let j = job_row(&s, id);
+            assert_eq!(j.str("status"), "done", "{}", j.str("result"));
+            assert_eq!(j.str("branch"), "");
+        }
+        let j = job_row(&s, &bad);
+        assert_eq!(j.str("status"), "queued", "{}", j.str("result"));
+        assert!(
+            verify_runs(&log) >= 4,
+            "the chain's check, then one per member: {} runs",
+            verify_runs(&log)
+        );
+        assert!(super::pending_landings(&s.conn().unwrap(), "proj").is_empty());
+        assert_eq!(
+            run(&root, &["git", "for-each-ref", "refs/heads/pulse/batch/"]).trim(),
+            ""
+        );
+        assert!(
+            !std::path::Path::new(&root).join("BAD").exists(),
+            "the bad branch reached main"
+        );
+    }
+
+    #[test]
+    fn conflicting_member_is_left_out_of_the_batch() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, root, log) = batch_project();
+        let (one, one_branch) = finished_branch(
+            &s,
+            &root,
+            "one",
+            "shared.txt",
+            "one\n",
+            "2026-09-06T09:00:00Z",
+        );
+        let (two, two_branch) = finished_branch(
+            &s,
+            &root,
+            "two",
+            "shared.txt",
+            "two\n",
+            "2026-09-06T09:01:00Z",
+        );
+        let (three, three_branch) = finished_branch(
+            &s,
+            &root,
+            "three",
+            "three.txt",
+            "three",
+            "2026-09-06T09:02:00Z",
+        );
+
+        let res = super::land_pending(&s, project, "daemon", TEST_NOW, true, 0, false);
+        let states = res.iter().map(|r| r.state.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            ["landed", "landed", "conflict", "landed"],
+            "{res:?}"
+        );
+        assert_eq!(verify_runs(&log), 1, "the batch of two is checked once");
+        let batches = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.batch'",
+            &[],
+        );
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        let detail: serde_json::Value = serde_json::from_str(&batches[0].str("detail")).unwrap();
+        let members = detail["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["branch"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            members,
+            [one_branch.clone(), three_branch.clone()],
+            "{detail}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.conflict' AND subject = ?",
+                &[&two_branch],
+            ),
+            1,
+            "the member left out met its conflict on its own"
+        );
+        assert_eq!(job_row(&s, &two).str("status"), "queued");
+        for id in [&one, &three] {
+            assert_eq!(job_row(&s, id).str("branch"), "");
+        }
+        assert_eq!(run(&root, &["git", "show", "main:shared.txt"]), "one\n");
+        assert!(super::pending_landings(&s.conn().unwrap(), "proj").is_empty());
+    }
+
+    #[test]
+    fn landing_batch_off_lands_each_branch_alone() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, root, log) = batch_project();
+        set_setting(&s, crate::land_batch::SETTING, "off");
+        finished_branch(&s, &root, "one", "one.txt", "one", "2026-09-06T09:00:00Z");
+        finished_branch(&s, &root, "two", "two.txt", "two", "2026-09-06T09:01:00Z");
+
+        let res = super::land_pending(&s, project, "daemon", TEST_NOW, true, 0, false);
+        let states = res.iter().map(|r| r.state.as_str()).collect::<Vec<_>>();
+        assert_eq!(states, ["landed", "landed"], "{res:?}");
+        assert_eq!(verify_runs(&log), 2);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action IN ('land.batch', 'land.batch-failed')",
+                &[]
+            ),
+            0
         );
     }
 }

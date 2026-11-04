@@ -556,6 +556,7 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
         ("merged", 0),
         ("conflict", 1),
         ("failed-verify", 1),
+        ("batch-failed", 1),
         ("missing", 1),
     ]);
     let branch = str_flag(fs, "branch");
