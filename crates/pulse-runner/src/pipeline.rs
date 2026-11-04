@@ -561,8 +561,9 @@ fn log_gone(err: &str) -> bool {
 /// `gh_auth::env_as` names the account and the command, never the token)
 /// cannot run at all, so the next account is tried rather than this one
 /// again every poll. A branch that is not there is a 404 too, but one that
-/// says so, and another account would not find it either.
-fn account_failed(err: &str) -> bool {
+/// says so, and another account would not find it either. The pull-request
+/// calls (`landing_pr::gh`) rotate on the same answers.
+pub(crate) fn account_failed(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     if low.contains("branch not found") {
         return false;

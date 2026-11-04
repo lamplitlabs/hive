@@ -542,33 +542,118 @@ pub(crate) fn land_experiment_context(
             format!("{branch} dropped ({reason}); archive {archive_id}"),
         )
     };
+    // A kept experiment goes to the forge as a pull request (`delivery.rs`,
+    // kind `experiment`) and the local default branch follows the upstream
+    // once the reviewer merges it: nothing merges locally any more, because
+    // a local merge the upstream never saw diverges the two, and the brain
+    // project's self-update reads the local default branch. A project with
+    // no upstream at all lands locally as before. Returns the lane's
+    // (state, note): `pr` when the pull request is open, the landing's own
+    // states on the local path, `deferred` when the push or gh failed (held
+    // once as `land.pr-held`; the lane retries on its schedule).
+    let deliver_kept = |archive_id: String, summary: String| -> (String, String) {
+        if crate::forge::upstream_of(&root, &def).is_none() {
+            return match crate::land::land_branch(
+                s,
+                project.clone(),
+                branch.clone(),
+                actor.clone(),
+                now.clone(),
+                crate::land::LandOpts {
+                    job: job.clone(),
+                    verify,
+                    ctx: Some(parent.clone()),
+                    archive_id: archive_id.clone(),
+                    run_id: run_id.clone(),
+                    ..Default::default()
+                },
+            ) {
+                Ok(v) => v,
+                Err(e) => ("error".into(), crate::run::err_message(&e)),
+            };
+        }
+        match crate::delivery::deliver_experiment(
+            s,
+            &project,
+            &job,
+            &archive_id,
+            &run_id,
+            &summary,
+            &now,
+        ) {
+            Ok((number, url, _)) => (
+                "pr".into(),
+                format!("delivered as pull request #{number} {url}"),
+            ),
+            Err(note) => {
+                let sha = crate::util::git_timeout(
+                    &root,
+                    Duration::from_secs(10),
+                    &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
+                )
+                .stdout
+                .trim()
+                .to_string();
+                let work = format!("{branch} {}", crate::recipe::short(&sha, 12));
+                if let Ok(conn) = s.conn() {
+                    let held = crate::util::query_rows(
+                        &conn,
+                        "SELECT detail FROM events WHERE subject = ? AND action = 'land.pr-held'
+                         AND json_extract(detail, '$.job') = ? ORDER BY seq DESC LIMIT 1",
+                        &[&slug, &job.str("id")],
+                    )
+                    .unwrap_or_default()
+                    .first()
+                    .is_some_and(|r| {
+                        serde_json::from_str::<serde_json::Value>(&r.str("detail"))
+                            .ok()
+                            .and_then(|d| {
+                                d.get("work").and_then(|w| w.as_str()).map(str::to_string)
+                            })
+                            .as_deref()
+                            == Some(work.as_str())
+                    });
+                    if !held {
+                        crate::util::event_at(
+                            &conn,
+                            &now,
+                            &actor,
+                            "land.pr-held",
+                            &slug,
+                            serde_json::json!({"project": slug, "job": job.str("id"), "experiment": job.str("id"),
+                                "archive": archive_id, "work": work, "note": note}),
+                        );
+                    }
+                }
+                ("deferred".into(), note)
+            }
+        }
+    };
+    // How the kept branch reached the default branch, for the result post.
+    let kept_how = |state: &str, note: &str| -> String {
+        if state == "pr" {
+            format!(
+                "It was {note}; the PULSE reviewer reviews and merges it, or asks the owner when it is complex."
+            )
+        } else {
+            format!("It landed under ADR-024: {note}.")
+        }
+    };
     if !prior.0.is_empty() {
         if prior.int("kept") == 0 {
             return discard(prior.str("id"), prior.str("note"), prior.str("note"));
         }
-        match crate::land::land_branch(
-            s,
-            project.clone(),
-            branch.clone(),
-            actor.clone(),
-            now.clone(),
-            crate::land::LandOpts {
-                job: job.clone(),
-                verify,
-                ctx: Some(parent.clone()),
-                archive_id: prior.str("id"),
-                run_id: run_id.clone(),
-                ..Default::default()
-            },
-        ) {
-            Ok((state, note)) if state == "landed" || state == "merged" => {
+        let (state, note) = deliver_kept(prior.str("id"), prior.str("note"));
+        match state.as_str() {
+            "landed" | "merged" | "pr" => {
                 post(
                     "tested",
                     format!("experiment {suggestion} kept: {}", prior.str("note")),
                     format!(
-                        "Branch `{branch}` was measured and kept earlier (archive {}): {}.\n\nIt landed under ADR-024: {note}.\n",
+                        "Branch `{branch}` was measured and kept earlier (archive {}): {}.\n\n{}\n",
                         prior.str("id"),
-                        prior.str("note")
+                        prior.str("note"),
+                        kept_how(&state, &note)
                     ),
                 );
                 return (
@@ -576,7 +661,7 @@ pub(crate) fn land_experiment_context(
                     format!("{branch} kept (archive {}); {note}", prior.str("id")),
                 );
             }
-            Ok((state, note)) => {
+            _ => {
                 return (
                     state,
                     format!(
@@ -585,7 +670,6 @@ pub(crate) fn land_experiment_context(
                     ),
                 );
             }
-            Err(e) => return ("error".into(), crate::run::err_message(&e)),
         }
     }
     // A deterministic archive validation refusal already held this job once:
@@ -927,27 +1011,15 @@ pub(crate) fn land_experiment_context(
     if !keep {
         return discard(archive_id, reason, measured + &hyp);
     }
-    match crate::land::land_branch(
-        s,
-        project,
-        branch.clone(),
-        actor.clone(),
-        now.clone(),
-        crate::land::LandOpts {
-            job: job.clone(),
-            verify,
-            ctx: Some(parent.clone()),
-            archive_id: archive_id.clone(),
-            run_id,
-            ..Default::default()
-        },
-    ) {
-        Ok((state, note)) if state == "landed" || state == "merged" => {
+    let (state, note) = deliver_kept(archive_id.clone(), format!("{measured}.{hyp}"));
+    match state.as_str() {
+        "landed" | "merged" | "pr" => {
             post(
                 "tested",
                 format!("experiment {suggestion} kept: {reason}"),
                 format!(
-                    "Branch `{branch}` was measured and kept (archive {archive_id}): {measured}.{hyp}\n\nIt landed under ADR-024: {note}.\n"
+                    "Branch `{branch}` was measured and kept (archive {archive_id}): {measured}.{hyp}\n\n{}\n",
+                    kept_how(&state, &note)
                 ),
             );
             (
@@ -955,7 +1027,8 @@ pub(crate) fn land_experiment_context(
                 format!("{branch} kept ({reason}); archive {archive_id}; {note}"),
             )
         }
-        Ok((state, note)) => {
+        "error" => (state, note),
+        _ => {
             if let Ok(conn) = s.conn() {
                 crate::util::event_at(
                     &conn,
@@ -971,7 +1044,6 @@ pub(crate) fn land_experiment_context(
                 format!("experiment kept ({reason}; archive {archive_id}) but {note}"),
             )
         }
-        Err(e) => ("error".into(), crate::run::err_message(&e)),
     }
 }
 
@@ -1343,6 +1415,131 @@ mod tests {
             run(&root, &["git", "status", "--porcelain"]).trim(),
             "",
             "merge-tree touched the checkout"
+        );
+    }
+
+    #[test]
+    fn a_kept_experiment_with_an_upstream_is_a_pull_request_until_merged() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        let bare = Path::new(&s.home)
+            .join("tmp")
+            .join(format!("origin-{}.git", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        let bare = bare.display().to_string();
+        run(".", &["git", "init", "--bare", "-q", &bare]);
+        run(&root, &["git", "remote", "add", "origin", &bare]);
+        run(&root, &["git", "push", "-q", "-u", "origin", "main"]);
+        let branch = job.str("branch");
+        let tip = run(&root, &["git", "rev-parse", &branch])
+            .trim()
+            .to_string();
+
+        let (state, note) = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(
+            state, "pr",
+            "kept experiment with an upstream: {state}: {note}"
+        );
+        assert!(
+            note.contains("delivered as pull request #7"),
+            "note: {note}"
+        );
+        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(bare_ref(&bare, &format!("refs/heads/{branch}")), tip);
+        assert_eq!(gh.head_of(7), branch);
+        assert!(
+            !std::fs::read_to_string(Path::new(&root).join("README.md"))
+                .unwrap()
+                .contains("measured variant"),
+            "the variant merged locally"
+        );
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["kind"], "experiment");
+        assert_eq!(pr["experiment"], job.str("id"));
+        assert_eq!(pr["job"], job.str("id"));
+        assert_eq!(pr["archive"], "B-002");
+        assert_eq!(pr["run_id"], last_run_id(&s, job.str("id")));
+        assert_eq!(pr["opened"], true);
+        let current = job_row(&s, &job.str("id"));
+        assert_eq!(
+            current.str("branch"),
+            branch,
+            "the job keeps its branch until the merge"
+        );
+        assert!(
+            pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                .unwrap()
+                .is_none(),
+            "evolve saw the experiment as finalized before the merge"
+        );
+        // A second pass changes nothing: the pull request is open and the
+        // branch has not moved.
+        let again = land_experiment(
+            &s,
+            project.clone(),
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(again.0, "pr", "second pass: {again:?}");
+        assert_eq!(
+            gh.calls()
+                .iter()
+                .filter(|c| c.starts_with("pr create"))
+                .count(),
+            1
+        );
+
+        merge_on_forge(&gh, &bare, 7);
+        let lines = crate::delivery::tend(&s, std::slice::from_ref(&project), TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 merged; experiment finalized")),
+            "{lines:?}"
+        );
+        let merged = last_detail(&s, "land.merged");
+        assert_eq!(merged["kind"], "experiment");
+        assert_eq!(merged["job"], job.str("id"));
+        assert_eq!(merged["archive"], "B-002");
+        assert_eq!(merged["run_id"], last_run_id(&s, job.str("id")));
+        assert_eq!(merged["number"], 7);
+        let current = job_row(&s, &job.str("id"));
+        assert_eq!(current.str("branch"), "");
+        assert!(
+            current
+                .str("result")
+                .contains("delivered as pull request #7"),
+            "{}",
+            current.str("result")
+        );
+        assert!(
+            run(&root, &["git", "branch", "--list", &branch])
+                .trim()
+                .is_empty(),
+            "delivered branch kept locally"
+        );
+        assert!(
+            std::fs::read_to_string(Path::new(&root).join("README.md"))
+                .unwrap()
+                .contains("measured variant"),
+            "local main did not follow the upstream"
+        );
+        assert!(
+            pulse_evolve::plan_feedback(&s, "proj", "daemon")
+                .unwrap()
+                .is_some(),
+            "the merge did not finalize the experiment for evolve"
         );
     }
 

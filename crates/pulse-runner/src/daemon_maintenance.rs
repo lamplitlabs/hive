@@ -37,8 +37,10 @@ pub(crate) fn set_stage(stage: Option<&Stage>, what: impl Into<String>) {
 }
 
 /// Landing states after which the job is no longer pending; every other
-/// state leaves the experiment in the queue for a later attempt.
-const TERMINAL_STATES: &[&str] = &["landed", "merged", "dropped", "missing"];
+/// state leaves the experiment in the queue for a later attempt. `pr` is a
+/// kept experiment pushed as a pull request: the delivery pass follows it
+/// from there (`delivery::poll_open`).
+const TERMINAL_STATES: &[&str] = &["landed", "merged", "dropped", "missing", "pr"];
 /// Retries of `lane.retry_minutes` a deferred experiment gets before the
 /// lane gives it up: a day of them at the default, since what a day of tries
 /// did not clear (a setup that fails, a base the branch lost) needs an owner,
@@ -290,16 +292,41 @@ impl DaemonMaintenance {
                     // away (bulk.rs) they would only fail on a dangling
                     // link, so the pass keeps to the board.
                     let bulk_away = crate::bulk::state(std::path::Path::new(&s.home)).is_missing();
-                    // A task whose jobs are all done goes to the forge as
-                    // one pull request; open ones are polled for merged or
-                    // closed (task_pr.rs). Nothing merges into the local
-                    // default branch here.
+                    // Every finished branch goes to the forge as a pull
+                    // request and the open ones are read for merged or
+                    // closed (delivery.rs); each default branch then follows
+                    // its upstream. Nothing merges into the local default
+                    // branch here. One line sums the pass up; the daemon log
+                    // had 40 landing lines a pass at the busiest.
                     let held: Option<BTreeMap<String, String>> = None;
                     let mut lines = if bulk_away || dry {
                         Vec::new()
                     } else {
-                        set_stage(Some(&stage), "task pull requests");
-                        crate::task_pr::tend_task_prs(&s, &projects, &now)
+                        set_stage(Some(&stage), "delivery");
+                        let started = std::time::Instant::now();
+                        let mut delivered = crate::delivery::tend(&s, &projects, &now);
+                        if !delivered.is_empty() {
+                            delivered.insert(
+                                0,
+                                format!(
+                                    "delivery: {} {} over {} {} in {:.1}s",
+                                    delivered.len(),
+                                    if delivered.len() == 1 {
+                                        "line"
+                                    } else {
+                                        "lines"
+                                    },
+                                    projects.len(),
+                                    if projects.len() == 1 {
+                                        "project"
+                                    } else {
+                                        "projects"
+                                    },
+                                    started.elapsed().as_secs_f64()
+                                ),
+                            );
+                        }
+                        delivered
                     };
                     if !(bulk_away || dry) {
                         set_stage(Some(&stage), "pull request reviews");
@@ -416,7 +443,7 @@ impl DaemonMaintenance {
             if crate::land::landing_retry_hold(s, &slug, now).is_some() {
                 continue;
             }
-            for job in crate::land::pending_landings(&conn, slug) {
+            for job in crate::land::pending_landings(&conn, &slug) {
                 if job.str("kind") != "experiment" {
                     continue;
                 }
@@ -425,6 +452,12 @@ impl DaemonMaintenance {
                     .get(&job.str("id"))
                     .is_some_and(|(at, wait)| at.elapsed() < *wait)
                 {
+                    continue;
+                }
+                // Kept and pushed as a pull request: the branch stays on
+                // the job until the forge merges it, and measuring it again
+                // would open nothing new.
+                if crate::delivery::open_pr_for_job(&conn, &slug, &job.str("id")).is_some() {
                     continue;
                 }
                 return Some((project.clone(), job));

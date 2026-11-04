@@ -202,10 +202,11 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "The real checkout is elsewhere and you cannot reach it. Nothing you do here is merged; the runner"
     );
     w!(
-        "copies your commits to a local branch `pulse/{}/{}` for a human to review.",
+        "copies your commits to a local branch `pulse/{}/{}`, which the daemon pushes as a pull request;",
         agent,
         jid
     );
+    w!("another agent reviews it and merges it, or asks the owner when it is complex.");
     if !o.artifacts_dir.is_empty() {
         w!(
             "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in $PULSE_ARTIFACTS ({});",
