@@ -1,18 +1,15 @@
 //! The load governor: how many runs this machine takes at once and when it
 //! leases nothing new because the machine is saturated.
 //!
-//! `workers` says how many local slots the owner would like; before this
-//! governor a laptop with `workers 12` ran twelve `npm ci`/`cargo test`
-//! trees at once, swapped, and the kernel killed workers (exit 137) whose
-//! jobs then failed and were re-planned. The governor caps the local slots
-//! at `daemon.max_jobs` (default derived from the hardware: half the cores,
-//! one run per 4 GB of RAM, never more than four), holds every local slot
-//! while the one-minute load average is over `daemon.max_load` (default:
-//! twice the number of CPUs) or the memory a new run could use is under
-//! `daemon.min_free_mem_mb` (default 1024), halves the runs it starts while
-//! the kernel's memory warning stands, and runs the daemon's children at
-//! nice [`CHILD_NICE`] so the owner's own work stays responsive. Remote
-//! executors keep their own `workers`: their load is not this machine's.
+//! The local slots come from the capacity model ([`crate::capacity`]): the
+//! smaller of the physical cores and one run per 3 GB of RAM, or the
+//! `capacity` override. The governor holds every local slot while the
+//! one-minute load average is over [`DEFAULT_LOAD_PER_CPU`] times the CPUs
+//! or the memory a new run could use is under [`MIN_FREE_MEM_MB`], halves
+//! the runs it starts while the kernel's memory warning stands, and runs
+//! the daemon's children at nice [`CHILD_NICE`] so the owner's own work
+//! stays responsive. Remote executors size themselves: their load is not
+//! this machine's.
 //!
 //! [`decide`] is the pure decision the loop and the self-update build use;
 //! [`Machine::detect`] and [`pressure`] are the only parts that touch the
@@ -27,16 +24,13 @@ use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 pub(crate) const CHILD_NICE: i32 = 10;
 /// The highest nice level `setpriority` accepts; `daemon.nice` is clamped to it.
 pub(crate) const MAX_NICE: i32 = 19;
-/// The hardware-derived default never admits more local runs than this.
-pub(crate) const DEFAULT_MAX_JOBS_CAP: i32 = 4;
-/// The default `daemon.max_load`, in load per CPU. macOS counts every
+/// Megabytes of usable memory under which nothing new starts locally.
+pub(crate) const MIN_FREE_MEM_MB: i64 = 1024;
+/// The load line, in load per CPU. macOS counts every
 /// runnable thread in the load average, and a laptop running an emulator
 /// or a browser build sits at twice its CPU count for hours while its CPUs
 /// are far from busy; a line at the CPU count held the fleet all day.
 pub(crate) const DEFAULT_LOAD_PER_CPU: f64 = 2.0;
-/// Megabytes of RAM one run is taken to need when the default is derived:
-/// a worker clone with its `npm ci`, a test run and the harness itself.
-const MB_PER_JOB: i64 = 4096;
 
 /// The nice level [`renice_child`] applies; 0 until the daemon sets it, so
 /// `pulse work` and the other commands run as before.
@@ -56,7 +50,7 @@ static BUILD_JOBS_LEVEL: AtomicI32 = AtomicI32::new(0);
 pub(crate) const TEST_MACHINE: Machine = Machine {
     cpus: 12,
     cores: 12,
-    mem_mb: 16384,
+    mem_mb: 12288,
 };
 
 /// What this machine has; read once per process.
@@ -99,18 +93,9 @@ impl Machine {
         }
     }
 
-    /// The default `daemon.max_jobs`: half the cores, at most one run per
-    /// 4 GB of RAM (16 GB: four, 8 GB: two), never more than
-    /// [`DEFAULT_MAX_JOBS_CAP`] and never under one. A machine whose memory
-    /// size is unknown is limited by its cores alone.
+    /// The runs this machine takes from its hardware ([`crate::capacity::machine_slots`]).
     pub(crate) fn default_max_jobs(&self) -> i32 {
-        let by_cores = (self.cores / 2).max(1);
-        let by_mem = if self.mem_mb > 0 {
-            ((self.mem_mb + MB_PER_JOB / 2) / MB_PER_JOB).max(1) as i32
-        } else {
-            by_cores
-        };
-        by_cores.min(by_mem).clamp(1, DEFAULT_MAX_JOBS_CAP)
+        crate::capacity::machine_slots(self.cores, self.mem_mb)
     }
 
     /// Parallelism for a build the daemon runs for itself (`cargo -j`) and
@@ -161,25 +146,21 @@ pub(crate) struct Limits {
     pub(crate) source: &'static str,
 }
 
-/// The limits from the settings, the flag and the machine: a positive
-/// `--max-jobs` wins, then a positive `daemon.max_jobs`, then the machine's
-/// default; `daemon.max_load` 0 is [`DEFAULT_LOAD_PER_CPU`] times the number
-/// of CPUs; `daemon.min_free_mem_mb` 0 turns the memory floor off;
-/// `daemon.build_jobs` 0 is half the cores.
+/// The limits from the flag, the `capacity` override and the machine: a
+/// positive `--max-jobs` wins, then a numeric `capacity`, then the
+/// machine's own slots; the load line is [`DEFAULT_LOAD_PER_CPU`] times the
+/// CPUs and the memory floor [`MIN_FREE_MEM_MB`]; `daemon.build_jobs` 0 is
+/// half the cores.
 pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i32) -> Limits {
-    let setting_max_jobs = s.setting_int("daemon.max_jobs") as i32;
     let (max_jobs, source) = if flag_max_jobs > 0 {
         (flag_max_jobs, "--max-jobs")
-    } else if setting_max_jobs > 0 {
-        (setting_max_jobs, "daemon.max_jobs")
+    } else if let Some(n) = crate::capacity::override_slots(s) {
+        (n, "capacity")
     } else {
         (machine.default_max_jobs(), "auto")
     };
     let cpus = machine.cpus.max(1);
-    let max_load = match s.setting_int("daemon.max_load") {
-        n if n > 0 => n as f64,
-        _ => f64::from(cpus) * DEFAULT_LOAD_PER_CPU,
-    };
+    let max_load = f64::from(cpus) * DEFAULT_LOAD_PER_CPU;
     let build_jobs = match s.setting_int("daemon.build_jobs") {
         n if n > 0 => n.min(i64::from(i32::MAX)) as i32,
         _ => machine.build_jobs(),
@@ -188,7 +169,7 @@ pub(crate) fn limits(s: &pulse_store::Store, machine: &Machine, flag_max_jobs: i
         max_jobs: max_jobs.max(1),
         max_load,
         cpus,
-        min_free_mem_mb: s.setting_int("daemon.min_free_mem_mb").max(0),
+        min_free_mem_mb: MIN_FREE_MEM_MB,
         own_nice: own_nice_level(s.setting_int("daemon.nice")),
         build_jobs,
         source,
@@ -284,7 +265,7 @@ pub(crate) fn hold_reason(limits: &Limits, pressure: &Pressure) -> Option<String
         && load > limits.max_load
     {
         return Some(format!(
-            "{HOLD_PREFIX}load {load:.1} on {} CPUs is over daemon.max_load {:.0}",
+            "{HOLD_PREFIX}load {load:.1} on {} CPUs is over the line {:.0}",
             limits.cpus.max(1),
             limits.max_load
         ));
@@ -299,7 +280,7 @@ pub(crate) fn hold_reason(limits: &Limits, pressure: &Pressure) -> Option<String
         && free < limits.min_free_mem_mb
     {
         return Some(format!(
-            "{HOLD_PREFIX}{free} MB of memory free, under daemon.min_free_mem_mb {}",
+            "{HOLD_PREFIX}{free} MB of memory free, under the floor {}",
             limits.min_free_mem_mb
         ));
     }
@@ -315,7 +296,7 @@ pub(crate) fn build_hold(limits: &Limits, pressure: &Pressure, running: usize) -
     }
     if running >= limits.max_jobs.max(1) as usize {
         return Some(format!(
-            "{running} local run(s) in flight fill daemon.max_jobs {}",
+            "{running} local run(s) in flight fill this machine's {} slot(s)",
             limits.max_jobs
         ));
     }
@@ -850,21 +831,14 @@ mod tests {
     #[test]
     fn default_max_jobs_follows_cores_memory_and_the_cap() {
         for (name, cpus, cores, mem_mb, want) in [
-            ("16 GB, 12 cores: four", 12, 12, 16384, 4),
-            ("16 GB reported as 15.6 GB rounds to four", 12, 12, 15990, 4),
+            ("12 GB, 12 cores: four", 12, 12, 12288, 4),
+            ("16 GB, 12 cores: five", 12, 12, 16384, 5),
             ("8 GB, 8 cores: two", 8, 8, 8192, 2),
-            ("4 GB, 8 cores: one", 8, 8, 4096, 1),
             ("2 GB, 2 cores: never under one", 2, 2, 2048, 1),
-            (
-                "64 GB, 32 cores: the cap",
-                64,
-                32,
-                65536,
-                DEFAULT_MAX_JOBS_CAP,
-            ),
-            ("16 GB, 4 cores: two", 8, 4, 16384, 2),
+            ("64 GB, 32 cores: no cap of four", 64, 32, 65536, 21),
+            ("16 GB, 4 cores: the cores", 8, 4, 16384, 4),
             ("one core", 1, 1, 16384, 1),
-            ("memory unknown: cores alone", 12, 12, 0, 4),
+            ("memory unknown: cores alone", 12, 12, 0, 12),
         ] {
             let m = Machine {
                 cpus,
@@ -925,7 +899,7 @@ mod tests {
         assert_eq!(v.room, 0, "load over the cap holds every slot: {v:?}");
         assert_eq!(
             v.hold.as_deref(),
-            Some("machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 12")
+            Some("machine saturated: load 40.1 on 12 CPUs is over the line 12")
         );
         assert!(
             !v.express,
@@ -939,7 +913,7 @@ mod tests {
         assert_eq!(v.room, 0);
         assert_eq!(
             v.hold.as_deref(),
-            Some("machine saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024")
+            Some("machine saturated: 512 MB of memory free, under the floor 1024")
         );
         assert!(!v.express, "memory under the floor has no express lane");
         let critical = Pressure {
@@ -1161,7 +1135,7 @@ mod tests {
         };
         assert!(is_hold_note(&hold_reason(&l, &loaded).unwrap()));
         assert!(is_hold_note(
-            "branch not landed: measuring main deferred: machine saturated: load 30.0 on 12 CPUs is over daemon.max_load 12"
+            "branch not landed: measuring main deferred: machine saturated: load 30.0 on 12 CPUs is over the line 12"
         ));
         assert!(!is_hold_note("verify failed: 3 tests"));
     }
@@ -1172,11 +1146,11 @@ mod tests {
         assert_eq!(build_hold(&l, &calm(), 3), None);
         assert_eq!(
             build_hold(&l, &calm(), 4).as_deref(),
-            Some("4 local run(s) in flight fill daemon.max_jobs 4")
+            Some("4 local run(s) in flight fill this machine's 4 slot(s)")
         );
         assert_eq!(
             build_hold(&l, &calm(), 9).as_deref(),
-            Some("9 local run(s) in flight fill daemon.max_jobs 4")
+            Some("9 local run(s) in flight fill this machine's 4 slot(s)")
         );
         let loaded = Pressure {
             load1: Some(30.0),
@@ -1259,30 +1233,40 @@ mod tests {
     #[test]
     fn limits_prefer_the_flag_then_the_setting_then_the_machine() {
         let s = crate::test_helpers::new_store();
+        crate::test_helpers_daemon::set_setting(&s, "capacity", "auto");
         let m = Machine {
             cpus: 12,
             cores: 12,
             mem_mb: 16384,
         };
         let l = limits_from(&s, &m, 0);
-        assert_eq!((l.max_jobs, l.source), (4, "auto"));
+        assert_eq!((l.max_jobs, l.source), (5, "auto"), "16 GB at 3 GB a run");
         assert_eq!(
             l.max_load, 24.0,
-            "daemon.max_load 0 is twice the CPU count: the load average counts runnable threads"
+            "the load line is twice the CPU count: the load average counts runnable threads"
         );
         assert_eq!(l.cpus, 12);
         assert_eq!(l.min_free_mem_mb, 1024, "the documented default floor");
         assert_eq!(l.own_nice, 5, "the documented default daemon.nice");
         assert_eq!(l.build_jobs, 6, "daemon.build_jobs 0 is half the cores");
-        crate::test_helpers_daemon::set_setting(&s, "daemon.max_jobs", "2");
-        crate::test_helpers_daemon::set_setting(&s, "daemon.max_load", "20");
-        crate::test_helpers_daemon::set_setting(&s, "daemon.min_free_mem_mb", "0");
+        crate::test_helpers_daemon::set_setting(&s, "capacity", "2");
+        for retired in [
+            "workers",
+            "parallel_per_project",
+            "daemon.max_jobs",
+            "daemon.max_load",
+            "daemon.min_free_mem_mb",
+        ] {
+            let err = s
+                .set_setting("human", retired, "3")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("is automatic now"), "{retired}: {err}");
+        }
         crate::test_helpers_daemon::set_setting(&s, "daemon.nice", "0");
         crate::test_helpers_daemon::set_setting(&s, "daemon.build_jobs", "3");
         let l = limits_from(&s, &m, 0);
-        assert_eq!((l.max_jobs, l.source), (2, "daemon.max_jobs"));
-        assert_eq!(l.max_load, 20.0);
-        assert_eq!(l.min_free_mem_mb, 0);
+        assert_eq!((l.max_jobs, l.source), (2, "capacity"));
         assert_eq!(l.own_nice, 0, "daemon.nice 0 leaves the priority alone");
         assert_eq!(l.build_jobs, 3);
         let l = limits_from(&s, &m, 3);
@@ -1395,7 +1379,7 @@ mod tests {
     fn the_machine_and_its_pressure_read_without_panicking() {
         let m = Machine::read();
         assert!(m.cpus >= 1 && m.cores >= 1 && m.cores <= m.cpus, "{m:?}");
-        assert!(m.default_max_jobs() >= 1 && m.default_max_jobs() <= DEFAULT_MAX_JOBS_CAP);
+        assert!(m.default_max_jobs() >= 1 && m.default_max_jobs() <= m.cores);
         let p = read_pressure();
         assert!(p.load1.is_none_or(|l| l >= 0.0), "{p:?}");
         assert!(p.free_mem_mb.is_none_or(|mb| mb >= 0), "{p:?}");

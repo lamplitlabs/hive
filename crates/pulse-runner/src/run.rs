@@ -5832,7 +5832,7 @@ mod tests {
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
-        set_setting(&s, "parallel_per_project", "2");
+        crate::capacity::pin_per_project(&s, 2);
         let jobs = vec![
             scheduling_job(&s, "proj", "first", 100),
             scheduling_job(&s, "proj", "second", 90),
@@ -5942,7 +5942,7 @@ mod tests {
                 .unwrap();
                 let mut agent = "borealis";
                 if scope == "worker" {
-                    set_setting(&s, "parallel_per_project", "2");
+                    crate::capacity::pin_per_project(&s, 2);
                     agent = "aurora";
                 }
                 let got = crate::jobs::lease_job(
@@ -5993,7 +5993,7 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
         new_bare_repo(&s);
-        set_setting(&s, "parallel_per_project", "2");
+        crate::capacity::pin_per_project(&s, 2);
         let first = scheduling_job(&s, "proj", "first", 100);
         let second = scheduling_job(&s, "proj", "second", 90);
         let third = scheduling_job(&s, "proj", "third", 80);
@@ -6018,7 +6018,7 @@ mod tests {
         join(&s, "aurora");
         join(&s, "borealis");
         set_setting(&s, "quorum", "1");
-        set_setting(&s, "parallel_per_project", "2");
+        crate::capacity::pin_per_project(&s, 2);
         let job = scheduling_job(&s, "proj", "held-work", 100);
         // borealis leased last, so the rotation would pick aurora next...
         let leased = lease_job_id(&s, "borealis", &job).unwrap();
@@ -6074,7 +6074,7 @@ mod tests {
             join(&s, "aurora");
             join(&s, "borealis");
             set_setting(&s, "quorum", "1");
-            set_setting(&s, "parallel_per_project", "2");
+            crate::capacity::pin_per_project(&s, 2);
             let first = scheduling_job(&s, "proj", "controller-still-running", 100);
             let second = scheduling_job(&s, "proj", "already-finished", 90);
             for (job, agent) in [(&first, "aurora"), (&second, "borealis")] {
@@ -6183,7 +6183,8 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
-        set_setting(&s, "parallel_per_project", "2");
+        set_setting(&s, "capacity", "2");
+        crate::capacity::pin_per_project(&s, 2);
         let conn = s.conn().unwrap();
         let mut scratch = Vec::new();
         for (i, project) in ["first", "second", "third"].iter().enumerate() {
@@ -6231,8 +6232,8 @@ mod tests {
         let _guard = pulse_testutil::env_lock();
         let (s, first) = crate::test_helpers_heartbeat::daemon_retry_fixture();
         let second = scheduling_job(&s, "proj", "slow-error", 90);
-        set_setting(&s, "workers", "2");
-        set_setting(&s, "parallel_per_project", "2");
+        set_setting(&s, "capacity", "2");
+        crate::capacity::pin_per_project(&s, 2);
         set_setting(&s, "jobs_per_day", "0");
         let (reflect_job, _) = crate::jobs::add_job(
             &s,

@@ -198,7 +198,7 @@ pub(crate) struct DaemonOpts {
     pub hub_home: String,
     pub self_update: Option<Box<crate::selfupdate::SelfUpdateEnv>>,
     pub no_watchdog: bool,
-    /// `--max-jobs`: local runs at once; 0 defers to `daemon.max_jobs` and
+    /// `--max-jobs`: local runs at once; 0 defers to the `capacity` setting and
     /// then the machine's default (see `daemon_load`).
     pub max_jobs: i32,
 }
@@ -394,12 +394,12 @@ pub(crate) fn hands_wanted(
     let slug = brain.str("slug");
     let summary = crate::util::trunc(
         &format!(
-            "hands wanted: {queued} job(s) waited {minutes} min with every slot busy or held ({slots} slot(s)); pairing another machine (pulse pair), compute.auto_approve, or raising workers/parallel_per_project would shorten the queue"
+            "hands wanted: {queued} job(s) waited {minutes} min with every slot busy or held ({slots} slot(s)); pairing another machine (pulse pair) or compute.auto_approve would shorten the queue"
         ),
         230,
     );
     let body = format!(
-        "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy or held by this machine's load or disk ({now}). More hands would shorten the queue: pair another machine with `pulse pair` (pulse record show WF-executors), set `compute.auto_approve` with `compute.max_vms` so the daemon rents one within your caps, raise `workers` on a machine that has the capacity, or raise `parallel_per_project` when the wait is on one project. The human owns machines and money; this post is a measurement, not a request to act.\n"
+        "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy or held by this machine's load or disk ({now}). More hands would shorten the queue: pair another machine with `pulse pair` (pulse record show WF-executors), set `compute.auto_approve` with `compute.max_vms` so the daemon rents one within your caps or a bigger machine (each machine sizes its own slots from its cores and memory, and the fleet adds them up). The human owns machines and money; this post is a measurement, not a request to act.\n"
     );
     let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
@@ -1979,10 +1979,10 @@ pub(crate) fn daemon(
                         .map(crate::diskroom::Admission::new);
                 }
                 // The load governor (daemon_load.rs): the local slots are capped
-                // at daemon.max_jobs and all close while the machine is saturated.
+                // at the machine's capacity and all close while the machine is saturated.
                 // One slot stays free while a self-update build waits for room.
                 let mut load_hold: Option<String> = None;
-                // The last half of the local slots under daemon.max_jobs
+                // The last half of the local slots under the machine's capacity
                 // (rounded up) go to the work class first (jobs.rs
                 // work_first): with four slots and a queue of reflects and
                 // ballots for every project, the fairness between projects
@@ -1990,7 +1990,7 @@ pub(crate) fn daemon(
                 let mut work_reserve = 0usize;
                 // While a soft hold (load, or the kernel's memory warning
                 // with free memory above the floor) closes the machine, or
-                // the fleet's own work fills daemon.max_jobs, one local slot
+                // the fleet's own work fills the machine, one local slot
                 // stays open to the owner's work (jobs.rs OWNER_DRIVEN_SQL):
                 // the owner should not wait behind the fleet's own builds.
                 if slots.iter().any(|n| n == crate::executor::LOCAL_EXECUTOR) {
@@ -2032,14 +2032,14 @@ pub(crate) fn daemon(
                         }
                     } else if verdict.express {
                         // The cap is full of the fleet's work and none of it
-                        // is the owner's: one slot over daemon.max_jobs takes
+                        // is the owner's: one slot over the capacity takes
                         // owner-driven jobs alone, so an answer to the owner
                         // does not wait out two verifies - nor a restart
                         // window, which the owner's run anchors.
                         load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
                         express_slot = true;
                         load_hold = Some(
-                            "every slot under daemon.max_jobs is busy with the fleet's work; one express slot stays open for the owner's work"
+                            "every slot of this machine is busy with the fleet's work; one express slot stays open for the owner's work"
                                 .to_string(),
                         );
                     } else {
@@ -3081,7 +3081,7 @@ mod tests {
             )
             .unwrap();
         }
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
             .unwrap();
@@ -3160,7 +3160,7 @@ mod tests {
             false,
         )
         .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
             .unwrap();
@@ -3177,12 +3177,12 @@ mod tests {
         );
         assert!(
             out.contains(
-                "load governor: up to 4 local run(s) at once (auto; 12 cores, 12 CPUs, 16384 MB)"
+                "load governor: up to 2 local run(s) at once (capacity; 12 cores, 12 CPUs, 12288 MB)"
             ),
             "{out}"
         );
         assert!(
-            out.contains("machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 24"),
+            out.contains("machine saturated: load 40.2 on 12 CPUs is over the line 24"),
             "{out}"
         );
         assert!(!out.contains("leased "), "{out}");
@@ -3211,13 +3211,11 @@ mod tests {
             },
         );
         assert!(
-            out.contains(
-                "machine saturated: 300 MB of memory free, under daemon.min_free_mem_mb 1024"
-            ) && !out.contains("leased "),
+            out.contains("machine saturated: 300 MB of memory free, under the floor 1024")
+                && !out.contains("leased "),
             "{out}"
         );
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mem_mb", "0")
-            .unwrap();
+        drop(tight);
         let out = once_daemon(
             &s,
             DaemonOpts {
@@ -3229,7 +3227,6 @@ mod tests {
             out.contains("leased ") && !out.contains("machine saturated"),
             "{out}"
         );
-        drop(tight);
         assert_eq!(
             count(
                 &s,
@@ -3261,7 +3258,7 @@ mod tests {
             false,
         )
         .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
             .unwrap();
         let starved_since = |out: &str| {
             let (raw, _) = s.meta("capacity").unwrap();
@@ -3456,11 +3453,7 @@ mod tests {
             false,
         )
         .unwrap();
-        for (k, v) in [
-            ("workers", "2"),
-            ("daemon.max_jobs", "1"),
-            ("daemon.min_free_mb", "0"),
-        ] {
+        for (k, v) in [("capacity", "1"), ("daemon.min_free_mb", "0")] {
             s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
         }
         let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
@@ -3476,7 +3469,7 @@ mod tests {
         );
         assert!(!out.contains("leased "), "{out}");
         assert!(
-            out.contains("every slot under daemon.max_jobs is busy with the fleet's work"),
+            out.contains("every slot of this machine is busy with the fleet's work"),
             "{out}"
         );
         assert_eq!(
@@ -3523,10 +3516,9 @@ mod tests {
             )
             .unwrap();
         }
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "3")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "3")
             .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "3")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 3);
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.setup_mb", "0")
@@ -3534,7 +3526,7 @@ mod tests {
         s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "none")
             .unwrap();
         // The flag beats the setting, the setting beats the machine.
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.max_jobs", "2")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
             .unwrap();
         let out = once_daemon(
             &s,
@@ -3557,7 +3549,7 @@ mod tests {
             },
         );
         assert!(
-            out.contains("load governor: up to 2 local run(s) at once (daemon.max_jobs;"),
+            out.contains("load governor: up to 2 local run(s) at once (capacity;"),
             "{out}"
         );
         assert_eq!(out.matches("leased ").count(), 2, "{out}");
@@ -3584,9 +3576,7 @@ mod tests {
         join(&s, "cirrus");
         join(&s, "drizzle");
         for (k, v) in [
-            ("workers", "4"),
-            ("parallel_per_project", "4"),
-            ("daemon.max_jobs", "2"),
+            ("capacity", "2"),
             ("daemon.pass_seconds", "3600"),
             ("daemon.min_free_mb", "0"),
             ("daemon.setup_mb", "0"),
@@ -3594,6 +3584,7 @@ mod tests {
         ] {
             s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
         }
+        crate::capacity::pin_per_project(&s, 4);
         let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
         let add = |title: &str, source: &str| {
             crate::jobs::add_job(
@@ -3654,7 +3645,7 @@ mod tests {
             let text = wait_for(&|t| t.matches("leased job-").count() >= 3, "a third lease");
             assert!(
                 text.contains(
-                    "every slot under daemon.max_jobs is busy with the fleet's work; one express slot stays open for the owner's work"
+                    "every slot of this machine is busy with the fleet's work; one express slot stays open for the owner's work"
                 ),
                 "{text}"
             );
@@ -3741,7 +3732,7 @@ mod tests {
                 &[&id, &yesterday],
             );
         }
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
             .unwrap();
@@ -3808,8 +3799,7 @@ mod tests {
         if !history.is_empty() {
             // Room for the slow run, the daily reflect the planner adds over
             // a day-old history and the job queued after the flip.
-            s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "3")
-                .unwrap();
+            crate::capacity::pin_per_project(&s, 3);
             s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "none")
                 .unwrap();
             // Ten real runs of ten seconds, two days ago so the daily job cap
@@ -3832,7 +3822,7 @@ mod tests {
             }
         }
         let workers = if history.is_empty() { "2" } else { "3" };
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", workers)
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", workers)
             .unwrap();
         s.set_setting(
             pulse_store::HUMAN_AGENT,
@@ -3967,7 +3957,7 @@ mod tests {
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "1")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "1")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.hold_seconds", "1")
             .unwrap();
@@ -4104,7 +4094,7 @@ mod tests {
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "1")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "1")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.hold_seconds", "1")
             .unwrap();
@@ -4319,7 +4309,7 @@ mod tests {
         new_bare_repo(&s);
         join(&s, "aurora");
         join(&s, "borealis");
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "2")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "daemon.pass_seconds", "3600")
             .unwrap();
@@ -5186,7 +5176,7 @@ mod tests {
     fn daemon_retires_a_worker_once_its_run_ends_and_spawns_a_fresh_one() {
         let _serial = crate::test_helpers::serial();
         let (s, first) = daemon_retry_fixture();
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "1")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "1")
             .unwrap();
         let (second, _) = crate::jobs::add_job(
             &s,
@@ -5674,6 +5664,8 @@ mod tests {
         crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
         crate::test_helpers_daemon::set_setting(&s, "jobs_per_day", "10");
         crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "1000");
+        // Room for the measurement and the other project past the reserved half.
+        crate::test_helpers_daemon::set_setting(&s, "capacity", "4");
         run(&root, &["git", "branch", "evolve/slow-measurement"]);
         exec1(&s,
             "INSERT INTO jobs (id, project, kind, title, status, branch, created_at, finished_at)

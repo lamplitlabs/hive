@@ -104,7 +104,7 @@ export function MachinePanel({ r, heading = true, machines = true }: { r: Runner
               ...(d.loops !== undefined ? [["Rounds", num(d.loops) + (d.passes !== undefined ? " so far, " + num(d.passes) + " of them planned work" : " so far")] as Row] : []),
               ["Checks every", d.interval ? spanSeconds(d.interval) : "—"],
               ["Last check-in", <When key="at" d={d.at} />],
-              ["Slots", num(r.hands.free) + " of " + num(r.hands.slots) + " free, on " + plural(r.hands.executors_active, "active machine")],
+              ["Slots", num(r.hands.free) + " of " + num(r.hands.slots) + " free, on " + plural(r.hands.executors_active, "active machine") + (r.hands.line ? " (" + r.hands.line + ")" : "")],
               ["Agents", num(r.workers.busy) + " working, " + num(r.workers.idle) + " idle"],
               ["Work", num(r.jobs.queued) + " waiting to start, " + num(r.jobs.leased) + " starting, " + num(r.jobs.running) + " running" + (r.jobs.blocked ? ", " + num(r.jobs.blocked) + " stuck" : "")],
               ["Runs today", num(r.jobs.runs_today) + (r.jobs.cap ? " of " + num(r.jobs.cap) : " (no daily limit)")],

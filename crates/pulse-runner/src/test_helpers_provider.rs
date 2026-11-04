@@ -1421,8 +1421,7 @@ mod tests {
         let s = new_store();
         new_bare_repo(&s);
         suppress_planner_reflect(&s);
-        s.set_setting(crate::util::HUMAN_AGENT, "parallel_per_project", "3")
-            .expect("parallel setting");
+        crate::capacity::pin_per_project(&s, 3);
         let ask = |at: String, agent: &str, thread: &str, summary: &str| {
             create_post(
                 &s,

@@ -14,6 +14,7 @@ pub mod board;
 pub mod brief;
 pub mod buildcache;
 pub mod bulk;
+pub mod capacity;
 pub mod checkout;
 pub mod commands;
 pub mod compute;

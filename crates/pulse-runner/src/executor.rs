@@ -204,10 +204,11 @@ pub(crate) fn executor_projects(r: &Row) -> Vec<String> {
 }
 
 pub(crate) fn local_executor_row(s: &pulse_store::Store) -> Row {
-    let mut workers = setting_int(s, "workers");
-    if workers < 0 {
-        workers = 0;
-    }
+    // The machine's slots plus one the load governor only ever lends to the
+    // owner's work (the express lane, daemon.rs): the governor trims the
+    // rest to the machine's capacity every tick. 0 keeps the machine idle.
+    let slots = crate::capacity::local_slots(s).max(0);
+    let workers = if slots > 0 { slots + 1 } else { 0 };
     let reserved = s.setting("machine.reserve", "") == "on";
     let mut r = Row::new();
     for (k, v) in [
@@ -1718,6 +1719,21 @@ fn record_caps(s: &pulse_store::Store, r: &Row, fields: &BTreeMap<String, String
             "UPDATE executors SET os = ?, arch = ? WHERE name = ?",
             &[&os, &arch, &r.str("name")],
         );
+    }
+    // The hands report their hardware; the machine's slots follow from it
+    // (capacity.rs), whatever `--workers` said at pairing.
+    if let (Some(cores), Some(mem_mb)) = (
+        fields.get("cores").and_then(|v| v.parse::<i32>().ok()),
+        fields.get("mem_mb").and_then(|v| v.parse::<i64>().ok()),
+    ) {
+        let slots = i64::from(crate::capacity::machine_slots(cores, mem_mb));
+        if slots != i64::from(r.int("workers")) {
+            exec1(
+                &conn,
+                "UPDATE executors SET workers = ? WHERE name = ?",
+                &[&slots, &r.str("name")],
+            );
+        }
     }
     if let Some(found) = fields.get("found") {
         let found = if found == "-" { "" } else { found.as_str() };

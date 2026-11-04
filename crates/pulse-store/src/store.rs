@@ -426,7 +426,10 @@ impl Store {
                 .map_err(|e| anyhow!("records schema: {e}"))?;
             }
         }
-        for name in crate::settings::RETIRED_SETTINGS {
+        for name in crate::settings::RETIRED_SETTINGS
+            .iter()
+            .chain(crate::settings::AUTOMATIC_SETTINGS)
+        {
             let value: Option<String> = tx
                 .query_row("SELECT value FROM settings WHERE name = ?", [name], |r| {
                     r.get(0)
@@ -998,10 +1001,18 @@ pub const WIDENED_CHECKS: &[(&str, &str)] = &[
 ];
 
 fn retired_settings_present(conn: &Connection) -> rusqlite::Result<bool> {
-    let marks = vec!["?"; crate::settings::RETIRED_SETTINGS.len()].join(", ");
+    let names = crate::settings::RETIRED_SETTINGS
+        .iter()
+        .chain(crate::settings::AUTOMATIC_SETTINGS);
+    let marks = vec![
+        "?";
+        crate::settings::RETIRED_SETTINGS.len()
+            + crate::settings::AUTOMATIC_SETTINGS.len()
+    ]
+    .join(", ");
     let n: i64 = conn.query_row(
         &format!("SELECT COUNT(*) FROM settings WHERE name IN ({marks})"),
-        rusqlite::params_from_iter(crate::settings::RETIRED_SETTINGS.iter()),
+        rusqlite::params_from_iter(names),
         |r| r.get(0),
     )?;
     Ok(n > 0)
@@ -1865,7 +1876,7 @@ mod tests {
             (
                 "bogus",
                 "1",
-                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, chat.idle_release_minutes, chat.resume_after_provider_error_secs, chat.sub_depth, chat.sub_open, claim_hours, expiry_days, inbox.retire_days, jobs_per_day, landing, landing.parallel, minutes_per_job, parallel_per_project, prune_after_days, quorum, records.auto_adopt, stale_days, stop, voice.language, voice.model, worker_model, workers",
+                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, capacity, chat.idle_release_minutes, chat.resume_after_provider_error_secs, chat.sub_depth, chat.sub_open, claim_hours, expiry_days, inbox.retire_days, jobs_per_day, landing, landing.parallel, minutes_per_job, prune_after_days, quorum, records.auto_adopt, stale_days, stop, voice.language, voice.model, worker_model",
             ),
             ("quorum", "x", "quorum takes a whole number, not 'x'"),
             (

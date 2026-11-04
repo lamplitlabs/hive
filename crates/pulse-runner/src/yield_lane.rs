@@ -2,7 +2,7 @@
 //!
 //! `lease_job` already takes an owner-driven job (a `task:` job, a lead's
 //! sitting, an answer) before the fleet's own work, but a project's work
-//! lanes (`project_lanes`, `parallel_per_project`) count every run alike:
+//! lanes (`project_lanes`, per-project share) count every run alike:
 //! when the fleet's improve jobs hold them, the owner's task waits for them
 //! to finish - once four hours, behind one `redbase` job, while the daemon
 //! leased fifty other runs around it. So each tick the daemon looks for an
@@ -62,7 +62,7 @@ pub(crate) fn fleet_waits_sql() -> String {
 }
 
 /// One pass: for every project with an owner-driven work job queued and
-/// no lane open to it - its work lanes full, or its `parallel_per_project`
+/// no lane open to it - its work lanes full, or its per-project share
 /// slots - asks the youngest fleet run in the way to hold. Returns one log
 /// line per run asked; a run already asked, or past its harness, is not
 /// asked twice and makes no line. `_fits`, the daemon's restart window, is
@@ -241,8 +241,7 @@ mod tests {
     /// One work lane: the project's checks take turns and one 10-minute
     /// check fits the commit cap.
     fn one_lane(s: &pulse_store::Store) {
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(s, 4);
         s.set_setting(
             pulse_store::HUMAN_AGENT,
             crate::verify_lock::SETTING,
@@ -347,8 +346,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
@@ -410,8 +408,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "2")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 2);
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
@@ -445,8 +442,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "2")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 2);
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
@@ -546,8 +542,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "1")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 1);
         for name in ["aurora", "borealis"] {
             join(&s, name);
         }
@@ -670,8 +665,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "2")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 2);
         s.set_setting(pulse_store::HUMAN_AGENT, "quorum", "2")
             .unwrap();
         for name in ["aurora", "borealis", "cinder"] {

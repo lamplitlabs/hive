@@ -691,10 +691,10 @@ mod tests {
             },
             8,
         );
-        s.set_setting("human", "workers", "2").unwrap();
+        s.set_setting("human", "capacity", "2").unwrap();
         let got = ch.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(got.action, "setting");
-        assert_eq!(got.subject, "workers");
+        assert_eq!(got.subject, "capacity");
         assert_eq!(got.detail, "2");
         assert_ne!(got.id, 0);
         b.publish_once(got);

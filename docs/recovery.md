@@ -475,7 +475,7 @@ job that decided work created for `lead.research_minutes` (default 60, `0` turns
 not count), the planner seeds one research job. While the fleet is idle
 (fewer than half the local slots leased and no job queued anywhere) a free
 lane is enough: research then runs beside the project's in-flight jobs as
-long as fewer than `parallel_per_project` ordinary jobs are open and the last
+long as fewer than the per-project share of ordinary jobs are open and the last
 research is older than the idle cadence, so idle slots make the next cards
 instead of waiting for the last job to finish (the idle line reads `N of M
 lanes are open (fleet idle)` when the lanes are full). A queued job is work

@@ -412,8 +412,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = new_store();
         new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "1500")

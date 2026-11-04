@@ -88,7 +88,11 @@ pulse job needs JOB_ID -                               # this one job may run an
 
 `pulse pair ADMIN@HOST --name NAME [--workdir /srv/pulse] [--workers N]
 [--projects a,b|*]` turns a Linux machine into an executor in one run, from
-the account that runs the daemon. Over the admin's ssh session it reads the
+the account that runs the daemon. `--workers` is only the starting count: each
+probe reads the machine's cores and memory (`cores=` and `mem_mb=` in the
+hands' probe line) and sets its slots to the smaller of the cores and one run
+per 3 GB, the same rule this machine uses, so the fleet's total grows with every
+machine paired. Over the admin's ssh session it reads the
 machine first (`uname`, `sudo`, a `pulse` user, installed hands, the workdir,
 `authorized_keys`, the sshd drop-in, git, …) and refuses before
 changing anything when the machine is not fit: not Linux, no passwordless

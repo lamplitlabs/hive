@@ -1066,7 +1066,6 @@ mod tests {
         join(&s, "aurora");
         commit_script(&dir, ".pulse/automations/check.sh", "exit 0\n", false);
         let sc = add(&s, "check", ".pulse/automations/check.sh", "task");
-        set_setting(&s, "daemon.max_load", "4");
         let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             load1: Some(40.2),
             ..crate::daemon_load::CALM
@@ -1075,7 +1074,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "schedules: 1 check/watch script due, held - machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 4".to_string()
+                "schedules: 1 check/watch script due, held - machine saturated: load 40.2 on 12 CPUs is over the line 24".to_string()
             ]
         );
         assert!(is_hold_line(&lines[0]));
@@ -1210,7 +1209,6 @@ mod tests {
                 rusqlite::params![TEST_NOW, sc.id],
             )
             .unwrap();
-        set_setting(&s, "daemon.max_load", "4");
         set_setting(&s, "daemon.min_free_mb", "0");
         let opts = || crate::daemon::DaemonOpts {
             worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
@@ -1222,7 +1220,7 @@ mod tests {
         });
         let out = once_daemon(&s, opts());
         assert!(
-            out.contains("schedules: 1 check/watch script due, held - machine saturated: load 40.2 on 12 CPUs is over daemon.max_load 4"),
+            out.contains("schedules: 1 check/watch script due, held - machine saturated: load 40.2 on 12 CPUs is over the line 24"),
             "{out}"
         );
         assert_eq!(schedules::get(&s, &sc.id).unwrap().runs, 0, "{out}");

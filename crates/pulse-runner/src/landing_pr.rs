@@ -478,10 +478,16 @@ pub(crate) fn propose_branch(
     let ahead = git(
         30,
         &[],
-        &["rev-list", "--count", &format!("refs/remotes/{remote}/{remote_branch}..{local}")],
+        &[
+            "rev-list",
+            "--count",
+            &format!("refs/remotes/{remote}/{remote_branch}..{local}"),
+        ],
     );
     if ahead.stdout.trim() == "0" {
-        return Err(format!("{branch} has nothing {remote}/{remote_branch} lacks"));
+        return Err(format!(
+            "{branch} has nothing {remote}/{remote_branch} lacks"
+        ));
     }
     let (env, cleanup, why) = crate::landing_hold::push_credential_env(s, root.clone());
     if !why.is_empty() {
@@ -490,16 +496,27 @@ pub(crate) fn propose_branch(
     let pushed = git(
         180,
         &env,
-        &["push", "--force-with-lease", &remote, &format!("{local}:{local}")],
+        &[
+            "push",
+            "--force-with-lease",
+            &remote,
+            &format!("{local}:{local}"),
+        ],
     );
     cleanup("", &[]);
     if !pushed.ok() {
         let why = pushed.err.clone().unwrap_or_else(|| {
             crate::run::squeeze(&format!("{} {}", pushed.stderr, pushed.stdout), 300)
         });
-        return Err(format!("push of {branch} failed: {}", pulse_cred::redact(&why, &[])));
+        return Err(format!(
+            "push of {branch} failed: {}",
+            pulse_cred::redact(&why, &[])
+        ));
     }
-    let url = git(10, &[], &["remote", "get-url", &remote]).stdout.trim().to_string();
+    let url = git(10, &[], &["remote", "get-url", &remote])
+        .stdout
+        .trim()
+        .to_string();
     let repo = repo_slug(&url).unwrap_or_default();
     if let Some((_, url)) = open_pull_request(&root, &repo, branch, &remote_branch)? {
         return Ok(url);
@@ -507,7 +524,11 @@ pub(crate) fn propose_branch(
     let log = git(
         30,
         &[],
-        &["log", "--format=- %s", &format!("refs/remotes/{remote}/{remote_branch}..{local}")],
+        &[
+            "log",
+            "--format=- %s",
+            &format!("refs/remotes/{remote}/{remote_branch}..{local}"),
+        ],
     )
     .stdout;
     let title = log
@@ -524,8 +545,16 @@ pub(crate) fn propose_branch(
         &root,
         &repo,
         &[
-            "pr", "create", "--head", branch, "--base", &remote_branch, "--title",
-            &crate::util::trunc(&title, 120), "--body", &body,
+            "pr",
+            "create",
+            "--head",
+            branch,
+            "--base",
+            &remote_branch,
+            "--title",
+            &crate::util::trunc(&title, 120),
+            "--body",
+            &body,
         ],
         Duration::from_secs(90),
     )?;

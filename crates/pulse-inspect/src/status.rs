@@ -34,6 +34,10 @@ pub struct StatusReport {
     pub planner_cache: PlannerCacheStatus,
     pub executors: String,
     pub capacity: String,
+    /// The fleet's slots as the capacity model works them out:
+    /// "slots 18 = this machine 10 + vm-1 8, per project 6".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub slots: String,
     /// Bulk storage on another disk (pulse bulk); empty while local.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bulk: String,
@@ -602,7 +606,7 @@ pub fn executors_line(s: &pulse_store::Store) -> Result<String> {
     let mut executors = vec![Executor {
         name: "local".into(),
         status: "active".into(),
-        workers: setting_int(&values, "workers").max(0),
+        workers: i64::from(pulse_runner::capacity::local_slots(s)),
     }];
     let conn = s.conn()?;
     let mut stmt = conn.prepare("SELECT name, status, workers FROM executors ORDER BY name")?;
@@ -690,6 +694,7 @@ pub fn status(s: &pulse_store::Store) -> Result<StatusReport> {
     }
     r.executors = executors_line(s)?;
     r.capacity = capacity_status(s)?;
+    r.slots = pulse_runner::capacity::fleet(s).line();
     r.bulk = pulse_runner::bulk::status_line(std::path::Path::new(&s.home));
     r.hygiene = hygiene_status(s)?;
     r.planner = planner_notes(s)?;
@@ -747,6 +752,12 @@ impl StatusReport {
             ));
         }
         out.push_str(&format!("executors  {}\n", self.executors));
+        if !self.slots.is_empty() {
+            out.push_str(&format!(
+                "slots      {}\n",
+                self.slots.trim_start_matches("slots ")
+            ));
+        }
         if !self.capacity.is_empty() {
             out.push_str(&format!("capacity   {}\n", self.capacity));
         }
@@ -1023,7 +1034,9 @@ mod tests {
             &s,
             "INSERT INTO meta(key,value) VALUES ('capacity','{\"queued\":3,\"slots\":2,\"inflight\":2,\"starved_since\":\"2026-09-06T18:29:01Z\"}'),('daemon','{\"pid\":123,\"at\":\"2026-09-06T18:59:00Z\",\"loops\":4,\"interval\":30,\"note\":\"\"}')",
         );
+        s.set_setting("human", "capacity", "1").unwrap();
         let report = status(&s).unwrap();
+        assert_eq!(report.slots, "slots 1 = this machine 1, per project 1");
         assert_eq!(report.projects.len(), 1);
         assert_eq!(report.projects[0].slug, "active");
         assert_eq!(report.runs_today, 3);
@@ -1194,6 +1207,7 @@ mod tests {
             .unwrap()
             .execute("INSERT INTO meta(key,value) VALUES ('unfit',?)", [raw])
             .unwrap();
+        s.set_setting("human", "capacity", "1").unwrap();
         let before = event_count(&s);
         assert_eq!(
             executors_line(&s).unwrap(),

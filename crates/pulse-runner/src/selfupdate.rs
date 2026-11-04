@@ -60,7 +60,7 @@ pub(crate) struct SelfUpdateState {
     /// measurement; the lane starts no new experiment while this is set.
     pub(crate) lane_wait: bool,
     /// A build is due but waits for the machine: saturated, or every slot
-    /// under daemon.max_jobs holds a run. The dispatcher keeps one local
+    /// under the machine's capacity holds a run. The dispatcher keeps one local
     /// slot free while this is set so the build starts within one run.
     pub(crate) build_wait: bool,
     /// The brain HEAD last seen differing from the running binary and when
@@ -1231,7 +1231,7 @@ mod tests {
         assert!(
             lines.len() == 1
                 && lines[0].contains(&format!(
-                    "self-update: brain HEAD {} differs from the running 000000000000; building once the machine has room: 1 local run(s) in flight fill daemon.max_jobs 1",
+                    "self-update: brain HEAD {} differs from the running 000000000000; building once the machine has room: 1 local run(s) in flight fill this machine's 1 slot(s)",
                     &rev[..12]
                 )),
             "full: {lines:?}"

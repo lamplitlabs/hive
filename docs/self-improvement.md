@@ -16,7 +16,7 @@ costing a fresh tally every minute; a tally the project has superseded - older
 watermark, older clock step, or past the TTL - leaves the cache the moment a
 newer one is stored, so a busy board does not park thirty-two dead tallies in
 the daemon's memory). It fills every free lane: as many new jobs per tick as
-`parallel_per_project` leaves beside the project's queued and leased ordinary
+the per-project share (capacity.rs) leaves beside the project's queued and leased ordinary
 jobs (experiments aside), so a project with three lanes and five voted cards
 works three at once instead of one every five minutes. **Product cards go
 first**: the planner classes every card as *product* (the thing the project
@@ -413,7 +413,7 @@ load governor: while the machine is saturated (the `machine saturated` hold
 below) it does not start a measurement - the log says `landing experiment
 <branch> (<project>) waits: machine saturated: …` once per hold and the
 experiment is tried again after `lane.short_retry_minutes` - and a
-measurement in progress counts as a local run under `daemon.max_jobs`, since
+measurement in progress counts as a local run under this machine's slots, since
 its two builds are load like any other. The lane reuses a
 cached baseline when the default-branch commit, fixture hash and TTL still
 match, logging `baseline for <commit7> reused from <at> (score <x>)`; archive

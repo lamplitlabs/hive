@@ -261,7 +261,7 @@ impl Handler {
             ("workdir", json!("")),
             (
                 "workers",
-                json!(std::cmp::max(0, store.setting_int("workers"))),
+                json!(std::cmp::max(0, pulse_runner::capacity::local_slots(store))),
             ),
             ("projects", json!("*")),
             ("status", json!("active")),
@@ -281,7 +281,7 @@ impl Handler {
             ("running", json!(0)),
             (
                 "free",
-                json!(std::cmp::max(0, store.setting_int("workers"))),
+                json!(std::cmp::max(0, pulse_runner::capacity::local_slots(store))),
             ),
         ]);
         rows.insert(0, local);
@@ -496,6 +496,7 @@ impl Handler {
                     ("free", json!(free)),
                     ("slots", json!(slots)),
                     ("executors_active", json!(active)),
+                    ("line", json!(pulse_runner::capacity::fleet(store).line())),
                     ("executors", json!(executor_rows.len())),
                     ("any_project", json!(any_project))
                 ])),

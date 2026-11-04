@@ -857,11 +857,7 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('parallel_per_project', '3', '', 'test') ON CONFLICT(name) DO UPDATE SET value = '3'",
-            [],
-        )
-        .unwrap();
+        crate::capacity::pin_per_project(&s, 3);
         let proj = crate::board::project_by_slug(&conn, "proj".into());
         let head = head_of(&proj);
         assert!(!head.is_empty(), "no head in {root}");
