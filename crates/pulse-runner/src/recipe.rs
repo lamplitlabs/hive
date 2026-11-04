@@ -2753,7 +2753,7 @@ mod tests {
             false,
             &crate::util::plus_hours(crate::test_helpers::TEST_NOW, 1.0),
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &Default::default(),
             &[],
         )
@@ -2868,7 +2868,7 @@ mod tests {
             false,
             &now,
             local,
-            0,
+            &[],
             &Default::default(),
             &[],
         )
@@ -2889,7 +2889,7 @@ mod tests {
             false,
             &now,
             local,
-            0,
+            &[],
             &Default::default(),
             &[],
         )

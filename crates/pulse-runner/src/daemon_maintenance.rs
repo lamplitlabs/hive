@@ -1206,7 +1206,7 @@ mod tests {
             false,
             &now,
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &Default::default(),
             &[],
         )

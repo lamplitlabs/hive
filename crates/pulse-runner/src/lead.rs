@@ -2183,7 +2183,7 @@ pub(crate) fn lead_job_for(
     dry_run: bool,
     now: String,
     slot: String,
-    taken: i32,
+    taken: &[String],
     held: &std::collections::BTreeMap<String, String>,
     fits: &[(String, String)],
 ) -> (String, Row, String) {

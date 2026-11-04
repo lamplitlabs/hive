@@ -2295,13 +2295,17 @@ pub(crate) fn daemon(
                                 }
                             }
                         }
+                        // The jobs this tick leased already: their run rows
+                        // land from their own threads, so the cap takes
+                        // the ids and counts each job once.
+                        let taken = started.iter().map(|d| d.job.str("id")).collect::<Vec<_>>();
                         let (lead, job, why) = crate::lead::lead_job_for(
                             s,
                             &names,
                             o.dry_run,
                             now.clone(),
                             slot.clone(),
-                            started.len() as i32,
+                            &taken,
                             &held,
                             fits,
                         );
@@ -2319,16 +2323,7 @@ pub(crate) fn daemon(
                                 }
                             };
                             let (job, _, why) = match crate::run::take_job_first(
-                                s,
-                                &worker,
-                                "",
-                                "",
-                                o.dry_run,
-                                &now,
-                                slot,
-                                started.len() as i32,
-                                &held,
-                                fits,
+                                s, &worker, "", "", o.dry_run, &now, slot, &taken, &held, fits,
                                 work_first,
                             ) {
                                 Ok(v) => v,
@@ -2537,12 +2532,15 @@ pub(crate) fn daemon(
             }
             // The daily cap: the owner hears the first tick it holds queued
             // work, on the board and in the log without the hourly dedupe,
-            // and hears again when it lifts (daily_cap.rs).
+            // and hears again when it lifts (daily_cap.rs). The jobs this
+            // tick started count whether or not their run rows are in yet,
+            // as the lease counted them.
             if !o.dry_run
                 && let Some(c) = conn.as_ref()
             {
                 let cap = crate::run::daily_cap(s);
-                let done = crate::run::runs_today(s, &now);
+                let started_ids = started.iter().map(|d| d.job.str("id")).collect::<Vec<_>>();
+                let done = crate::run::jobs_today_with(s, &now, &started_ids);
                 let holding = cap > 0 && done >= cap && queued > 0;
                 if holding && cap_was_holding != Some(true) {
                     let post = crate::daily_cap::post_cap_reached(

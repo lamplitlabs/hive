@@ -294,6 +294,27 @@ pub(crate) fn runs_today(s: &pulse_store::Store, now: &str) -> i32 {
     .unwrap_or(0) as i32
 }
 
+/// [`runs_today`] with the jobs a lease pass has taken so far (`taken`)
+/// counted in - once each. A taken job's run row goes in from the run's
+/// own thread, so by the time the daemon fills its next slot the row may
+/// or may not be there; adding the pass's count to the table's count made
+/// the first job of a tick count twice whenever the thread was quick, and
+/// a cap of two then held the second slot with "2 of 2 jobs today" after
+/// one job had started.
+pub(crate) fn jobs_today_with(s: &pulse_store::Store, now: &str, taken: &[String]) -> i32 {
+    let c = conn(s);
+    let day = now.get(..10).unwrap_or(now);
+    let mut jobs: BTreeSet<String> = c
+        .prepare(pulse_store::DAILY_CAP_JOBS_SQL)
+        .and_then(|mut st| {
+            st.query_map([day], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()
+        })
+        .unwrap_or_default();
+    jobs.extend(taken.iter().cloned());
+    jobs.len() as i32
+}
+
 pub(crate) fn daily_cap(s: &pulse_store::Store) -> i32 {
     pulse_store::daily_cap_of(&s.setting("jobs_per_day", ""), 2) as i32
 }
@@ -312,7 +333,9 @@ pub(crate) fn daily_cap_reason(done: i32, cap: i32) -> String {
     )
 }
 
-/// `held` names projects this call may not lease, with the unfit reason each
+/// `taken` names the jobs this lease pass has taken already (the daemon's
+/// tick, one slot after another): the cap counts them with today's
+/// (`jobs_today_with`). `held` names projects this call may not lease, with the unfit reason each
 /// carries - the daemon's disk headroom for the local executor (diskroom.rs);
 /// a project's own marks and blocks come first. `fits` names the project and
 /// kind pairs the call may lease - the daemon's restart window, which short
@@ -327,7 +350,7 @@ pub(crate) fn take_job(
     dry_run: bool,
     now: &str,
     executor: &str,
-    taken: i32,
+    taken: &[String],
     held: &BTreeMap<String, String>,
     fits: &[(String, String)],
 ) -> Result<(Row, Row, String)> {
@@ -348,7 +371,7 @@ pub(crate) fn take_job_first(
     dry_run: bool,
     now: &str,
     executor: &str,
-    taken: i32,
+    taken: &[String],
     held: &BTreeMap<String, String>,
     fits: &[(String, String)],
     work_first: bool,
@@ -366,7 +389,7 @@ pub(crate) fn take_job_first(
     let mut cap_note = String::new();
     if !dry_run {
         let cap = daily_cap(s);
-        let done = runs_today(s, now) + taken;
+        let done = jobs_today_with(s, now, taken);
         if cap > 0 && done >= cap {
             cap_note = daily_cap_reason(done, cap);
             if !crate::jobs::is_owner_lane(&fits) {
@@ -702,7 +725,7 @@ pub(crate) fn work_once(
         o.dry_run,
         now,
         &o.executor,
-        0,
+        &[],
         &BTreeMap::new(),
         &[],
     )?;
@@ -4544,7 +4567,7 @@ mod tests {
             false,
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &BTreeMap::new(),
             &[],
         )
@@ -4586,7 +4609,7 @@ mod tests {
             false,
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &BTreeMap::new(),
             &[],
         )

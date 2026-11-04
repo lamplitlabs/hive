@@ -1232,7 +1232,7 @@ mod tests {
                 dry_run,
                 TEST_NOW,
                 "",
-                0,
+                &[],
                 &Default::default(),
                 &[],
             );

@@ -10,9 +10,24 @@
 //! Dry runs and runs that failed before the worker started (`error`) were
 //! never counted.
 
+// One filter for the list and the count, so a change to what the cap
+// counts cannot reach one and miss the other.
+macro_rules! daily_cap_jobs_sql {
+    () => {
+        "SELECT DISTINCT job_id FROM runs WHERE mode != 'dry-run' AND status NOT IN ('error', 'held', 'lost') AND substr(started_at, 1, 10) = ?"
+    };
+}
+
+/// The jobs the cap counts for one UTC day, one `job_id` a row; the one
+/// parameter is the day as `YYYY-MM-DD`. The runner's lease reads this
+/// list rather than the count: the jobs it leased this tick may or may
+/// not have their run rows in yet (the run's thread inserts them), and a
+/// job must count once either way.
+pub const DAILY_CAP_JOBS_SQL: &str = daily_cap_jobs_sql!();
+
 /// Counts what the cap counts for one UTC day; the one parameter is the
 /// day as `YYYY-MM-DD`.
-pub const DAILY_CAP_COUNT_SQL: &str = "SELECT COUNT(DISTINCT job_id) FROM runs WHERE mode != 'dry-run' AND status NOT IN ('error', 'held', 'lost') AND substr(started_at, 1, 10) = ?";
+pub const DAILY_CAP_COUNT_SQL: &str = concat!("SELECT COUNT(*) FROM (", daily_cap_jobs_sql!(), ")");
 
 /// The cap a `jobs_per_day` value means: 0 for no cap (empty, `0`, `none`,
 /// `off`, `unlimited`), the number otherwise. `fallback` is what an
