@@ -225,7 +225,7 @@ hook, taking or renewing a job lease, the runner's supervision of its run, or
 hands supervisor record an execution heartbeat and refresh it every 60 seconds,
 including quiet work and lead jobs; exit, cancellation and timeout stop that
 observation. A stop is the execution's last word, not death: the agent stays
-`online` while the runner verifies and lands its run, and is `dead` once
+`online` while the runner verifies its run and writes its branch, and is `dead` once
 `heartbeat.dead_after` has passed since the stop without a fresh beat. While
 the runner runs the project's check on the finished worker's clone it beats for
 the worker itself (source `verify`, every 60 seconds), so a check longer than

@@ -1,6 +1,7 @@
 # The runner (how the machine works)
 
-`pulse daemon` (the service) lands verified branches, plans jobs from the
+`pulse daemon` (the service) delivers verified branches as pull requests and
+follows the upstream ([Delivery](landing.md)), plans jobs from the
 tally, leases work to executors (this machine, paired Linux hands, or
 provisioned compute), and runs the lead of every project so owner tasks and
 messages get answers. `pulse work` runs one worker here; `pulse land`,
@@ -107,13 +108,15 @@ neither dies with a terminal. Running `pulse service install` again is safe: a
 unit whose file did not change and is loaded is left running.
 
 That install line is for the first install only. After it, the daemon keeps
-itself current (ADR-035): when a landing moves the brain's `main`, it rebuilds
-`pulse` from that clean checkout, smoke-tests the new binary, installs it in
+itself current (ADR-035): when the brain's `main` moves - a pull request
+merged on the forge and fast-forwarded into the checkout by the delivery
+pass ([Delivery](landing.md#the-local-default-branch-follows-the-upstream)) - it
+rebuilds `pulse` from that clean checkout, smoke-tests the new binary, installs it in
 place and restarts once its runs in flight finish - the console follows within
 a minute and shows the build it runs beside the daemon's under **Settings →
 Running**. The restart is a handover, not a pause: a daemon whose binary
 changed on disk while runs are in flight keeps dispatching, planning and
-landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
+delivering for up to `daemon.restart_drain_minutes` (default 30), stops starting
 the fleet's runs of a kind on a project once less of that window is left than
 such a run is expected to take (log line `restarting: the owner's work and
 any run on blog, lamplitlabs; ballot, reflect, lead runs on amistio-template
@@ -170,18 +173,19 @@ the daemon then says `self-update: brain HEAD <rev> differs from the running
 free so the build starts within one run, and the experiment lane measures
 nothing new meanwhile, as when the build waits for the lane. Nor does it start
 until the brain's HEAD has stood unchanged for `daemon.self_update_settle_minutes`
-(default 60; 0 builds at once): a fleet lands a burst of brain branches minutes
-apart, and five release builds a day, each followed by a restart window that
-refuses the long kinds of run, were the price of building on every landing -
-the daemon says `building once it has stood for 60 min` once, and a further
-landing restarts the clock, so the burst builds once, from its last commit. Nor
+(default 60; 0 builds at once): a fleet merges a burst of brain branches
+minutes apart, and five release builds a day, each followed by a restart
+window that refuses the long kinds of run, were the price of building on every
+merge - the daemon says `building once it has stood for 60 min` once, and a
+further merge restarts the clock, so the burst builds once, from its last
+commit. Nor
 does it start while a fleet improve, task or experiment job is queued that the
 restart the build ends in would refuse (its run is not expected to end before
 the runs in flight): the daemon says `building once the queued improve runs on
 <project> have started` once and lets them start first, for at most an hour.
 The owner's queued work is never among those: the restart does not refuse
 it, so the build does not wait for it.
-A landing that touches nothing the binary is built from is not built at all:
+A merge that touches nothing the binary is built from is not built at all:
 the daemon diffs the brain's HEAD against the revision it runs, and when every
 changed path lies outside the crates, the workspace `Cargo.toml` and
 `Cargo.lock`, the toolchain and `.cargo/` files and the console's built output
@@ -189,8 +193,8 @@ under `web/hub/out/` (which pulse-hub embeds into the binary, so a console
 build does change `pulse`), it says `self-update: brain HEAD <rev> differs
 from the running <rev> only outside what the binary is built from (N file(s):
 a, b, c and K more); no build` once and keeps the binary it has. The next
-landing is diffed against the running revision again, not against that one,
-so a change under `crates/` that follows a docs landing is built with both.
+merge is diffed against the running revision again, not against that one,
+so a change under `crates/` that follows a docs merge is built with both.
 The measured reason: of the 39 landings on the brain's `main` over four days,
 each a release build and a restart, three changed only docs, the README, a
 script or the macOS app. A running binary that does not know its revision (an
@@ -229,10 +233,10 @@ the conversation back up (`pulse harness run --resume`) with a note of where
 it was interrupted, in the same clone, and the agent carries on instead of
 starting over; the held session is marked `resumed`. A run that cannot hold
 (a custom worker command, a run still in its recipe setup or already in its
-landing check, a remote executor, an agent gone inactive) is stopped after
+run-end check, a remote executor, an agent gone inactive) is stopped after
 `daemon.hold_seconds` (default 120) and settles `lost`: its job returns to
-the queue and starts over. A landing or measurement in flight gets the same
-cap before it is cancelled; the next daemon lands or measures it again. The
+the queue and starts over. A delivery pass or measurement in flight gets the
+same cap before it is cancelled; the next daemon delivers or measures again. The
 hub does the same for its conversations: a console whose binary
 changed stops the turns in flight with a note and the next console carries
 each on by itself, so a chat mid-work needs no "continue" after an update
@@ -323,7 +327,7 @@ Pulling the drive, or logging in without it, is safe at any moment and needs
 no `launchctl` first. The link simply dangles, and a dangling link creates
 nothing: `mkdir -p`, `git clone` and every `create_dir_all` fail on it instead
 of filling the internal disk. The daemon notices before each pass, holds every
-dispatch, landing, sweep, reclaim, experiment lane and self-update with one
+dispatch, delivery, sweep, reclaim, experiment lane and self-update with one
 line - `idle: bulk storage away: /Volumes/Kingston/pulse is not mounted; all
 work waits for the disk` - and the console shows the same hold in red on the
 Overview with the one remedy, plug it back in. It never exits, so the service's

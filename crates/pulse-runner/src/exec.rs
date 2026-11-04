@@ -2280,7 +2280,9 @@ mod tests {
             let (cmd, _) = worker_command(&s, kind, "brief", "/tmp/clone", "", false);
             assert_eq!(flag_arg(&cmd, "--max-steps"), "300", "{kind}");
         }
-        for kind in ["answer", "ballot", "onboard", "reflect", "lead", "clean"] {
+        for kind in [
+            "answer", "ballot", "onboard", "reflect", "lead", "clean", "review",
+        ] {
             let (cmd, _) = worker_command(&s, kind, "brief", "/tmp/clone", "", false);
             assert_eq!(flag_arg(&cmd, "--max-steps"), "150", "{kind}");
         }
@@ -2300,7 +2302,7 @@ mod tests {
         assert_eq!(s.run_model("lead"), "");
         set_setting(&s, "worker_model", "heavy-test");
         for kind in [
-            "task", "lead", "answer", "ballot", "reflect", "onboard", "clean",
+            "task", "lead", "answer", "ballot", "reflect", "onboard", "clean", "review",
         ] {
             assert_eq!(s.run_model(kind), "heavy-test", "{kind}");
         }

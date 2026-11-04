@@ -102,7 +102,7 @@ crates/pulse-gitenv            git environment scrubbing for child git commands
 crates/pulse-provider          the model-provider contract (chat, models, status, device/token login) and its registry
 crates/pulse-provider-copilot  GitHub Copilot (device login); pulse-provider-openai every OpenAI-compatible vendor as one Vendor entry each: OpenAI, Azure OpenAI (key or Microsoft device login), OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, GitHub Models (token or GitHub device login), Ollama, LM Studio, vLLM; pulse-provider-anthropic Anthropic Claude (Messages API); pulse-provider-gemini Google Gemini (generateContent); pulse-provider-fake the scripted test provider
 crates/pulse-harness           the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs
-crates/pulse-runner            daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep
+crates/pulse-runner            daemon, planner, workers, delivery and review, executors, leads, compute providers, experiments, recovery, hygiene sweep
 crates/pulse-evolve            the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
 crates/pulse-inspect           status, projects, jobs, agents, events, settings, schema, verify, signers
 crates/pulse-hub               the HTTP API and SSE the console uses; embeds web/hub/out

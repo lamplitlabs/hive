@@ -1,8 +1,18 @@
 //! Pull requests through `gh`, the forge CLI the owner already logs in to
-//! on this machine (its auth never reaches git): the helpers the per-task
-//! pull requests use (`task_pr.rs`), and `pulse land --propose`, which
-//! pushes one branch and opens a pull request for it.
+//! on this machine (its auth never reaches git): the calls the delivery
+//! pass (`delivery.rs`) makes to open, find, list and read pull requests.
+//!
+//! Every call is made as the gh account that can see the repository. The
+//! daemon's active gh login is a fine-grained token that answers 404 for
+//! the owner's repositories while another login on the machine sees them
+//! all (measured 2026-11-04: every `gh pr create` of the first per-task
+//! pull requests failed that way), so a call that fails with 401, 403 or
+//! 404 is made again as each other logged-in account (`gh_auth`), the one
+//! that answers is remembered for the repository, and the next call goes
+//! straight to it. Errors name the account and the command, never a token.
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// `OWNER/REPO` (or `HOST/OWNER/REPO` off github.com) for `gh --repo`, from
@@ -40,9 +50,35 @@ pub(crate) fn repo_slug(url: &str) -> Option<String> {
     })
 }
 
+/// The gh account that last answered for each repository (`gh --repo`
+/// slug), kept for the daemon's lifetime: the first call of a pass finds
+/// it once, the rest go straight to it.
+static REPO_ACCOUNTS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+fn remembered(repo: &str) -> Option<String> {
+    REPO_ACCOUNTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(repo)
+        .cloned()
+}
+
+fn remember(repo: &str, user: Option<&str>) {
+    let mut map = REPO_ACCOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    match user {
+        Some(u) => {
+            map.insert(repo.to_string(), u.to_string());
+        }
+        None => {
+            map.remove(repo);
+        }
+    }
+}
+
 /// Runs `gh` in the project checkout (so it finds the repository from the
-/// remotes when `repo` is empty) with the daemon's own environment: `gh`
-/// keeps its login in its own config, nothing of it reaches git. Returns
+/// remotes when `repo` is empty) as the account that can see `repo`:
+/// first the one remembered for it, else the active login; when that one
+/// cannot see the repository, every other logged-in account once. Returns
 /// stdout, or the failure put into words.
 pub(crate) fn gh(
     root: &str,
@@ -50,21 +86,106 @@ pub(crate) fn gh(
     args: &[&str],
     timeout: Duration,
 ) -> Result<String, String> {
-    let mut words = vec!["gh".to_string()];
-    words.extend(args.iter().map(|a| crate::util::shell_quote(a)));
-    if !repo.is_empty() {
-        words.push("--repo".into());
-        words.push(crate::util::shell_quote(repo));
+    gh_with(root, repo, args, timeout, &crate::gh_auth::logins)
+}
+
+/// `gh` with the machine's logins supplied by the caller, so tests name
+/// them instead of asking `gh auth status`.
+pub(crate) fn gh_with(
+    root: &str,
+    repo: &str,
+    args: &[&str],
+    timeout: Duration,
+    logins: &dyn Fn() -> crate::gh_auth::Logins,
+) -> Result<String, String> {
+    let first = remembered(repo);
+    let err = match run_gh(root, repo, args, timeout, first.as_deref()) {
+        Ok(out) => return Ok(out),
+        Err(e) if !crate::pipeline::account_failed(&e) => return Err(e),
+        Err(e) => e,
+    };
+    let logins = logins();
+    let active = if logins.active.is_empty() {
+        "the active gh login".to_string()
+    } else {
+        logins.active.clone()
+    };
+    let mut tried = vec![first.clone().unwrap_or_else(|| active.clone())];
+    let mut candidates: Vec<Option<String>> = Vec::new();
+    if let Some(user) = &first {
+        remember(repo, None);
+        if *user != logins.active {
+            candidates.push(None);
+        }
     }
-    let what = format!("gh {} {}", args[0], args[1]);
-    let (code, out, err) = crate::land::sh_with_timeout(root.to_string(), words.join(" "), timeout);
-    match code.as_deref() {
-        Some(0) => Ok(out),
-        Some(_) => Err(gh_failure(&what, &format!("{err} {out}"))),
-        None => Err(format!(
+    candidates.extend(
+        logins
+            .others(first.as_deref().unwrap_or_default())
+            .into_iter()
+            .map(Some),
+    );
+    for candidate in candidates {
+        match run_gh(root, repo, args, timeout, candidate.as_deref()) {
+            Ok(out) => {
+                remember(repo, candidate.as_deref());
+                return Ok(out);
+            }
+            Err(e) if crate::pipeline::account_failed(&e) => {
+                tried.push(candidate.unwrap_or_else(|| active.clone()));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(format!(
+        "{err} (none of the gh logins on this machine can see {}: tried {})",
+        if repo.is_empty() {
+            "the repository"
+        } else {
+            repo
+        },
+        tried.join(", ")
+    ))
+}
+
+fn run_gh(
+    root: &str,
+    repo: &str,
+    args: &[&str],
+    timeout: Duration,
+    user: Option<&str>,
+) -> Result<String, String> {
+    let mut argv = vec!["gh".to_string()];
+    argv.extend(args.iter().map(|a| a.to_string()));
+    if !repo.is_empty() {
+        argv.push("--repo".into());
+        argv.push(repo.to_string());
+    }
+    let what = match user {
+        Some(u) => format!("gh {} {} as {u}", args[0], args[1]),
+        None => format!("gh {} {}", args[0], args[1]),
+    };
+    let env = match user {
+        Some(u) => crate::gh_auth::env_as(u).map_err(|e| format!("{what}: {e}"))?,
+        None => crate::proc::environ(),
+    };
+    match crate::proc::run_group(
+        &pulse_bus::CancellationToken::new(),
+        &argv,
+        root,
+        &env,
+        &[],
+        timeout,
+    ) {
+        Err(e) => Err(gh_failure(&what, &e.to_string())),
+        Ok(out) if out.timeout => Err(format!(
             "{what} did not finish within {}s",
             timeout.as_secs()
         )),
+        Ok(out) if out.exit_code != 0 => Err(gh_failure(
+            &what,
+            &pulse_cred::redact(&format!("{} {}", out.stderr, out.stdout), &[]),
+        )),
+        Ok(out) => Ok(out.stdout),
     }
 }
 
@@ -108,6 +229,131 @@ pub(crate) fn open_pull_request(
     }))
 }
 
+/// Opens the pull request from `head` into `base` and returns its
+/// (number, url) as gh prints them.
+pub(crate) fn create_pull_request(
+    root: &str,
+    repo: &str,
+    head: &str,
+    base: &str,
+    title: &str,
+    body: &str,
+) -> Result<(i64, String), String> {
+    let out = gh(
+        root,
+        repo,
+        &[
+            "pr",
+            "create",
+            "--head",
+            head,
+            "--base",
+            base,
+            "--title",
+            &crate::util::trunc(title, 200),
+            "--body",
+            body,
+        ],
+        Duration::from_secs(120),
+    )?;
+    let url = out
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with("http"))
+        .unwrap_or_default()
+        .to_string();
+    let number = url
+        .rsplit('/')
+        .next()
+        .and_then(|n| n.parse::<i64>().ok())
+        .unwrap_or(0);
+    if number == 0 {
+        return Err(format!("gh did not name the pull request for {head}"));
+    }
+    Ok((number, url))
+}
+
+/// What the forge says of one pull request.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PrState {
+    pub(crate) number: i64,
+    /// `OPEN`, `MERGED` or `CLOSED`.
+    pub(crate) state: String,
+    pub(crate) merged_at: String,
+    pub(crate) url: String,
+    pub(crate) head: String,
+}
+
+fn pr_state(v: &serde_json::Value) -> PrState {
+    let field = |k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    PrState {
+        number: v.get("number").and_then(|n| n.as_i64()).unwrap_or(0),
+        state: field("state"),
+        merged_at: field("mergedAt"),
+        url: field("url"),
+        head: field("headRefName"),
+    }
+}
+
+/// The repository's newest 200 pull requests in every state, one process
+/// per repository per pass instead of one `gh pr view` per open pull
+/// request (the daemon keeps a dozen open at a time; each gh call is
+/// 0.4-1 s).
+pub(crate) fn list_prs(root: &str, repo: &str) -> Result<BTreeMap<i64, PrState>, String> {
+    let out = gh(
+        root,
+        repo,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "all",
+            "--json",
+            "number,state,mergedAt,url,headRefName",
+            "--limit",
+            "200",
+        ],
+        Duration::from_secs(90),
+    )?;
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(out.trim()).map_err(|e| format!("gh pr list answered oddly: {e}"))?;
+    Ok(list
+        .iter()
+        .map(pr_state)
+        .filter(|p| p.number > 0)
+        .map(|p| (p.number, p))
+        .collect())
+}
+
+/// One pull request as the forge has it, for a number the list missed.
+pub(crate) fn view_pr(root: &str, repo: &str, number: i64) -> Result<PrState, String> {
+    let out = gh(
+        root,
+        repo,
+        &[
+            "pr",
+            "view",
+            &number.to_string(),
+            "--json",
+            "number,state,mergedAt,url,headRefName",
+        ],
+        Duration::from_secs(60),
+    )?;
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).map_err(|e| format!("gh pr view answered oddly: {e}"))?;
+    let mut st = pr_state(&v);
+    if st.number == 0 {
+        st.number = number;
+    }
+    Ok(st)
+}
+
 fn gh_failure(what: &str, why: &str) -> String {
     let why = why.trim();
     if why.contains("No such file or directory")
@@ -127,143 +373,6 @@ fn gh_failure(what: &str, why: &str) -> String {
         squeezed
     };
     format!("{what} failed: {squeezed}")
-}
-
-/// `pulse land --branch B --propose`: the branch itself pushed to the
-/// project's upstream and a pull request opened from it into the upstream
-/// default branch - nothing is merged locally. The review lead (or the
-/// owner) reviews and merges it on the forge; the daemon's next push pass
-/// fast-forwards the local default branch from the upstream. Asked for by
-/// the owner on 2026-11-04: land through a reviewed pull request, not
-/// straight into main. Returns the pull request url, or the failure in words.
-pub(crate) fn propose_branch(
-    s: &pulse_store::Store,
-    project: &crate::util::Row,
-    branch: &str,
-    actor: &str,
-    now: &str,
-) -> Result<String, String> {
-    let root = project.str("path");
-    let def = {
-        let d = project.str("default_branch");
-        if d.is_empty() { "main".to_string() } else { d }
-    };
-    if branch.is_empty() || branch == def {
-        return Err(format!("--propose needs a branch other than {def}"));
-    }
-    let Some((remote, _, remote_branch)) = crate::forge::tracking_of(&root, &def) else {
-        return Err(format!(
-            "{def} has no upstream (git branch --set-upstream-to=origin/{def} {def})"
-        ));
-    };
-    let git = |timeout: u64, env: &[String], args: &[&str]| {
-        crate::util::git_timeout_env(&root, Duration::from_secs(timeout), env, args)
-    };
-    let local = format!("refs/heads/{branch}");
-    if !git(10, &[], &["rev-parse", "--verify", "-q", &local]).ok() {
-        return Err(format!("no branch {branch} in {root}"));
-    }
-    let ahead = git(
-        30,
-        &[],
-        &[
-            "rev-list",
-            "--count",
-            &format!("refs/remotes/{remote}/{remote_branch}..{local}"),
-        ],
-    );
-    if ahead.stdout.trim() == "0" {
-        return Err(format!(
-            "{branch} has nothing {remote}/{remote_branch} lacks"
-        ));
-    }
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.clone());
-    if !why.is_empty() {
-        return Err(format!("push credential: {why}"));
-    }
-    let pushed = git(
-        180,
-        &env,
-        &[
-            "push",
-            "--force-with-lease",
-            &remote,
-            &format!("{local}:{local}"),
-        ],
-    );
-    cleanup("", &[]);
-    if !pushed.ok() {
-        let why = pushed.err.clone().unwrap_or_else(|| {
-            crate::run::squeeze(&format!("{} {}", pushed.stderr, pushed.stdout), 300)
-        });
-        return Err(format!(
-            "push of {branch} failed: {}",
-            pulse_cred::redact(&why, &[])
-        ));
-    }
-    let url = git(10, &[], &["remote", "get-url", &remote])
-        .stdout
-        .trim()
-        .to_string();
-    let repo = repo_slug(&url).unwrap_or_default();
-    if let Some((_, url)) = open_pull_request(&root, &repo, branch, &remote_branch)? {
-        return Ok(url);
-    }
-    let log = git(
-        30,
-        &[],
-        &[
-            "log",
-            "--format=- %s",
-            &format!("refs/remotes/{remote}/{remote_branch}..{local}"),
-        ],
-    )
-    .stdout;
-    let title = log
-        .lines()
-        .last()
-        .map(|l| l.trim_start_matches("- ").to_string())
-        .unwrap_or_else(|| branch.to_string());
-    let body = format!(
-        "Branch `{branch}` of {} proposed by PULSE for review.\n\n{}\nThe review lead reviews it, runs the project's check and merges it; nothing reached `{def}` yet.\n",
-        project.str("slug"),
-        log
-    );
-    let out = gh(
-        &root,
-        &repo,
-        &[
-            "pr",
-            "create",
-            "--head",
-            branch,
-            "--base",
-            &remote_branch,
-            "--title",
-            &crate::util::trunc(&title, 120),
-            "--body",
-            &body,
-        ],
-        Duration::from_secs(90),
-    )?;
-    let url = out
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| l.starts_with("http"))
-        .unwrap_or_default()
-        .to_string();
-    if let Ok(conn) = s.conn() {
-        crate::util::event_at(
-            &conn,
-            now,
-            actor,
-            "land.proposed",
-            &project.str("slug"),
-            serde_json::json!({"project": project.str("slug"), "branch": branch, "base": remote_branch, "url": url}),
-        );
-    }
-    Ok(url)
 }
 
 #[cfg(test)]
@@ -289,6 +398,95 @@ mod tests {
         ] {
             assert_eq!(repo_slug(url).as_deref(), want, "{url}");
         }
+    }
+
+    /// A gh that can see `rot/r` only as the account whose token it hands
+    /// out for `seer-x`, cannot see `rot/closed` as anyone, and writes
+    /// which account made each pull-request call (the token's user, never
+    /// the token).
+    fn rotating_gh() -> (tempfile::TempDir, pulse_testutil::SetenvGuard) {
+        let bin = tempfile::tempdir().expect("fake gh dir");
+        let script = format!(
+            r#"#!/bin/sh
+d='{d}'
+case "$1 $2" in
+  "auth status") echo "github.com: Logged in to github.com account pat-x (keyring)"; exit 0 ;;
+  "auth token") echo "tok-$4"; exit 0 ;;
+esac
+echo "$1 $2 as=${{GH_TOKEN#tok-}}" >> "$d/calls"
+repo=""; prev=""
+for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
+if [ "$repo" = rot/r ] && [ "$GH_TOKEN" = tok-seer-x ]; then echo '[]'; exit 0; fi
+echo "GraphQL: Could not resolve to a Repository with the name '$repo'. (repository)" >&2
+exit 1
+"#,
+            d = bin.path().display()
+        );
+        let path = bin.path().join("gh");
+        std::fs::write(&path, script).expect("fake gh script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod gh");
+        }
+        let guard = pulse_testutil::setenv(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.path().display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+        (bin, guard)
+    }
+
+    #[test]
+    fn a_call_the_active_login_cannot_make_is_made_as_the_login_that_can() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (bin, _path) = rotating_gh();
+        let calls = || {
+            std::fs::read_to_string(bin.path().join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let logins = || crate::gh_auth::Logins {
+            active: "pat-x".into(),
+            accounts: vec!["pat-x".into(), "seer-x".into()],
+        };
+        remember("rot/r", None);
+        remember("rot/closed", None);
+        let root = std::env::temp_dir().display().to_string();
+        let args = ["pr", "list", "--state", "open"];
+        let out = gh_with(&root, "rot/r", &args, Duration::from_secs(20), &logins);
+        assert_eq!(out.as_deref().map(str::trim), Ok("[]"), "{out:?}");
+        assert_eq!(
+            calls(),
+            vec!["pr list as=".to_string(), "pr list as=seer-x".to_string()],
+            "the active login first, then the other account by token"
+        );
+        assert_eq!(remembered("rot/r").as_deref(), Some("seer-x"));
+
+        // The next call goes straight to the account that answered.
+        let out = gh_with(&root, "rot/r", &args, Duration::from_secs(20), &logins);
+        assert_eq!(out.as_deref().map(str::trim), Ok("[]"), "{out:?}");
+        assert_eq!(calls().len(), 3);
+        assert_eq!(calls()[2], "pr list as=seer-x");
+
+        // A repository no account can see names them all and no token.
+        let err = gh_with(&root, "rot/closed", &args, Duration::from_secs(20), &logins)
+            .expect_err("rot/closed is visible to nobody");
+        assert!(
+            err.contains("gh pr list failed")
+                && err.contains("Could not resolve to a Repository")
+                && err.contains("can see rot/closed: tried pat-x, seer-x"),
+            "{err}"
+        );
+        assert!(!err.contains("tok-"), "token in the error: {err}");
+        assert_eq!(remembered("rot/closed"), None);
     }
 
     #[test]

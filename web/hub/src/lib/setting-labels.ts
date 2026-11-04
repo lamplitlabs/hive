@@ -24,13 +24,15 @@ const LABELS: Record<string, string> = {
   "landing.setup_repair": "Repair a broken project setup",
   "landing.verify_memo": "Skip checks that already passed",
   "landing.verify_memo_hours": "Trust an earlier check for (hours)",
-  "landing.batch": "Check several finished branches as one",
   "dependencies.security_updates": "Fix security alerts in dependencies",
   "dependencies.major_updates": "When a security fix needs a major upgrade",
   "dependencies.min_release_age_days": "A new dependency version must be at least this old (days)",
   "dependencies.alert_check_minutes": "Look for new security alerts every (minutes)",
   "pipeline.watch": "Watch the checks a push sets off on GitHub",
   "pipeline.wait_hours": "Give up on a check still running after (hours)",
+  "review.merge": "Who merges a reviewed pull request",
+  "review.max_files": "Agents merge up to this many changed files",
+  "review.max_lines": "Agents merge up to this many changed lines",
   "backup.to": "Keep a copy of PULSE's own data at",
   "backup.every_hours": "Take a backup every (hours)",
   "backup.keep": "Backups to keep",
@@ -212,7 +214,7 @@ const LABELS: Record<string, string> = {
   "voice.language": "Language spoken into the microphone (auto = detect)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|voice)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -232,7 +234,6 @@ const HELP: Record<string, string> = {
   "landing.auto_stash": "Whether PULSE sets aside uncommitted changes in a project folder before it merges, and puts them back after.",
   "landing.verify_memo": "Whether a merge skips its check when the exact same code already passed the same check on this machine.",
   "landing.verify_memo_hours": "How long an earlier passing check of the same code counts before the merge runs it again.",
-  "landing.batch": "Whether several finished branches waiting at once are merged into one chain and checked once together, each landing on its own again when the chain fails its check. Off checks every branch on its own.",
   "landing.setup_repair": "Whether an agent repairs a project's setup when it fails on the main branch itself - a setup command, a check command or a lockfile that outran its manifest - and proves the setup passes again before the fix lands; at most three repair jobs a day per project. Off leaves the setup to you and the merge tries again later.",
   "dependencies.security_updates": "Whether agents fix the security alerts GitHub raises on a project's dependencies (Dependabot), one small update per alert, in every project PULSE watches. Off leaves the alerts to you.",
   "dependencies.major_updates": "What happens when the only fix for a security alert is a major version upgrade of the package. Ask me: the agent puts it to you in For you with Yes (upgrade it) and No (leave it); your yes queues the upgrade. Automatic: agents queue the upgrade like any other security fix, to the newest version of the patched line that is old enough, and the project's own checks must pass before it lands.",
@@ -240,6 +241,9 @@ const HELP: Record<string, string> = {
   "dependencies.alert_check_minutes": "How often PULSE asks GitHub for open security alerts on each project's dependencies.",
   "pipeline.watch": "What PULSE does with the GitHub Actions checks that run on a push it made, to the main branch or to a pull request. Tell me and fix: a failed check is a message for you on the project's board and one fix job for an agent, with the failed step and the end of its log; at most three fix jobs a day per project. Tell me: the message only. Off: PULSE does not look.",
   "pipeline.wait_hours": "How many hours PULSE waits for a check that is still running before it stops watching that push and tells you.",
+  "review.merge": "Every finished branch becomes a pull request and a review agent reads it. Automatic: the agent merges a small, safe pull request itself once the project's check passes, and hands anything else to you with its findings. Ask me: the agent reviews and comments, but every merge waits for you.",
+  "review.max_files": "A pull request that touches more files than this is not merged by the agent; it comes to you with the agent's review instead.",
+  "review.max_lines": "A pull request that adds and removes more lines than this (lockfiles and build output not counted) is not merged by the agent; it comes to you with the agent's review instead.",
   "backup.to": "Where a compressed, checked copy of the PULSE database goes so a broken disk does not take your history with it: a folder on another drive or in a synced folder (it must already exist), az://ACCOUNT/CONTAINER/PREFIX for Azure Blob Storage through the az CLI you are logged in to, or run: COMMAND {file} {name} for any other tool. Leave empty for no backups.",
   "backup.every_hours": "How many hours pass between two backups the daemon takes on its own. 0 means only when you run pulse backup.",
   "backup.keep": "How many of this machine's backups stay at the destination before the oldest is removed. 0 keeps them all.",

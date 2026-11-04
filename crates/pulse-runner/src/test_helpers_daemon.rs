@@ -717,6 +717,158 @@ pub(crate) fn dispatch_of(
     }
 }
 
+/// A `gh` on PATH that answers like GitHub for the delivery pass: `pr
+/// create` numbers pull requests from 7 and remembers each one's head, `pr
+/// list --head` finds the open one for a head, `pr list --state all` and
+/// `pr view N` print the states the test wrote (`set_state`), and every
+/// call is logged. Drop it to take it off PATH.
+pub(crate) struct FakeGh {
+    dir: std::path::PathBuf,
+    _bin: tempfile::TempDir,
+    _path: pulse_testutil::SetenvGuard,
+}
+
+impl FakeGh {
+    /// The pull-request calls made so far, as their first three words
+    /// (`pr list --head`, `pr create --head`, `pr list --state`, `pr view
+    /// 7`).
+    pub(crate) fn calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.join("gh.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("pr "))
+            .map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+
+    /// Sets pull request `n`'s state: `OPEN`, `MERGED` or `CLOSED`.
+    pub(crate) fn set_state(&self, n: i64, state: &str) {
+        std::fs::write(self.dir.join("state").join(n.to_string()), state).expect("pr state");
+    }
+
+    /// The head branch pull request `n` was created from.
+    pub(crate) fn head_of(&self, n: i64) -> String {
+        std::fs::read_to_string(self.dir.join("heads").join(n.to_string()))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// The title `pr create` was given for pull request `n`.
+    pub(crate) fn title_of(&self, n: i64) -> String {
+        std::fs::read_to_string(self.dir.join("titles").join(n.to_string()))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+}
+
+pub(crate) fn fake_gh() -> FakeGh {
+    let bin = tempfile::tempdir().expect("fake gh dir");
+    let dir = bin.path().to_path_buf();
+    for sub in ["state", "heads", "titles", "byhead"] {
+        std::fs::create_dir_all(dir.join(sub)).expect("fake gh state dir");
+    }
+    std::fs::write(dir.join("next"), "7").expect("fake gh counter");
+    let script = format!(
+        r#"#!/bin/sh
+d='{d}'
+echo "$@" >> "$d/gh.log"
+head=""; title=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "--head" ] && head="$a"
+  [ "$prev" = "--title" ] && title="$a"
+  prev="$a"
+done
+key=$(printf '%s' "$head" | tr / _)
+pr_json() {{
+  st=$(cat "$d/state/$1"); m=null
+  [ "$st" = MERGED ] && m='"2026-11-04T07:00:00Z"'
+  printf '{{"number":%s,"state":"%s","mergedAt":%s,"url":"https://github.com/o/r/pull/%s","headRefName":"%s"}}' "$1" "$st" "$m" "$1" "$(cat "$d/heads/$1")"
+}}
+case "$1 $2 $3" in
+  "pr list --head")
+    n=$(cat "$d/byhead/$key" 2>/dev/null)
+    if [ -n "$n" ] && [ "$(cat "$d/state/$n")" = OPEN ]; then
+      echo "[{{\"number\":$n,\"url\":\"https://github.com/o/r/pull/$n\"}}]"
+    else
+      echo '[]'
+    fi ;;
+  "pr list --state")
+    out=""
+    for f in "$d"/state/*; do
+      [ -e "$f" ] || continue
+      out="$out$(pr_json "$(basename "$f")"),"
+    done
+    echo "[${{out%,}}]" ;;
+  "pr create --head")
+    n=$(cat "$d/next"); echo $((n + 1)) > "$d/next"
+    echo OPEN > "$d/state/$n"; echo "$head" > "$d/heads/$n"; echo "$title" > "$d/titles/$n"; echo "$n" > "$d/byhead/$key"
+    echo "https://github.com/o/r/pull/$n" ;;
+  "pr view "*)
+    [ -e "$d/state/$3" ] || {{ echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }}
+    pr_json "$3" ;;
+  *) echo "unexpected gh $*" >&2; exit 2 ;;
+esac
+"#,
+        d = dir.display()
+    );
+    let path = dir.join("gh");
+    std::fs::write(&path, script).expect("fake gh script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod gh");
+    }
+    let guard = pulse_testutil::setenv(
+        "PATH",
+        format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+    FakeGh {
+        dir,
+        _bin: bin,
+        _path: guard,
+    }
+}
+
+/// Makes pull request `n` merged on the forge: the upstream's `main` moved
+/// to the pull request's head as the upstream has it, and the fake gh told.
+pub(crate) fn merge_on_forge(gh: &FakeGh, bare: &str, n: i64) {
+    let head = gh.head_of(n);
+    assert!(
+        !head.is_empty(),
+        "pull request #{n} has no head on the fake forge"
+    );
+    run(
+        ".",
+        &[
+            "git",
+            "--git-dir",
+            bare,
+            "update-ref",
+            "refs/heads/main",
+            &format!("refs/heads/{head}"),
+        ],
+    );
+    gh.set_state(n, "MERGED");
+}
+
+/// The newest event with `action`, as its detail.
+pub(crate) fn last_detail(s: &pulse_store::Store, action: &str) -> serde_json::Value {
+    let rows = must_rows(
+        s,
+        "SELECT detail FROM events WHERE action = ? ORDER BY seq DESC LIMIT 1",
+        &[&action],
+    );
+    rows.first()
+        .map(|r| serde_json::from_str(&r.str("detail")).unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -31,7 +31,7 @@ import { MicButton, useDictation } from "@/components/chat/mic";
 import { BackButton, Pane } from "@/components/chat/split";
 import {
   TONE_TEXT,
-  jobWaitingToLand,
+  jobWaitingForPr,
   relShort,
   stepWords,
   taskMoodOf,
@@ -197,8 +197,8 @@ function TaskBody({
     lead: t.lead,
     needs_you: review,
     working,
-    landing: d.jobs.some((j) => jobWaitingToLand(j.status, j.branch)),
-    reviewing: d.jobs.some((j) => !!j.reviewing),
+    waiting_for_pr: d.jobs.some((j) => jobWaitingForPr(j.status, j.branch)),
+    pr: d.delivery?.state,
   });
   // The run the canvas follows: the step being worked on now, else the
   // latest one that ran.
@@ -432,7 +432,7 @@ function TaskBody({
           </span>
         </div>
       ) : null}
-      <TaskDeliveryLine delivery={d.delivery} className="mt-0" />
+      <TaskDeliveryLine delivery={d.delivery} taskId={t.id} className="mt-0" />
       {closed ? (
         <Notice tone="info">
           {t.status === "done"
@@ -758,6 +758,7 @@ function StepsPanel({
         progress={progress}
         closed={closed}
         run={run}
+        pr={d.delivery?.state}
         onEvidence={onEvidence}
       />
       {progress.total ? <TaskProgressBar t={t} className="px-1" /> : null}
@@ -932,6 +933,7 @@ function StepList({
   progress,
   closed,
   run: shown,
+  pr,
   onEvidence,
 }: {
   jobs: TaskJob[];
@@ -939,6 +941,9 @@ function StepList({
   progress: ReturnType<typeof taskProgress>;
   closed: boolean;
   run: string;
+  // Where the task's pull request stands: a done step still on its branch
+  // reads it instead of waiting for one.
+  pr?: string;
   onEvidence: (j: TaskJob) => void;
 }) {
   const now = useNow(15000);
@@ -958,7 +963,7 @@ function StepList({
         >
           {jobs.map((j) => {
             const w = progress.working.find((x) => x.job === j.id);
-            const s = stepWords(j.status, !!w, j.branch, j.reviewing);
+            const s = stepWords(j.status, !!w, j.branch, pr);
             const at =
               j.finished_at ||
               j.leased_at ||

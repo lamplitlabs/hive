@@ -1672,7 +1672,7 @@ pub(crate) fn tend_tasks(
             }
             let owner_at = owner_spoke_at(s, t.id.clone());
             let (next, reason, told) = if tally.waiting > 0
-                || crate::task_pr::closed_awaiting_work(s, &slug, &t.id)
+                || crate::delivery::closed_awaiting_work(s, &slug, &t.id)
             {
                 // Waiting for the task's pull request, or its pull request
                 // was closed unmerged and no new job has run since: the

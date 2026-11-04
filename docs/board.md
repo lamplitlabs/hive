@@ -440,7 +440,7 @@ default branch is not fetched here, is skipped without a word.
 ## Role leads: `pulse lead`
 
 The project lead tends the board as a whole. A **role lead** owns one
-concern and sits for it on its own cadence. Twelve roles are built in, each
+concern and sits for it on its own cadence. Thirteen roles are built in, each
 with its title, standing brief and cadence:
 
 | Role | Title | Sits | Owns |
@@ -457,8 +457,9 @@ with its title, standing brief and cadence:
 | `triage` | Issue triage lead | daily | the repository's issues and pull requests: reproduce, answer, turn into jobs |
 | `tidy` | Tidy-up lead | weekly | lint findings, dead code, duplicates, aged TODOs, files that outgrew their name |
 | `dx` | Developer experience lead | weekly | the path from clone to green: setup, env recipe, build and test time, tooling |
+| `review` | Review lead | hourly | the project's open pull requests as a whole: the stale, the human-made and the ones waiting on the owner; the review job reads each one on its own ([The reviewer](review.md#the-review-lead)) |
 
-A word of your own makes a thirteenth: `--role content --title "Content
+A word of your own makes a fourteenth: `--role content --title "Content
 lead" --brief "..."` (a custom role needs its title and brief; the built-in
 ones carry theirs). One live lead per role and project; the agent is named
 `<slug>-lead-<role>`.
@@ -482,7 +483,7 @@ queued by the daemon when the seat is due and run by the role lead alone -
 the project lead never takes it, and a role lead never takes the project
 lead's. Its brief is the role's standing brief plus what the project shows
 now: for `rsi` the loop's level, ballot, lane and archive; for `docs` the
-landings that changed code without a page; for `security` the manifests,
+merges that changed code without a page; for `security` the manifests,
 audits and credentials, and on a GitHub remote the exact `gh api
 repos/<owner>/<repo>/dependabot/alerts` command that lists the open alerts
 (the lead reads them first, bumps what has a fixed version - critical and
@@ -492,7 +493,7 @@ says instead of asking for a token; since the daemon's own
 [dependency watcher](landing.md#dependencies-security-alerts-and-the-release-age-rule)
 queues those updates hourly, a sitting mostly finds what the watcher left
 for the owner); for `monitor` the checks, watchers and the red among
-them; for `tests` the verify command and the landings it failed; for `deps`
+them; for `tests` the verify command and the runs it failed; for `deps`
 the lockfiles and their age; for `release` the last tag and the commits since;
 for `perf` the benchmark folders and schedules; for `a11y` the UI framework
 in use; for `triage` the open threads and questions; for `tidy` whether the
@@ -509,10 +510,10 @@ that sitting runs on the worker model (`worker_model`), the other roles'
 sittings on the light one.
 
 PULSE **suggests** a seat when the project shows the gap: the loop is at
-level D with no `rsi` lead; three or more landings in a fortnight changed
+level D with no `rsi` lead; three or more merges in a fortnight changed
 code and none touched a doc; the project depends on packages and nothing
-audits them; a project that has landed a change has no check or watcher, or
-some are red and unowned; the check is empty or three landings in a fortnight
+audits them; a project that has merged a change has no check or watcher, or
+some are red and unowned; the check is empty or three runs in a fortnight
 failed it (`tests`); a lockfile has not moved in 45 days (`deps`); twenty or
 more commits sit on the default branch since the last tag (`release`); a
 `benches/` folder or a `bench` script exists and no schedule runs it
@@ -663,8 +664,8 @@ native harness's `task` tool:
   project's lead plans the task on its next pass with a brief that says
   *agent X from conversation Y filed it (not the owner)* - so the lead
   knows whose words it reads and never asks the owner to accept what the
-  owner did not ask for (an agent's task closes when its work lands, where
-  the owner's waits for the owner's word).
+  owner did not ask for (an agent's task closes when its pull request
+  merges, where the owner's waits for the owner's word).
 - `list` (`project?`, `status?`) and `show` (`id`) read the board, so an
   agent checks for a twin before filing and follows what it filed.
 

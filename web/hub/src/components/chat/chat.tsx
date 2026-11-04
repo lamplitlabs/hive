@@ -30,6 +30,7 @@ import {
   CpuIcon,
   FolderGitIcon,
   GitBranchIcon,
+  GitPullRequestIcon,
   InfoIcon,
   ListChecksIcon,
   ListEndIcon,
@@ -84,6 +85,7 @@ import {
   exitWords,
   mergeSteps,
 } from "@/components/harness/harness";
+import { ConfirmDialog } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
 import { PulseMascot } from "@/components/pulse/mascots";
 import {
@@ -136,6 +138,7 @@ import type {
   HarnessModelsResponse,
   HarnessSessionResponse,
   HarnessStep,
+  PrState,
   ProjectsPayload,
 } from "@/lib/api";
 import {
@@ -166,12 +169,13 @@ import {
 import { hrefs } from "@/lib/nav";
 import {
   GROUP_ORDER,
+  PR_NEEDS_OWNER,
   TONE_TEXT,
-  REVIEWING,
-  WAITING_TO_LAND,
+  WAITING_FOR_PR,
   entryGroup,
   foldedEntries,
   listEntries,
+  prMood,
   relShort,
   reportVerb,
   sessionWords,
@@ -180,6 +184,7 @@ import {
   taskTitleOf,
   type ListGroup,
   type Mood,
+  type Tone,
 } from "@/components/chat/task-groups";
 import { makeTab } from "@/lib/canvas";
 import {
@@ -208,6 +213,11 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
   const l = live ?? c.live;
   const status = l?.status || c.status;
   const pending = l?.pending ?? null;
+  const pr = prMood(c.pr?.state);
+  // The owner's Merge on the conversation's pull request comes before
+  // whatever its agent is doing: the reviewer handed the pull request over
+  // and nothing moves until the owner decides.
+  if (pr && c.pr && PR_NEEDS_OWNER.has(c.pr.state)) return pr;
   if (status === "waiting" && pending?.kind === "approval")
     return {
       word: "Needs a yes",
@@ -226,10 +236,11 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
       pip: "asleep",
       dot: "bg-muted-foreground/40",
     };
-  // Nobody at it and commits main lacks: finished or idle, the work is
-  // waiting to land (task-groups.ts groupOf puts it in that section).
-  if (c.reviewing) return REVIEWING;
-  if (c.waiting_to_land) return WAITING_TO_LAND;
+  // Nobody at it: the pull request opened from its branch says where the
+  // work stands; without one, commits main lacks wait for the daemon to open
+  // it (task-groups.ts groupOf puts both in the In review section).
+  if (pr) return pr;
+  if (c.waiting_to_land && !c.pr) return WAITING_FOR_PR;
   if (status === "closed")
     return { word: "Finished", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (status === "ended")
@@ -247,13 +258,14 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
   };
 }
 
-// The list's sections (task-groups.ts): working, waiting to land, open,
-// finished, archived. Every entry is a conversation - a plain one, one with
-// sub-conversations under it, or a task with its steps under it - in the
-// section of its most pressing member.
+// The list's sections (task-groups.ts): needs your review, working, in
+// review, open, finished, archived. Every entry is a conversation - a plain
+// one, one with sub-conversations under it, or a task with its steps under
+// it - in the section of its most pressing member.
 const GROUP_TITLES: Record<ListGroup, string> = {
+  needs_review: "Needs your review",
   working: "Working",
-  landing: "Waiting for merge / reviewing",
+  review: "In review",
   open: "Open",
   finished: "Finished",
   archived: "Archived",
@@ -1327,6 +1339,76 @@ function ConversationList({
   );
 }
 
+// The pull request under a card: its number as a link to the forge, where
+// its review stands, and - when the reviewer handed it to the owner or its
+// review failed - the Merge the owner presses. The hub records the ask and
+// the daemon merges on GitHub as the owner on its next pass, so the row
+// reads "Merging" after the click rather than "Merged". A row of its own
+// because the card is one button and a link cannot sit inside a button.
+function PrRow({ pr, project }: { pr: PrState; project: string }) {
+  const [merge, setMerge] = useState(false);
+  const m = prMood(pr.state);
+  const word = m ? m.word : pr.state === "merged" ? "Merged" : pr.state === "closed" ? "Closed" : "";
+  const tone: Tone = m ? m.tone : pr.state === "merged" ? "ok" : "neutral";
+  const name = "PR #" + pr.number;
+  return (
+    <div
+      className="flex min-w-0 items-center gap-2 border-t bg-muted/20 px-3 py-1.5 text-xs"
+      data-testid="list-pr"
+    >
+      <GitPullRequestIcon
+        className="size-3.5 shrink-0 text-muted-foreground"
+        aria-hidden
+      />
+      <a
+        href={pr.url}
+        target="_blank"
+        rel="noreferrer"
+        className="shrink-0 font-medium text-foreground underline-offset-2 hover:underline"
+        title={pr.title ? pr.title + " - open on GitHub" : "Open on GitHub"}
+      >
+        {name}
+      </a>
+      <span className={cn("min-w-0 truncate", TONE_TEXT[tone])}>{word}</span>
+      {pr.can_merge && project ? (
+        <>
+          <Button
+            type="button"
+            size="xs"
+            className="ml-auto"
+            onClick={() => setMerge(true)}
+          >
+            Merge
+          </Button>
+          <ConfirmDialog
+            open={merge}
+            onOpenChange={setMerge}
+            title={"Merge " + name + " into " + (pr.base || "the default branch") + "?"}
+            description={
+              <>
+                {pr.title ? (
+                  <span className="block font-medium text-foreground anywhere">
+                    {pr.title}
+                  </span>
+                ) : null}
+                <span className="mt-2 block">
+                  The daemon merges it on GitHub as you.
+                </span>
+              </>
+            }
+            action="Merge"
+            onConfirm={() => writes.mergeProjectPr(project, pr.number)}
+            success={"Merging " + name + "\u2026"}
+            invalidates={(p) =>
+              p.startsWith("chat") || p.startsWith("tasks") || p.startsWith("events") || p.startsWith("projects")
+            }
+          />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 // A task in the list, the same card as a conversation: the row is the
 // owner's conversation with the lead agent (the team icon is the one mark
 // of a task), and under it one line per step the lead cut - the agent on
@@ -1415,7 +1497,7 @@ function TaskItem({
             aria-label={`Steps of ${t.title || t.id}`}
           >
             {steps.map((s) => {
-              const w = sessionWords(s);
+              const w = sessionWords(s, t.pr?.state);
               const body = (
                 <>
                   <span
@@ -1478,6 +1560,7 @@ function TaskItem({
             {plural(steps.length, "step")} · show
           </button>
         ) : null}
+        {t.pr ? <PrRow pr={t.pr} project={t.project} /> : null}
       </div>
     </li>
   );
@@ -1632,6 +1715,7 @@ function ConversationItem({
             })}
           </ul>
         ) : null}
+        {c.pr ? <PrRow pr={c.pr} project={c.project} /> : null}
       </div>
     </li>
   );

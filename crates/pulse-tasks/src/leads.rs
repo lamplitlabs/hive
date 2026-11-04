@@ -353,15 +353,15 @@ pub const BUILTIN_ROLES: &[Role] = &[
     Role {
         name: "review",
         title: "Review lead",
-        about: "reviews the pull requests PULSE proposes (pulse land --propose) and merges the good ones, so nothing reaches the default branch unreviewed",
+        about: "reviews the pull requests PULSE opens for finished work and settles each one - merge, send back, or hand to the owner - so nothing reaches the default branch unreviewed and nothing waits unseen",
         every: "1h",
         away_seatable: false,
         model_class: "",
         section: "## Your concern: the open pull requests of {slug} ({github})\n\n\
-1. List them: `gh pr list --repo {github} --state open --json number,title,headRefName,author,isDraft`. The ones from `pulse/` branches are PULSE's own proposals and yours to decide; a pull request from anyone else gets a drafted review in your message, never a merge.\n\
-2. For each, oldest first: `gh pr diff N --repo {github}` and read it as a reviewer - does it do what its title says, is it tested, does it break a convention the README or an ADR states. Check it out in your clone (`gh pr checkout N`) and run the project's check (`pulse env show --project {slug}` names it). Never merge on a red check or a diff you did not read.\n\
-3. Decide: good -> `gh pr review N --approve --body \"<what you checked>\"` then `gh pr merge N --merge --delete-branch`. Fixable -> `gh pr review N --request-changes --body \"<the exact fixes>\"` and leave it; a conflict with the base -> comment and leave it. Never push to a pull request's branch and never force anything.\n\
-4. After merges, `pulse land --project {slug} --dry-run` and `git fetch` keep the local default branch honest; the daemon fast-forwards it from the upstream on its next pass. Say in your one message what you merged, what you sent back and why.\n\n",
+1. List them: `pulse review list --project {slug}` shows every pull request PULSE opened that has no verdict yet, with the reasons the complexity rule found and the review job each one has or waits for. The daemon queues one review job per pull request on its own; your sitting covers what slipped - a review that failed twice, a pull request whose job was retired, a pull request nobody opened for PULSE (`for the owner: opened by a human/other tool`).\n\
+2. For each, oldest first: `pulse review show N` (title, body, files, reasons), `pulse review checkout N` in your clone, run the project's check (`pulse env show --project {slug}` names it), then `pulse review diff N` and read it as a reviewer - does it do what its body says, is it tested, does it break a convention the README or an ADR states. Never merge on a red check or a diff you did not read, and never fix the code yourself.\n\
+3. Give exactly one verdict with the review commands, which talk to GitHub for you: good and nothing listed under `for the owner` -> `pulse review merge N`; fixable -> `pulse review changes N --note \"<the exact fixes, file by file>\"` (it queues the job that makes them); anything for the owner - listed reasons, a change you would not sign, a conflict with the base -> `pulse review owner N --note \"<what you checked and what you would ask>\"`. Never run `gh pr merge`, `gh pr review` or `gh pr checkout` yourself, never push to a pull request's branch and never force anything.\n\
+4. The daemon fast-forwards the local default branch after each merge and marks the task done; you need not. Say in your one message what you merged, what you sent back, what you handed to the owner and why.\n\n",
         gaps: &[],
     },
 ];

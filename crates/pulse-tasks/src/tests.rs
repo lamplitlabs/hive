@@ -4136,6 +4136,449 @@ fn delivery_follows_a_landing_to_the_forge() {
     );
 }
 
+/// One pull request's events, oldest first, as `pr_state_of` reads them.
+fn pr_trail(events: &[(&str, &str)]) -> Vec<LandEvent> {
+    events
+        .iter()
+        .enumerate()
+        .map(|(i, (action, detail))| LandEvent {
+            seq: i as i64 + 1,
+            at: format!("2026-10-31T13:{:02}:00Z", i),
+            actor: "daemon".into(),
+            action: (*action).to_string(),
+            detail: (*detail).to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn a_pull_requests_state_is_its_newest_event() {
+    let opened = r#"{"project":"demo","kind":"task","task":"TASK-1","number":7,"url":"https://github.com/o/r/pull/7","head":"pulse/task/TASK-1","base":"main","title":"Add the page","opened":true}"#;
+    let queued = r#"{"project":"demo","number":7,"job":"JOB-rev","kind":"task","reasons":[]}"#;
+    let big = r#"{"project":"demo","number":7,"job":"JOB-rev","kind":"task","reasons":["touches 40 files","migrations"]}"#;
+    let owner = r#"{"project":"demo","number":7,"reasons":["touches 40 files"],"note":"the schema change needs you"}"#;
+    let ask = r#"{"project":"demo","number":7,"action":"merge","task":"TASK-1"}"#;
+    let changes = r#"{"project":"demo","number":7,"note":"the test for the footer is missing","follow_up":"JOB-fix"}"#;
+    let failed = r#"{"project":"demo","number":7,"error":"gh pr merge: merge conflict"}"#;
+    let merged = r#"{"project":"demo","number":7,"by":"owner"}"#;
+    let closed = r#"{"project":"demo","kind":"task","task":"TASK-1","number":7}"#;
+    let updated = r#"{"project":"demo","kind":"task","task":"TASK-1","number":7,"url":"https://github.com/o/r/pull/7","head":"pulse/task/TASK-1","base":"main","opened":false}"#;
+
+    assert_eq!(pr_state_of(&[]).state, "");
+
+    let p = pr_state_of(&pr_trail(&[("land.pr", opened)]));
+    assert_eq!(
+        (
+            p.state.as_str(),
+            p.number,
+            p.kind.as_str(),
+            p.task.as_str(),
+            p.head.as_str(),
+            p.base.as_str(),
+            p.title.as_str(),
+            p.can_merge
+        ),
+        (
+            "pr_open",
+            7,
+            "task",
+            "TASK-1",
+            "pulse/task/TASK-1",
+            "main",
+            "Add the page",
+            false
+        )
+    );
+    assert_eq!(p.opened_at, "2026-10-31T13:00:00Z");
+
+    // Each reviewer event names the state; only the owner's turn can merge.
+    type Trail<'a> = Vec<(&'a str, &'a str)>;
+    let table: Vec<(Trail, &str, bool)> = vec![
+        (
+            vec![("land.pr", opened), ("review.queued", queued)],
+            "in_review",
+            false,
+        ),
+        (
+            vec![("land.pr", opened), ("review.queued", big)],
+            "needs_owner",
+            true,
+        ),
+        (
+            vec![
+                ("land.pr", opened),
+                ("review.queued", queued),
+                ("review.owner", owner),
+            ],
+            "needs_owner",
+            true,
+        ),
+        (
+            vec![
+                ("land.pr", opened),
+                ("review.owner", owner),
+                ("review.ask", ask),
+            ],
+            "merge_asked",
+            false,
+        ),
+        (
+            vec![
+                ("land.pr", opened),
+                ("review.queued", queued),
+                ("review.changes", changes),
+            ],
+            "changes_requested",
+            false,
+        ),
+        (
+            vec![("land.pr", opened), ("review.failed", failed)],
+            "review_failed",
+            true,
+        ),
+        (
+            vec![
+                ("land.pr", opened),
+                ("review.ask", ask),
+                ("review.merged", merged),
+            ],
+            "merged",
+            false,
+        ),
+        (
+            vec![("land.pr", opened), ("land.merged", closed)],
+            "merged",
+            false,
+        ),
+        (
+            vec![("land.pr", opened), ("land.pr-closed", closed)],
+            "closed",
+            false,
+        ),
+        // New commits put it back in front of the reviewer.
+        (
+            vec![
+                ("land.pr", opened),
+                ("review.owner", owner),
+                ("land.pr", updated),
+            ],
+            "pr_open",
+            false,
+        ),
+    ];
+    for (trail, state, can_merge) in table {
+        let p = pr_state_of(&pr_trail(&trail));
+        assert_eq!(
+            (p.state.as_str(), p.can_merge),
+            (state, can_merge),
+            "{trail:?}"
+        );
+        assert_eq!(
+            p.at,
+            format!("2026-10-31T13:{:02}:00Z", trail.len() - 1),
+            "{trail:?}"
+        );
+    }
+
+    // Merged and closed are final: a late review event changes nothing,
+    // not even the time.
+    let p = pr_state_of(&pr_trail(&[
+        ("land.pr", opened),
+        ("land.merged", closed),
+        ("review.failed", failed),
+    ]));
+    assert_eq!(
+        (p.state.as_str(), p.at.as_str(), p.can_merge),
+        ("merged", "2026-10-31T13:01:00Z", false)
+    );
+
+    // What each state carries for the owner.
+    let p = pr_state_of(&pr_trail(&[("land.pr", opened), ("review.queued", big)]));
+    assert_eq!(p.reasons, ["touches 40 files", "migrations"]);
+    let p = pr_state_of(&pr_trail(&[
+        ("land.pr", opened),
+        ("review.queued", big),
+        ("review.owner", owner),
+    ]));
+    assert_eq!(
+        (p.reasons.clone(), p.note.as_str()),
+        (
+            vec!["touches 40 files".to_string()],
+            "the schema change needs you"
+        )
+    );
+    let p = pr_state_of(&pr_trail(&[
+        ("land.pr", opened),
+        ("review.changes", changes),
+    ]));
+    assert_eq!(
+        (p.note.as_str(), p.follow_up.as_str()),
+        ("the test for the footer is missing", "JOB-fix")
+    );
+    let p = pr_state_of(&pr_trail(&[("land.pr", opened), ("review.failed", failed)]));
+    assert_eq!(p.note, "gh pr merge: merge conflict");
+    let p = pr_state_of(&pr_trail(&[
+        ("land.pr", opened),
+        ("review.owner", owner),
+        ("land.pr", updated),
+    ]));
+    assert!(p.reasons.is_empty() && p.note.is_empty(), "{p:?}");
+    assert_eq!(p.title, "Add the page", "the update keeps the title");
+    assert_eq!(p.opened_at, "2026-10-31T13:00:00Z");
+}
+
+#[test]
+fn delivery_follows_the_review_of_the_tasks_pull_request() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let task = new(&s, "demo", "Add the page", "brief", 0, "human").unwrap();
+    let id = task.id.clone();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at, created_by, branch) VALUES \
+             ('JOB-page', 'demo', 'task', 'Add it', ?, 'done', '2026-10-30T14:00:00Z', 'demo-lead', 'pulse/worker/JOB-page')",
+            params![format!("task:{id}")],
+        )
+        .unwrap();
+    let emit = |action: &str, detail: String| {
+        pulse_bus::emit(&s, "daemon", action, "demo", detail).unwrap();
+    };
+    emit(
+        "land.pr",
+        format!(
+            r#"{{"project":"demo","kind":"task","task":"{id}","number":7,"url":"https://github.com/o/r/pull/7","head":"pulse/task/{id}","base":"main","remote":"origin","to":"abc123","opened":true,"title":"Add the page"}}"#
+        ),
+    );
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!(
+        (
+            d.state.as_str(),
+            d.number,
+            d.kind.as_str(),
+            d.base.as_str(),
+            d.can_merge
+        ),
+        ("pr_open", 7, "task", "main", false)
+    );
+    assert_eq!(d.remote, "origin/main");
+
+    emit(
+        "review.queued",
+        r#"{"project":"demo","number":7,"url":"https://github.com/o/r/pull/7","job":"JOB-rev","kind":"task","reasons":[]}"#.into(),
+    );
+    assert_eq!(delivery_for(&s, &id).unwrap().state, "in_review");
+
+    emit(
+        "review.owner",
+        r#"{"project":"demo","number":7,"url":"https://github.com/o/r/pull/7","reasons":["touches 40 files"],"note":"please look at the schema change"}"#.into(),
+    );
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!((d.state.as_str(), d.can_merge), ("needs_owner", true));
+    assert_eq!(d.reasons, ["touches 40 files"]);
+    assert_eq!(d.note, "please look at the schema change");
+    assert_eq!(d.url, "https://github.com/o/r/pull/7");
+
+    // The owner's Merge is one event the daemon answers.
+    ask_merge(&s, "demo", 7, &id, pulse_store::HUMAN_AGENT).unwrap();
+    let asks = events(&s, "review.ask");
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        (asks[0].actor.as_str(), asks[0].subject.as_str()),
+        ("human", "demo")
+    );
+    let detail: serde_json::Value = serde_json::from_str(&asks[0].detail).unwrap();
+    assert_eq!(
+        detail,
+        serde_json::json!({"project": "demo", "number": 7, "action": "merge", "task": id})
+    );
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!((d.state.as_str(), d.can_merge), ("merge_asked", false));
+    assert!(d.reasons.is_empty() && d.note.is_empty(), "{d:?}");
+
+    emit(
+        "review.merged",
+        r#"{"project":"demo","number":7,"url":"https://github.com/o/r/pull/7","by":"owner"}"#
+            .into(),
+    );
+    assert_eq!(delivery_for(&s, &id).unwrap().state, "merged");
+
+    // A failed merge offers the button again; a request for changes names
+    // the follow-up job.
+    let other = new(&s, "demo", "Fix the footer", "brief", 0, "human").unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at, created_by, branch) VALUES \
+             ('JOB-foot', 'demo', 'task', 'Fix it', ?, 'done', '2026-10-30T15:00:00Z', 'demo-lead', 'pulse/worker/JOB-foot')",
+            params![format!("task:{}", other.id)],
+        )
+        .unwrap();
+    emit(
+        "land.pr",
+        format!(
+            r#"{{"project":"demo","kind":"task","task":"{}","number":8,"url":"https://github.com/o/r/pull/8","head":"pulse/task/{}","base":"main","remote":"origin","to":"def456","opened":true}}"#,
+            other.id, other.id
+        ),
+    );
+    emit(
+        "review.changes",
+        r#"{"project":"demo","number":8,"url":"https://github.com/o/r/pull/8","note":"the footer test is missing","follow_up":"JOB-fix"}"#.into(),
+    );
+    let d = delivery_for(&s, &other.id).unwrap();
+    assert_eq!(
+        (
+            d.state.as_str(),
+            d.note.as_str(),
+            d.follow_up.as_str(),
+            d.can_merge
+        ),
+        (
+            "changes_requested",
+            "the footer test is missing",
+            "JOB-fix",
+            false
+        )
+    );
+    emit(
+        "review.failed",
+        r#"{"project":"demo","number":8,"url":"https://github.com/o/r/pull/8","error":"gh pr merge: not mergeable"}"#.into(),
+    );
+    let d = delivery_for(&s, &other.id).unwrap();
+    assert_eq!(
+        (d.state.as_str(), d.note.as_str(), d.can_merge),
+        ("review_failed", "gh pr merge: not mergeable", true)
+    );
+    assert_eq!(
+        delivery_for(&s, &id).unwrap().state,
+        "merged",
+        "#7 keeps its own state"
+    );
+
+    // Old sheets' JSON without the review fields still reads.
+    let old: TaskDelivery =
+        serde_json::from_str(r#"{"state":"pr_open","number":3,"can_ask":false}"#).unwrap();
+    assert_eq!(
+        (old.state.as_str(), old.number, old.can_merge),
+        ("pr_open", 3, false)
+    );
+}
+
+#[test]
+fn pr_states_list_the_projects_pull_requests_newest_first() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    // Events are append-only, so each is written with its own time.
+    let emit = |at: &str, action: &str, detail: &str| {
+        pulse_bus::emit_conn(&s.conn().unwrap(), at, "daemon", action, "demo", detail).unwrap();
+    };
+    // A task's pull request under review, a conversation's proposed as is,
+    // one merged last week, one merged a month ago, one closed yesterday,
+    // and the older landings' project-level pull request.
+    emit(
+        "2026-09-01T10:00:00Z",
+        "land.pr",
+        r#"{"project":"demo","kind":"task","task":"TASK-a","number":7,"url":"https://github.com/o/r/pull/7","head":"pulse/task/TASK-a","base":"main","title":"Add the page","opened":true}"#,
+    );
+    emit(
+        "2026-09-02T10:00:00Z",
+        "review.queued",
+        r#"{"project":"demo","number":7,"url":"https://github.com/o/r/pull/7","job":"JOB-rev","kind":"task","reasons":[]}"#,
+    );
+    emit(
+        "2026-09-03T10:00:00Z",
+        "land.pr",
+        r#"{"project":"demo","kind":"proposed","conversation":"chat-1","number":8,"url":"https://github.com/o/r/pull/8","head":"pulse/chat-chat-1","base":"main","title":"Chat: the footer","opened":true}"#,
+    );
+    emit(
+        "2026-09-04T10:00:00Z",
+        "review.owner",
+        r#"{"project":"demo","number":8,"url":"https://github.com/o/r/pull/8","reasons":["no tests"],"note":"the change has no test"}"#,
+    );
+    emit(
+        "2026-08-30T10:00:00Z",
+        "land.pr",
+        r#"{"project":"demo","kind":"job","job":"JOB-x","number":5,"url":"https://github.com/o/r/pull/5","head":"pulse/job/JOB-x","base":"main","opened":true}"#,
+    );
+    emit(
+        "2026-08-31T10:00:00Z",
+        "land.merged",
+        r#"{"project":"demo","kind":"job","job":"JOB-x","number":5,"url":"https://github.com/o/r/pull/5","head":"pulse/job/JOB-x","base":"main"}"#,
+    );
+    emit(
+        "2026-08-01T10:00:00Z",
+        "land.pr",
+        r#"{"project":"demo","kind":"task","task":"TASK-old","number":3,"url":"https://github.com/o/r/pull/3","head":"pulse/task/TASK-old","base":"main","opened":true}"#,
+    );
+    emit(
+        "2026-08-02T10:00:00Z",
+        "land.merged",
+        r#"{"project":"demo","kind":"task","task":"TASK-old","number":3,"url":"https://github.com/o/r/pull/3"}"#,
+    );
+    emit(
+        "2026-09-05T10:00:00Z",
+        "land.pr",
+        r#"{"project":"demo","kind":"experiment","experiment":"EXP-1","number":9,"url":"https://github.com/o/r/pull/9","head":"pulse/exp/EXP-1","base":"main","opened":true}"#,
+    );
+    emit(
+        "2026-09-05T12:00:00Z",
+        "land.pr-closed",
+        r#"{"project":"demo","kind":"experiment","experiment":"EXP-1","number":9,"url":"https://github.com/o/r/pull/9"}"#,
+    );
+    emit(
+        "2026-09-06T10:00:00Z",
+        "land.pr",
+        r#"{"project":"demo","remote":"origin","branch":"main","head":"pulse/landed","base":"main","number":12,"url":"https://github.com/o/r/pull/12","commits":3,"opened":true}"#,
+    );
+    // Another project's pull request is not this project's.
+    pulse_bus::emit(
+        &s,
+        "daemon",
+        "land.pr",
+        "other",
+        r#"{"project":"other","kind":"task","task":"TASK-o","number":1,"url":"https://github.com/o/q/pull/1","head":"pulse/task/TASK-o","base":"main","opened":true}"#,
+    )
+    .unwrap();
+
+    let prs = pr_states_for(&s, "demo").unwrap();
+    let seen: Vec<(i64, &str, &str)> = prs
+        .iter()
+        .map(|p| (p.number, p.state.as_str(), p.at.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            (9, "closed", "2026-09-05T12:00:00Z"),
+            (8, "needs_owner", "2026-09-04T10:00:00Z"),
+            (7, "in_review", "2026-09-02T10:00:00Z"),
+            (5, "merged", "2026-08-31T10:00:00Z"),
+        ],
+        "#3 settled a month ago and #12 is the older landings' head"
+    );
+    let chat = prs.iter().find(|p| p.number == 8).unwrap();
+    assert_eq!(
+        (
+            chat.kind.as_str(),
+            chat.conversation.as_str(),
+            chat.head.as_str(),
+            chat.title.as_str(),
+            chat.can_merge
+        ),
+        (
+            "proposed",
+            "chat-1",
+            "pulse/chat-chat-1",
+            "Chat: the footer",
+            true
+        )
+    );
+    assert_eq!(chat.reasons, ["no tests"]);
+    assert_eq!(chat.note, "the change has no test");
+    let job = prs.iter().find(|p| p.number == 5).unwrap();
+    assert_eq!((job.kind.as_str(), job.job.as_str()), ("job", "JOB-x"));
+    assert!(pr_states_for(&s, "nowhere").unwrap().is_empty());
+}
+
 // ---- manifest: the project's own .pulse/pulse.yaml and SKILL.md folders ----
 
 use crate::manifest;
