@@ -243,8 +243,8 @@ pub(crate) fn lead_brief(
     b.push_str(&format!("## What to do\n\n\
 1. For each task: read `pulse task show <id>` (brief, revisions, messages, jobs so far) and the owner's messages above.\n\
 2. Reply to the owner with `pulse msg send --project {slug} --task <id> \"...\"` (or `pulse task reply <id> \"...\"`; `pulse msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap instead of a blank to fill: `--choice \"<your recommendation>\" --choice \"<the alternative>\"` (a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief); ask for written words only when no short list of answers exists. Never repeat a question the owner has not answered yet.\n\
-3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `pulse job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`pulse job add` keeps one open job per source); all of them count as the task's jobs. The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
-4. Set `pulse task status <id> planned` once its jobs exist.\n\
+3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `pulse job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`pulse job add` keeps one open job per source); all of them count as the task's jobs. Every task gets its own job: never fold two tasks into one job - a task is known to be planned only by a job whose source names it, so the task a merged job does not name sits planned with nothing behind it; when two tasks touch the same code, queue one job per task and keep the second waiting on the first (or say in the second's brief what the first lands). The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
+4. Set `pulse task status <id> planned` once its jobs exist, and only then: the daemon sends a planned task that no job names back to you (`unplanned`), and to the owner in review when it happens again. Tell the owner \"queued\" only for jobs you queued.\n\
 5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`pulse env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time.\n\
 6. A task whose jobs failed and none runs: read each failure (`pulse task show <id>` lists the results), then queue a corrected job - smaller, or another approach. Inspect the evidence and try to resolve an ordinary blocker yourself; ask a relevant peer for a focused diagnosis when useful. Fix a shared prerequisite once before retrying its dependents, and do not duplicate a recovery already queued by the daemon. When the failure is a decision only the owner can take, `pulse task status <id> review` and tell the owner why in one message that carries the answers to pick (`--choice`); a task with three failed jobs goes to review by itself, with the choices to carry on, close, or change it. The owner's next message on a task in review puts it back in progress and wakes you: act on the answer. When the owner's task has landed, the daemon asks the owner in the chat whether it is what they wanted; an answer of \"Not what I meant\" (or words to that effect) means: read the brief against what landed, say in one message what you will change, and queue it - when you cannot tell what is missing, ask one question that carries the answers to pick.\n"));
     b.push_str(&rules);
@@ -667,6 +667,14 @@ pub(crate) fn lead_due(
         }
         let finished = job.str("finished_at");
         if job.str("status") != "done" && job.str("status") != "failed" {
+            continue;
+        }
+        if let Some(at) = reopened_unplanned_at(s, &t, &finished) {
+            due.push(DueTask {
+                detail: format!("unplanned: your run {} marked it planned but queued no job for it, so I reopened it at {at}. Queue its own job now with `--source task:{}` (or `task:{}:<label>`); do not fold it into another task's job.", job.str("id"), t.id, t.id),
+                why: UNPLANNED_WHY.into(),
+                task: t,
+            });
             continue;
         }
         if t.updated_at > finished {
@@ -1557,6 +1565,11 @@ pub(crate) fn tend_tasks(
                 Err(_) => continue,
             };
             if jobs.is_empty() {
+                if t.status == "planned"
+                    && let Some(line) = reopen_unplanned(s, &t, &actor)
+                {
+                    lines.push(line);
+                }
                 continue;
             }
             jobs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -2065,6 +2078,105 @@ fn ensure_acceptance(
     )))
 }
 
+/// What a task reopened by [`reopen_unplanned`] records as its `why`, and
+/// the lead's brief names as the reason it is due again.
+pub(crate) const UNPLANNED_WHY: &str = "unplanned";
+
+/// How many times a planned task with no job is sent back to its lead
+/// before it goes to the owner in review instead: each reopen costs a lead
+/// sitting, and a lead that keeps marking it planned without queueing a
+/// job will not stop on its own.
+pub(crate) const UNPLANNED_REOPENS: i32 = 2;
+
+/// A `planned` task no job carries (no `task:<id>` or `task:<id>:<label>`
+/// source) after its lead's sitting ended: nothing will ever run for it.
+/// TASK-057 sat planned for a day this way - its lead folded it into
+/// TASK-056's job and told the owner "Jobs are queued". Sent back to `open`
+/// so the next pass hands it to the lead again ([`lead_due`] says why),
+/// with one line to the task's chat so its last word is not a stale
+/// "queued"; after [`UNPLANNED_REOPENS`] such reopens it goes to review
+/// with the owner's choices. `None` while the lead's sitting still runs
+/// (it may set the status before queueing the jobs).
+fn reopen_unplanned(s: &pulse_store::Store, t: &pulse_tasks::Task, actor: &str) -> Option<String> {
+    let conn = s.conn().ok()?;
+    if !t.job_id.is_empty() {
+        let job = crate::jobs::job_row(&conn, t.job_id.clone());
+        if matches!(job.str("status").as_str(), "queued" | "leased" | "blocked") {
+            return None;
+        }
+    }
+    let reopens = must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM events WHERE action = 'task.status' AND subject = ? AND json_valid(detail) AND json_extract(detail, '$.from') = 'planned' AND json_extract(detail, '$.to') = 'open'",
+        &[&t.id],
+    )
+    .int("n");
+    let lead = if t.lead.is_empty() {
+        lead_name(t.project.clone())
+    } else {
+        t.lead.clone()
+    };
+    let source = format!("task:{}", t.id);
+    if reopens >= UNPLANNED_REOPENS {
+        if let Err(e) = pulse_tasks::set_status(s, &t.id, "review", actor) {
+            return Some(format!("task {}: {}", t.id, crate::run::err_message(&e)));
+        }
+        let body = format!(
+            "I stopped {} ({}): it was marked planned {} times with no job behind it (no job has the source `{source}` or `{source}:<label>`), so nothing runs for it.\n\nPick how we go on, or write what you want instead.",
+            t.id,
+            t.title,
+            reopens + 1
+        );
+        let told = pulse_tasks::reply_with_choices(s, &t.id, &lead, &body, &review_choices());
+        return Some(match told {
+            Ok(_) => format!(
+                "task {} in review: planned {} times with no job",
+                t.id,
+                reopens + 1
+            ),
+            Err(e) => format!(
+                "task {} in review; owner not told: {}",
+                t.id,
+                crate::run::err_message(&e)
+            ),
+        });
+    }
+    let why = format!(
+        "{UNPLANNED_WHY}: marked planned but no job has the source `{source}` or `{source}:<label>`"
+    );
+    if let Err(e) = pulse_tasks::reopen(s, &t.id, &why, actor) {
+        return Some(format!("task {}: {}", t.id, crate::run::err_message(&e)));
+    }
+    let body = format!(
+        "{}: no job is queued for it yet, so I am planning it again.",
+        t.title
+    );
+    let _ = pulse_tasks::reply(s, &t.id, &lead, &body);
+    Some(format!(
+        "task {} reopened: planned with no job, back to {lead}",
+        t.id
+    ))
+}
+
+/// When `t` was last sent back to `open` by [`reopen_unplanned`] at or
+/// after `since` (its lead's last sitting ended), with nothing changed on
+/// it since: the stamp. `None` otherwise.
+fn reopened_unplanned_at(
+    s: &pulse_store::Store,
+    t: &pulse_tasks::Task,
+    since: &str,
+) -> Option<String> {
+    let conn = s.conn().ok()?;
+    let last = must_one(
+        &conn,
+        "SELECT at, CASE WHEN json_valid(detail) THEN json_extract(detail, '$.why') END AS why FROM events WHERE action = 'task.status' AND subject = ? ORDER BY seq DESC LIMIT 1",
+        &[&t.id],
+    );
+    let at = last.str("at");
+    (last.str("why").starts_with(UNPLANNED_WHY) && at.as_str() >= since && t.updated_at <= at)
+        .then_some(at)
+}
+
 /// A task the owner gave, as against one an agent or a lead opened: only
 /// the owner can say whether what landed is what they asked for.
 fn owner_task(t: &pulse_tasks::Task) -> bool {
@@ -2324,6 +2436,120 @@ mod tests {
             "SELECT * FROM jobs WHERE source = ? ORDER BY created_at",
             &[&accept_source(task_id)],
         )
+    }
+
+    /// TASK-068: a lead folded a second task into the first task's job and
+    /// marked both planned; no job named the second, so tending skipped it
+    /// and it sat planned for a day. Now it goes back to the lead, and to
+    /// the owner in review when the lead does it again.
+    #[test]
+    fn a_planned_task_no_job_names_goes_back_to_the_lead() {
+        let _serial = serial();
+        let s = new_store();
+        new_repo(&s);
+        ensure_lead(&s, "proj".into()).unwrap();
+        let first =
+            pulse_tasks::new(&s, "proj", "First", "a", 50, crate::util::HUMAN_AGENT).expect("task");
+        let second = pulse_tasks::new(&s, "proj", "Second", "b", 50, crate::util::HUMAN_AGENT)
+            .expect("task");
+        let sitting = |n: i32| -> Row {
+            let (lead, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                LEAD_KIND.into(),
+                "Lead: plan".into(),
+                "plan".into(),
+                0,
+                LEAD_JOB_PRIORITY,
+                format!("lead:proj:{n}"),
+                "daemon".into(),
+                true,
+            )
+            .expect("lead job");
+            for t in [&first, &second] {
+                pulse_tasks::set_lead(&s, &t.id, "proj-lead", &lead.str("id"), "daemon")
+                    .expect("set lead");
+            }
+            lead
+        };
+        let lead = sitting(1);
+        // The sitting queues one job for the first task that also does the
+        // second, and marks both planned.
+        task_job(&s, "Both changes", &format!("task:{}", first.id));
+        for t in [&first, &second] {
+            pulse_tasks::set_status(&s, &t.id, "planned", "proj-lead").expect("planned");
+        }
+        let status = |id: &str| pulse_tasks::get(&s, id).unwrap().0.status;
+        // While the sitting runs, nothing is decided: it may queue the job
+        // after setting the status.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'leased' WHERE id = ?",
+            &[&lead.str("id")],
+        );
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(status(&second.id), "planned", "{lines:?}");
+        let before = crate::util::plus_minutes(TEST_NOW, -1.0);
+        let finish = |lead: &Row| {
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "UPDATE jobs SET status = 'done', finished_at = ?, result = 'SUMMARY: planned both' WHERE id = ?",
+                &[&before, &lead.str("id")],
+            );
+        };
+        finish(&lead);
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(status(&first.id), "planned", "{lines:?}");
+        assert_eq!(status(&second.id), "open", "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&second.id) && l.contains("reopened")),
+            "{lines:?}"
+        );
+        let said = pulse_tasks::messages(&s, "proj", &second.id, "", "").unwrap();
+        assert!(
+            said.iter()
+                .any(|m| m.author == "proj-lead" && m.body.contains("no job is queued")),
+            "{said:?}"
+        );
+        // The lead's next brief names why it is due and how to plan it.
+        let (_, due, _) = lead_due(&s, "proj".into(), "proj-lead".into(), TEST_NOW.into()).unwrap();
+        let back = due
+            .iter()
+            .find(|d| d.task.id == second.id)
+            .unwrap_or_else(|| panic!("{} not due: {due:?}", second.id));
+        assert_eq!(back.why, UNPLANNED_WHY);
+        assert!(
+            back.detail
+                .contains(&format!("--source task:{}", second.id))
+                && back
+                    .detail
+                    .contains("do not fold it into another task's job"),
+            "{}",
+            back.detail
+        );
+        assert!(due.iter().all(|d| d.task.id != first.id), "{due:?}");
+        // The lead does it again: once more back, then the owner decides.
+        for n in 2..=3 {
+            let lead = sitting(n);
+            pulse_tasks::set_status(&s, &second.id, "planned", "proj-lead").expect("planned");
+            finish(&lead);
+            tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        }
+        assert_eq!(status(&second.id), "review");
+        let said = pulse_tasks::messages(&s, "proj", &second.id, "", "").unwrap();
+        let ask = said
+            .iter()
+            .find(|m| m.body.starts_with(&format!("I stopped {}", second.id)))
+            .unwrap_or_else(|| panic!("no review ask: {said:?}"));
+        assert!(
+            ask.body.contains("planned 3 times with no job"),
+            "{}",
+            ask.body
+        );
+        assert!(!ask.choices.is_empty(), "{ask:?}");
+        assert_eq!(status(&first.id), "planned");
     }
 
     #[test]
@@ -3242,6 +3468,8 @@ mod tests {
             "queue one doc job that drafts the decision record",
             "Few, whole jobs",
             "`--source task:<id>:<label>`",
+            "never fold two tasks into one job",
+            "the daemon sends a planned task that no job names back to you",
             &format!("raises those jobs to priority {NUDGE_PRIORITY}"),
             "spend what is left of this run as the maintainer",
             "Do not commit while the default branch is red",

@@ -325,6 +325,32 @@ fn state_machine() {
 }
 
 #[test]
+fn only_a_planned_task_reopens_and_the_event_says_why() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let a = new(&s, "demo", "T", "", 0, "human").unwrap();
+    assert!(reopen(&s, &a.id, "no job", "daemon").is_err(), "open");
+    set_status(&s, &a.id, "planned", "demo-lead").unwrap();
+    assert!(reopen(&s, &a.id, "no job", "").is_err(), "no actor");
+    let back = reopen(&s, &a.id, "no job carries it", "daemon").unwrap();
+    assert_eq!(back.status, "open");
+    let evs = events(&s, "task.status");
+    let last = evs.last().unwrap();
+    assert!(
+        last.detail.contains(r#""from": "planned""#),
+        "{}",
+        last.detail
+    );
+    assert!(last.detail.contains(r#""to": "open""#), "{}", last.detail);
+    assert!(last.detail.contains("no job carries it"), "{}", last.detail);
+    set_status(&s, &a.id, "in_progress", "demo-lead").unwrap();
+    assert!(
+        reopen(&s, &a.id, "no job", "daemon").is_err(),
+        "in progress"
+    );
+}
+
+#[test]
 fn owner_answer_ends_review_and_choices_are_checked() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
