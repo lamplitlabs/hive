@@ -24,6 +24,7 @@ const LABELS: Record<string, string> = {
   "landing.setup_repair": "Repair a broken project setup",
   "landing.verify_memo": "Skip checks that already passed",
   "landing.verify_memo_hours": "Trust an earlier check for (hours)",
+  "landing.batch": "Check several finished branches as one",
   "dependencies.security_updates": "Fix security alerts in dependencies",
   "dependencies.major_updates": "When a security fix needs a major upgrade",
   "dependencies.min_release_age_days": "A new dependency version must be at least this old (days)",
@@ -199,10 +200,10 @@ const LABELS: Record<string, string> = {
   "harness.deny_tools": "Tool calls a run refuses outright",
   "harness.allow_tools": "Tool calls a chat session runs without asking",
   "models.allowed": "Models a custom agent file may ask for",
-  "harness.trim_keep_recent": "Recent tool results kept whole when the context is trimmed",
-  "harness.trim_over": "Trim older tool results longer than (characters)",
   "harness.compact_at": "Summarise the conversation past this share of the context window (%)",
   "harness.compact_model": "Model that writes the conversation summaries (empty = the run's own)",
+  "harness.trim_keep_recent": "Latest command results every request carries whole",
+  "harness.trim_over": "Older command results longer than this are sent as head and tail (characters)",
   "harness.reasoning": "Reasoning effort asked of the model",
   "harness.step_timeout": "Time limit per command (seconds)",
   "harness.commit_timeout": "Time limit per verified git commit (seconds)",
@@ -231,6 +232,7 @@ const HELP: Record<string, string> = {
   "landing.auto_stash": "Whether PULSE sets aside uncommitted changes in a project folder before it merges, and puts them back after.",
   "landing.verify_memo": "Whether a merge skips its check when the exact same code already passed the same check on this machine.",
   "landing.verify_memo_hours": "How long an earlier passing check of the same code counts before the merge runs it again.",
+  "landing.batch": "Whether several finished branches waiting at once are merged into one chain and checked once together, each landing on its own again when the chain fails its check. Off checks every branch on its own.",
   "landing.setup_repair": "Whether an agent repairs a project's setup when it fails on the main branch itself - a setup command, a check command or a lockfile that outran its manifest - and proves the setup passes again before the fix lands; at most three repair jobs a day per project. Off leaves the setup to you and the merge tries again later.",
   "dependencies.security_updates": "Whether agents fix the security alerts GitHub raises on a project's dependencies (Dependabot), one small update per alert, in every project PULSE watches. Off leaves the alerts to you.",
   "dependencies.major_updates": "What happens when the only fix for a security alert is a major version upgrade of the package. Ask me: the agent puts it to you in For you with Yes (upgrade it) and No (leave it); your yes queues the upgrade. Automatic: agents queue the upgrade like any other security fix, to the newest version of the patched line that is old enough, and the project's own checks must pass before it lands.",
@@ -375,6 +377,10 @@ const HELP: Record<string, string> = {
     "When the conversation fills this share of the context window, the model summarises its older part and the summary takes its place; the last 6 messages stay. It happens again each time the conversation grows back to the threshold, carrying the earlier summary forward, and whatever the share when a request would pass its size budget. The summary call is free of the step cap. 0 leaves compaction to the size budget alone.",
   "harness.compact_model":
     "The model that writes the summaries. A cheaper one saves money where the provider bills per token (OpenAI, Anthropic, Gemini and the OpenAI-compatible vendors); Copilot bills per request, so there it only saves time. Empty uses the conversation's own model.",
+  "harness.trim_keep_recent":
+    "How many of the latest command results each request sends whole, counting back from the most recent. Results older than these and longer than harness.trim_over travel as their first and last 750 characters around a line saying how much was left out; the conversation the run keeps, its trajectory and the session's steps stay whole, so the compaction summary and the console still read everything. Measured over three days of task runs, results older than the eight most recent held 84% of the result text in an average request. 0 turns the trimming off.",
+  "harness.trim_over":
+    "Characters an older command result may hold before a request sends it trimmed. Results above 4,000 were a fifth of those measured and held two thirds of the result text, so that threshold takes most of the bulk while short results the model refers back to - a file listing, a test summary - go as they were. 0 turns the trimming off.",
   "provider.max_request_mb":
     "How big one request may grow - the conversation, its tool results and images, the tool schemas - before the older conversation is summarised, whatever the token count. Copilot's gateway gives up reading a body of about 1.5 MiB long before a 1M-token window is full; a request it still refuses is summarised and sent again before the turn stops. 0 leaves compaction to the context-window share alone.",
   "harness.reasoning":

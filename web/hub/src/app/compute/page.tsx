@@ -5,7 +5,9 @@ import { CheckCircle2Icon, ServerIcon } from "lucide-react";
 import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { ExecutorRow, MachinePanel } from "@/components/compute/machine";
 import { HygienePanel } from "@/components/pulse/hygiene";
-import { CapsPanel, ComputeInboxCard, ComputeRequestCard } from "@/components/compute/compute";
+import { useState } from "react";
+import { CapsPanel, ComputeInboxCard, ComputeRequestCard, ComputeRequestRow } from "@/components/compute/compute";
+import { Button } from "@/components/ui/button";
 import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { RemoveMenuButton } from "@/components/project/project-dialogs";
@@ -20,11 +22,15 @@ const newestFirst = (a: ComputeRequest, b: ComputeRequest) => (b.at || "").local
 
 const LIVE = new Set(["approved", "provisioning", "ready"]);
 
+// Past requests show the latest few; the rest wait behind "Show all".
+const PAST_SHOWN = 5;
+
 const quietLink = "text-[13px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
 
 export default function ComputePage() {
   const q = useApi<Compute>("compute", { refresh: 10000 });
   const runner = useApi<Runner>("runner");
+  const [allPast, setAllPast] = useState(false);
   if (q.error && !q.data)
     return (
       <>
@@ -43,7 +49,10 @@ export default function ComputePage() {
   const past = c.requests.filter((r) => r.status !== "pending" && !LIVE.has(r.status)).sort(newestFirst);
   // The compute route returns the raw executor rows; the runner adds the live
   // running / free counts (and the local machine), so prefer it once loaded.
-  const executors: Executor[] = runner.data?.executors?.length ? runner.data.executors : (c.executors ?? []).map((e) => ({ ...e, running: e.running ?? 0, free: e.free ?? 0 }));
+  // A removed machine is gone for good; it is kept in the store as history, not shown.
+  const executors: Executor[] = (runner.data?.executors?.length ? runner.data.executors : (c.executors ?? []).map((e) => ({ ...e, running: e.running ?? 0, free: e.free ?? 0 }))).filter((e) => e.status !== "removed");
+  const pastShown = allPast ? past : past.slice(0, PAST_SHOWN);
+  const pastFailed = past.filter((r) => r.status === "failed").length;
   const active = executors.filter((e) => e.status === "active").length;
   const pairings = c.pairings ?? [];
   // A finished pairing's machine is in the executors list already; the row
@@ -107,7 +116,7 @@ export default function ComputePage() {
                   ))}
                   {executors.map((e) => (
                     // The local executor is this machine and a removed row is already gone: neither gets Remove.
-                    <ExecutorRow key={e.name} e={e} action={e.name !== "local" && e.status !== "removed" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
+                    <ExecutorRow key={e.name} e={e} action={e.name !== "local" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
                   ))}
                 </ul>
               ) : (
@@ -125,15 +134,22 @@ export default function ComputePage() {
         </div>
 
         <section aria-label="Past requests">
-          <SectionHeading count={past.length || undefined} note={past.length ? "Earlier requests that are over, and your answers." : undefined}>
+          <SectionHeading count={past.length || undefined} note={past.length ? "Earlier requests that are over" + (pastFailed ? ", " + pastFailed + " of them failed" : "") + ". Newest first." : undefined}>
             Past requests
           </SectionHeading>
           {past.length ? (
-            <CardGrid cols={2} className={past.length === 1 ? "max-w-3xl" : undefined}>
-              {past.map((r) => (
-                <ComputeRequestCard key={r.id} r={r} />
-              ))}
-            </CardGrid>
+            <div className="grid gap-2">
+              <ul className="grid gap-2">
+                {pastShown.map((r) => (
+                  <ComputeRequestRow key={r.id} r={r} />
+                ))}
+              </ul>
+              {past.length > PAST_SHOWN ? (
+                <Button variant="ghost" size="sm" className="justify-self-start" onClick={() => setAllPast((v) => !v)}>
+                  {allPast ? "Show fewer" : "Show all " + past.length}
+                </Button>
+              ) : null}
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">Nothing here yet. Requests you deny, and machines whose time is up, move here.</p>
           )}
