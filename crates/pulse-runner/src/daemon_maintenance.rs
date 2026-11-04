@@ -370,6 +370,18 @@ impl DaemonMaintenance {
                             ));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            // ADR-049: a landed sha the default branch no
+                            // longer keeps is a land.reverted, once; inert
+                            // unless evolve.mode=variants.
+                            set_stage(Some(&stage), "revert scan");
+                            lines.extend(crate::revert_scan::tend_revert_scan(
+                                &s,
+                                &projects,
+                                &s.now(),
+                                &actor,
+                            ));
+                        }
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             set_stage(Some(&stage), "unfit re-probe");
                             lines.extend(tend_unfit_reprobes(&s, s.now(), actor.clone()));
                         }

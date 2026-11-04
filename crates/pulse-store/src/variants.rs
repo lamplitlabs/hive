@@ -60,7 +60,327 @@ pub struct Revert {
     pub how: String,
 }
 
+/// The settings a variant's `settings.toml` may set (ADR-049 "The genome"):
+/// the model and reasoning classes and the harness knobs that change how an
+/// agent thinks; the planner's brief inputs come in as the `lead.` and
+/// `plan.` families ([`VARIANT_SETTING_PREFIXES`]).
+pub const VARIANT_SETTINGS: &[&str] = &[
+    "worker_model",
+    "light_model",
+    "worker_reasoning",
+    "light_reasoning",
+    "harness.compact_at",
+    "harness.compact_model",
+    "harness.max_steps",
+    "harness.reasoning",
+    "harness.subagents",
+    "harness.skills",
+    "harness.memory",
+];
+/// Setting families a variant may set whole: the planner's brief inputs.
+pub const VARIANT_SETTING_PREFIXES: &[&str] = &["lead.", "plan."];
+
+/// The constitution's immutable set as settings: a variant changes how an
+/// agent thinks and which model it uses, never what it is allowed to do.
+/// A name equal to an entry, or under an entry ending in `.`, or (for
+/// `landing`) any `landing*` name, is refused at registration.
+pub const VARIANT_IMMUTABLE_SETTINGS: &[&str] = &[
+    "owner.",
+    "stop",
+    "landing",
+    "push.",
+    "compute.",
+    "harness.deny_tools",
+    "harness.allow_tools",
+    "evolve.",
+];
+
+/// Why a variant may not set `name`, or None when the allowlist takes it.
+/// The immutable set is checked first so its refusal names it as such.
+pub fn variant_setting_refusal(name: &str) -> Option<String> {
+    let n = name.trim();
+    let immutable = VARIANT_IMMUTABLE_SETTINGS.iter().any(|entry| {
+        if let Some(prefix) = entry.strip_suffix('.') {
+            n == prefix || n.starts_with(entry)
+        } else if *entry == "landing" {
+            n.starts_with("landing")
+        } else {
+            n == *entry
+        }
+    });
+    if immutable {
+        return Some(format!(
+            "{n} is in the immutable set (owner.*, stop, landing*, push.*, compute.*, harness.deny_tools, harness.allow_tools, evolve.*): a variant changes how an agent thinks, never what it may do"
+        ));
+    }
+    let allowed =
+        VARIANT_SETTINGS.contains(&n) || VARIANT_SETTING_PREFIXES.iter().any(|p| n.starts_with(p));
+    if !allowed {
+        return Some(format!(
+            "{n} is not on the variant allowlist ({}, lead.*, plan.*)",
+            VARIANT_SETTINGS.join(", ")
+        ));
+    }
+    None
+}
+
+/// What [`Store::insert_variant`] registers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewVariant {
+    pub id: String,
+    /// Islands (project slugs) the variant may canary on; empty: every one.
+    pub projects: Vec<String>,
+    /// Job kinds it may run; empty: the phase-1 trial kinds.
+    pub kinds: Vec<String>,
+    pub parent: String,
+    pub hypothesis: String,
+    pub proposer_job: String,
+    pub evidence: Vec<String>,
+    /// Where the genome lives (`~/.pulse/variants/<id>`).
+    pub dir: String,
+}
+
+/// The event registration, retirement and promotion write; the subject is
+/// the variant id.
+pub const VARIANT_REGISTERED: &str = "evolve.registered";
+pub const VARIANT_RETIRED: &str = "evolve.retired";
+pub const VARIANT_PROMOTED: &str = "evolve.promoted";
+
+fn scan_variant(r: &rusqlite::Row<'_>) -> rusqlite::Result<Variant> {
+    Ok(Variant {
+        id: r.get(0)?,
+        project_scope: r.get(1)?,
+        kinds_scope: r.get(2)?,
+        parent: r.get(3)?,
+        hypothesis: r.get(4)?,
+        state: r.get(5)?,
+        proposer_job: r.get(6)?,
+        evidence: r.get(7)?,
+        dir: r.get(8)?,
+        created_at: r.get(9)?,
+        retired_at: r.get(10)?,
+        promoted_at: r.get(11)?,
+    })
+}
+
+const VARIANT_COLS: &str = "id, project_scope, kinds_scope, parent, hypothesis, state, proposer_job, evidence, dir, created_at, retired_at, promoted_at";
+
+impl Variant {
+    /// The islands of `project_scope`; empty means every project.
+    pub fn projects(&self) -> Vec<String> {
+        serde_json::from_str(&self.project_scope).unwrap_or_default()
+    }
+    pub fn kinds(&self) -> Vec<String> {
+        serde_json::from_str(&self.kinds_scope).unwrap_or_default()
+    }
+    /// Whether the variant may run on island `slug`.
+    pub fn on_island(&self, slug: &str) -> bool {
+        let p = self.projects();
+        p.is_empty() || p.iter().any(|x| x == slug)
+    }
+}
+
 impl Store {
+    /// Every variant, oldest first (the archive is never pruned).
+    pub fn variants(&self) -> Result<Vec<Variant>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {VARIANT_COLS} FROM variants ORDER BY created_at, id"
+        ))?;
+        Ok(stmt
+            .query_map([], scan_variant)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Registers a variant in state `proposed` and writes `evolve.registered`.
+    /// The caller has already checked the genome; this checks the row.
+    pub fn insert_variant(&self, actor: &str, v: &NewVariant) -> Result<Variant> {
+        if !crate::settings::valid_variant_id(&v.id) || v.id == BASE_VARIANT {
+            return Err(input_err(format!(
+                "{:?} is not a variant id (letters, digits, . _ -; not base)",
+                v.id
+            )));
+        }
+        if v.hypothesis.trim().is_empty() {
+            return Err(input_err("a variant needs a one-line hypothesis"));
+        }
+        let tx = self.begin()?;
+        let parent_known: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM variants WHERE id = ?)",
+            [&v.parent],
+            |r| r.get(0),
+        )?;
+        if !parent_known {
+            tx.rollback()?;
+            return Err(input_err(format!(
+                "parent {:?} is not a registered variant",
+                v.parent
+            )));
+        }
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM variants WHERE id = ?)",
+            [&v.id],
+            |r| r.get(0),
+        )?;
+        if exists {
+            tx.rollback()?;
+            return Err(input_err(format!("variant {} is already registered", v.id)));
+        }
+        let now = self.now();
+        tx.execute(
+            "INSERT INTO variants (id, project_scope, kinds_scope, parent, hypothesis, state, proposer_job, evidence, dir, created_at) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?)",
+            params![
+                v.id,
+                serde_json::to_string(&v.projects)?,
+                serde_json::to_string(&v.kinds)?,
+                v.parent,
+                v.hypothesis.trim(),
+                v.proposer_job,
+                serde_json::to_string(&v.evidence)?,
+                v.dir,
+                now
+            ],
+        )?;
+        tx.event(
+            actor,
+            VARIANT_REGISTERED,
+            &v.id,
+            serde_json::json!({
+                "parent": v.parent,
+                "projects": v.projects,
+                "kinds": v.kinds,
+                "hypothesis": v.hypothesis.trim(),
+                "dir": v.dir,
+            }),
+        )?;
+        tx.commit()?;
+        self.variant(&v.id)?
+            .ok_or_else(|| anyhow::anyhow!("variant {} vanished after insert", v.id))
+    }
+
+    /// Retires `id` (it stays in the archive as a stepping stone) and moves
+    /// every project pointer that named it back to its parent when that is
+    /// a live promoted variant, else to `base`. Returns the projects whose
+    /// pointer moved, each with where it went.
+    pub fn retire_variant(
+        &self,
+        actor: &str,
+        id: &str,
+        reason: &str,
+    ) -> Result<Vec<(String, String)>> {
+        if id == BASE_VARIANT {
+            return Err(input_err(
+                "base is the empty overlay every project falls back to; it is never retired",
+            ));
+        }
+        let Some(v) = self.variant(id)? else {
+            return Err(input_err(format!("no variant {id}")));
+        };
+        if v.state == "retired" {
+            return Err(input_err(format!(
+                "variant {id} was already retired at {}",
+                v.retired_at
+            )));
+        }
+        let back = match self.variant(&v.parent)? {
+            Some(p) if p.state == "promoted" => p.id,
+            _ => BASE_VARIANT.to_string(),
+        };
+        let now = self.now();
+        let tx = self.begin()?;
+        let moved: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT name FROM settings WHERE name LIKE 'evolve.incumbent.%' AND TRIM(value) = ? ORDER BY name",
+            )?;
+            stmt.query_map([id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for name in &moved {
+            tx.execute(
+                "UPDATE settings SET value = ?, updated_at = ?, updated_by = ? WHERE name = ?",
+                params![back, now, actor, name],
+            )?;
+            tx.event(actor, "setting", name, back.as_str())?;
+        }
+        tx.execute(
+            "UPDATE variants SET state = 'retired', retired_at = ? WHERE id = ?",
+            params![now, id],
+        )?;
+        let moved: Vec<(String, String)> = moved
+            .into_iter()
+            .map(|n| {
+                (
+                    n.trim_start_matches(crate::settings::INCUMBENT_PREFIX)
+                        .to_string(),
+                    back.clone(),
+                )
+            })
+            .collect();
+        tx.event(
+            actor,
+            VARIANT_RETIRED,
+            id,
+            serde_json::json!({
+                "reason": reason,
+                "was": v.state,
+                "pointers": moved.iter().map(|(p, to)| serde_json::json!({"project": p, "to": to})).collect::<Vec<_>>(),
+            }),
+        )?;
+        tx.commit()?;
+        Ok(moved)
+    }
+
+    /// Makes `id` the incumbent of `slug`: the pointer moves and the row is
+    /// marked promoted. Returns the incumbent it replaced.
+    pub fn promote_variant(
+        &self,
+        actor: &str,
+        id: &str,
+        slug: &str,
+        reason: &str,
+    ) -> Result<String> {
+        let Some(v) = self.variant(id)? else {
+            return Err(input_err(format!("no variant {id}")));
+        };
+        if v.state == "retired" {
+            return Err(input_err(format!(
+                "variant {id} is retired; register a new variant instead"
+            )));
+        }
+        if !v.on_island(slug) {
+            return Err(input_err(format!(
+                "variant {id} does not cover project {slug} (its islands: {})",
+                v.projects().join(", ")
+            )));
+        }
+        let was = self.incumbent(slug);
+        if was == id {
+            return Err(input_err(format!(
+                "variant {id} is already the incumbent of {slug}"
+            )));
+        }
+        let name = incumbent_setting(slug);
+        crate::settings::validate_setting(&name, id)?;
+        let now = self.now();
+        let tx = self.begin()?;
+        tx.execute("INSERT INTO settings (name, value, updated_at, updated_by) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by", params![name, id, now, actor])?;
+        tx.event(actor, "setting", &name, id)?;
+        if v.state != "promoted" {
+            tx.execute(
+                "UPDATE variants SET state = 'promoted', promoted_at = ? WHERE id = ?",
+                params![now, id],
+            )?;
+        }
+        tx.event(
+            actor,
+            VARIANT_PROMOTED,
+            id,
+            serde_json::json!({"project": slug, "was": was, "reason": reason}),
+        )?;
+        tx.commit()?;
+        Ok(was)
+    }
+
     /// True when the owner has turned the agent-program loop on
     /// (`evolve.mode=variants`); every variant path checks this first.
     pub fn variants_mode(&self) -> bool {
@@ -98,24 +418,9 @@ impl Store {
         let conn = self.conn()?;
         Ok(conn
             .query_row(
-                "SELECT id, project_scope, kinds_scope, parent, hypothesis, state, proposer_job, evidence, dir, created_at, retired_at, promoted_at FROM variants WHERE id = ?",
+                &format!("SELECT {VARIANT_COLS} FROM variants WHERE id = ?"),
                 [id],
-                |r| {
-                    Ok(Variant {
-                        id: r.get(0)?,
-                        project_scope: r.get(1)?,
-                        kinds_scope: r.get(2)?,
-                        parent: r.get(3)?,
-                        hypothesis: r.get(4)?,
-                        state: r.get(5)?,
-                        proposer_job: r.get(6)?,
-                        evidence: r.get(7)?,
-                        dir: r.get(8)?,
-                        created_at: r.get(9)?,
-                        retired_at: r.get(10)?,
-                        promoted_at: r.get(11)?,
-                    })
-                },
+                scan_variant,
             )
             .optional()?)
     }
@@ -465,5 +770,133 @@ mod tests {
         );
         s.set_setting("human", "evolve.mode", "variants").unwrap();
         assert!(s.variants_mode());
+    }
+
+    #[test]
+    fn a_variant_may_set_the_allowlist_and_never_the_immutable_set() {
+        for name in [
+            "worker_model",
+            "light_reasoning",
+            "harness.compact_at",
+            "harness.max_steps",
+            "lead.idle_hours",
+            "plan.operating_layer_per_day",
+        ] {
+            assert_eq!(variant_setting_refusal(name), None, "{name}");
+        }
+        for name in [
+            "owner.presence",
+            "stop",
+            "landing",
+            "landing.push",
+            "landing.parallel",
+            "push.credential",
+            "compute.provider",
+            "harness.deny_tools",
+            "harness.allow_tools",
+            "evolve.mode",
+            "evolve.incumbent.demo",
+        ] {
+            let why = variant_setting_refusal(name).unwrap_or_default();
+            assert!(why.contains("immutable set"), "{name}: {why}");
+            assert!(why.starts_with(name), "names the key: {why}");
+        }
+        for name in ["provider", "workers", "harness.max_cost", "quorum"] {
+            let why = variant_setting_refusal(name).unwrap_or_default();
+            assert!(
+                why.contains("not on the variant allowlist"),
+                "{name}: {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn variants_register_retire_and_promote_through_the_pointer() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, s) = open();
+        s.ensure_base_variant().unwrap();
+        let new = NewVariant {
+            id: "v-one".into(),
+            projects: vec!["demo".into()],
+            parent: BASE_VARIANT.into(),
+            hypothesis: "a cheaper compaction model keeps kept landings per token up".into(),
+            dir: "/tmp/v-one".into(),
+            ..NewVariant::default()
+        };
+        let v = s.insert_variant("human", &new).unwrap();
+        assert_eq!(v.state, "proposed");
+        assert_eq!(v.projects(), ["demo"]);
+        assert!(v.on_island("demo") && !v.on_island("other"));
+        let err = s.insert_variant("human", &new).unwrap_err().to_string();
+        assert!(err.contains("already registered"), "{err}");
+        for (bad, want) in [
+            (
+                NewVariant {
+                    id: "base".into(),
+                    ..new.clone()
+                },
+                "not a variant id",
+            ),
+            (
+                NewVariant {
+                    id: "two words".into(),
+                    ..new.clone()
+                },
+                "not a variant id",
+            ),
+            (
+                NewVariant {
+                    id: "v-2".into(),
+                    parent: "ghost".into(),
+                    ..new.clone()
+                },
+                "not a registered variant",
+            ),
+            (
+                NewVariant {
+                    id: "v-3".into(),
+                    hypothesis: " ".into(),
+                    ..new.clone()
+                },
+                "hypothesis",
+            ),
+        ] {
+            let err = s.insert_variant("human", &bad).unwrap_err().to_string();
+            assert!(err.contains(want), "{err}");
+        }
+        let err = s
+            .promote_variant("human", "v-one", "other", "")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not cover project other"), "{err}");
+        assert_eq!(
+            s.promote_variant("human", "v-one", "demo", "test").unwrap(),
+            "base"
+        );
+        assert_eq!(s.incumbent("demo"), "v-one");
+        assert_eq!(s.variant("v-one").unwrap().unwrap().state, "promoted");
+        assert!(s.promote_variant("human", "v-one", "demo", "").is_err());
+        let moved = s.retire_variant("human", "v-one", "rollback").unwrap();
+        assert_eq!(moved, [("demo".to_string(), "base".to_string())]);
+        assert_eq!(s.incumbent("demo"), "base");
+        let v = s.variant("v-one").unwrap().unwrap();
+        assert_eq!(v.state, "retired");
+        assert_eq!(v.retired_at, NOW);
+        assert!(s.retire_variant("human", "v-one", "").is_err());
+        assert!(s.retire_variant("human", "base", "").is_err());
+        assert!(s.promote_variant("human", "v-one", "demo", "").is_err());
+        let conn = s.conn().unwrap();
+        let actions: Vec<String> = conn
+            .prepare("SELECT action FROM events WHERE subject = 'v-one' ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            actions,
+            [VARIANT_REGISTERED, VARIANT_PROMOTED, VARIANT_RETIRED]
+        );
+        assert_eq!(s.variants().unwrap().len(), 2);
     }
 }

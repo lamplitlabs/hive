@@ -76,6 +76,7 @@ pub mod research;
 pub mod resync;
 pub mod retention;
 pub mod retire;
+pub(crate) mod revert_scan;
 pub mod run;
 pub mod runners;
 pub mod schedule;

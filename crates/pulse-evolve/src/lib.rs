@@ -21,6 +21,7 @@ pub mod fixtures;
 pub mod flat_gate;
 pub mod fleet;
 pub mod format; // crate-private items only; not re-exported
+pub mod genome;
 pub(crate) mod gopath;
 pub mod heal;
 pub mod heldout_auto;
@@ -40,6 +41,7 @@ pub mod score; // crate-private items only; not re-exported
 pub mod starter;
 pub mod status;
 pub mod usage;
+pub(crate) mod variant_cmd;
 
 pub use api::*;
 pub use archive::*;

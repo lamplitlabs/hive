@@ -424,6 +424,10 @@ static INCUMBENT_SLUG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9._-]{0,127}$").unwrap());
 static VARIANT_ID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$").unwrap());
+/// Whether `id` has the shape of a variant id (the pointer's value rule).
+pub fn valid_variant_id(id: &str) -> bool {
+    VARIANT_ID.is_match(id)
+}
 fn incumbent_rule(name: &str) -> Option<SettingRule> {
     let slug = name.strip_prefix(INCUMBENT_PREFIX)?;
     INCUMBENT_SLUG.is_match(slug).then(|| {

@@ -19,7 +19,7 @@ impl RepeatedStrings {
 }
 /// Command metadata for `pulse evolve`.
 pub const EVOLVE_SUMMARY: &str = "measure, rehearse and run the voted self-improvement loop";
-pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]   (--fixture NAME measures those public fixtures and, always, the held-out set)\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS... | score check -- CMD ARGS...   (the card-check scorer: exit status 1/0, or a single integer on stdout as a count that should fall)";
+pub const EVOLVE_USAGE: &str = "pulse evolve status|report|fixture|seed|setup|measure|archive|lineage|cycle|score|variant [flags]\n  fixture add --project P --name N --request FILE|- --scorer CMD [--metric] [--weight W] [--kind public|signal] [--answer-key PATH...]\n  fixture list|enable|disable [NAME] [--project P] [--json]\n  fixture seed [--project P] [--json]   (starter set; every registered project without --project)\n  seed [--project P] [--json]   (constitution and evaluators from the checkout's docs/evolution or the template, then the starter set; existing records kept)\n  setup DIR | status [--project P] [--json] | archive [--project P] [--json] | lineage --project P [--json]\n  report [--project P] [--days N] [--json]   (the window's counts from the store: posts, the suggestion funnel, card jobs, jobs by outcome, landings, experiments, the owner inbox)\n  measure --project P [--ref REF] [--tree DIR] [--fixture NAME...] [--shadow] [--json]   (--fixture NAME measures those public fixtures and, always, the held-out set)\n  cycle --project P [--once] [--agent A] [--json]\n  score NAME | score metric (--lower|--higher) --scale S [--floor F] -- CMD ARGS... | score check -- CMD ARGS...   (the card-check scorer: exit status 1/0, or a single integer on stdout as a count that should fall)\n  variant new --project P --dir D [--id ID] [--parent ID] [--hypothesis \"...\"] [--kinds K,K] [--evidence POST,POST] [--json]   (evolve.mode=variants only: registers the genome in D - variant.yaml, agents/, skills/, instructions.md, settings.toml - refusing a setting off the allowlist or in the immutable set, the constitution, evaluators or STOP, and a near-duplicate of an archive member on the island)\n  variant list [--project P] [--json] | variant show ID [--json] | variant retire ID [--reason R] | variant promote ID --project P [--reason R]   (promote: the owner only, evolve.mode=variants only; retire moves an incumbent pointer back to the parent or base)";
 pub const REFLECT_SUMMARY: &str =
     "read-only working state, board, ballot, hygiene and evolution gates";
 pub const REFLECT_USAGE: &str = "pulse reflect [--project P] [--area A] [--agent R/M] [--json]";
@@ -303,12 +303,13 @@ pub fn run_evolve(
         "fixture" => run_fixture(c, &rest),
         "seed" => run_seed(c, &rest),
         "score" => run_score(c, &rest),
+        "variant" => crate::variant_cmd::run_variant(c, &rest),
         "report" | "measure" | "cycle" | "status" | "gates" | "archive" | "lineage" | "setup" => {
             run_evolve_sub(c, &sub, &rest)
         }
         _ => Err(crate::fixtures::input_error(
             "Unknown evolve subcommand",
-            "choose status, report, fixture, seed, setup, measure, archive, lineage, cycle or score",
+            "choose status, report, fixture, seed, setup, measure, archive, lineage, cycle, score or variant",
             "pulse help evolve",
         )),
     };
@@ -1053,7 +1054,7 @@ pub(crate) fn print_lineage(w: &mut dyn Write, tree: &[crate::lineage::LineageNo
     }
 }
 
-fn add_common_flags(fs: &mut pulse_cli::FlagSet, c: &pulse_cli::Context) {
+pub(crate) fn add_common_flags(fs: &mut pulse_cli::FlagSet, c: &pulse_cli::Context) {
     fs.string_var("project", &c.project, "project slug");
     fs.string_var("agent", &c.agent, "calling agent");
     fs.string_var("session", &c.session, "calling session");
@@ -1063,7 +1064,7 @@ fn add_common_flags(fs: &mut pulse_cli::FlagSet, c: &pulse_cli::Context) {
     fs.bool_var("quiet", c.quiet, "suppress ordinary text");
 }
 
-fn apply_common_flags(c: &mut pulse_cli::Context, fs: &pulse_cli::FlagSet) {
+pub(crate) fn apply_common_flags(c: &mut pulse_cli::Context, fs: &pulse_cli::FlagSet) {
     c.project = fs.get_string("project");
     c.agent = fs.get_string("agent");
     c.session = fs.get_string("session");
@@ -1073,7 +1074,7 @@ fn apply_common_flags(c: &mut pulse_cli::Context, fs: &pulse_cli::FlagSet) {
     c.quiet = fs.get_bool("quiet");
 }
 
-fn store_context(c: &pulse_cli::Context) -> pulse_cli::Context {
+pub(crate) fn store_context(c: &pulse_cli::Context) -> pulse_cli::Context {
     pulse_cli::Context {
         store: c.store.clone(),
         home: c.home.clone(),

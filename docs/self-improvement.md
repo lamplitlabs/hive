@@ -156,6 +156,49 @@ daemon runs the cycle by itself; the command is the by-hand alternative.
   archived tree, each row's outcome (`improved`, `neutral`, `discarded`), CMP
   values and the current candidate count.
 
+### Agent-program variants (ADR-049, being built)
+
+PLAN-050 adds a second loop that evolves the agent program, not product
+code. It is off unless the owner sets `evolve.mode=variants`; under the
+default `fixtures` mode nothing below writes anything except `list`, `show`
+and `retire`.
+
+- **Revert scan.** The daemon's landing maintenance checks every
+  `land.landed` sha younger than `evolve.keep_days × 2`. If the default
+  branch no longer contains it, or a newer commit there says `This reverts
+  commit <sha>`, the scan writes one `land.reverted` event for that sha,
+  only once. The git it runs is read-only.
+- **Genome.** A variant is a directory `~/.pulse/variants/<id>/` holding
+  `variant.yaml`, `agents/<name>.md`, `skills/<name>/SKILL.md`,
+  `instructions.md` and `settings.toml`.
+  `pulse evolve variant new --project P --dir D [--id ID] [--parent ID]
+  [--hypothesis "..."]` parses every file and refuses, naming the key or the
+  file:
+  - a setting off the allowlist (`worker_model`, `light_model`,
+    `worker_reasoning`, `light_reasoning`, `harness.compact_at`,
+    `harness.compact_model`, `harness.max_steps`, `harness.reasoning`,
+    `harness.subagents`, `harness.skills`, `harness.memory`, `lead.*`,
+    `plan.*`);
+  - a setting in the immutable set (`owner.*`, `stop`, `landing*`, `push.*`,
+    `compute.*`, `harness.deny_tools`, `harness.allow_tools`, `evolve.*`);
+  - a value `validate_setting` rejects;
+  - a constitution, evaluators or `STOP` file;
+  - an agent or skill whose front matter widens tools, permissions, hooks or
+    MCP servers;
+  - an overlay within similarity 0.9 (Jaccard over the normalised lines and
+    settings) of an archive member on the same island. The refusal names
+    that member, and the empty overlay counts as `base`.
+
+  The checked genome is copied under `~/.pulse/variants/<id>/` and
+  registered as `proposed`.
+- **The other variant commands.**
+  - `pulse evolve variant list|show ID` prints the archive, the overlay and
+    each variant's incumbent projects.
+  - `retire ID` keeps the row and moves any incumbent pointer back to the
+    parent (when it is promoted) or to `base`.
+  - `promote ID --project P` moves `evolve.incumbent.<slug>`. Only the owner
+    runs it by hand; the promotion test will run it otherwise.
+
 ## Seeded records and starter fixtures
 
 Registering a project (`pulse init`, `pulse onboard`, the console) seeds the
