@@ -530,7 +530,7 @@ Multiple command/action blocks are still refused as ambiguous. The final
 report is what the runner has always read - `SUMMARY:`,
 `FINDING:`, `SUGGESTION:`, `QUESTION:`, `VOTE:`, `DECIDE:` and, in
 teacher mode, `LESSON:` lines - so
-briefs, planning, landing, lessons and the board are unchanged. A run that
+briefs, planning, delivery, lessons and the board are unchanged. A run that
 hits a limit still reports: `SUMMARY: harness stopped: step_limit after 60
 model calls and 41 commands; format_errors=0` and the model's last message
 as a `FINDING:`. Report headings and report keywords are matched
