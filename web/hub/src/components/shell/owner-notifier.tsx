@@ -231,7 +231,10 @@ export function OwnerNotifier() {
   // whenever the owner comes back (they may have changed it in System Settings).
   useEffect(() => {
     if (!on || !appNotifier()) return;
-    const read = () => void notifyPermission(false);
+    // macOS needs no click to ask, so the app asks when nobody has yet: the
+    // choices may have been turned on before the app could ask (or in another
+    // build), and until it asks every notice falls back to the page's chime.
+    const read = () => void notifyPermission(appPermission === "default");
     read();
     window.addEventListener("focus", read);
     return () => window.removeEventListener("focus", read);
