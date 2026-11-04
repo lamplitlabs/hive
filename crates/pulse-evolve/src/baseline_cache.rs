@@ -18,6 +18,8 @@ pub const BASELINE_CACHE_SETTINGS: &[&str] = &[
     "harness.output_limit",
     "harness.max_cost",
     "harness.keep_observations",
+    "harness.trim_keep_recent",
+    "harness.trim_over",
     "minutes_per_job",
 ];
 

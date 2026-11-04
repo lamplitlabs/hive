@@ -1018,6 +1018,8 @@ impl Handler {
                 "harness.allow_tools",
                 "harness.deny_tools",
                 "harness.compact_at",
+                "harness.trim_keep_recent",
+                "harness.trim_over",
                 "harness.reasoning",
                 "harness.step_timeout",
                 "harness.commit_timeout",
