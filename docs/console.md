@@ -46,6 +46,15 @@ page starts with **For you**, **Your projects** and **What's happening**; the
 machine details, service controls and raw activity fold under **Details for
 this machine**.
 
+**What's happening** ends with **Over time**: what the fleet got done and
+what it spent, per day - landings, jobs done, tasks done and agent sessions,
+each with a sparkline, a per-day rate and the change against the window
+before; tokens in and out (and money, when a provider prices its calls);
+then one chart switchable between the work and the spend over the last 7,
+14 or 30 days. It reads `GET /api/v1/kpis?days=N[&project=SLUG]`, one
+zero-filled row per UTC day from the harness sessions, the jobs table and
+the `land.landed` / `task.status` events; `days` is 1..90 (default 30).
+
 ### For you
 
 Everything waiting on the owner in one place: proposed decisions (ADRs) to
