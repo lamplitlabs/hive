@@ -262,7 +262,8 @@ impl Handler {
             self.addition_task_activity(w, r, &parts[1]);
             return;
         }
-        if parts.len() > 3
+        let merge = parts.len() == 4 && parts[2] == "pr" && parts[3] == "merge";
+        if (parts.len() > 3 && !merge)
             || (parts.len() == 3
                 && parts[2] != "amend"
                 && parts[2] != "cancel"
@@ -274,7 +275,7 @@ impl Handler {
         }
         let methods = if parts.len() == 1 {
             vec!["GET".to_string(), "POST".to_string()]
-        } else if parts.len() == 3 {
+        } else if parts.len() >= 3 {
             vec!["POST".to_string()]
         } else {
             vec!["GET".to_string()]
@@ -717,6 +718,10 @@ impl Handler {
             self.addition_task_pull_request(w, r, store, &parts[1]);
             return;
         }
+        if parts[2] == "pr" {
+            self.addition_task_merge(w, r, store, &parts[1]);
+            return;
+        }
         let (title, brief, note, reason, ok) = if parts[2] == "amend" {
             let has_title = payload.contains_key("title");
             let (title, ok1) = addition_string(w, &payload, "title", has_title);
@@ -854,70 +859,31 @@ impl Handler {
         write_json(w, 200, json!({"task": task}));
     }
 
-    /// `POST /api/v1/tasks/{id}/pull-request`: the owner asks for what the
-    /// task landed to go to the forge as a pull request from `pulse/landed`,
-    /// whatever `landing.push` says. The daemon answers on its next landing
-    /// pass (`land.pr`, or `land.pr-answered` when nothing is ahead).
+    /// `POST /api/v1/tasks/{id}/pull-request`: the owner's old ask for a
+    /// pull request of the landed work. Every finished task gets its own
+    /// pull request now and nothing answers the ask any more, so it is
+    /// refused rather than left pending for ever; the page stopped
+    /// offering it, and a stale page or script learns why here.
     fn addition_task_pull_request(
         &self,
         w: &mut ResponseWriter,
         r: &Request,
-        store: &pulse_store::Store,
+        _store: &pulse_store::Store,
         id: &str,
     ) {
-        let task = match self.addition_task(r, id) {
-            Ok(v) => v,
-            Err(e) => {
-                addition_failure(w, e.to_string());
-                return;
-            }
-        };
-        let delivery = match pulse_tasks::delivery_for(store, id) {
-            Ok(v) => v,
-            Err(e) => {
-                addition_failure(w, e.to_string());
-                return;
-            }
-        };
-        if !delivery.can_ask {
-            let (text, fix) = match delivery.state.as_str() {
-                "none" | "waiting" => (
-                    "Nothing of this task has landed on the default branch yet.".to_string(),
-                    "Wait for the landing; the pull request can be asked for then.".to_string(),
-                ),
-                "asked" => (
-                    "A pull request was already asked for; the daemon opens it on its next landing pass.".to_string(),
-                    "Watch the task's activity for the pull request.".to_string(),
-                ),
-                "pr" => (
-                    format!(
-                        "The landed work is on the pull request already{}.",
-                        if delivery.url.is_empty() { String::new() } else { format!(": {}", delivery.url) }
-                    ),
-                    "Merge it on the forge.".to_string(),
-                ),
-                _ => (
-                    "The landed work was pushed to the upstream already.".to_string(),
-                    "Nothing waits for a pull request.".to_string(),
-                ),
-            };
-            write_error(w, 409, "No pull request to ask for".to_string(), text, fix);
-            return;
-        }
-        let project = addition_row_string(&task, "project");
-        if let Err(e) = pulse_tasks::ask_pull_request(store, &project, id, pulse_store::HUMAN_AGENT)
-        {
+        if let Err(e) = self.addition_task(r, id) {
             addition_failure(w, e.to_string());
             return;
         }
-        let delivery = match pulse_tasks::delivery_for(store, id) {
-            Ok(v) => serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
-            Err(e) => {
-                addition_failure(w, e.to_string());
-                return;
-            }
-        };
-        write_json(w, 202, json!({"task": task, "delivery": delivery}));
+        write_error(
+            w,
+            409,
+            "No pull request to ask for".to_string(),
+            "Every task now gets its pull request automatically once its steps are done."
+                .to_string(),
+            "Watch the task's sheet: it says where the pull request stands and offers Merge when the review hands it to you."
+                .to_string(),
+        );
     }
 
     pub(crate) fn addition_message_write(&self, w: &mut ResponseWriter, r: &Request) {
@@ -2545,7 +2511,7 @@ mod tests {
     }
 
     #[test]
-    fn task_detail_carries_delivery_and_the_owner_asks_for_a_pull_request() {
+    fn task_detail_carries_delivery() {
         let _serial = crate::test_helpers::serial();
         let s = http::additions_store(false);
         http::additions_project(&s, "one");
@@ -2556,14 +2522,6 @@ mod tests {
             http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
         assert_eq!(status, 200, "{result:?}");
         assert_eq!(result["delivery"]["state"], "none");
-        // Nothing landed: no pull request to ask for.
-        let (status, result) = http::additions_request(
-            http::handler(&s),
-            "POST",
-            &format!("/api/v1/tasks/{id}/pull-request"),
-            "{}",
-        );
-        assert_eq!(status, 409, "{result:?}");
 
         s.store
             .conn()
@@ -2587,26 +2545,6 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(result["delivery"]["state"], "landed");
         assert_eq!(result["delivery"]["sha"], "59f641d2c3b4");
-        assert_eq!(result["delivery"]["can_ask"], true);
-
-        let (status, result) = http::additions_request(
-            http::handler(&s),
-            "POST",
-            &format!("/api/v1/tasks/{id}/pull-request"),
-            "{}",
-        );
-        assert_eq!(status, 202, "{result:?}");
-        assert_eq!(result["delivery"]["state"], "asked");
-        assert_eq!(result["delivery"]["can_ask"], false);
-        assert!(pulse_tasks::pull_request_asked(&s.store, "one"));
-        // Asked once; the daemon answers before another ask is taken.
-        let (status, _) = http::additions_request(
-            http::handler(&s),
-            "POST",
-            &format!("/api/v1/tasks/{id}/pull-request"),
-            "{}",
-        );
-        assert_eq!(status, 409);
         let (status, _) = http::additions_request(
             http::handler(&s),
             "GET",

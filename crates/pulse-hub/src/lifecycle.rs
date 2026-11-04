@@ -14,6 +14,10 @@ impl Handler {
         r: &crate::httpx::Request,
         parts: Vec<String>,
     ) -> bool {
+        if parts.len() >= 3 && parts[2] == "prs" {
+            self.addition_project_prs(w, r, &parts);
+            return true;
+        }
         if !lifecycle_route(parts.clone()) {
             return false;
         }

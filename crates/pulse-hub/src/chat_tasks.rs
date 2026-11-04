@@ -8,6 +8,7 @@ use anyhow::Result;
 use pulse_store::Store;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 /// How many tasks a list returns.
 const TASK_LIMIT: i64 = 200;
@@ -57,9 +58,20 @@ pub(crate) fn task_groups(store: &Store, all: bool) -> Result<Vec<Value>> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // The projects' pull requests, read once per project: the page words
+    // each task from the state of its own pull request, and
+    // `pr_states_for` is one query over the project's events.
+    let mut prs: BTreeMap<String, Vec<pulse_tasks::PrState>> = BTreeMap::new();
     let mut out = Vec::with_capacity(tasks.len());
     for t in tasks {
-        out.push(group_json(&conn, &t)?);
+        let pr = prs
+            .entry(t.project.clone())
+            .or_insert_with(|| pulse_tasks::pr_states_for(store, &t.project).unwrap_or_default())
+            .iter()
+            .find(|p| p.task == t.id)
+            .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+            .unwrap_or(Value::Null);
+        out.push(group_json(&conn, &t, pr)?);
     }
     Ok(out)
 }
@@ -76,7 +88,9 @@ struct TaskRow {
     updated_at: String,
 }
 
-fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
+/// The task as the page lists it; `pr` is the state of the task's pull
+/// request (`pulse_tasks::PrState`) or null before one is opened.
+fn group_json(conn: &Connection, t: &TaskRow, pr: Value) -> Result<Value> {
     let (messages, last_message_at, last_author): (i64, String, String) = conn.query_row(
         "SELECT count(*), coalesce(max(at), ''), \
          coalesce((SELECT author FROM messages WHERE task_id = ?1 ORDER BY at DESC, rowid DESC LIMIT 1), '') \
@@ -200,6 +214,7 @@ fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
         "last_message_at": last_message_at,
         "last_author": last_author,
         "needs_you": t.status == "review",
+        "pr": pr,
         "sessions": sessions,
     }))
 }

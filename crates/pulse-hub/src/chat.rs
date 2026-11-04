@@ -16,6 +16,7 @@ use hyper::header::{self, HeaderValue};
 use pulse_harness::conversation::{ImageAttachment, Manager};
 use pulse_store::Conversation;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 /// The manager, built on first use from the handler's store; tests seed it
@@ -220,6 +221,7 @@ impl Handler {
         };
         let waiting = chats.waiting_to_land(&rows);
         let reviewing = chats.reviewing(&rows);
+        let mut prs = ProjectPrs::new(store);
         let items: Vec<Value> = rows
             .iter()
             .map(|row| {
@@ -228,6 +230,7 @@ impl Handler {
                     chats,
                     waiting.contains(&row.id),
                     reviewing.contains(&row.id),
+                    prs.of(row),
                 )
             })
             .collect();
@@ -303,7 +306,7 @@ impl Handler {
             Ok(row) => write_json(
                 w,
                 201,
-                json!({"conversation": conversation_json_one(&row, chats)}),
+                json!({"conversation": conversation_json_one(self.store.as_deref(), &row, chats)}),
             ),
             Err(e) => addition_failure(w, e),
         }
@@ -378,10 +381,17 @@ impl Handler {
         family.push(row.clone());
         let waiting = chats.waiting_to_land(&family);
         let reviewing = chats.reviewing(&family);
+        let mut prs = ProjectPrs::new(store);
         let children: Vec<Value> = children
             .iter()
             .map(|c| {
-                conversation_json(c, chats, waiting.contains(&c.id), reviewing.contains(&c.id))
+                conversation_json(
+                    c,
+                    chats,
+                    waiting.contains(&c.id),
+                    reviewing.contains(&c.id),
+                    prs.of(c),
+                )
             })
             .collect();
         let mut conversation = serde_json::to_value(&row).unwrap_or(Value::Null);
@@ -394,6 +404,7 @@ impl Handler {
                 "reviewing".to_string(),
                 Value::Bool(reviewing.contains(&row.id)),
             );
+            map.insert("pr".to_string(), prs.of(&row));
         }
         write_json(
             w,
@@ -555,7 +566,7 @@ impl Handler {
                             write_json(
                                 w,
                                 200,
-                                json!({"conversation": conversation_json_one(&row, chats), "attached": attached}),
+                                json!({"conversation": conversation_json_one(self.store.as_deref(), &row, chats), "attached": attached}),
                             );
                         }
                         return;
@@ -596,7 +607,7 @@ impl Handler {
                     write_json(
                         w,
                         200,
-                        json!({"conversation": conversation_json_one(&row, chats)}),
+                        json!({"conversation": conversation_json_one(self.store.as_deref(), &row, chats)}),
                     );
                 }
             }
@@ -699,15 +710,18 @@ impl Handler {
     }
 }
 
-/// A row with its live state folded in.
-/// The row with its live state and whether its branch waits to land
-/// (commits the project's default branch lacks; `Manager::waiting_to_land`).
-/// `reviewing` says a landing is merging and checking its branch now.
+/// The row with its live state, whether its branch waits for its pull
+/// request (commits the project's default branch lacks;
+/// `Manager::waiting_to_land`), `reviewing` (a landing of the older flow is
+/// merging its branch) and `pr`: where the pull request opened from its
+/// branch stands (`ProjectPrs::of`), null without one. The page groups by
+/// `pr` first and falls back to `waiting_to_land`.
 fn conversation_json(
     row: &Conversation,
     chats: &Manager,
     waiting_to_land: bool,
     reviewing: bool,
+    pr: Value,
 ) -> Value {
     let live = chats.live(row);
     let mut v = serde_json::to_value(row).unwrap_or(Value::Null);
@@ -718,12 +732,17 @@ fn conversation_json(
         );
         map.insert("waiting_to_land".to_string(), Value::Bool(waiting_to_land));
         map.insert("reviewing".to_string(), Value::Bool(reviewing));
+        map.insert("pr".to_string(), pr);
     }
     v
 }
 
 /// `conversation_json` for one row, asking git about its branch.
-fn conversation_json_one(row: &Conversation, chats: &Manager) -> Value {
+fn conversation_json_one(
+    store: Option<&pulse_store::Store>,
+    row: &Conversation,
+    chats: &Manager,
+) -> Value {
     let one = std::slice::from_ref(row);
     let waiting = chats.waiting_to_land(one);
     let reviewing = chats.reviewing(one);
@@ -732,7 +751,47 @@ fn conversation_json_one(row: &Conversation, chats: &Manager) -> Value {
         chats,
         waiting.contains(&row.id),
         reviewing.contains(&row.id),
+        store
+            .map(|s| ProjectPrs::new(s).of(row))
+            .unwrap_or(Value::Null),
     )
+}
+
+/// The projects' pull requests, read once per project while a list is
+/// worded: `pr_states_for` is one query over the project's events, and the
+/// list of two hundred conversations would otherwise run it per row.
+struct ProjectPrs<'a> {
+    store: &'a pulse_store::Store,
+    by_project: BTreeMap<String, Vec<pulse_tasks::PrState>>,
+}
+
+impl<'a> ProjectPrs<'a> {
+    fn new(store: &'a pulse_store::Store) -> Self {
+        Self {
+            store,
+            by_project: BTreeMap::new(),
+        }
+    }
+
+    /// The conversation's pull request, newest first: the one opened for
+    /// the conversation itself (`kind: proposed`) or from its branch. A
+    /// list must not fail because the events could not be read, so an
+    /// error reads as no pull request.
+    fn of(&mut self, row: &Conversation) -> Value {
+        if row.project.is_empty() {
+            return Value::Null;
+        }
+        let prs = self
+            .by_project
+            .entry(row.project.clone())
+            .or_insert_with(|| {
+                pulse_tasks::pr_states_for(self.store, &row.project).unwrap_or_default()
+            });
+        prs.iter()
+            .find(|p| p.conversation == row.id || (!row.branch.is_empty() && p.head == row.branch))
+            .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
+            .unwrap_or(Value::Null)
+    }
 }
 
 fn payload_bool(
@@ -2161,6 +2220,50 @@ mod tests {
             .find(|c| c["id"] == id.as_str())
             .expect("listed");
         assert_eq!(listed["waiting_to_land"], true, "{raw}");
+        assert!(listed["pr"].is_null(), "no pull request yet: {raw}");
+        // The daemon proposes the branch as a pull request and the reviewer
+        // hands it to the owner: the page reads both from `pr`, found by
+        // the conversation's id or its branch.
+        pulse_bus::emit(
+            &ts.store,
+            "daemon",
+            "land.pr",
+            "demo",
+            format!(
+                r#"{{"project":"demo","kind":"proposed","conversation":"{id}","number":4,"url":"https://github.com/o/r/pull/4","head":"pulse/chat-{id}","base":"main","title":"Chat: add a line","opened":true}}"#
+            ),
+        )
+        .unwrap();
+        pulse_bus::emit(
+            &ts.store,
+            "daemon",
+            "review.owner",
+            "demo",
+            r#"{"project":"demo","number":4,"url":"https://github.com/o/r/pull/4","reasons":["no tests"],"note":"the change has no test"}"#,
+        )
+        .unwrap();
+        let (code, list, raw) = call(&h, "GET", "/api/v1/chat", Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        let listed = list["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .expect("listed");
+        assert_eq!(listed["pr"]["number"], 4, "{raw}");
+        assert_eq!(listed["pr"]["state"], "needs_owner");
+        assert_eq!(listed["pr"]["reasons"][0], "no tests");
+        assert_eq!(listed["pr"]["can_merge"], true);
+        let (code, shown, raw) = call(&h, "GET", &format!("/api/v1/chat/{id}"), Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        assert_eq!(
+            shown["conversation"]["pr"]["url"],
+            "https://github.com/o/r/pull/4"
+        );
+        assert_eq!(
+            shown["conversation"]["pr"]["note"],
+            "the change has no test"
+        );
         let (code, diff, _) = call(&h, "GET", &format!("/api/v1/chat/{id}/diff"), Value::Null);
         assert_eq!(code, 200);
         assert!(diff["diff"].as_str().unwrap().contains("+more"));
@@ -2273,6 +2376,33 @@ mod tests {
         assert_eq!(sessions[2]["job"], "job-c");
         assert_eq!(sessions[2]["job_status"], "done");
         assert_eq!(sessions[2]["branch"], "pulse/iris/job-c");
+        assert!(g["pr"].is_null(), "no pull request yet: {raw}");
+
+        // The task's pull request, once opened, comes with the group.
+        pulse_bus::emit(
+            &ts.store,
+            "daemon",
+            "land.pr",
+            "one",
+            format!(
+                r#"{{"project":"one","kind":"task","task":"{}","number":5,"url":"https://github.com/o/r/pull/5","head":"pulse/task/{}","base":"main","opened":true}}"#,
+                task.id, task.id
+            ),
+        )
+        .unwrap();
+        pulse_bus::emit(
+            &ts.store,
+            "daemon",
+            "review.queued",
+            "one",
+            r#"{"project":"one","number":5,"url":"https://github.com/o/r/pull/5","job":"JOB-rev","kind":"task","reasons":[]}"#,
+        )
+        .unwrap();
+        let (code, body, raw) = call(&h, "GET", "/api/v1/chat", Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        let g = &body["tasks"].as_array().unwrap()[0];
+        assert_eq!(g["pr"]["number"], 5, "{raw}");
+        assert_eq!(g["pr"]["state"], "in_review");
 
         let (code, body, raw) = call(&h, "GET", "/api/v1/chat?all=1", Value::Null);
         assert_eq!(code, 200, "{raw}");
