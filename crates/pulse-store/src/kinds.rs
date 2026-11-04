@@ -92,6 +92,12 @@ pub const KIND_SPECS: &[KindSpec] = &[
         read_only: false,
         about: "remove what the runs left behind",
     },
+    KindSpec {
+        name: "review",
+        implements: false,
+        read_only: false,
+        about: "review one pull request: merge it, ask for changes, or hand it to the owner",
+    },
 ];
 
 /// The job-kind names, kept in lockstep with [`KIND_SPECS`] by the unit test
@@ -107,6 +113,7 @@ pub const JOB_KINDS: &[&str] = &[
     "baseline",
     "onboard",
     "clean",
+    "review",
 ];
 
 /// The spec for a known kind, or `None` for a word the table does not name.

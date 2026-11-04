@@ -54,6 +54,7 @@ pub const JOB_KINDS: &[&str] = &[
     "experiment",
     "lead",
     "baseline",
+    "review",
 ];
 pub const JOB_END_STATES: &[&str] = &["done", "failed", "cancelled", "blocked", "queued"];
 pub const JOB_RECOVER_ACTION: &str = "job.recover";
