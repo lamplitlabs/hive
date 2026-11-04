@@ -860,7 +860,10 @@ mod tests {
         pulse_tasks::set_compute_status(&s, &id, "failed", "", "daemon").unwrap();
         let reason = |h: &Handler| {
             let (_, listed) = http::additions_request(h.clone(), "GET", "/api/v1/compute", "");
-            listed["requests"][0]["note"].as_str().unwrap_or("?").to_string()
+            listed["requests"][0]["note"]
+                .as_str()
+                .unwrap_or("?")
+                .to_string()
         };
         assert_eq!(reason(&h), "", "no note and no finding");
         s.conn()
