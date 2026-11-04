@@ -189,7 +189,7 @@ mod tests {
         let (code, v) = call("GET", "/api/v1/leads?project=proj", "");
         assert_eq!(code, 200, "{v:?}");
         assert_eq!(v["leads"].as_array().unwrap().len(), 0);
-        assert_eq!(v["roles"].as_array().unwrap().len(), 12);
+        assert_eq!(v["roles"].as_array().unwrap().len(), 13);
         assert!(v["suggestions"].is_array());
 
         let (code, v) = call(
@@ -273,11 +273,11 @@ mod tests {
         let (code, v) = call("GET", "/api/v1/leads?project=proj", "");
         assert_eq!(code, 200);
         let roles = v["roles"].as_array().unwrap();
-        assert_eq!(roles.len(), 13);
+        assert_eq!(roles.len(), 14);
         assert_eq!(roles[0]["source"], "builtin");
-        assert_eq!(roles[12]["role"], "content");
-        assert_eq!(roles[12]["title"], "Content lead");
-        assert_eq!(roles[12]["source"], "store");
+        assert_eq!(roles[13]["role"], "content");
+        assert_eq!(roles[13]["title"], "Content lead");
+        assert_eq!(roles[13]["source"], "store");
 
         let (code, _) = call("POST", "/api/v1/leads/LEAD-001/dance", "{}");
         assert_eq!(code, 404);
