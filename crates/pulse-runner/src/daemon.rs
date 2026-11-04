@@ -2785,15 +2785,13 @@ pub(crate) fn daemon(
         // runs took (on 2026-11-04, seven asks in a day, one unheard for
         // hours while a task run was in its check).
         let asks_after = pulse_bus::last_id(s).unwrap_or(0);
-        // Set when the ask arrives in this wait: the cap then stops the runs
-        // as a restart asked for now before the loop ended does.
-        let mut forced_in_wait = false;
         let ask_tick = if result == "restart" && !restart.forced() {
             crossbeam_channel::tick(WAIT_ASK_POLL)
         } else {
             crossbeam_channel::never()
         };
-        let wait_beat = |inflight: &BTreeMap<String, Dispatch>| {
+        let wait_beat = |inflight: &BTreeMap<String, Dispatch>,
+                         restart: &crate::restart::Restart| {
             heartbeat(
                 loops,
                 passes,
@@ -2805,7 +2803,7 @@ pub(crate) fn daemon(
                 tick_timing.beat(),
             );
         };
-        wait_beat(&inflight);
+        wait_beat(&inflight, &restart);
         while !inflight.is_empty() {
             crossbeam_channel::select! {
                 recv(results_rx) -> msg => {
@@ -2817,15 +2815,18 @@ pub(crate) fn daemon(
                         say(&o, format!("idle: {}", d.reason));
                     }
                 },
-                recv(beat_tick) -> _ => wait_beat(&inflight),
+                recv(beat_tick) -> _ => wait_beat(&inflight, &restart),
                 recv(ask_tick) -> _ => {
-                    if !forced_in_wait
+                    if !restart.forced()
                         && let Some(ask) = restart_asked(s, asks_after)
                         && ask.force
                     {
                         let held = hold_runs_in_flight(s);
                         let heard = held.iter().filter(|(_, n)| *n > 0).count();
-                        forced_in_wait = true;
+                        // The cap then stops the runs as a restart asked for
+                        // now before the loop ended does, and the heartbeat
+                        // says the restart is now forced.
+                        restart.force(s, &inflight);
                         grace = hold_cap(s);
                         timer = Some(crossbeam_channel::after(grace));
                         say(&o, format!(
@@ -2845,7 +2846,7 @@ pub(crate) fn daemon(
                     }
                 },
                 recv(timer.as_ref().unwrap_or(&never_tick)) -> _ => {
-                    if (restart.forced() || forced_in_wait) && result == "restart" {
+                    if restart.forced() && result == "restart" {
                         say(&o, format!("hold cap of {} over: stopping {} run(s) still in flight; their jobs return to the queue", pulse_cli::format_duration(grace), inflight.len()));
                     } else {
                         say(&o, format!("grace of {} over: killing {} run(s) still in flight", pulse_cli::format_duration(grace), inflight.len()));
