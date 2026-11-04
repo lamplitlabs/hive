@@ -4,7 +4,11 @@
 //! what is left of the window, drains for `daemon.restart_drain_minutes`,
 //! stays for the owner's queued work one more drain at most and exits with
 //! code 3 once the runs it waits for have ended, so the service restarts it
-//! on the new build. [`Restart`] holds the handover's state for the daemon
+//! on the new build. Runs still in flight when the drain ends are asked to
+//! hold (`daemon::hold_for_restart`, `daemon.restart_hold`) as a restart
+//! asked for now holds them, so the handover waits only for runs past their
+//! harness; the console's drain without "now" waits for every run, as the
+//! owner chose. [`Restart`] holds the handover's state for the daemon
 //! loop; the measures its decisions rest on - how long a run of each kind
 //! is expected to take, which kinds fit the window, which runs the window
 //! follows and what the notices say - are the functions beside it, tested

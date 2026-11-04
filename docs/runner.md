@@ -162,8 +162,21 @@ an improve run on the brain an hour and one on a blog five minutes, so one
 measure for all either held the short runs for every window or admitted long
 runs against the runs in flight's two-hour budget while those ended within
 the half hour - one such run held nine idle slots for forty minutes at each
-release. A run the window outlives is waited for, never cut. `0` stops
-dispatching at once and waits for the runs, as before. The build itself is a
+release. A run the window outlives is asked to hold rather than waited for
+(`daemon.restart_hold`, on by default): as under **Restart now** below, the
+harness saves its conversation and exits held within moments, the job
+returns to the queue with the attempt refunded and the next daemon carries
+it on in the same clone, so the handover costs the run a step rather than
+the machine the run's length - log lines `restart: N run(s) in flight, M
+asked to hold (daemon.restart_hold); ...` then one per run. A run past its
+harness - in its run-end check, or a custom worker - has no session to hear
+the hold and runs to its end, since a check stopped midway loses the run and
+its job is done over. The measured reason: on the brain, where a task run
+takes hours, ten self-updates in three days waited 0.2 to 4.3 hours each
+with nothing dispatched, twelve hours in all. `off` waits for every run, as
+before; the console's own **Restart** without "now" holds nothing either, as
+the owner chose. `0` stops
+dispatching at once and holds the runs the same way. The build itself is a
 full release compile, so it keeps out of the runs' way: it runs at nice 10
 with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
 default), and it does not start while the load governor (below) says the
@@ -237,6 +250,12 @@ run-end check, a remote executor, an agent gone inactive) is stopped after
 `daemon.hold_seconds` (default 120) and settles `lost`: its job returns to
 the queue and starts over. A delivery pass or measurement in flight gets the
 same cap before it is cancelled; the next daemon delivers or measures again. The
+ask is heard while the daemon waits for its runs too: a daemon whose drain
+is over and that waits for a run past its harness reads the ask every two
+seconds (log line `restart asked by <who> at <when> while this daemon waits
+for N run(s) in flight: M asked to hold; stopping the rest after <cap>`) -
+until 2026-11-04 only the loop read it, so an owner pressing **Restart now**
+during that wait was not heard until the run ended, seven times in a day. The
 hub does the same for its conversations: a console whose binary
 changed stops the turns in flight with a note and the next console carries
 each on by itself, so a chat mid-work needs no "continue" after an update

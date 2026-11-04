@@ -160,6 +160,47 @@ pub(crate) fn hold_runs_in_flight(s: &pulse_store::Store) -> Vec<(String, usize)
         .collect()
 }
 
+/// Whether a restart whose drain ends with runs still in flight asks them
+/// to hold rather than wait them out (`daemon.restart_hold`, on by default).
+pub(crate) fn restart_hold_on(s: &pulse_store::Store) -> bool {
+    s.setting("daemon.restart_hold", "on") != "off"
+}
+
+/// The restart's drain is over and runs are still in flight: asks them to
+/// hold as a restart asked for now does, and says what each was asked. A
+/// run whose harness heard it stops at its current step within moments
+/// (the harness saves its conversation and exits held), its job returns to
+/// the queue with the attempt refunded and the next daemon carries it on in
+/// the same clone; a run past its harness - in its run-end check, or a
+/// custom worker - runs to its end, since a check stopped midway loses the
+/// run and its job is done over. Before this (to 2026-11-04) the daemon
+/// waited for every run to end: on the brain, where a task run takes
+/// hours, ten self-updates in three days waited 0.2 to 4.3 hours each with
+/// nothing dispatched, twelve hours in all, and the owner's asks to restart
+/// now went unheard in that wait.
+pub(crate) fn hold_for_restart(s: &pulse_store::Store, inflight: usize) -> Vec<String> {
+    let held = hold_runs_in_flight(s);
+    let heard = held.iter().filter(|(_, n)| *n > 0).count();
+    let mut lines = vec![format!(
+        "restart: {inflight} run(s) in flight, {heard} asked to hold (daemon.restart_hold); a held run's job returns to the queue and the next daemon carries it on, the rest run to their end"
+    )];
+    for (run, n) in &held {
+        lines.push(if *n > 0 {
+            format!("run {run}: {n} harness session(s) asked to hold")
+        } else {
+            format!(
+                "run {run}: no harness session running (in its check, or a custom worker); it runs to its end"
+            )
+        });
+    }
+    lines
+}
+
+/// How often the wait after the loop looks for the owner's ask to restart
+/// now, so a daemon waiting for its runs hears it (the harness polls its
+/// hold at the same pace).
+const WAIT_ASK_POLL: Duration = Duration::from_secs(2);
+
 #[derive(Debug, Clone)]
 struct PlannerSnapshot {
     watermark: String,
@@ -1567,6 +1608,14 @@ pub(crate) fn daemon(
         match restart.tend(s, changed, &inflight, &mut idle_log) {
             crate::restart::Tend::Exits(line) => {
                 say(&o, line);
+                // A self-update's drain that ends with runs in flight holds
+                // them; the console's drain without "now" waits them out, as
+                // the owner chose (`hold_for_restart`).
+                if !inflight.is_empty() && !restart.console_draining() && restart_hold_on(s) {
+                    for line in hold_for_restart(s, inflight.len()) {
+                        say(&o, line);
+                    }
+                }
                 leave = ("restart", "restarting");
                 break;
             }
@@ -2730,6 +2779,20 @@ pub(crate) fn daemon(
         // an hour): beat on, naming the runs, so the console does not call a
         // daemon that waits for its runs silent.
         let beat_tick = crossbeam_channel::tick(Duration::from_secs(interval.max(1) as u64));
+        // The owner's ask to restart now, written while this daemon waits
+        // for its runs, is heard here: before this it was read only by the
+        // loop, so a daemon in this wait sat on the ask for as long as its
+        // runs took (on 2026-11-04, seven asks in a day, one unheard for
+        // hours while a task run was in its check).
+        let asks_after = pulse_bus::last_id(s).unwrap_or(0);
+        // Set when the ask arrives in this wait: the cap then stops the runs
+        // as a restart asked for now before the loop ended does.
+        let mut forced_in_wait = false;
+        let ask_tick = if result == "restart" && !restart.forced() {
+            crossbeam_channel::tick(WAIT_ASK_POLL)
+        } else {
+            crossbeam_channel::never()
+        };
         let wait_beat = |inflight: &BTreeMap<String, Dispatch>| {
             heartbeat(
                 loops,
@@ -2755,6 +2818,25 @@ pub(crate) fn daemon(
                     }
                 },
                 recv(beat_tick) -> _ => wait_beat(&inflight),
+                recv(ask_tick) -> _ => {
+                    if !forced_in_wait
+                        && let Some(ask) = restart_asked(s, asks_after)
+                        && ask.force
+                    {
+                        let held = hold_runs_in_flight(s);
+                        let heard = held.iter().filter(|(_, n)| *n > 0).count();
+                        forced_in_wait = true;
+                        grace = hold_cap(s);
+                        timer = Some(crossbeam_channel::after(grace));
+                        say(&o, format!(
+                            "restart asked by {} at {} while this daemon waits for {} run(s) in flight: {heard} asked to hold; stopping the rest after {}, their jobs return to the queue",
+                            ask.actor,
+                            ask.at,
+                            inflight.len(),
+                            pulse_cli::format_duration(grace)
+                        ));
+                    }
+                },
                 recv(caller_done.as_ref().unwrap_or(&never_done)) -> _ => {
                     caller_done = None;
                     if timer.is_none() {
@@ -2763,7 +2845,7 @@ pub(crate) fn daemon(
                     }
                 },
                 recv(timer.as_ref().unwrap_or(&never_tick)) -> _ => {
-                    if restart.forced() && result == "restart" {
+                    if (restart.forced() || forced_in_wait) && result == "restart" {
                         say(&o, format!("hold cap of {} over: stopping {} run(s) still in flight; their jobs return to the queue", pulse_cli::format_duration(grace), inflight.len()));
                     } else {
                         say(&o, format!("grace of {} over: killing {} run(s) still in flight", pulse_cli::format_duration(grace), inflight.len()));
@@ -4185,6 +4267,202 @@ mod tests {
         );
         let left = crate::test_helpers::work_leftovers(&s.home);
         assert!(left.is_empty(), "clone left behind: {left:?}");
+    }
+
+    #[test]
+    fn hold_for_restart_asks_harness_runs_to_hold_and_lets_checks_run_on() {
+        let s = new_store();
+        let conn = s.conn().unwrap();
+        for (run, agent) in [("run-harness", "aurora"), ("run-check", "borealis")] {
+            conn.execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, ?, 'proj', '2026-11-04T10:00:00Z', 'running')",
+                rusqlite::params![run, format!("job-{run}"), agent],
+            )
+            .unwrap();
+        }
+        // The first run is in its harness; the second is past it (its
+        // check): no session to hear a hold.
+        s.begin_harness_session(pulse_store::HarnessSession {
+            id: "h-harness".into(),
+            run_id: "run-harness".into(),
+            job_id: "job-run-harness".into(),
+            agent: "aurora".into(),
+            project: "proj".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        drop(conn);
+        assert!(restart_hold_on(&s), "the hold is on by default");
+        let lines = hold_for_restart(&s, 2);
+        assert_eq!(
+            lines[0],
+            "restart: 2 run(s) in flight, 1 asked to hold (daemon.restart_hold); a held run's job returns to the queue and the next daemon carries it on, the rest run to their end",
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"run run-harness: 1 harness session(s) asked to hold".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"run run-check: no harness session running (in its check, or a custom worker); it runs to its end".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            !s.harness_session_head("h-harness")
+                .unwrap()
+                .unwrap()
+                .hold_requested_at
+                .is_empty(),
+            "the harness session was not asked to hold"
+        );
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.restart_hold", "off")
+            .unwrap();
+        assert!(!restart_hold_on(&s));
+    }
+
+    /// A daemon whose binary changed with the drain at zero exits at once:
+    /// its run in flight is asked to hold, and the owner's ask to restart
+    /// now written while it waits for that run is heard, stopping the run
+    /// at the hold cap rather than after the hour the run would take.
+    #[test]
+    fn a_restart_asked_now_during_the_wait_for_runs_in_flight_is_heard() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "1")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.hold_seconds", "1")
+            .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            "daemon.restart_drain_minutes",
+            "0",
+        )
+        .unwrap();
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Slow run".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let old_stamp = *BINARY_STAMP.read().unwrap();
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        set_binary_stamp(test_restart_stamp);
+        let out = OutBuf::new();
+        let (waiting_tx, waiting_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: waiting_tx,
+            needle: "run(s) in flight to finish".into(),
+            sent: false,
+        }));
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(writer),
+            worker_cmd: "sh -c 'sleep 60; echo SUMMARY: ok'".into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = pulse_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let began = std::time::Instant::now();
+            while count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE status = 'running'",
+                &[],
+            ) == 0
+            {
+                assert!(
+                    began.elapsed() < test_wait(Duration::from_secs(60)),
+                    "the run never started:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+            pulse_bus::emit(
+                &s,
+                "human",
+                "post.question",
+                "wake-restart",
+                serde_json::json!({"project": "proj"}),
+            )
+            .unwrap();
+            waiting_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the daemon never waited for its run in flight");
+            ask_restart(
+                &s,
+                "owner",
+                serde_json::json!({"from": "settings", "now": true}),
+            )
+            .unwrap();
+            let asked = std::time::Instant::now();
+            let result = done_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the daemon did not exit after the ask");
+            (result, asked.elapsed())
+        }));
+        cancel.cancel();
+        set_binary_stamp(old_stamp);
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (result, took) = match result {
+            Ok(result) => result,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        let out = out.string();
+        assert_eq!(result, "restart", "{out}");
+        assert!(
+            took < Duration::from_secs(50),
+            "the ask was not heard until the run ended ({took:?}):\n{out}"
+        );
+        assert!(
+            out.contains("restart: 1 run(s) in flight, 0 asked to hold (daemon.restart_hold)")
+                && out.contains(
+                    "no harness session running (in its check, or a custom worker); it runs to its end"
+                ),
+            "{out}"
+        );
+        assert!(
+            out.contains("restart asked by owner at ")
+                && out.contains(
+                    "while this daemon waits for 1 run(s) in flight: 0 asked to hold; stopping the rest after 1s"
+                ),
+            "{out}"
+        );
+        assert!(
+            out.contains("hold cap of 1s over: stopping 1 run(s) still in flight; their jobs return to the queue"),
+            "{out}"
+        );
+        let conn = s.conn().unwrap();
+        let runs = crate::util::must_rows(
+            &conn,
+            "SELECT status FROM runs WHERE job_id = ?",
+            &[&job.str("id")],
+        );
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].str("status"), "lost", "{runs:?}\n{out}");
+        assert_eq!(
+            crate::jobs::job_row(&conn, job.str("id")).str("status"),
+            "queued",
+            "{out}"
+        );
     }
 
     #[test]
