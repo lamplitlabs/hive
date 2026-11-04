@@ -879,6 +879,12 @@ pub trait Ui: Send {
     fn finish(&mut self, _summary: &str) -> bool {
         false
     }
+    /// Why the conversation may not finish yet: sub-conversations it
+    /// started are still at work, and their reports must come back first.
+    /// None when nothing holds the finish.
+    fn finish_held(&mut self) -> Option<String> {
+        None
+    }
     /// The model starts, steers or reads a sub-conversation (`chat` tool).
     /// `Ok` is what the model reads back, `Err` why the hub refused; None
     /// where there are no conversations to have (a terminal chat), which
@@ -979,7 +985,7 @@ pub fn question_tool() -> Tool {
 pub fn finish_tool() -> Tool {
     Tool {
         name: FINISH_TOOL.into(),
-        description: "Mark this conversation finished: the owner's request is complete, verified, and nothing waits on them. Call it once, then give your closing reply. Not for ending a turn, not when you are blocked or asked a question - only when the whole request is done. The owner can reopen the conversation by writing again.".into(),
+        description: "Mark this conversation finished: the owner's request is complete, verified, and nothing waits on them. Call it once, then give your closing reply. Not for ending a turn, not when you are blocked or asked a question - only when the whole request is done. Refused while a sub-conversation you started is still open: end the turn, wait for its report, join it, then finish. The owner can reopen the conversation by writing again.".into(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -993,7 +999,7 @@ pub fn finish_tool() -> Tool {
 pub fn chat_tool() -> Tool {
     Tool {
         name: CHAT_TOOL.into(),
-        description: "Sub-conversations: a separate agent in a conversation of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this conversation) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it to split a request with several parts - one sub-conversation per independent part, running at the same time, each on its own files - and for a part that keeps going while you answer the owner: a long check, a review, a second thing to build. A quick lookup whose answer you need now is the subagent tool instead.".into(),
+        description: "Sub-conversations: a separate agent in a conversation of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this conversation) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message and starts your next turn; you cannot finish until every one you started has reported. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it to split a request with several parts - one sub-conversation per independent part, running at the same time, each on its own files - and for a part that keeps going while you answer the owner: a long check, a review, a second thing to build. A quick lookup whose answer you need now is the subagent tool instead.".into(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -3201,6 +3207,13 @@ impl Agent {
             return self.tool_error(
                 "finish: arguments must be a JSON object with a string summary".to_string(),
             );
+        }
+        let held = self
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.lock().unwrap_or_else(|e| e.into_inner()).finish_held());
+        if let Some(why) = held {
+            return self.tool_error(format!("finish: not yet - {why}"));
         }
         self.result.steps += 1;
         self.emit(Step {
