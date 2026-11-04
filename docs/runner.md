@@ -11,7 +11,12 @@ messages get answers. `pulse work` runs one worker here; `pulse land`,
 
 Use `pulse daemon --interval S` (or `pulse service install --interval S`) to
 set the idle wait and the retry pause after an all-error batch. The default
-is 300 seconds; zero or negative values use that default. Store events can
+is 300 seconds; zero or negative values use that default. `pulse daemon`
+takes flags only: a stray word (`pulse daemon start`) exits 2 with the usage
+instead of starting a loop. It also refuses to start (exit 3, naming the pid)
+while the store's heartbeat names another daemon whose pid is alive and whose
+beat is fresh; `--force` starts anyway. An `exited` or `restarting` beat, a
+stale beat or a dead pid never holds the store. Store events can
 wake the loop early; job queue events (`job.add`, `job.queued`, `job.requeue`,
 `job.recover`) wake dispatch, and an idle daemon also polls the active queued
 count every 15 seconds so a missed event still starts work within one dispatch
