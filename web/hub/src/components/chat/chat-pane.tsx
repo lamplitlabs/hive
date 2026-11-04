@@ -99,13 +99,16 @@ function dayLabel(at: string): string {
 }
 
 // Where a reported step stands now, from the task's live job list: the
-// report said how the step ended; the job row says whether its code landed
-// since, waits on its branch, or was sent round again after a landing failed.
-export function reportLanding(j: TaskJob | undefined): { word: string; tone: Tone } | null {
+// report said how the step ended; the job row says whether its code is
+// merged since (the daemon clears the branch when the task's pull request
+// is), still waits on its branch for the pull request's merge, or was sent
+// round again. The reviewer agent or the owner merges, so waiting is
+// information here, not a call on the owner - the task's own line carries that.
+export function reportWhere(j: TaskJob | undefined): { word: string; tone: Tone } | null {
   if (!j) return null;
   switch (j.status) {
     case "done":
-      return j.branch ? { word: "Waiting to land", tone: "warn" } : { word: "Landed", tone: "ok" };
+      return j.branch ? { word: "Waiting for merge", tone: "info" } : { word: "Merged", tone: "ok" };
     case "failed":
       return { word: "Failed", tone: "bad" };
     case "queued":
@@ -123,7 +126,7 @@ export function reportLanding(j: TaskJob | undefined): { word: string; tone: Ton
 // who ran the step, what they found, and where the step's code is now - and
 // the files it left (screenshots, reports), a link to the newest one.
 function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameAuthor: boolean }) {
-  const landing = reportLanding(job);
+  const where = reportWhere(job);
   const evidence = !!job?.artifacts;
   return (
     <div className="flex min-w-0 items-start gap-2 pl-4 sm:pl-9" data-report={m.job_id}>
@@ -139,11 +142,11 @@ function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameA
         <div title={sameAuthor ? fmtDate(m.at) : undefined} className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-dashed bg-muted/30 px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground anywhere">
           <Markdown source={m.body} className="[&>:last-child]:mb-0" />
         </div>
-        {landing || job?.harness_session || evidence ? (
+        {where || job?.harness_session || evidence ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
-            {landing ? (
-              <ToneBadge tone={landing.tone} dot title={"Job " + (job?.id ?? m.job_id) + (job?.branch ? ", branch " + job.branch : "")}>
-                {landing.word}
+            {where ? (
+              <ToneBadge tone={where.tone} dot title={"Job " + (job?.id ?? m.job_id) + (job?.branch ? ", branch " + job.branch : "")}>
+                {where.word}
               </ToneBadge>
             ) : null}
             {job?.harness_session ? (

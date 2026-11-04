@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GROUP_ORDER, entryGroup, entryId, foldedEntries, jobWaitingToLand, listEntries, sessionWords, stepWords, taskFinished, taskGroup, taskGroupOf, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
+import { GROUP_ORDER, entryGroup, entryId, foldedEntries, jobWaitingForPr, listEntries, prGroupOf, prMood, sessionWords, stepWords, taskFinished, taskGroup, taskGroupOf, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
 
 const session = (over = {}) => ({ job: "job-1", kind: "feature", title: "Build it", job_status: "queued", agent: "", session: "", status: "", started_at: "", updated_at: "", ended_at: "", cost: 0, steps: 0, ...over });
 const task = (over = {}) => ({ id: "TASK-001", project: "one", title: "Ship it", status: "in_progress", priority: 10, lead: "one-lead", created_by: "owner", created_at: "", updated_at: "", last_at: "", messages: 0, last_message_at: "", last_author: "", needs_you: false, sessions: [], ...over });
@@ -52,60 +52,112 @@ test("a task takes the same section a conversation would", () => {
   assert.equal(taskGroup(task({ status: "cancelled" })), "finished");
 });
 
-test("work done but not on main yet waits to land: a step by its branch, a task by its steps, a conversation by the hub's answer", () => {
-  // A done job keeps its branch until the landing clears it.
-  assert.equal(jobWaitingToLand("done", "pulse/iris/job-1"), true);
-  assert.equal(jobWaitingToLand("done", ""), false);
-  assert.equal(jobWaitingToLand("done", undefined), false);
-  assert.equal(jobWaitingToLand("failed", "pulse/iris/job-1"), false);
-  assert.equal(jobWaitingToLand("leased", "pulse/iris/job-1"), false);
-  const landing = session({ job_status: "done", status: "ended", branch: "pulse/iris/job-1" });
-  assert.deepEqual(sessionWords(landing), { word: "Waiting to land", tone: "wait" });
-  assert.deepEqual(stepWords("done", false, "pulse/iris/job-1"), { word: "Waiting to land", tone: "wait" });
+test("work done without a pull request yet waits for one: a step by its branch, a task by its steps, a conversation by the hub's answer", () => {
+  // A done job keeps its branch until the pull request is merged or closed.
+  assert.equal(jobWaitingForPr("done", "pulse/iris/job-1"), true);
+  assert.equal(jobWaitingForPr("done", ""), false);
+  assert.equal(jobWaitingForPr("done", undefined), false);
+  assert.equal(jobWaitingForPr("failed", "pulse/iris/job-1"), false);
+  assert.equal(jobWaitingForPr("leased", "pulse/iris/job-1"), false);
+  const waiting = session({ job_status: "done", status: "ended", branch: "pulse/iris/job-1" });
+  assert.deepEqual(sessionWords(waiting), { word: "Waiting for its pull request", tone: "neutral" });
+  assert.deepEqual(stepWords("done", false, "pulse/iris/job-1"), { word: "Waiting for its pull request", tone: "neutral" });
   assert.deepEqual(stepWords("done", true, "pulse/iris/job-1"), { word: "Working", tone: "run" }, "a session at it outranks the branch");
   assert.deepEqual(stepWords("done", false, ""), { word: "Done", tone: "ok" });
-  // The task: the section sits between working and open; a step waiting to
-  // land outranks Done (the task is not on main yet) but not an agent at
-  // another step, nor the owner's turn.
-  assert.deepEqual(GROUP_ORDER, ["working", "landing", "open", "finished", "archived"]);
-  assert.equal(taskMood(task({ sessions: [landing] })).word, "Waiting to land");
-  assert.equal(taskGroup(task({ sessions: [landing] })), "landing");
-  assert.equal(taskMood(task({ status: "done", sessions: [landing] })).word, "Waiting to land");
-  assert.equal(taskGroup(task({ status: "done", sessions: [landing] })), "landing");
-  assert.equal(taskGroup(task({ status: "cancelled", sessions: [landing] })), "landing");
-  assert.equal(taskMood(task({ sessions: [landing, session({ job_status: "leased", status: "running" })] })).word, "Working");
-  assert.equal(taskGroup(task({ sessions: [landing, session({ job_status: "leased" })] })), "working");
-  assert.equal(taskMood(task({ status: "review", needs_you: true, sessions: [landing] })).word, "Asked you");
-  assert.equal(taskGroup(task({ status: "review", needs_you: true, sessions: [landing] })), "working");
+  // The task: the section sits between working and open; a step waiting for
+  // the pull request outranks Done (the task is not on main yet) but not an
+  // agent at another step, nor the owner's turn.
+  assert.deepEqual(GROUP_ORDER, ["needs_review", "working", "review", "open", "finished", "archived"]);
+  assert.equal(taskMood(task({ sessions: [waiting] })).word, "Waiting for its pull request");
+  assert.equal(taskGroup(task({ sessions: [waiting] })), "review");
+  assert.equal(taskMood(task({ status: "done", sessions: [waiting] })).word, "Waiting for its pull request");
+  assert.equal(taskGroup(task({ status: "done", sessions: [waiting] })), "review");
+  assert.equal(taskGroup(task({ status: "cancelled", sessions: [waiting] })), "review");
+  assert.equal(taskMood(task({ sessions: [waiting, session({ job_status: "leased", status: "running" })] })).word, "Working");
+  assert.equal(taskGroup(task({ sessions: [waiting, session({ job_status: "leased" })] })), "working");
+  assert.equal(taskMood(task({ status: "review", needs_you: true, sessions: [waiting] })).word, "Asked you");
+  assert.equal(taskGroup(task({ status: "review", needs_you: true, sessions: [waiting] })), "working");
   assert.equal(taskGroup(task({ status: "done", sessions: [session({ job_status: "done", branch: "" })] })), "finished");
   // The task's own page reads the same from its jobs.
-  const state = (over = {}) => ({ status: "in_progress", lead: "one-lead", needs_you: false, working: false, landing: true, ...over });
-  assert.equal(taskMoodOf(state()).word, "Waiting to land");
-  assert.equal(taskGroupOf(state()), "landing");
-  assert.equal(taskMoodOf(state({ status: "done" })).word, "Waiting to land");
+  const state = (over = {}) => ({ status: "in_progress", lead: "one-lead", needs_you: false, working: false, waiting_for_pr: true, ...over });
+  assert.equal(taskMoodOf(state()).word, "Waiting for its pull request");
+  assert.equal(taskGroupOf(state()), "review");
+  assert.equal(taskMoodOf(state({ status: "done" })).word, "Waiting for its pull request");
   assert.equal(taskMoodOf(state({ working: true })).word, "Working");
-  assert.equal(taskMoodOf(state({ status: "done", working: true })).word, "Waiting to land", "a done task's running session does not hide the unlanded step");
-  assert.equal(taskGroupOf(state({ status: "done", working: true })), "landing");
-  assert.deepEqual(taskMoodOf(state()), taskMood(task({ sessions: [landing] })));
+  assert.equal(taskMoodOf(state({ status: "done", working: true })).word, "Waiting for its pull request", "a done task's running session does not hide the step without a pull request");
+  assert.equal(taskGroupOf(state({ status: "done", working: true })), "review");
+  assert.deepEqual(taskMoodOf(state()), taskMood(task({ sessions: [waiting] })));
   // A conversation: the hub's answer puts a finished or idle one in the
   // section; one being worked on, asked about or put away keeps its own.
-  assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: true }), "landing");
-  assert.equal(groupOf({ id: "c", status: "idle", waiting_to_land: true }), "landing");
-  assert.equal(groupOf({ id: "c", status: "ended", waiting_to_land: true }), "landing");
+  assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: true }), "review");
+  assert.equal(groupOf({ id: "c", status: "idle", waiting_to_land: true }), "review");
+  assert.equal(groupOf({ id: "c", status: "ended", waiting_to_land: true }), "review");
   assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: false }), "finished");
   assert.equal(groupOf({ id: "c", status: "closed" }), "finished");
   assert.equal(groupOf({ id: "c", status: "idle", waiting_to_land: true, live: { status: "running" } }), "working");
   assert.equal(groupOf({ id: "c", status: "waiting", waiting_to_land: true }), "working");
   assert.equal(groupOf({ id: "c", status: "archived", waiting_to_land: true }), "archived");
-  // A family with a finished parent and a sub-conversation waiting to land
-  // is listed under Waiting to land.
+  // A family with a finished parent and a sub-conversation waiting for its
+  // pull request is listed under In review.
   const rows = [
     { id: "p", status: "closed", created_at: "2026-10-31T10:00:00Z" },
     { id: "k", status: "closed", parent: "p", created_at: "2026-10-31T10:01:00Z", waiting_to_land: true },
   ];
   const entries = listEntries(rows, []);
   assert.equal(entries.length, 1);
-  assert.equal(entryGroup(entries[0]), "landing");
+  assert.equal(entryGroup(entries[0]), "review");
+});
+
+test("a pull request's review state groups the entry first: the owner's two states on top, the reviewer's four under In review, merged and closed by the entry's own status", () => {
+  for (const state of ["needs_owner", "review_failed"]) assert.equal(prGroupOf(state), "needs_review", state);
+  for (const state of ["pr_open", "in_review", "merge_asked", "changes_requested"]) assert.equal(prGroupOf(state), "review", state);
+  for (const state of ["merged", "closed", "", undefined, null, "odd"]) assert.equal(prGroupOf(state), null, String(state));
+  assert.equal(prMood("needs_owner").word, "Needs your review");
+  assert.equal(prMood("needs_owner").tone, "wait");
+  assert.equal(prMood("review_failed").word, "Review failed");
+  assert.equal(prMood("in_review").word, "In review");
+  assert.equal(prMood("merge_asked").word, "Merging");
+  assert.equal(prMood("changes_requested").word, "Changes requested");
+  assert.equal(prMood("merged"), null);
+  // A task: its pull request outranks Done and the steps still carrying
+  // their branch, but an agent at a step or the lead's question comes
+  // first; the owner's Merge comes before everything.
+  const pr = (state) => ({ number: 7, url: "https://g/pr/7", state });
+  const waiting = session({ job_status: "done", status: "ended", branch: "pulse/iris/job-1" });
+  assert.equal(taskMood(task({ sessions: [waiting], pr: pr("pr_open") })).word, "Pull request open");
+  assert.equal(taskGroup(task({ sessions: [waiting], pr: pr("pr_open") })), "review");
+  assert.equal(taskMood(task({ status: "done", sessions: [waiting], pr: pr("in_review") })).word, "In review");
+  assert.equal(taskGroup(task({ status: "done", pr: pr("in_review") })), "review");
+  assert.equal(taskMood(task({ status: "done", pr: pr("merged") })).word, "Done");
+  assert.equal(taskGroup(task({ status: "done", pr: pr("merged") })), "finished");
+  assert.equal(taskGroup(task({ status: "in_progress", pr: pr("closed") })), "open");
+  assert.equal(taskMood(task({ sessions: [waiting, session({ job_status: "leased", status: "running" })], pr: pr("pr_open") })).word, "Working");
+  assert.equal(taskGroup(task({ sessions: [session({ job_status: "leased" })], pr: pr("pr_open") })), "working");
+  assert.equal(taskMood(task({ status: "review", needs_you: true, pr: pr("needs_owner") })).word, "Asked you");
+  assert.equal(taskMood(task({ sessions: [session({ job_status: "leased", status: "running" })], pr: pr("needs_owner") })).word, "Needs your review");
+  assert.equal(taskGroup(task({ sessions: [session({ job_status: "leased" })], pr: pr("needs_owner") })), "needs_review");
+  assert.equal(taskGroup(task({ status: "done", pr: pr("review_failed") })), "needs_review");
+  assert.equal(taskMood(task({ status: "done", pr: pr("review_failed") })).word, "Review failed");
+  // Its steps read the pull request's word instead of waiting for one.
+  assert.deepEqual(sessionWords(waiting, "in_review"), { word: "In review", tone: "run" });
+  assert.deepEqual(stepWords("done", false, "pulse/x", "needs_owner"), { word: "Needs your review", tone: "wait" });
+  assert.deepEqual(stepWords("done", false, "pulse/x", "merged"), { word: "Waiting for its pull request", tone: "neutral" }, "a branch the daemon has not cleared yet");
+  assert.deepEqual(stepWords("done", true, "pulse/x", "needs_owner"), { word: "Working", tone: "run" });
+  assert.deepEqual(stepWords("done", false, "", "needs_owner"), { word: "Done", tone: "ok" });
+  // The task's own page reads the same from the delivery state.
+  assert.equal(taskMoodOf({ status: "in_progress", lead: "", needs_you: false, working: false, pr: "merge_asked" }).word, "Merging");
+  assert.equal(taskGroupOf({ status: "in_progress", lead: "", needs_you: false, working: false, pr: "changes_requested" }), "review");
+  // A conversation: the pull request's state wins over the branch's commits,
+  // the owner's turn over a running agent; a merged one is finished whatever
+  // its branch still holds (a squash leaves commits main lacks).
+  assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: true, pr: pr("pr_open") }), "review");
+  assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: true, pr: pr("merged") }), "finished");
+  assert.equal(groupOf({ id: "c", status: "idle", waiting_to_land: false, pr: pr("changes_requested") }), "review");
+  assert.equal(groupOf({ id: "c", status: "idle", pr: pr("needs_owner"), live: { status: "running" } }), "needs_review");
+  assert.equal(groupOf({ id: "c", status: "idle", pr: pr("pr_open"), live: { status: "running" } }), "working");
+  assert.equal(groupOf({ id: "c", status: "archived", pr: pr("needs_owner") }), "needs_review", "the owner's Merge is asked for even on a put-away conversation");
+  assert.equal(groupOf({ id: "c", status: "archived", pr: pr("pr_open") }), "archived");
+  assert.equal(groupOf({ id: "c", status: "closed", pr: null }), "finished");
 });
 
 test("the one list orders tasks and conversations by what moved last, a sub-conversation counting for its parent", () => {
@@ -203,14 +255,4 @@ test("a report note says what the sub-conversation did", () => {
   assert.equal(reportVerb("finished"), "finished");
   assert.equal(reportVerb("asks"), "asks you");
   assert.equal(reportVerb("odd"), "reports");
-});
-
-test("a branch a landing is checking reads Reviewing, after waiting to land", () => {
-  assert.equal(groupOf({ id: "c", status: "closed", waiting_to_land: true, reviewing: true }), "landing");
-  assert.equal(groupOf({ id: "c", status: "idle", reviewing: true, live: { status: "running" } }), "working");
-  assert.equal(stepWords("done", false, "pulse/x", true).word, "Reviewing");
-  assert.equal(stepWords("done", true, "pulse/x", true).word, "Working");
-  assert.equal(stepWords("done", false, "pulse/x", false).word, "Waiting to land");
-  assert.equal(taskMoodOf({ status: "done", lead: "", needs_you: false, working: false, landing: true, reviewing: true }).word, "Reviewing");
-  assert.equal(taskGroupOf({ status: "done", lead: "", needs_you: false, working: false, reviewing: true }), "landing");
 });

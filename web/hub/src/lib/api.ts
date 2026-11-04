@@ -1677,11 +1677,48 @@ export interface Conversation {
   parent: string;
   live?: ConversationLive;
   // Whether the branch holds commits the project's default branch lacks:
-  // work finished or paused but not landed (the list's "Waiting to land"
-  // section). Absent from hubs older than the field.
+  // work finished or paused that waits for its pull request (the list's "In
+  // review" section). Absent from hubs older than the field.
   waiting_to_land?: boolean;
-  // A landing is merging and checking the branch now ("Reviewing").
+  // Kept on the wire for hubs older than the pull request flow; always false now.
   reviewing?: boolean;
+  // The pull request opened for this conversation or from its branch, and
+  // where its review stands; null while there is none.
+  pr?: PrState | null;
+}
+
+// A pull request PULSE opened on the project's forge and where its review
+// stands (GET /projects/{slug}/prs, and on conversations and tasks). The
+// reviewer agent merges the simple ones; `needs_owner` and `review_failed`
+// are the two the owner decides with Merge (`can_merge`).
+export type PrReviewState =
+  | "pr_open"
+  | "in_review"
+  | "needs_owner"
+  | "merge_asked"
+  | "changes_requested"
+  | "review_failed"
+  | "merged"
+  | "closed";
+
+export interface PrState {
+  number: number;
+  url: string;
+  title: string;
+  kind: string; // task, job, experiment, proposed
+  task: string;
+  job: string;
+  experiment: string;
+  conversation: string;
+  head: string;
+  base: string;
+  state: PrReviewState | string;
+  reasons: string[]; // why the reviewer handed it to the owner
+  note: string;
+  follow_up: string; // the job queued for the requested changes
+  at: string;
+  opened_at: string;
+  can_merge: boolean;
 }
 
 export interface ConversationMessage {
@@ -1780,6 +1817,8 @@ export interface ChatTask {
   last_author: string;
   needs_you: boolean; // the lead waits for your reply (status review)
   sessions: ChatTaskSession[];
+  // The task's pull request and where its review stands; null before one.
+  pr?: PrState | null;
 }
 
 // A step of a task as a conversation: the job and, once an agent took it,
@@ -1789,10 +1828,10 @@ export interface ChatTaskSession {
   kind: string;
   title: string;
   job_status: string; // queued, leased, blocked, done, failed, cancelled
-  // The job's branch; a done step still carrying one waits to land (the
-  // landing clears it once the commits are on the default branch).
+  // The job's branch; a done step still carrying one waits for the task's
+  // pull request (cleared once its commits are on the default branch).
   branch?: string;
-  // A landing is checking this step's branch now ("Reviewing").
+  // Kept on the wire for hubs older than the pull request flow; always false now.
   reviewing?: boolean;
   agent: string;
   session: string; // run-… or ""
@@ -2477,7 +2516,7 @@ export interface TaskJob {
   status: string;
   agent: string;
   branch: string;
-  // A landing is checking this step's branch now ("Reviewing").
+  // Kept on the wire for hubs older than the pull request flow; always false now.
   reviewing?: boolean;
   project?: string;
   tier?: number;
@@ -2535,13 +2574,29 @@ export interface LeadWork {
   read_at: string;
 }
 
-// Where a task's code stands after it landed on the default branch: still
-// on this machine (landed, held: the push did not go through, asked: a pull
-// request was asked for), or on the forge (pushed to the upstream, or on
-// the pull request from pulse/landed). `can_ask` says the owner may ask for
-// a pull request now (POST tasks/{id}/pull-request).
+// Where a task's code stands: each task gets one GitHub pull request
+// (branch pulse/task-<id>) that the reviewer agent reads. pr_open (url,
+// number) until the review starts, in_review, needs_owner (reasons, note:
+// the owner decides with Merge), merge_asked (the daemon merges it as the
+// owner), changes_requested (note, follow_up job), review_failed (note is
+// the error; Merge offered), merged (the task is done), held (note: the PR
+// could not be opened). Older work can still carry the landing states.
+// `can_ask` is kept for the wire only.
 export type TaskDeliveryState =
-  "none" | "waiting" | "landed" | "held" | "asked" | "pushed" | "pr";
+  | "none"
+  | "pr_open"
+  | "in_review"
+  | "needs_owner"
+  | "merge_asked"
+  | "changes_requested"
+  | "review_failed"
+  | "merged"
+  | "held"
+  | "waiting"
+  | "landed"
+  | "asked"
+  | "pushed"
+  | "pr";
 
 export interface TaskDelivery {
   state: TaskDeliveryState;
@@ -2552,8 +2607,14 @@ export interface TaskDelivery {
   remote: string; // origin/main
   url: string; // the pull request
   number: number;
-  note: string; // why it is held, or what the owner may do
+  note: string; // why it is held, the reviewer's note, or the review's error
   can_ask: boolean;
+  // Absent from hubs older than the review states.
+  reasons?: string[];
+  follow_up?: string;
+  kind?: string;
+  base?: string;
+  can_merge?: boolean;
 }
 
 export interface TaskDetail {
@@ -3569,6 +3630,19 @@ export const writes = {
     post<{ task: Task }>("tasks/" + enc(id) + "/amend", input),
   cancelTask: (id: string, reason: string) =>
     post<{ task: Task }>("tasks/" + enc(id) + "/cancel", { reason }),
+  // The owner's Merge on a pull request the reviewer handed to them: the hub
+  // records the ask and the daemon merges it on GitHub as the owner on its
+  // next pass, so the answer is the refreshed state, not the merge.
+  mergeTaskPr: (id: string) =>
+    post<{ task: Task; delivery: TaskDelivery }>(
+      "tasks/" + enc(id) + "/pr/merge",
+      {},
+    ),
+  mergeProjectPr: (project: string, number: number) =>
+    post<{ pr: PrState }>(
+      "projects/" + enc(project) + "/prs/" + enc(String(number)) + "/merge",
+      {},
+    ),
   // The owner moves a task on (done after "good enough", in_progress to hand a
   // review back); `words` reach the task's chat first so the lead reads why.
   setTaskStatus: (id: string, status: TaskStatus, words?: string) =>

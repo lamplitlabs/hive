@@ -1,30 +1,379 @@
-# Landing, pipelines, dependencies and credentials
+# Delivery: every branch becomes a pull request
 
-## Workers, landing and the load governor
+Workers commit in their own clones and never push; the runner copies each
+job's commits to a `pulse/<agent>/<job>` branch in your checkout. From there
+the daemon delivers: every finished branch is pushed to the project's upstream
+and becomes a pull request against the upstream default branch, a `review` job
+reads it and merges it or hands it to you ([The reviewer](review.md)), and the
+daemon fast-forwards the local default branch from the upstream on every pass.
+Nothing merges into the local default branch any more: the forge holds the
+merge, the review and the pipeline, and the checkout follows it. (A project
+with no upstream at all - no remote for its default branch and no `origin` -
+has no forge to hold them, so its finished branches land locally as before;
+the daemon says so in its delivery line and `pulse land --dry-run` says so
+per project.)
 
-Workers commit in their own clones and never push; the runner copies each job's
-commits to a `pulse/<agent>/<job>` branch in your checkout, and the daemon
-lands them into the default branch (ADR-024: verify command first, fast-forward
-or a `Land …` merge commit).
+Before this (ADR-024) the daemon merged each finished branch into the local
+default branch itself - verify command first, fast-forward or a `Land …` merge
+commit - and `landing.push` said whether the result went further. [What
+changed and why](#what-changed-and-why) has the measured reasons; the rest of
+this page describes the flow as it is now. The page keeps its file name so
+links to it stay valid.
 
-A merge that conflicts is not resolved for you: the branch's patch is saved
-under `~/.pulse/patches/<slug>/`, the branch is removed, the job is requeued on
-the current default branch (`land.conflict` names the patch) and the run is
-made again on the moved base. One conflict is an exception, because it is not
-a conflict between anyone's sources: the console's generated export under
-`web/hub/out/`, which every build of the hub regenerates with content-hashed
-chunk names, so two branches that both touched the hub's source always
-collided there while the sources merged clean. Of the nine amistio-template
-landings that conflicted on 2026-11-02..04, every patch was 80-90%
-`web/hub/out`, and each one threw away a finished run and ran its job again
-for a conflict nobody wrote. When every conflicted path lies under
-`web/hub/out/`, the daemon drops the export from the merge, runs `npm ci` and
-`npm run build` in the landing worktree on the merged `web/hub/src`, stages
-the rebuilt export and finishes the `Land …` merge commit with it; the landing
-line and the `land.landed` event say `web/hub/out rebuilt from the merged src`
-(`hub_out_rebuilt`). A build that fails, or a conflict that reaches any other
-path, holds as before. The rebuilt bundle's stamp names the merged src tree,
-so the bundle test the verify command runs still passes.
+## What is delivered and when
+
+A delivery pass runs inside the daemon's maintenance pass (its stage is named
+`delivery` in the pass summary) - every tick, on its own thread, so a slow
+`gh` call never holds dispatch, heartbeats or STOP - and by hand as `pulse
+land`. It delivers four kinds of work:
+
+| Kind | What | Branch | When |
+| --- | --- | --- | --- |
+| `task` | the owner's task: every job the lead cut for it, as one pull request | `pulse/task-<id>`, built in a scratch worktree (`.git/pulse-task-pr/<task>`) from the default branch plus every finished job branch of the task, each merged with its own merge commit in finished order | once no job of the task is queued, running or blocked and at least one finished job has a branch that no pull request carries yet; the branch is rebuilt and pushed again, and the same pull request updated, when a later job of the task finishes |
+| `job` | one finished job that belongs to no task: suggestion work, a security update, a lead's or a schedule's job, a pipeline or setup fix, research, a handoff | `pulse/<agent>/<job>`, pushed as the runner wrote it | when the job is `done` with a branch; a branch that moves while its pull request is open is pushed again and the pull request updated |
+| `experiment` | a kept evolve experiment | the experiment's branch | when the measurement says keep ([Evolve](self-improvement.md#evolve)); the measurement summary is the pull request body |
+| `proposed` | a branch proposed by hand, or a conversation's branch | the branch itself; `pulse/chat-<id>` for a conversation | `pulse land --project X --branch B` at once; a conversation branch once it holds commits the default branch lacks and its last commit is older than ten minutes, so an agent still at work does not get a pull request of half its change |
+
+What is not delivered: a job's branch while another job of its task is still
+queued or running (the task is one pull request, so the reviewer reads the
+whole change once), a job that ended without a commit (there is nothing to
+deliver; the job is simply done), a failed run (its commits were never
+verified; the job is retried as before, see [Recovery](recovery.md)), and a
+`review` job, which changes nothing in the project and has no branch of its
+own. The first push of a branch is a plain `--force` (the branch is PULSE's
+own); a push onto an open pull request is `--force-with-lease` against the
+commit the last push left there, so a branch someone moved on the forge is
+not overwritten. A pass opens at most ten pull requests per project
+(GitHub's secondary rate limit is on creations; the rest wait a tick), and
+reads every open one.
+
+The measured share: of the 260 landings on one machine in the seven days
+before this flow, 22 (8%) were task work and 238 were everything else -
+suggestion jobs 120, security updates 39, lead idle work 21, role leads 17,
+schedules 11, red-base fixes 7, pipeline fixes 7, research 6, handoffs 3,
+others 7. PR #53 (the per-task pull request) covered the 8%; this flow covers
+every finished branch.
+
+## The pull request
+
+A pull request is PULSE's words about the work before its diff, so the
+reviewer and you read what was meant first. A task's is titled `<task id>:
+<task title>`; its body names the task, lists the jobs with their branches
+and says that the reviewer reviews it, that merging it closes the task and
+that closing it unmerged sends the task back to its lead. A job's is titled
+with the job's title; its body is the worker's result summary (cut at 4,000
+characters) followed by the job's id, kind and source (`suggestion:…`,
+`security:…`, `pipeline:…`) and its branch, so the reviewer knows what the
+change set out to do. An experiment's carries the measurement: the experiment
+and archive ids, the summary with the baseline and the variant scores, the
+fixtures that moved and the verdict, and the job and branch; merging it
+finalizes the experiment. A proposed branch's title is its last commit's
+subject, and its body says who proposed it (a conversation by id, or
+`pulse land --branch` by hand) and lists the commits it adds over the
+upstream default branch.
+
+The commits are the runner's: each carries its `Pulse-Agent`, `Pulse-Job` and
+`Pulse-Executor` trailers and the run key's signature, and `pulse verify
+<ref>` checks that they match the run that made it (ADR-022; `pulse signers`
+lists the trusted keys). The `land.pr` event names the pull request (`number`,
+`url`, `title`), the branches (`head`, `base`, `remote`), the commits (`from`,
+the merge base with the default branch; `to`, the head pushed; `commits`, how
+many between them), the `jobs` it delivers, whether the pass `opened` the pull
+request or updated an open one, and the ids of the work: `task`, `job`,
+`experiment` with `archive` and `run_id`, or `conversation`. A follow-up
+pushed onto an open pull request after the reviewer asked for changes
+([The follow-up after changes](review.md#the-follow-up-after-changes)) is a
+`land.pr` with `opened` false and `fix` naming the follow-up job.
+
+## Polling and bookkeeping
+
+Each pass asks GitHub about every pull request PULSE opened and has no verdict
+for yet (`gh pr view <n> --json state,mergedAt,url`):
+
+- **Merged** - `land.merged`, with `merged_at` from GitHub. The jobs' branches
+  are cleared (nothing of the work waits any more; the hub's row leaves *In
+  review*) and the local copies deleted - unless a worktree has one checked
+  out, which the line says - a task is marked done (merging its pull request
+  is what closes it, as the body says, and its delivery line reads *Merged*,
+  [Tasks](console.md#tasks)), a kept experiment is finalized the way a local
+  landing finalized it ([Evolve](self-improvement.md#evolve)), and the local
+  default branch is fast-forwarded from the upstream at once rather than when
+  the fetch memo runs out. Whether the reviewer merged it or you did, the
+  event is the same; the reviewer's own record is `review.merged`
+  ([The reviewer](review.md)).
+- **Closed without merging** - `land.pr-closed`. The branches are cleared
+  too; a task goes back to *in progress* with a message in its conversation
+  that says the pull request was closed and that its lead reads why on the
+  pull request and plans what comes next. The branch stays on the remote, so
+  nothing is lost and nothing delivers it again; a new job of the task makes
+  a new pull request.
+- **Open** - nothing to do here. Where the review stands is the reviewer's
+  record (`review.queued`, `review.owner`, `review.changes`), and the hub
+  reads both ([Where the work stands](#where-the-work-stands-in-the-hub)).
+
+The pass remembers what it delivered in the event log alone: the newest of
+`land.pr`, `land.merged` and `land.pr-closed` for a task, job or branch says
+whether a pull request is open, so a daemon restart loses nothing and `pulse
+events --action 'land.*'` is the whole history.
+
+`gh` is the GitHub CLI logged in on this machine; its login never reaches git.
+A machine often has more than one login (`gh auth status` lists them), and `gh`
+uses one of them for everything, so a fine-grained token that cannot see a
+repository answered 404 to every call while the account beside it could see
+them all. The daemon therefore tries every logged-in account when a call
+comes back 401, 403 or 404 and remembers, per repository, the one that
+answered, for as long as it runs; the list of logins itself is read from `gh
+auth status` once every ten minutes. An error names the account and the
+command, and no token is ever written to a log, an event or an error. The
+same selection serves the pull requests, the reviewer's `pulse review`
+commands and the pipeline watcher below; git's own push and fetch use the
+machine's credentials or `push.credential`, never `gh`
+([Credentials](#credentials)).
+
+## The local default branch follows the upstream
+
+Every pass fetches each active project's upstream (`origin/<default>`, or
+whatever the local default branch tracks; a fetch is trusted for two minutes,
+and a merge the pass just settled fetches at once) and fast-forwards the local
+default branch to it. A clean checkout on the default branch is fast-forwarded
+in place; a checkout on another branch, or detached, has its default branch
+moved by ref (`git update-ref`, with a reflog message) and its working tree
+left alone, so your branch, your edits and your stash stay as you left them;
+the move is `land.fast-forward` in the log (`behind`, `from`, `to`, `how`:
+`checkout` or `ref`) and a `landing fast-forwarded <slug>: main -> origin/main
+(N commits)` line in the daemon log. The next worker clone starts from the
+commit the forge has.
+
+A dirty checkout on the default branch is stashed around the fast-forward
+when `landing.auto_stash` is on (the default), as the old landing stashed
+around a merge; with it off the branch is left alone, the daemon records
+`land.sync-skipped` with what holds it back (at most once an hour per
+project, so the log does not fill with the same line) and tries again on the
+next pass - commit or stash your changes and the branch follows. A local
+default branch that has diverged from the upstream - commits of its own that
+the forge lacks, which only a `pulse land --branch B --local` or a merge by
+hand makes now - is not merged for you: on the default branch the
+fast-forward fails and `land.fast-forward` says so (`ok` false, `why`); on
+another branch the ref is not moved. Push or reset the local commits and the
+branch follows again.
+
+Following the upstream is what keeps PULSE updating itself: the brain project
+(PULSE on the machine that runs it) rebuilds and restarts the daemon when its
+local default branch moves ([Services and self-update](runner.md#services-and-self-update)), and
+with the merge on the forge, the fast-forward is how a merged change reaches
+the running binary. The pass fast-forwards whether or not anything of PULSE's
+merged, so a change you merged on GitHub by hand reaches the checkout within a
+pass too.
+
+## Events
+
+Every event's subject is the project slug; `pulse watch --project X --action
+'land.*'` streams them (`--since 0 --detail` replays them), and the hub lists
+them at `GET /api/v1/events?project=X&action=land.*`.
+
+| Event | When | Detail |
+| --- | --- | --- |
+| `land.pr` | a pull request opened or updated | `project`, `kind` (`task`, `job`, `experiment`, `proposed`), `number`, `url`, `title`, `head`, `base`, `remote`, `from`, `to`, `commits`, `jobs`, `opened`; the ids: `task`, `job`, `experiment` with `archive` and `run_id`, `conversation`; `fix` (the follow-up job) when a follow-up was pushed onto it |
+| `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
+| `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
+| `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branch list), `note` (why) |
+| `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not |
+| `land.sync-skipped` | the local default branch was left behind the upstream because the checkout is dirty and `landing.auto_stash` is off | `project`, `branch`, `upstream`, `behind`, `why`; at most once an hour per project |
+
+The reviewer's events (`review.queued`, `review.merged`, `review.changes`,
+`review.owner`, `review.failed`, `review.ask`) are listed with [the
+reviewer](review.md#events). Older stores hold the events of the local flow -
+`land.landed`, `land.batch`, `land.pushed`, `land.synced`, `land.held`,
+`land.failed-verify`, `land.deferred`, `land.conflict` - as history; only a
+project without an upstream writes `land.landed` now. The goal review counts
+`land.landed` and `land.merged` alike ([Goals](goals.md)); the loop report's
+landing counts and the code-delivery report still read `land.landed` only,
+so for a project with an upstream they count nothing under this flow until
+they are taught `land.merged`.
+
+## When delivery fails
+
+A branch the pass cannot deliver is held with `land.pr-held` and the reason in
+`note`, shown on the task's conversation and on the hub's row, and tried again
+only when the work changes (a new job of the task finishes, the branch moves
+to a new commit) or when you propose the branch by hand with `pulse land
+--branch` - a hold is not retried blind every tick, because the reasons below
+do not clear by themselves:
+
+- **The task's branches do not merge together**: two jobs of one task changed
+  the same lines. The note names the branch and the conflict; the lead reads
+  it on the task and plans a job that resolves it on top of the others (its
+  branch then joins the task's pull request).
+- **The push was refused**: a credential that cannot be resolved
+  ([Credentials](#credentials)), a branch protection, a network that is down.
+  The note carries git's words with secrets removed.
+- **`gh` could not open or read the pull request**: no account that can see
+  the repository, a rate limit, GitHub down. The note names the account and
+  the command that failed; the pass tries again next time.
+- **The branch is gone**: a job whose branch no longer exists in the checkout
+  is held once and forgets the branch, so it is not asked about again.
+- **A follow-up is not built on the pull request**: a `pr-fix` job's branch
+  that does not descend from the pull request's head is held with the head
+  to rebase onto ([The follow-up after changes](review.md#the-follow-up-after-changes)).
+
+A pull request closed on GitHub without a merge is not a failure of the
+delivery: `land.pr-closed` records it, the task goes back to its lead with the
+pull request's words, and the branch stays on the remote (above). A review
+that could not be made - the review job ended twice without a verdict on the
+same head - is the reviewer's `review.failed`, and the pull request waits for
+you ([The reviewer](review.md#when-the-review-fails)). A checkout that cannot
+follow the upstream is `land.fast-forward` with `ok` false or
+`land.sync-skipped` (above).
+
+## Where the work stands in the hub
+
+A task's conversation shows one delivery line under its title, read from the
+same events: *PR #n open, waiting for review*, then *PR #n is being reviewed*
+while the review job runs, then one of *Needs your review: PR #n — <the
+reviewer's reasons>* with a **Merge** button (the button records `review.ask`,
+and the daemon merges as you on its next pass - the same as `pulse review
+merge <n> --by owner`), *Changes requested on PR #n: <note>. Follow-up <job>
+is queued.*, *Merging PR #n…*, *The review of PR #n failed* (with the button
+too) and *Merged*. A finished step whose branch still waits for the task's
+pull request reads *Waiting for its pull request*. The Chat page's list
+groups the rows the same way: **Needs your review** at the top, then
+**Working**, then **In review** for work that has a pull request and nobody
+waiting on you, then the rest ([Chat](console.md#chat)). The old *Waiting to
+land* and *Reviewing* groups are gone with the local landing they described.
+
+## By hand
+
+- `pulse land [--project X | --all]` runs one delivery pass now: it pushes the
+  ready branches, opens or updates their pull requests, polls the open ones
+  and fast-forwards the local default branch. It prints one line per pull
+  request (`task pr <slug> <task>: #n opened|updated <url>`, `job pr <slug>
+  job <id>: …`, `task pr <slug> <task>: held: <why>`, `task pr <slug>: #n
+  merged; task done`, `… closed unmerged; the branch stays on the remote`)
+  and `<slug>: nothing waiting` when there is nothing to do; a project
+  without an upstream prints `<slug>: no upstream, landing locally` and the
+  local landing's lines. `--limit` is accepted for older scripts and does
+  nothing: a pass opens at most ten pull requests per project.
+- `pulse land --dry-run` lists what the next pass would deliver, per project,
+  without pushing anything: where the pull requests go (`pull requests go to
+  origin/main <url>`, or `no upstream, finished branches land locally on
+  main`), then each task with its jobs and branches, each job's branch and
+  whether it becomes a pull request or a push onto one, and each conversation
+  branch with how far ahead it is and how old its last commit is.
+- `pulse land --project X --branch B` proposes `B` as a pull request: the
+  branch is pushed and a pull request opened from it into the upstream default
+  branch, delivered and reviewed like any other; it prints `<slug> proposed: B
+  #n <url>`, or says the branch is delivered already (`--propose` is accepted
+  as an alias; a conversation's **Open PR for review** button runs the same).
+  A branch not under `pulse/` counts as a person's to the reviewer, so it is
+  handed to you rather than merged ([The complexity
+  rule](review.md#the-complexity-rule)).
+- `pulse land --project X --branch B --local` is the escape hatch: it merges
+  `B` into the local default branch the way the old landing did (the verify
+  command first unless `--no-verify`, then a fast-forward or a `Land …` merge
+  commit) and warns that the local default branch will be ahead of its
+  upstream until that is pushed or reset, and that the daemon only ever
+  fast-forwards it. Use it when the forge is unreachable and a change cannot
+  wait; the rest of the time, propose the branch.
+- `pulse review …` reads and decides pull requests ([The
+  reviewer](review.md#the-verdict-commands)); `pulse pipeline` shows what the
+  merges set running ([Pipelines](#pipelines-what-a-push-set-running-on-github)).
+
+## Moving from the local landing
+
+Nothing needs doing: on its first pass under this flow the daemon delivers
+every branch that was waiting to land - each finished job's branch of a task
+as that task's pull request, each other finished branch as its own - and the
+hub's *Waiting to land* rows become *In review*. A branch the old flow had
+held (an owner-only path, a lockfile too young, a verify that failed on the
+merged result) is a pull request now too, and the reviewer's complexity rule
+hands the ones that need a person to you ([The complexity
+rule](review.md#the-complexity-rule)). A project with no upstream keeps the
+local landing, verify command and all, until you give its default branch one
+(`git remote add origin …` or `git branch --set-upstream-to`).
+
+Settings: `review.merge`, `review.max_files` and `review.max_lines` are new
+(review.md has them). `landing.parallel` is gone with the per-project landing
+workers. `landing.batch` is still read, but only by the local landing a
+project without an upstream keeps. `landing.push` is kept so an older store's
+value still parses, but no code reads it: the daemon pushes branches and
+never the default branch, and the merge is the forge's. `landing.auto_stash`
+keeps its meaning for the fast-forward of a dirty checkout
+([above](#the-local-default-branch-follows-the-upstream)) and for `pulse land
+--local`; `landing.verify_memo` and `landing.verify_memo_hours` matter only
+to the local landings. `landing.base_red_retry_minutes` and
+`landing.setup_repair` keep their meaning for the runs and local landings
+that find the default branch red or its setup broken ([A red default
+branch](#a-red-default-branch)). `push.credential` is used for the push and
+the fetch alike ([Credentials](#credentials)). Patches the old flow saved
+under `~/.pulse/patches/<slug>/` stay where they are; only a local landing
+writes there now.
+
+What the local flow had, in one paragraph each, so the older events and
+settings read right:
+
+- **Verify before landing.** Each branch was merged in a throwaway worktree
+  and the project's verify command run on the merged result before the
+  default branch moved; a failure was charged to the branch (patch saved, job
+  requeued) only when the default branch passed the same command. The check
+  now runs in the worker's clone (the pre-commit hook and the run-end check,
+  [The verify command](#the-verify-command)) and once more where the reviewer
+  checks the pull request out.
+- **Batch landing** (`landing.batch`). Two or more waiting branches were
+  merged into one chain and verified once, because one verify took 1,210 s on
+  average on the brain and the branches queued behind each other. A pull
+  request per branch has no shared verify to save; the setting still steers
+  the local landing of a project without an upstream.
+- **The landing lock and parallel landings** (`landing.parallel`). One lock
+  per project (`.git/pulse-land.lock`) kept landings serial; a lock left by a
+  daemon killed mid-landing froze the project's queue until it expired, 30
+  minutes at a time. There is no lock: the pass pushes and reads, and nothing
+  it does needs the checkout to hold still.
+- **The red-base fix and the setup repair at landing.** A landing that found
+  the default branch itself failing the check held the project's landings and
+  queued a fix job; one whose worktree setup failed queued a repair. Both are
+  still planned from the runs that find the same thing ([A red default
+  branch](#a-red-default-branch)); a landing no longer finds it first.
+- **Resync.** When someone had moved the upstream, the landing merged the
+  remote commits in as a landing of their own and re-applied the local
+  commits the upstream lacked onto its tip, with a `task` job per commit that
+  could not be re-applied. The local default branch has no commits of its own
+  any more, so there is nothing to re-apply: it fast-forwards.
+- **Landing hold notes.** `pulse status` and the hub carried a `landing` line
+  (how many branches waited and why: a red base, a refused push, a young
+  lockfile, an owner-only path). A branch that cannot be delivered is
+  `land.pr-held` on its own task or job, and a pull request that waits for a
+  person is *Needs your review* on the hub.
+
+## What changed and why
+
+The local landing was the slowest and most fragile part of the day, and it
+served the smallest share of the work. Of the 260 landings on one machine in
+the seven days before this flow, 22 (8%) were task work; the rest - suggestion
+jobs, security updates, lead and schedule work, fixes, research, handoffs -
+went through the same serial path. That path stalled in ways that had nothing
+to do with the change being landed: a landing lock left by the restart of a
+self-update froze a project's queue for 30 minutes, four times in one day;
+each branch's verify ran 7-10 minutes on the brain and serialised every branch
+behind it; and the owner saw task after task *waiting to land* for hours while
+nothing was wrong with the work.
+
+Delivering by pull request removes the serial step. The daemon pushes a branch
+and opens a pull request in seconds, the forge runs the project's pipeline on
+every pull request at once, the reviewer reads each one as a job like any
+other, and the local default branch follows the upstream by a fetch and a
+fast-forward that touches nothing of yours. The owner reads pull requests, not
+hold notes: a diff with the reviewer's findings beside it, a **Merge** button
+in the hub for the ones the rule hands over, and GitHub's own history of who
+merged what. The 8% that PR #53 had already moved to pull requests showed the
+shape worked; this is the same shape for the other 92%.
+
+## Workers and the load governor
+
+The rest of this page is what else happens on the machine around a run: the
+workers and paired hands, the disk floor and the headroom per run, the load
+governor and the express lane, the verify command and how its runs take turns,
+a red default branch, the pipelines a merge sets running, the dependency
+watcher and the credentials the daemon pushes and fetches with.
 
 ### The verify command
 
@@ -33,62 +382,64 @@ CMD` sets or replaces it; re-registering keeps everything else); a project
 registered without one adopts its recipe's `suggested_check` the first time the
 daemon or a run reads a recipe that parses - once, with a `finding` on the
 project's `runner/verify` thread and a `verify.adopted` event - so a project is
-never left landing unchecked work because nobody passed `--verify` (`pulse env
-status` shows both when they differ, and an owner's own command is never
+never left delivering unchecked work because nobody passed `--verify` (`pulse
+env status` shows both when they differ, and an owner's own command is never
 replaced; before this, seven of eleven projects on one machine had no verify
 command and landed every job unchecked, three of them with a `make test`
 committed in their recipe that the daemon never ran).
 
-The verify command runs in a throwaway worktree that starts bare, so the daemon
-first runs the project's setup there - the recipe's `setup:` lines from the
-default branch, else the lockfile rules (`corepack pnpm install`, `uv sync`,
-`npm ci`, …) that a worker clone gets - within ten minutes (`SETUP_MINUTES`,
-the budget every setup gets, whatever `minutes_per_job` says: a hung `pnpm
-install` once held a slot for the two hours a job may run); a setup that fails
-on the machine defers the landing with a `land.deferred` event naming the file
-and the failure, and nothing is charged to the branch.
+The command runs where the work is made: in the worker clone's pre-commit hook
+at every commit, so a commit that fails the check is never made, and once more
+when the run ends, on the clone as the worker left it. A run whose check fails
+is a failed run - no branch is written, the job is retried as [Recovery](recovery.md)
+describes - so every branch the daemon delivers passed the project's own check
+on the commit it carries. The forge then runs the project's pipeline on the
+pull request ([Pipelines](#pipelines-what-a-push-set-running-on-github)), and
+the reviewer runs the command again where it checks the pull request out
+([The reviewer](review.md)). The merged result is not verified on this machine
+before the default branch moves, because the default branch does not move
+here: a merge the forge makes is a merge the forge's pipeline checked.
 
-A setup that fails that way at the base - not a timeout, not a dead network or
-a full disk, judged on the output's last lines where the error is, so that
-npm's `could not resolve dependency` peer note above a lockfile error never
-passes for a DNS failure and the unfit mark and the repair read the same
-evidence - is a fault of the default branch itself that no retry and no other
-job can get past: every landing of the project runs the same setup first, and
-every worker clone does too.
-
-So the daemon plans the fix (`landing.setup_repair`, default `on`): one Tier 1
-`task` job with source `setup:SLUG` (the `land.deferred` detail carries its id
-as `repair`, the hold note says `repair job ID planned`, and a `setup.repair`
-event records the command, the exit code and the last lines), briefed with the
-base commit, the recipe file, the command and the output, and told the three
-ways such a setup breaks and how to prove each fixed: the recipe names paths or
-tools the tree no longer has (`pulse env set --project SLUG --file …`, and
-`pulse init PATH --verify` for a verify command that moved with them), a
-lockfile out of step with its manifest (regenerated only at the versions the
-manifest already pins, since the landing's release-age rule reads every new
-version it adds), or the tree itself. That job is the one job of the project
-the setup is not run for - the runner says so in its log and the brief's rule 3
-tells the worker to install only what the setup would have - and it is leased
-even while the project is marked unfit for the machine, which holds everything
-else of the project back. The same failure seen in a worker clone plans it too,
-at the point the second same-signature failure marks the project unfit, so a
-project frozen on every machine by a broken `npm ci` no longer waits a day per
-machine for marks to expire - unless the checkout is behind its upstream (the
-`origin/main` the last push pass fetched, `origin/pr` in PR mode): then no
-repair is planned and the hold note says the sync lands first, because the
-recipe may already describe upstream's tree, set by hand after the owner
+The clone starts bare, so the runner first runs the project's setup there -
+the recipe's `setup:` lines from the default branch, else the lockfile rules
+(`corepack pnpm install`, `uv sync`, `npm ci`, …) - within ten minutes
+(`SETUP_MINUTES`, the budget every setup gets, whatever `minutes_per_job`
+says: a hung `pnpm install` once held a slot for the two hours a job may run).
+A setup that fails that way - not a timeout, not a dead network or a full
+disk, judged on the output's last lines where the error is, so that npm's
+`could not resolve dependency` peer note above a lockfile error never passes
+for a DNS failure - is a fault of the default branch itself that no retry and
+no other job can get past, since every clone of the project runs the same
+setup first. Two such failures with the same signature mark the project unfit
+for that executor ([Workers and paired hands](#workers-and-paired-hands)), and
+the daemon plans the fix (`landing.setup_repair`, default `on`): one Tier 1
+`task` job with source `setup:SLUG` (a `setup.repair` event records the
+command, the exit code and the last lines), briefed with the base commit, the
+recipe file, the command and the output, and told the three ways such a setup
+breaks and how to prove each fixed: the recipe names paths or tools the tree no
+longer has (`pulse env set --project SLUG --file …`, and `pulse init PATH
+--verify` for a verify command that moved with them), a lockfile out of step
+with its manifest (regenerated only at the versions the manifest already pins,
+since the release-age rule reads every new version it adds), or the tree
+itself. That job is the one job of the project the setup is not run for - the
+runner says so in its log and the brief's rule 3 tells the worker to install
+only what the setup would have - and it is leased even while the project is
+marked unfit for the machine, which holds everything else of the project back.
+No repair is planned while the checkout is behind its upstream, because the
+recipe may already describe the upstream's tree, set by hand after the owner
 renamed a solution, and a worker sent to fix it at the stale head would write
-the old paths back; the sync's own setup failure, whose base is upstream's tip,
-still plans one.
+the old paths back; the fast-forward brings the checkout up on the next pass,
+and a setup that still fails there plans one.
 
 Three repairs a day per project at most; a failing repair stays open and is
-briefed afresh at the next failure rather than queued again; and the first
-landing whose setup passes on the machine clears that machine's `setup:` mark
-for the project at once (an `executor.fit` event), so the held work follows the
+briefed afresh at the next failure rather than queued again; and the mark
+clears when the executor's next probe gets through the setup (an `executor.fit`
+event; the daemon re-probes a marked machine on `daemon.unfit_reprobe_minutes`
+and the mark expires after 24 hours in any case), so the held work follows the
 repair out. Before this, a project whose `server/package-lock.json` had drifted
 from its manifest sat frozen on the hub for a day behind an `npm ci` that no
 job was allowed to fix, and a pnpm workspace whose lockfile no longer matched
-its `overrides` held every landing the same way.
+its `overrides` held every run the same way.
 
 ### Workers and paired hands
 
@@ -143,9 +494,10 @@ carries the last pass: what it freed, over which rungs, and what is left.
 
 The leak itself is closed at the source: a local run's worker, its pre-commit
 hook and its run-end check get `TMPDIR` set to `<clone>.tmp` beside the clone
-(a recipe that sets `TMPDIR` wins), and a landing's commands get
-`<worktree>.tmp`, so what a killed test leaves behind goes with the clone or
-the worktree instead of piling up in the system temp directory.
+(a recipe that sets `TMPDIR` wins), and a by-hand `pulse land --local` gets
+`<worktree>.tmp` beside its worktree, so what a killed test leaves behind goes
+with the clone or the worktree instead of piling up in the system temp
+directory.
 
 ### Disk headroom per run
 
@@ -226,7 +578,7 @@ A load hold alone (not memory, not a restart window) keeps one local slot open
 as the express lane: it leases only the owner's work - lead runs, answers,
 `task:` jobs - while the load stays under twice the load line and the run
 cap has room; the idle line adds `one express slot stays open for the owner's
-work`. The fleet's own builds and landings are what push the load over the
+work`. The fleet's own builds and checks are what push the load over the
 line, and without the lane they held the owner's tasks behind themselves. The
 cap itself is the other way they did it: with two local slots and both
 slots on fleet verifies, the lead sitting your *Try again another way* queued
@@ -296,7 +648,7 @@ responsive, not cool: four runs each compiling on all twelve cores still ran
 the laptop hot for most of a day, so the daemon also exports
 `CARGO_BUILD_JOBS=<daemon.build_jobs>` (default 0: half the physical cores) to
 everything it spawns - a worker's `cargo test`, the pre-commit verification
-that inherits the worker's environment, the landing verification, the
+that inherits the worker's environment, the run-end check, the
 self-update build's `-j`, the experiment lane's measurements (each fixture's
 share of the cores, `evolve.measure_parallel`, never over this cap) - whenever
 the environment does not set it already, so an owner's own export or a recipe's
@@ -305,7 +657,7 @@ read their own variables (`GOMAXPROCS`, `MAKEFLAGS`); a recipe sets those where
 a project needs them.
 
 The daemon itself lowers its own priority to `daemon.nice` (default 5) as it
-starts, so its planning, sweeps and landing passes yield to the owner's
+starts, so its planning, sweeps and delivery passes yield to the owner's
 foreground work while the loop still comes before the fleet's builds; 0 leaves
 the level the service started it at, and a `renice` by hand does not survive
 the restart a self-update brings, which is why the daemon does it itself.
@@ -334,8 +686,8 @@ probe NAME`); until then such a project runs on the hub only, as before, which
 kept five of eight projects off the hands.
 
 A setup that fails twice the same way marks the project unfit for that executor
-and plans the setup repair job described under landing, which that mark lets
-through; a failure the machine did not cause - a dead network, a full disk (`no
+and plans the setup repair job described under [the verify
+command](#the-verify-command), which that mark lets through; a failure the machine did not cause - a dead network, a full disk (`no
 space left on device`, `disk quota exceeded`) - never does, and the job simply
 goes back to the queue. While a mark holds queued jobs, the daemon's idle line
 says so (`no queued job; 3 queued wait: 3 for blog (local cannot set up
@@ -343,65 +695,24 @@ Gemfile.lock); …`) with the probe command, instead of a bare `no queued job`
 over a queue nobody can see. The login check the daemon runs on an executor is
 a two-step harness run that must answer `SUMMARY: ok`.
 
-### Landing beside your checkout
-
-While the checkout is on another branch the landing does not touch it: the
-merge is verified in the throwaway worktree as always and the default branch
-then moves by ref (a compare-and-swap `update-ref` with the same reflog
-receipt, so the code delivery evidence is unchanged); your branch, your edits
-and your stash stay as you left them, and the next worker clone starts from the
-landed commit. Only a second worktree that has the default branch checked out
-makes the landing wait, naming that worktree. When the checkout is on the
-default branch and has uncommitted changes, `landing.auto_stash` (default `on`)
-stashes them with a clear message so the landing can proceed, and a stash that
-cannot be made blocks the landing with the reason instead of silently
-deferring. Your work in progress is never committed or lost.
-
-A verify failure on the merged result is charged to the branch (patch saved,
-job requeued, branch removed) only when the default branch passes the same
-command in the same worktree; when the default branch is red itself - a tool
-gone from the machine, a broken dependency, a suite that fails on its own - the
-branch is kept, the project's landings wait `landing.base_red_retry_minutes`
-(default 10 minutes), the hold names the failing line and logs `retry in 10m`,
-a `land.base-red` event records the tail, and `pulse land --project X` retries
-at once after you fixed it - the branches and the push step's sync of the
-upstream alike, which reads the same hold (before this, `pulse land` by hand on
-a project whose setup had failed landed nothing, reported nothing waiting, and
-left the sync behind the hold its own note said the command lifts). The hold
-shows in `pulse status` and the hub as `landing` (how many branches wait and
-why), and the daemon logs it and writes `land.held` once per change,
-`land.resumed` when the branches land again.
-
-When the branch is charged, the check's whole stdout and stderr are kept next
-to its patch as `~/.pulse/patches/<slug>/<branch>.verify.log`, the
-`land.failed-verify` event carries that path (`log`), the failing lines
-(`failures`) and the last 1500 characters, and the command's own line names
-the first three failures: `verify exit 1 on the merged main; branch removed;
-patch at …; the check's whole output at …verify.log (failed: error: test
-failed, to rerun pass …)`. Before the tail is cut, every command a tool echoed
-in backticks is shortened to its first word: cargo repeats the whole `rustc`
-invocation of a crate whose build or test binary failed, several thousand
-characters that pushed the `error: test failed` line out of the tail, so the
-event said `failures: []` and the agent fixing the branch retried blind.
-
 ### A red default branch
 
-A red default branch is also a plan, not just a hold: the first run or landing
-that finds the base itself failing the verify command records it (`base.red`
+A red default branch is also a plan, not just a hold: the first run that
+finds the base itself failing the verify command - a run whose own check
+failed asks whether the base was already red before charging the job - records it (`base.red`
 event, one `finding` on the project's `runner/verify` thread with the check's
 tail), queues one `improve` job to make the check pass - source
 `redbase:<slug>`, priority above the planner's improve jobs, a brief that
 carries the command, the exit code and the failing lines and forbids loosening
 or skipping the check; a corrected job keeps the source if it fails - and holds
-the project's other landing work (improve, task, experiment and clean jobs)
-with its attempts intact until the default branch moves; research, ballots,
+the project's other work on the branch (improve, task, experiment and clean
+jobs) with its attempts intact until the default branch moves; research, ballots,
 answers and leads keep running, and the idle line counts the held jobs (`2 jobs
 of blog wait for a green default branch (3f9c… is red; fix job … leased)`).
 
 A check that did not run to a verdict - the disk under `daemon.min_free_mb`
 (exit 71), the verify lock given up (exit 75), a timeout, a worktree that could
-not be made - says nothing about either tree: the run or landing waits as
-before, but the base is not recorded red and the branch is not charged, and the
+not be made - says nothing about either tree: the run waits as before, but the base is not recorded red and the branch is not charged, and the
 base tree is not checked again when the job's own check could not run.
 
 The hold lifts on the tick after the default branch moves (`base.moved`),
@@ -410,24 +721,26 @@ check of the default branch as it stands passes (`base.green`, a finding on the
 same thread; the red was never the tree's own, or was fixed without moving the
 branch); if half an hour passes with no fix job open and the base still red,
 the daemon asks the owner once (`default branch main is still red at …`, a
-question marked for the owner) with the two ways out - land a fix by hand, or
-give the project a check it can pass with `pulse init PATH --verify CMD` - and
+question marked for the owner) with the two ways out - merge a fix by hand,
+or give the project a check it can pass with `pulse init PATH --verify CMD` - and
 answers its own question when the branch moves or the hold lifts. In the week
 before this landed, 42 runs across 40 jobs on one machine each spent a worker
 to learn the same thing and threw their commits away.
 
-A branch that changes `docs/context/environment.md` alone is yours to land
-(ADR-026): the daemon holds it, asks once on the project's `runner/environment`
-thread, and then leaves it be for thirty minutes at a time instead of
-re-reading it every tick - `pulse land --project X --branch B` lands it
-whenever you are ready, and `pulse land --project X` by hand always shows what
-waits.
+A branch that changes `docs/context/environment.md` alone was yours to merge
+under the local landing (ADR-026: the daemon held the branch and asked once
+on the project's `runner/environment` thread). It is delivered as a pull
+request like any other now, and the reviewer's rule does not single the path
+out ([The complexity rule](review.md#the-complexity-rule)): the reviewer
+merges it unless another reason holds it, or every pull request when
+`review.merge=ask`.
 
 ### Verifications take turns
 
-The same verification command runs three times per change - in the worker
-clone's pre-commit hook at every commit, once more when the run ends, and in
-the landing worktree - and on one machine those runs overlap across clones.
+The same verification command runs more than once per change - in the worker
+clone's pre-commit hook at every commit, once more when the run ends, and
+again where the reviewer checks the pull request out - and on one machine
+those runs overlap across clones.
 When the clones share a build cache (a `CARGO_TARGET_DIR`, a Gradle or Bazel
 cache: the usual way to keep a large build fast and the disk small) two
 overlapping runs rewrite each other's artifacts mid-run and both fail for
@@ -448,9 +761,10 @@ with a per-project share of 4 and a check that takes eight minutes, a clone's
 commit may wait for three other checks before its own and the harness kills the
 command at `harness.commit_timeout` (25 min by default; plain commands stop at
 `harness.step_timeout`) - the run retries, and the lanes burn their budget
-waiting on each other. So the daemon measures the check's own run time at every
-landing (`verify_seconds` on the `land.landed` event, the lock's wait excluded)
-and leases `improve` and `task` jobs for the project only up to the lanes that
+waiting on each other. So the daemon measures the check's own run time
+(`verify_seconds`, the lock's wait excluded; the local flow recorded it on
+every `land.landed` event, and those measurements are what an older store
+still reads) and leases `improve` and `task` jobs for the project only up to the lanes that
 fit that commit cap (`commit_timeout / median of the last five`, never below
 one; the cap is `harness.commit_timeout`, never below `harness.step_timeout`,
 the same deadline the harness gives the gated commit); research, ballots and
@@ -471,169 +785,16 @@ the pre-commit check is skipped) and the run's own verification judges it like
 any other commit. The run log says `the runner committed its work for
 verification`; a worker that stopped for a reason of its own keeps its verdict.
 
-### Several branches at once: `landing.batch`
-
-A landing verifies each branch on its own, and on a project whose check takes
-long that serializes the queue: on amistio-template one verify took 1,210 s on
-average (36 timed landings over three days, the longest 1,642 s) and two to
-four finished branches often waited at once, so the last of them sat through
-every verify ahead of it. So when a landing pass finds two or more plain
-pending branches with a verify command to run (`landing.batch`, default `on`;
-`off` lands every branch on its own), it lands them as one: in a throwaway
-worktree of the default branch it merges each member in finished order exactly
-as its own landing would (the same fast-forward and merge-commit rules, the
-`pulse` identity, `out/`-only conflicts resolved by rebuilding the hub bundle,
-`PULSE_RESULT.md` dropped), leaves out a member whose merge conflicts - it
-lands or is refused on its own afterwards - points a synthetic branch
-`pulse/batch/<id>` at the chain and lands that branch like any other: one
-verify of the merged whole, one fast-forward, one push, one `land.batch` event
-(the chain as subject, the batch id and the member jobs and branches in the
-detail). The pass then marks each member landed in it: a `land.landed` event
-of its own, with the commits it added to the chain as `before` and `sha`, the
-batch id and the chain's verify in the detail, and text, note and result post
-on the job's thread that say the branch landed in batch `<id>` with N branches
-and was checked once as the merged whole, so the members leave the queue, show
-on the task page and count for the push exactly as individually landed jobs
-do. Experiments,
-sync and upstream landings, held branches, branches in a retry hold, and
-branches a landing would refuse or treat specially - owner paths, guarded
-files, `docs/context/environment.md`, a lockfile the release-age rule dates -
-never join a batch; a batch counts once against `pulse land --limit`, whatever
-its size. Whatever goes wrong with the chain costs the pass only that one
-attempt: a chain that fails its verify, conflicts, is refused or cannot be set
-up records `land.batch-failed` (the reason and the check's tail in the detail)
-instead of a retry hold, a repair or a result post, its synthetic branch is
-deleted, and the same pass lands the members one by one, where the member's
-own verify names the culprit and the good branches still land. A red default
-branch holds a batch as it holds any landing.
-
-### Pushing: `landing.push`
-
-Landing moves your local default branch; whether it goes further is your
-standing instruction, `landing.push` (ADR-037). `off`, the default: you review
-and push. `pulse settings landing.push main`: after each landing the daemon
-pushes the project's default branch to its upstream - the one branch, a plain
-fast-forward push with the git credentials this machine already has (or with
-the daemon's own key, see [Credentials](#credentials)), never a force, never a
-prompt - and pushes what landed earlier and was not pushed yet, so turning it
-on sends yesterday's landings along with whatever else sits on your `main`.
-Before it pushes, the daemon fetches the upstream branch through the same push
-url and credential.
-
-When someone else moved the remote, it does not stop at "not fast-forward": it
-brings the remote commits in as a landing of their own
-(`pulse/sync/<remote>/<branch>`, merged in the throwaway worktree and judged by
-the project's check like any other landing, `land.synced` in the log), then
-pushes the result. The upstream is the owner's published truth, so a sync is
-set up and checked as upstream has it: its recipe, its lockfiles and manifests,
-and the paths the check names are the merged tree's, not restored from the
-local head the way an agent's branch has them restored so it cannot change what
-checks its own work. (Before this, a sync of an owner's rename lost the renamed
-solution and csproj files the check named and failed every setup with `MSB1009:
-Project file does not exist`, and no retry could pass.)
-
-A plain merge that conflicts is not left to you: the upstream is the published
-truth, so the daemon re-applies the local branch's own commits - the ones the
-upstream lacks, merges left out, up to 200 - onto the upstream tip in a
-throwaway worktree, one by one, the way a pull with a hand resolution would
-end. A commit the upstream already holds in another form becomes empty and is
-dropped; one that clashes only on files the upstream removed loses those files
-and keeps the rest; one that conflicts for real is set aside. The tree that
-results becomes one merge commit of both sides (`Sync <remote>/<branch> into
-<default>` in the log, listing where each commit went), landed and checked like
-any sync, so the push is a fast-forward and the local history still holds every
-set-aside commit through the merge's first parent. Each set-aside commit gets
-its patch under `~/.pulse/patches/<slug>/resync-<sha>.patch` and one job
-(`task`, tier 1, source `resync:<slug>:<sha>`) that re-applies what it meant on
-the synced branch, or finishes without a change when the upstream holds it
-another way; a `finding` for you names them, and `land.synced` carries `resync`
-with each commit's fate. A merged result that fails the project's check lands
-all the same when the upstream tip fails it the same way (`land.upstream-red`
-in the log): the forge is red already, holding would protect nothing, and only
-a checkout that holds the forge's head lets the pipeline watcher's fix start
-from it. A merge that fails the check for more than the upstream's own reasons,
-or a re-apply that cannot be made (the branch too far ahead, a worktree that
-cannot be added), holds the push with the reason and `git pull --no-rebase`
-spelled out, and is not tried again until either side moves. A conflict a
-daemon remembered before it knew how to re-apply is retried once by the
-re-apply rather than left waiting for a move. A credential error that carries
-the tool's own timestamp (`[ERROR] 2026/10/31 09:08:24 ...`) is noted without
-it, so the hold is logged once, not again every pass.
-
-One remote move is not merged at all: an upstream rewritten by hand into a
-squash of history the daemon had already pushed - a root commit, or any commit
-the local branch shares no ancestor with, whose tree equals a commit on the
-local branch's first-parent line. The daemon copies the local commits made
-since that point onto the squash with their trees, authors, dates and messages
-(a landing's merge becomes one commit carrying its tree, up to 2000 commits),
-points the local branch at the copy - the tree is unchanged, so the working
-tree, the index and the check's verdict are untouched - and pushes the
-fast-forward, `land.synced` with `replayed` in the log. A remembered conflict
-from an earlier merge attempt is retired the same pass.
-
-A push url that is `https://` and takes a password the daemon has none of
-(`could not read Username`, `unable to get password from user`) is moved to its
-ssh form (`git@github.com:owner/repo.git`) when that form answers to the
-daemon's key - push url only, the fetch url stays, `land.push-url` in the
-log - and the hold note names the `git remote set-url --push` to run when it
-does not.
-
-A push that is still refused (no credentials, no upstream) never undoes the
-landing: it is a `landing` note in `pulse status` and the hub and a `land.held`
-event once per change, retried every tick until it goes through as
-`land.pushed`; the note ends with the way to a pull request instead. `pulse
-land` by hand does the same. Workers never push, whatever the setting.
-
-### Pull requests
-
-`pulse settings landing.push pr`: the daemon pushes the default branch to the
-PULSE-owned `pulse/landed` branch on the upstream instead - a plain push, never
-a force; a `pulse/landed` someone else moved holds with the reason - and keeps
-one pull request open from it into the upstream branch (`gh`, the GitHub CLI,
-logged in as the user the daemon runs as; its login never reaches git), so
-every landing waits for your merge on the forge. Later landings push to the
-same branch and update the open pull request; a merged one is followed by a
-fresh pull request with only what is new (merge with a merge commit: a squash
-or rebase merge lists the old commits again). When the upstream moved and
-merging it conflicts, the pull request still opens and shows the conflict for
-you to resolve there, nothing holds here. The pull request is `land.pr` in the
-log, with its number and url.
-
-Whatever the setting says, a task's conversation in the hub offers **Open a
-pull request** once its work landed and is not on the forge yet (the Task API:
-`POST /api/v1/tasks/{id}/pull-request`), and `pulse land --project <slug> --pr`
-asks the same way: the daemon's next landing pass delivers that project's
-landed work as a pull request (`land.pr-asked`, answered by `land.pr`, or by
-`land.pr-answered` when the upstream already has everything). The sheet's
-delivery line says where a task's code is - landed here only, held with the
-push's reason, on the upstream, or on pull request #N - and the task's activity
-feed carries the same, so the lead agent reads at close whether the work
-reached GitHub, not only that it landed.
-
-### Signatures and parallel landings
-
-Before you push, `pulse verify <ref>` checks that a landed commit's signature
-and its `Pulse-Agent`/`Pulse-Job`/`Pulse-Executor` trailers match the run that
-made it (ADR-022); `pulse signers` lists the keys it trusts.
-
-The daemon can tend multiple projects' finished branches at once with
-`landing.parallel` (default `4`); landings within one project remain serial
-behind that project's landing lock, and `landing.parallel=1` keeps the old
-single-project maintenance-pass behaviour. The lock (`.git/pulse-land.lock`)
-names the process holding it: a lock whose process is gone - a landing cut
-off by the restart of a self-update, a crash - is taken over at once, and
-one whose holder still runs is only forced after 30 minutes.
-
 ## Pipelines: what a push set running on GitHub
 
-A push is not the end of a landing: the repository's GitHub Actions
+A push is not the end of a delivery: the repository's GitHub Actions
 workflows run on it, and a red one is a regression PULSE made. So the daemon
 watches what its own pushes set off - and, since a project's default branch
 is PULSE's to keep green whoever pushed to it, the head of that branch on
 the forge as well. Each tick, for every active project
 whose remote is on GitHub, it takes the pushes of the last 48 hours that
-still have no verdict - `land.pushed` to the default branch and `land.pr`
-to `pulse/landed` alike - and asks GitHub for the runs on that commit (`gh
+still have no verdict - every `land.pr` push, the head a pull request was
+opened or updated from - and asks GitHub for the runs on that commit (`gh
 run list --commit`, the GitHub CLI logged in as the user the daemon runs
 as, with read access to the repository's Actions). It counts the runs the
 push itself caused (`push`, `pull_request`, `pull_request_target`,
@@ -657,8 +818,8 @@ landed, and the command that re-runs the failed jobs (`gh run rerun <id>
 nothing. With `pipeline.watch` at `fix`, the default, a red pipeline also
 queues one fix job for the project (`task`, tier 1, priority 60, source
 `pipeline:<slug>`) whose brief carries the same evidence and the project's
-verify command: a worker takes it like any other job, and its landing is
-pushed and watched in turn. A worker has no `gh` of its own, so the brief is
+verify command: a worker takes it like any other job, and its branch is
+delivered as a pull request and watched in turn. A worker has no `gh` of its own, so the brief is
 what it knows of the failure; when GitHub no longer has the failed log
 (HTTP 410 or 404: the repository's log retention passed, or someone deleted
 it) the daemon does not plan a job around a brief with no error in it. It
@@ -691,23 +852,21 @@ tracks, `origin/<default>` when it tracks none). A head that is one of
 PULSE's own pushes, or a commit already judged, is left alone; any other
 is judged by the same rules, its verdict recorded with `head: true` and the
 login or name that pushed it (`by`), and a red one is a finding and a fix job
-like a push's - with one difference: a worker starts from the project
-checkout, so the job is planned only once the checkout's default branch
-holds the commit. The landing pass brings it there: with `landing.push` on,
-the daemon fetches each project's upstream every ten minutes whether or not
-anything landed - a quiet project gets a landing worker for it (`landing
-<slug>: started (upstream refresh)` in the log) - because a tracking ref
-nobody fetches never says the forge moved: before this, a merge made on
-GitHub never reached the checkout, and the red head waited its two hours
-for nothing. A checkout that is behind then follows: a clean checkout on the default branch is fast-forwarded, a
-checkout on another branch or detached has its default branch moved by ref
-and its working tree left alone (`land.fast-forward` with `how`), a dirty
-checkout on the default branch keeps its HEAD and the sync merges the remote
-commits in as above. Until the checkout holds the commit the daemon looks
-again every three minutes and the log says it is waiting; when the checkout
-still lacks the commit two hours after the daemon first saw the failure, the
+like a push's. The merge of a pull request is such a head: the merge commit
+is the forge's, not a push of PULSE's, so a merge that turns the default
+branch red is found here, whoever merged it. One difference from a push's
+fix job: a worker starts from the project checkout, so the job is planned
+only once the checkout's default branch holds the commit. The delivery pass
+brings it there - it fetches each project's upstream and fast-forwards the
+local default branch every pass ([above](#the-local-default-branch-follows-the-upstream)),
+because a tracking ref nobody fetches never says the forge moved: before
+this, a merge made on GitHub never reached the checkout, and the red head
+waited its two hours for nothing. Until the checkout holds the commit the
+daemon looks again every three minutes and the log says it is waiting; when
+the checkout still lacks the commit two hours after the daemon first saw the
+failure - a dirty checkout on the default branch is the usual reason - the
 finding goes out without a job and names what holds the checkout behind (the
-push's hold note, when there is one), so you can see what to clear. The
+`land.sync-skipped` reason, when there is one), so you can see what to clear. The
 brief of a head's fix job says that the push was not PULSE's and that PULSE
 looks after the branch all the same.
 
@@ -734,8 +893,9 @@ that long costs little against a known vulnerability and nothing against a
 routine bump. The publish dates come from the package's own registry - npm,
 crates.io, PyPI, the Go module proxy, RubyGems - and are cached in the store
 once known (`release_age:<ecosystem>:<name>:<version>` in `meta`), since a
-publish date never changes. The rule is applied twice, so neither an agent
-nor a branch can slip a younger version past it.
+publish date never changes. The rule is applied by the watcher before it
+queues an update and by the local landing before it merges a branch; a pull
+request on the forge does not apply it (below).
 
 **The watcher.** Once per `dependencies.alert_check_minutes` (default `60`)
 the daemon reads each active project's open Dependabot alerts through the
@@ -758,7 +918,7 @@ reads "never change a lockfile - dependencies are Tier 2"). A patched version
 younger than the rule is not queued yet: the daemon logs the date it becomes
 eligible (`security.waiting`) and queues it on the first pass after that.
 Alerts a job already covers - queued, running, or finished within the last
-24 hours, while its branch may still be landing - are not queued again.
+24 hours, while its pull request may still be open - are not queued again.
 What the watcher cannot take it hands to you, once each, as a `finding` marked
 for the owner on the project's `security/dependabot` thread, where it waits in
 the console's For you inbox with two buttons: a fix that
@@ -781,35 +941,28 @@ or gone with the dependency - the watcher answers the finding itself
 `dependencies.security_updates off` stops the watcher; the watcher's memory
 per project is the `meta` row `dependabot:<slug>`.
 
-**The landing.** A branch that changes a lockfile together with its manifest
-(`package.json`, or `pnpm-workspace.yaml`, where pnpm 10 keeps `overrides`
-and `catalog:` pins - before this a branch changing those two alone was no
-dependency bump to the landing, main's lockfile was restored over the
-branch's workspace file, and every landing of the project then failed its
-setup with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`)
-used to wait for a human landing in every case. Now the landing diffs the
+**The pull request.** The local landing read the rule itself: it diffed the
 pins between the default branch and the branch (`Cargo.lock`,
 `package-lock.json`, `pnpm-lock.yaml` in every shape pnpm has written,
-`yarn.lock` classic and berry, `uv.lock`, `Gemfile.lock`) and asks the
-registry how old every new version is. When each one is at least the rule's age the
-branch lands like any other, with its lockfile and manifests kept for the
-check (the recipe's `cargo fetch --locked` or `npm ci` must see the branch's
-lockfile, not main's) and a `land.release-age` event naming the versions
-adopted. When a version is too young the branch is held with reason
-`release-age` and the date it can land from (`can land from
-2026-10-26T13:40Z`); the daemon lands it on the first tick after that, no
-human needed. A jump past the compatible range (`next 16.3.8 -> 17.0.0`), a
-lockfile the landing does not read (`poetry.lock`, `go.sum`, `bun.lock`) or
-a registry that cannot be asked keep the human hold as before, with why in the `land.held` event, and `pulse land --project
-X --branch B` by hand still lands whatever you ask for, recording the verdict
-only. One exception to the major-jump hold: a branch the **security
-watcher** queued (job source `security:…`) lands past the compatible range
-when `dependencies.major_updates` is `auto` - you authorized those upgrades
-in advance, so the landing does not ask again; the `land.release-age` event
-then carries `authorized: dependencies.major_updates`. An agent's own major
-jump still waits, and a security major held under `ask` says in its hold
-note which setting would let it land. With the rule at `0` days no registry is asked and only the
-compatible-range check remains.
+`yarn.lock` classic and berry, `uv.lock`, `Gemfile.lock`), asked the registry
+how old every new version was, recorded a `land.release-age` event naming the
+versions adopted, and held a branch with a version younger than the rule
+(reason `release-age`, with the date it could land from), a jump past the
+compatible range (`next 16.3.8 -> 17.0.0`), a lockfile it did not read
+(`poetry.lock`, `go.sum`, `bun.lock`) or a registry it could not ask - with
+one exception, a branch the **security watcher** queued (job source
+`security:…`) past the compatible range when `dependencies.major_updates` is
+`auto`, which carried `authorized: dependencies.major_updates` in its event.
+That reading still runs where a branch lands locally: a project without an
+upstream and `pulse land --branch B --local` ([Moving from the local
+landing](#moving-from-the-local-landing)). A pull request carries no
+release-age reading today: the watcher already waits for a patched version to
+be the rule's age before it queues the update, and a pull request that bumps
+a lockfile is read by the reviewer like any other - its rule counts files,
+lines and guarded paths, not versions ([The complexity
+rule](review.md#the-complexity-rule)). A lockfile change you want to see
+before it merges is one to set `review.merge=ask` for, until the pull request
+body carries the versions and their ages.
 
 ## Credentials
 
@@ -818,7 +971,7 @@ as unattended as your credentials are. An SSH key that lives in an agent
 which asks you before each use (1Password's SSH agent, a hardware key) makes
 every push wait for a click that never comes at 3 a.m.: `push failed:
 sign_and_send_pubkey: signing failed ... communication with agent failed`
-lines in the daemon log, landings piling up unpushed. No vault whitelists a
+lines in the daemon log, branches piling up undelivered. No vault whitelists a
 process for good - 1Password's agent remembers an approval only until the app
 locks - so the honest answer is a key of the daemon's own (ADR-041):
 
@@ -854,12 +1007,14 @@ and the key never pass through the settings store or the page.
 
 Without 1Password, `keychain://SERVICE/ACCOUNT` names a macOS Keychain item
 holding the key, and `file:///ABSOLUTE/PATH` a 0600 file (a symlink or a
-looser mode is refused). Whatever the reference, the daemon resolves it at
-push time, writes the key 0600 into a 0700 directory under `$PULSE_HOME/tmp`
-for the seconds of the push, runs `ssh -oBatchMode=yes -oIdentitiesOnly=yes
--oIdentityAgent=none -i <that file>` for exactly that push, and removes it.
-A key that cannot be resolved holds the landing with `push credential:
-<why>` in `pulse status` and the hub; the daemon never falls back to your
+looser mode is refused). Whatever the reference, the daemon resolves it when
+it pushes a branch and when it fetches the upstream to fast-forward the local
+default branch, writes the key 0600 into a 0700 directory under
+`$PULSE_HOME/tmp` for the seconds of the call, runs `ssh -oBatchMode=yes
+-oIdentitiesOnly=yes -oIdentityAgent=none -i <that file>` for exactly that
+push or fetch, and removes it. A key that cannot be resolved holds the
+delivery (`land.pr-held` with `push credential: <why>` in its note, shown on
+the task's row in the hub and by `pulse land`); the daemon never falls back to your
 credentials, and no reference is resolved inside a worker - the one exception
 is an MCP server's secret, which `pulse mcp` resolves on the local executor
 for the request it sends and never prints (see [Connecting the outside

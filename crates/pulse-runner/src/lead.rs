@@ -1671,7 +1671,12 @@ pub(crate) fn tend_tasks(
                 continue;
             }
             let owner_at = owner_spoke_at(s, t.id.clone());
-            let (next, reason, told) = if tally.waiting > 0 {
+            let (next, reason, told) = if tally.waiting > 0
+                || crate::delivery::closed_awaiting_work(s, &slug, &t.id)
+            {
+                // Waiting for the task's pull request, or its pull request
+                // was closed unmerged and no new job has run since: the
+                // task is not finished.
                 continue;
             } else if failed == 0 || tally.fixed {
                 let how = if failed == 0 {

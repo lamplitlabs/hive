@@ -53,9 +53,8 @@ pub(crate) const YIELD_ACTION: &str = "job.yield";
 pub(crate) fn fleet_waits_sql() -> String {
     let work = crate::jobs::work_kinds_sql();
     format!(
-        "NOT (NOT {owner} AND ((j.kind IN ({work}) AND j.source NOT LIKE '{red}%' AND EXISTS (SELECT 1 FROM jobs q JOIN projects qp ON qp.slug = q.project WHERE q.project = j.project AND q.status = 'queued' AND qp.status = 'active' AND q.kind IN ({work}) AND {owner_q})) OR EXISTS (SELECT 1 FROM events y JOIN jobs t ON t.id = json_extract(y.detail, '$.to') WHERE y.action = '{yield}' AND y.subject = j.id AND t.status = 'queued' AND t.project = j.project)))",
+        "NOT (NOT {owner} AND ((j.kind IN ({work}) AND EXISTS (SELECT 1 FROM jobs q JOIN projects qp ON qp.slug = q.project WHERE q.project = j.project AND q.status = 'queued' AND qp.status = 'active' AND q.kind IN ({work}) AND {owner_q})) OR EXISTS (SELECT 1 FROM events y JOIN jobs t ON t.id = json_extract(y.detail, '$.to') WHERE y.action = '{yield}' AND y.subject = j.id AND t.status = 'queued' AND t.project = j.project)))",
         owner = crate::jobs::OWNER_DRIVEN_SQL,
-        red = crate::redbase::RED_BASE_SOURCE_PREFIX,
         owner_q = crate::jobs::owner_driven_sql("q"),
         yield = YIELD_ACTION,
     )
@@ -89,13 +88,12 @@ pub(crate) fn yield_lanes_to_owner(
     if waiting.is_empty() {
         return Vec::new();
     }
-    let red = crate::redbase::holds(s, now);
     let limit = crate::jobs::parallel_per_project(s).max(1);
     let mut lines = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for owner in waiting {
         let slug = owner.str("project");
-        if !seen.insert(slug.clone()) || red.contains_key(&slug) {
+        if !seen.insert(slug.clone()) {
             continue;
         }
         let lanes = crate::jobs::project_lanes(s, &slug).lanes.max(1);
@@ -465,71 +463,6 @@ mod tests {
         );
         assert!(hold_requested(&s, &research));
         assert!(!hold_requested(&s, &fleet));
-    }
-
-    #[test]
-    fn a_red_default_branch_keeps_its_fix_running_and_leasing() {
-        let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        crate::test_helpers::new_bare_repo(&s);
-        one_lane(&s);
-        for name in ["aurora", "borealis"] {
-            join(&s, name);
-        }
-        let conn = s.conn().unwrap();
-        conn.execute(
-            "UPDATE projects SET verify_cmd = 'make test', default_branch = 'main' WHERE slug = 'proj'",
-            [],
-        )
-        .unwrap();
-        let proj = crate::board::project_by_slug(&conn, "proj".into());
-        let head = crate::util::git(
-            &proj.str("path"),
-            &["rev-parse", "--verify", "--quiet", "refs/heads/main"],
-        )
-        .stdout
-        .trim()
-        .to_string();
-        drop(conn);
-        let fix = crate::redbase::mark_red_base(
-            &s,
-            &proj,
-            &head,
-            2,
-            "FAIL tests/x.rs",
-            crate::test_helpers::TEST_NOW,
-        )
-        .expect("fix job")
-        .str("id");
-        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fix);
-        running(&s, &fix, "aurora", "2026-09-01T01:00:00Z");
-        let _task = queue(&s, "task", "task:TASK-001");
-        // The owner's task waits behind the fix: nothing yields to it...
-        assert!(yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]).is_empty());
-        assert!(!hold_requested(&s, &fix));
-        // ...and the fix job itself leases past the owner's queued work.
-        let conn = s.conn().unwrap();
-        conn.execute(
-            "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
-            [&fix],
-        )
-        .unwrap();
-        conn.execute("UPDATE runs SET status = 'failed' WHERE job_id = ?", [&fix])
-            .unwrap();
-        drop(conn);
-        let hold_except = vec![("proj".to_string(), crate::redbase::fix_source("proj"))];
-        let got = crate::jobs::lease_job(
-            &s,
-            "borealis".into(),
-            crate::test_helpers::TEST_NOW.into(),
-            crate::jobs::LeaseOpts {
-                any_proj: true,
-                hold_except,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(got.str("id"), fix, "{got:?}");
     }
 
     #[test]

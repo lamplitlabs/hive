@@ -36,36 +36,71 @@ export function relShort(d: string, now: number): string {
   return Math.round(s / 86400) + "d";
 }
 
-// The words of work that is done but not on the default branch yet: a
-// finished step whose branch the daemon has still to land, a conversation
-// whose branch holds commits main lacks. The same mood for a step, a task
-// and a conversation, so the section reads as one thing.
-export const WAITING_TO_LAND: Mood = { word: "Waiting to land", tone: "wait", pip: "waiting", dot: "bg-warn" };
+// Where a pull request's review stands (PrState.state from the hub): the
+// reviewer agent reads every pull request PULSE opens, merges the simple ones
+// and hands the rest to the owner. Two states are the owner's turn; four are
+// the reviewer's or the daemon's; merged and closed leave the entry to its
+// own status.
+export const PR_NEEDS_OWNER = new Set(["needs_owner", "review_failed"]);
+export const PR_IN_REVIEW = new Set(["pr_open", "in_review", "merge_asked", "changes_requested"]);
 
-// The step after waiting: a landing has taken the branch and is merging and
-// running the project's checks on it (its pulse-land.lock names the branch).
-// "Working" is an agent at it, "Waiting to land" is the branch asking to
-// land, "Reviewing" is the landing checking it.
-export const REVIEWING: Mood = { word: "Reviewing", tone: "run", pip: "busy", dot: "bg-primary" };
+export const NEEDS_REVIEW: Mood = { word: "Needs your review", tone: "wait", pip: "waiting", dot: "bg-warn" };
 
-// A step waits to land once its job is done and its branch is still on the
-// job: the landing clears the branch when the commits reach the default
-// branch (the runner's pending landings are exactly these jobs).
-export function jobWaitingToLand(jobStatus: string, branch: string | undefined): boolean {
+// Work done but without a pull request yet: a finished step whose branch is
+// still on it, a conversation whose branch holds commits main lacks. The
+// daemon opens the pull request on its next pass, so nobody is asked.
+export const WAITING_FOR_PR: Mood = { word: "Waiting for its pull request", tone: "neutral", pip: "waiting", dot: "bg-muted-foreground/40" };
+
+// The pull request's word, the same for a step, a task and a conversation,
+// so a section reads as one thing; null once it is merged or closed, and
+// for a state this build does not know.
+export function prMood(state: string | undefined | null): Mood | null {
+  switch (state) {
+    case "needs_owner":
+      return NEEDS_REVIEW;
+    case "review_failed":
+      return { word: "Review failed", tone: "wait", pip: "worried", dot: "bg-warn" };
+    case "pr_open":
+      return { word: "Pull request open", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
+    case "in_review":
+      return { word: "In review", tone: "run", pip: "busy", dot: "bg-primary" };
+    case "merge_asked":
+      return { word: "Merging", tone: "run", pip: "busy", dot: "bg-primary" };
+    case "changes_requested":
+      return { word: "Changes requested", tone: "neutral", pip: "curious", dot: "bg-primary/50" };
+    default:
+      return null;
+  }
+}
+
+// The section a pull request puts its entry in, or null when the entry's own
+// status decides (no pull request, or one merged or closed).
+export function prGroupOf(state: string | undefined | null): ListGroup | null {
+  if (!state) return null;
+  if (PR_NEEDS_OWNER.has(state)) return "needs_review";
+  if (PR_IN_REVIEW.has(state)) return "review";
+  return null;
+}
+
+// A step waits for the task's pull request once its job is done and its
+// branch is still on the job: the daemon clears the branch when the pull
+// request is merged or closed.
+export function jobWaitingForPr(jobStatus: string, branch: string | undefined): boolean {
   return jobStatus === "done" && !!branch;
 }
 
 // What a task's mood is read from, the same for the list's row (GET /chat)
 // and the task's own page (GET /tasks/{id}): its status, whether it has a
 // lead, whether the lead waits on the owner, whether an agent is at a step,
-// whether a finished step still waits to land.
+// whether a finished step still waits for the pull request, and where the
+// pull request's review stands once there is one.
 export interface TaskState {
   status: string;
   lead: string;
   needs_you: boolean;
   working: boolean;
-  landing?: boolean;
-  reviewing?: boolean;
+  waiting_for_pr?: boolean;
+  pr?: string | null;
 }
 
 function taskClosed(status: string): boolean {
@@ -73,17 +108,23 @@ function taskClosed(status: string): boolean {
 }
 
 // A task's state in the list's words, on the same scale as a conversation's:
-// the owner's turn first, then what the agents are doing. A step waiting to
-// land outranks "Done" - the task is not on main yet - but not an agent
-// still at another step.
+// the owner's turn first, then what the agents are doing. The pull request
+// outranks "Done" - the task is not on main until it is merged - but not an
+// agent still at another step; the owner's Merge outranks everything but the
+// lead's question.
 export function taskMoodOf(t: TaskState): Mood {
   if (t.needs_you) return { word: "Asked you", tone: "wait", pip: "waiting", dot: "bg-warn" };
-  if (t.reviewing) return REVIEWING;
-  if (taskClosed(t.status) && t.landing) return WAITING_TO_LAND;
-  if (t.status === "done") return { word: "Done", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
-  if (t.status === "cancelled") return { word: "Cancelled", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
+  const pr = prMood(t.pr);
+  if (pr && PR_NEEDS_OWNER.has(t.pr!)) return pr;
+  if (taskClosed(t.status)) {
+    if (pr) return pr;
+    if (t.waiting_for_pr) return WAITING_FOR_PR;
+    if (t.status === "done") return { word: "Done", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
+    return { word: "Cancelled", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
+  }
   if (t.working) return { word: "Working", tone: "run", pip: "busy", dot: "bg-primary" };
-  if (t.landing) return WAITING_TO_LAND;
+  if (pr) return pr;
+  if (t.waiting_for_pr) return WAITING_FOR_PR;
   if (t.status === "open") return { word: t.lead ? "Lead agent starting" : "New", tone: "ok", pip: "curious", dot: "bg-ok" };
   if (t.status === "planned") return { word: "Planned", tone: "ok", pip: "curious", dot: "bg-ok" };
   return { word: "In progress", tone: "ok", pip: "happy", dot: "bg-ok" };
@@ -95,8 +136,8 @@ export function taskStateOf(t: ChatTask): TaskState {
     lead: t.lead,
     needs_you: t.needs_you,
     working: t.sessions.some((s) => s.status === "running" || s.job_status === "leased"),
-    landing: t.sessions.some((s) => jobWaitingToLand(s.job_status, s.branch)),
-    reviewing: t.sessions.some((s) => !!s.reviewing),
+    waiting_for_pr: t.sessions.some((s) => jobWaitingForPr(s.job_status, s.branch)),
+    pr: t.pr?.state,
   };
 }
 
@@ -108,13 +149,17 @@ export function taskFinished(t: ChatTask): boolean {
   return taskClosed(t.status);
 }
 
-// A task's section, on the same scale as a conversation's: working while
-// the lead waits on you or an agent is at a step, waiting to land while a
-// finished step's branch is not on main yet, open while it is new or
+// A task's section, on the same scale as a conversation's: needs your
+// review while its pull request waits on the owner, working while the lead
+// waits on you or an agent is at a step, in review while its pull request
+// is open or a finished step still waits for one, open while it is new or
 // planned, finished once done or cancelled (a task is never archived).
 export function taskGroupOf(t: TaskState): ListGroup {
+  if (t.pr && PR_NEEDS_OWNER.has(t.pr)) return "needs_review";
   if (t.needs_you || (!taskClosed(t.status) && t.working)) return "working";
-  if (t.landing || t.reviewing) return "landing";
+  const pr = prGroupOf(t.pr);
+  if (pr) return pr;
+  if (t.waiting_for_pr) return "review";
   if (taskClosed(t.status)) return "finished";
   return "open";
 }
@@ -124,11 +169,14 @@ export function taskGroup(t: ChatTask): ListGroup {
 }
 
 // A step's state: the job's word, except while an agent's session runs it;
-// a done step with its branch still on it waits to land.
-export function stepWords(jobStatus: string, running: boolean, branch?: string, reviewing?: boolean): { word: string; tone: Tone } {
+// a done step with its branch still on it reads where the task's pull
+// request stands (`pr`), or that it waits for one.
+export function stepWords(jobStatus: string, running: boolean, branch?: string, pr?: string | null): { word: string; tone: Tone } {
   if (running) return { word: "Working", tone: "run" };
-  if (reviewing) return { word: REVIEWING.word, tone: REVIEWING.tone };
-  if (jobWaitingToLand(jobStatus, branch)) return { word: WAITING_TO_LAND.word, tone: WAITING_TO_LAND.tone };
+  if (jobWaitingForPr(jobStatus, branch)) {
+    const m = prMood(pr) ?? WAITING_FOR_PR;
+    return { word: m.word, tone: m.tone };
+  }
   switch (jobStatus) {
     case "queued":
       return { word: "Waiting", tone: "neutral" };
@@ -148,8 +196,8 @@ export function stepWords(jobStatus: string, running: boolean, branch?: string, 
   return { word: spaced.charAt(0).toUpperCase() + spaced.slice(1), tone: "neutral" };
 }
 
-export function sessionWords(s: ChatTaskSession): { word: string; tone: Tone } {
-  return stepWords(s.job_status, s.status === "running", s.branch, s.reviewing);
+export function sessionWords(s: ChatTaskSession, pr?: string | null): { word: string; tone: Tone } {
+  return stepWords(s.job_status, s.status === "running", s.branch, pr);
 }
 
 // The task's name from what the owner typed: its first line without list or
@@ -171,15 +219,16 @@ export function taskTitleOf(text: string): string {
 
 // ----- sub-conversations ----------------------------------------------------
 
-// The list's sections: a conversation is working while its agent runs or
-// waits on you, waiting to land while its branch holds commits the default
-// branch lacks and nobody is at it, open while it is idle between turns,
-// finished once the agent or the owner closed it (a message reopens it),
-// and archived when it was put away - put away is the owner's word, so an
-// archived conversation stays archived whatever its branch holds.
-export type ListGroup = "working" | "landing" | "open" | "finished" | "archived";
+// The list's sections: a conversation needs your review while its pull
+// request waits on the owner, is working while its agent runs or waits on
+// you, in review while its pull request is open or its branch holds commits
+// the default branch lacks and nobody is at it, open while it is idle
+// between turns, finished once the agent or the owner closed it (a message
+// reopens it), and archived when it was put away - put away is the owner's
+// word, so an archived conversation stays archived whatever its branch holds.
+export type ListGroup = "needs_review" | "working" | "review" | "open" | "finished" | "archived";
 
-export const GROUP_ORDER: ListGroup[] = ["working", "landing", "open", "finished", "archived"];
+export const GROUP_ORDER: ListGroup[] = ["needs_review", "working", "review", "open", "finished", "archived"];
 
 export interface Grouped {
   id: string;
@@ -189,15 +238,18 @@ export interface Grouped {
   live?: { status: string } | null;
   // The hub's answer (GET /chat): commits on the branch that main lacks.
   waiting_to_land?: boolean;
-  // A landing is checking the branch now (GET /chat).
-  reviewing?: boolean;
+  // The pull request opened for the conversation or from its branch (GET /chat).
+  pr?: { state: string } | null;
 }
 
 export function groupOf(c: Grouped): ListGroup {
   const status = c.live?.status || c.status;
+  const pr = prGroupOf(c.pr?.state);
+  if (pr === "needs_review") return pr;
   if (status === "running" || status === "waiting") return "working";
   if (status === "archived") return "archived";
-  if (c.waiting_to_land || c.reviewing) return "landing";
+  if (pr) return pr;
+  if (c.waiting_to_land && !c.pr) return "review";
   if (status === "closed") return "finished";
   return "open";
 }

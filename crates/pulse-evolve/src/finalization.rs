@@ -1,6 +1,10 @@
 use anyhow::Result;
 use rusqlite::params;
 
+// A local landing writes its proof with the branch as subject; a pull
+// request merged on the forge is recorded by the delivery poll under the
+// project slug, like every other `land.*` event the hub reads. Both count,
+// as long as the detail names this project, job, run and archive.
 pub(crate) const FINALIZED_EXPERIMENT_SQL: &str = r#"
 	j.kind = 'experiment' AND j.status = 'done' AND j.branch = '' AND r.status = 'done'
 	AND lower(j.result) NOT LIKE '%violation%' AND lower(j.result) NOT LIKE '%hard stop%'
@@ -8,7 +12,7 @@ pub(crate) const FINALIZED_EXPERIMENT_SQL: &str = r#"
 	AND NOT EXISTS (SELECT 1 FROM runs active WHERE active.job_id = j.id AND active.status = 'running')
 	AND r.id = (SELECT latest.id FROM runs latest WHERE latest.job_id = j.id
 		ORDER BY latest.started_at DESC, latest.id DESC LIMIT 1)
-	AND EXISTS (SELECT 1 FROM events e WHERE e.subject = a.branch
+	AND EXISTS (SELECT 1 FROM events e WHERE e.subject IN (a.branch, a.project)
 		AND ((a.kept = 1 AND e.action IN ('land.landed', 'land.merged'))
 			OR (a.kept = 0 AND e.action = 'land.dropped'))
 		AND json_extract(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END, '$.project') = a.project

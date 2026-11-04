@@ -510,13 +510,6 @@ pub(crate) fn take_job_first(
             ));
         }
     }
-    // A red default branch holds the project's landing kinds behind its fix
-    // job; the lease still takes the fix job and the project's other kinds.
-    let red = crate::redbase::holds(s, now);
-    let hold_except = red
-        .keys()
-        .map(|slug| (slug.clone(), crate::redbase::fix_source(slug)))
-        .collect();
     let caps = crate::executor::caps(&exrow);
     let reserved = crate::executor::reserved(&exrow);
     let job = crate::jobs::lease_job(
@@ -529,7 +522,6 @@ pub(crate) fn take_job_first(
             projects: projects.clone(),
             any_proj,
             fits: fits.to_vec(),
-            hold_except,
             only_source,
             work_first,
             caps: Some(caps.clone()),
@@ -570,10 +562,6 @@ pub(crate) fn take_job_first(
         }
         if project.is_empty() {
             why.push_str(&held_queue_note(&c, &exrow.str("name"), &unfit));
-            why.push_str(&crate::redbase::queue_note(&c, &projects, any_proj, &red));
-        } else {
-            let only: Vec<String> = vec![project.to_string()];
-            why.push_str(&crate::redbase::queue_note(&c, &only, false, &red));
         }
         why.push_str(&needs_queue_note(
             &c, &exrow, &caps, reserved, &projects, any_proj, project,
@@ -1796,59 +1784,6 @@ pub(crate) fn run_job(
                 } else {
                     parsed.summary.clone()
                 };
-                if job
-                    .str("source")
-                    .starts_with(crate::redbase::RED_BASE_SOURCE_PREFIX)
-                    && !project.str("verify_cmd").is_empty()
-                {
-                    // The red-base fix job made no commit: when the base passes
-                    // the check as it is (the red was never the tree's own, or
-                    // someone fixed it without moving the branch) the hold has
-                    // nothing left to wait for and lifts here, since it would
-                    // otherwise wait for a branch move that nothing makes.
-                    let check_cmd = wrapped_check(s, &project, recipe.as_ref(), &pins, &clone);
-                    let short = crate::recipe::short(&base, 12);
-                    let slug = project.str("slug");
-                    match base_tree_verify(
-                        ex.as_ref(),
-                        &cancel,
-                        &base,
-                        &check_cmd,
-                        minutes,
-                        &log,
-                        "the fix job made no commit; does the base pass the check as it is?",
-                    ) {
-                        BaseVerdict::Green => {
-                            verify_note = "verify exit 0 on the base tree".into();
-                            if crate::redbase::clear_green_base(s, &project, &base, now) {
-                                log.add(format!(
-                                    "green base: {slug}'s red-base hold on {short} is lifted; its landing work runs again"
-                                ));
-                                summary = format!(
-                                    "{summary}; the base {short} passes `{}` as it is, so the red-base hold on {slug} is lifted",
-                                    project.str("verify_cmd")
-                                );
-                            } else {
-                                summary = format!(
-                                    "{summary}; the base {short} passes `{}` as it is",
-                                    project.str("verify_cmd")
-                                );
-                            }
-                        }
-                        BaseVerdict::Red { rc, .. } => {
-                            verify_note = format!("verify exit {rc} on the base tree");
-                            summary = format!(
-                                "{summary}; the base {short} still fails `{}` (exit {rc}), so {slug}'s landing work keeps waiting",
-                                project.str("verify_cmd")
-                            );
-                        }
-                        BaseVerdict::Unknown => {
-                            summary = format!(
-                                "{summary}; the check did not run to a verdict on the base {short}, so {slug}'s landing work keeps waiting"
-                            );
-                        }
-                    }
-                }
             } else if !lease_ok(minutes + 5) {
                 status = "stale".into();
                 summary = format!(
@@ -1963,27 +1898,11 @@ pub(crate) fn run_job(
                             "the job's verify failed; was the base already red?",
                         )
                     };
-                    if let BaseVerdict::Red {
-                        rc: base_rc,
-                        tail: base_tail,
-                    } = verdict
-                    {
+                    if let BaseVerdict::Red { rc: base_rc, .. } = verdict {
                         summary = format!(
                             "{commits} commit(s) but {verify_note}; the base {} was already red before this job (verify exit {base_rc} on the base tree), so this is not a regression the job introduced; nothing landed",
                             crate::recipe::short(&base, 12)
                         );
-                        // The project, not the job, is what fails: plan the
-                        // fix once and hold the rest of its landing work.
-                        if let Some(fix) = crate::redbase::mark_red_base(
-                            s, &project, &base, base_rc, &base_tail, now,
-                        ) {
-                            log.add(format!(
-                                "red base: fix job {} planned; {}'s landing work waits until {} is green",
-                                fix.str("id"),
-                                project.str("slug"),
-                                crate::recipe::short(&base, 12)
-                            ));
-                        }
                     }
                 } else if !lease_ok(5) {
                     status = "stale".into();
@@ -4310,137 +4229,6 @@ mod tests {
     }
 
     #[test]
-    fn run_job_names_an_already_red_base_instead_of_blaming_the_commits() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        if which::which("ssh-keygen").is_err() {
-            return;
-        }
-        let s = new_store();
-        let (_, root) = new_repo(&s);
-        // The base tree is red: the check fails on the commit the job branches from.
-        std::fs::write(std::path::Path::new(&root).join("check.sh"), "exit 3\n").unwrap();
-        run(&root, &["git", "add", "check.sh"]);
-        run(&root, &["git", "commit", "-q", "-m", "red base"]);
-        let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
-        s.conn()
-            .unwrap()
-            .execute(
-                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
-                ["sh ./check.sh"],
-            )
-            .unwrap();
-        join(&s, "aurora");
-        let (job, _) = crate::jobs::add_job(
-            &s,
-            "proj".into(),
-            "task".into(),
-            "harmless commit".into(),
-            "add a note".into(),
-            1,
-            0,
-            "test".into(),
-            crate::util::HUMAN_AGENT.into(),
-            false,
-        )
-        .unwrap();
-        let job = crate::jobs::lease_job(
-            &s,
-            "aurora".into(),
-            TEST_NOW.into(),
-            crate::jobs::LeaseOpts {
-                job_id: job.str("id"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        // The worker commits something that does not touch the check at all.
-        let worker = "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && echo 'SUMMARY: added a note'";
-        let r = run_job(
-            &s,
-            job,
-            "aurora",
-            TEST_NOW,
-            RunOpts {
-                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(r.str("status"), "failed", "run: {r:?}");
-        let summary = r.str("summary");
-        assert!(
-            summary.contains("1 commit(s) but verify exit 3"),
-            "summary: {summary}"
-        );
-        assert!(
-            summary.contains(&format!(
-                "the base {} was already red before this job (verify exit 3 on the base tree)",
-                crate::recipe::short(&base, 12)
-            )),
-            "summary does not name the red base: {summary}"
-        );
-        assert!(
-            summary.contains("not a regression the job introduced"),
-            "summary: {summary}"
-        );
-        assert!(summary.ends_with("nothing landed"), "summary: {summary}");
-        assert_eq!(
-            run(&root, &["git", "rev-parse", "HEAD"]).trim(),
-            base,
-            "the red base must not move"
-        );
-        let stored = crate::util::must_one(
-            &conn(&s),
-            "SELECT base FROM runs WHERE id = ?",
-            &[&r.str("id")],
-        )
-        .str("base");
-        assert_eq!(
-            stored, base,
-            "runs.base must record the base sha so retries can compare bases: {r:?}"
-        );
-        assert!(
-            run(&root, &["git", "worktree", "list"]).lines().count() == 1,
-            "the base-tree worktree must be removed again"
-        );
-        // The project, not the job, is red: one fix job is planned, the
-        // failure is transient for recovery (the job runs again as it was),
-        // and dispatch holds the project's landing kinds behind the fix.
-        let fix = crate::util::must_one(
-            &conn(&s),
-            "SELECT * FROM jobs WHERE source = ? AND status = 'queued'",
-            &[&crate::redbase::fix_source("proj")],
-        );
-        assert!(
-            fix.str("title").contains("`sh ./check.sh`") && fix.str("brief").contains("exits 3"),
-            "{fix:?}"
-        );
-        assert_eq!(
-            crate::failure::classify_failure(
-                String::new(),
-                "failed".into(),
-                summary.clone(),
-                false
-            )
-            .class
-            .0,
-            crate::failure::FAILURE_TRANSIENT
-        );
-        let held = crate::redbase::holds(&s, TEST_NOW);
-        assert_eq!(
-            held.get("proj").map(|m| m.base.as_str()),
-            Some(base.as_str()),
-            "{held:?}"
-        );
-        let log = std::fs::read_to_string(r.str("log")).unwrap();
-        assert!(
-            log.contains(&format!("red base: fix job {} planned", fix.str("id"))),
-            "{log}"
-        );
-    }
-
-    #[test]
     fn base_worktree_command_runs_the_whole_check_in_the_worktree_or_not_at_all() {
         // It spawns git and sh from PATH: other tests swap PATH under these.
         let _serial = crate::test_helpers::serial();
@@ -4588,17 +4376,6 @@ mod tests {
             !summary.contains("already red"),
             "a check that did not run must not call the base red: {summary}"
         );
-        // Nothing is recorded against the base: no mark, no fix job, no hold.
-        assert!(crate::redbase::marks(&conn(&s)).is_empty());
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM jobs WHERE source = ?",
-                &[&crate::redbase::fix_source("proj")]
-            ),
-            0
-        );
-        assert!(crate::redbase::holds(&s, TEST_NOW).is_empty());
         assert_eq!(run(&root, &["git", "rev-parse", "HEAD"]).trim(), base);
         // The base tree was not even checked: its prelude would stop the
         // same way.
@@ -4620,127 +4397,6 @@ mod tests {
                 .0,
             crate::failure::FAILURE_TRANSIENT
         );
-    }
-
-    #[test]
-    fn run_job_lifts_the_red_base_hold_when_the_fix_job_finds_the_base_green() {
-        let _serial = crate::test_helpers::serial();
-        let _guard = pulse_testutil::env_lock();
-        if which::which("ssh-keygen").is_err() {
-            return;
-        }
-        let s = new_store();
-        let (_, root) = new_repo(&s);
-        std::fs::write(std::path::Path::new(&root).join("check.sh"), "exit 0\n").unwrap();
-        run(&root, &["git", "add", "check.sh"]);
-        run(&root, &["git", "commit", "-q", "-m", "green base"]);
-        let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
-        conn(&s)
-            .execute(
-                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
-                ["sh ./check.sh"],
-            )
-            .unwrap();
-        // The base was called red for a check that could not run; the mark
-        // and its fix job are in place, and a task of the project waits.
-        let proj = crate::board::project_by_slug(&conn(&s), "proj".into());
-        let fix = crate::redbase::mark_red_base(&s, &proj, &base, 71, "disk full", TEST_NOW)
-            .expect("fix job");
-        crate::jobs::add_job(
-            &s,
-            "proj".into(),
-            "task".into(),
-            "waiting work".into(),
-            "do it".into(),
-            1,
-            0,
-            "task:TASK-1".into(),
-            crate::util::HUMAN_AGENT.into(),
-            false,
-        )
-        .unwrap();
-        assert!(!crate::redbase::holds(&s, TEST_NOW).is_empty());
-        join(&s, "aurora");
-        let fix = crate::jobs::lease_job(
-            &s,
-            "aurora".into(),
-            TEST_NOW.into(),
-            crate::jobs::LeaseOpts {
-                job_id: fix.str("id"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(fix.str("source"), crate::redbase::fix_source("proj"));
-        // The fix job finds nothing to fix and commits nothing.
-        let worker = "echo 'SUMMARY: no change needed: sh ./check.sh exits 0 at the base'";
-        let r = run_job(
-            &s,
-            fix.clone(),
-            "aurora",
-            TEST_NOW,
-            RunOpts {
-                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(r.str("status"), "done", "run: {r:?}");
-        assert_eq!(r.int("commits"), 0, "run: {r:?}");
-        assert_eq!(
-            r.str("verify"),
-            "verify exit 0 on the base tree",
-            "run: {r:?}"
-        );
-        let summary = r.str("summary");
-        assert!(
-            summary.starts_with("no change needed: sh ./check.sh exits 0 at the base")
-                && summary.contains(&format!(
-                    "the base {} passes `sh ./check.sh` as it is, so the red-base hold on proj is lifted",
-                    crate::recipe::short(&base, 12)
-                )),
-            "summary: {summary}"
-        );
-        // The hold is gone although the branch never moved; the waiting task
-        // leases on the next tick.
-        assert_eq!(run(&root, &["git", "rev-parse", "HEAD"]).trim(), base);
-        assert!(crate::redbase::marks(&conn(&s)).is_empty());
-        assert!(crate::redbase::holds(&s, TEST_NOW).is_empty());
-        assert_eq!(
-            count(
-                &s,
-                "SELECT COUNT(*) AS n FROM events WHERE action = 'base.green' AND subject = 'proj'",
-                &[]
-            ),
-            1
-        );
-        assert_eq!(
-            run(&root, &["git", "worktree", "list"]).lines().count(),
-            1,
-            "the base-tree worktree must be removed again"
-        );
-        let log = std::fs::read_to_string(r.str("log")).unwrap();
-        assert!(
-            log.contains("verify the base tree")
-                && log.contains("green base: proj's red-base hold on"),
-            "{log}"
-        );
-        join(&s, "birch");
-        let next = crate::jobs::lease_job(
-            &s,
-            "birch".into(),
-            TEST_NOW.into(),
-            crate::jobs::LeaseOpts {
-                any_proj: true,
-                hold_except: crate::redbase::holds(&s, TEST_NOW)
-                    .keys()
-                    .map(|slug| (slug.clone(), crate::redbase::fix_source(slug)))
-                    .collect(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(next.str("source"), "task:TASK-1", "{next:?}");
     }
 
     /// Seeds the harness evidence the rescue looks for: a session of this

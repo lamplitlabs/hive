@@ -97,8 +97,8 @@ checkout of a different repository is refused until **Use this folder anyway**,
 which also adopts its remote); remove one after a preview of what deactivates,
 and restore a removed one from the picker. A checkout the runner made
 itself - a worker clone under `PULSE_HOME/work`, a fleet clone or measurement
-root under `PULSE_HOME/fleet`, a landing worktree under
-`PULSE_HOME/worktrees` - is refused: those come and go with jobs, and a project
+root under `PULSE_HOME/fleet`, a worktree under `PULSE_HOME/worktrees` - is
+refused: those come and go with jobs, and a project
 is the checkout they are cloned from. Adding a path that is already a project
 refreshes it instead of duplicating it: a name given with it (`pulse init PATH
 --name N` from a terminal) renames the project, while its slug - what posts,
@@ -144,39 +144,42 @@ schedule (15 min for urgent, then 30, 60, ...) until the blocker is gone, a
 failed job goes back to the lead to re-plan, a sitting the lead lost to an
 outage (a provider error, a timeout, a dead run - anything the daemon would
 retry for a worker) brings its tasks back after five minutes, then 15, 45...
-while the outage lasts (`lead-failed` in the daemon's line), and a task whose
-jobs are done and
-landed comes back to you once with the question that matters - *the work
-landed. Have a look - is it what you wanted?* with what landed under it and the
-choices *Yes, close it*, *Not what I meant* and *Change what I asked* - while a
-task an agent opened for itself closes on its own (`done: 2 job(s) landed`).
+while the outage lasts (`lead-failed` in the daemon's line). A task whose
+jobs are all done becomes one pull request on the project's upstream
+([Delivery](landing.md)); the reviewer reads it and merges it, or hands it to
+you under **Needs your review** with its findings and a **Merge** button
+([The reviewer](review.md)); and merging closes the task (`land.merged`),
+while closing the pull request unmerged sends it back to its lead with the
+pull request's words. The pull request is where you look at the work - the
+diff, the reviewer's findings, the pipeline's verdict - in place of the
+*the work landed. Have a look - is it what you wanted?* question the local
+landing asked.
 
-A task done in two or more jobs is checked as a whole first: each slice passed
+A task done in two or more jobs is reviewed as a whole: each slice passed
 its own tests, nobody yet walked the path across them, and that is where split
 work breaks (six slices of a picture-attachment task once landed with the
-picture never reaching the model). Before you are asked, the daemon queues one
-more job (`task:TASK-NNN:accept`, *Check TASK-NNN end to end*) that reads your
-ask again, traces each point through the default branch and the project's
-checks, mends a small gap on the spot with a test, or ends `blocked: missing
-...` - which comes back to the lead as a failed job to plan, and a fresh check
-follows the new slice. Your message then opens with *I checked it end to end
-against what you asked: ...*. Leads plan vertically for the same reason: the
-first job makes the thinnest end-to-end path work, the next ones widen it.
+picture never reaching the model). The task's pull request is the jobs'
+branches merged together on the default branch, so the reviewer reads the
+whole change against your brief, runs the project's check on it, and asks for
+changes where a slice does not meet the next - a `task` job of the same task,
+whose branch joins the pull request when it finishes. Leads plan vertically for
+the same reason: the first job makes the thinnest end-to-end path work, the
+next ones widen it.
 
 Each job is a sub-session of the task, and it reports back to the task's
 conversation the moment it ends: the daemon writes one message in the worker's
 name (*Done with the step "Composer UI". …* with the worker's summary, or
 *Stopped on the step …* with why) marked with the job, so you read what each
 step found as it comes instead of hours later in the lead's summary. The chat
-shows a report nested under the conversation with the step's live landing state
-(*Landed*, *Waiting to land*, *Failed*, *Queued again*) and a **See the run**
+shows a report nested under the conversation with the step's live state
+(*Waiting for merge*, *Merged*, *Failed*, *Queued again*) and a **See the
+run**
 link; a report is news, not the lead's answer, so the delivery line under your
 message stands and the lead's choices stay live. The lead reads the reports in
 its next brief under *Your workers reported back*, never as your words, and a
-report alone wakes nobody: the daemon lands the branches, runs the end-to-end
-check and asks you by itself, and a failed step reaches the lead the way it
-always did. The end-to-end check writes no report; its verdict is in the lead's
-message. (`pulse task show` and `pulse msg list` tag a report with its job.)
+report alone wakes nobody: the daemon opens the pull request once every step
+is done, the reviewer reads it, and a failed step reaches the lead the way it
+always did. (`pulse task show` and `pulse msg list` tag a report with its job.)
 
 `review` means the lead could not finish without you - the conversation says
 why - and the lead's brief tells it that your answer, however short (`use your
@@ -195,13 +198,12 @@ first so the lead reads why). Agents offer choices on their own messages with
 one=done"` (up to six; `=done` closes the task with that label as your words,
 `=amend` opens the brief, plain labels reply). The daemon writes the stop to
 the chat itself - `I stopped TASK-012 (...): three jobs failed ...` - and the
-landing too, so nothing shows *waits for your decision* unless a message of
+delivery too, so nothing shows *waits for your decision* unless a message of
 yours would change what happens next: a review whose jobs are still running or
-waiting to land goes back to in progress on the next tick, and one you have
-answered stays with the lead until it replies - *Not what I meant* tells the
-lead to ask in one message what fell short, or to plan the fix when your words
-already say. The daemon asks once per landing; a second landing on the same
-task asks again, a reply of yours does not.
+whose pull request is still open goes back to in progress on the next tick,
+and one you have answered stays with the lead until it replies - *Not what I
+meant* tells the lead to ask in one message what fell short, or to plan the fix
+when your words already say.
 
 Under your latest message in a task's chat one line says where it stands, so
 you never type into silence: *Sent* when nobody has it, *Sent · ember reads it
@@ -221,7 +223,7 @@ it - your brief and messages (the lead's answers as buttons under its latest
 word), the jobs the lead cut, each run as a chapter under the agent who did it
 with the commands it ran (✓/✗ and how long), the files it edited, its plans and
 what it said between tools, the quiet stretches folded into one line (*read ×3
-· grep*), the landing and the status changes, and the posts agents wrote about
+· grep*), the delivery and the status changes, and the posts agents wrote about
 it on the board. A running chapter shows the typing dots and its last step's
 age and the feed follows the work live, so while an agent is at a step you
 watch it think and type; a finished one folds to a line (*cinder worked 11
@@ -232,14 +234,19 @@ newest 400 lines and *Show everything* fetches the rest (`GET
 
 Beside the conversation sit the steps, the brief, a **History** of its versions
 once you changed it, and the facts. Under the title a delivery line says where
-the task's code is once it landed: on this machine only, held with the push's
-reason, pushed to the upstream, or on pull request #N - with **Open a pull
-request** while it is not on GitHub yet (`delivery` on `GET
-/api/v1/tasks/<id>`, `POST /api/v1/tasks/<id>/pull-request`; see
-`landing.push`). Once the code is on GitHub, `delivery.pipeline` carries the
-daemon's verdict on the runs that push set off - `watching`, `passed`, `failed`
-(with `pipeline_job`, the fix job it queued), `none` or `gave-up` (see
-`pipeline.watch`).
+the task's code is once its jobs are done: *PR #n open, waiting for review*
+once the daemon opened the pull request, *PR #n is being reviewed* while the
+review job runs, then *Needs your review: PR #n — <reasons>. <the review>*
+with a **Merge** button (it records `review.ask`; the daemon's next pass
+merges the pull request on GitHub as you), *Changes requested on PR #n:
+<note>. Follow-up <job> is queued.*, *The review of PR #n failed: <why>* (the
+Merge button again), *Merging PR #n…* and *Merged*; a branch the pass could
+not deliver shows its `land.pr-held` note
+(`delivery` on `GET /api/v1/tasks/<id>`; [Delivery](landing.md), [The
+reviewer](review.md)). Once the pull request is open, `delivery.pipeline`
+carries the daemon's verdict on the runs its push set off - `watching`,
+`passed`, `failed` (with `pipeline_job`, the fix job it queued), `none` or
+`gave-up` (see `pipeline.watch`).
 
 ## Suggested work
 
@@ -307,28 +314,34 @@ closing reply after), or you press **Finish** (which stops a running turn), and
 the conversation is marked *Finished* with the summary as its note; your next
 message reopens it, so nothing is lost.
 
-The list is one list, grouped by state - **Working** (running or waiting on
-you), **Waiting to land** (nobody at it, and its branch holds commits the
-project's default branch does not have yet: the agent finished or paused
-without landing, or its `pulse land` waits behind another landing - the hub
-asks git once per project on every poll, so the row moves to *Finished* or
-*Open* the moment the commits reach the default branch; a branch rebased
-after its work landed, whose every commit has a patch-equivalent on the
-default branch, counts as landed), **Open** (idle
+The list is one list, grouped by state - **Needs your review** (a pull request
+the reviewer handed to you, with its reasons and the **Merge** button; these
+stay at the very top), **Working** (running or waiting on you), **In review**
+(nobody at it, and its work is on its way through a pull request: a task's
+once its jobs are done, a conversation's once its `pulse/chat-<id>` branch
+holds commits the default branch lacks - before the pull request is opened,
+while it is open or being reviewed, while changes are made and while a merge
+you asked for runs; the row moves to *Finished* or *Open* the moment the pull
+request is merged or closed), **Open** (idle
 between turns), **Finished** (the latest eight, *Show all* for the rest) and
 **Archived** when shown (put away is your word, so an archived conversation
 stays there whatever its branch holds) - so the ones that need you stay on
-top, ordered by what moved last. A task the project's team works on is a row
-like any conversation - its title, a team mark after it, its state in the
-list's words (*Working* while a step's agent runs, *Asked you* when the lead
+top, ordered by what moved last. *Waiting to land* and *Reviewing* were the
+groups of the local landing; nothing waits to land now. A task the project's
+team works on is a row like any conversation - its title, a team mark after
+it, its state in the list's words (*Working* while a step's agent runs, *Asked you* when the lead
 stopped for you - counted in the tab title with the conversations that
-wait - *Waiting to land* while a finished step's branch is still to land,
-even once the lead marked the task done, *Planned*, *Done*, *Cancelled*) - with
+wait - *Waiting for its pull request* once its steps are done, then the
+pull request's own word: *Pull request open*, *In review*, *Needs your
+review* when the reviewer handed it to you, *Changes requested*, *Merging*,
+*Review failed* - *Planned*, *Done*, *Cancelled*) - with
 the steps the lead cut as lines under it the way sub-conversations sit under
 their parent: the agent on each (a dashed circle until one takes it), its
-state (*Waiting*, *Starting*, *Working*, *Waiting to land* - the job is done
-and the daemon's landing pass has still to merge its branch - *Done*,
-*Failed*, *Blocked*) and when it last moved; a finished task folds its steps
+state (*Waiting*, *Starting*, *Working*; a done step whose branch is not
+merged yet reads where the task's pull request stands - *Waiting for its pull
+request*, *Pull request open*, *In review*, *Needs your review*, *Changes
+requested*, *Merging*, *Review failed*; then *Done*, *Failed*, *Blocked*) and
+when it last moved; a finished task folds its steps
 (*N steps · show*).
 
 A conversation's title follows the conversation: it starts as the first line
@@ -343,7 +356,7 @@ a header with its state, project and lead, **Finish** and **Cancel** beside it
 (the title opens the brief for editing); under it the task's whole feed as the
 conversation (see **Tasks** above) - what you asked on the right, the lead's
 replies on the left with any choices it offers as buttons, a step agent's
-report back framed with how its work landed, and each run as a live chapter
+report back framed with where its work stands, and each run as a live chapter
 under the agent doing it, its commands and words arriving as it works - and a
 box to answer or steer, which the lead reads on its next turn (a finished task
 says so and takes no more); the canvas beside it (below, the same one a
@@ -516,12 +529,14 @@ opens the whole diff as a tab: old and new line numbers, a sticky header per
 file, files over 400 lines folded until you open them; the transcript and the
 message box never move, so you read and keep talking, and the list reloads
 itself when the branch moves. **Open PR for review** asks the agent to run the
-check and then `pulse land --project <slug> --branch pulse/chat-<id> --propose`:
-the branch is pushed and a pull request opened against the upstream default
-branch, and nothing is merged locally. The project's review lead (`pulse lead
-add --project <slug> --role review`, hourly) reviews PULSE's pull requests, runs
-the check, and merges or sends them back; the daemon then fast-forwards main
-from the upstream.
+check and then `pulse land --project <slug> --branch pulse/chat-<id>`: the
+branch is pushed and a pull request opened against the upstream default
+branch, and nothing is merged locally. A conversation's branch left alone for
+ten minutes after its last commit is proposed the same way by the daemon's
+next pass, so finished work does not wait for the button. The review job
+reads the pull request, runs the check, and merges it or hands it to you
+([The reviewer](review.md)); the daemon then fast-forwards the local default
+branch from the upstream.
 
 Leave the project on **Let the agent decide** and the agent starts in a scratch
 folder with the list of your projects and their goals in its brief, reads

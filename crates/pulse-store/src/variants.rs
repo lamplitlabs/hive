@@ -789,7 +789,6 @@ mod tests {
             "stop",
             "landing",
             "landing.push",
-            "landing.parallel",
             "push.credential",
             "compute.provider",
             "harness.deny_tools",

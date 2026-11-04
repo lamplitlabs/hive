@@ -42,9 +42,10 @@ pub fn register() {
 
         cli_register(Command { name:"plan".into(), group:"runner".into(), summary:"the job planner: turn the tally into queued jobs".into(), usage:"pulse plan [--project SLUG] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_plan, flags:None });
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
-        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--pr] [--propose]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
+        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"push finished branches to the upstream as pull requests and settle the open ones (a project without an upstream lands them locally); --branch proposes one branch, --local merges it here instead".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--propose] [--local]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made and of each project's default branch head, whoever pushed it: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
-        cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
+        cli_register(Command { name:"review".into(), group:"runner".into(), summary:"review the pull requests PULSE opened: list and read them, check one out in the job's clone, then merge it, ask for changes, or hand it to the owner".into(), usage:"pulse review list [--project SLUG] | show N | diff N | checkout N | merge N [--by owner] | changes N --note TEXT | owner N --note TEXT".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::review_cli::cmd_review, flags:Some(crate::review_cli::review_flags) });
+        cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:DAEMON_USAGE.into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
         cli_register(Command { name:"backup".into(), group:"runner".into(), summary:"copy the store off this machine: a checked, gzipped copy of pulse.sqlite to backup.to - a directory, az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage), or `run: COMMAND {file} {name}` (the daemon does this every backup.every_hours); --status shows the last one and when the next is due".into(), usage:"pulse backup [--to DEST] [--keep N] [--status] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_backup, flags:Some(backup_flags) });
         cli_register(Command { name:"service".into(), group:"runner".into(), summary:"install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)".into(), usage:"pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_service, flags:Some(service_flags) });
@@ -71,20 +72,32 @@ fn work_flags(fs: &mut FlagSet) {
 }
 
 fn land_flags(fs: &mut FlagSet) {
-    fs.string_var("branch", "", "land this branch");
+    fs.string_var(
+        "branch",
+        "",
+        "push this branch and open its pull request (with --local: merge it into the default branch here)",
+    );
     fs.bool_var("all", false, "every active project");
-    fs.int_var("limit", 5, "at most N branches per project");
-    fs.bool_var("no-verify", false, "skip the verify command");
-    fs.bool_var("dry-run", false, "list what waits, land nothing");
+    fs.int_var(
+        "limit",
+        5,
+        "accepted for older scripts; a pass opens at most ten pull requests per project",
+    );
+    fs.bool_var("no-verify", false, "skip the verify command (--local only)");
     fs.bool_var(
-        "pr",
+        "dry-run",
         false,
-        "deliver what landed as a pull request from pulse/landed, whatever landing.push says",
+        "list what a pass would deliver: tasks, jobs, conversation branches, fixes",
     );
     fs.bool_var(
         "propose",
         false,
-        "with --branch: push the branch and open a pull request for the review lead to merge; nothing lands locally",
+        "with --branch: what --branch does by itself now; kept for scripts",
+    );
+    fs.bool_var(
+        "local",
+        false,
+        "with --branch: merge the branch into the local default branch instead of opening a pull request; the local branch then diverges from the upstream",
     );
 }
 
@@ -102,6 +115,11 @@ fn daemon_flags(fs: &mut FlagSet) {
         "no-restart",
         false,
         "do not exit for a restart when the pulse binary changes",
+    );
+    fs.bool_var(
+        "force",
+        false,
+        "start even when the heartbeat names another live daemon",
     );
     fs.int_var(
         "max-jobs",
@@ -556,38 +574,55 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
         ("merged", 0),
         ("conflict", 1),
         ("failed-verify", 1),
-        ("batch-failed", 1),
         ("missing", 1),
     ]);
     let branch = str_flag(fs, "branch");
     let verify = !bool_flag(fs, "no-verify");
+    let local = bool_flag(fs, "local");
+    if local && branch.is_empty() {
+        return Err(pulse_cli::errorf(
+            2,
+            "land --local needs --branch",
+            "--local merges one named branch into the local default branch by hand",
+            "pulse land --project SLUG --branch B --local",
+        )
+        .into());
+    }
+    if bool_flag(fs, "propose") && branch.is_empty() {
+        return Err(pulse_cli::errorf(
+            2,
+            "land --propose needs --branch",
+            "--propose names the branch to open a pull request for",
+            "pulse land --project SLUG --branch B",
+        )
+        .into());
+    }
     for proj in targets {
         let slug = proj.str("slug");
         if bool_flag(fs, "dry-run") {
-            let pending = crate::land::pending_landings(&s, &slug);
-            if pending.is_empty() {
-                c.printf(format_args!("{slug}: nothing waiting\n"))?;
-            }
-            for j in pending {
-                c.printf(format_args!(
-                    "{} would land: {} ({} {})\n",
-                    slug,
-                    j.str("branch"),
-                    j.str("kind"),
-                    j.str("id")
-                ))?;
+            for line in crate::delivery::dry_run(&s, &proj, &now) {
+                c.printf(format_args!("{line}\n"))?;
             }
             continue;
         }
-        // The hold a failed setup or a red base left says this command retries
-        // now; the push step's sync reads the same hold, so it is lifted here
-        // for the branches and the sync alike.
-        if bool_flag(fs, "propose") {
-            if branch.is_empty() {
-                return Err(pulse_cli::errorf(2, "", "", "land --propose needs --branch").into());
+        if branch.is_empty() {
+            // One delivery pass for the project: the pull requests owed,
+            // the open ones settled, the default branch brought up to its
+            // upstream (delivery.rs) - what the daemon does every pass.
+            let lines = crate::delivery::tend(&s, std::slice::from_ref(&proj), &now);
+            if lines.is_empty() {
+                c.printf(format_args!("{slug}: nothing waiting\n"))?;
             }
-            match crate::landing_pr::propose_branch(&s, &proj, &branch, &actor, &now) {
-                Ok(url) => c.printf(format_args!("{slug} proposed: {branch} {url}\n"))?,
+            for line in lines {
+                c.printf(format_args!("{line}\n"))?;
+            }
+            continue;
+        }
+        let def = crate::baseline::default_branch(proj.clone());
+        let has_upstream = crate::forge::upstream_of(&proj.str("path"), &def).is_some();
+        if !local && has_upstream {
+            match crate::delivery::propose_branch(&s, &proj, &branch, &now) {
+                Ok(d) => c.printf(format_args!("{}\n", d.line))?,
                 Err(why) => {
                     c.printf(format_args!("{slug} not proposed: {why}\n"))?;
                     worst = worst.max(1);
@@ -595,65 +630,38 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             }
             continue;
         }
-        crate::land::clear_landing_retry(&s, &slug);
-        let results = if !branch.is_empty() {
-            let job = query_one_row(
-                &*s.conn()?,
-                "SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
-                &[&slug, &branch],
-            );
-            let (state, note) = crate::land::land_branch(
-                &s,
-                proj.clone(),
-                branch.clone(),
-                actor.clone(),
-                now.clone(),
-                crate::land::LandOpts {
-                    job,
-                    verify,
-                    by_hand: actor == crate::util::HUMAN_AGENT,
-                    ..Default::default()
-                },
-            )?;
-            vec![crate::land::LandResult { state, note }]
+        if local && has_upstream {
+            c.printf(format_args!(
+                "{slug}: merging {branch} into {def} here; the local {def} will be ahead of its upstream until that is pushed or reset, and the daemon only ever fast-forwards it\n"
+            ))?;
         } else {
-            crate::land::land_pending(
-                &s,
-                proj.clone(),
-                actor.clone(),
-                now.clone(),
+            c.printf(format_args!("{slug}: no upstream, landing locally\n"))?;
+        }
+        // The hold a failed setup or a red base left says this command retries
+        // now.
+        crate::land::clear_landing_retry(&s, &slug);
+        let job = query_one_row(
+            &*s.conn()?,
+            "SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
+            &[&slug, &branch],
+        );
+        let (state, note) = crate::land::land_branch(
+            &s,
+            proj.clone(),
+            branch.clone(),
+            actor.clone(),
+            now.clone(),
+            crate::land::LandOpts {
+                job,
                 verify,
-                int_flag(fs, "limit"),
-                true,
-            )
-        };
-        if results.is_empty() {
-            c.printf(format_args!("{slug}: nothing waiting\n"))?;
-        }
-        let mut landed = false;
-        for r in results {
-            c.printf(format_args!("{slug} {}: {}\n", r.state, r.note))?;
-            if r.state == "landed" {
-                landed = true;
-            }
-            let w = rank.get(r.state.as_str()).copied().unwrap_or(3);
-            if w > worst {
-                worst = w;
-            }
-        }
-        if bool_flag(fs, "pr") {
-            pulse_tasks::ask_pull_request(&s, &slug, "", &actor)?;
-        }
-        let (push_lines, note) =
-            crate::landing_hold::push_landed(&s, proj, actor.clone(), now.clone(), landed);
-        for line in &push_lines {
-            c.printf(format_args!("{line}\n"))?;
-        }
-        if !note.is_empty() {
-            c.printf(format_args!("{slug} {note}\n"))?;
-            if worst < 1 {
-                worst = 1;
-            }
+                by_hand: actor == crate::util::HUMAN_AGENT,
+                ..Default::default()
+            },
+        )?;
+        c.printf(format_args!("{slug} {state}: {note}\n"))?;
+        let w = rank.get(state.as_str()).copied().unwrap_or(3);
+        if w > worst {
+            worst = w;
         }
     }
     if worst != 0 {
@@ -672,11 +680,86 @@ pub(crate) fn query_one_row(
         .unwrap_or_default()
 }
 
-pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
+const DAEMON_USAGE: &str = "pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--force] [--agent A]";
+
+/// The pid of another daemon that still beats on this store: the heartbeat
+/// row names a pid other than ours that is alive, its note is not the final
+/// `exited`/`restarting` beat, and the beat is fresh (the same window
+/// `pulse status` calls alive), so a pid reused after a reboot does not
+/// block the service from starting.
+pub(crate) fn live_daemon_pid(s: &pulse_store::Store) -> Option<(i32, String)> {
+    let (raw, exists) = s.meta("daemon").ok()?;
+    if !exists {
+        return None;
+    }
+    let beat: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let pid = i32::try_from(beat.get("pid")?.as_i64()?).ok()?;
+    if pid <= 1 || pid as u32 == std::process::id() {
+        return None;
+    }
+    let note = beat.get("note").and_then(|v| v.as_str()).unwrap_or("");
+    if note == "exited" || note == "restarting" {
+        return None;
+    }
+    let at = beat.get("at").and_then(|v| v.as_str()).unwrap_or("");
+    let at_time = crate::util::parse_iso(at).ok()?;
+    let now = crate::util::parse_iso(&s.now()).ok()?;
+    let interval = beat
+        .get("interval")
+        .and_then(|v| v.as_i64())
+        .filter(|n| *n > 0)
+        .unwrap_or(crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS as i64);
+    if (now - at_time).num_seconds() > 2 * interval + 60 {
+        return None;
+    }
+    // ESRCH is the only answer that means gone; EPERM is a live process of
+    // another user.
+    let gone = matches!(
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+        Err(nix::errno::Errno::ESRCH)
+    );
+    if gone {
+        return None;
+    }
+    Some((pid, at.to_string()))
+}
+
+/// Why `pulse daemon` will not start: stray positional arguments (exit 2)
+/// or another live daemon on the same store (exit 3) unless `--force`.
+fn daemon_start_refusal(
+    s: &pulse_store::Store,
+    fs: &FlagSet,
+    args: &[String],
+) -> Option<pulse_cli::Error> {
+    if !args.is_empty() {
+        return Some(crate::util::fail(
+            2,
+            format!(
+                "pulse daemon takes no arguments (got {}); usage: {DAEMON_USAGE}",
+                args.join(" ")
+            ),
+        ));
+    }
+    if bool_flag(fs, "force") {
+        return None;
+    }
+    let (pid, at) = live_daemon_pid(s)?;
+    Some(crate::util::fail(
+        3,
+        format!(
+            "a pulse daemon is already running on this store (pid {pid}, last heartbeat {at}); stop it first or pass --force"
+        ),
+    ))
+}
+
+pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = c
         .store
         .clone()
         .ok_or_else(|| anyhow!("daemon: store is needed"))?;
+    if let Some(refusal) = daemon_start_refusal(&s, fs, args) {
+        return Err(refusal.into());
+    }
     // The first SIGTERM/SIGINT cancels the loop; `_stop` (the guard) unregisters the
     // handler on return so a second signal terminates the process.
     let cancel = pulse_bus::CancellationToken::new();
@@ -1843,7 +1926,9 @@ mod tests {
         );
         let (out, _, code) = invoke(&s, "land", "proj", &["--dry-run"]);
         assert!(
-            code == 0 && out.trim() == "proj: nothing waiting",
+            code == 0
+                && out
+                    == "proj: no upstream, finished branches land locally on main\n  nothing waiting for proj\n",
             "land --dry-run: {code} {out:?}"
         );
         assert!(
@@ -1961,6 +2046,83 @@ mod tests {
         );
     }
 
+    /// The heartbeat row a running daemon leaves, naming `pid`.
+    fn beat_for(s: &pulse_store::Store, pid: u32, note: &str, at: &str) {
+        crate::daemon::meta_upsert(
+            s,
+            "daemon",
+            &json!({"pid": pid, "at": at, "loops": 3, "passes": 1, "interval": 60, "note": note}),
+        );
+    }
+
+    fn daemon_flagset(args: &[&str]) -> FlagSet {
+        let mut fs = FlagSet::new("daemon");
+        daemon_flags(&mut fs);
+        fs.parse(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+            .expect("daemon flags");
+        fs
+    }
+
+    #[test]
+    fn daemon_refuses_stray_arguments_with_its_usage() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (out, err_text, code) = invoke(&s, "daemon", "", &["start", "--once"]);
+        assert!(
+            code == 2
+                && err_text.contains("takes no arguments (got start)")
+                && err_text.contains(DAEMON_USAGE),
+            "stray argument: {code} {out:?} {err_text:?}"
+        );
+        let (raw, exists) = s.meta("daemon").unwrap();
+        assert!(!exists, "a refused daemon wrote a heartbeat: {raw}");
+    }
+
+    #[test]
+    fn daemon_refuses_a_second_live_instance_unless_forced() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let mut other = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = other.id();
+        beat_for(&s, pid, "idle", &s.now());
+        let (out, err_text, code) = invoke(&s, "daemon", "", &["--once", "--dry-run"]);
+        assert!(
+            code == 3
+                && err_text.contains(&format!("already running on this store (pid {pid}"))
+                && err_text.contains("--force"),
+            "second daemon: {code} {out:?} {err_text:?}"
+        );
+        let (raw, _) = s.meta("daemon").unwrap();
+        assert!(
+            raw.contains(&format!("\"pid\":{pid}")),
+            "the refused daemon overwrote the live one's heartbeat: {raw}"
+        );
+        assert!(
+            daemon_start_refusal(&s, &daemon_flagset(&["--force"]), &[]).is_none(),
+            "--force still refused"
+        );
+        // The final beats and a stale beat do not hold the store.
+        for note in ["exited", "restarting"] {
+            beat_for(&s, pid, note, &s.now());
+            assert_eq!(live_daemon_pid(&s), None, "note {note}");
+        }
+        beat_for(&s, pid, "idle", "2000-01-01T00:00:00Z");
+        assert_eq!(live_daemon_pid(&s), None, "a stale beat held the store");
+        // Our own pid is never another daemon.
+        beat_for(&s, std::process::id(), "idle", &s.now());
+        assert_eq!(live_daemon_pid(&s), None, "own pid");
+        // A dead pid frees the store.
+        beat_for(&s, pid, "idle", &s.now());
+        assert_eq!(live_daemon_pid(&s).map(|(p, _)| p), Some(pid as i32));
+        other.kill().expect("kill sleep");
+        other.wait().expect("reap sleep");
+        assert_eq!(live_daemon_pid(&s), None, "a dead pid held the store");
+        assert!(daemon_start_refusal(&s, &daemon_flagset(&[]), &[]).is_none());
+    }
+
     #[test]
     fn service_command_show() {
         let _serial = crate::test_helpers::serial();
@@ -1996,7 +2158,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_commit_lands_through_land() {
+    fn worker_commit_lands_locally_when_the_project_has_no_upstream() {
         let _serial = crate::test_helpers::serial();
         if !std::path::Path::new("/usr/bin/ssh-keygen").exists()
             && !std::path::Path::new("/usr/local/bin/ssh-keygen").exists()
@@ -2040,24 +2202,96 @@ mod tests {
             branches.contains(&format!("pulse/aurora/{}", job.str("id"))),
             "branch not pushed to the checkout: {branches:?}"
         );
+        // The project has no upstream to open a pull request on: plain
+        // `pulse land` lands the branch here, as before.
         let (out, err_text, code) = invoke(&s, "land", "proj", &[]);
         assert!(
-            code == 0 && (out.contains("proj landed: ") || out.contains("proj merged: ")),
+            code == 0
+                && out.starts_with("proj: no upstream, landing locally\n")
+                && out.contains("proj: landed "),
             "land: {code} {out:?} {err_text:?}"
         );
         assert!(
             std::path::Path::new(&dir).join("f.txt").exists(),
             "f.txt not on main after landing"
         );
-        let n = crate::test_helpers::count(
-            &s,
-            "SELECT COUNT(*) AS n FROM events WHERE action = 'job.landed' OR action = 'land.done' OR action LIKE 'land%'",
-            &[],
-        );
-        assert!(n != 0, "no landing event");
+        let (out, _, code) = invoke(&s, "land", "proj", &[]);
         assert!(
-            !run(&dir, &["git", "branch", "--list", "pulse/*"]).contains(&job.str("id")),
-            "landed branch not deleted"
+            code == 0 && out.trim() == "proj: nothing waiting",
+            "land again: {code} {out:?}"
+        );
+    }
+
+    #[test]
+    fn land_branch_proposes_a_pull_request_and_local_is_the_way_round_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = crate::test_helpers_daemon::fake_gh();
+        let s = new_store();
+        let (_proj, repo, bare) = crate::test_helpers_daemon::push_fixture(&s);
+        run(&repo, &["git", "checkout", "-q", "-b", "feat/one", "main"]);
+        std::fs::write(std::path::Path::new(&repo).join("one.txt"), "one\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "one"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let tip = run(&repo, &["git", "rev-parse", "feat/one"])
+            .trim()
+            .to_string();
+
+        let (out, err_text, code) = invoke(&s, "land", "proj", &["--branch", "feat/one"]);
+        assert!(
+            code == 0
+                && out.trim()
+                    == "proposed pr proj feat/one: #7 opened https://github.com/o/r/pull/7",
+            "land --branch: {code} {out:?} {err_text:?}"
+        );
+        assert_eq!(
+            crate::test_helpers_daemon::bare_ref(&bare, "refs/heads/feat/one"),
+            tip
+        );
+        assert_eq!(gh.head_of(7), "feat/one");
+        assert!(
+            !std::path::Path::new(&repo).join("one.txt").exists(),
+            "nothing merged locally"
+        );
+        // `--propose` is what `--branch` does now; it still parses.
+        let (out, _, code) = invoke(&s, "land", "proj", &["--branch", "feat/one", "--propose"]);
+        assert!(
+            code == 0 && out.contains("is delivered at"),
+            "land --propose: {code} {out:?}"
+        );
+        let (out, _, code) = invoke(&s, "land", "proj", &["--dry-run"]);
+        assert!(
+            code == 0 && out.starts_with("proj: pull requests go to origin/main ("),
+            "land --dry-run: {code} {out:?}"
+        );
+
+        // `--local` merges here and says what that costs.
+        run(
+            &repo,
+            &["git", "checkout", "-q", "-b", "pulse/hand/two", "main"],
+        );
+        std::fs::write(std::path::Path::new(&repo).join("two.txt"), "two\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "two"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let (out, err_text, code) = invoke(
+            &s,
+            "land",
+            "proj",
+            &["--branch", "pulse/hand/two", "--local", "--no-verify"],
+        );
+        assert!(
+            code == 0
+                && out.starts_with("proj: merging pulse/hand/two into main here; the local main will be ahead of its upstream")
+                && (out.contains("proj landed: ") || out.contains("proj merged: ")),
+            "land --local: {code} {out:?} {err_text:?}"
+        );
+        assert!(std::path::Path::new(&repo).join("two.txt").exists());
+        let (_, err_text, code) = invoke(&s, "land", "proj", &["--local"]);
+        assert!(
+            code == 2 && err_text.contains("land --local needs --branch"),
+            "{code} {err_text:?}"
         );
     }
 }

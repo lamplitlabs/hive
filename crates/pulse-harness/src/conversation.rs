@@ -13,8 +13,9 @@
 //! Where it works: a conversation that names a project gets its own git
 //! worktree of that project under `PULSE_HOME/work/chat/<id>/<slug>` on
 //! branch `pulse/chat-<id>`, so two conversations never collide and the
-//! owner's checkout stays theirs; `pulse land --branch` merges it through
-//! the project's checks. A conversation without a project starts in a
+//! owner's checkout stays theirs; `pulse land --branch` opens a pull
+//! request for it, and the daemon opens one itself once the branch has
+//! been quiet for ten minutes. A conversation without a project starts in a
 //! scratch folder with a brief that lists the projects and tells the agent
 //! how to pick one (`pulse chat attach SLUG`), queue tasks for the fleet, or
 //! answer outright. Files for the owner's eyes go in `$PULSE_ARTIFACTS`,
@@ -3812,7 +3813,7 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         b.push_str(
             "LOCKDOWN (sandbox) MODE. This conversation runs inside a sandbox and nothing reaches outside this machine: the network is off (only localhost answers), writes land only in your worktree and the temp and build folders, credentials and private keys cannot be read, and there is no fetch, web_search or MCP tool. \
              Commands that would reach a remote (git push/fetch/pull/clone, curl or ssh to a host, pulse land, publishing, sign-in) are refused, and the sandbox refuses an attempt that slips past the words. \
-             Do the work from what is in the worktree and on this machine; commit here, and leave landing to the owner after they take the conversation out of lockdown. \
+             Do the work from what is in the worktree and on this machine; commit here, and leave the pull request to the owner after they take the conversation out of lockdown. \
              When something cannot be done without the outside, say so plainly instead of working around the sandbox.\n",
         );
     }
@@ -3875,7 +3876,8 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
             }
         ));
         b.push_str(&format!(
-            "When the work is complete and verified, or when the owner asks, land it with `pulse land --project {} --branch {}`: the project's checks run first, then it merges into {}. \
+            "When the work is complete and verified, or when the owner asks, `pulse land --project {} --branch {}` pushes the branch and opens a pull request against {} for review; another agent reviews and merges it, or asks the owner when it is complex. \
+             The daemon opens that pull request on its own once your last commit is ten minutes old, so commit only what is ready. \
              Other projects: `pulse chat attach SLUG` moves this conversation into that project's worktree after your reply.\n",
             row.project, row.branch, base
         ));
@@ -5449,7 +5451,10 @@ mod tests {
         };
         let text = brief_text(&attached, &projects, art);
         assert!(text.contains("Workspace: /w/demo is your own git worktree of project demo (Demo) on branch pulse/chat-chat-1, started from main"));
-        assert!(text.contains("pulse land --project demo --branch pulse/chat-chat-1"));
+        assert!(text.contains("`pulse land --project demo --branch pulse/chat-chat-1` pushes the branch and opens a pull request against main for review"));
+        assert!(text.contains(
+            "The daemon opens that pull request on its own once your last commit is ten minutes old"
+        ));
         assert!(text.contains("The owner's checkout at /srv/demo is not yours to edit"));
         assert!(text.contains("`pulse ask --all \"...\"` answers from the shared board"));
         // A top-level conversation is told to fan its work out: helpers
@@ -5495,7 +5500,7 @@ mod tests {
         assert!(text.contains("LOCKDOWN (sandbox) MODE"));
         assert!(text.contains("the network is off (only localhost answers)"));
         assert!(text.contains("no fetch, web_search or MCP tool"));
-        assert!(text.contains("leave landing to the owner"));
+        assert!(text.contains("leave the pull request to the owner"));
         assert_eq!(
             title_from("  Fix the login page\nmore"),
             "Fix the login page"
