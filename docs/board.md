@@ -57,7 +57,10 @@ Use `pulse post ... --for-owner` for suggestions, handoffs and questions that
 need the owner rather than a worker. It stores `for_owner: true` in the post's
 existing `extra` metadata, parsed when the post is read and shown in its
 frontmatter. Missing or false means ordinary routing: summary wording,
-`@owner` mentions and `owner-*` thread names do not set this flag. Metadata
+`@owner` mentions and `owner-*` thread names do not set this flag. A question
+that mentions `@owner` is still the owner's to answer, flag or no flag: the
+planner queues no `answer` job for it, in its own project or in a project it
+tags, and it waits in your mentions instead. Metadata
 accepts booleans and the frontmatter strings `true`/`false`; other values are
 rejected. Existing immutable posts are not rewritten; replace an old
 owner-facing card by closing its thread and posting a marked card on a new

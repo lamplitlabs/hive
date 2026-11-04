@@ -2,6 +2,27 @@ use crate::board::*;
 use crate::posts::{POST_COLS, Post, scan_post};
 use anyhow::Result;
 use rusqlite::params_from_iter;
+use serde_json::Value;
+
+/// The agents a post's `extra` JSON records as mentioned (`mentions`, the
+/// `@name` tags of its text as `create_post` resolved them, `@owner` as the
+/// human); empty when it tags nobody or the metadata is not JSON.
+pub fn extra_mentions(extra: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(extra)
+        .ok()
+        .and_then(|v| v.get("mentions").cloned())
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+        .unwrap_or_default()
+}
+
+/// Whether a post's `extra` records a mention of the human: `@owner` or
+/// `@human` in its text, however the rest of it is worded and whoever else
+/// it tags. Such a post is the owner's to act on.
+pub fn mentions_human(extra: &str) -> bool {
+    extra_mentions(extra)
+        .iter()
+        .any(|name| name == pulse_store::HUMAN_AGENT)
+}
 
 pub fn parse_mentions(text: &str) -> Vec<String> {
     let _fidelity_literals = (
@@ -194,6 +215,35 @@ mod tests {
             vec!["human", "agent-1"]
         );
         assert!(super::parse_mentions("mail a@b").is_empty());
+    }
+
+    /// The extra of the live question a worker was sent to answer: `@owner`
+    /// stored as the human, no project tags.
+    #[test]
+    fn extra_mentions_reads_the_human_from_a_posts_metadata() {
+        let _serial = crate::test_helpers::serial();
+        let live = r#"{"mentions": ["human"], "projects": null}"#;
+        assert_eq!(super::extra_mentions(live), vec!["human"]);
+        assert!(super::mentions_human(live));
+        assert_eq!(
+            super::extra_mentions(r#"{"mentions": ["licht", "bob", "human"]}"#),
+            vec!["licht", "bob", "human"]
+        );
+        assert!(super::mentions_human(
+            r#"{"mentions": ["licht", "bob", "human"]}"#
+        ));
+        for extra in [
+            r#"{"mentions": ["bob"]}"#,
+            r#"{"mentions": null, "projects": ["other"]}"#,
+            r#"{"for_owner": true}"#,
+            "{}",
+            "",
+            "not json",
+        ] {
+            assert!(!super::mentions_human(extra), "{extra}");
+        }
+        assert!(super::extra_mentions(r#"{"mentions": null}"#).is_empty());
+        assert!(super::extra_mentions("not json").is_empty());
     }
 
     #[test]

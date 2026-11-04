@@ -376,8 +376,19 @@ pub(crate) fn is_owner_addressed_post(post: Row) -> bool {
     pulse_store::post_for_owner(&post.str("extra")).unwrap_or(false)
 }
 
+/// Whether a worker may be sent to answer question `q`. A question marked
+/// for the owner, one whose File: or Signal: names an owner-only path, and
+/// one that mentions `@owner` (recorded as the human in `extra.mentions`)
+/// are the owner's to act on: a worker sent to the last of these could only
+/// repeat that it is owner-only, as the run on `.github is owner-only` did,
+/// and the question already waits in the owner's mentions. The planner's and
+/// the daemon's own questions and the evolution stop are never answered by
+/// a worker either.
 pub(crate) fn answerable(q: Row, planner_actor: String) -> bool {
-    if is_owner_addressed_post(q.clone()) || owner_targeted(q.clone()) {
+    if is_owner_addressed_post(q.clone())
+        || owner_targeted(q.clone())
+        || pulse_board::mentions_human(&q.str("extra"))
+    {
         return false;
     }
     let agent = q.str("agent");
@@ -2122,6 +2133,171 @@ mod tests {
             .len(),
             1,
             "the close is posted once"
+        );
+    }
+
+    /// The body of the live question a worker was sent to answer: `@owner`
+    /// up front, the owner-only path in backticks mid-sentence, no File: or
+    /// Signal: line for the path gate to read.
+    const OWNER_PATCH_QUESTION: &str = "@owner The daemon flagged `.github/skills/design-taste-frontend/SKILL.md` at 87,057 bytes, over the 64 KB skill limit (proposal 20261030T161135Z-daemon; you said yes).\n`.github/` is owner-only in amistio's constitution (and rule 8 of the job brief), so I did not commit it. The split is ready as a patch in the artifacts of job-20261104T035436Z-d17298:\n`design-taste-frontend-split.patch` (it applies cleanly with `git apply --check` on main 5e9a3422a), plus `README.md` with the two commands.\nDo you want to apply it yourself, or allow this one skill-folder change to land from a Pulse branch?\n";
+
+    fn lumen_question(
+        s: &pulse_store::Store,
+        project: &str,
+        thread: &str,
+        at: &str,
+        summary: &str,
+        body: &str,
+    ) -> Row {
+        crate::board::create_post(
+            s,
+            at.into(),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: project.into(),
+                area: "skills".into(),
+                thread: thread.into(),
+                summary: summary.into(),
+                body: body.into(),
+                agent: crate::board::actor_agent(s, "lumen".into()),
+                session: "s-lumen".into(),
+                ..Default::default()
+            },
+        )
+        .expect("question")
+    }
+
+    #[test]
+    fn plan_jobs_leaves_a_question_that_mentions_the_owner_to_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        suppress_planner_reflect(&s);
+        for agent in ["lumen", "bob"] {
+            join(&s, agent);
+        }
+        let for_owner = lumen_question(
+            &s,
+            "proj",
+            "design-taste-frontend-size",
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+            "Apply the design-taste-frontend split patch (.github is owner-only)",
+            OWNER_PATCH_QUESTION,
+        );
+        assert_eq!(
+            pulse_board::extra_mentions(&for_owner.str("extra")),
+            vec!["human"],
+            "the post records @owner as the human: {}",
+            for_owner.str("extra")
+        );
+        assert!(
+            !owner_targeted(for_owner.clone()),
+            "the fixture must reach the mention gate: no File: or Signal: line names the path"
+        );
+        assert!(!answerable(for_owner.clone(), "daemon".into()));
+        let for_bob = lumen_question(
+            &s,
+            "proj",
+            "skill-limit",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+            "Which skill limit applies to split files?",
+            "@bob you set the 64 KB limit: does it count each sibling file alone?\n",
+        );
+        assert_eq!(
+            pulse_board::extra_mentions(&for_bob.str("extra")),
+            vec!["bob"]
+        );
+        assert!(answerable(for_bob.clone(), "daemon".into()));
+        let open = open_questions(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            open.iter().any(|q| q.str("id") == for_owner.str("id")),
+            "the owner's question stays open for the owner: {open:?}"
+        );
+        let plan = || plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        let jobs = plan();
+        assert_eq!(jobs.len(), 1, "jobs: {jobs:?}");
+        assert_eq!(jobs[0].str("kind"), "answer");
+        assert_eq!(
+            jobs[0].str("source"),
+            format!("question:{}", for_bob.str("id")),
+            "the older question, the owner's, is passed over for the one @bob can answer"
+        );
+        plan();
+        let conn = s.conn().expect("conn");
+        assert!(
+            must_rows(
+                &conn,
+                "SELECT id FROM jobs WHERE source = ?",
+                &[&format!("question:{}", for_owner.str("id"))]
+            )
+            .is_empty(),
+            "no worker is sent to answer a question addressed to the owner"
+        );
+    }
+
+    /// The ask is one no path gate can read, as the live asks of this kind
+    /// were (merge a PR, confirm a production password): only `@owner` says
+    /// it is the owner's, so only the mention keeps the tagged project's
+    /// worker from spending a run on it.
+    #[test]
+    fn plan_ask_answers_leaves_an_ask_that_mentions_the_owner_to_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        new_bare_repo_named(&s, "other");
+        join(&s, "lumen");
+        let for_owner = lumen_question(
+            &s,
+            "proj",
+            "gateway-switch-on",
+            &crate::util::plus_hours(TEST_NOW, -2.0),
+            "@other @owner merge PR #1 to main and run the switch-on steps?",
+            "The remaining steps need the owner's account on other: merge PR #1, then run the go-live steps. A worker may do neither.\n",
+        );
+        let plain = lumen_question(
+            &s,
+            "proj",
+            "skill-limit",
+            &crate::util::plus_hours(TEST_NOW, -1.0),
+            "@other which skill limit applies to split files?",
+            "Does other's 64 KB limit count each sibling file alone?\n",
+        );
+        for q in [&for_owner, &plain] {
+            assert_eq!(
+                pulse_board::extra_projects(&q.str("extra")),
+                vec!["other"],
+                "{}",
+                q.str("extra")
+            );
+            assert!(
+                pulse_board::owner_only_proposal(&q.str("summary"), &q.str("body")).is_empty()
+                    && !owner_targeted(q.clone()),
+                "the fixture must reach the mention gate: {}",
+                q.str("summary")
+            );
+        }
+        assert!(pulse_board::mentions_human(&for_owner.str("extra")));
+        assert!(!pulse_board::mentions_human(&plain.str("extra")));
+        let asks = pulse_board::open_asks_to(&s, "other").expect("open asks");
+        assert_eq!(
+            asks.len(),
+            2,
+            "both asks reach other's board; the planner decides who answers"
+        );
+        let conn = s.conn().expect("conn");
+        let jobs = plan_ask_answers(&s, &conn, "other", "daemon", 5).expect("plan asks");
+        assert_eq!(jobs.len(), 1, "jobs: {jobs:?}");
+        assert_eq!(jobs[0].str("kind"), "answer");
+        assert_eq!(jobs[0].str("project"), "other");
+        assert_eq!(
+            jobs[0].str("source"),
+            format!("question:{}", plain.str("id"))
+        );
+        assert!(
+            plan_ask_answers(&s, &conn, "other", "daemon", 5)
+                .expect("plan asks again")
+                .is_empty(),
+            "the owner's ask is never queued for a worker of the tagged project"
         );
     }
 
