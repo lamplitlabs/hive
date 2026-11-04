@@ -593,7 +593,15 @@ impl Handler {
             self.addition_compute_write(w, r, &parts[1], &parts[2]);
             return;
         }
-        let mut query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,note,at,updated_at FROM compute_requests".to_string();
+        // A request that failed or was released before the daemon kept its note (2026-11-01)
+        // has an empty note; its reason is in the daemon's board finding
+        // "compute CR-NNN failed: why", so the Machines page can still say why.
+        let mut query = "SELECT id,project,requested_by,size,hours,reason,status,decided_by,executor,\
+            CASE WHEN note = '' AND status IN ('failed','released') THEN COALESCE((\
+              SELECT substr(p.summary, length('compute ' || c.id || ' ' || c.status || ': ') + 1) FROM posts p \
+              WHERE p.kind = 'finding' AND substr(p.summary, 1, length('compute ' || c.id || ' ' || c.status || ': ')) = 'compute ' || c.id || ' ' || c.status || ': ' \
+              ORDER BY p.created_at DESC LIMIT 1), '') ELSE note END AS note,\
+            at,updated_at FROM compute_requests c".to_string();
         let mut args = Vec::new();
         let project = self.addition_project(r);
         if !project.is_empty() {
