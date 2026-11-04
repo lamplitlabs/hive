@@ -4169,18 +4169,18 @@ function ChangesPanel({
     setBusy("land");
     try {
       const text =
-        "Please land this branch now: run `pulse land --project " +
+        "Please propose this branch for review: commit what is left, run the project's check, then run `pulse land --project " +
         ch.project +
         " --branch " +
         ch.branch +
-        "` and tell me what happened. If the verify step fails, fix it first and try again.";
+        " --propose` (it pushes the branch and opens a pull request; the review lead reviews and merges it). Tell me the pull request url.";
       const sentAt = Date.now();
       const shows = sentShowsNow(d.live.status);
       apply(
         await writes.chatSend(c.id, text),
         shows ? sentMessage(text, [], sentAt) : undefined,
       );
-      toast.success("Asked the agent to land the branch.");
+      toast.success("Asked the agent to open a pull request for review.");
     } catch (e) {
       fail(e, "The request did not send");
     } finally {
@@ -4238,7 +4238,8 @@ function ChangesPanel({
                 "Asks the agent to run pulse land --project " +
                 ch.project +
                 " --branch " +
-                ch.branch
+                ch.branch +
+                " --propose: a pull request the review lead merges"
               }
             >
               {busy === "land" ? (
@@ -4246,7 +4247,7 @@ function ChangesPanel({
               ) : (
                 <CheckIcon />
               )}{" "}
-              Ask to land
+              Open PR for review
             </Button>
           ) : null}
         </div>

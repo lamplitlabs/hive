@@ -1861,10 +1861,10 @@ Feed the blog of {slug}; {blocked_jobs} wait on the environment.
         assert_eq!(gap.title, "Content lead");
         assert_eq!(gap.command, "pulse lead add --project proj --role content");
         let roles = crate::lead_cli::roles_out(&s, "proj");
-        assert_eq!(roles.len(), 13);
+        assert_eq!(roles.len(), 14);
         assert_eq!(roles[0].source, leads::RoleSource::Builtin);
-        assert_eq!(roles[12].role, "content");
-        assert_eq!(roles[12].source, leads::RoleSource::Store);
+        assert_eq!(roles[13].role, "content");
+        assert_eq!(roles[13].source, leads::RoleSource::Store);
 
         // Seating takes the record's title and cadence; the brief is the
         // record's section, rendered with the project's signals.

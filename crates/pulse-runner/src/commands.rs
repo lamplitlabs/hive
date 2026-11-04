@@ -42,7 +42,7 @@ pub fn register() {
 
         cli_register(Command { name:"plan".into(), group:"runner".into(), summary:"the job planner: turn the tally into queued jobs".into(), usage:"pulse plan [--project SLUG] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_plan, flags:None });
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
-        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
+        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--pr] [--propose]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made and of each project's default branch head, whoever pushed it: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
@@ -80,6 +80,11 @@ fn land_flags(fs: &mut FlagSet) {
         "pr",
         false,
         "deliver what landed as a pull request from pulse/landed, whatever landing.push says",
+    );
+    fs.bool_var(
+        "propose",
+        false,
+        "with --branch: push the branch and open a pull request for the review lead to merge; nothing lands locally",
     );
 }
 
@@ -576,6 +581,19 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
         // The hold a failed setup or a red base left says this command retries
         // now; the push step's sync reads the same hold, so it is lifted here
         // for the branches and the sync alike.
+        if bool_flag(fs, "propose") {
+            if branch.is_empty() {
+                return Err(pulse_cli::errorf(2, "", "", "land --propose needs --branch").into());
+            }
+            match crate::landing_pr::propose_branch(&s, &proj, &branch, &actor, &now) {
+                Ok(url) => c.printf(format_args!("{slug} proposed: {branch} {url}\n"))?,
+                Err(why) => {
+                    c.printf(format_args!("{slug} not proposed: {why}\n"))?;
+                    worst = worst.max(1);
+                }
+            }
+            continue;
+        }
         crate::land::clear_landing_retry(&s, &slug);
         let results = if !branch.is_empty() {
             let job = query_one_row(

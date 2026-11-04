@@ -441,6 +441,114 @@ pub(crate) fn deliver(
     (lines, String::new())
 }
 
+/// `pulse land --branch B --propose`: the branch itself pushed to the
+/// project's upstream and a pull request opened from it into the upstream
+/// default branch - nothing is merged locally. The review lead (or the
+/// owner) reviews and merges it on the forge; the daemon's next push pass
+/// fast-forwards the local default branch from the upstream. Asked for by
+/// the owner on 2026-11-04: land through a reviewed pull request, not
+/// straight into main. Returns the pull request url, or the failure in words.
+pub(crate) fn propose_branch(
+    s: &pulse_store::Store,
+    project: &crate::util::Row,
+    branch: &str,
+    actor: &str,
+    now: &str,
+) -> Result<String, String> {
+    let root = project.str("path");
+    let def = {
+        let d = project.str("default_branch");
+        if d.is_empty() { "main".to_string() } else { d }
+    };
+    if branch.is_empty() || branch == def {
+        return Err(format!("--propose needs a branch other than {def}"));
+    }
+    let Some((remote, _, remote_branch)) = crate::landing_hold::tracking_of(&root, &def) else {
+        return Err(format!(
+            "{def} has no upstream (git branch --set-upstream-to=origin/{def} {def})"
+        ));
+    };
+    let git = |timeout: u64, env: &[String], args: &[&str]| {
+        crate::util::git_timeout_env(&root, Duration::from_secs(timeout), env, args)
+    };
+    let local = format!("refs/heads/{branch}");
+    if !git(10, &[], &["rev-parse", "--verify", "-q", &local]).ok() {
+        return Err(format!("no branch {branch} in {root}"));
+    }
+    let ahead = git(
+        30,
+        &[],
+        &["rev-list", "--count", &format!("refs/remotes/{remote}/{remote_branch}..{local}")],
+    );
+    if ahead.stdout.trim() == "0" {
+        return Err(format!("{branch} has nothing {remote}/{remote_branch} lacks"));
+    }
+    let (env, cleanup, why) = crate::landing_hold::push_credential_env(s, root.clone());
+    if !why.is_empty() {
+        return Err(format!("push credential: {why}"));
+    }
+    let pushed = git(
+        180,
+        &env,
+        &["push", "--force-with-lease", &remote, &format!("{local}:{local}")],
+    );
+    cleanup("", &[]);
+    if !pushed.ok() {
+        let why = pushed.err.clone().unwrap_or_else(|| {
+            crate::run::squeeze(&format!("{} {}", pushed.stderr, pushed.stdout), 300)
+        });
+        return Err(format!("push of {branch} failed: {}", pulse_cred::redact(&why, &[])));
+    }
+    let url = git(10, &[], &["remote", "get-url", &remote]).stdout.trim().to_string();
+    let repo = repo_slug(&url).unwrap_or_default();
+    if let Some((_, url)) = open_pull_request(&root, &repo, branch, &remote_branch)? {
+        return Ok(url);
+    }
+    let log = git(
+        30,
+        &[],
+        &["log", "--format=- %s", &format!("refs/remotes/{remote}/{remote_branch}..{local}")],
+    )
+    .stdout;
+    let title = log
+        .lines()
+        .last()
+        .map(|l| l.trim_start_matches("- ").to_string())
+        .unwrap_or_else(|| branch.to_string());
+    let body = format!(
+        "Branch `{branch}` of {} proposed by PULSE for review.\n\n{}\nThe review lead reviews it, runs the project's check and merges it; nothing reached `{def}` yet.\n",
+        project.str("slug"),
+        log
+    );
+    let out = gh(
+        &root,
+        &repo,
+        &[
+            "pr", "create", "--head", branch, "--base", &remote_branch, "--title",
+            &crate::util::trunc(&title, 120), "--body", &body,
+        ],
+        Duration::from_secs(90),
+    )?;
+    let url = out
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with("http"))
+        .unwrap_or_default()
+        .to_string();
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.proposed",
+            &project.str("slug"),
+            serde_json::json!({"project": project.str("slug"), "branch": branch, "base": remote_branch, "url": url}),
+        );
+    }
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

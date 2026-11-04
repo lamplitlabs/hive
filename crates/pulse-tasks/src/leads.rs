@@ -350,6 +350,20 @@ pub const BUILTIN_ROLES: &[Role] = &[
 4. Write down what you learned where a newcomer looks first (the README's setup section or `CONTRIBUTING.md`), in the project's own voice; a setup doc that lies is a bug.\n\n",
         gaps: &[GapRule::EnvBlockedJobs],
     },
+    Role {
+        name: "review",
+        title: "Review lead",
+        about: "reviews the pull requests PULSE proposes (pulse land --propose) and merges the good ones, so nothing reaches the default branch unreviewed",
+        every: "1h",
+        away_seatable: false,
+        model_class: "",
+        section: "## Your concern: the open pull requests of {slug} ({github})\n\n\
+1. List them: `gh pr list --repo {github} --state open --json number,title,headRefName,author,isDraft`. The ones from `pulse/` branches are PULSE's own proposals and yours to decide; a pull request from anyone else gets a drafted review in your message, never a merge.\n\
+2. For each, oldest first: `gh pr diff N --repo {github}` and read it as a reviewer - does it do what its title says, is it tested, does it break a convention the README or an ADR states. Check it out in your clone (`gh pr checkout N`) and run the project's check (`pulse env show --project {slug}` names it). Never merge on a red check or a diff you did not read.\n\
+3. Decide: good -> `gh pr review N --approve --body \"<what you checked>\"` then `gh pr merge N --merge --delete-branch`. Fixable -> `gh pr review N --request-changes --body \"<the exact fixes>\"` and leave it; a conflict with the base -> comment and leave it. Never push to a pull request's branch and never force anything.\n\
+4. After merges, `pulse land --project {slug} --dry-run` and `git fetch` keep the local default branch honest; the daemon fast-forwards it from the upstream on its next pass. Say in your one message what you merged, what you sent back and why.\n\n",
+        gaps: &[],
+    },
 ];
 
 pub fn builtin(role: &str) -> Option<&'static Role> {
@@ -1383,10 +1397,10 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_is_the_twelve_builtins_in_order() {
+    fn the_registry_is_the_thirteen_builtins_in_order() {
         let s = store();
         let specs = roles(&s, "demo");
-        assert_eq!(specs.len(), 12);
+        assert_eq!(specs.len(), 13);
         assert_eq!(
             specs.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             BUILTIN_ROLES.iter().map(|r| r.name).collect::<Vec<_>>()
@@ -1479,7 +1493,7 @@ Feed the blog of {slug}.
             "Twin of the project lead.\n",
         );
         let specs = roles(&s, "demo");
-        assert_eq!(specs.len(), 13);
+        assert_eq!(specs.len(), 14);
         let c = specs.last().unwrap();
         assert_eq!(c.name, "content");
         assert_eq!(c.source, RoleSource::Store);
@@ -1521,7 +1535,7 @@ Feed the blog of {slug}.
             "Write the docs of {slug} in plain words.\n",
         );
         let specs = roles(&s, "demo");
-        assert_eq!(specs.len(), 12);
+        assert_eq!(specs.len(), 13);
         let docs = &specs[1];
         let builtin_docs = builtin("docs").unwrap();
         assert_eq!(docs.name, "docs");
@@ -1615,7 +1629,7 @@ Repository words.\n",
         let c = spec_of(&s, "demo", "content").unwrap();
         assert_eq!(c.title, "Demo content");
         assert_eq!(c.section, "Own words.\n\n");
-        assert_eq!(roles(&s, "demo").len(), 13);
+        assert_eq!(roles(&s, "demo").len(), 14);
     }
 
     #[test]

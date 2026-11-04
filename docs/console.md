@@ -495,9 +495,13 @@ hunks, **File** and **Changes** switching between the two - and **Review all**
 opens the whole diff as a tab: old and new line numbers, a sticky header per
 file, files over 400 lines folded until you open them; the transcript and the
 message box never move, so you read and keep talking, and the list reloads
-itself when the branch moves. **Ask to land** asks the agent to run `pulse land
---project <slug> --branch pulse/chat-<id>` (verify first, then merge) and
-report.
+itself when the branch moves. **Open PR for review** asks the agent to run the
+check and then `pulse land --project <slug> --branch pulse/chat-<id> --propose`:
+the branch is pushed and a pull request opened against the upstream default
+branch, and nothing is merged locally. The project's review lead (`pulse lead
+add --project <slug> --role review`, hourly) reviews PULSE's pull requests, runs
+the check, and merges or sends them back; the daemon then fast-forwards main
+from the upstream.
 
 Leave the project on **Let the agent decide** and the agent starts in a scratch
 folder with the list of your projects and their goals in its brief, reads
