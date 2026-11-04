@@ -1751,7 +1751,11 @@ mod tests {
 
     #[test]
     fn run_in_bounds_a_build_by_its_silence_and_a_smoke_by_its_length() {
-        let here = env!("CARGO_MANIFEST_DIR").to_string();
+        // Read when the test runs: a test binary served from a shared target
+        // dir carries the compiling checkout's path, which may be gone.
+        let here = pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .to_string_lossy()
+            .into_owned();
         let sh = |script: &str| vec!["-c".to_string(), script.to_string()];
         // A child that keeps printing is working, however long it takes:
         // eight lines a tenth of a second apart under a bound ten times the
@@ -1803,7 +1807,7 @@ mod tests {
     #[test]
     fn every_embedded_path_is_a_binary_input() {
         use std::path::{Component, Path, PathBuf};
-        let root = fold(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")));
+        let root = fold(&pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../.."));
         let mut files = Vec::new();
         sources(&root.join("crates"), &mut files);
         assert!(
