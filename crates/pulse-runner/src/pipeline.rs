@@ -556,9 +556,12 @@ fn log_gone(err: &str) -> bool {
 /// repository: GitHub answers 404 for a repository the account has no
 /// access to (so the name does not say that it exists) and cannot resolve
 /// its name, 403 for one it may see but not read the Actions of, 401 for a
-/// token that is no longer good, and `gh auth token` has no token for an
-/// account that logged out. A branch that is not there is a 404 too, but
-/// one that says so, and another account would not find it either.
+/// token that is no longer good, and an account whose token `gh auth
+/// token` cannot hand out (logged out, keyring locked, no answer in time;
+/// `gh_auth::env_as` names the account and the command, never the token)
+/// cannot run at all, so the next account is tried rather than this one
+/// again every poll. A branch that is not there is a 404 too, but one that
+/// says so, and another account would not find it either.
 fn account_failed(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     if low.contains("branch not found") {
@@ -568,7 +571,7 @@ fn account_failed(err: &str) -> bool {
         || low.contains("http 403")
         || low.contains("http 404")
         || low.contains("could not resolve to a repository")
-        || low.contains("no oauth token found")
+        || low.contains("gh auth token for")
 }
 
 /// Reads the repository as the gh account that can see it. The watch's
@@ -2710,6 +2713,71 @@ mod tests {
             ]
         );
         assert!(load_watch(&s, "proj").gh_user.is_empty());
+    }
+
+    #[test]
+    fn an_account_whose_token_cannot_be_read_is_passed_over_like_one_that_cannot_see() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        // octocat is logged in but its token cannot be had (the error
+        // `gh_auth::env_as` gives, wrapped by `gh_ask`); third sees the
+        // repository until it is told otherwise.
+        const NO_TOKEN: &str = "gh run list as octocat: gh auth token for octocat exited 1: no oauth token found for github.com account octocat";
+        let third_sees = std::cell::Cell::new(true);
+        let gh = |ask: &Ask, user: Option<&str>| -> Result<String, String> {
+            match user {
+                Some("octocat") => Err(NO_TOKEN.to_string()),
+                Some("third") if third_sees.get() => Ok(match ask {
+                    Ask::Runs { .. } => {
+                        Value::Array(vec![run("CI", "push", "completed", "success", 1)]).to_string()
+                    }
+                    Ask::Head { .. } => {
+                        head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z").to_string()
+                    }
+                    _ => String::new(),
+                }),
+                _ => Err(NOT_FOUND.to_string()),
+            }
+        };
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &gh, &logins);
+        assert_eq!(
+            lines,
+            [
+                "pipeline proj: reading o/r as third, since the active gh login pat-login cannot see it".to_string(),
+                "pipeline proj: green at 8f377827f6c6 on origin/main (CI)".to_string(),
+            ]
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.gh_user, "third");
+        assert!(w.unreadable_until.is_empty());
+
+        // third loses its access too: the account without a token counts
+        // among those tried, and the repository waits the hour rather than
+        // failing on the token at every poll.
+        third_sees.set(false);
+        let sha2 = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+        pushed(&s, "2026-10-31T10:05:00Z", sha2);
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T10:11:00Z", "daemon", &gh, &logins);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with(
+                "pipeline proj: the runs of aaaa1111aaaa could not be read as third, the active gh login pat-login and octocat: "
+            ) && lines[0].ends_with("; o/r is left alone until 2026-10-31T11:11:00Z"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].starts_with("pipeline proj: told the owner ("),
+            "{lines:?}"
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.unreadable_until, "2026-10-31T11:11:00Z");
+        assert!(w.gh_user.is_empty());
+        let unreadable = events(&s, "pipeline.unreadable");
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(
+            unreadable[0]["tried"],
+            json!(["third", "pat-login", "octocat"])
+        );
     }
 
     #[test]

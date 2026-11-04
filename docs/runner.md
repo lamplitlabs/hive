@@ -53,7 +53,9 @@ runs or of the branch head answers 401, 403, 404 or a repository name
 GitHub cannot resolve, the stage tries each other account `gh auth status`
 lists - read once and kept ten minutes, since the status check reaches
 GitHub for every account (1.8 s measured) - running `gh` with that
-account's token in `GH_TOKEN`. The first that answers is remembered for
+account's token in `GH_TOKEN`; an account whose token `gh auth token`
+cannot hand out counts as one that failed and the next is tried. The first
+that answers is remembered for
 the project (`gh_user` in its watch), read as first from then on, and named
 once in the log (`pipeline <slug>: reading <repo> as <account>, since the
 active gh login <name> cannot see it`); a remembered account that fails the
