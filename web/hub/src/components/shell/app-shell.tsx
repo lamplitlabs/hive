@@ -5,7 +5,6 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useEffect } from "react";
 import {
   BookOpenIcon,
-  BotIcon,
   BrainIcon,
   CalendarClockIcon,
   ChevronDownIcon,
@@ -102,13 +101,6 @@ const WORK: NavItem[] = [
   },
 ];
 const SYSTEM: NavItem[] = [
-  {
-    href: "/agents/",
-    label: "Agents",
-    hint: "Who is working and what they did",
-    icon: BotIcon,
-    match: (p) => p.startsWith("/agents"),
-  },
   {
     href: "/harness/",
     label: "Runs",

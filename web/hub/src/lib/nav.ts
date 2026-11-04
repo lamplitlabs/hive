@@ -103,7 +103,6 @@ export const hrefs = {
     "/code-deliveries/" + qs({ project: f.project }),
   compute: () => "/compute/",
   settings: (section?: string) => "/settings/" + (section ? "#" + section : ""),
-  agents: () => "/agents/",
   conversations: (id?: string) => "/chat/" + qs({ id }),
   harness: (
     f: { id?: string; project?: string; status?: string; agent?: string } = {},

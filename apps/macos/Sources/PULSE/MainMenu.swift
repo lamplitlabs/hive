@@ -12,10 +12,9 @@ enum MainMenu {
         ("Tasks", "/tasks/", "3"),
         ("Votes", "/votes/", "4"),
         ("Records", "/records/", "5"),
-        ("Agents", "/agents/", "6"),
-        ("Runs", "/harness/", "7"),
-        ("Machines", "/compute/", "8"),
-        ("Connections", "/connections/", "9"),
+        ("Runs", "/harness/", "6"),
+        ("Machines", "/compute/", "7"),
+        ("Connections", "/connections/", "8"),
     ]
 
     static func build() -> NSMenu {
