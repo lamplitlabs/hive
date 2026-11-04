@@ -725,7 +725,10 @@ impl StatusReport {
         }
         out.push_str(&format!("executors  {}\n", self.executors));
         if !self.slots.is_empty() {
-            out.push_str(&format!("slots      {}\n", self.slots.trim_start_matches("slots ")));
+            out.push_str(&format!(
+                "slots      {}\n",
+                self.slots.trim_start_matches("slots ")
+            ));
         }
         if !self.capacity.is_empty() {
             out.push_str(&format!("capacity   {}\n", self.capacity));

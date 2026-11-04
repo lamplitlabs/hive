@@ -103,17 +103,17 @@ pub fn fleet(s: &pulse_store::Store) -> Fleet {
         name: crate::executor::LOCAL_EXECUTOR.to_string(),
         slots: local_slots(s),
     }];
-    if let Ok(conn) = s.conn() {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT name, workers FROM executors WHERE status = 'active' ORDER BY name",
-        ) && let Ok(rows) = stmt.query_map([], |r| {
+    if let Ok(conn) = s.conn()
+        && let Ok(mut stmt) = conn
+            .prepare("SELECT name, workers FROM executors WHERE status = 'active' ORDER BY name")
+        && let Ok(rows) = stmt.query_map([], |r| {
             Ok(MachineSlots {
                 name: r.get(0)?,
                 slots: r.get::<_, i64>(1)?.clamp(0, i64::from(i32::MAX)) as i32,
             })
-        }) {
-            machines.extend(rows.flatten());
-        }
+        })
+    {
+        machines.extend(rows.flatten());
     }
     let busy: i32 = s
         .conn()
@@ -153,7 +153,8 @@ const PIN_KEY: &str = "test.per_project";
 /// Tests fix a project's share on their own store, whatever the fleet says.
 #[cfg(test)]
 pub(crate) fn pin_per_project(s: &pulse_store::Store, n: i32) {
-    s.set_meta(PIN_KEY, &n.to_string()).expect("pin per project");
+    s.set_meta(PIN_KEY, &n.to_string())
+        .expect("pin per project");
 }
 
 #[cfg(test)]
@@ -202,6 +203,9 @@ mod tests {
             busy_projects: 3,
             per_project: per_project(18, 3),
         };
-        assert_eq!(f.line(), "slots 18 = this machine 10 + vm-1 8, per project 6");
+        assert_eq!(
+            f.line(),
+            "slots 18 = this machine 10 + vm-1 8, per project 6"
+        );
     }
 }

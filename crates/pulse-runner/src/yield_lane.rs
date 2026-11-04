@@ -236,7 +236,7 @@ mod tests {
     /// One work lane: the project's checks take turns and one 10-minute
     /// check fits the commit cap.
     fn one_lane(s: &pulse_store::Store) {
-        crate::capacity::pin_per_project(&s, 4);
+        crate::capacity::pin_per_project(s, 4);
         s.set_setting(
             pulse_store::HUMAN_AGENT,
             crate::verify_lock::SETTING,

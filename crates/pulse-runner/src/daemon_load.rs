@@ -1250,8 +1250,17 @@ mod tests {
         assert_eq!(l.own_nice, 5, "the documented default daemon.nice");
         assert_eq!(l.build_jobs, 6, "daemon.build_jobs 0 is half the cores");
         crate::test_helpers_daemon::set_setting(&s, "capacity", "2");
-        for retired in pulse_store::AUTOMATIC_SETTINGS {
-            let err = s.set_setting("human", retired, "3").unwrap_err().to_string();
+        for retired in [
+            "workers",
+            "parallel_per_project",
+            "daemon.max_jobs",
+            "daemon.max_load",
+            "daemon.min_free_mem_mb",
+        ] {
+            let err = s
+                .set_setting("human", retired, "3")
+                .unwrap_err()
+                .to_string();
             assert!(err.contains("is automatic now"), "{retired}: {err}");
         }
         crate::test_helpers_daemon::set_setting(&s, "daemon.nice", "0");

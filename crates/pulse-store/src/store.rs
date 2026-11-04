@@ -1006,7 +1006,8 @@ fn retired_settings_present(conn: &Connection) -> rusqlite::Result<bool> {
         .chain(crate::settings::AUTOMATIC_SETTINGS);
     let marks = vec![
         "?";
-        crate::settings::RETIRED_SETTINGS.len() + crate::settings::AUTOMATIC_SETTINGS.len()
+        crate::settings::RETIRED_SETTINGS.len()
+            + crate::settings::AUTOMATIC_SETTINGS.len()
     ]
     .join(", ");
     let n: i64 = conn.query_row(

@@ -3685,9 +3685,8 @@ mod tests {
             },
         );
         assert!(
-            out.contains(
-                "machine saturated: 300 MB of memory free, under the floor 1024"
-            ) && !out.contains("leased "),
+            out.contains("machine saturated: 300 MB of memory free, under the floor 1024")
+                && !out.contains("leased "),
             "{out}"
         );
         drop(tight);
@@ -3928,10 +3927,7 @@ mod tests {
             false,
         )
         .unwrap();
-        for (k, v) in [
-            ("capacity", "1"),
-            ("daemon.min_free_mb", "0"),
-        ] {
+        for (k, v) in [("capacity", "1"), ("daemon.min_free_mb", "0")] {
             s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
         }
         let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
