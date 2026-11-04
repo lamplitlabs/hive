@@ -530,12 +530,21 @@ pub fn secret_shaped(value: &str) -> bool {
     // base64 string ends in `=` too.
     static ASSIGNMENT: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^([A-Za-z_][A-Za-z0-9_]{0,38})=(.*)$").unwrap());
+    // A snake_case identifier - a Rust test name such as
+    // `an_idle_sleep_under_a_hold_wakes_when_the_load_drops`, alone or under
+    // its module path (`daemon::tests::...`) - is code vocabulary however
+    // long it runs: lowercase words joined by `_` or `::`, four or more of
+    // them, none longer than a word. A token is mixed-case or one long run.
+    static IDENTIFIER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[a-z][a-z0-9]{0,19}(?:(?:_|::)[a-z0-9]{1,20}){3,}$").unwrap()
+    });
     if !LONG.is_match(value) {
         return false;
     }
     let path_like = |word: &str| {
         PATH_OR_URL.is_match(word)
             || STORE_ID.is_match(word)
+            || IDENTIFIER.is_match(word)
             || (SEGMENTS.is_match(word)
                 && (word.matches('/').count() >= 2 || word.contains(['-', '_', '.'])))
     };
@@ -1157,6 +1166,32 @@ mod tests {
             "20261012T092238Z-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh=",
             "20261012T092238Z AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh",
             "2026101T092238Z-copilot-fable-1012-hub-2-and-a-longer-tail",
+        ] {
+            assert!(secret_shaped(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn secret_shape_spares_snake_case_identifiers() {
+        // Experiment card 20261103T200329Z-sable-3-2 named a 52-character
+        // test in its Variable and Signal lines; the planner refused it as
+        // "experiment card must not contain credentials" and the whole
+        // experiment lane waited on it.
+        for text in [
+            "have an_idle_sleep_under_a_hold_wakes_when_the_load_drops wait for a wake",
+            "check:cargo test -p pulse-runner --lib an_idle_sleep_under_a_hold_wakes_when_the_load_drops",
+            "daemon::tests::restart_drain_holds_queued_work_while_the_run_in_flight_finishes",
+            "`a_project_conversation_reports_its_branch_and_attach_validates`",
+        ] {
+            assert!(!secret_shaped(text), "{text}");
+        }
+        // Tokens stay tokens: mixed case, one long lowercase run, or a
+        // Stripe-style key with a long opaque tail.
+        for text in [
+            "abcdefghijklmnopqrstuvwxyz0123456789abcd",
+            "sk_live_51habcdefghijklmnopqrstuvwxyz0123456789",
+            "an_idle_sleep_under_a_hold_AbCdEfGhIjKlMnOpQrSt",
+            "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh",
         ] {
             assert!(secret_shaped(text), "{text}");
         }

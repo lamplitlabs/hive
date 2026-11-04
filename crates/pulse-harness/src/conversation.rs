@@ -6348,13 +6348,18 @@ mod tests {
         let report = wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_FINISHED);
         assert_eq!(report.extra["report"]["child"], cid);
         assert_eq!(report.extra["report"]["title"], "Docs check");
+        // Every session replays the one script, so the child's report
+        // depends on a race: when its grandchild closed before the child's
+        // first finish, that finish is accepted and the next scripted reply
+        // ("Waiting on it.") closes it; otherwise the finish is refused and
+        // the second one closes with "Done here.". Both are correct.
         assert!(
-            report.content.starts_with("Docs checked.")
-                || report.content.starts_with("Started the docs check."),
+            (report.content.starts_with("Docs checked.") && report.content.contains("Done here."))
+                || (report.content.starts_with("Started the docs check.")
+                    && report.content.contains("Waiting on it.")),
             "{}",
             report.content
         );
-        assert!(report.content.contains("Done here."), "{}", report.content);
         let parent = wait_status(&m, &pid, &["idle"]);
         assert_eq!(
             parent.status, "idle",
