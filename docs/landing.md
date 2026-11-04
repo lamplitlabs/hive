@@ -7,6 +7,25 @@ commits to a `pulse/<agent>/<job>` branch in your checkout, and the daemon
 lands them into the default branch (ADR-024: verify command first, fast-forward
 or a `Land …` merge commit).
 
+A merge that conflicts is not resolved for you: the branch's patch is saved
+under `~/.pulse/patches/<slug>/`, the branch is removed, the job is requeued on
+the current default branch (`land.conflict` names the patch) and the run is
+made again on the moved base. One conflict is an exception, because it is not
+a conflict between anyone's sources: the console's generated export under
+`web/hub/out/`, which every build of the hub regenerates with content-hashed
+chunk names, so two branches that both touched the hub's source always
+collided there while the sources merged clean. Of the nine amistio-template
+landings that conflicted on 2026-11-02..04, every patch was 80-90%
+`web/hub/out`, and each one threw away a finished run and ran its job again
+for a conflict nobody wrote. When every conflicted path lies under
+`web/hub/out/`, the daemon drops the export from the merge, runs `npm ci` and
+`npm run build` in the landing worktree on the merged `web/hub/src`, stages
+the rebuilt export and finishes the `Land …` merge commit with it; the landing
+line and the `land.landed` event say `web/hub/out rebuilt from the merged src`
+(`hub_out_rebuilt`). A build that fails, or a conflict that reaches any other
+path, holds as before. The rebuilt bundle's stamp names the merged src tree,
+so the bundle test the verify command runs still passes.
+
 ### The verify command
 
 The verify command is the project's `verify_cmd` (`pulse init PATH --verify

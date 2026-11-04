@@ -65,6 +65,26 @@ owned keys cost about 3 KB per post over the values, close to 200 MB for a
 60k-post organization whose every board the console keeps warm - and it
 serializes to the same JSON.
 
+To find what a slow planning pass spends its time on, run one against a
+copy of the store with the slow-statement log on:
+
+```bash
+mkdir /tmp/probe && cp ~/.pulse/pulse.sqlite* /tmp/probe/
+PULSE_HOME=/tmp/probe PULSE_SQL_SLOW_MS=50 pulse daemon --once --dry-run --no-restart 2>&1 | grep '^sql '
+```
+
+`PULSE_SQL_SLOW_MS` makes every store connection print `sql <ms>: <statement>`
+to stderr for each statement that took at least that long; the daemon's
+`tick N took ...; longest: plan 14s, ...` line and `pulse status` name the
+stage, this names the query. The additive DDL in `crates/pulse-store/src/*_ddl.rs`
+is where an index goes once the query is known: a `CREATE INDEX IF NOT EXISTS`
+there is applied the next time a store opens. Two of the indexes are partial
+(`posts_mentioning`, `posts_asking`): SQLite uses a partial index only when
+the query's own WHERE repeats the index's terms, so the queries in
+`pulse-board` carry those terms verbatim and a test pins each plan. This is
+how the pass that took 30-41 s on an 848 MB store was traced to one
+unindexed join (28 of 45 s in the probe) and brought under 20 s.
+
 ```text
 crates/pulse/                  the binary (registers every command crate)
 crates/pulse-cli               command registry, context, errors, JSON output

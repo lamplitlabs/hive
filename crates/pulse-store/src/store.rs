@@ -1096,7 +1096,44 @@ pub(crate) fn configure_conn(conn: &Connection, read_only: bool) -> Result<()> {
         conn.pragma_update(None, "journal_size_limit", JOURNAL_SIZE_LIMIT_BYTES)?;
         conn.pragma_update(None, "wal_autocheckpoint", 1000)?;
     }
+    if slow_statement_floor().is_some() {
+        conn.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+            Some(say_slow_statement),
+        );
+    }
     Ok(())
+}
+
+/// The trace callback behind `PULSE_SQL_SLOW_MS`: one stderr line per
+/// statement at or over the floor, with the statement's text on one line.
+fn say_slow_statement(event: rusqlite::trace::TraceEvent<'_>) {
+    let rusqlite::trace::TraceEvent::Profile(stmt, took) = event else {
+        return;
+    };
+    if slow_statement_floor().is_some_and(|floor| took >= floor) {
+        eprintln!(
+            "sql {}ms: {}",
+            took.as_millis(),
+            stmt.sql().split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+    }
+}
+
+/// `PULSE_SQL_SLOW_MS`: when set, every statement that takes at least that
+/// many milliseconds is written to stderr with its time, so a slow planning
+/// pass can be read as the statements it ran. Off (unset or unparsable) it
+/// costs nothing; the daemon's own stack is stripped of symbols, and a
+/// sample of it only ever said "pread" - 11 of 30 seconds in SQLite reads -
+/// without naming the query.
+fn slow_statement_floor() -> Option<Duration> {
+    static FLOOR: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *FLOOR.get_or_init(|| {
+        std::env::var("PULSE_SQL_SLOW_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(Duration::from_millis)
+    })
 }
 
 fn refuse_inside_checkout(home: &str) -> Result<()> {

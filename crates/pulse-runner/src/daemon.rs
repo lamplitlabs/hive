@@ -230,27 +230,91 @@ impl std::fmt::Debug for DaemonOpts {
 /// merely beat late. The heartbeat carries the last body, the slowest and
 /// how many ran over the cadence (`tick`); `pulse status` and the hub show
 /// them. A body over the cadence is said once and again only after one fits,
-/// so a slow planning pass is one line, not one per tick.
+/// so a slow planning pass is one line, not one per tick. The line and the
+/// heartbeat also name where the time went (`StageClock`): the number alone
+/// said that seven passes after one restart took 29-33 s each and nothing
+/// about which of the twenty tenders took them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct TickTiming {
     last: Option<Duration>,
     max: Duration,
     slow: u32,
     over: bool,
+    /// The longest stages of the slowest body, for the heartbeat.
+    longest: Vec<(&'static str, Duration)>,
+}
+
+/// Where a loop body's time goes, by stage. The loop marks the end of each
+/// stage and the time since the previous mark is charged to it; a stage
+/// that runs once per project (the tenders) is charged every time, so its
+/// total across projects is what shows.
+#[derive(Debug, Default)]
+pub(crate) struct StageClock {
+    since: Option<std::time::Instant>,
+    spent: BTreeMap<&'static str, Duration>,
+}
+
+impl StageClock {
+    pub(crate) fn start() -> Self {
+        Self {
+            since: Some(std::time::Instant::now()),
+            ..Self::default()
+        }
+    }
+
+    /// Charges the time since the last mark (or the start) to `stage`.
+    pub(crate) fn mark(&mut self, stage: &'static str) {
+        let now = std::time::Instant::now();
+        if let Some(since) = self.since.replace(now) {
+            self.charge(stage, now.saturating_duration_since(since));
+        }
+    }
+
+    pub(crate) fn charge(&mut self, stage: &'static str, took: Duration) {
+        *self.spent.entry(stage).or_default() += took;
+    }
+
+    /// The `n` longest stages of a second or more, longest first.
+    pub(crate) fn longest(&self, n: usize) -> Vec<(&'static str, Duration)> {
+        let mut all: Vec<_> = self
+            .spent
+            .iter()
+            .filter(|(_, took)| **took >= Duration::from_secs(1))
+            .map(|(stage, took)| (*stage, *took))
+            .collect();
+        all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        all.truncate(n);
+        all
+    }
+}
+
+/// `plan 14s, maintenance 9s, pipeline 3s`.
+fn stages_phrase(stages: &[(&'static str, Duration)]) -> String {
+    stages
+        .iter()
+        .map(|(stage, took)| format!("{stage} {}", pulse_cli::format_duration(*took)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl TickTiming {
     /// Records one body and returns the line to say when it runs over
-    /// `bound` after a body that fit (or as the first body).
+    /// `bound` after a body that fit (or as the first body). `stages` is
+    /// the body's clock; its three longest stages end the line and ride
+    /// the heartbeat while the body is the slowest seen.
     pub(crate) fn record(
         &mut self,
         loops: i32,
         took: Duration,
         bound: Duration,
         pass: bool,
+        stages: &StageClock,
     ) -> Option<String> {
         self.last = Some(took);
-        self.max = self.max.max(took);
+        if took >= self.max {
+            self.max = took;
+            self.longest = stages.longest(3);
+        }
         if took <= bound {
             self.over = false;
             return None;
@@ -260,20 +324,33 @@ impl TickTiming {
             return None;
         }
         let kind = if pass { "planning pass" } else { "refill tick" };
+        let longest = stages.longest(3);
+        let went = if longest.is_empty() {
+            String::new()
+        } else {
+            format!("; longest: {}", stages_phrase(&longest))
+        };
         Some(format!(
-            "tick {loops} took {}, over the {} dispatch cadence ({kind}); queued work waited that long for a slot, said again once a tick fits",
+            "tick {loops} took {}, over the {} dispatch cadence ({kind}); queued work waited that long for a slot, said again once a tick fits{went}",
             pulse_cli::format_duration(took),
             pulse_cli::format_duration(bound)
         ))
     }
 
     /// The heartbeat's `tick` object; nothing before the first body ends.
+    /// `longest` names the slowest body's longest stages, so `pulse status`
+    /// says what a slow pass spent its time on.
     pub(crate) fn beat(&self) -> Option<serde_json::Value> {
         let last = self.last?;
         Some(serde_json::json!({
             "ms": last.as_millis() as u64,
             "max_ms": self.max.as_millis() as u64,
             "slow": self.slow,
+            "longest": self
+                .longest
+                .iter()
+                .map(|(stage, took)| serde_json::json!({"stage": stage, "ms": took.as_millis() as u64}))
+                .collect::<Vec<_>>(),
         }))
     }
 }
@@ -1335,6 +1412,7 @@ pub(crate) fn daemon(
         loops += 1;
         loops_shared.store(loops, std::sync::atomic::Ordering::SeqCst);
         let tick_began = std::time::Instant::now();
+        let mut stages = StageClock::start();
         // The wall clock got ahead of the monotonic clock while the loop
         // waited: the machine slept. Said, recorded as an event, and kept in
         // the heartbeat so the console can explain the lost hours.
@@ -1613,6 +1691,7 @@ pub(crate) fn daemon(
                     None
                 }
             };
+            stages.mark("reap");
             // The planning pass; a tick inside `daemon.pass_seconds` skips to
             // the slots below.
             if full_pass {
@@ -1625,6 +1704,7 @@ pub(crate) fn daemon(
                 for line in hold_lines {
                     say(&o, line);
                 }
+                stages.mark("probes");
                 if maintenance.done.is_none()
                     && (!only_maintenance_wake || maintenance.has_new_pending(s, projects.clone()))
                 {
@@ -1656,9 +1736,11 @@ pub(crate) fn daemon(
                         binary,
                     );
                 }
+                stages.mark("maintenance");
                 for line in crate::auto_adopt::auto_adopt_drafts(s, now.clone(), actor.clone()) {
                     say(&o, line);
                 }
+                stages.mark("adopt");
                 let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
                 let environment_now = crate::recover::live_environment(s);
                 for project in &projects {
@@ -1671,9 +1753,11 @@ pub(crate) fn daemon(
                     ) {
                         say(&o, line);
                     }
+                    stages.mark("amend");
                     for line in crate::manifest::tend_manifest(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
+                    stages.mark("manifest");
                     for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);
@@ -1687,19 +1771,23 @@ pub(crate) fn daemon(
                     for line in crate::lead_roles::seat_decided_leads(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
+                    stages.mark("leads");
                     for line in crate::toolkit::suggest_toolkit(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
                     for line in crate::toolkit::add_decided_toolkit(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
+                    stages.mark("toolkit");
                     for line in crate::lead::tend_tasks(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);
                     }
+                    stages.mark("tasks");
                     for line in crate::suggestions::tend_suggestions(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
+                    stages.mark("suggestions");
                     for line in crate::recover::recover_failed_jobs(
                         s,
                         project.clone(),
@@ -1717,15 +1805,19 @@ pub(crate) fn daemon(
                     ) {
                         say(&o, line);
                     }
+                    stages.mark("recover");
                     for line in crate::security::tend_dependency_alerts(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
+                    stages.mark("security");
                     for line in crate::pipeline::tend_pipeline(s, &slug, &now, &actor) {
                         say(&o, line);
                     }
+                    stages.mark("pipeline");
                     for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
                         say(&o, line);
                     }
+                    stages.mark("lessons");
                 }
                 if !o.dry_run {
                     for line in crate::evolve_plan::tend_evolve(
@@ -1736,6 +1828,7 @@ pub(crate) fn daemon(
                     ) {
                         say(&o, line);
                     }
+                    stages.mark("evolve");
                     if crate::run::runner_stopped(s).is_empty() {
                         let mut scripts_held = false;
                         // When the bulk volume is away, leave every due schedule
@@ -1783,6 +1876,7 @@ pub(crate) fn daemon(
                             idle_log.clear("schedules");
                         }
                     }
+                    stages.mark("schedules");
                 }
                 let mut planned = BTreeMap::new();
                 for slug in &slugs {
@@ -1820,6 +1914,7 @@ pub(crate) fn daemon(
                         );
                     }
                 }
+                stages.mark("plan");
                 let mut cur_idle = BTreeMap::new();
                 if let Some(c) = conn.as_ref() {
                     for slug in &slugs {
@@ -1856,9 +1951,11 @@ pub(crate) fn daemon(
                 }
                 crate::idle::record_idle_notes(s, cur_idle.clone(), now.clone());
                 prev_idle = cur_idle;
+                stages.mark("idle");
                 for line in crate::heldout::tend_heldout(s, now.clone()) {
                     say(&o, line);
                 }
+                stages.mark("heldout");
                 for pr in crate::keys::reprobe_due(s, interval, &now) {
                     say(
                         &o,
@@ -1868,10 +1965,12 @@ pub(crate) fn daemon(
                 for line in crate::retire::tend_executors(s, now.clone(), actor.clone()) {
                     say(&o, line);
                 }
+                stages.mark("executors");
             }
             for line in compute.tick(&compute_ctx, &now) {
                 say(&o, line);
             }
+            stages.mark("compute");
             let mut busy = BTreeMap::new();
             for d in inflight.values() {
                 *busy.entry(d.slot.clone()).or_insert(0) += 1;
@@ -2506,7 +2605,10 @@ pub(crate) fn daemon(
         {
             say(&o, format!("idle: {line}"));
         }
-        if let Some(line) = tick_timing.record(loops, tick_began.elapsed(), tick_bound, full_pass) {
+        stages.mark("dispatch");
+        if let Some(line) =
+            tick_timing.record(loops, tick_began.elapsed(), tick_bound, full_pass, &stages)
+        {
             say(&o, line);
         }
         if o.max_loops > 0 && loops >= o.max_loops {
@@ -4245,42 +4347,82 @@ mod tests {
     fn tick_timing_says_a_slow_body_once_and_carries_it_in_the_heartbeat() {
         let bound = Duration::from_secs(15);
         let mut timing = TickTiming::default();
+        let quiet = StageClock::default();
         assert_eq!(
             timing.beat(),
             None,
             "nothing measured before the first body"
         );
-        assert_eq!(timing.record(1, Duration::from_secs(2), bound, true), None);
+        assert_eq!(
+            timing.record(1, Duration::from_secs(2), bound, true, &quiet),
+            None
+        );
+        // The slow pass's clock: four tenders over a second, one under it
+        // (left out), so the line names the three longest, longest first.
+        let mut stages = StageClock::default();
+        stages.charge("plan", Duration::from_secs(14));
+        stages.charge("pipeline", Duration::from_secs(3));
+        stages.charge("maintenance", Duration::from_secs(9));
+        stages.charge("leads", Duration::from_millis(1500));
+        stages.charge("adopt", Duration::from_millis(200));
         let line = timing
-            .record(2, Duration::from_secs(40), bound, true)
+            .record(2, Duration::from_secs(40), bound, true, &stages)
             .expect("the first body over the cadence is said");
         assert_eq!(
             line,
-            "tick 2 took 40s, over the 15s dispatch cadence (planning pass); queued work waited that long for a slot, said again once a tick fits"
+            "tick 2 took 40s, over the 15s dispatch cadence (planning pass); queued work waited that long for a slot, said again once a tick fits; longest: plan 14s, maintenance 9s, pipeline 3s"
         );
         // Still over: quiet, so a slow pass is one line and not one per tick.
         assert_eq!(
-            timing.record(3, Duration::from_secs(16), bound, false),
+            timing.record(3, Duration::from_secs(16), bound, false, &quiet),
             None
         );
         let beat = timing.beat().unwrap();
         assert_eq!(beat["ms"], 16_000);
         assert_eq!(beat["max_ms"], 40_000);
         assert_eq!(beat["slow"], 2);
-        // A body that fits reopens the line for the next crossing, and a
-        // refill tick is named as such.
+        // The heartbeat keeps the slowest body's stages, not the last body's.
         assert_eq!(
-            timing.record(4, Duration::from_millis(900), bound, false),
+            beat["longest"],
+            serde_json::json!([
+                {"stage": "plan", "ms": 14_000},
+                {"stage": "maintenance", "ms": 9_000},
+                {"stage": "pipeline", "ms": 3_000}
+            ])
+        );
+        // A body that fits reopens the line for the next crossing, and a
+        // refill tick is named as such; a clock with nothing over a second
+        // adds no phrase.
+        assert_eq!(
+            timing.record(4, Duration::from_millis(900), bound, false, &quiet),
             None
         );
         let again = timing
-            .record(5, Duration::from_secs(20), bound, false)
+            .record(5, Duration::from_secs(20), bound, false, &quiet)
             .unwrap();
         assert!(
-            again.starts_with("tick 5 took 20s, over the 15s dispatch cadence (refill tick);"),
+            again.ends_with("(refill tick); queued work waited that long for a slot, said again once a tick fits"),
             "{again}"
         );
         assert_eq!(timing.beat().unwrap()["slow"], 3);
+    }
+
+    #[test]
+    fn stage_clock_charges_the_time_since_the_previous_mark() {
+        let mut clock = StageClock::start();
+        std::thread::sleep(Duration::from_millis(20));
+        clock.mark("reap");
+        clock.mark("plan");
+        assert!(
+            clock.spent["reap"] >= Duration::from_millis(20),
+            "{:?}",
+            clock.spent
+        );
+        assert!(clock.spent["plan"] < Duration::from_millis(20));
+        // A stage marked once per project adds up across the projects.
+        clock.charge("pipeline", Duration::from_secs(2));
+        clock.charge("pipeline", Duration::from_secs(3));
+        assert_eq!(clock.longest(3), vec![("pipeline", Duration::from_secs(5))]);
     }
 
     #[test]

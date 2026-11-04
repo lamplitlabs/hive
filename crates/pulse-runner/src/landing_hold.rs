@@ -653,19 +653,21 @@ pub(crate) fn replay_onto_squashed_upstream(
 /// Directory prefix of the hub's generated static export.
 pub(crate) const HUB_OUT_PREFIX: &str = "web/hub/out/";
 
-/// Rebuild the hub's static export from the merged `web/hub/src` after an
-/// upstream sync merge conflicted only under the generated export: take the
-/// upstream copy of `web/hub/{src,out,package-lock.json}`, rebuild in a
-/// temporary index and working tree so a failure leaves the merge conflict
-/// intact for the usual hold, and commit. Returns false when the conflict
-/// reaches outside the export or any step failed.
-pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> bool {
-    // The sync branch is `pulse/sync/<remote>/<upstream-branch>`; the
-    // upstream ref it merged is `<remote>/<upstream-branch>`.
-    let upstream_ref = branch
-        .strip_prefix("pulse/sync/")
-        .map(str::to_string)
-        .unwrap_or_default();
+/// Rebuild the hub's static export from the merged `web/hub/src` when a
+/// landing's merge conflicted only under the generated export, and commit
+/// the merge with the rebuilt bundle. Two branches that both touch the hub's
+/// source always collide there - every build names its chunks by content
+/// hash - so without this a finished run was thrown away and its job run
+/// again for a conflict no one wrote: of the nine amistio-template landings
+/// that conflicted on 2026-11-02..04, every patch was 80-90% `web/hub/out`
+/// and the sources had merged clean. Any branch gets the rebuild, not only
+/// an upstream sync. The export leaves the index and the disk before the
+/// build: the stamp the bundle test reads hashes the staged `src` with
+/// `git write-tree`, which refuses an index that still holds unmerged
+/// entries, and a chunk the losing side left on disk would otherwise ride
+/// into the commit. Returns false, with the merge aborted, when the conflict
+/// reaches outside the export or any step failed, so the usual hold follows.
+pub(crate) fn resolve_hub_out_conflict(worktree: &str, branch: &str) -> bool {
     let unmerged = crate::util::git_timeout(
         worktree,
         Duration::from_secs(30),
@@ -679,26 +681,34 @@ pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> boo
     {
         return false;
     }
-    let upstream = crate::util::git_timeout(
+    let abort = || {
+        crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
+        false
+    };
+    let out_dir = HUB_OUT_PREFIX.trim_end_matches('/');
+    if !crate::util::git_timeout(
         worktree,
-        Duration::from_secs(30),
-        &["rev-parse", "--verify", &upstream_ref],
-    );
-    if !upstream.ok() {
-        return false;
+        Duration::from_secs(120),
+        &[
+            "rm",
+            "-r",
+            "-f",
+            "-q",
+            "--cached",
+            "--ignore-unmatch",
+            "--",
+            out_dir,
+        ],
+    )
+    .ok()
+    {
+        return abort();
     }
-    let upstream = upstream.stdout.trim().to_string();
-    // Incidental bare-index fixup from the merge path; best effort only.
-    let _ = crate::util::git_timeout(
-        worktree,
-        Duration::from_secs(60),
-        &["checkout", &upstream, "--", ".husky/_/.gitignore"],
-    );
+    let _ = std::fs::remove_dir_all(std::path::Path::new(worktree).join(out_dir));
     // Rebuild the export in place: the landing worktree's disk already holds
     // the merged web/hub/src (only generated out/ paths conflicted, so src
     // merged clean), which is exactly the tree the stamp gate names. Build
     // over it with npm, then stage the result and finish the merge commit.
-    // Any failure backs out to the usual hold.
     let hub = std::path::Path::new(worktree).join("web/hub");
     let npm = |args: &[&str]| {
         std::process::Command::new("npm")
@@ -714,8 +724,7 @@ pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> boo
             .is_ok_and(|st| st.success())
     };
     if !npm(&["ci", "--no-audit", "--no-fund"]) || !npm(&["run", "build"]) {
-        crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
-        return false;
+        return abort();
     }
     if !crate::util::git_timeout(
         worktree,
@@ -724,8 +733,7 @@ pub(crate) fn resolve_hub_out_sync_conflict(worktree: &str, branch: &str) -> boo
     )
     .ok()
     {
-        crate::util::git_timeout(worktree, Duration::from_secs(60), &["merge", "--abort"]);
-        return false;
+        return abort();
     }
     let msg = format!("Land {branch}: rebuild web/hub/out from the merged src");
     let committed = crate::util::git_timeout(
@@ -1596,22 +1604,23 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
-    /// A repo with one committed `web/hub` skeleton and a bare `origin/main`
-    /// ref (a plain local branch), so the resolver can rev-parse the upstream
-    /// it derives from the `pulse/sync/<remote>/<branch>` name.
     /// Build a repo whose `origin/main` and local `main` diverged, changing
     /// only the generated `web/hub/out/index.html`, so a real merge of
-    /// origin/main conflicts out/-only. Returns the sync branch name.
+    /// origin/main conflicts out/-only. Returns the name of the branch being
+    /// landed: a job branch, since any landing gets the rebuild.
     fn seed_hub_sync_worktree(root: &str) -> String {
         std::fs::create_dir_all(Path::new(root).join("web/hub/src")).expect("dirs");
         std::fs::create_dir_all(Path::new(root).join("web/hub/out")).expect("dirs");
         commit_file(root, "web/hub/src/app.css", "merged src\n", "seed src");
         commit_file(root, "web/hub/out/index.html", "base out\n", "seed out");
-        // A buildable hub skeleton: the resolver runs `npm ci && npm run build`.
+        // A buildable hub skeleton: the resolver runs `npm ci && npm run
+        // build`. Like `next build`, the build makes out/ itself: the
+        // resolver removes the export before building so nothing of the
+        // losing side's chunks survives into the commit.
         commit_file(
             root,
             "web/hub/package.json",
-            "{\"name\":\"t\",\"version\":\"0.0.0\",\"scripts\":{\"build\":\"node -e \\\"require('fs').writeFileSync('out/index.html','rebuilt')\\\"\"}}\n",
+            "{\"name\":\"t\",\"version\":\"0.0.0\",\"scripts\":{\"build\":\"node -e \\\"require('fs').mkdirSync('out',{recursive:true});require('fs').writeFileSync('out/index.html','rebuilt')\\\"\"}}\n",
             "seed pkg",
         );
         commit_file(
@@ -1636,11 +1645,11 @@ mod tests {
         run(root, &["git", "update-ref", "refs/remotes/origin/main", up]);
         run(root, &["git", "checkout", "-q", "main"]);
         run(root, &["git", "branch", "-qD", "upbuild"]);
-        "pulse/sync/origin/main".to_string()
+        "pulse/quartz-6/job-20261104T000000Z-abc123".to_string()
     }
 
     #[test]
-    fn hub_out_only_sync_conflict_is_resolved_by_the_rebuilt_bundle() {
+    fn hub_out_only_conflict_is_resolved_by_the_rebuilt_bundle_for_any_branch() {
         let home = tempfile::tempdir().expect("home");
         let root = home.path().join("wt");
         std::fs::create_dir_all(&root).expect("root");
@@ -1673,7 +1682,7 @@ mod tests {
         );
         let before = run(&root_s, &["git", "rev-parse", "HEAD"]);
         assert!(
-            resolve_hub_out_sync_conflict(&root_s, &branch),
+            resolve_hub_out_conflict(&root_s, &branch),
             "out/-only conflict should resolve"
         );
         let head = run(&root_s, &["git", "log", "-1", "--format=%s", "HEAD"]);
@@ -1691,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_conflict_outside_the_hub_export_still_holds() {
+    fn conflict_outside_the_hub_export_still_holds() {
         let home = tempfile::tempdir().expect("home");
         let root = home.path().join("wt");
         std::fs::create_dir_all(&root).expect("root");
@@ -1715,7 +1724,7 @@ mod tests {
         }
         feed_git(&root_s, &["update-index", "--index-info"], &info);
         assert!(
-            !resolve_hub_out_sync_conflict(&root_s, &branch),
+            !resolve_hub_out_conflict(&root_s, &branch),
             "a conflict outside web/hub/out must still hold"
         );
         assert_eq!(run(&root_s, &["git", "rev-parse", "HEAD"]), before);

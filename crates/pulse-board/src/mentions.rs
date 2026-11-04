@@ -122,10 +122,35 @@ pub fn mentions_for(
         agent
     };
     let scope = mention_scope_projects(s, project)?;
-    let scope_filter = if scope.is_empty() {
+    let q = mentions_sql(scope.len(), limit > 0);
+    let conn = s.conn()?;
+    let mut args: Vec<String> = scope;
+    args.push(agent.to_string());
+    args.push(agent.to_string());
+    args.push(agent.to_string());
+    if limit > 0 {
+        args.push(limit.to_string());
+    }
+    let mut stmt = conn.prepare(&q)?;
+    let rows = stmt.query_map(params_from_iter(args), scan_post)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The unanswered-mention query: posts in `scope_len` projects (every
+/// project when zero) that mention the agent and that the agent has not
+/// answered in their thread since; binds the scope slugs, then the agent
+/// three times, then the limit when `limited`.
+///
+/// The `json_extract ... IS NOT NULL` term repeats the WHERE clause of the
+/// `posts_mentioning` partial index word for word: SQLite uses a partial
+/// index only when the query's own terms imply the index's, and this is what
+/// turns a parse of every post's extra into a walk of the few that mention
+/// anyone (1,180 of 78,000 posts on the store that was measured).
+fn mentions_sql(scope_len: usize, limited: bool) -> String {
+    let scope_filter = if scope_len == 0 {
         "1 = 1".to_string()
     } else {
-        let list = scope.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let list = vec!["?"; scope_len].join(", ");
         format!("p.project IN ({list})")
     };
     let mut q = "SELECT p.".to_string()
@@ -135,6 +160,7 @@ pub fn mentions_for(
         + r#"
   AND p.agent != ?
   AND json_valid(p.extra)
+  AND json_extract(p.extra, '$.mentions') IS NOT NULL
   AND EXISTS (SELECT 1 FROM json_each(p.extra, '$.mentions') WHERE value = ?)
   AND NOT EXISTS (
     SELECT 1 FROM posts a
@@ -142,18 +168,10 @@ pub fn mentions_for(
       AND (a.date > p.date OR (a.date = p.date AND a.rowid > p.rowid))
   )
 ORDER BY p.date DESC, p.rowid DESC"#;
-    let conn = s.conn()?;
-    let mut args: Vec<String> = scope;
-    args.push(agent.to_string());
-    args.push(agent.to_string());
-    args.push(agent.to_string());
-    if limit > 0 {
+    if limited {
         q.push_str(" LIMIT ?");
-        args.push(limit.to_string());
     }
-    let mut stmt = conn.prepare(&q)?;
-    let rows = stmt.query_map(params_from_iter(args), scan_post)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    q
 }
 
 pub fn mention_count(s: &pulse_store::Store, project: &str, agent: &str) -> Result<usize> {
@@ -166,7 +184,7 @@ mod tests {
     use crate::agents::{JoinInput, join_agent};
     use crate::posts::{PostInput, create_post};
     use crate::projects::register_project;
-    use crate::test_helpers::{TEST_NOW, fixture, git_repo};
+    use crate::test_helpers::{TEST_NOW, fixture, git_repo, query_plan};
 
     #[test]
     fn parse_mentions_cases() {
@@ -366,5 +384,26 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// The partial index serves the query only while the query repeats the
+    /// index's WHERE terms; a drift on either side would quietly put the
+    /// full-board scan back, so the plan is pinned here.
+    #[test]
+    fn unanswered_mentions_are_read_through_the_partial_index() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let conn = s.conn().unwrap();
+        for scope_len in [0, 3] {
+            let plan = query_plan(&conn, &super::mentions_sql(scope_len, true));
+            let outer = plan
+                .iter()
+                .find(|line| line.contains(" p USING "))
+                .unwrap_or_else(|| panic!("no plan line for p in {plan:#?}"));
+            assert!(
+                outer.contains("INDEX posts_mentioning"),
+                "scope {scope_len}: {outer}\n{plan:#?}"
+            );
+        }
     }
 }

@@ -492,6 +492,7 @@ fn measure_fixture(
                 );
             }
             crate::clones::check_clone(cancel, &clone, keys)?;
+            crate::clones::drop_ignored(cancel, &clone)?;
         }
         let score_cancel = cancel.with_timeout(timeout);
         let mut env = scorer_env(&home, commit, exe);

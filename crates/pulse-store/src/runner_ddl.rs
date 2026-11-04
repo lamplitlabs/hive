@@ -45,6 +45,23 @@ pub const RUNNER_DDL: &[&str] = &[
     r####"CREATE INDEX IF NOT EXISTS posts_thread_answers ON posts (project, area, thread, agent, date DESC)"####,
     r####"CREATE INDEX IF NOT EXISTS posts_project_date ON posts (project, date)"####,
     r####"CREATE INDEX IF NOT EXISTS posts_project_area_thread_id ON posts (project, area, thread, id)"####,
+    // "Did this run leave a suggestion card?" is a lookup by the post's
+    // session; as a scan of every suggestion post it cost the planning pass
+    // 28 of its 45 seconds on a store with 78,000 posts.
+    r####"CREATE INDEX IF NOT EXISTS posts_session_kind ON posts (session, kind)"####,
+    // The unanswered-mention check reads only the posts that carry a
+    // `mentions` list in their extra (1,180 of 78,000 on the measured store),
+    // so a partial index over exactly those spares it the JSON parse of
+    // every other post; `mentions_for` repeats the index's WHERE terms
+    // verbatim, which is what lets SQLite choose it.
+    r####"CREATE INDEX IF NOT EXISTS posts_mentioning ON posts (project, date DESC) WHERE json_valid(extra) AND json_extract(extra, '$.mentions') IS NOT NULL"####,
+    // Likewise for the questions one project addresses to another: the
+    // open-asks query in `asks.rs` repeats these terms.
+    r####"CREATE INDEX IF NOT EXISTS posts_asking ON posts (kind, date DESC) WHERE json_valid(extra) AND json_extract(extra, '$.projects') IS NOT NULL"####,
+    // The pending-landing scan asks for a project's done jobs with a branch;
+    // with branch in the index SQLite answers from the index entries instead
+    // of reading each done job's row (brief included) to find none.
+    r####"CREATE INDEX IF NOT EXISTS jobs_project_status_branch ON jobs (project, status, branch)"####,
     r####"CREATE INDEX IF NOT EXISTS agents_status_active ON agents (status, last_active_at DESC)"####,
 ];
 use crate::Column;

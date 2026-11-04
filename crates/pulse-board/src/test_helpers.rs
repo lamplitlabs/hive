@@ -237,6 +237,20 @@ pub(crate) fn count_rows(
         .expect("count rows")
 }
 
+/// The `EXPLAIN QUERY PLAN` detail lines SQLite gives for `sql`, every
+/// parameter bound to a placeholder string; what a test reads to pin the
+/// index a query must keep using.
+pub(crate) fn query_plan(conn: &rusqlite::Connection, sql: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap_or_else(|e| panic!("{e}: {sql}"));
+    let args = vec!["x".to_string(); stmt.parameter_count()];
+    stmt.query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
 pub(crate) fn no_tty() {
     crate::commands::set_stdin_for_tests(Some(Vec::new()));
 }

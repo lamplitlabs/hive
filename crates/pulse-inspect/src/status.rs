@@ -274,13 +274,24 @@ pub struct DaemonBeat {
 }
 
 /// The last loop body in milliseconds, the slowest since the daemon started
-/// and how many ran over the dispatch cadence.
+/// and how many ran over the dispatch cadence; `longest` names the slowest
+/// body's longest stages (daemon.rs `StageClock`), empty from a daemon older
+/// than the measurement.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TickBeat {
     pub ms: u64,
     pub max_ms: u64,
     pub slow: u64,
+    pub longest: Vec<StageBeat>,
+}
+
+/// One stage of the slowest loop body and its milliseconds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StageBeat {
+    pub stage: String,
+    pub ms: u64,
 }
 
 pub fn read_daemon_beat(s: &pulse_store::Store) -> Result<(DaemonBeat, bool)> {
@@ -343,7 +354,24 @@ pub fn daemon_status(s: &pulse_store::Store) -> Result<String> {
             } else {
                 String::new()
             };
-            format!(", last tick {}ms (slowest {}ms{slow})", t.ms, t.max_ms)
+            // What the slowest body spent its time on, so a daemon over
+            // its cadence names the tender to look at.
+            let longest = if t.longest.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ": {}",
+                    t.longest
+                        .iter()
+                        .map(|st| format!("{} {}ms", st.stage, st.ms))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            format!(
+                ", last tick {}ms (slowest {}ms{longest}{slow})",
+                t.ms, t.max_ms
+            )
         })
         .unwrap_or_default();
     Ok(format!(
@@ -1120,6 +1148,10 @@ mod tests {
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":80,"max_ms":950,"slow":0}}"#,
                 "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, last tick 80ms (slowest 950ms)",
+            ),
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":80,"max_ms":31000,"slow":7,"longest":[{"stage":"plan","ms":14000},{"stage":"pipeline","ms":9000}]}}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, last tick 80ms (slowest 31000ms: plan 14000ms, pipeline 9000ms, 7 over the cadence)",
             ),
         ] {
             s.conn().unwrap().execute("INSERT INTO meta(key,value) VALUES ('daemon',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [raw]).unwrap();

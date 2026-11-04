@@ -47,7 +47,7 @@ pulse-voice = { path = "crates/pulse-voice" }
 anyhow = "1.0"
 thiserror = "2.0"
 # sqlite (bundled: no system library, like modernc.org/sqlite was)
-rusqlite = { version = "0.40", features = ["bundled", "backup", "functions", "column_decltype", "hooks"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup", "functions", "column_decltype", "hooks", "trace"] }
 # serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }

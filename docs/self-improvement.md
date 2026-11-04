@@ -264,7 +264,15 @@ Held-out fixtures dialog, which also work under `auto` and are never
 overwritten. Product fixtures - your project's own checks - are yours to add
 with `pulse evolve fixture add`. Every scorer runs against a frozen clone: a
 symlink or hardlink that leaves the clone, a special file, or a tree that
-differs after the scorer ran fails the measurement as a violation. A metric
+differs after the scorer ran fails the measurement as a violation. What the
+project's own `.gitignore` ignores is removed from the clone first (`git clean
+-X`: ignored paths only, never an untracked file the agent made), because an
+agent that runs the project's setup leaves `.venv/`, `node_modules/` or
+`target/` behind, a virtualenv's interpreter is an absolute symlink, and a
+grep-style scorer would count the artifacts - on one machine every distillery
+evolution branch was deferred as `scored tree has an escaping symlink:
+.venv/bin/python` 42 times over a month, base measurement included, and
+never scored. A metric
 fixture skips the agent request and scores the frozen tree directly, which
 gives the baseline headroom when governance fixtures already score `1.0`:
 `pulse evolve fixture add --project P --name N --metric --scorer 'pulse evolve

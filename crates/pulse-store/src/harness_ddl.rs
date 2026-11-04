@@ -27,6 +27,11 @@ pub const HARNESS_DDL: &[&str] = &[
 )"####,
     r####"CREATE INDEX IF NOT EXISTS harness_sessions_project ON harness_sessions(project, started_at)"####,
     r####"CREATE INDEX IF NOT EXISTS harness_sessions_status ON harness_sessions(status, started_at)"####,
+    // The planner joins a project's finished jobs to their harness sessions
+    // every pass (the research shallowness check); without this index SQLite
+    // drove the join from a scan of every session, 4 s per call on a store
+    // with 17,000 sessions, eight calls a pass.
+    r####"CREATE INDEX IF NOT EXISTS harness_sessions_job ON harness_sessions(job_id)"####,
     r####"CREATE TABLE IF NOT EXISTS harness_steps (
   session_id TEXT NOT NULL,
   n INTEGER NOT NULL,

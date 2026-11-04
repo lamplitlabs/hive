@@ -105,6 +105,19 @@ pub(crate) fn post_projects(
     Ok(out)
 }
 
+/// The open-asks query, binding the addressed project once. The
+/// `json_extract ... IS NOT NULL` term repeats the WHERE clause of the
+/// `posts_asking` partial index word for word, which is what lets SQLite
+/// walk only the questions that tag a project instead of parsing the extra
+/// of every question on the store (1,784 of them, none tagged, four times a
+/// planning pass when this was measured).
+fn open_asks_sql() -> String {
+    format!(
+        "SELECT p.{} FROM posts p WHERE p.kind = 'question' AND p.area != 'jobs' AND json_valid(p.extra) AND json_extract(p.extra, '$.projects') IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(p.extra, '$.projects') WHERE value = ?) AND {THREAD_OPEN_SQL} ORDER BY p.date DESC, p.rowid DESC",
+        POST_COLS.replace(", ", ", p.")
+    )
+}
+
 /// The `where` an ask's thread must pass: no post in it carries a resolution
 /// (the thread status rule in `threads`).
 const THREAD_OPEN_SQL: &str = "NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = p.project AND r.area = p.area AND r.thread = p.thread AND r.resolution != '')";
@@ -114,11 +127,7 @@ const THREAD_OPEN_SQL: &str = "NOT EXISTS (SELECT 1 FROM posts r WHERE r.project
 /// unanswered, their thread not closed; newest first.
 pub fn open_asks_to(s: &pulse_store::Store, project: &str) -> Result<Vec<Ask>> {
     let conn = s.conn()?;
-    let q = format!(
-        "SELECT p.{} FROM posts p WHERE p.kind = 'question' AND p.area != 'jobs' AND json_valid(p.extra) AND EXISTS (SELECT 1 FROM json_each(p.extra, '$.projects') WHERE value = ?) AND {THREAD_OPEN_SQL} ORDER BY p.date DESC, p.rowid DESC",
-        POST_COLS.replace(", ", ", p.")
-    );
-    let mut stmt = conn.prepare(&q)?;
+    let mut stmt = conn.prepare(&open_asks_sql())?;
     let rows = stmt
         .query_map([project], scan_post)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -194,7 +203,7 @@ fn answer_to(conn: &Connection, q: &Post) -> Result<Option<Post>> {
 mod tests {
     use super::*;
     use crate::posts::{PostInput, create_post, post_by_id};
-    use crate::test_helpers::{TEST_NOW, code, count_rows, fixture, run_cmd, what_any};
+    use crate::test_helpers::{TEST_NOW, code, count_rows, fixture, query_plan, run_cmd, what_any};
     use serde_json::json;
 
     fn test_context() -> pulse_cli::Context {
@@ -531,5 +540,19 @@ mod tests {
         assert!(from[4].answer.is_none());
         assert_eq!(ids(&asks_from(&s, "demo", 2).unwrap()).len(), 2);
         assert!(asks_from(&s, "other", 0).unwrap().is_empty());
+    }
+
+    /// Pins the plan: the partial index serves the query only while the
+    /// query repeats the index's WHERE terms.
+    #[test]
+    fn open_asks_are_read_through_the_partial_index() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let plan = query_plan(&s.conn().unwrap(), &super::open_asks_sql());
+        let outer = plan
+            .iter()
+            .find(|line| line.contains(" p USING "))
+            .unwrap_or_else(|| panic!("no plan line for p in {plan:#?}"));
+        assert!(outer.contains("INDEX posts_asking"), "{outer}\n{plan:#?}");
     }
 }

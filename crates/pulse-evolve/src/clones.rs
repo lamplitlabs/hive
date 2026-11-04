@@ -360,6 +360,25 @@ pub(crate) fn check_clone(
     Ok(())
 }
 
+/// Removes what the project's own `.gitignore` says is not part of its tree
+/// (`git clean -fdXq`: ignored files and directories only, never an
+/// untracked file the harness made) before the clone is frozen and scored.
+/// A harness that runs the project's setup leaves `.venv/`, `node_modules/`
+/// or `target/` behind, and a virtualenv's interpreter is an absolute
+/// symlink, which the read-only scorer refused as an escaping symlink: on
+/// one machine every distillery evolution branch was deferred that way 42
+/// times over a month, the base measurement included, and never scored. A
+/// scorer that greps the tree would also have counted those artifacts.
+pub(crate) fn drop_ignored(cancel: &pulse_bus::CancellationToken, dest: &str) -> Result<()> {
+    crate::process::git_output(
+        cancel,
+        dest,
+        &["clean".into(), "-fdXq".into(), "--".into(), ".".into()],
+    )
+    .map_err(|_| clone_failure(cancel, "remove the clone's ignored files"))?;
+    Ok(())
+}
+
 /// Detaches a clone's HEAD again when the harness left it on a branch (`git
 /// switch -c`, `git checkout main`): HEAD keeps the commit the harness ended
 /// on and the index and tree stay as they are, so the scorer judges what the
@@ -590,5 +609,52 @@ mod tests {
             err.to_string().contains("clone is no longer detached"),
             "{err}"
         );
+    }
+
+    /// A harness that ran the project's setup leaves a virtualenv whose
+    /// interpreter is an absolute symlink; the project ignores the venv, so
+    /// it leaves before the scorer, while an untracked file the harness
+    /// made - part of what is judged - stays.
+    #[test]
+    fn drop_ignored_removes_setup_artifacts_but_keeps_the_harness_work() {
+        let _serial = crate::test_helpers::serial();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        put_file(Path::new(&repo).join(".gitignore"), ".venv/\n", 0o644);
+        test_git(&repo, &["add", ".gitignore"]);
+        test_git(&repo, &["commit", "--quiet", "-m", "ignore the venv"]);
+        let commit = test_git(&repo, &["rev-parse", "HEAD"]);
+        let clone = crate::test_helpers::temp_path().join("clone");
+        let clone = clone.to_str().unwrap();
+        let cancel = pulse_bus::CancellationToken::new();
+        super::stripped_clone(&cancel, &repo, &commit, clone, &[]).unwrap();
+        let venv_bin = Path::new(clone).join(".venv/bin");
+        fs::create_dir_all(&venv_bin).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/python3", venv_bin.join("python")).unwrap();
+        put_file(
+            Path::new(clone).join("notes.txt"),
+            "harness wrote this\n",
+            0o644,
+        );
+        let root = crate::readonly::TreeRoot::open(clone).unwrap();
+        let err = match crate::readonly::freeze_tree(&root) {
+            Ok(_) => panic!("the venv's symlink escapes"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("escaping symlink: .venv/bin/python"),
+            "{err}"
+        );
+
+        super::drop_ignored(&cancel, clone).unwrap();
+        assert!(!Path::new(clone).join(".venv").exists(), "the venv is gone");
+        assert_eq!(
+            fs::read_to_string(Path::new(clone).join("notes.txt")).unwrap(),
+            "harness wrote this\n",
+            "an untracked file the harness made is still judged"
+        );
+        let restore = crate::readonly::freeze_tree(&root).expect("the tree freezes now");
+        restore().unwrap();
     }
 }
