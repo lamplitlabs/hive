@@ -105,7 +105,11 @@ Notifications → PULSE** decides after that, and the card in the console says
 what macOS allows. A click opens the page it is about in the window in front
 and brings PULSE forward. While a PULSE window has focus the page shows its
 own note and the app adds only the sound. When macOS does not let PULSE
-notify, the page plays its own chime instead. A copy run outside PULSE.app
+notify, the page plays its own chime instead. **Help → Send Test
+Notification** posts one through the same path, banner and sound even while
+PULSE is in front, so you can see what macOS does with a real one (a click
+opens Settings → Notifications); when macOS does not let PULSE notify, it
+says why instead. A copy run outside PULSE.app
 (`swift run`) has no bundle for Notification Center, so it only gets the
 notes on the page. The request's parsing (and the rule that a click only
 opens a console path) is `PulseKit/Notify.swift`, tested in `NotifyTests`.

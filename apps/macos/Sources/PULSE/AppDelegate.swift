@@ -375,6 +375,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSWorkspace.shared.open([log], withApplicationAt: console, configuration: NSWorkspace.OpenConfiguration())
     }
 
+    /// Help → Send Test Notification: a banner with the Mac's sound now, so
+    /// the owner sees native delivery work, or a sheet saying why it cannot.
+    @objc func sendTestNotification(_ sender: Any?) {
+        let window = NSApp.keyWindow
+        Task { @MainActor in
+            if let (title, detail) = await notifications.sendTest() {
+                tell(title, detail, window: window)
+            }
+        }
+    }
+
     @objc func showPulseHelp(_ sender: Any?) {
         if let url = URL(string: "https://github.com/manishtiwari25/pulse/blob/main/docs/mac-app.md") {
             NSWorkspace.shared.open(url)

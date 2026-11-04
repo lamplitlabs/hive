@@ -50,6 +50,27 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Help → Send Test Notification: asks macOS when nobody has, then posts
+    /// the test the way the page's notes are posted. Nil when it was posted;
+    /// otherwise why not, in words for the owner (title, detail).
+    func sendTest() async -> (String, String)? {
+        switch await permission(ask: true) {
+        case "granted":
+            post(.test)
+            log.notice("test notification posted")
+            return nil
+        case "unsupported":
+            return ("Notifications need PULSE.app",
+                    "This copy of PULSE runs outside PULSE.app, and Notification Center only serves the app. Build it with apps/macos/scripts/build.sh and open PULSE.app.")
+        case "denied":
+            return ("macOS does not let PULSE notify you",
+                    "Turn on Allow Notifications for PULSE in System Settings → Notifications → PULSE, then try again.")
+        default:
+            return ("macOS has not answered yet",
+                    "PULSE asked macOS whether it may notify you. Answer that, then try again.")
+        }
+    }
+
     func post(_ note: PageNotification) {
         guard let center else { return }
         let content = UNMutableNotificationContent()
