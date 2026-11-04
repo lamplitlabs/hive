@@ -34,7 +34,7 @@ const CELLS: { key: KpiKey; label: string; dir: KpiDirection; href?: string; tex
   { key: "landings", label: "Landings", dir: "up-good", href: hrefs.codeDeliveries(), perDay: true },
   { key: "jobs_done", label: "Jobs done", dir: "up-good", href: hrefs.harness(), perDay: true },
   { key: "tasks_done", label: "Tasks done", dir: "up-good", href: hrefs.tasks({ status: "done" }), perDay: true },
-  { key: "sessions", label: "Agent sessions", dir: "neutral", href: hrefs.harness(), perDay: true },
+  { key: "sessions", label: "Agent runs", dir: "neutral", href: hrefs.harness(), perDay: true },
 ];
 
 function initialRange(): KpiRange {
@@ -49,7 +49,8 @@ function cellSub(f: KpiFigure, range: KpiRange, perDay: boolean): string {
 }
 
 // What the fleet got done and what it spent, per day: landings, jobs, tasks
-// and agent sessions with their tokens (and money, when priced), each with
+// and agent runs (the harness sessions - the hub's "Sessions" page is the
+// chat) with their tokens (and money, when priced), each with
 // a sparkline and a comparison with the window before, then one chart
 // switchable between the work and the spend. The range is remembered.
 export function KpisPanel({ project, height = 200 }: { project?: string | null; height?: number }) {
@@ -107,7 +108,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
     return (
       <Panel title="Over time" icon={TrendingUpIcon} actions={controls}>
         <EmptyState title="Nothing measured yet" hint="Landings, finished jobs, done tasks and the tokens agents spend show up here per day once the runner has done a pass.">
-          No sessions, jobs or landings in the last {KPI_RANGE_LABEL[range]}.
+          No runs, jobs or landings in the last {KPI_RANGE_LABEL[range]}.
         </EmptyState>
       </Panel>
     );
