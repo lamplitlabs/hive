@@ -642,8 +642,8 @@ impl Handler {
                 w,
                 404,
                 format!("No such {what}"),
-                format!("{name} is not a file in this conversation's {kind} folder."),
-                "Open the conversation and pick a file from its list.".to_string(),
+                format!("{name} is not a file in this session's {kind} folder."),
+                "Open the session and pick a file from its list.".to_string(),
             );
             return;
         };
@@ -696,8 +696,8 @@ impl Handler {
                 write_error(
                     w,
                     404,
-                    "No such conversation".to_string(),
-                    format!("There is no conversation {id}."),
+                    "No such session".to_string(),
+                    format!("There is no session {id}."),
                     "Pick one from the list.".to_string(),
                 );
                 None
@@ -1675,6 +1675,11 @@ mod tests {
             .send()
             .unwrap();
         assert_eq!(resp.status().as_u16(), 404);
+        let missing = resp.text().unwrap();
+        assert!(
+            missing.contains("missing.txt is not a file in this session's attachments folder."),
+            "{missing}"
+        );
 
         // The message names the uploads; unknown names and bad shapes are refused.
         let (code, _, _) = call(
@@ -2292,8 +2297,12 @@ mod tests {
             Value::Null,
         );
         assert_eq!(code, 200);
-        let (code, _, _) = call(&h, "GET", "/api/v1/chat/nope", Value::Null);
+        let (code, _, raw) = call(&h, "GET", "/api/v1/chat/nope", Value::Null);
         assert_eq!(code, 404);
+        assert!(
+            raw.contains("No such session") && raw.contains("There is no session nope."),
+            "the hub names a session the way its Sessions page does: {raw}"
+        );
         let (code, _, _) = call(&h, "POST", "/api/v1/chat", json!({"text": ""}));
         assert_eq!(code, 400);
         std::thread::sleep(Duration::from_millis(100));
