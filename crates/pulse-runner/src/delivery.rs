@@ -76,10 +76,19 @@ pub(crate) fn tend(s: &pulse_store::Store, projects: &[Row], now: &str) -> Vec<S
     lines
 }
 
-/// The tasks of a project whose jobs are all finished, with at least one
-/// done job whose branch has not been delivered, and no pull request open.
-/// (task id, title, its done jobs as (job id, branch)).
-type ReadyTask = (String, String, Vec<(String, String)>);
+/// A task whose jobs are all finished with at least one done job whose
+/// branch its pull request has not got yet: no pull request open, or one
+/// open that a later job (the reviewer's "changes" queue a follow-up `task:`
+/// job on its head) must be pushed onto.
+#[derive(Debug, Clone)]
+struct ReadyTask {
+    task: String,
+    title: String,
+    /// Every done job with a branch, as (job id, branch), in creation order.
+    branches: Vec<(String, String)>,
+    /// The task's pull request still open, as its `land.pr` detail.
+    open: Option<Value>,
+}
 
 fn ready_tasks(s: &pulse_store::Store, slug: &str) -> Vec<ReadyTask> {
     let Ok(conn) = s.conn() else {
@@ -94,9 +103,6 @@ fn ready_tasks(s: &pulse_store::Store, slug: &str) -> Vec<ReadyTask> {
     let mut out = Vec::new();
     for t in tasks {
         let id = t.str("id");
-        if open_pr(&conn, slug, &id).is_some() {
-            continue;
-        }
         let (exact, like) = pulse_store::task_source_params(&id);
         let jobs = crate::util::query_rows(
             &conn,
@@ -118,9 +124,22 @@ fn ready_tasks(s: &pulse_store::Store, slug: &str) -> Vec<ReadyTask> {
             .filter(|j| j.str("status") == "done" && !j.str("branch").is_empty())
             .map(|j| (j.str("id"), j.str("branch")))
             .collect();
-        if !branches.is_empty() {
-            out.push((id, t.str("title"), branches));
+        if branches.is_empty() {
+            continue;
         }
+        let open = open_pr(&conn, slug, &id);
+        if let Some(pr) = &open {
+            let delivered = jobs_of(pr);
+            if branches.iter().all(|(j, _)| delivered.contains(j)) {
+                continue;
+            }
+        }
+        out.push(ReadyTask {
+            task: id,
+            title: t.str("title"),
+            branches,
+            open,
+        });
     }
     out
 }
@@ -482,8 +501,10 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
     let ready = ready_work(s, project, now);
     let mut lines = Vec::new();
     let mut opened = 0usize;
-    for (task, title, branches) in &ready.tasks {
-        let key = branches
+    for rt in &ready.tasks {
+        let task = &rt.task;
+        let key = rt
+            .branches
             .iter()
             .map(|(_, b)| b.as_str())
             .collect::<Vec<_>>()
@@ -493,11 +514,13 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
             continue;
         }
         drop(conn);
-        if opened >= CREATIONS_PER_PASS {
-            break;
+        if rt.open.is_none() {
+            if opened >= CREATIONS_PER_PASS {
+                break;
+            }
+            opened += 1;
         }
-        opened += 1;
-        match deliver_task(s, project, &up, task, title, branches, now) {
+        match deliver_task(s, project, &up, rt, now) {
             Ok(line) => lines.push(line),
             Err(note) => {
                 hold(s, now, &slug, json!({"task": task, "work": key}), &note);
@@ -616,15 +639,21 @@ pub(crate) fn dry_run(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<S
             "{slug}: no upstream, finished branches land locally on {def}"
         )),
     }
-    for (task, title, branches) in &ready.tasks {
+    for rt in &ready.tasks {
         lines.push(format!(
-            "  task {task} ({title}): {} as {}",
-            branches
+            "  task {} ({}): {} as {}{}",
+            rt.task,
+            rt.title,
+            rt.branches
                 .iter()
                 .map(|(j, b)| format!("{j} {b}"))
                 .collect::<Vec<_>>()
                 .join(", "),
-            task_branch(task)
+            task_branch(&rt.task),
+            match &rt.open {
+                Some(pr) => format!(" -> push onto pull request #{}", number_of(pr)),
+                None => " -> one pull request".to_string(),
+            }
         ));
     }
     for rj in &ready.jobs {
@@ -722,6 +751,9 @@ struct Work<'a> {
     sha: String,
     /// The pull request already open for the work, as its `land.pr` detail.
     open: Option<Value>,
+    /// The tip the push expects to find on the remote, when it is known to
+    /// differ from what `open` recorded; else the recorded tip is the lease.
+    lease: Option<String>,
 }
 
 /// A pull request opened or updated, and the log line saying so.
@@ -745,11 +777,12 @@ fn deliver_work(
     let slug = project.str("slug");
     let root = project.str("path");
     let def = crate::baseline::default_branch(project.clone());
-    let lease = work
-        .open
-        .as_ref()
-        .map(|d| field_of(d, "to"))
-        .filter(|to| !to.is_empty());
+    let lease = work.lease.clone().or_else(|| {
+        work.open
+            .as_ref()
+            .map(|d| field_of(d, "to"))
+            .filter(|to| !to.is_empty())
+    });
     push(s, &root, up, &work.local, &work.head, lease.as_deref())?;
     let from = {
         let base = crate::util::git_timeout(
@@ -864,19 +897,37 @@ fn push(
 }
 
 /// Builds `pulse/task-<id>` from the default branch plus every job branch,
-/// pushes it and opens (or finds) its pull request.
+/// pushes it and opens (or finds) its pull request. When the task's pull
+/// request is open already, the rebuilt branch also takes in whatever the
+/// pull request's head holds beyond the job branches (a reviewer's or the
+/// owner's commits on the forge), so a follow-up job never pushes those
+/// away, and the push expects that head.
 fn deliver_task(
     s: &pulse_store::Store,
     project: &Row,
     up: &Upstream,
-    task: &str,
-    title: &str,
-    branches: &[(String, String)],
+    rt: &ReadyTask,
     now: &str,
 ) -> Result<String, String> {
     let root = project.str("path");
     let def = crate::baseline::default_branch(project.clone());
+    let task = rt.task.as_str();
+    let branches = rt.branches.as_slice();
     let head = task_branch(task);
+    let remote_head = match &rt.open {
+        Some(_) => {
+            let sha = fetch_head(s, &root, up, &head)?;
+            if sha.is_empty() {
+                return Err(format!(
+                    "{head} (pull request #{}) is gone from {}",
+                    rt.open.as_ref().map(number_of).unwrap_or_default(),
+                    up.name()
+                ));
+            }
+            Some(sha)
+        }
+        None => None,
+    };
     let git = |args: &[&str]| crate::util::git_timeout(&root, Duration::from_secs(120), args);
     let git_dir = git(&["rev-parse", "--absolute-git-dir"])
         .stdout
@@ -896,8 +947,25 @@ fn deliver_task(
         ));
     }
     let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
+    let mut merges: Vec<(String, String)> = branches
+        .iter()
+        .map(|(_, b)| (b.clone(), b.clone()))
+        .collect();
+    if let Some(sha) = &remote_head {
+        merges.push((
+            sha.clone(),
+            format!(
+                "{head} as pull request #{} has it",
+                rt.open.as_ref().map(number_of).unwrap_or_default()
+            ),
+        ));
+    }
     let mut result: Result<(), String> = Ok(());
-    for (_, b) in branches {
+    for (rev, what) in &merges {
+        let contained = in_wt(&["merge-base", "--is-ancestor", rev, "HEAD"]);
+        if contained.ok() {
+            continue;
+        }
         let m = in_wt(&[
             "-c",
             "user.name=PULSE",
@@ -907,13 +975,13 @@ fn deliver_task(
             "--no-ff",
             "--no-edit",
             "-m",
-            &format!("Merge {b} into {head}"),
-            b,
+            &format!("Merge {what} into {head}"),
+            rev,
         ]);
         if !m.ok() {
             let _ = in_wt(&["merge", "--abort"]);
             result = Err(format!(
-                "{b} does not merge cleanly onto {def} with the task's other branches: {}",
+                "{what} does not merge cleanly onto {def} with the task's other branches: {}",
                 crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
             ));
             break;
@@ -930,16 +998,67 @@ fn deliver_task(
             kind: "task",
             ids: vec![("task", task.to_string())],
             jobs: branches.iter().map(|(j, _)| j.clone()).collect(),
-            title: format!("{task}: {title}"),
-            body: task_body(task, title, branches),
+            title: format!("{task}: {}", rt.title),
+            body: task_body(task, &rt.title, branches),
             local: head.clone(),
             head,
             sha: tip,
-            open: None,
+            open: rt.open.clone(),
+            lease: remote_head,
         },
         now,
     )?
     .line)
+}
+
+/// Fetches the upstream's `head` into `refs/remotes/<remote>/<head>` and
+/// returns its sha, empty when the upstream has no such branch.
+fn fetch_head(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    head: &str,
+) -> Result<String, String> {
+    let tracking = format!("refs/remotes/{}/{head}", up.remote);
+    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
+    if !why.is_empty() {
+        return Err(why);
+    }
+    let fetched = crate::util::git_timeout_env(
+        root,
+        Duration::from_secs(120),
+        &env,
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            &up.url,
+            &format!("+refs/heads/{head}:{tracking}"),
+        ],
+    );
+    cleanup("", &[]);
+    if !fetched.ok() {
+        // A branch the upstream has not got is a fetch error, not a
+        // failure: the ref stays absent and the caller sees an empty sha.
+        let text = format!("{} {}", fetched.stderr, fetched.stdout).to_ascii_lowercase();
+        if text.contains("couldn't find remote ref") || text.contains("could not find remote ref") {
+            let _ = crate::util::git_timeout(
+                root,
+                Duration::from_secs(10),
+                &["update-ref", "-d", &tracking],
+            );
+            return Ok(String::new());
+        }
+        return Err(pulse_cred::redact(
+            &format!(
+                "fetch of {head} from {} failed: {}",
+                up.name(),
+                crate::run::squeeze(&fetched.stderr, 200)
+            ),
+            &[],
+        ));
+    }
+    Ok(rev(root, &tracking))
 }
 
 fn task_body(task: &str, title: &str, branches: &[(String, String)]) -> String {
@@ -988,6 +1107,7 @@ fn deliver_job(
                 Next::Update(d) => Some(d),
                 _ => None,
             },
+            lease: None,
         },
         now,
     )
@@ -1042,34 +1162,8 @@ fn deliver_fix(
             "pull request #{number} has no head branch on record"
         ));
     }
-    let tracking = format!("refs/remotes/{}/{head}", up.remote);
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.clone());
-    if !why.is_empty() {
-        return Err(why);
-    }
-    let fetched = crate::util::git_timeout_env(
-        &root,
-        Duration::from_secs(120),
-        &env,
-        &[
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            &up.url,
-            &format!("+refs/heads/{head}:{tracking}"),
-        ],
-    );
-    cleanup("", &[]);
-    if !fetched.ok() {
-        return Err(pulse_cred::redact(
-            &format!(
-                "fetch of {head} (pull request #{number}) failed: {}",
-                crate::run::squeeze(&fetched.stderr, 200)
-            ),
-            &[],
-        ));
-    }
-    let remote_sha = rev(&root, &tracking);
+    let remote_sha =
+        fetch_head(s, &root, up, &head).map_err(|e| format!("pull request #{number}: {e}"))?;
     if remote_sha.is_empty() {
         return Err(format!(
             "{head} (pull request #{number}) is gone from {}",
@@ -1102,16 +1196,7 @@ fn deliver_fix(
     .trim()
     .parse::<i64>()
     .unwrap_or(0);
-    let mut jobs: Vec<String> = orig
-        .get("jobs")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut jobs = jobs_of(&orig);
     if !jobs.contains(&id) {
         jobs.push(id.clone());
     }
@@ -1206,6 +1291,7 @@ fn deliver_proposed(
                 Next::Update(d) => Some(d),
                 _ => None,
             },
+            lease: None,
         },
         now,
     )
@@ -1353,6 +1439,7 @@ pub(crate) fn deliver_experiment(
             head: branch,
             sha,
             open,
+            lease: None,
         },
         now,
     )?;
@@ -1892,6 +1979,103 @@ mod tests {
         // Settled: no more polls.
         let lines = tend_proj(&s, &proj, TEST_NOW);
         assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn a_follow_up_job_is_pushed_onto_the_task_pull_request_with_what_the_forge_holds() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(last_detail(&s, "land.pr")["number"], 7);
+        let first_tip = bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        // The reviewer pushes a commit straight to the pull request, and its
+        // "changes" follow-up job finishes on a branch cut from the pull
+        // request's head as `pulse review checkout` leaves it.
+        run(&repo, &["git", "branch", "hand", &head]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(
+            &repo,
+            &["git", "push", "-q", &bare, &format!("hand:{head}")],
+        );
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        let fix = push_branch(&s, &proj, &repo, "pulse/worker/c");
+        run(&repo, &["git", "branch", "-f", "pulse/worker/c", &head]);
+        let c_tip = commit_on(&repo, "pulse/worker/c", "c.txt");
+        exec1(
+            &s,
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{task}"), &fix.str("id")],
+        );
+        assert!(
+            dry_run(&s, &proj, TEST_NOW)
+                .iter()
+                .any(|l| l.contains("pulse/worker/c") && l.contains("push onto pull request #7")),
+            "{:?}",
+            dry_run(&s, &proj, TEST_NOW)
+        );
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 updated"))),
+            "{lines:?}"
+        );
+        let pushed = bare_ref(&bare, &format!("refs/heads/{head}"));
+        assert_ne!(pushed, first_tip);
+        for tip in [&hand, &c_tip] {
+            run(&repo, &["git", "merge-base", "--is-ancestor", tip, &pushed]);
+        }
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["number"], 7);
+        assert_eq!(pr["opened"], false);
+        assert_eq!(pr["to"], pushed);
+        assert_eq!(pr["jobs"].as_array().map(Vec::len), Some(3));
+        assert!(
+            pr["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|j| j == &json!(fix.str("id")))
+        );
+        assert_eq!(
+            gh.calls()
+                .iter()
+                .filter(|c| c.starts_with("pr create"))
+                .count(),
+            1,
+            "{:?}",
+            gh.calls()
+        );
+        assert_eq!(status(&s, &task), "in_progress");
+        assert_eq!(pulse_tasks::delivery_for(&s, &task).unwrap().waiting, 3);
+
+        // Nothing new: nothing pushed.
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(bare_ref(&bare, &format!("refs/heads/{head}")), pushed);
+
+        merge_on_forge(&gh, &bare, 7);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged; task done")),
+            "{lines:?}"
+        );
+        assert_eq!(status(&s, &task), "done");
+        assert_eq!(pulse_tasks::delivery_for(&s, &task).unwrap().waiting, 0);
+        assert!(rev(&repo, "refs/heads/pulse/worker/c").is_empty());
+        assert_eq!(
+            last_detail(&s, "land.merged")["jobs"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
     }
 
     #[test]
