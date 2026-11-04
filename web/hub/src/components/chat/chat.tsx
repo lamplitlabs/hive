@@ -150,6 +150,7 @@ import {
   enc,
   errorText,
   isChatImage,
+  projectLabel,
   query,
   writes,
 } from "@/lib/api";
@@ -1849,7 +1850,7 @@ function NewConversation({
                     )}
                     {list.map((p) => (
                       <SelectItem key={p.slug} value={p.slug}>
-                        {p.slug}
+                        {projectLabel(p)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -4392,7 +4393,7 @@ function ProjectPanel({
             <SelectContent>
               {list.map((p) => (
                 <SelectItem key={p.slug} value={p.slug}>
-                  {p.slug}
+                  {projectLabel(p)}
                 </SelectItem>
               ))}
             </SelectContent>

@@ -318,7 +318,7 @@ function PipMug() {
   return (
     <>
       <rect x={60} y={56} width={9} height={9.5} rx={1.6} fill="oklch(0.95 0.01 95)" stroke={LIMB} strokeWidth={1.4} />
-      <path d="M69 58.6 q3.8 0 3.8 2.6 q0 2.6 -3.8 2.6" fill="none" stroke={LIMB} strokeWidth={1.6} />
+      <path d="M60 58.2 q-4.6 0 -4.6 3 q0 3 4.6 3" fill="none" stroke={LIMB} strokeWidth={1.6} />
       <circle cx={60} cy={62} r={3.8} fill={LIMB} />
       <g className="pip-steam" stroke="var(--awake)" strokeWidth={1.3} strokeLinecap="round" fill="none">
         <path d="M62.4 54 q-1.2 -2 0 -4" />
