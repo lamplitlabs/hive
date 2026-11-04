@@ -31,6 +31,9 @@ const LABELS: Record<string, string> = {
   "dependencies.alert_check_minutes": "Look for new security alerts every (minutes)",
   "pipeline.watch": "Watch the checks a push sets off on GitHub",
   "pipeline.wait_hours": "Give up on a check still running after (hours)",
+  "review.merge": "Who merges a reviewed pull request",
+  "review.max_files": "Agents merge up to this many changed files",
+  "review.max_lines": "Agents merge up to this many changed lines",
   "backup.to": "Keep a copy of PULSE's own data at",
   "backup.every_hours": "Take a backup every (hours)",
   "backup.keep": "Backups to keep",
@@ -212,7 +215,7 @@ const LABELS: Record<string, string> = {
   "voice.language": "Language spoken into the microphone (auto = detect)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|voice)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -240,6 +243,9 @@ const HELP: Record<string, string> = {
   "dependencies.alert_check_minutes": "How often PULSE asks GitHub for open security alerts on each project's dependencies.",
   "pipeline.watch": "What PULSE does with the GitHub Actions checks that run on a push it made, to the main branch or to a pull request. Tell me and fix: a failed check is a message for you on the project's board and one fix job for an agent, with the failed step and the end of its log; at most three fix jobs a day per project. Tell me: the message only. Off: PULSE does not look.",
   "pipeline.wait_hours": "How many hours PULSE waits for a check that is still running before it stops watching that push and tells you.",
+  "review.merge": "Every finished branch becomes a pull request and a review agent reads it. Automatic: the agent merges a small, safe pull request itself once the project's check passes, and hands anything else to you with its findings. Ask me: the agent reviews and comments, but every merge waits for you.",
+  "review.max_files": "A pull request that touches more files than this is not merged by the agent; it comes to you with the agent's review instead.",
+  "review.max_lines": "A pull request that adds and removes more lines than this (lockfiles and build output not counted) is not merged by the agent; it comes to you with the agent's review instead.",
   "backup.to": "Where a compressed, checked copy of the PULSE database goes so a broken disk does not take your history with it: a folder on another drive or in a synced folder (it must already exist), az://ACCOUNT/CONTAINER/PREFIX for Azure Blob Storage through the az CLI you are logged in to, or run: COMMAND {file} {name} for any other tool. Leave empty for no backups.",
   "backup.every_hours": "How many hours pass between two backups the daemon takes on its own. 0 means only when you run pulse backup.",
   "backup.keep": "How many of this machine's backups stay at the destination before the oldest is removed. 0 keeps them all.",

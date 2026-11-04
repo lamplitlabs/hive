@@ -177,8 +177,10 @@ pub(crate) const WORK_WAITED_HOURS: i32 = 2;
 /// (an owner's task on the brain once queued 13 hours with no attempt,
 /// behind one narrowed lane and through the day's restart windows).
 /// A role lead's sittings (`lead-role:` sources) are standing work, not the
-/// owner's, and queue with the fleet.
-pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.source LIKE 'task:%' OR j.source LIKE 'security:%')";
+/// owner's, and queue with the fleet. A review job is the owner's too: it
+/// decides a pull request the owner is waiting on, and a review that queues
+/// behind the fleet leaves finished work unmerged for hours.
+pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.kind = 'review' OR j.source LIKE 'task:%' OR j.source LIKE 'security:%')";
 
 /// [`OWNER_DRIVEN_SQL`] over another table alias.
 pub(crate) fn owner_driven_sql(alias: &str) -> String {
@@ -190,6 +192,7 @@ pub(crate) fn is_owner_driven(job: &Row) -> bool {
     let kind = job.str("kind");
     let source = job.str("source");
     ((kind == "lead" || kind == "answer") && !source.starts_with("lead-role:"))
+        || kind == "review"
         || source.starts_with("task:")
         || source.starts_with("security:")
 }
@@ -732,6 +735,8 @@ mod tests {
             ("task", "security:proj:lockfile"),
             ("task", "test"),
             ("improve", "evolve"),
+            ("review", "review:proj:7"),
+            ("improve", "pr-fix:proj:7"),
         ]
         .map(|(kind, source)| add(kind, source));
         let mut by_sql = crate::util::must_rows(
@@ -753,7 +758,7 @@ mod tests {
             .collect::<Vec<_>>();
         by_row.sort();
         assert_eq!(by_sql, by_row);
-        assert_eq!(by_row.len(), 6, "{by_row:?}");
+        assert_eq!(by_row.len(), 7, "{by_row:?}");
     }
 
     #[test]
