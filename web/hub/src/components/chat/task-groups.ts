@@ -36,48 +36,89 @@ export function relShort(d: string, now: number): string {
   return Math.round(s / 86400) + "d";
 }
 
+// The words of work that is done but not on the default branch yet: a
+// finished step whose branch the daemon has still to land, a conversation
+// whose branch holds commits main lacks. The same mood for a step, a task
+// and a conversation, so the section reads as one thing.
+export const WAITING_TO_LAND: Mood = { word: "Waiting to land", tone: "wait", pip: "waiting", dot: "bg-warn" };
+
+// A step waits to land once its job is done and its branch is still on the
+// job: the landing clears the branch when the commits reach the default
+// branch (the runner's pending landings are exactly these jobs).
+export function jobWaitingToLand(jobStatus: string, branch: string | undefined): boolean {
+  return jobStatus === "done" && !!branch;
+}
+
 // What a task's mood is read from, the same for the list's row (GET /chat)
 // and the task's own page (GET /tasks/{id}): its status, whether it has a
-// lead, whether the lead waits on the owner, whether an agent is at a step.
+// lead, whether the lead waits on the owner, whether an agent is at a step,
+// whether a finished step still waits to land.
 export interface TaskState {
   status: string;
   lead: string;
   needs_you: boolean;
   working: boolean;
+  landing?: boolean;
+}
+
+function taskClosed(status: string): boolean {
+  return status === "done" || status === "cancelled";
 }
 
 // A task's state in the list's words, on the same scale as a conversation's:
-// the owner's turn first, then what the agents are doing.
+// the owner's turn first, then what the agents are doing. A step waiting to
+// land outranks "Done" - the task is not on main yet - but not an agent
+// still at another step.
 export function taskMoodOf(t: TaskState): Mood {
   if (t.needs_you) return { word: "Asked you", tone: "wait", pip: "waiting", dot: "bg-warn" };
+  if (taskClosed(t.status) && t.landing) return WAITING_TO_LAND;
   if (t.status === "done") return { word: "Done", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (t.status === "cancelled") return { word: "Cancelled", tone: "neutral", pip: "asleep", dot: "bg-muted-foreground/40" };
   if (t.working) return { word: "Working", tone: "run", pip: "busy", dot: "bg-primary" };
+  if (t.landing) return WAITING_TO_LAND;
   if (t.status === "open") return { word: t.lead ? "Lead agent starting" : "New", tone: "ok", pip: "curious", dot: "bg-ok" };
   if (t.status === "planned") return { word: "Planned", tone: "ok", pip: "curious", dot: "bg-ok" };
   return { word: "In progress", tone: "ok", pip: "happy", dot: "bg-ok" };
 }
 
+export function taskStateOf(t: ChatTask): TaskState {
+  return {
+    status: t.status,
+    lead: t.lead,
+    needs_you: t.needs_you,
+    working: t.sessions.some((s) => s.status === "running" || s.job_status === "leased"),
+    landing: t.sessions.some((s) => jobWaitingToLand(s.job_status, s.branch)),
+  };
+}
+
 export function taskMood(t: ChatTask): Mood {
-  return taskMoodOf({ status: t.status, lead: t.lead, needs_you: t.needs_you, working: t.sessions.some((s) => s.status === "running" || s.job_status === "leased") });
+  return taskMoodOf(taskStateOf(t));
 }
 
 export function taskFinished(t: ChatTask): boolean {
-  return t.status === "done" || t.status === "cancelled";
+  return taskClosed(t.status);
 }
 
 // A task's section, on the same scale as a conversation's: working while
-// the lead waits on you or an agent is at a step, open while it is new or
+// the lead waits on you or an agent is at a step, waiting to land while a
+// finished step's branch is not on main yet, open while it is new or
 // planned, finished once done or cancelled (a task is never archived).
-export function taskGroup(t: ChatTask): ListGroup {
-  if (taskFinished(t)) return "finished";
-  const tone = taskMood(t).tone;
-  return tone === "wait" || tone === "run" ? "working" : "open";
+export function taskGroupOf(t: TaskState): ListGroup {
+  if (t.needs_you || (!taskClosed(t.status) && t.working)) return "working";
+  if (t.landing) return "landing";
+  if (taskClosed(t.status)) return "finished";
+  return "open";
 }
 
-// A step's state: the job's word, except while an agent's session runs it.
-export function stepWords(jobStatus: string, running: boolean): { word: string; tone: Tone } {
+export function taskGroup(t: ChatTask): ListGroup {
+  return taskGroupOf(taskStateOf(t));
+}
+
+// A step's state: the job's word, except while an agent's session runs it;
+// a done step with its branch still on it waits to land.
+export function stepWords(jobStatus: string, running: boolean, branch?: string): { word: string; tone: Tone } {
   if (running) return { word: "Working", tone: "run" };
+  if (jobWaitingToLand(jobStatus, branch)) return { word: WAITING_TO_LAND.word, tone: WAITING_TO_LAND.tone };
   switch (jobStatus) {
     case "queued":
       return { word: "Waiting", tone: "neutral" };
@@ -98,7 +139,7 @@ export function stepWords(jobStatus: string, running: boolean): { word: string; 
 }
 
 export function sessionWords(s: ChatTaskSession): { word: string; tone: Tone } {
-  return stepWords(s.job_status, s.status === "running");
+  return stepWords(s.job_status, s.status === "running", s.branch);
 }
 
 // The task's name from what the owner typed: its first line without list or
@@ -121,12 +162,14 @@ export function taskTitleOf(text: string): string {
 // ----- sub-conversations ----------------------------------------------------
 
 // The list's sections: a conversation is working while its agent runs or
-// waits on you, open while it is idle between turns, finished once the
-// agent or the owner closed it (a message reopens it), and archived when
-// it was put away.
-export type ListGroup = "working" | "open" | "finished" | "archived";
+// waits on you, waiting to land while its branch holds commits the default
+// branch lacks and nobody is at it, open while it is idle between turns,
+// finished once the agent or the owner closed it (a message reopens it),
+// and archived when it was put away - put away is the owner's word, so an
+// archived conversation stays archived whatever its branch holds.
+export type ListGroup = "working" | "landing" | "open" | "finished" | "archived";
 
-export const GROUP_ORDER: ListGroup[] = ["working", "open", "finished", "archived"];
+export const GROUP_ORDER: ListGroup[] = ["working", "landing", "open", "finished", "archived"];
 
 export interface Grouped {
   id: string;
@@ -134,13 +177,16 @@ export interface Grouped {
   parent?: string;
   created_at?: string;
   live?: { status: string } | null;
+  // The hub's answer (GET /chat): commits on the branch that main lacks.
+  waiting_to_land?: boolean;
 }
 
 export function groupOf(c: Grouped): ListGroup {
   const status = c.live?.status || c.status;
   if (status === "running" || status === "waiting") return "working";
-  if (status === "closed") return "finished";
   if (status === "archived") return "archived";
+  if (c.waiting_to_land) return "landing";
+  if (status === "closed") return "finished";
   return "open";
 }
 

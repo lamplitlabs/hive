@@ -87,7 +87,8 @@ fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
     let (exact, like) = pulse_store::task_source_params(&t.id);
     let mut stmt = conn.prepare(&format!(
         "SELECT id, kind, title, status, coalesce(nullif(lease_agent, ''), agent), created_at, coalesce(finished_at, ''), \
-         coalesce((SELECT hs.id FROM harness_sessions hs WHERE hs.job_id = jobs.id ORDER BY hs.started_at DESC LIMIT 1), '') \
+         coalesce((SELECT hs.id FROM harness_sessions hs WHERE hs.job_id = jobs.id ORDER BY hs.started_at DESC LIMIT 1), ''), \
+         coalesce(branch, '') \
          FROM jobs WHERE project = ? AND {} ORDER BY created_at, id",
         pulse_store::task_source_clause("source")
     ))?;
@@ -102,6 +103,7 @@ fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
                 r.get::<_, String>(5)?,
                 r.get::<_, String>(6)?,
                 r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -110,12 +112,16 @@ fn group_json(conn: &Connection, t: &TaskRow) -> Result<Value> {
         last_at = last_message_at.clone();
     }
     let mut sessions = Vec::with_capacity(jobs.len());
-    for (job, kind, title, job_status, agent, created_at, finished_at, session) in jobs {
+    for (job, kind, title, job_status, agent, created_at, finished_at, session, branch) in jobs {
+        // The branch stays on a done job until its landing clears it, so a
+        // done step with a branch is one waiting to land (land.rs
+        // pending_landings); the page words it so.
         let mut item = json!({
             "job": job,
             "kind": kind,
             "title": title,
             "job_status": job_status,
+            "branch": branch,
             "agent": agent,
             "session": session,
             "status": "",

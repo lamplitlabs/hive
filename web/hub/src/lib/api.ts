@@ -1646,6 +1646,10 @@ export interface Conversation {
   // owner from its page, started this one); empty for a top-level one.
   parent: string;
   live?: ConversationLive;
+  // Whether the branch holds commits the project's default branch lacks:
+  // work finished or paused but not landed (the list's "Waiting to land"
+  // section). Absent from hubs older than the field.
+  waiting_to_land?: boolean;
 }
 
 export interface ConversationMessage {
@@ -1753,6 +1757,9 @@ export interface ChatTaskSession {
   kind: string;
   title: string;
   job_status: string; // queued, leased, blocked, done, failed, cancelled
+  // The job's branch; a done step still carrying one waits to land (the
+  // landing clears it once the commits are on the default branch).
+  branch?: string;
   agent: string;
   session: string; // run-… or ""
   status: string; // the session's status, "" without one

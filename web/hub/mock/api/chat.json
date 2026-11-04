@@ -147,7 +147,8 @@
         "version": 5,
         "session_id": "run-20261017-chat-f7a8b9-1"
       },
-      "parent": ""
+      "parent": "",
+      "waiting_to_land": true
     }
   ],
   "tasks": [
@@ -179,7 +180,8 @@
           "updated_at": "2026-09-01T19:09:00Z",
           "ended_at": "2026-09-01T19:09:00Z",
           "cost": 0,
-          "steps": 0
+          "steps": 0,
+          "branch": "pulse/iris/job-20260901T190200Z-87e2d1"
         },
         {
           "job": "job-20260901T191600Z-f05f5f",

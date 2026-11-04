@@ -166,6 +166,7 @@ import { hrefs } from "@/lib/nav";
 import {
   GROUP_ORDER,
   TONE_TEXT,
+  WAITING_TO_LAND,
   entryGroup,
   foldedEntries,
   listEntries,
@@ -223,6 +224,9 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
       pip: "asleep",
       dot: "bg-muted-foreground/40",
     };
+  // Nobody at it and commits main lacks: finished or idle, the work is
+  // waiting to land (task-groups.ts groupOf puts it in that section).
+  if (c.waiting_to_land) return WAITING_TO_LAND;
   if (status === "closed")
     return { word: "Finished", tone: "neutral", pip: "happy", dot: "bg-ok/50" };
   if (status === "ended")
@@ -240,12 +244,13 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
   };
 }
 
-// The list's sections (task-groups.ts): working, open, finished, archived.
-// Every entry is a conversation - a plain one, one with sub-conversations
-// under it, or a task with its steps under it - in the section of its most
-// pressing member.
+// The list's sections (task-groups.ts): working, waiting to land, open,
+// finished, archived. Every entry is a conversation - a plain one, one with
+// sub-conversations under it, or a task with its steps under it - in the
+// section of its most pressing member.
 const GROUP_TITLES: Record<ListGroup, string> = {
   working: "Working",
+  landing: "Waiting to land",
   open: "Open",
   finished: "Finished",
   archived: "Archived",

@@ -299,17 +299,28 @@ the conversation is marked *Finished* with the summary as its note; your next
 message reopens it, so nothing is lost.
 
 The list is one list, grouped by state - **Working** (running or waiting on
-you), **Open** (idle between turns), **Finished** (the latest eight, *Show all*
-for the rest) and **Archived** when shown - so the ones that need you stay on
+you), **Waiting to land** (nobody at it, and its branch holds commits the
+project's default branch does not have yet: the agent finished or paused
+without landing, or its `pulse land` waits behind another landing - the hub
+asks git once per project on every poll, so the row moves to *Finished* or
+*Open* the moment the commits reach the default branch; a branch rebased
+after its work landed, whose every commit has a patch-equivalent on the
+default branch, counts as landed), **Open** (idle
+between turns), **Finished** (the latest eight, *Show all* for the rest) and
+**Archived** when shown (put away is your word, so an archived conversation
+stays there whatever its branch holds) - so the ones that need you stay on
 top, ordered by what moved last. A task the project's team works on is a row
 like any conversation - its title, a team mark after it, its state in the
 list's words (*Working* while a step's agent runs, *Asked you* when the lead
 stopped for you - counted in the tab title with the conversations that
-wait - *Planned*, *Done*, *Cancelled*) - with the steps the lead cut as lines
-under it the way sub-conversations sit under their parent: the agent on each (a
-dashed circle until one takes it), its state (*Waiting*, *Starting*, *Working*,
-*Done*, *Failed*, *Blocked*) and when it last moved; a finished task folds its
-steps (*N steps · show*).
+wait - *Waiting to land* while a finished step's branch is still to land,
+even once the lead marked the task done, *Planned*, *Done*, *Cancelled*) - with
+the steps the lead cut as lines under it the way sub-conversations sit under
+their parent: the agent on each (a dashed circle until one takes it), its
+state (*Waiting*, *Starting*, *Working*, *Waiting to land* - the job is done
+and the daemon's landing pass has still to merge its branch - *Done*,
+*Failed*, *Blocked*) and when it last moved; a finished task folds its steps
+(*N steps · show*).
 
 A conversation's title follows the conversation: it starts as the first line
 you wrote, and after each reply the agent asks its model for a short name of

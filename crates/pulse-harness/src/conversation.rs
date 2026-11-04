@@ -33,7 +33,7 @@ use pulse_provider::{CancelToken, ImageContent};
 use pulse_store::{Conversation as Row, Project, Store};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -3036,6 +3036,69 @@ impl Manager {
         Some(changes_in(&row.cwd, &row.project, &row.branch, &base))
     }
 
+    /// The ids of the conversations among `rows` whose branch holds commits
+    /// the project's default branch does not have: work that is finished or
+    /// paused but not landed, the Chat page's "Waiting to land" section.
+    /// One `git for-each-ref --no-merged` per project (a few milliseconds)
+    /// rather than a `rev-list` per conversation, so the list's five-second
+    /// poll costs the same whatever its length; only a branch that test
+    /// leaves unmerged pays a `git cherry`, which drops a branch whose every
+    /// commit has a patch-equivalent on the default branch - an agent that
+    /// rebased its branch a minute after the landing read the tip left a
+    /// ref no merge contains while its work is on main (a206ec, 2026-11-04).
+    /// A conversation without a branch, a project whose checkout is gone or
+    /// whose default branch is missing has nothing waiting.
+    pub fn waiting_to_land(&self, rows: &[Row]) -> BTreeSet<String> {
+        let mut unmerged: BTreeMap<String, Unmerged> = BTreeMap::new();
+        let mut out = BTreeSet::new();
+        for row in rows {
+            if row.branch.is_empty() || row.project.is_empty() {
+                continue;
+            }
+            let project = unmerged
+                .entry(row.project.clone())
+                .or_insert_with(|| self.unmerged_branches(&row.project));
+            if project.branches.contains(&row.branch)
+                && git(
+                    &project.path,
+                    &["cherry", &project.default_branch, &row.branch],
+                )
+                .lines()
+                .any(|l| l.starts_with('+'))
+            {
+                out.insert(row.id.clone());
+            }
+        }
+        out
+    }
+
+    /// The project's local branches with commits its default branch lacks.
+    fn unmerged_branches(&self, project: &str) -> Unmerged {
+        let Some(p) = self.store.project(project).ok().flatten() else {
+            return Unmerged::default();
+        };
+        if p.path.is_empty() || !Path::new(&p.path).is_dir() {
+            return Unmerged::default();
+        }
+        // The full ref name: the short form of a branch that shares its
+        // name with a tag is "heads/x", not "x".
+        let default_branch = default_branch(&p);
+        let base = format!("--no-merged=refs/heads/{default_branch}");
+        let branches = git(
+            &p.path,
+            &["for-each-ref", "--format=%(refname)", &base, "refs/heads/"],
+        )
+        .lines()
+        .filter_map(|l| l.strip_prefix("refs/heads/"))
+        .map(str::to_string)
+        .collect();
+        Unmerged {
+            path: p.path,
+            default_branch,
+            branches,
+        }
+    }
+
     /// The branch's diff against its base, committed and not, capped.
     pub fn diff(&self, row: &Row) -> Option<String> {
         let changes = self.changes(row)?;
@@ -3509,6 +3572,15 @@ fn default_branch(p: &Project) -> String {
     } else {
         p.default_branch.clone()
     }
+}
+
+/// A project's branches `for-each-ref --no-merged` lists against its default
+/// branch, with what `waiting_to_land` needs to look closer at each.
+#[derive(Default)]
+struct Unmerged {
+    path: String,
+    default_branch: String,
+    branches: BTreeSet<String>,
 }
 
 fn read_trajectory(home: &str, session_id: &str) -> Option<Trajectory> {
@@ -4900,6 +4972,80 @@ mod tests {
         assert!(
             std::fs::read(&index).unwrap() == before,
             "reading the changes rewrote the index"
+        );
+    }
+
+    #[test]
+    fn waiting_to_land_names_the_conversations_whose_branch_is_ahead_of_the_default_branch() {
+        let _env = pulse_testutil::env_lock();
+        let _git = PlainGit::set();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let dir = project_repo(home.path(), &s, "demo");
+        // Two branches off main: one with a commit of its own, one at main.
+        git_in(&dir, &["branch", "pulse/chat-ahead", "main"]);
+        git_in(&dir, &["branch", "pulse/chat-level", "main"]);
+        git_in(&dir, &["checkout", "-q", "pulse/chat-ahead"]);
+        std::fs::write(dir.join("NOTES.md"), "work\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "work on the branch"]);
+        git_in(&dir, &["checkout", "-q", "main"]);
+        let m = Manager::new(&home.path().display().to_string(), s.clone());
+        let row = |id: &str, branch: &str, project: &str| Row {
+            id: id.into(),
+            project: project.into(),
+            branch: branch.into(),
+            cwd: dir.display().to_string(),
+            ..Row::default()
+        };
+        let rows = vec![
+            row("c-ahead", "pulse/chat-ahead", "demo"),
+            row("c-level", "pulse/chat-level", "demo"),
+            row("c-gone", "pulse/chat-gone", "demo"),
+            row("c-none", "", "demo"),
+            row("c-elsewhere", "pulse/chat-ahead", "nowhere"),
+        ];
+        let waiting = m.waiting_to_land(&rows);
+        assert_eq!(
+            waiting.into_iter().collect::<Vec<_>>(),
+            vec!["c-ahead".to_string()],
+            "only the branch with a commit main lacks waits to land"
+        );
+        // Landed (merged into main): nothing waits any more.
+        git_in(&dir, &["merge", "-q", "--no-edit", "pulse/chat-ahead"]);
+        assert!(m.waiting_to_land(&rows).is_empty());
+        // A branch rebased after its commit landed: no merge contains the new
+        // ref, but every commit on it has a patch-equivalent on main, so it is
+        // landed, not waiting. A further commit of its own waits again.
+        git_in(&dir, &["checkout", "-q", "pulse/chat-ahead"]);
+        git_in(
+            &dir,
+            &[
+                "commit",
+                "-q",
+                "--amend",
+                "-m",
+                "work on the branch, reworded",
+            ],
+        );
+        git_in(&dir, &["checkout", "-q", "main"]);
+        assert!(
+            git(
+                &dir.display().to_string(),
+                &["branch", "--no-merged", "main"]
+            )
+            .contains("pulse/chat-ahead"),
+            "the amended ref is not an ancestor of main"
+        );
+        assert!(m.waiting_to_land(&rows).is_empty());
+        git_in(&dir, &["checkout", "-q", "pulse/chat-ahead"]);
+        std::fs::write(dir.join("MORE.md"), "more\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "more work"]);
+        git_in(&dir, &["checkout", "-q", "main"]);
+        assert_eq!(
+            m.waiting_to_land(&rows).into_iter().collect::<Vec<_>>(),
+            vec!["c-ahead".to_string()]
         );
     }
 

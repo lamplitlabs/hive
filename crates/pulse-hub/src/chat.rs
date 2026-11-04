@@ -218,9 +218,10 @@ impl Handler {
                 return;
             }
         };
+        let waiting = chats.waiting_to_land(&rows);
         let items: Vec<Value> = rows
             .iter()
-            .map(|row| conversation_json(row, chats))
+            .map(|row| conversation_json(row, chats, waiting.contains(&row.id)))
             .collect();
         // The tasks the page groups conversations under (chat_tasks); an
         // older store without the task tables lists none.
@@ -294,7 +295,7 @@ impl Handler {
             Ok(row) => write_json(
                 w,
                 201,
-                json!({"conversation": conversation_json(&row, chats)}),
+                json!({"conversation": conversation_json_one(&row, chats)}),
             ),
             Err(e) => addition_failure(w, e),
         }
@@ -356,18 +357,34 @@ impl Handler {
                 .map(|p| p.title)
                 .unwrap_or_default()
         };
-        let children: Vec<Value> = match store.chat_children(id, true) {
-            Ok(rows) => rows.iter().map(|c| conversation_json(c, chats)).collect(),
+        let children = match store.chat_children(id, true) {
+            Ok(rows) => rows,
             Err(e) => {
                 addition_failure(w, e);
                 return;
             }
         };
+        // One git question for the family: the row and its children share
+        // the row's branch, and the page words each from the same answer.
+        let mut family = children.clone();
+        family.push(row.clone());
+        let waiting = chats.waiting_to_land(&family);
+        let children: Vec<Value> = children
+            .iter()
+            .map(|c| conversation_json(c, chats, waiting.contains(&c.id)))
+            .collect();
+        let mut conversation = serde_json::to_value(&row).unwrap_or(Value::Null);
+        if let Value::Object(map) = &mut conversation {
+            map.insert(
+                "waiting_to_land".to_string(),
+                Value::Bool(waiting.contains(&row.id)),
+            );
+        }
         write_json(
             w,
             200,
             json!({
-                "conversation": row,
+                "conversation": conversation,
                 "live": live,
                 "session_id": session_id,
                 "messages": messages,
@@ -523,7 +540,7 @@ impl Handler {
                             write_json(
                                 w,
                                 200,
-                                json!({"conversation": conversation_json(&row, chats), "attached": attached}),
+                                json!({"conversation": conversation_json_one(&row, chats), "attached": attached}),
                             );
                         }
                         return;
@@ -564,7 +581,7 @@ impl Handler {
                     write_json(
                         w,
                         200,
-                        json!({"conversation": conversation_json(&row, chats)}),
+                        json!({"conversation": conversation_json_one(&row, chats)}),
                     );
                 }
             }
@@ -668,7 +685,9 @@ impl Handler {
 }
 
 /// A row with its live state folded in.
-fn conversation_json(row: &Conversation, chats: &Manager) -> Value {
+/// The row with its live state and whether its branch waits to land
+/// (commits the project's default branch lacks; `Manager::waiting_to_land`).
+fn conversation_json(row: &Conversation, chats: &Manager, waiting_to_land: bool) -> Value {
     let live = chats.live(row);
     let mut v = serde_json::to_value(row).unwrap_or(Value::Null);
     if let Value::Object(map) = &mut v {
@@ -676,8 +695,15 @@ fn conversation_json(row: &Conversation, chats: &Manager) -> Value {
             "live".to_string(),
             serde_json::to_value(&live).unwrap_or(Value::Null),
         );
+        map.insert("waiting_to_land".to_string(), Value::Bool(waiting_to_land));
     }
     v
+}
+
+/// `conversation_json` for one row, asking git about its branch.
+fn conversation_json_one(row: &Conversation, chats: &Manager) -> Value {
+    let waiting = chats.waiting_to_land(std::slice::from_ref(row));
+    conversation_json(row, chats, waiting.contains(&row.id))
 }
 
 fn payload_bool(
@@ -2090,6 +2116,22 @@ mod tests {
                 .unwrap()
                 .contains("README.md")
         );
+        // A commit main lacks: the conversation waits to land, on its page
+        // and in the list alike.
+        assert_eq!(
+            shown["conversation"]["waiting_to_land"], true,
+            "{}",
+            shown["conversation"]
+        );
+        let (code, list, raw) = call(&h, "GET", "/api/v1/chat", Value::Null);
+        assert_eq!(code, 200, "{raw}");
+        let listed = list["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id.as_str())
+            .expect("listed");
+        assert_eq!(listed["waiting_to_land"], true, "{raw}");
         let (code, diff, _) = call(&h, "GET", &format!("/api/v1/chat/{id}/diff"), Value::Null);
         assert_eq!(code, 200);
         assert!(diff["diff"].as_str().unwrap().contains("+more"));
@@ -2155,9 +2197,10 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO jobs (id, project, kind, title, source, status, lease_agent, created_at) VALUES \
-             ('job-a', 'one', 'task', 'Write the page', ?1, 'leased', 'iris', '2026-10-31T10:01:00Z'), \
-             ('job-b', 'one', 'task', 'Add the test', ?1 || ':ui', 'queued', '', '2026-10-31T10:02:00Z')",
+            "INSERT INTO jobs (id, project, kind, title, source, status, lease_agent, created_at, branch) VALUES \
+             ('job-a', 'one', 'task', 'Write the page', ?1, 'leased', 'iris', '2026-10-31T10:01:00Z', ''), \
+             ('job-b', 'one', 'task', 'Add the test', ?1 || ':ui', 'queued', '', '2026-10-31T10:02:00Z', ''), \
+             ('job-c', 'one', 'task', 'Wire it up', ?1 || ':api', 'done', 'iris', '2026-10-31T10:03:00Z', 'pulse/iris/job-c')",
             [format!("task:{}", task.id)],
         )
         .unwrap();
@@ -2184,7 +2227,7 @@ mod tests {
             "the newest change of any session"
         );
         let sessions = g["sessions"].as_array().unwrap();
-        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions.len(), 3);
         assert_eq!(sessions[0]["job"], "job-a");
         assert_eq!(sessions[0]["session"], "run-a");
         assert_eq!(sessions[0]["agent"], "iris");
@@ -2195,6 +2238,12 @@ mod tests {
         assert_eq!(sessions[1]["title"], "Add the test");
         assert_eq!(sessions[1]["session"], "");
         assert_eq!(sessions[1]["job_status"], "queued");
+        assert_eq!(sessions[1]["branch"], "");
+        // A done step keeps its branch until the landing clears it: the
+        // page lists the step, and the task, as waiting to land.
+        assert_eq!(sessions[2]["job"], "job-c");
+        assert_eq!(sessions[2]["job_status"], "done");
+        assert_eq!(sessions[2]["branch"], "pulse/iris/job-c");
 
         let (code, body, raw) = call(&h, "GET", "/api/v1/chat?all=1", Value::Null);
         assert_eq!(code, 200, "{raw}");

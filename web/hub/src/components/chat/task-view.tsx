@@ -31,6 +31,7 @@ import { MicButton, useDictation } from "@/components/chat/mic";
 import { BackButton, Pane } from "@/components/chat/split";
 import {
   TONE_TEXT,
+  jobWaitingToLand,
   relShort,
   stepWords,
   taskMoodOf,
@@ -196,6 +197,7 @@ function TaskBody({
     lead: t.lead,
     needs_you: review,
     working,
+    landing: d.jobs.some((j) => jobWaitingToLand(j.status, j.branch)),
   });
   // The run the canvas follows: the step being worked on now, else the
   // latest one that ran.
@@ -960,7 +962,7 @@ function StepList({
         >
           {jobs.map((j) => {
             const w = progress.working.find((x) => x.job === j.id);
-            const s = stepWords(j.status, !!w);
+            const s = stepWords(j.status, !!w, j.branch);
             const at =
               j.finished_at ||
               j.leased_at ||
