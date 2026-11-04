@@ -1652,6 +1652,8 @@ export interface Conversation {
   // work finished or paused but not landed (the list's "Waiting to land"
   // section). Absent from hubs older than the field.
   waiting_to_land?: boolean;
+  // A landing is merging and checking the branch now ("Reviewing").
+  reviewing?: boolean;
 }
 
 export interface ConversationMessage {
@@ -1762,6 +1764,8 @@ export interface ChatTaskSession {
   // The job's branch; a done step still carrying one waits to land (the
   // landing clears it once the commits are on the default branch).
   branch?: string;
+  // A landing is checking this step's branch now ("Reviewing").
+  reviewing?: boolean;
   agent: string;
   session: string; // run-… or ""
   status: string; // the session's status, "" without one
@@ -2445,6 +2449,8 @@ export interface TaskJob {
   status: string;
   agent: string;
   branch: string;
+  // A landing is checking this step's branch now ("Reviewing").
+  reviewing?: boolean;
   project?: string;
   tier?: number;
   priority?: number;
