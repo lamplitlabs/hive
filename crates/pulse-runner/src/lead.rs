@@ -2834,7 +2834,7 @@ mod tests {
         join(&s, "aurora");
         set_setting(&s, "lead.idle_hours", "6");
         set_setting(&s, "lead.idle_factor", "3");
-        set_setting(&s, "workers", "2");
+        set_setting(&s, "capacity", "2");
         let add = |title: &str, source: &str| {
             crate::jobs::add_job(
                 &s,

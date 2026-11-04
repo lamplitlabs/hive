@@ -47,7 +47,7 @@ interface Group {
 // from the owner's view. Anchors (#stop #owner #notify #harness #runner #compute
 // #evolve #daemon #provider #other) are linked from other pages.
 const RUNNER_CLUSTERS: Cluster[] = [
-  { title: "How much work runs", keys: ["stop", "workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
+  { title: "How much work runs", keys: ["stop", "capacity", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
   { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.auto_stash", "landing.parallel", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
   { title: "Dependencies", keys: ["dependencies.security_updates", "dependencies.major_updates", "dependencies.min_release_age_days", "dependencies.alert_check_minutes"] },
   { title: "Checks on GitHub", keys: ["pipeline.watch", "pipeline.wait_hours"] },
@@ -89,7 +89,7 @@ const GROUPS: Group[] = [
     keys: keysOf(RUNNER_CLUSTERS),
     match: (n) => n.startsWith("lead.") || n.startsWith("landing.") || n.startsWith("plan.") || n.startsWith("board.") || n.startsWith("verify.") || n.startsWith("dependencies."),
     clusters: RUNNER_CLUSTERS,
-    primary: ["workers", "parallel_per_project", "jobs_per_day", "minutes_per_job", "landing", "landing.push", "push.credential", "quorum"],
+    primary: ["capacity", "jobs_per_day", "minutes_per_job", "landing", "landing.push", "push.credential", "quorum"],
   },
   {
     id: "compute",

@@ -980,22 +980,22 @@ mod tests {
             assert_eq!(jobs, 1 - i as i64, "decide {answer} queued {jobs} jobs");
         }
         let err =
-            pulse_store::validate_setting("workers", "-1").expect_err("fixture should be invalid");
+            pulse_store::validate_setting("capacity", "-1").expect_err("fixture should be invalid");
         let (code, data) = confirmed_request(
             h.clone_for_test(),
             "settings",
-            r#"{"name":"workers","value":-1}"#,
+            r#"{"name":"capacity","value":-1}"#,
         );
         assert_eq!(code, 400);
         assert_eq!(data["error"], err.to_string());
-        let (code, data) = confirmed_request(h, "settings", r#"{"name":"workers","value":"3"}"#);
+        let (code, data) = confirmed_request(h, "settings", r#"{"name":"capacity","value":"3"}"#);
         assert_eq!(code, 200);
         assert_eq!(data["ok"], true);
-        assert_eq!(s.setting("workers", ""), "3");
+        assert_eq!(s.setting("capacity", ""), "3");
         let events: i64 = s
             .conn()
             .expect("conn")
-            .query_row("SELECT count(*) FROM events WHERE action='setting' AND subject='workers' AND actor='human:dashboard'", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM events WHERE action='setting' AND subject='capacity' AND actor='human:dashboard'", [], |r| r.get(0))
             .expect("setting event count");
         assert!(events > 0, "missing CLI-compatible setting event");
     }
@@ -1007,7 +1007,7 @@ mod tests {
         let h = new_handler(Some(Arc::new((*s).clone())), None);
         let cases = vec![
             (
-                r#"{"name":"workers","value":1}"#.to_string(),
+                r#"{"name":"capacity","value":1}"#.to_string(),
                 "application/json",
                 "",
                 "",
@@ -1015,7 +1015,7 @@ mod tests {
                 403,
             ),
             (
-                r#"{"name":"workers","value":1}"#.to_string(),
+                r#"{"name":"capacity","value":1}"#.to_string(),
                 "text/plain",
                 "yes",
                 "",
@@ -1023,7 +1023,7 @@ mod tests {
                 415,
             ),
             (
-                r#"{"name":"workers","value":1}"#.to_string(),
+                r#"{"name":"capacity","value":1}"#.to_string(),
                 "application/json",
                 "yes",
                 "https://evil.invalid",
@@ -1031,7 +1031,7 @@ mod tests {
                 403,
             ),
             (
-                r#"{"name":"workers","value":1}"#.to_string(),
+                r#"{"name":"capacity","value":1}"#.to_string(),
                 "application/json",
                 "yes",
                 "",
@@ -1064,7 +1064,7 @@ mod tests {
                 400,
             ),
             (
-                r#"{"name":"workers","value":1} {}"#.to_string(),
+                r#"{"name":"capacity","value":1} {}"#.to_string(),
                 "application/json",
                 "yes",
                 "",
@@ -1072,7 +1072,7 @@ mod tests {
                 400,
             ),
             (
-                r#"{"name":"workers","value":false}"#.to_string(),
+                r#"{"name":"capacity","value":false}"#.to_string(),
                 "application/json",
                 "yes",
                 "",
@@ -1141,7 +1141,7 @@ mod tests {
         let (code, data) = confirmed_request(
             new_handler(Some(Arc::new((*s).clone())), None),
             "settings",
-            r#"{"name":"workers","value":"3"}"#,
+            r#"{"name":"capacity","value":"3"}"#,
         );
         assert_eq!(code, 500, "storage failure was misclassified: {data:#?}");
         assert!(
@@ -1151,8 +1151,8 @@ mod tests {
                 .contains("store could not save")
         );
         assert_eq!(
-            s.setting("workers", ""),
-            pulse_store::DEFAULT_SETTINGS["workers"]
+            s.setting("capacity", ""),
+            pulse_store::DEFAULT_SETTINGS["capacity"]
         );
     }
 

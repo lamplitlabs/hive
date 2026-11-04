@@ -988,7 +988,7 @@ mod tests {
         deferral_at(
             &long_ago,
             &format!(
-                "{}load 30.0 on 12 CPUs is over daemon.max_load 24",
+                "{}load 30.0 on 12 CPUs is over the line 24",
                 crate::daemon_load::HOLD_PREFIX
             ),
         );
@@ -1072,7 +1072,7 @@ mod tests {
             experiment_retry(
                 &s,
                 "deferred",
-                "evolve/B-1 not landed: measuring waits - machine saturated: load 40.0 on 12 CPUs is over daemon.max_load 24"
+                "evolve/B-1 not landed: measuring waits - machine saturated: load 40.0 on 12 CPUs is over the line 24"
             ),
             Duration::from_secs(2 * 60),
             "a measurement the governor held retries with the load, not the long retry"

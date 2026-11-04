@@ -119,9 +119,10 @@ pub(crate) fn job_row(q: &Querier, id: String) -> Row {
     one_dyn(q, "SELECT * FROM jobs WHERE id = ?", &[&id])
 }
 
+/// A project's share of the fleet's slots (capacity.rs): the fleet total
+/// over the projects with work, so a lone busy project may use them all.
 pub(crate) fn parallel_per_project(s: &pulse_store::Store) -> i32 {
-    let n = crate::util::setting_int(s, "parallel_per_project");
-    if n < 1 { 1 } else { n }
+    crate::capacity::parallel_per_project(s)
 }
 
 /// The job kinds whose runs commit and so run the project's check under the
@@ -763,8 +764,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "1500")
@@ -829,8 +829,7 @@ mod tests {
         assert_eq!(narrowed.len(), 1, "{narrowed:?}");
         assert_eq!(narrowed[0].0, "proj");
         // parallel_per_project 1 has nothing to narrow.
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "1")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 1);
         assert!(super::narrowed_lanes(&s).is_empty());
         assert_eq!(super::project_lanes(&s, "proj").lanes, 1);
     }
@@ -840,8 +839,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
             .unwrap();
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "900")
@@ -940,8 +938,7 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
@@ -1052,8 +1049,7 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         add_second_project(&s, "other");
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         for name in ["aurora", "borealis", "cinder", "dusk"] {
             join(&s, name);
         }
@@ -1118,8 +1114,7 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         add_second_project(&s, "other");
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 4);
         for name in ["aurora", "borealis", "cinder", "dusk"] {
             join(&s, name);
         }
@@ -4080,8 +4075,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         )
         .unwrap();
         assert!(got.0.is_empty(), "worker leased the lead job: {got:?}");
-        s.set_setting(crate::util::HUMAN_AGENT, "parallel_per_project", "2")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 2);
         let got = crate::jobs::lease_job(
             &s,
             "proj-lead".into(),
@@ -4110,8 +4104,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "2")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 2);
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
@@ -8082,8 +8075,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "10")
-            .unwrap();
+        crate::capacity::pin_per_project(&s, 10);
         let plain = queued(&s, "plain", "");
         let mac = queued(&s, "mac", "macos,xcode");
         let linux = queued(&s, "linux", "linux");

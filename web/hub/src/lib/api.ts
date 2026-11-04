@@ -973,6 +973,8 @@ export interface Runner {
     slots: number;
     executors_active: number;
     executors: number;
+    // "slots 18 = this machine 10 + vm-1 8, per project 6"
+    line?: string;
     any_project: boolean;
   };
   executors: Executor[];

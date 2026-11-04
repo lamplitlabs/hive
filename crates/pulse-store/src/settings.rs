@@ -44,13 +44,24 @@ macro_rules! rules { ($($k:literal => ($kind:literal, $min:expr, [$($c:literal),
 /// their rows so a store that set them lists nothing it cannot explain.
 pub const RETIRED_SETTINGS: &[&str] = &["harness", "max_ai_credits", "runner_cmd"];
 
+/// Concurrency settings the capacity model now works out from the machines
+/// (pulse-runner capacity.rs): a stored value is swept and ignored, and
+/// setting one says it is automatic now.
+pub const AUTOMATIC_SETTINGS: &[&str] = &[
+    "workers",
+    "parallel_per_project",
+    "daemon.max_jobs",
+    "daemon.max_load",
+    "daemon.min_free_mem_mb",
+];
+
 /// What the `runner` column of an agent the runner spawns says: every
 /// worker runs through the built-in harness.
 pub const HARNESS_RUNNER: &str = "pulse";
 
 pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.idle_release_minutes"=>"15","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","parallel_per_project"=>"1","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","voice.language"=>"auto","voice.model"=>"nemotron-3.5-asr-streaming-0.6b","worker_model"=>"","workers"=>"1",
+    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.idle_release_minutes"=>"15","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","voice.language"=>"auto","voice.model"=>"nemotron-3.5-asr-streaming-0.6b","worker_model"=>"","capacity"=>"auto",
     }
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
@@ -65,8 +76,7 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "inbox.retire_days"=>("count",Some(0),[],None,"days before daemon maintenance may close an open owner question only when it is an older duplicate of a newer open question or its job was cancelled; 0 turns the owner-inbox retire sweep off"),
         "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
         "landing.parallel"=>("count",Some(1),[],None,"projects whose finished branches the daemon may land in parallel; 1 keeps the serial maintenance-pass behaviour"),
-        "workers"=>("count",Some(0),[],None,"parallel slots on this machine (the local executor); 0 keeps it idle while remote hands exist"),
-        "parallel_per_project"=>("count",Some(1),[],None,"queued or leased jobs one project may have in flight at once (experiments aside); the planner fills every free lane with voted cards each loop, so this is also how many cards a project works in parallel; 1 is one at a time"),
+        "capacity"=>("text",None,[],None,"how many runs this machine takes at once: auto (the default) works it out from the hardware - the smaller of the physical cores and one run per 3 GB of RAM - and backs off live under load or low memory; a number caps this machine at that many (0 keeps it idle while remote hands work); every paired machine sizes itself the same way and the fleet adds them up. To pause the fleet use pulse stop"),
         "prune_after_days"=>("count",Some(1),[],None,"days without useful output after which an agent is pruned (its history stays)"),
         "claim_hours"=>("count",Some(1),[],None,"hours a board claim stays active before it is treated as stale"),
         "quorum"=>("count",Some(1),[],None,"distinct voters a suggestion needs before it is eligible for the queue"),
@@ -236,7 +246,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.max_jobs"=>"0","daemon.max_load"=>"0","daemon.min_free_mem_mb"=>"1024","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -276,8 +286,6 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "daemon.restart_drain_minutes"=>("count",Some(0),[],None,"minutes a daemon whose binary changed on disk keeps dispatching and landing while runs are in flight before it stops starting runs and exits with code 3 after them; it exits as soon as nothing is in flight, stops dispatching once less than minutes_per_job + 5 of the window is left, and 0 stops dispatching at once (the old behaviour)"),
         "daemon.hold_seconds"=>("count",Some(0),[],None,"seconds a daemon asked to restart now (Settings, Running, Restart now) waits for its runs in flight to hold - the harness saves its conversation, exits held and the job's next run carries on in the same clone - before it stops the runs still going, whose jobs return to the queue and start over; then it exits with code 3 so the service restarts it"),
         "daemon.pass_seconds"=>("count",Some(0),[],None,"least seconds between two planning passes of the daemon loop (leads, tasks, amendments, recoveries, lessons, evolution, schedules, planner, idle notes, executors, maintenance); the ticks in between, every 15 seconds while runs are in flight and whenever a run ends or the bus wakes the loop, only reap, watch the stop switch and the restart drain, start approved compute and refill free slots; 0 plans on every tick, and a shorter daemon interval caps it"),
-        "daemon.max_jobs"=>("count",Some(0),[],None,"local runs the daemon on this machine starts at once, whatever `workers` says (remote executors keep their own); 0 derives it from the hardware - half the physical cores, one run per 4 GB of RAM, never more than four - and `pulse daemon --max-jobs N` overrides both for one daemon"),
-        "daemon.max_load"=>("count",Some(0),[],None,"one-minute load average over which the daemon leases no new local run; the runs in flight finish and the idle line says `machine saturated`; 0 uses twice the number of CPUs (the load average counts runnable threads, and a laptop with an emulator or a browser build sits at its CPU count while its CPUs are not busy)"),
         "dependencies.security_updates"=>("choice",None,["on","off"],None,"on: for every active project with a GitHub remote the daemon reads the repository's open Dependabot alerts (through the gh CLI) once per dependencies.alert_check_minutes and queues one security update job per affected manifest, which moves each vulnerable package to the newest patched version that is at least dependencies.min_release_age_days old and stays within its compatible range (a fix that needs a major upgrade is reported to the owner instead); the landing checks the same rule on the branch. off: alerts are not read"),
         "dependencies.min_release_age_days"=>("count",Some(0),[],None,"days a dependency version must have been published before pulse adopts it, checked against the version's registry (npm, crates.io, PyPI, the Go proxy); a security update waits for the patched version to be this old, and a branch that pins younger versions in a lockfile is held until they are; 0 turns the rule off"),
         "dependencies.alert_check_minutes"=>("count",Some(5),[],None,"minutes between two reads of a project's Dependabot alerts"),
@@ -291,7 +299,6 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "backup.every_hours"=>("count",Some(0),[],None,"hours between two backups the daemon takes to backup.to on its maintenance pass; a failed one is tried again after an hour; 0 leaves backups to `pulse backup`"),
         "backup.keep"=>("count",Some(0),[],None,"copies of this machine's store kept at a directory or Azure destination, the newest first; older ones are removed after each backup; 0 keeps every copy"),
         "backup.subscription"=>("text",None,[],None,"the Azure subscription (name or id) that holds the az:// account in backup.to, when it is not the az CLI's default one: every az call a backup makes (keys list, upload, list, delete) carries it as --subscription, so the key is found and the login's token is cut for that tenant. Empty: the CLI's default subscription"),
-        "daemon.min_free_mem_mb"=>("count",Some(0),[],None,"megabytes of memory a new run could use without swapping (free, inactive, speculative and purgeable pages on macOS, MemAvailable on Linux) under which the daemon leases no new local run and starts no self-update build; 0 turns the floor off"),
         "daemon.nice"=>("count",Some(0),[],None,"nice level the daemon's own process runs at from startup (setpriority), under the owner's foreground work at 0 and over its job children at 10, so planning, sweeps and landing passes yield to what the owner is doing while the loop still comes before the fleet's builds; 0 leaves the level the service started it at"),
         "daemon.build_jobs"=>("count",Some(0),[],None,"parallel compile jobs a build the daemon causes may use: exported as CARGO_BUILD_JOBS to its job children, their pre-commit verification and the landing verification when the environment does not set it, and passed as -j to the self-update build; 0 is half the physical cores, so no single build takes the whole machine"),
         "daemon.keep_awake"=>("choice",None,["off","on","always"],None,"on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say. A paused or stopped daemon holds nothing, and closing a laptop's lid still sleeps a Mac without an external display. Each tick the daemon also notices when the machine slept anyway (the wall clock jumped while the loop waited) and says for how long"),
@@ -579,6 +586,11 @@ pub fn majority(value: &str) -> Result<(i64, i64)> {
 }
 
 pub fn validate_setting(name: &str, value: &str) -> Result<String> {
+    if AUTOMATIC_SETTINGS.contains(&name) {
+        return Err(input_err(format!(
+            "{name} is automatic now: each machine works out its runs from its cores and memory and the fleet adds them up (pulse status shows the numbers); set capacity to cap this machine, or pulse stop to pause"
+        )));
+    }
     let Some(rule) = known_setting(name) else {
         let msg = if name.starts_with("compute.") {
             format!(
@@ -643,6 +655,19 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
                 region.to_ascii_uppercase()
             )
         });
+    }
+    if name == "capacity" {
+        let lower = text.to_ascii_lowercase();
+        if lower.is_empty() || lower == "auto" || lower == "off" {
+            return Ok("auto".into());
+        }
+        return match lower.parse::<i64>() {
+            Ok(n) if n >= 0 => Ok(n.to_string()),
+            _ => Err(input_err(format!(
+                "capacity takes auto or a whole number of runs (0 keeps this machine idle), not {}",
+                py_repr(text)
+            ))),
+        };
     }
     if name == "harness.system_prompt" && text.contains("{{if}}") {
         return Err(input_err(

@@ -245,7 +245,7 @@ pub(crate) fn idle_factor(s: &pulse_store::Store) -> i32 {
 /// ballots in 30 days, most of them ten minutes apart.
 pub(crate) fn fleet_idle(s: &pulse_store::Store) -> bool {
     let (leased, queued) = fleet_load(s);
-    let workers = setting_int(s, "workers").max(1);
+    let workers = crate::capacity::fleet(s).total.max(1);
     leased * 2 < workers && queued == 0
 }
 
@@ -788,7 +788,7 @@ mod tests {
         let s = new_store();
         new_repo(&s);
         join(&s, "aurora");
-        s.set_setting(pulse_store::HUMAN_AGENT, "workers", "4")
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "4")
             .unwrap();
         assert!(fleet_idle(&s), "nothing queued or leased: idle");
         let (ballot, _) = crate::jobs::add_job(
@@ -851,7 +851,7 @@ mod tests {
         for (k, v) in [
             ("lead.research_minutes", "60"),
             ("lead.idle_factor", "3"),
-            ("workers", "4"),
+            ("capacity", "4"),
         ] {
             s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
         }

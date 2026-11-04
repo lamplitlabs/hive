@@ -347,6 +347,7 @@ impl Hands {
         } else {
             format!(" pulse_lookup={pulse_lookup}")
         };
+        let hw = crate::daemon_load::Machine::detect();
         let dash = |v: Vec<String>| {
             if v.is_empty() {
                 "-".into()
@@ -356,13 +357,15 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 os={} arch={} found={}",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 os={} arch={} found={} cores={} mem_mb={}",
             self.workdir,
             dash(jobs),
             dash(keys),
             pulse_store::needs::this_os(),
             pulse_store::needs::this_arch(),
-            dash(crate::executor::found_labels().to_vec())
+            dash(crate::executor::found_labels().to_vec()),
+            hw.cores,
+            hw.mem_mb
         )?;
         Ok(())
     }

@@ -1849,7 +1849,7 @@ mod tests {
         std::fs::create_dir_all(std::path::Path::new(&root).join("src")).unwrap();
         set_setting(&s, "quorum", "1");
         set_setting(&s, "evolve.draft_hours", "0");
-        set_setting(&s, "parallel_per_project", "3");
+        crate::capacity::pin_per_project(&s, 3);
         for agent in ["alice", "bob", "carol"] {
             join(&s, agent);
         }
@@ -2134,8 +2134,8 @@ mod tests {
         join(&s, "aurora");
         set_setting(&s, "lead.research_minutes", "60");
         set_setting(&s, "lead.idle_factor", "3");
-        set_setting(&s, "workers", "6");
-        set_setting(&s, "parallel_per_project", "2");
+        set_setting(&s, "capacity", "6");
+        crate::capacity::pin_per_project(&s, 2);
         suppress_planner_reflect(&s);
         let improve = |n: i32| {
             crate::jobs::add_job(
@@ -2213,7 +2213,7 @@ mod tests {
         research_on(&s, "60");
         set_setting(&s, "lead.idle_factor", "3");
         set_setting(&s, "lead.research_per_day", "2");
-        set_setting(&s, "workers", "4");
+        set_setting(&s, "capacity", "4");
         suppress_planner_reflect(&s);
         let research = |minutes_ago: f64| {
             let (job, _) = crate::jobs::add_job(
@@ -2602,7 +2602,7 @@ mod tests {
         join(&s, "aurora");
         join(&s, "boris");
         set_setting(&s, "lead.idle_factor", "3");
-        set_setting(&s, "workers", "4");
+        set_setting(&s, "capacity", "4");
         suppress_planner_reflect(&s);
         // A card 25 minutes old: too young for the plain hour, old enough for
         // the idle third of it.

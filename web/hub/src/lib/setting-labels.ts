@@ -6,8 +6,7 @@
 // one entry per line, a plain double-quoted label, no quotes inside it.
 const LABELS: Record<string, string> = {
   stop: "Pause all work",
-  workers: "Agents working at once",
-  parallel_per_project: "Runs at once per project",
+  capacity: "Runs at once on this machine (auto = from its cores and memory)",
   jobs_per_day: "Runs per day (all machines together)",
   minutes_per_job: "Minutes per run",
   prune_after_days: "Remove an idle agent after (days)",
@@ -145,9 +144,6 @@ const LABELS: Record<string, string> = {
   "hygiene.cargo_target_hours": "Remove old Cargo caches after (hours)",
   "daemon.min_free_mb": "Free disk to keep (MB)",
   "daemon.setup_mb": "Disk each run needs to set up (MB)",
-  "daemon.max_jobs": "Runs at once on this machine (0 = decide from the hardware)",
-  "daemon.max_load": "Start nothing above this load (0 = number of CPUs)",
-  "daemon.min_free_mem_mb": "Free memory a new run needs (MB)",
   "daemon.nice": "Runner priority, nice level (0 = leave as started)",
   "daemon.build_jobs": "Compile jobs per build (0 = half the cores)",
   "daemon.keep_awake": "Keep this machine awake while PULSE runs",
@@ -218,8 +214,7 @@ const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
-  workers: "How many agents may work on this machine at the same time. 0 keeps this machine idle.",
-  parallel_per_project: "How many runs one project may have going at once. 1 means one at a time.",
+  capacity: "Auto lets this machine work out how many runs it takes from its cores and memory (one per 3 GB, at most one per core) and back off when it is busy; every paired machine does the same and the fleet adds them up, shared fairly between the projects with work. A number caps this machine; 0 keeps it idle. To pause, use Pause all work.",
   jobs_per_day: "A hard stop for the whole fleet: once today's runs reach this number no new run starts until midnight UTC, on any machine. 0 means no cap; your own tasks and answers always run.",
   minutes_per_job: "How long one run may take before PULSE stops it.",
   prune_after_days: "How long an agent may go without useful work before it is removed from the list. Its history stays.",

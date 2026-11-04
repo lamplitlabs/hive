@@ -46,7 +46,7 @@ for their processes to launch. Without the owner-first key a six-project fleet
 on four workers made an urgent task wait a full round of other projects'
 improve jobs (ninety minutes, measured) before its first job leased. Between
 the owner's work and the fairness comes the work class: the last half of the
-local slots under `daemon.max_jobs` (rounded up: two of four) take a queued
+local slots of this machine (rounded up: two of four) take a queued
 improve, task or experiment job before a reflect, ballot or clean, and every
 slot does once such a job has waited two hours (`WORK_WAITED_HOURS`) - the
 meta kinds are many and short, and four slots cycling through them for every
@@ -102,7 +102,7 @@ dispatching at once and waits for the runs, as before. The build itself is a
 full release compile, so it keeps out of the runs' way: it runs at nice 10
 with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
 default), and it does not start while the load governor (below) says the
-machine is saturated or every local slot under `daemon.max_jobs` holds a run -
+machine is saturated or every local slot of this machine holds a run -
 the daemon then says `self-update: brain HEAD <rev> differs from the running
 <rev>; building once the machine has room: <why>` once, keeps one local slot
 free so the build starts within one run, and the experiment lane measures

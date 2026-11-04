@@ -157,31 +157,37 @@ disks.
 ### The load governor
 
 The machine itself is governed the same way
-(`crates/pulse-runner/src/daemon_load.rs`): `workers` says how many local slots
-the owner would like, but a 12-core 16 GB laptop with `workers 12` leased seven
-jobs within a few seconds and ran their `npm ci`, test suites and `cargo test`
-builds at once, at a load average of forty with 2.3 GB of its 3 GB swap in use,
-while the daemon's own loop crawled. So the daemon starts no more local runs at
-once than `daemon.max_jobs` - by default derived from the hardware: half the
-physical cores, one run per 4 GB of RAM, never more than four (a 12-core 16 GB
-laptop: four) - and `pulse daemon --max-jobs N` overrides both for one daemon;
-the startup line `load governor: up to N local run(s) at once
-(auto|daemon.max_jobs|--max-jobs; C cores, P CPUs, M MB), nothing new over load
-L or under F MB of memory free; children run at nice 10, builds at -jJ, the
-daemon itself at nice 5` names what is in force.
+(`crates/pulse-runner/src/daemon_load.rs`, sized by `capacity.rs`): a 12-core
+16 GB laptop once told to run twelve local slots leased seven jobs within a few
+seconds and ran their `npm ci`, test suites and `cargo test` builds at once, at a
+load average of forty with 2.3 GB of its 3 GB swap in use. There is no slot
+setting any more: every machine works out its own slots from its hardware - the
+smaller of its physical cores and one run per 3 GB of RAM, never under one (a
+12-core 16 GB laptop: five; a 32-core 64 GB box: twenty-one) - and each paired
+machine does the same from the cores and memory its hands report on every
+probe. The fleet's total is the sum over the active machines, and a project may
+have `ceil(total / projects with work)` jobs in flight, so a lone busy project
+uses every slot and several share them fairly; `pulse status` shows it as
+`slots 18 = this machine 10 + vm-1 8, per project 6`. The one optional override is
+`capacity` (auto by default; a number caps this machine, 0 keeps it idle), and
+`pulse daemon --max-jobs N` overrides both for one daemon; `pulse stop` pauses.
+The startup line `load governor: up to N local run(s) at once
+(auto|capacity|--max-jobs; C cores, P CPUs, M MB), nothing new over load L or
+under F MB of memory free; children run at nice 10, builds at -jJ, the daemon
+itself at nice 5` names what is in force.
 
 Before leasing it also reads the one-minute load average and the memory a new
 run could use (free, inactive, speculative and purgeable pages on macOS - the
 caches the kernel drops on request, a gigabyte or two on a 16 GB laptop whose
 `free` reads a few hundred megabytes - `MemAvailable` on Linux) and leases
-nothing new while the load is over `daemon.max_load` (default: twice the number
+nothing new while the load is over the load line (twice the number
 of CPUs - the load average counts runnable threads, and a laptop with an
 emulator or a browser build sits at its CPU count for hours while its CPUs are
 not busy; a line at the CPU count held the fleet all day) or the memory is
-under `daemon.min_free_mem_mb` (default 1024; 0 off), or while macOS itself
+under 1024 MB (both internal constants, not settings), or while macOS itself
 reports critical memory pressure; the runs in flight finish, the idle line says
-`machine saturated: load 40.1 on 12 CPUs is over daemon.max_load 24` or
-`machine saturated: 512 MB of memory free, under daemon.min_free_mem_mb 1024`
+`machine saturated: load 40.1 on 12 CPUs is over the line 24` or
+`machine saturated: 512 MB of memory free, under the floor 1024`
 once per change rather than per tick. A queue behind held slots is as short of
 hands as one behind busy slots: once an improve or task job has waited half an
 hour that way, the daemon rents a machine itself when `compute.auto_approve` is
@@ -191,7 +197,7 @@ request at a time, four hours, `AUTO_COMPUTE_HOURS`), and otherwise posts
 
 The kernel's memory warning (the level under critical, which a 16 GB laptop
 reports for hours with a browser open) is not a hold: while it stands the
-daemon starts half as many local runs at once (`daemon.max_jobs` halved, never
+daemon starts half as many local runs at once (the machine's slots halved, never
 under one), and the experiment lane's measurements in progress count as runs
 under the cap, since their builds are load like any other.
 
@@ -199,22 +205,21 @@ under the cap, since their builds are load like any other.
 
 A load hold alone (not memory, not a restart window) keeps one local slot open
 as the express lane: it leases only the owner's work - lead runs, answers,
-`task:` jobs - while the load stays under twice `daemon.max_load` and the run
+`task:` jobs - while the load stays under twice the load line and the run
 cap has room; the idle line adds `one express slot stays open for the owner's
 work`. The fleet's own builds and landings are what push the load over the
 line, and without the lane they held the owner's tasks behind themselves. The
-cap itself is the other way they did it: with `daemon.max_jobs 2` and both
+cap itself is the other way they did it: with two local slots and both
 slots on fleet verifies, the lead sitting your *Try again another way* queued
 waited forty minutes for a slot. So when every slot under the cap is busy with
 the fleet's work, none of it is the owner's, no slot is reserved for a restart
 and the machine is not hard-pressed (memory, the floor, twice the load line),
 the daemon lends one slot over the cap to the owner's work alone - one at a
-time, never while an owner run is already in flight, and only when `workers`
-leaves a hand to lend - with the line `every slot under daemon.max_jobs is busy
+time, never while an owner run is already in flight - with the line `every slot of this machine is busy
 with the fleet's work; one express slot stays open for the owner's work`.
 
 A free slot is not a free lane, though: a project's own work lanes
-(`parallel_per_project`, narrowed to what fits the commit cap while its checks
+(the fleet's per-project share, narrowed to what fits the commit cap while its checks
 take turns) count the fleet's runs and the owner's alike, so an owner's task
 queued behind one long fleet `improve` job in its project waited four hours
 while the daemon leased fifty runs in other projects around it. Now the owner's
@@ -234,7 +239,7 @@ behind the fix job there and holding the fix would only lengthen the wait.
 
 The lead's own sitting is outside its project's count altogether. A sitting
 reads and posts for a minute, plans the owner's work and directs the fleet's;
-with `parallel_per_project 2` and two long fleet `improve` runs in the project,
+with a per-project share of 2 and two long fleet `improve` runs in the project,
 the sitting an owner's *continue* queued once waited 54 minutes for a lane the
 express slot had offered it every tick. Now a project lead's sitting leases
 whatever the project's lanes hold (at most one short run over the limit: one
@@ -387,7 +392,7 @@ command to refresh what the checkout owns (for Cargo, touch the workspace
 sources before building; the dependency cache stays).
 
 Taking turns also sets how many work jobs a project can usefully run at once:
-with `parallel_per_project` 4 and a check that takes eight minutes, a clone's
+with a per-project share of 4 and a check that takes eight minutes, a clone's
 commit may wait for three other checks before its own and the harness kills the
 command at `harness.commit_timeout` (25 min by default; plain commands stop at
 `harness.step_timeout`) - the run retries, and the lanes burn their budget

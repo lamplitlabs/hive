@@ -321,11 +321,13 @@ mod tests {
         let (_dir, s) = temporary_store();
         for args in [
             vec!["set"],
-            vec!["set", "workers"],
+            vec!["set", "capacity"],
             vec!["set", "not-a-setting", "1"],
-            vec!["set", "workers", "many"],
-            vec!["set", "workers", "-1"],
-            vec!["set", "parallel_per_project", "0"],
+            vec!["set", "capacity", "many"],
+            vec!["set", "capacity", "-1"],
+            vec!["set", "workers", "4"],
+            vec!["set", "parallel_per_project", "2"],
+            vec!["set", "daemon.max_jobs", "2"],
             vec!["set", "jobs_per_day", "two"],
             vec!["set", "harness.max_steps", "0"],
             vec!["set", "amend_majority", "1/0"],
@@ -342,7 +344,8 @@ mod tests {
     fn settings_successful_writes() {
         let (_dir, s) = temporary_store();
         for (name, input, normalized) in [
-            ("workers", " 0002 ", "2"),
+            ("capacity", " 0002 ", "2"),
+            ("capacity", "AUTO", "auto"),
             ("jobs_per_day", "OFF", "off"),
             ("amend_majority", " 2 / 3 ", "2/3"),
             ("landing", "HUMAN", "human"),

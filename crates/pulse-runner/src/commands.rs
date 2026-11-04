@@ -101,7 +101,7 @@ fn daemon_flags(fs: &mut FlagSet) {
     fs.int_var(
         "max-jobs",
         0,
-        "local runs at once (0 = the daemon.max_jobs setting, then the machine's default)",
+        "local runs at once (0 = the capacity setting, then what the machine's cores and memory allow)",
     );
 }
 

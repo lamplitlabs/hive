@@ -18,6 +18,7 @@ pub mod checkout;
 pub mod commands;
 pub mod compute;
 pub mod daemon;
+pub mod capacity;
 pub(crate) mod daemon_load;
 pub mod daemon_maintenance;
 pub mod daemon_watchdog;
