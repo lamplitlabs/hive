@@ -8,7 +8,7 @@
 //! The complexity rule ([`reasons_for`]) is computed here, in code, before
 //! the job is queued: a pull request the owner asked to see (`review.merge`
 //! `ask`), one over `review.max_files` / `review.max_lines`, one touching a
-//! guarded path, one that mostly deletes, or one not from a `pulse/` branch
+//! guarded path, one that mostly deletes, or one not from a PULSE branch
 //! is reviewed all the same, but the agent may only hand it to the owner
 //! with its findings. The rule lives in code rather than in the brief so
 //! the agent cannot talk itself past it, and so the hub can show the owner
@@ -476,7 +476,10 @@ pub(crate) fn reasons_for(s: &pulse_store::Store, pr: &PrView) -> Vec<String> {
             "removes more than it adds ({deleted} lines removed, {added} added)"
         ));
     }
-    if !pr.head.starts_with("pulse/") {
+    // PULSE's own heads are `pulse/...` (jobs, tasks, conversations) and
+    // `evolve/<id>` (a kept experiment, already measured against its card);
+    // anything else was pushed by a person or another tool and gets the owner.
+    if !pulse_head(&pr.head) {
         reasons.push(format!(
             "opened by a human/other tool (branch {})",
             if pr.head.is_empty() {
@@ -487,6 +490,12 @@ pub(crate) fn reasons_for(s: &pulse_store::Store, pr: &PrView) -> Vec<String> {
         ));
     }
     reasons
+}
+
+/// True for a branch PULSE itself pushes: `pulse/<agent>/<job>`,
+/// `pulse/task-<id>`, `pulse/chat-<id>` or an experiment's `evolve/<id>`.
+pub(crate) fn pulse_head(head: &str) -> bool {
+    head.starts_with("pulse/") || head.starts_with("evolve/")
 }
 
 /// The project's check command when the store knows one.
@@ -1534,6 +1543,10 @@ mod tests {
 
         let r = reasons_for(&s, &view_of(7, "feature/by-hand", &[("src/a.rs", 1, 0)]));
         assert_eq!(r, ["opened by a human/other tool (branch feature/by-hand)"]);
+        assert!(
+            reasons_for(&s, &view_of(7, "evolve/B-013", &[("src/a.rs", 1, 0)])).is_empty(),
+            "a kept experiment's branch is PULSE's own"
+        );
 
         set_setting(&s, "review.merge", "ask");
         let r = reasons_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 1, 0)]));
