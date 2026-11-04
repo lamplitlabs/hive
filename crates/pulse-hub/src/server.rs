@@ -1337,7 +1337,6 @@ mod tests {
             "/records",
             "/compute",
             "/settings",
-            "/agents",
             "/harness",
             "/connections",
         ] {
