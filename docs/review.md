@@ -59,7 +59,12 @@ tested, does it touch anything the body does not explain, does it break a
 convention the README or an ADR states; exactly one verdict command; and
 `pulse job finish $PULSE_JOB done --result 'SUMMARY: reviewed #<n>:
 <verdict> - <one line>'` with no `--branch`, because a review leaves no
-branch. The reviewer never fixes the code itself (a fix is a *changes* note,
+branch. The run that carries a review lands nothing either: once the clone
+stands on the pull request's head, the commits past the run's base are the
+author's, signed by the author's run key, and the runner counts them as none
+of this run's rather than refusing them at the identity check (eighteen
+review runs failed that way on 2026-11-04, after reviews that had merged
+their pull request). The reviewer never fixes the code itself (a fix is a *changes* note,
 and the follow-up job makes it), never calls `gh` or pushes - `pulse review`
 talks to GitHub for it - and never loosens a check to make it pass. A review
 job leaves no branch, so the delivery has nothing to push for it.
