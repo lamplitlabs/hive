@@ -13,7 +13,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { BotIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CornerDownRightIcon, FilePenIcon, FilePlusIcon, ListChecksIcon, MessageSquareIcon, PlugIcon, RadioIcon, TerminalIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { DeliveryLine, reportLanding } from "@/components/chat/chat-pane";
+import { DeliveryLine, reportWhere } from "@/components/chat/chat-pane";
 import { JobEvidence } from "@/components/chat/job-evidence";
 import { Markdown } from "@/components/pulse/markdown";
 import { Disclosure, EmptyState, ErrorNotice, SkeletonRows } from "@/components/pulse/panel";
@@ -252,14 +252,14 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
   let meta: ReactNode;
   if (report) {
     note = "reported back on " + (job?.title ? "\u201c" + sentence(job.title) + "\u201d" : jobId ? "job " + jobId : "a step");
-    const landing = reportLanding(job);
+    const where = reportWhere(job);
     const evidence = job?.artifacts ? <JobEvidence job={job} onOpen={chat.onEvidence} variant="link" /> : null;
     meta =
-      landing || job?.harness_session || evidence ? (
+      where || job?.harness_session || evidence ? (
         <>
-          {landing ? (
-            <ToneBadge tone={landing.tone} dot title={"Job " + jobId + (job?.branch ? ", branch " + job.branch : "")}>
-              {landing.word}
+          {where ? (
+            <ToneBadge tone={where.tone} dot title={"Job " + jobId + (job?.branch ? ", branch " + job.branch : "")}>
+              {where.word}
             </ToneBadge>
           ) : null}
           {job?.harness_session ? (

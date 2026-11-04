@@ -60,6 +60,7 @@ pub mod mcp;
 pub mod memory_api;
 pub mod privacy;
 pub mod project_goal;
+pub mod pull_requests;
 pub mod read;
 pub mod register;
 pub mod running;
