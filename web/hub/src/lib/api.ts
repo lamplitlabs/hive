@@ -334,6 +334,34 @@ export interface Timeline {
   series?: (Timeline & { slug: string; kind: string; base: string })[];
 }
 
+// One UTC day of GET /api/v1/kpis: what the fleet got done (landings, jobs,
+// tasks) and what it spent (sessions, tokens, cost). Zero-filled, so a quiet
+// day is a row of zeros rather than a gap.
+export interface KpiDay {
+  day: string;
+  sessions: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost: number;
+  jobs_done: number;
+  jobs_failed: number;
+  landings: number;
+  tasks_done: number;
+}
+
+export interface KpisPayload {
+  now: string;
+  days: number;
+  from: string;
+  to: string;
+  project: string;
+  series: KpiDay[];
+  totals: Omit<KpiDay, "day">;
+  // False when no session in the window carried a price (Copilot records
+  // cost 0), so the money column is hidden rather than shown as $0.
+  priced: boolean;
+}
+
 // The self-improvement gates on a project row (ADR-029). The loop for a
 // project opens only with enabled public fixtures and a recorded baseline;
 // the console shows both and names the next human step, never starting a

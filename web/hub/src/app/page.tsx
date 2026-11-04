@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
 import { GoalNudge, useGoalNudges } from "@/components/home/goal-nudge";
+import { KpisPanel } from "@/components/home/kpis-panel";
 import { NowPanel } from "@/components/home/now-panel";
 import { HomeHero } from "@/components/home/hero";
 import { awakeView } from "@/components/shell/awake";
@@ -229,7 +230,7 @@ export default function HubPage() {
       </section>
 
       <section aria-label="What's happening" className="mt-12">
-        <SectionHeading note="Who is working on what, and the tasks you gave most recently.">What&apos;s happening</SectionHeading>
+        <SectionHeading note="Who is working on what, the tasks you gave most recently, and how the fleet's output and spend move over time.">What&apos;s happening</SectionHeading>
         <div className="grid min-w-0 items-start gap-4 xl:grid-cols-2">
           <Panel title="Working now" actions={<span>{workingSummary(working, o.active_claims.length)}</span>}>
             <WorkingNow claims={o.active_claims} tasks={openTasks} />
@@ -252,6 +253,9 @@ export default function HubPage() {
               <SkeletonRows n={2} />
             )}
           </Panel>
+        </div>
+        <div className="mt-4">
+          <KpisPanel height={200} />
         </div>
         <div className="mt-4">{tl.data ? <ActivityChart tl={tl.data} bys={["total", "project", "kind"]} height={180} /> : null}</div>
       </section>

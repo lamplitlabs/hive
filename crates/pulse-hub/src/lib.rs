@@ -53,6 +53,7 @@ pub mod heldout;
 pub mod httpx;
 pub mod hygiene;
 pub mod job_repair;
+pub mod kpis;
 pub mod leads_api;
 pub mod lifecycle;
 pub mod machines;

@@ -47,10 +47,10 @@ const DAEMON = starts("runner", "running", "service", "hygiene", "roster");
 export const TOUCHES: [RegExp, PathMatch][] = [
   // The Transcript panel consumes harness.step from the live buffer and fetches ?after=N itself; the sessions list polls.
   [/^harness\.step$/, never],
-  [/^harness\./, starts("harness/sessions", "roster")],
+  [/^harness\./, starts("harness/sessions", "roster", "kpis")],
   // messages: the task chat's "reads it next / reading / seen" line follows the lead's job.
-  [/^(job|run)\.|^decide\.job$/, any(starts("runner", "jobs/failed", "roster", "tasks", "messages", "code-deliveries", "org"), registry, projectView("overview", "evolution"))],
-  [/^task\./, starts("tasks", "messages", "code-deliveries", "roster")],
+  [/^(job|run)\.|^decide\.job$/, any(starts("runner", "jobs/failed", "roster", "tasks", "messages", "code-deliveries", "org", "kpis"), registry, projectView("overview", "evolution"))],
+  [/^task\./, starts("tasks", "messages", "code-deliveries", "roster", "kpis")],
   [/^(message|msg)\.|^mention$/, starts("messages", "tasks")],
   [/^post(\.|$)|^question\./, BOARD],
   [/^decide(\.|$)/, any(BOARD, starts("compute", "records", "constitution", "tasks", "heldout"))],
@@ -60,7 +60,7 @@ export const TOUCHES: [RegExp, PathMatch][] = [
   [/^executor\./, starts("compute", "executors", "runner", "roster")],
   [/^setting(s\.|$)/, starts("settings", "org", "runner", "running", "service", "harness", "heldout", "compute")],
   [/^cred\./, starts("cred", "settings", "runner", "harness")],
-  [/^land(ing)?\./, any(starts("org", "code-deliveries", "runner", "tasks"), registry, projectView("overview", "project", "timeline", "evolution"))],
+  [/^land(ing)?\./, any(starts("org", "code-deliveries", "runner", "tasks", "kpis"), registry, projectView("overview", "project", "timeline", "evolution"))],
   [/^project\./, any(SUMMARY, registry, projectView(), starts("tasks", "timeline"))],
   [/^hook\./, any(starts("org", "settings"), registry, projectView("project", "overview"))],
   [/^schedule\./, any(starts("runner", "tasks", "org"), projectView("overview"))],
