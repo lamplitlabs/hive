@@ -42,7 +42,7 @@ pub fn register() {
 
         cli_register(Command { name:"plan".into(), group:"runner".into(), summary:"the job planner: turn the tally into queued jobs".into(), usage:"pulse plan [--project SLUG] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_plan, flags:None });
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
-        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--propose]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
+        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"push finished branches to the upstream as pull requests and settle the open ones (a project without an upstream lands them locally); --branch proposes one branch, --local merges it here instead".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--propose] [--local]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made and of each project's default branch head, whoever pushed it: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:DAEMON_USAGE.into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
@@ -71,15 +71,32 @@ fn work_flags(fs: &mut FlagSet) {
 }
 
 fn land_flags(fs: &mut FlagSet) {
-    fs.string_var("branch", "", "land this branch");
+    fs.string_var(
+        "branch",
+        "",
+        "push this branch and open its pull request (with --local: merge it into the default branch here)",
+    );
     fs.bool_var("all", false, "every active project");
-    fs.int_var("limit", 5, "at most N branches per project");
-    fs.bool_var("no-verify", false, "skip the verify command");
-    fs.bool_var("dry-run", false, "list what waits, land nothing");
+    fs.int_var(
+        "limit",
+        5,
+        "accepted for older scripts; a pass opens at most ten pull requests per project",
+    );
+    fs.bool_var("no-verify", false, "skip the verify command (--local only)");
+    fs.bool_var(
+        "dry-run",
+        false,
+        "list what a pass would deliver: tasks, jobs, conversation branches, fixes",
+    );
     fs.bool_var(
         "propose",
         false,
-        "with --branch: push the branch and open a pull request for the review lead to merge; nothing lands locally",
+        "with --branch: what --branch does by itself now; kept for scripts",
+    );
+    fs.bool_var(
+        "local",
+        false,
+        "with --branch: merge the branch into the local default branch instead of opening a pull request; the local branch then diverges from the upstream",
     );
 }
 
@@ -556,38 +573,55 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
         ("merged", 0),
         ("conflict", 1),
         ("failed-verify", 1),
-        ("batch-failed", 1),
         ("missing", 1),
     ]);
     let branch = str_flag(fs, "branch");
     let verify = !bool_flag(fs, "no-verify");
+    let local = bool_flag(fs, "local");
+    if local && branch.is_empty() {
+        return Err(pulse_cli::errorf(
+            2,
+            "land --local needs --branch",
+            "--local merges one named branch into the local default branch by hand",
+            "pulse land --project SLUG --branch B --local",
+        )
+        .into());
+    }
+    if bool_flag(fs, "propose") && branch.is_empty() {
+        return Err(pulse_cli::errorf(
+            2,
+            "land --propose needs --branch",
+            "--propose names the branch to open a pull request for",
+            "pulse land --project SLUG --branch B",
+        )
+        .into());
+    }
     for proj in targets {
         let slug = proj.str("slug");
         if bool_flag(fs, "dry-run") {
-            let pending = crate::land::pending_landings(&s, &slug);
-            if pending.is_empty() {
-                c.printf(format_args!("{slug}: nothing waiting\n"))?;
-            }
-            for j in pending {
-                c.printf(format_args!(
-                    "{} would land: {} ({} {})\n",
-                    slug,
-                    j.str("branch"),
-                    j.str("kind"),
-                    j.str("id")
-                ))?;
+            for line in crate::delivery::dry_run(&s, &proj, &now) {
+                c.printf(format_args!("{line}\n"))?;
             }
             continue;
         }
-        // The hold a failed setup or a red base left says this command retries
-        // now; the push step's sync reads the same hold, so it is lifted here
-        // for the branches and the sync alike.
-        if bool_flag(fs, "propose") {
-            if branch.is_empty() {
-                return Err(pulse_cli::errorf(2, "", "", "land --propose needs --branch").into());
+        if branch.is_empty() {
+            // One delivery pass for the project: the pull requests owed,
+            // the open ones settled, the default branch brought up to its
+            // upstream (delivery.rs) - what the daemon does every pass.
+            let lines = crate::delivery::tend(&s, std::slice::from_ref(&proj), &now);
+            if lines.is_empty() {
+                c.printf(format_args!("{slug}: nothing waiting\n"))?;
             }
-            match crate::landing_pr::propose_branch(&s, &proj, &branch, &actor, &now) {
-                Ok(url) => c.printf(format_args!("{slug} proposed: {branch} {url}\n"))?,
+            for line in lines {
+                c.printf(format_args!("{line}\n"))?;
+            }
+            continue;
+        }
+        let def = crate::baseline::default_branch(proj.clone());
+        let has_upstream = crate::forge::upstream_of(&proj.str("path"), &def).is_some();
+        if !local && has_upstream {
+            match crate::delivery::propose_branch(&s, &proj, &branch, &now) {
+                Ok(d) => c.printf(format_args!("{}\n", d.line))?,
                 Err(why) => {
                     c.printf(format_args!("{slug} not proposed: {why}\n"))?;
                     worst = worst.max(1);
@@ -595,44 +629,38 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             }
             continue;
         }
-        crate::land::clear_landing_retry(&s, &slug);
-        let results = if !branch.is_empty() {
-            let job = query_one_row(
-                &*s.conn()?,
-                "SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
-                &[&slug, &branch],
-            );
-            let (state, note) = crate::land::land_branch(
-                &s,
-                proj.clone(),
-                branch.clone(),
-                actor.clone(),
-                now.clone(),
-                crate::land::LandOpts {
-                    job,
-                    verify,
-                    by_hand: actor == crate::util::HUMAN_AGENT,
-                    ..Default::default()
-                },
-            )?;
-            vec![crate::land::LandResult { state, note }]
+        if local && has_upstream {
+            c.printf(format_args!(
+                "{slug}: merging {branch} into {def} here; the local {def} will be ahead of its upstream until that is pushed or reset, and the daemon only ever fast-forwards it\n"
+            ))?;
         } else {
-            // Task work no longer lands locally: it goes to the forge as
-            // one pull request per task (task_pr.rs).
-            for line in crate::task_pr::tend_task_prs(&s, std::slice::from_ref(&proj), &now) {
-                c.printf(format_args!("{line}\n"))?;
-            }
-            Vec::new()
-        };
-        if results.is_empty() {
-            c.printf(format_args!("{slug}: nothing waiting\n"))?;
+            c.printf(format_args!("{slug}: no upstream, landing locally\n"))?;
         }
-        for r in results {
-            c.printf(format_args!("{slug} {}: {}\n", r.state, r.note))?;
-            let w = rank.get(r.state.as_str()).copied().unwrap_or(3);
-            if w > worst {
-                worst = w;
-            }
+        // The hold a failed setup or a red base left says this command retries
+        // now.
+        crate::land::clear_landing_retry(&s, &slug);
+        let job = query_one_row(
+            &*s.conn()?,
+            "SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
+            &[&slug, &branch],
+        );
+        let (state, note) = crate::land::land_branch(
+            &s,
+            proj.clone(),
+            branch.clone(),
+            actor.clone(),
+            now.clone(),
+            crate::land::LandOpts {
+                job,
+                verify,
+                by_hand: actor == crate::util::HUMAN_AGENT,
+                ..Default::default()
+            },
+        )?;
+        c.printf(format_args!("{slug} {state}: {note}\n"))?;
+        let w = rank.get(state.as_str()).copied().unwrap_or(3);
+        if w > worst {
+            worst = w;
         }
     }
     if worst != 0 {
@@ -1897,7 +1925,9 @@ mod tests {
         );
         let (out, _, code) = invoke(&s, "land", "proj", &["--dry-run"]);
         assert!(
-            code == 0 && out.trim() == "proj: nothing waiting",
+            code == 0
+                && out
+                    == "proj: no upstream, finished branches land locally on main\n  nothing waiting for proj\n",
             "land --dry-run: {code} {out:?}"
         );
         assert!(
@@ -2127,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_commit_lands_only_through_land_branch() {
+    fn worker_commit_lands_locally_when_the_project_has_no_upstream() {
         let _serial = crate::test_helpers::serial();
         if !std::path::Path::new("/usr/bin/ssh-keygen").exists()
             && !std::path::Path::new("/usr/local/bin/ssh-keygen").exists()
@@ -2171,23 +2201,96 @@ mod tests {
             branches.contains(&format!("pulse/aurora/{}", job.str("id"))),
             "branch not pushed to the checkout: {branches:?}"
         );
-        // Plain `pulse land` no longer merges into main: the branch waits
-        // for its task's pull request.
-        let (_out, err_text, code) = invoke(&s, "land", "proj", &[]);
-        assert_eq!(code, 0, "land: {err_text:?}");
+        // The project has no upstream to open a pull request on: plain
+        // `pulse land` lands the branch here, as before.
+        let (out, err_text, code) = invoke(&s, "land", "proj", &[]);
         assert!(
-            !std::path::Path::new(&dir).join("f.txt").exists(),
-            "nothing merges into main locally"
-        );
-        let branch = format!("pulse/aurora/{}", job.str("id"));
-        let (out, err_text, code) = invoke(&s, "land", "proj", &["--branch", &branch]);
-        assert!(
-            code == 0 && (out.contains("proj landed: ") || out.contains("proj merged: ")),
-            "land --branch: {code} {out:?} {err_text:?}"
+            code == 0
+                && out.starts_with("proj: no upstream, landing locally\n")
+                && out.contains("proj: landed "),
+            "land: {code} {out:?} {err_text:?}"
         );
         assert!(
             std::path::Path::new(&dir).join("f.txt").exists(),
             "f.txt not on main after landing"
+        );
+        let (out, _, code) = invoke(&s, "land", "proj", &[]);
+        assert!(
+            code == 0 && out.trim() == "proj: nothing waiting",
+            "land again: {code} {out:?}"
+        );
+    }
+
+    #[test]
+    fn land_branch_proposes_a_pull_request_and_local_is_the_way_round_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = crate::test_helpers_daemon::fake_gh();
+        let s = new_store();
+        let (_proj, repo, bare) = crate::test_helpers_daemon::push_fixture(&s);
+        run(&repo, &["git", "checkout", "-q", "-b", "feat/one", "main"]);
+        std::fs::write(std::path::Path::new(&repo).join("one.txt"), "one\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "one"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let tip = run(&repo, &["git", "rev-parse", "feat/one"])
+            .trim()
+            .to_string();
+
+        let (out, err_text, code) = invoke(&s, "land", "proj", &["--branch", "feat/one"]);
+        assert!(
+            code == 0
+                && out.trim()
+                    == "proposed pr proj feat/one: #7 opened https://github.com/o/r/pull/7",
+            "land --branch: {code} {out:?} {err_text:?}"
+        );
+        assert_eq!(
+            crate::test_helpers_daemon::bare_ref(&bare, "refs/heads/feat/one"),
+            tip
+        );
+        assert_eq!(gh.head_of(7), "feat/one");
+        assert!(
+            !std::path::Path::new(&repo).join("one.txt").exists(),
+            "nothing merged locally"
+        );
+        // `--propose` is what `--branch` does now; it still parses.
+        let (out, _, code) = invoke(&s, "land", "proj", &["--branch", "feat/one", "--propose"]);
+        assert!(
+            code == 0 && out.contains("is delivered at"),
+            "land --propose: {code} {out:?}"
+        );
+        let (out, _, code) = invoke(&s, "land", "proj", &["--dry-run"]);
+        assert!(
+            code == 0 && out.starts_with("proj: pull requests go to origin/main ("),
+            "land --dry-run: {code} {out:?}"
+        );
+
+        // `--local` merges here and says what that costs.
+        run(
+            &repo,
+            &["git", "checkout", "-q", "-b", "pulse/hand/two", "main"],
+        );
+        std::fs::write(std::path::Path::new(&repo).join("two.txt"), "two\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "two"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let (out, err_text, code) = invoke(
+            &s,
+            "land",
+            "proj",
+            &["--branch", "pulse/hand/two", "--local", "--no-verify"],
+        );
+        assert!(
+            code == 0
+                && out.starts_with("proj: merging pulse/hand/two into main here; the local main will be ahead of its upstream")
+                && (out.contains("proj landed: ") || out.contains("proj merged: ")),
+            "land --local: {code} {out:?} {err_text:?}"
+        );
+        assert!(std::path::Path::new(&repo).join("two.txt").exists());
+        let (_, err_text, code) = invoke(&s, "land", "proj", &["--local"]);
+        assert!(
+            code == 2 && err_text.contains("land --local needs --branch"),
+            "{code} {err_text:?}"
         );
     }
 }

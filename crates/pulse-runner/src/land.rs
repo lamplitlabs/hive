@@ -2188,44 +2188,18 @@ pub(crate) fn land_branch_with_registry(
                 ));
             }
             let stash_msg = format!("pulse auto-stash before landing {}", job_id_of(job.clone()));
-            let stash = crate::util::git_timeout(
-                &root,
-                Duration::from_secs(60),
-                &["stash", "push", "-m", &stash_msg],
-            );
-            if !stash.ok() {
-                let why = if stash.stderr.trim().is_empty() {
-                    "git stash failed".to_string()
-                } else {
-                    stash.stderr.trim().to_string()
-                };
-                return Ok((
-                    "blocked".into(),
-                    format!(
-                        "the checkout of {root} has uncommitted changes and could not be auto-stashed: {why}"
-                    ),
-                ));
-            }
             // The stash commit just pushed: the guard pops that entry and no other,
             // so an older stash in the list is never popped onto the checkout.
-            let id = crate::util::git_timeout(
-                &root,
-                Duration::from_secs(60),
-                &["rev-parse", "--verify", "refs/stash"],
-            );
-            auto_stash = Some(AutoStash {
-                root: root.clone(),
-                armed: true,
-                since: std::time::Instant::now(),
-                id: id.stdout.trim().to_string(),
-            });
-            if !checkout_state_pair(&root, &def).1 {
-                return Ok((
-                    "blocked".into(),
-                    format!(
-                        "the checkout of {root} has uncommitted changes that could not be stashed"
-                    ),
-                ));
+            match AutoStash::push(&root, &stash_msg) {
+                Ok(guard) => auto_stash = Some(guard),
+                Err(why) => {
+                    return Ok((
+                        "blocked".into(),
+                        format!(
+                            "the checkout of {root} has uncommitted changes and could not be auto-stashed: {why}"
+                        ),
+                    ));
+                }
             }
         }
         let ff = crate::util::git_timeout_env(
@@ -3753,7 +3727,7 @@ struct LandingCleanup {
 /// once the branch landed. It pops the entry it pushed (`id`, the stash commit) and
 /// no other: a checkout can carry older stashes, and a blind `git stash pop` would
 /// land one of those on the owner's tree with conflict markers.
-struct AutoStash {
+pub(crate) struct AutoStash {
     root: String,
     armed: bool,
     since: std::time::Instant,
@@ -3761,6 +3735,44 @@ struct AutoStash {
 }
 
 impl AutoStash {
+    /// Stashes the checkout's uncommitted changes under `message` and arms the
+    /// guard; the error is git's own words when the stash could not be pushed
+    /// or the checkout is still dirty after it.
+    pub(crate) fn push(root: &str, message: &str) -> Result<AutoStash, String> {
+        let stash = crate::util::git_timeout(
+            root,
+            Duration::from_secs(60),
+            &["stash", "push", "-m", message],
+        );
+        if !stash.ok() {
+            return Err(if stash.stderr.trim().is_empty() {
+                "git stash failed".to_string()
+            } else {
+                stash.stderr.trim().to_string()
+            });
+        }
+        let id = crate::util::git_timeout(
+            root,
+            Duration::from_secs(60),
+            &["rev-parse", "--verify", "refs/stash"],
+        );
+        let guard = AutoStash {
+            root: root.to_string(),
+            armed: true,
+            since: std::time::Instant::now(),
+            id: id.stdout.trim().to_string(),
+        };
+        let status = crate::util::git_timeout(
+            root,
+            Duration::from_secs(60),
+            &["status", "--porcelain", "--untracked-files=no"],
+        );
+        if !(status.ok() && status.stdout.trim().is_empty()) {
+            return Err("the checkout still has uncommitted changes after the stash".to_string());
+        }
+        Ok(guard)
+    }
+
     /// The `stash@{n}` entry holding this landing's stash, while it is in the list.
     fn entry(&self) -> Option<String> {
         if self.id.is_empty() {
@@ -3782,7 +3794,7 @@ impl AutoStash {
     /// the clean landed tree instead of leaving conflict markers; the returned note
     /// tells the owner where the work is instead of letting it sit unmentioned in
     /// `git stash list`.
-    fn pop(&mut self) -> Option<String> {
+    pub(crate) fn pop(&mut self) -> Option<String> {
         self.armed = false;
         let Some(entry) = self.entry() else {
             return Some(format!(
