@@ -122,8 +122,16 @@ pub(crate) fn provenance_hook(agent: &str, job_id: &str, executor: &str) -> Stri
     )
 }
 pub(crate) const PRE_COMMIT_HOOK_UNSET: &str = "unset GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE";
+/// The hook runs `check_cmd` (the project's check inside the verify lock,
+/// the shared-target-dir touch inside the lock with it: `run::wrapped_check`)
+/// and keys the memo it reads and writes by `memo_cmd`, the bare check
+/// inside the lock that every other verifier keys by (`run::verify_memo_key`,
+/// landing's `vc_run`). The two differ only by the touch, which says nothing
+/// about what was verified.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pre_commit_hook_script(
-    verify_cmd: &str,
+    check_cmd: &str,
+    memo_cmd: &str,
     recipe: Option<&crate::recipe::Recipe>,
     pins: &[String],
     clone: &str,
@@ -143,17 +151,17 @@ pub(crate) fn pre_commit_hook_script(
             b.push('\n');
         }
     }
-    prepend_verify_memo_skip(&mut b, verify_cmd, clone, pulse_home, project);
+    prepend_verify_memo_skip(&mut b, memo_cmd, clone, pulse_home, project);
     // The verify runs in a subshell: the lock wrapper ends in `exit`, which
     // would otherwise leave the hook before the memo below is written.
     b.push_str("(\n");
     if pins.is_empty() {
-        b.push_str(verify_cmd);
+        b.push_str(check_cmd);
     } else {
-        b.push_str(&crate::recipe::mise_wrap_shell(pins, verify_cmd, clone));
+        b.push_str(&crate::recipe::mise_wrap_shell(pins, check_cmd, clone));
     }
     b.push_str("\n)\nrc=$?\nif [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi\n");
-    append_verify_memo_hook(&mut b, verify_cmd, clone, pulse_home, project, agent);
+    append_verify_memo_hook(&mut b, memo_cmd, clone, pulse_home, project, agent);
     b
 }
 
@@ -606,9 +614,42 @@ mod tests {
         }
     }
 
+    /// The hook runs the check it is given, touch and all, and keys the memo
+    /// it reads and writes by the bare check, like every other verifier.
+    #[test]
+    fn pre_commit_hook_runs_the_check_but_keys_the_memo_by_the_bare_command() {
+        let bare = "cargo test -p pulse-runner";
+        let check = crate::exec::freshen_before_check(bare, "the clone's");
+        let script = pre_commit_hook_script(
+            &check,
+            bare,
+            None,
+            &[],
+            "/clone",
+            "/home/me/.pulse",
+            "proj",
+            "aurora",
+        );
+        assert!(script.contains(&check), "{script}");
+        assert!(
+            script.contains(&crate::verify_memo::verify_sha256(bare)),
+            "{script}"
+        );
+        assert!(
+            !script.contains(&crate::verify_memo::verify_sha256(&check)),
+            "{script}"
+        );
+        // The touch comes after the memo skip: a tree already passed is not
+        // rebuilt either.
+        let skip = script.find("verify skipped").unwrap();
+        let touch = script.find("xargs -0 -r touch -c").unwrap();
+        assert!(skip < touch, "{script}");
+    }
+
     #[test]
     fn pre_commit_hook_writes_verified_tree_memo() {
         let script = pre_commit_hook_script(
+            "cargo test -p pulse-runner",
             "cargo test -p pulse-runner",
             None,
             &[],
@@ -667,8 +708,16 @@ mod tests {
         let runs = || std::fs::read_to_string(&counter).unwrap_or_default().len();
         let clone_s = clone.display().to_string();
         let home_s = home.display().to_string();
-        let script =
-            pre_commit_hook_script(&verify, None, &[], &clone_s, &home_s, "proj", "aurora");
+        let script = pre_commit_hook_script(
+            &verify,
+            &verify,
+            None,
+            &[],
+            &clone_s,
+            &home_s,
+            "proj",
+            "aurora",
+        );
         write_pre_commit_hook(&clone_s, &script).unwrap();
 
         std::fs::write(clone.join("a.txt"), "one\n").unwrap();
@@ -726,6 +775,7 @@ mod tests {
         git_in(&clone, &["config", "commit.gpgsign", "false"]);
         let verify = "( true )\npulse_rc=$?\nexit $pulse_rc";
         let script = pre_commit_hook_script(
+            verify,
             verify,
             None,
             &[],

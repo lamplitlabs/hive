@@ -299,8 +299,9 @@ value still parses, but no code reads it: the daemon pushes branches and
 never the default branch, and the merge is the forge's. `landing.auto_stash`
 keeps its meaning for the fast-forward of a dirty checkout
 ([above](#the-local-default-branch-follows-the-upstream)) and for `pulse land
---local`; `landing.verify_memo` and `landing.verify_memo_hours` matter only
-to the local landings. `landing.base_red_retry_minutes` and
+--local`; `landing.verify_memo` and `landing.verify_memo_hours` govern the
+local landings and the run's own check ([The verify
+command](#the-verify-command)). `landing.base_red_retry_minutes` and
 `landing.setup_repair` keep their meaning for the runs and local landings
 that find the default branch red or its setup broken ([A red default
 branch](#a-red-default-branch)). `push.credential` is used for the push and
@@ -390,7 +391,22 @@ committed in their recipe that the daemon never ran).
 
 The command runs where the work is made: in the worker clone's pre-commit hook
 at every commit, so a commit that fails the check is never made, and once more
-when the run ends, on the clone as the worker left it. A run whose check fails
+when the run ends, on the clone as the worker left it - unless the clone is
+clean and its committed tree is the one the hook just passed: the hook leaves
+a memo of the tree and the command under `~/.pulse/verified/<slug>/`, and a
+run that finds a fresh one (`landing.verify_memo`, `landing.verify_memo_hours`)
+says `verify skipped: tree <tree> already passed this check on this store` and
+records `verified earlier by hook at <when>` as its verification rather than
+run the identical command on the identical tree again; a check that does run
+and passes on a clean clone leaves a memo of its own (`by: run`), so a landing
+or a [base check](#a-red-default-branch) on that tree can skip in turn. The
+measured reason:
+on the brain, 42 run checks in three days ran 720 minutes and waited 462 for
+the project's verify lock while the hook had written 46 memos for those
+trees in the same days - twenty hours, a third of the project's lock time,
+spent passing the same trees twice. A run whose worker left changes
+uncommitted, or on a remote executor (whose hook writes its memo on the
+remote store), runs the check as before. A run whose check fails
 is a failed run - no branch is written, the job is retried as [Recovery](recovery.md)
 describes - so every branch the daemon delivers passed the project's own check
 on the commit it carries. The forge then runs the project's pipeline on the
@@ -715,6 +731,16 @@ A check that did not run to a verdict - the disk under `daemon.min_free_mb`
 not be made - says nothing about either tree: the run waits as before, but the base is not recorded red and the branch is not charged, and the
 base tree is not checked again when the job's own check could not run.
 
+The base check reads and leaves the same verified-tree memos as the run's own
+check ([The verify command](#the-verify-command)): a base tree this user
+passed within `landing.verify_memo_hours` - as a run's committed tree, a local
+landing's, or an earlier base check's - is green without taking the project's
+verify lock (`base verify skipped: tree <tree> already passed this check on
+this store`), and a base the check passes here is memoed for the next run that
+fails on it. The measured reason: the three brain runs that failed their check
+on 2026-11-04 each re-checked the same main tree, fifteen to twenty-five
+minutes of the lock apiece, to learn the same thing.
+
 The hold lifts on the tick after the default branch moves (`base.moved`),
 whoever moved it, and when the fix job ends with no commit and the daemon's own
 check of the default branch as it stands passes (`base.green`, a finding on the
@@ -752,9 +778,19 @@ verification does); the command runs under an atomic lock in
 lock whose holder has died is removed by the next arrival, and a wait longer
 than `minutes_per_job` gives up with exit 75 without running the command.
 Taking turns does not make a shared cache tell one checkout from another: a
-build system that decides freshness by file times still needs the project's own
-command to refresh what the checkout owns (for Cargo, touch the workspace
-sources before building; the dependency cache stays).
+build system that decides freshness by file times still needs what the
+checkout owns refreshed before it builds. For a Cargo project whose check
+builds into a target dir outside the clone - the recipe's `CARGO_TARGET_DIR`
+or the one the verify command names - the daemon does this itself: every
+check it runs (the pre-commit hook's, the run's own, the base tree's, a
+landing's) touches the tree's tracked `*.rs`, `Cargo.toml` and `build.rs`
+files *inside the lock, after the wait*, so the workspace crates rebuild from
+the tree being judged while the dependency cache stays. The place matters:
+Cargo names a workspace crate by its path relative to the workspace root and
+calls it fresh when its sources are older than the artifact, so a clone whose
+hook waited an hour behind another clone's check inherited that clone's test
+binaries - on 2026-11-04 two brain runs passed their hook that way and failed
+the run-end check, one with a compile error, after a day's work each.
 
 Taking turns also sets how many work jobs a project can usefully run at once:
 with a per-project share of 4 and a check that takes eight minutes, a clone's

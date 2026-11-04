@@ -1435,10 +1435,17 @@ pub(crate) fn run_job(
             }
         }
         if !custom_worker && !project.str("verify_cmd").is_empty() {
-            let hook_verify =
-                crate::verify_lock::wrap(s, &project.str("slug"), &project.str("verify_cmd"));
+            // The hook applies the recipe's exports and pins itself, so it
+            // is given the bare check inside the lock, touch included, and
+            // the memo key beside it.
+            let hook_check = crate::verify_lock::wrap(
+                s,
+                &project.str("slug"),
+                &check_with_freshen(&project, recipe.as_ref(), &clone, "the clone's"),
+            );
             ex.install_pre_commit_hook(
-                &hook_verify,
+                &hook_check,
+                &verify_memo_key(s, &project),
                 recipe.as_ref(),
                 &pins,
                 &home,
@@ -1803,7 +1810,17 @@ pub(crate) fn run_job(
                 let mut check_tool = String::new();
                 let mut base_check_cmd = String::new();
                 let mut verify_rc: Option<i32> = None;
-                if !project.str("verify_cmd").is_empty() {
+                if let Some((tree, memo)) = (!project.str("verify_cmd").is_empty())
+                    .then(|| hook_verified_tree(s, &project, &*ex, &clone))
+                    .flatten()
+                {
+                    verify_rc = Some(0);
+                    verify_note = crate::verify_memo::note(&memo, &tree);
+                    log.add(format!(
+                        "$ {}\npulse: verify skipped: tree {tree} already passed this check on this store ({verify_note})",
+                        project.str("verify_cmd")
+                    ));
+                } else if !project.str("verify_cmd").is_empty() {
                     let check_cmd = wrapped_check(s, &project, recipe.as_ref(), &pins, &clone);
                     base_check_cmd = check_cmd.clone();
                     let (mut rc, mut vout) = ex.verify(&cancel, &check_cmd, minutes);
@@ -1831,6 +1848,11 @@ pub(crate) fn run_job(
                         }
                     }
                     verify_rc = rc;
+                    if rc == Some(0) && ex.dirty().is_empty() {
+                        // The tree the check judged is the committed one, so
+                        // a landing or a later base check on it can skip.
+                        record_verified_tree(s, &project, &*ex, &clone, "HEAD", "run", agent);
+                    }
                     if let Some(rc) = rc {
                         verify_note = crate::verify_lock::exit_note(rc);
                         ok = rc == 0;
@@ -1888,14 +1910,18 @@ pub(crate) fn run_job(
                         );
                         BaseVerdict::Unknown
                     } else {
-                        base_tree_verify(
+                        base_tree_verdict(
+                            s,
+                            &project,
                             ex.as_ref(),
                             &cancel,
+                            &clone,
                             &base,
                             &base_check_cmd,
                             minutes,
                             &log,
                             "the job's verify failed; was the base already red?",
+                            agent,
                         )
                     };
                     if let BaseVerdict::Red { rc: base_rc, .. } = verdict {
@@ -3306,6 +3332,129 @@ type StagedPulsePathFn = Option<fn() -> String>;
 pub(crate) static STAGED_PULSE_PATH: LazyLock<RwLock<StagedPulsePathFn>> =
     LazyLock::new(|| RwLock::new(None));
 
+/// The key under which this project's verify memos are written and found,
+/// whoever verified: the check as the pre-commit hook runs it, inside the
+/// verify lock (`install_pre_commit_hook` is given exactly this string), and
+/// the key a landing uses too (`land.rs`, `vc_run`). Recipe exports and tool
+/// pins wrap the command that runs but never the key, so a memo written by
+/// one verifier is good for every other.
+fn verify_memo_key(s: &pulse_store::Store, project: &Row) -> String {
+    crate::verify_lock::wrap(s, &project.str("slug"), &project.str("verify_cmd"))
+}
+
+/// The tree `rev` names in the clone and its fresh verify memo, when this
+/// user already passed this project's check on that very tree on this store
+/// (`landing.verify_memo`, `landing.verify_memo_hours`). Only a local
+/// executor qualifies: a remote executor's hook writes its memo on the
+/// remote store, where this daemon cannot read it.
+fn verified_tree(
+    s: &pulse_store::Store,
+    project: &Row,
+    ex: &dyn Executor,
+    clone: &str,
+    rev: &str,
+) -> Option<(String, crate::verify_memo::VerifyMemo)> {
+    if ex.remote() || project.str("verify_cmd").is_empty() {
+        return None;
+    }
+    let tree = crate::land::git_tree(clone, rev);
+    if tree.is_empty() {
+        return None;
+    }
+    let key = verify_memo_key(s, project);
+    let memo = crate::land::find_verify_memo(s, &project.str("slug"), &tree, &key, &s.now())?;
+    Some((tree, memo))
+}
+
+/// The clone's committed tree when the pre-commit hook's memo says it already
+/// passed this project's check: the run's own check then has nothing to add,
+/// since the hook ran the identical command on the identical tree moments
+/// before, and it is skipped. Only a clean clone qualifies - uncommitted
+/// tracked changes mean the check would judge a tree the hook did not. The
+/// measured reason: on the brain, 42 run checks in the three days to
+/// 2026-11-04 ran 720 minutes and waited 462 for the project's verify lock,
+/// while the hook had written 46 memos for those trees in the same days -
+/// twenty hours of lock time, a third of the project's, spent passing the
+/// same trees twice.
+fn hook_verified_tree(
+    s: &pulse_store::Store,
+    project: &Row,
+    ex: &dyn Executor,
+    clone: &str,
+) -> Option<(String, crate::verify_memo::VerifyMemo)> {
+    if !ex.dirty().is_empty() {
+        return None;
+    }
+    verified_tree(s, project, ex, clone, "HEAD")
+}
+
+/// Leaves the memo a passed check earns: `rev`'s tree in a local clone, keyed
+/// as every other verifier keys it, so the next run, landing or base check on
+/// the same tree can skip. A remote executor's memo belongs on the remote
+/// store and is not written here.
+fn record_verified_tree(
+    s: &pulse_store::Store,
+    project: &Row,
+    ex: &dyn Executor,
+    clone: &str,
+    rev: &str,
+    by: &str,
+    agent: &str,
+) {
+    if ex.remote() || project.str("verify_cmd").is_empty() {
+        return;
+    }
+    let tree = crate::land::git_tree(clone, rev);
+    if tree.is_empty() {
+        return;
+    }
+    let _ = crate::verify_memo::write(
+        &s.home,
+        &project.str("slug"),
+        &tree,
+        &verify_memo_key(s, project),
+        by,
+        agent,
+        clone,
+    );
+}
+
+/// `base_tree_verify` behind the verify memo: a base tree this user already
+/// passed is green without the check, and a base the check passes here is
+/// memoed for the next run that fails on it. The measured reason: the three
+/// brain runs that failed their check on 2026-11-04 (fjord-7, ember-7,
+/// nimbus-7) each re-checked the same main tree `6cd2724e`, fifteen to
+/// twenty-five minutes of the project's verify lock apiece, to learn the same
+/// thing.
+#[allow(clippy::too_many_arguments)]
+fn base_tree_verdict(
+    s: &pulse_store::Store,
+    project: &Row,
+    ex: &dyn Executor,
+    cancel: &pulse_bus::CancellationToken,
+    clone: &str,
+    base: &str,
+    check_cmd: &str,
+    minutes: i32,
+    log: &RunLog,
+    why: &str,
+    agent: &str,
+) -> BaseVerdict {
+    if let Some((tree, memo)) = verified_tree(s, project, ex, clone, base) {
+        log.add(format!(
+            "$ verify the base tree {} ({why})\npulse: base verify skipped: tree {tree} already passed this check on this store ({}); the base is green",
+            crate::recipe::short(base, 12),
+            crate::verify_memo::note(&memo, &tree)
+        ));
+        return BaseVerdict::Green;
+    }
+    let verdict = base_tree_verify(ex, cancel, base, check_cmd, minutes, log, why);
+    if matches!(verdict, BaseVerdict::Green) {
+        record_verified_tree(s, project, ex, clone, base, "base", agent);
+    }
+    verdict
+}
+
 /// On the failure path only: re-run the project's check against the base tree
 /// (the commit the job branched from) in a throwaway worktree beside the clone.
 /// Returns `Some(exit)` when the base itself fails verify, so the job's commits
@@ -3328,7 +3477,47 @@ pub(crate) fn wrapped_check(
     if !pins.is_empty() {
         cmd = crate::recipe::mise_wrap_shell(pins, &cmd, clone);
     }
+    if check_shares_target_dir(project, recipe, clone) {
+        // The run-end check runs in the clone and the base check in a
+        // worktree beside it; the line is relative to wherever it runs.
+        cmd = crate::exec::freshen_before_check(&cmd, "the tree's");
+    }
     crate::verify_lock::wrap(s, &project.str("slug"), &cmd)
+}
+
+/// True when the project's check builds into a Cargo target dir outside the
+/// clone - the recipe's `CARGO_TARGET_DIR` or the one the verify command
+/// names - and so shares it with every other clone and landing of the
+/// project (`exec::check_shares_cargo_target_dir`).
+fn check_shares_target_dir(
+    project: &Row,
+    recipe: Option<&crate::recipe::Recipe>,
+    clone: &str,
+) -> bool {
+    crate::exec::check_shares_cargo_target_dir(
+        recipe
+            .and_then(|r| r.env.get("CARGO_TARGET_DIR"))
+            .map(String::as_str),
+        &project.str("verify_cmd"),
+        clone,
+    )
+}
+
+/// The bare verify command with the shared-target-dir touch in front of it
+/// when the check needs one (`exec::freshen_before_check`), for the hook,
+/// which wraps the recipe's exports and pins around the check itself.
+fn check_with_freshen(
+    project: &Row,
+    recipe: Option<&crate::recipe::Recipe>,
+    clone: &str,
+    whose: &str,
+) -> String {
+    let vc = project.str("verify_cmd");
+    if check_shares_target_dir(project, recipe, clone) {
+        crate::exec::freshen_before_check(&vc, whose)
+    } else {
+        vc
+    }
 }
 
 /// The shell line that runs `check` on a detached worktree of `base` at `wt`
@@ -3570,6 +3759,7 @@ mod tests {
         fn install_pre_commit_hook(
             &self,
             _: &str,
+            _: &str,
             _: Option<&crate::recipe::Recipe>,
             _: &[String],
             _: &str,
@@ -3787,6 +3977,274 @@ mod tests {
         );
     }
 
+    /// The pre-commit hook verified the committed tree and left its memo: the
+    /// run's own check, the identical command on the identical tree, is
+    /// skipped. A clone the worker left with uncommitted edits is checked as
+    /// before, since the hook never saw that tree. A custom worker gets no
+    /// hook from the run, so the worker installs the run's own hook script
+    /// itself before it commits.
+    #[test]
+    fn run_job_skips_the_check_the_hook_just_passed_on_the_same_tree() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, _) = new_repo(&s);
+        join(&s, "aurora");
+        let count_path = std::path::Path::new(&s.home).join("checks");
+        let vc = format!(
+            "printf 'x\\n' >> {}",
+            crate::util::shell_quote(&count_path.display().to_string())
+        );
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &conn,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[&vc, &proj.str("slug")],
+        );
+        let run_with = |title: &str, after_hook: &str| {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "commit a file".into(),
+                1,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            let job = crate::jobs::lease_job(
+                &s,
+                "aurora".into(),
+                TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: job.str("id"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let clone = std::path::Path::new(&s.home)
+                .join("work")
+                .join(job.str("id"))
+                .display()
+                .to_string();
+            let hook_path = std::path::Path::new(&s.home).join(format!("hook-{title}"));
+            std::fs::write(
+                &hook_path,
+                crate::keys::pre_commit_hook_script(
+                    &crate::verify_lock::wrap(&s, "proj", &vc),
+                    &crate::verify_lock::wrap(&s, "proj", &vc),
+                    None,
+                    &[],
+                    &clone,
+                    &s.home,
+                    "proj",
+                    "aurora",
+                ),
+            )
+            .unwrap();
+            let worker = format!(
+                "cp {} .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit && {after_hook}",
+                crate::util::shell_quote(&hook_path.display().to_string())
+            );
+            let r = run_job(
+                &s,
+                job,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let log = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+            (r, log)
+        };
+        let (r, log) = run_with(
+            "clean",
+            "printf 'a\\n' > a.txt && git add a.txt && git commit -q -m a && echo 'SUMMARY: a'",
+        );
+        assert_eq!(r.str("status"), "done", "run: {r:?}\n{log}");
+        assert!(
+            r.str("verify").starts_with("verified earlier by hook at "),
+            "run: {r:?}\n{log}"
+        );
+        assert!(
+            log.contains("pulse: verify skipped: tree ")
+                && log.contains(" already passed this check on this store ("),
+            "{log}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&count_path).unwrap().trim(),
+            "x",
+            "the check ran once, in the hook"
+        );
+        // The worker commits, then edits a tracked file without committing:
+        // the tree the check would judge is not the one the hook passed.
+        let (r, log) = run_with(
+            "dirty",
+            "printf 'b\\n' > b.txt && git add b.txt && git commit -q -m b && printf 'more\\n' >> b.txt && echo 'SUMMARY: b'",
+        );
+        assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}\n{log}");
+        assert!(!log.contains("verify skipped"), "{log}");
+        assert_eq!(
+            std::fs::read_to_string(&count_path).unwrap().trim(),
+            "x\nx\nx",
+            "the hook's check and the run's"
+        );
+    }
+
+    /// A check that builds into a target dir shared with other trees carries
+    /// its touch inside the verify lock, after the wait, and the memo key is
+    /// the check without it: the hook, the run-end check and the base check
+    /// all key the same memo whatever they had to touch.
+    #[test]
+    fn wrapped_check_touches_the_sources_inside_the_lock_and_keys_the_memo_without_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (mut proj, root) = new_repo(&s);
+        s.set_setting("human", "verify.lock", "project").unwrap();
+        let shared =
+            "env CARGO_TARGET_DIR=${PULSE_TEST_FRESHEN_UNSET:-/tmp/pulse-land-shared} cargo test";
+        proj.insert("verify_cmd", serde_json::json!(shared));
+        let cmd = wrapped_check(&s, &proj, None, &[], &root);
+        let lock_taken = cmd.find("pulse_t0=$(date +%s)").expect("the lock prelude");
+        let touch = cmd.find("xargs -0 -r touch -c").expect("the touch");
+        let check = cmd.find(shared).expect("the check");
+        assert!(lock_taken < touch && touch < check, "{cmd}");
+        assert_eq!(
+            verify_memo_key(&s, &proj),
+            crate::verify_lock::wrap(&s, "proj", shared),
+            "the memo key is the bare check inside the lock"
+        );
+        assert_ne!(cmd, verify_memo_key(&s, &proj));
+        // A target dir inside the clone is this tree's alone: no touch, and
+        // the check is its own memo key.
+        proj.insert("verify_cmd", serde_json::json!("cargo test"));
+        let cmd = wrapped_check(&s, &proj, None, &[], &root);
+        assert!(!cmd.contains("touch"), "{cmd}");
+        assert_eq!(cmd, verify_memo_key(&s, &proj));
+    }
+
+    /// Two runs fail their check on the same base: the first checks the base
+    /// tree and memoes it green, the second reads the memo instead of taking
+    /// the project's verify lock for the same answer.
+    #[test]
+    fn run_job_checks_a_base_tree_once_across_runs_that_fail_on_it() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        let count_path = std::path::Path::new(&s.home).join("base-checks");
+        std::fs::write(
+            std::path::Path::new(&root).join("check.sh"),
+            format!(
+                "printf 'b\\n' >> {}\nexit 0\n",
+                crate::util::shell_quote(&count_path.display().to_string())
+            ),
+        )
+        .unwrap();
+        run(&root, &["git", "add", "check.sh"]);
+        run(&root, &["git", "commit", "-q", "-m", "green base"]);
+        let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+                ["sh ./check.sh"],
+            )
+            .unwrap();
+        join(&s, "aurora");
+        let run_red = |title: &str| {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "break the check".into(),
+                1,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            let job = crate::jobs::lease_job(
+                &s,
+                "aurora".into(),
+                TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    job_id: job.str("id"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            // The worker's commit turns the check red; the base stays green.
+            let worker = format!(
+                "printf 'exit 1\\n' > check.sh && git add check.sh && git commit -q -m {title} && echo 'SUMMARY: {title}'"
+            );
+            let r = run_job(
+                &s,
+                job,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(r.str("status"), "failed", "run: {r:?}");
+            assert_eq!(
+                r.str("summary"),
+                "1 commit(s) but verify exit 1; nothing landed",
+                "the base is green either way"
+            );
+            std::fs::read_to_string(r.str("log")).unwrap()
+        };
+        let log = run_red("first");
+        assert!(
+            log.contains("base tree verify exit 0: the base is green"),
+            "{log}"
+        );
+        assert_eq!(std::fs::read_to_string(&count_path).unwrap().trim(), "b");
+        let base_tree = run(&root, &["git", "rev-parse", &format!("{base}^{{tree}}")])
+            .trim()
+            .to_string();
+        let memo = crate::verify_memo::lookup(
+            &s.home,
+            "proj",
+            &base_tree,
+            &crate::verify_lock::wrap(&s, "proj", "sh ./check.sh"),
+            24,
+            chrono::Utc::now(),
+        )
+        .expect("the green base is memoed");
+        assert_eq!(memo.by, "base");
+        let log = run_red("second");
+        assert!(
+            log.contains(&format!(
+                "pulse: base verify skipped: tree {base_tree} already passed this check on this store (verified earlier by base at "
+            )),
+            "{log}"
+        );
+        assert!(!log.contains("base tree verify exit"), "{log}");
+        assert_eq!(
+            std::fs::read_to_string(&count_path).unwrap().trim(),
+            "b",
+            "the base was checked once"
+        );
+    }
+
     #[test]
     fn run_job_gives_the_worker_and_the_check_a_tmpdir_beside_the_clone_and_removes_it() {
         let _serial = crate::test_helpers::serial();
@@ -3795,7 +4253,7 @@ mod tests {
             return;
         }
         let s = new_store();
-        let (proj, _) = new_repo(&s);
+        let (proj, root) = new_repo(&s);
         join(&s, "aurora");
         let seen_path = std::path::Path::new(&s.home).join("tmpdirs");
         let seen = crate::util::shell_quote(&seen_path.display().to_string());
@@ -3848,6 +4306,24 @@ mod tests {
         .unwrap();
         assert_eq!(r.str("status"), "done", "run: {r:?}");
         assert_eq!(r.str("verify"), "verify exit 0", "run: {r:?}");
+        // The passed check leaves its memo for the branch's tree, keyed as
+        // the hook and a landing key theirs.
+        let tree = run(
+            &root,
+            &["git", "rev-parse", &format!("{}^{{tree}}", r.str("branch"))],
+        )
+        .trim()
+        .to_string();
+        let memo = crate::verify_memo::lookup(
+            &s.home,
+            "proj",
+            &tree,
+            &crate::verify_lock::wrap(&s, "proj", &record),
+            24,
+            chrono::Utc::now(),
+        )
+        .expect("the run's passed check is memoed");
+        assert_eq!(memo.by, "run");
         let want = std::path::Path::new(&s.home)
             .join("work")
             .join(format!("{job_id}.tmp"))
@@ -6437,7 +6913,20 @@ mod tests {
             }
             assert_eq!(successful.str("status"), "done", "successful run");
             assert_eq!(successful.int("commits"), 1, "successful run");
-            assert_eq!(successful.str("verify"), "verify exit 0", "successful run");
+            if takeover == "verification" {
+                // The fenced run's check passed on this very tree and left
+                // its memo; the replacement commits the identical fixture
+                // and skips the identical check.
+                assert!(
+                    successful
+                        .str("verify")
+                        .starts_with("verified earlier by run at "),
+                    "successful run: {:?}",
+                    successful.str("verify")
+                );
+            } else {
+                assert_eq!(successful.str("verify"), "verify exit 0", "successful run");
+            }
             assert_eq!(
                 successful.str("branch"),
                 format!("pulse/quiet/{}", job.str("id")),

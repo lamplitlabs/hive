@@ -2986,6 +2986,7 @@ mod tests {
         };
         let script = crate::keys::pre_commit_hook_script(
             "make test",
+            "make test",
             Some(&recipe),
             &[],
             "/tmp/clone",
@@ -3033,6 +3034,7 @@ mod tests {
         };
         let pins = vec!["go@1.22".to_string(), "node@20".to_string()];
         let script = crate::keys::pre_commit_hook_script(
+            "go test ./...",
             "go test ./...",
             Some(&recipe),
             &pins,
