@@ -44,7 +44,7 @@ pub fn register() {
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
         cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--pr] [--propose]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made and of each project's default branch head, whoever pushed it: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
-        cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
+        cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:DAEMON_USAGE.into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
         cli_register(Command { name:"backup".into(), group:"runner".into(), summary:"copy the store off this machine: a checked, gzipped copy of pulse.sqlite to backup.to - a directory, az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage), or `run: COMMAND {file} {name}` (the daemon does this every backup.every_hours); --status shows the last one and when the next is due".into(), usage:"pulse backup [--to DEST] [--keep N] [--status] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_backup, flags:Some(backup_flags) });
         cli_register(Command { name:"service".into(), group:"runner".into(), summary:"install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)".into(), usage:"pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_service, flags:Some(service_flags) });
@@ -102,6 +102,11 @@ fn daemon_flags(fs: &mut FlagSet) {
         "no-restart",
         false,
         "do not exit for a restart when the pulse binary changes",
+    );
+    fs.bool_var(
+        "force",
+        false,
+        "start even when the heartbeat names another live daemon",
     );
     fs.int_var(
         "max-jobs",
@@ -672,11 +677,86 @@ pub(crate) fn query_one_row(
         .unwrap_or_default()
 }
 
-pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
+const DAEMON_USAGE: &str = "pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--force] [--agent A]";
+
+/// The pid of another daemon that still beats on this store: the heartbeat
+/// row names a pid other than ours that is alive, its note is not the final
+/// `exited`/`restarting` beat, and the beat is fresh (the same window
+/// `pulse status` calls alive), so a pid reused after a reboot does not
+/// block the service from starting.
+pub(crate) fn live_daemon_pid(s: &pulse_store::Store) -> Option<(i32, String)> {
+    let (raw, exists) = s.meta("daemon").ok()?;
+    if !exists {
+        return None;
+    }
+    let beat: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let pid = i32::try_from(beat.get("pid")?.as_i64()?).ok()?;
+    if pid <= 1 || pid as u32 == std::process::id() {
+        return None;
+    }
+    let note = beat.get("note").and_then(|v| v.as_str()).unwrap_or("");
+    if note == "exited" || note == "restarting" {
+        return None;
+    }
+    let at = beat.get("at").and_then(|v| v.as_str()).unwrap_or("");
+    let at_time = crate::util::parse_iso(at).ok()?;
+    let now = crate::util::parse_iso(&s.now()).ok()?;
+    let interval = beat
+        .get("interval")
+        .and_then(|v| v.as_i64())
+        .filter(|n| *n > 0)
+        .unwrap_or(crate::daemon::DEFAULT_DAEMON_INTERVAL_SECONDS as i64);
+    if (now - at_time).num_seconds() > 2 * interval + 60 {
+        return None;
+    }
+    // ESRCH is the only answer that means gone; EPERM is a live process of
+    // another user.
+    let gone = matches!(
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+        Err(nix::errno::Errno::ESRCH)
+    );
+    if gone {
+        return None;
+    }
+    Some((pid, at.to_string()))
+}
+
+/// Why `pulse daemon` will not start: stray positional arguments (exit 2)
+/// or another live daemon on the same store (exit 3) unless `--force`.
+fn daemon_start_refusal(
+    s: &pulse_store::Store,
+    fs: &FlagSet,
+    args: &[String],
+) -> Option<pulse_cli::Error> {
+    if !args.is_empty() {
+        return Some(crate::util::fail(
+            2,
+            format!(
+                "pulse daemon takes no arguments (got {}); usage: {DAEMON_USAGE}",
+                args.join(" ")
+            ),
+        ));
+    }
+    if bool_flag(fs, "force") {
+        return None;
+    }
+    let (pid, at) = live_daemon_pid(s)?;
+    Some(crate::util::fail(
+        3,
+        format!(
+            "a pulse daemon is already running on this store (pid {pid}, last heartbeat {at}); stop it first or pass --force"
+        ),
+    ))
+}
+
+pub(crate) fn cmd_daemon(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = c
         .store
         .clone()
         .ok_or_else(|| anyhow!("daemon: store is needed"))?;
+    if let Some(refusal) = daemon_start_refusal(&s, fs, args) {
+        return Err(refusal.into());
+    }
     // The first SIGTERM/SIGINT cancels the loop; `_stop` (the guard) unregisters the
     // handler on return so a second signal terminates the process.
     let cancel = pulse_bus::CancellationToken::new();
@@ -1959,6 +2039,83 @@ mod tests {
             crate::executor::executor_row(&s, "hands").is_empty(),
             "still there"
         );
+    }
+
+    /// The heartbeat row a running daemon leaves, naming `pid`.
+    fn beat_for(s: &pulse_store::Store, pid: u32, note: &str, at: &str) {
+        crate::daemon::meta_upsert(
+            s,
+            "daemon",
+            &json!({"pid": pid, "at": at, "loops": 3, "passes": 1, "interval": 60, "note": note}),
+        );
+    }
+
+    fn daemon_flagset(args: &[&str]) -> FlagSet {
+        let mut fs = FlagSet::new("daemon");
+        daemon_flags(&mut fs);
+        fs.parse(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+            .expect("daemon flags");
+        fs
+    }
+
+    #[test]
+    fn daemon_refuses_stray_arguments_with_its_usage() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (out, err_text, code) = invoke(&s, "daemon", "", &["start", "--once"]);
+        assert!(
+            code == 2
+                && err_text.contains("takes no arguments (got start)")
+                && err_text.contains(DAEMON_USAGE),
+            "stray argument: {code} {out:?} {err_text:?}"
+        );
+        let (raw, exists) = s.meta("daemon").unwrap();
+        assert!(!exists, "a refused daemon wrote a heartbeat: {raw}");
+    }
+
+    #[test]
+    fn daemon_refuses_a_second_live_instance_unless_forced() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let mut other = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = other.id();
+        beat_for(&s, pid, "idle", &s.now());
+        let (out, err_text, code) = invoke(&s, "daemon", "", &["--once", "--dry-run"]);
+        assert!(
+            code == 3
+                && err_text.contains(&format!("already running on this store (pid {pid}"))
+                && err_text.contains("--force"),
+            "second daemon: {code} {out:?} {err_text:?}"
+        );
+        let (raw, _) = s.meta("daemon").unwrap();
+        assert!(
+            raw.contains(&format!("\"pid\":{pid}")),
+            "the refused daemon overwrote the live one's heartbeat: {raw}"
+        );
+        assert!(
+            daemon_start_refusal(&s, &daemon_flagset(&["--force"]), &[]).is_none(),
+            "--force still refused"
+        );
+        // The final beats and a stale beat do not hold the store.
+        for note in ["exited", "restarting"] {
+            beat_for(&s, pid, note, &s.now());
+            assert_eq!(live_daemon_pid(&s), None, "note {note}");
+        }
+        beat_for(&s, pid, "idle", "2000-01-01T00:00:00Z");
+        assert_eq!(live_daemon_pid(&s), None, "a stale beat held the store");
+        // Our own pid is never another daemon.
+        beat_for(&s, std::process::id(), "idle", &s.now());
+        assert_eq!(live_daemon_pid(&s), None, "own pid");
+        // A dead pid frees the store.
+        beat_for(&s, pid, "idle", &s.now());
+        assert_eq!(live_daemon_pid(&s).map(|(p, _)| p), Some(pid as i32));
+        other.kill().expect("kill sleep");
+        other.wait().expect("reap sleep");
+        assert_eq!(live_daemon_pid(&s), None, "a dead pid held the store");
+        assert!(daemon_start_refusal(&s, &daemon_flagset(&[]), &[]).is_none());
     }
 
     #[test]
