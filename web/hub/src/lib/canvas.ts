@@ -55,7 +55,7 @@ export const KIND_LABEL: Record<CanvasKind, string> = {
   diff: "All changes",
   artifacts: "Artifacts",
   artifact: "Artifact",
-  subs: "Sub-conversations",
+  subs: "Sub-sessions",
   project: "Project",
   links: "Links",
   steps: "Steps",

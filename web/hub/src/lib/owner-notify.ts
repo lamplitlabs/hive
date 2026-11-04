@@ -143,7 +143,7 @@ function chatItems(c: Conversation): NotifyItem[] {
   if (!c.turns || status === "running" || (live?.queued?.length ?? 0) > 0) return [];
   if (status === "closed") {
     if (c.note === CLOSED_BY_OWNER_NOTE) return [];
-    return [{ ...base, id: "chat-done:" + c.id + ":" + c.turns, kind: "chat-done", group: "finished", title: "Conversation finished", body: title + (c.note ? ": " + clip(c.note, 160) : "") }];
+    return [{ ...base, id: "chat-done:" + c.id + ":" + c.turns, kind: "chat-done", group: "finished", title: "Session finished", body: title + (c.note ? ": " + clip(c.note, 160) : "") }];
   }
   if (status === "idle") return [{ ...base, id: "chat-reply:" + c.id + ":" + c.turns, kind: "chat-reply", group: "finished", title: "Reply ready", body: title }];
   return [];

@@ -852,7 +852,7 @@ function ViewerBar({
         variant="ghost"
         onClick={onClose}
         className="shrink-0 text-muted-foreground hover:text-foreground"
-        title="Back to the conversation (Esc)"
+        title="Back to the session (Esc)"
       >
         <ArrowLeftIcon /> <span className="hidden sm:inline">Conversation</span>
       </Button>
@@ -866,7 +866,7 @@ function ViewerBar({
           variant="ghost"
           onClick={onClose}
           aria-label="Close"
-          title="Back to the conversation (Esc)"
+          title="Back to the session (Esc)"
         >
           <XIcon />
         </Button>

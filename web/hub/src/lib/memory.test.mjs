@@ -38,7 +38,7 @@ const orphan = file("old-project", "project", "", [entry("2026-03-04", "gone but
 
 test("files are named for a person and explained in one line", () => {
   assert.equal(fileTitle(user), "You, in every project");
-  assert.equal(fileTitle(shared), "Conversations without a project");
+  assert.equal(fileTitle(shared), "Sessions without a project");
   assert.equal(fileTitle(demo), "demo-app");
   assert.equal(fileTitle(orphan), "old-project");
   assert.match(fileHint(user), /every run on every project/);

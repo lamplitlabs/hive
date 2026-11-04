@@ -129,7 +129,7 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
     return (
       <div className="p-5">
         <ErrorNotice error={error} onRetry={() => void reload()}>
-          The conversation didn&apos;t load.
+          The session didn&apos;t load.
         </ErrorNotice>
       </div>
     );
@@ -165,7 +165,7 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
         className={cn("scroll-thin min-h-0 flex-1 overflow-y-auto bg-background/60 px-4 py-4 sm:px-5", className)}
         role="log"
         aria-live="polite"
-        aria-label="Conversation on this task"
+        aria-label="Session on this task"
       >
         {data.has_more ? (
           <div className="mb-4 flex justify-center">

@@ -278,7 +278,7 @@ const LET_AGENT_DECIDE = "__decide__";
 // without restarting the hub: the session ends, the next message loads
 // the conversation back from its saved transcript and repairs it.
 const RESTART_SESSION_HINT =
-  "Start the agent's session over from the saved transcript. Keeps the transcript and the workspace; the next message reloads the conversation from the transcript, repairing anything the provider refused.";
+  "Start the agent's session over from the saved transcript. Keeps the transcript and the workspace; the next message reloads the session from the transcript, repairing anything the provider refused.";
 
 function stepRange(
   m: ConversationMessage,
@@ -1098,7 +1098,7 @@ export function ChatPageClient() {
   // (the shell names the page; this only adds the count).
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const base = "Chat · PULSE";
+    const base = "Sessions · PULSE";
     document.title = attention ? `(${attention}) ${base}` : base;
   }, [attention]);
 
@@ -1142,7 +1142,7 @@ export function ChatPageClient() {
         sub={
           opened
             ? undefined
-            : "Ask an agent to do something. It works in its own branch, shows every step, and asks when it needs you. Leave a conversation without a project and the agent picks the project itself."
+            : "Ask an agent to do something. It works in its own branch, shows every step, and asks when it needs you. Leave a session without a project and the agent picks the project itself."
         }
         actions={
           // On a phone the list is off-screen while a conversation is open,
@@ -1155,12 +1155,12 @@ export function ChatPageClient() {
               className="lg:hidden"
               onClick={() => open(null)}
             >
-              <MessageSquarePlusIcon /> New conversation
+              <MessageSquarePlusIcon /> New session
             </Button>
           ) : undefined
         }
       >
-        Chat
+        Sessions
       </PageTitle>
       {unavailable ? (
         <Notice tone="warn">
@@ -1169,7 +1169,7 @@ export function ChatPageClient() {
         </Notice>
       ) : list.error && !list.data ? (
         <ErrorNotice error={list.error} onRetry={() => void list.reload()}>
-          The conversation list did not load.
+          The session list did not load.
         </ErrorNotice>
       ) : null}
       <Split list={listNode} listOnMobile={!opened} fill={opened}>
@@ -1256,7 +1256,7 @@ function ConversationList({
         aria-current={composing ? "page" : undefined}
       >
         <MessageSquarePlusIcon className="size-4" />
-        New conversation
+        New session
       </Button>
       <h2 className="px-1 pt-1 text-[13px] font-semibold tracking-wide text-muted-foreground uppercase">
         Conversations
@@ -1266,9 +1266,9 @@ function ConversationList({
       ) : entries.length === 0 ? (
         <EmptyState
           icon={<PulseMascot mood="happy" size={56} decorative />}
-          hint="Start one on the right. What an agent hands on - a sub-conversation, a task's steps - is listed under it."
+          hint="Start one on the right. What an agent hands on - a sub-session, a task's steps - is listed under it."
         >
-          No conversations yet.
+          No sessions yet.
         </EmptyState>
       ) : (
         groups.map(({ g, entries: all }) => {
@@ -1657,7 +1657,7 @@ function ConversationItem({
           <ul
             className="grid min-w-0 gap-px border-t bg-muted/20 py-1"
             role="list"
-            aria-label={`Sub-conversations of ${c.title || c.id}`}
+            aria-label={`Sub-sessions of ${c.title || c.id}`}
           >
             {subs.map((k) => {
               const km = moodOf(k);
@@ -1672,7 +1672,7 @@ function ConversationItem({
                       "flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50",
                       kActive && "bg-primary/[0.08]",
                     )}
-                    title={`${k.title || k.id}: open the sub-conversation`}
+                    title={`${k.title || k.id}: open the sub-session`}
                   >
                     <span
                       className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl"
@@ -1781,7 +1781,7 @@ function NewConversation({
           priority: 10,
         });
         toast.success(
-          `Started. The ${project} lead agent is on it now and replies in the conversation.`,
+          `Started. The ${project} lead agent is on it now and replies in the session.`,
           { id, description: r.task.id },
         );
         invalidate(
@@ -1794,7 +1794,7 @@ function NewConversation({
         onTaskCreated(r.task.id);
       } catch (e) {
         toast.dismiss(id);
-        fail(e, "The conversation did not start");
+        fail(e, "The session did not start");
       } finally {
         setBusy(false);
       }
@@ -1812,7 +1812,7 @@ function NewConversation({
       invalidate("chat");
       onCreated(r.conversation);
     } catch (e) {
-      fail(e, "The conversation did not start");
+      fail(e, "The session did not start");
     } finally {
       setBusy(false);
     }
@@ -1841,7 +1841,7 @@ function NewConversation({
                 Say it the way you would to a colleague. The agent reads the
                 project, works in its own branch, and reports back here.{" "}
                 {busyElsewhere
-                  ? `${plural(busyElsewhere, "other conversation")} ${busyElsewhere === 1 ? "is" : "are"} working right now.`
+                  ? `${plural(busyElsewhere, "other session")} ${busyElsewhere === 1 ? "is" : "are"} working right now.`
                   : ""}
               </p>
             </div>
@@ -1954,7 +1954,7 @@ function NewConversation({
                       value={model}
                       onChange={setModel}
                       models={models.data?.models ?? []}
-                      label="Model for this conversation"
+                      label="Model for this session"
                     />
                   </label>
                   <label className="grid gap-1 text-xs font-medium text-muted-foreground">
@@ -1962,7 +1962,7 @@ function NewConversation({
                     <EffortPicker
                       value={reasoning}
                       onChange={setReasoning}
-                      label="Reasoning effort for this conversation"
+                      label="Reasoning effort for this session"
                     />
                   </label>
                   <label className="flex items-center gap-2 text-sm text-foreground">
@@ -2041,7 +2041,7 @@ function NewConversation({
           {
             icon: GitBranchIcon,
             title: "Its own branch",
-            body: "Each conversation works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like.",
+            body: "Each session works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like.",
           },
           {
             icon: ShieldCheckIcon,
@@ -2051,7 +2051,7 @@ function NewConversation({
           {
             icon: ListChecksIcon,
             title: "Hands work on in view",
-            body: "Big work fans out: the agent starts sub-conversations, or the project's team takes it as steps. Each shows under its conversation in the list, open to watch or steer.",
+            body: "Big work fans out: the agent starts sub-sessions, or the project's team takes it as steps. Each shows under its session in the list, open to watch or steer.",
           },
         ].map((f, i) => (
           <div
@@ -2167,7 +2167,7 @@ function ConversationView({
       setError("");
     } catch (e) {
       const t = errorText(e);
-      setError(t.error || "The conversation did not load.");
+      setError(t.error || "The session did not load.");
       if (e instanceof ApiError && e.status === 404) goneRef.current();
     } finally {
       inflight.current = false;
@@ -2255,7 +2255,7 @@ function ConversationView({
           <div className="grid gap-3">
             <BackButton onBack={onBack} />
             <ErrorNotice error={error} onRetry={() => void pull()}>
-              This conversation did not load.
+              This session did not load.
             </ErrorNotice>
           </div>
         }
@@ -2621,7 +2621,7 @@ function ConversationBody({
                   onChange={(e) => setTitle(e.target.value)}
                   onBlur={saveTitle}
                   autoFocus
-                  aria-label="Conversation title"
+                  aria-label="Session title"
                   className="h-8 max-w-md"
                   maxLength={120}
                 />
@@ -2703,7 +2703,7 @@ function ConversationBody({
                     <Link
                       href={hrefs.conversations(c.parent)}
                       className="truncate underline-offset-4 hover:text-foreground hover:underline"
-                      title="Open the conversation this one is part of"
+                      title="Open the session this one is part of"
                     >
                       {d.parentTitle || c.parent}
                     </Link>
@@ -2742,7 +2742,7 @@ function ConversationBody({
                 )
               }
               disabled={!!busy}
-              title="Finish this conversation; a message reopens it"
+              title="Finish this session; a message reopens it"
             >
               <CircleCheckIcon />
               <span className="sr-only sm:not-sr-only">Finish</span>
@@ -2758,7 +2758,7 @@ function ConversationBody({
                 void act(
                   "restart",
                   () => writes.chatRestart(c.id),
-                  "Session restarted. Your next message reloads the conversation from the saved transcript.",
+                  "Session restarted. Your next message reloads the session from the saved transcript.",
                 )
               }
               disabled={!!busy || running || waiting}
@@ -2786,7 +2786,7 @@ function ConversationBody({
                 )
               }
               disabled={!!busy}
-              title="Archive this conversation"
+              title="Archive this session"
             >
               <ArchiveIcon />
               <span className="sr-only sm:not-sr-only">Archive</span>
@@ -2812,15 +2812,15 @@ function ConversationBody({
       ) : null}
       {archived ? (
         <Notice tone="info">
-          This conversation is archived. Its branch and files stay where they
+          This session is archived. Its branch and files stay where they
           were; start a new conversation to carry on.
         </Notice>
       ) : null}
       {closed && !archived ? (
         <Notice tone="info">
           {closedBy === "owner"
-            ? "You finished this conversation."
-            : "The agent finished this conversation" +
+            ? "You finished this session."
+            : "The agent finished this session" +
               (c.note ? ": " + c.note : ".")}{" "}
           Write below to reopen it, or archive it to put it away.
         </Notice>
@@ -2933,7 +2933,7 @@ function ConversationBody({
   const canvas = (
     <Canvas
       ctl={ctl}
-      label="Work of this conversation"
+      label="Work of this session"
       session={d.sessionId}
       steps={steps}
       live={running}
@@ -3245,11 +3245,11 @@ function MessageRow({
           <Link
             href={hrefs.conversations(report.child)}
             className="inline-flex min-w-0 items-center gap-1 text-xs font-semibold text-primary underline-offset-4 hover:underline"
-            title="Open the sub-conversation"
+            title="Open the sub-session"
           >
             <CornerDownRightIcon className="size-3 shrink-0" aria-hidden />
             <span className="min-w-0 truncate">
-              {title || "Sub-conversation"}
+              {title || "Sub-session"}
             </span>
             <span className="shrink-0 font-medium text-muted-foreground">
               · {reportVerb(report.kind)}
@@ -3274,13 +3274,13 @@ function MessageRow({
           <Link
             href={hrefs.conversations(from)}
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-            title="Open the conversation this one is part of"
+            title="Open the session this one is part of"
           >
             <CornerDownRightIcon
               className="size-3 shrink-0 -scale-x-100"
               aria-hidden
             />
-            From {d.parentTitle || "the conversation this one is part of"}
+            From {d.parentTitle || "the session this one is part of"}
           </Link>
           <div className="whitespace-pre-wrap anywhere">{m.content}</div>
         </div>
@@ -3302,7 +3302,7 @@ function MessageRow({
             aria-hidden
           />
           <span className="min-w-0 anywhere">
-            Started sub-conversation{" "}
+            Started sub-session{" "}
             <Link
               href={hrefs.conversations(child)}
               className="font-medium text-primary underline-offset-4 hover:underline"
@@ -3671,7 +3671,7 @@ function PendingCard({
                   void act(
                     "approve",
                     () => writes.chatApprove(id, "always"),
-                    "Allowed for the rest of this conversation.",
+                    "Allowed for the rest of this session.",
                   )
                 }
                 title={pending.always}
@@ -3939,11 +3939,11 @@ function Composer({
           }}
           placeholder={
             disabled
-              ? "This conversation is archived."
+              ? "This session is archived."
               : running
                 ? composePlaceholder(true)
                 : closed
-                  ? "Write to reopen this conversation…"
+                  ? "Write to reopen this session…"
                   : picks.length
                     ? "Say what to change about what you picked, or just send it."
                     : picked.length
@@ -4090,7 +4090,7 @@ function SubConversations({
       });
       toast.success(
         "Started " +
-          (r.conversation.title || "the sub-conversation") +
+          (r.conversation.title || "the sub-session") +
           ". Its replies come back here.",
       );
       setText("");
@@ -4100,17 +4100,17 @@ function SubConversations({
       void pull();
       router.replace(hrefs.conversations(r.conversation.id), { scroll: false });
     } catch (e) {
-      fail(e, "Could not start a sub-conversation");
+      fail(e, "Could not start a sub-session");
     } finally {
       setBusy("");
     }
   };
 
   return (
-    <section className="grid min-w-0 gap-1.5" aria-label="Sub-conversations">
+    <section className="grid min-w-0 gap-1.5" aria-label="Sub-sessions">
       <h3 className="flex items-center gap-1.5 px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
         <CornerDownRightIcon className="size-3" aria-hidden />
-        Sub-conversations
+        Sub-sessions
         {kids.length ? (
           <span className="tnum font-normal">{kids.length}</span>
         ) : null}
@@ -4167,7 +4167,7 @@ function SubConversations({
         <p className="px-1 text-[12px] leading-relaxed text-muted-foreground">
           None yet. The agent starts one for a part of the work it wants watched
           on its own page; you can start one here too. Its replies come back
-          into this conversation.
+          into this session.
         </p>
       ) : null}
       {open ? (
@@ -4182,7 +4182,7 @@ function SubConversations({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Title (optional)"
-            aria-label="Sub-conversation title"
+            aria-label="Sub-session title"
             maxLength={120}
             className="h-8"
           />
@@ -4190,8 +4190,8 @@ function SubConversations({
             ref={brief}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="What should it do? It works in this conversation's workspace and reports back here."
-            aria-label="Sub-conversation brief"
+            placeholder="What should it do? It works in this session's workspace and reports back here."
+            aria-label="Sub-session brief"
             rows={3}
             className="min-h-16 text-[13px]"
           />
@@ -4283,7 +4283,7 @@ function ChangesPanel({
   if (!ch)
     return (
       <p className="px-1 text-[13px] leading-relaxed text-muted-foreground">
-        Changes appear once the conversation has a project and a branch.
+        Changes appear once the session has a project and a branch.
       </p>
     );
   return (

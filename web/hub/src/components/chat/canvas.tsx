@@ -451,7 +451,7 @@ export function Canvas({
           ) : (
             <Pane>
               <p className="text-[13px] leading-relaxed text-muted-foreground">
-                The diff appears once the conversation has a project and a
+                The diff appears once the session has a project and a
                 branch with changes.
               </p>
             </Pane>
@@ -1144,7 +1144,7 @@ function ArtifactTab({
         <p className="text-[13px] text-muted-foreground">
           {name +
             " is not in " +
-            (source.kind === "job" ? "this step's" : "this conversation's") +
+            (source.kind === "job" ? "this step's" : "this session's") +
             " artifacts any more."}
         </p>
       </Pane>

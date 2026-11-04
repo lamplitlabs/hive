@@ -436,8 +436,8 @@ function TaskBody({
       {closed ? (
         <Notice tone="info">
           {t.status === "done"
-            ? "This task is done. The conversation stays here to read; give a new task to carry on."
-            : "This task was cancelled. The conversation stays here to read; give a new task to carry on."}
+            ? "This task is done. The session stays here to read; give a new task to carry on."
+            : "This task was cancelled. The session stays here to read; give a new task to carry on."}
         </Notice>
       ) : null}
 
