@@ -619,7 +619,10 @@ made it (ADR-022); `pulse signers` lists the keys it trusts.
 The daemon can tend multiple projects' finished branches at once with
 `landing.parallel` (default `4`); landings within one project remain serial
 behind that project's landing lock, and `landing.parallel=1` keeps the old
-single-project maintenance-pass behaviour.
+single-project maintenance-pass behaviour. The lock (`.git/pulse-land.lock`)
+names the process holding it: a lock whose process is gone - a landing cut
+off by the restart of a self-update, a crash - is taken over at once, and
+one whose holder still runs is only forced after 30 minutes.
 
 ## Pipelines: what a push set running on GitHub
 

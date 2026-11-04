@@ -241,7 +241,9 @@ pub(crate) fn checkout_state(root: String, default_branch: String) -> Option<boo
 }
 
 /// The lock holds "pid time branch": the hub reads the branch to word the
-/// conversation or task whose landing is under way "Reviewing".
+/// conversation or task whose landing is under way "Reviewing". A lock whose
+/// holder is gone goes at once (see `landing_lock_abandoned`); a live holder
+/// keeps it for `LAND_LOCK_MINUTES`.
 pub(crate) fn landing_lock(root: String, now: String, branch: &str) -> String {
     let path = Path::new(&root).join(".git").join("pulse-land.lock");
     for _ in 0..2 {
@@ -255,13 +257,7 @@ pub(crate) fn landing_lock(root: String, now: String, branch: &str) -> String {
                 return path.display().to_string();
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let Ok(st) = std::fs::metadata(&path) else {
-                    continue;
-                };
-                if let Ok(modified) = st.modified()
-                    && modified.elapsed().unwrap_or_default()
-                        < Duration::from_secs((LAND_LOCK_MINUTES as u64) * 60)
-                {
+                if !landing_lock_abandoned(&path) {
                     return String::new();
                 }
                 let _ = std::fs::remove_file(&path);
@@ -270,6 +266,30 @@ pub(crate) fn landing_lock(root: String, now: String, branch: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Whether the landing lock at `path` belongs to nobody any more: the pid it
+/// names is not running, or it is older than `LAND_LOCK_MINUTES`. Checking
+/// the pid matters because the daemon restarts for every self-update: a
+/// landing cut off by one left its lock behind, and until the age rule
+/// cleared it 30 minutes later every pass said "another landing holds" and
+/// the project's queue stood still. A lock without a readable pid (an empty
+/// one, a hand-written one) keeps the age rule alone.
+pub(crate) fn landing_lock_abandoned(path: &Path) -> bool {
+    let holder = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<i32>().ok())
+        .unwrap_or(0);
+    if holder > 0 && !crate::sweep::process_alive(holder) {
+        return true;
+    }
+    let Ok(st) = std::fs::metadata(path) else {
+        return true;
+    };
+    st.modified()
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .is_some_and(|age| age >= Duration::from_secs((LAND_LOCK_MINUTES as u64) * 60))
 }
 
 pub(crate) fn save_branch_patch(
@@ -4023,6 +4043,48 @@ mod tests {
         });
         assert!(!tmp.exists(), "the landing's TMPDIR goes with the worktree");
         assert!(!lock.exists());
+    }
+
+    #[test]
+    fn landing_lock_of_a_holder_that_is_gone_goes_at_once() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("proj");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let lock = root.join(".git").join("pulse-land.lock");
+        // Fresh by age, so only the pid can free it; 99999999 runs nowhere.
+        std::fs::write(&lock, b"99999999 2026-11-04T06:42:01Z pulse/x\n").unwrap();
+        let taken = super::landing_lock(
+            root.display().to_string(),
+            "2026-11-04T06:49:00Z".into(),
+            "pulse/y",
+        );
+        assert_eq!(taken, lock.display().to_string());
+        let text = std::fs::read_to_string(&lock).unwrap();
+        assert_eq!(
+            text.trim(),
+            format!("{} 2026-11-04T06:49:00Z pulse/y", std::process::id())
+        );
+    }
+
+    #[test]
+    fn landing_lock_of_a_live_holder_stays_while_fresh() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("proj");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let lock = root.join(".git").join("pulse-land.lock");
+        // Our own pid is a holder that is still running.
+        let held = format!("{} 2026-11-04T06:42:01Z pulse/x\n", std::process::id());
+        std::fs::write(&lock, &held).unwrap();
+        let taken = super::landing_lock(
+            root.display().to_string(),
+            "2026-11-04T06:49:00Z".into(),
+            "pulse/y",
+        );
+        assert_eq!(taken, "");
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), held);
+        // A lock with no pid in it leaves the age rule alone to decide.
+        std::fs::write(&lock, b"").unwrap();
+        assert!(!super::landing_lock_abandoned(&lock));
     }
 
     #[test]
