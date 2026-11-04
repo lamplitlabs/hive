@@ -8,7 +8,10 @@
 //! head on the forge and judges its runs the same way, so a bot's commit or
 //! a merge made on GitHub that turned the pipeline red is PULSE's to fix as
 //! well. The fix is planned only once the project checkout holds that
-//! commit, so the worker starts from the code that is red.
+//! commit, so the worker starts from the code that is red. GitHub is read
+//! with the gh account that can see the repository: the active login
+//! first, and when it cannot, each other account `gh auth status` lists,
+//! the first that answers remembered for the project (`gh_auth`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -16,6 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::gh_auth::Logins;
 use crate::util::{Row, event_at, must_rows, plus_hours, plus_minutes, trunc};
 
 /// `off`: pushes are not watched. `watch`: a red pipeline is a finding for
@@ -62,6 +66,10 @@ const HEAD_POLL_MINUTES: f64 = 10.0;
 /// before the finding is posted without a fix job: a fix built on a
 /// checkout that does not have the red code would fix the wrong thing.
 const HEAD_CATCH_UP_HOURS: f64 = 2.0;
+/// Minutes a repository no logged-in gh account can see is left alone
+/// before the accounts are tried again: polling three such repositories at
+/// every interval cost one daemon tick 7.3 s of 404s and said nothing new.
+const UNREADABLE_MINUTES: f64 = 60.0;
 
 pub(crate) fn fix_source(slug: &str) -> String {
     format!("{SOURCE_PREFIX}{slug}")
@@ -220,11 +228,14 @@ pub(crate) enum Ask<'a> {
     Rerun { repo: &'a str, id: i64 },
 }
 
-pub(crate) type Gh<'a> = dyn Fn(&Ask) -> Result<String, String> + 'a;
+/// What the pass asks GitHub, and as which gh account (`None`: the active
+/// login), so tests answer in its place.
+pub(crate) type Gh<'a> = dyn Fn(&Ask, Option<&str>) -> Result<String, String> + 'a;
 
-/// Runs `gh` with the daemon's own environment: `gh` keeps its login in its
-/// own config, nothing of it reaches git.
-fn gh_ask(ask: &Ask) -> Result<String, String> {
+/// Runs `gh` with the daemon's own environment - `gh` keeps its login in
+/// its own config, nothing of it reaches git - as the active login, or as
+/// `user` with that account's token in `GH_TOKEN`.
+fn gh_ask(ask: &Ask, user: Option<&str>) -> Result<String, String> {
     let argv: Vec<String> = match ask {
         Ask::Runs { repo, sha } => vec![
             "gh".into(),
@@ -274,11 +285,15 @@ fn gh_ask(ask: &Ask) -> Result<String, String> {
         ],
     };
     let what = format!("gh {} {}", argv[1], argv[2]);
+    let env = match user {
+        Some(user) => crate::gh_auth::env_as(user).map_err(|e| format!("{what} as {user}: {e}"))?,
+        None => crate::proc::environ(),
+    };
     match crate::proc::run_group(
         &pulse_bus::CancellationToken::new(),
         &argv,
         "",
-        &crate::proc::environ(),
+        &env,
         &[],
         GH_TIMEOUT,
     ) {
@@ -495,6 +510,27 @@ pub(crate) struct Watch {
     /// their log; a commit is rerun once.
     #[serde(default)]
     pub reruns: BTreeMap<String, String>,
+    /// The gh account that reads the repository when the active login
+    /// cannot see it: found by trying each logged-in account once, read as
+    /// first from then on, forgotten when it fails. Empty: the active login.
+    #[serde(default)]
+    pub gh_user: String,
+    /// Until when the repository is left alone because no logged-in account
+    /// could read it; empty once one can.
+    #[serde(default)]
+    pub unreadable_until: String,
+}
+
+impl Watch {
+    /// The account the repository is read as, for the `Gh` closure.
+    fn user(&self) -> Option<&str> {
+        (!self.gh_user.is_empty()).then_some(self.gh_user.as_str())
+    }
+
+    /// Whether no account could read the repository within the hour.
+    fn left_alone(&self, now: &str) -> bool {
+        !self.unreadable_until.is_empty() && self.unreadable_until.as_str() > now
+    }
 }
 
 /// Whether a `pipeline.*` verdict was recorded for the commit, ever: a head
@@ -514,6 +550,147 @@ pub(crate) fn judged_sha(q: &(impl crate::util::Querier + ?Sized), slug: &str, s
 fn log_gone(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     low.contains("http 410") || low.contains("http 404")
+}
+
+/// Whether gh's error says the account it ran as is no use for the
+/// repository: GitHub answers 404 for a repository the account has no
+/// access to (so the name does not say that it exists) and cannot resolve
+/// its name, 403 for one it may see but not read the Actions of, 401 for a
+/// token that is no longer good, and an account whose token `gh auth
+/// token` cannot hand out (logged out, keyring locked, no answer in time;
+/// `gh_auth::env_as` names the account and the command, never the token)
+/// cannot run at all, so the next account is tried rather than this one
+/// again every poll. A branch that is not there is a 404 too, but one that
+/// says so, and another account would not find it either.
+fn account_failed(err: &str) -> bool {
+    let low = err.to_ascii_lowercase();
+    if low.contains("branch not found") {
+        return false;
+    }
+    low.contains("http 401")
+        || low.contains("http 403")
+        || low.contains("http 404")
+        || low.contains("could not resolve to a repository")
+        || low.contains("gh auth token for")
+}
+
+/// Reads the repository as the gh account that can see it. The watch's
+/// remembered account goes first, the active login when it remembers none;
+/// when that account cannot see the repository (`account_failed`) every
+/// other logged-in account is tried once and the first that answers is
+/// remembered, so the next polls go straight to it and the daemon says so
+/// once, not per poll. When none can, the repository is left alone for
+/// `UNREADABLE_MINUTES`. Only the reads every poll makes (the runs of a
+/// push, the branch head) rotate; a run's jobs and log follow a read that
+/// answered, and a 404 on a log means the log is gone, not the account.
+struct Reader<'a> {
+    gh: &'a Gh<'a>,
+    logins: &'a dyn Fn() -> Logins,
+    slug: &'a str,
+    repo: &'a str,
+    now: &'a str,
+    /// The active login's name once `logins` has been asked, or what it is
+    /// called when the status did not name it.
+    active: String,
+    /// The accounts the last read failed as, names only, in the order
+    /// tried; empty after a read that answered.
+    tried: Vec<String>,
+    /// The last read failed as every account there was to try.
+    exhausted: bool,
+}
+
+/// What the active login is called when `gh auth status` did not say.
+const ACTIVE_UNNAMED: &str = "the active gh login";
+
+impl Reader<'_> {
+    fn read(
+        &mut self,
+        watch: &mut Watch,
+        ask: &Ask,
+        lines: &mut Vec<String>,
+    ) -> Result<String, String> {
+        self.exhausted = false;
+        let first = watch.gh_user.clone();
+        let err = match (self.gh)(ask, watch.user()) {
+            Ok(body) => {
+                self.tried.clear();
+                watch.unreadable_until.clear();
+                return Ok(body);
+            }
+            Err(e) if !account_failed(&e) => return Err(e),
+            Err(e) => e,
+        };
+        let logins = (self.logins)();
+        self.active = if logins.active.is_empty() {
+            ACTIVE_UNNAMED.to_string()
+        } else {
+            logins.active.clone()
+        };
+        self.tried = vec![if first.is_empty() {
+            self.active.clone()
+        } else {
+            first.clone()
+        }];
+        let since = format!("since {} cannot see it", self.name(&self.tried[0]));
+        // The remembered account is no use any more: the active login is
+        // tried as itself, then the others by name.
+        let mut candidates: Vec<Option<String>> = Vec::new();
+        if !first.is_empty() {
+            watch.gh_user.clear();
+            if first != logins.active {
+                candidates.push(None);
+            }
+        }
+        candidates.extend(logins.others(&first).into_iter().map(Some));
+        for candidate in candidates {
+            match (self.gh)(ask, candidate.as_deref()) {
+                Ok(body) => {
+                    let reading_as = match &candidate {
+                        Some(user) => {
+                            watch.gh_user = user.clone();
+                            user.clone()
+                        }
+                        None => format!("{} again", self.name(&self.active)),
+                    };
+                    lines.push(format!(
+                        "pipeline {}: reading {} as {reading_as}, {since}",
+                        self.slug, self.repo
+                    ));
+                    self.tried.clear();
+                    watch.unreadable_until.clear();
+                    return Ok(body);
+                }
+                Err(e) if account_failed(&e) => {
+                    self.tried
+                        .push(candidate.unwrap_or_else(|| self.active.clone()));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        self.exhausted = true;
+        watch.unreadable_until = plus_minutes(self.now, UNREADABLE_MINUTES);
+        Err(err)
+    }
+
+    /// How a tried account is called in prose: the active login is said to
+    /// be that, so the owner knows which one `gh` would use by itself.
+    fn name(&self, user: &str) -> String {
+        if user == self.active && user != ACTIVE_UNNAMED {
+            format!("the active gh login {user}")
+        } else {
+            user.to_string()
+        }
+    }
+
+    /// `a`, `a and b`, `a, b and c`: the accounts the last read failed as.
+    fn tried_text(&self) -> String {
+        let named: Vec<String> = self.tried.iter().map(|u| self.name(u)).collect();
+        match named.len() {
+            0 => String::new(),
+            1 => named[0].clone(),
+            n => format!("{} and {}", named[..n - 1].join(", "), named[n - 1]),
+        }
+    }
 }
 
 /// Whether the project checkout's default branch holds the commit, so a
@@ -639,15 +816,31 @@ pub(crate) fn tend_pipeline(
     now: &str,
     actor: &str,
 ) -> Vec<String> {
-    tend_pipeline_with(s, slug, now, actor, &gh_ask)
+    tend_pipeline_as(s, slug, now, actor, &gh_ask, &crate::gh_auth::logins)
 }
 
+/// `tend_pipeline` with gh answered by `gh` and the active login the only
+/// account there is.
+#[cfg(test)]
 pub(crate) fn tend_pipeline_with(
     s: &pulse_store::Store,
     slug: &str,
     now: &str,
     actor: &str,
     gh: &Gh<'_>,
+) -> Vec<String> {
+    tend_pipeline_as(s, slug, now, actor, gh, &Logins::default)
+}
+
+/// `tend_pipeline` with gh answered by `gh` and the logged-in accounts by
+/// `logins`, which is asked only when an account cannot see the repository.
+pub(crate) fn tend_pipeline_as(
+    s: &pulse_store::Store,
+    slug: &str,
+    now: &str,
+    actor: &str,
+    gh: &Gh<'_>,
+    logins: &dyn Fn() -> Logins,
 ) -> Vec<String> {
     let mode = s.setting(WATCH, "fix");
     if mode == "off" {
@@ -663,13 +856,29 @@ pub(crate) fn tend_pipeline_with(
     let Some(repo) = crate::security::github_repo(&project.str("remote")) else {
         return Vec::new();
     };
-    let pushes = pending(&conn, slug, now);
     let mut watch = load_watch(s, slug);
+    if watch.left_alone(now) {
+        return Vec::new();
+    }
+    let pushes = pending(&conn, slug, now);
     let wait_hours = crate::util::setting_int(s, WAIT_HOURS).max(1) as f64;
     let newest = pushes.last().map(|p| p.sha.clone()).unwrap_or_default();
     let mut lines = Vec::new();
     let mut judged = Vec::new();
+    let mut reader = Reader {
+        gh,
+        logins,
+        slug,
+        repo: &repo,
+        now,
+        active: String::new(),
+        tried: Vec::new(),
+        exhausted: false,
+    };
     for push in &pushes {
+        if watch.left_alone(now) {
+            break;
+        }
         if watch
             .polled
             .get(&push.sha)
@@ -678,10 +887,14 @@ pub(crate) fn tend_pipeline_with(
             continue;
         }
         watch.polled.insert(push.sha.clone(), now.to_string());
-        let runs = match gh(&Ask::Runs {
-            repo: &repo,
-            sha: &push.sha,
-        }) {
+        let runs = match reader.read(
+            &mut watch,
+            &Ask::Runs {
+                repo: &repo,
+                sha: &push.sha,
+            },
+            &mut lines,
+        ) {
             Ok(body) => match parse_runs(&body) {
                 Ok(runs) => runs,
                 Err(e) => {
@@ -690,20 +903,33 @@ pub(crate) fn tend_pipeline_with(
                 }
             },
             Err(e) => {
+                if !reader.exhausted {
+                    lines.push(format!(
+                        "pipeline {slug}: the runs of {} could not be read: {}",
+                        push.short(),
+                        trunc(e.trim(), 300)
+                    ));
+                    continue;
+                }
+                let tried = reader.tried_text();
                 lines.push(format!(
-                    "pipeline {slug}: the runs of {} could not be read: {}",
+                    "pipeline {slug}: the runs of {} could not be read as {tried}: {}; {repo} is left alone until {}",
                     push.short(),
-                    trunc(e.trim(), 300)
+                    trunc(e.trim(), 300),
+                    watch.unreadable_until
                 ));
-                let low = e.to_ascii_lowercase();
-                if (low.contains("http 403") || low.contains("http 404"))
-                    && watch.unreadable_told != repo
-                {
-                    let summary = format!(
-                        "pulse cannot read the workflow runs of {repo}: the gh login the daemon uses needs read access to the repository's Actions"
-                    );
+                if watch.unreadable_told != repo {
+                    let summary = if reader.tried.len() == 1 {
+                        format!(
+                            "pulse cannot read the workflow runs of {repo}: {tried} needs read access to the repository's Actions"
+                        )
+                    } else {
+                        format!(
+                            "pulse cannot read the workflow runs of {repo}: none of the gh logins on this machine ({tried}) can see it"
+                        )
+                    };
                     let body = format!(
-                        "`gh run list --repo {repo} --commit {}` answered: {}\n\nThe daemon watches the pipeline of every push it makes ({WATCH} is `{mode}`) and needs the gh login it runs as to read the repository's Actions. Give that account read access on the forge, or `pulse settings set {WATCH} off` to stop watching.",
+                        "`gh run list --repo {repo} --commit {}` answered: {}\n\nThe daemon watches the pipeline of every push it makes ({WATCH} is `{mode}`) and reads the repository's Actions as whichever gh login on this machine can see it; it tried {tried} and none could. Give one of them read access to the repository on the forge, or `gh auth login` as the user the daemon runs as with an account that has it. Until then the daemon leaves {repo} alone and tries the logins again every hour. `pulse settings set {WATCH} off` stops watching.",
                         push.short(),
                         trunc(e.trim(), 300)
                     );
@@ -715,7 +941,7 @@ pub(crate) fn tend_pipeline_with(
                             actor,
                             "pipeline.unreadable",
                             slug,
-                            json!({"project": slug, "repo": repo, "post": post, "error": trunc(e.trim(), 300)}),
+                            json!({"project": slug, "repo": repo, "post": post, "error": trunc(e.trim(), 300), "tried": reader.tried, "until": watch.unreadable_until}),
                         );
                         lines.push(format!("pipeline {slug}: told the owner ({post})"));
                     }
@@ -773,6 +999,7 @@ pub(crate) fn tend_pipeline_with(
             pushes: &pushes,
             gh,
         },
+        &mut reader,
         &mut watch,
         &mut lines,
     );
@@ -826,8 +1053,18 @@ fn upstream_of(root: &str, def: &str) -> (String, String) {
 /// and judges its runs when neither pulse's own pushes nor an earlier read
 /// judged that commit. A red head gets its finding and fix job once the
 /// project checkout holds the commit; until then the daemon waits up to
-/// `HEAD_CATCH_UP_HOURS`, then posts the finding without a job.
-fn tend_head(h: &HeadPass<'_>, watch: &mut Watch, lines: &mut Vec<String>) {
+/// `HEAD_CATCH_UP_HOURS`, then posts the finding without a job. The head
+/// and its runs are read through `reader`, so a project with no push of
+/// pulse's pending still finds the account that sees its repository.
+fn tend_head(
+    h: &HeadPass<'_>,
+    reader: &mut Reader<'_>,
+    watch: &mut Watch,
+    lines: &mut Vec<String>,
+) {
+    if watch.left_alone(h.now) {
+        return;
+    }
     if !watch.head_next.is_empty() && watch.head_next.as_str() > h.now {
         return;
     }
@@ -839,19 +1076,35 @@ fn tend_head(h: &HeadPass<'_>, watch: &mut Watch, lines: &mut Vec<String>) {
     let (remote, branch) = upstream_of(&root, &def);
     watch.head_read = h.now.to_string();
     watch.head_next = plus_minutes(h.now, HEAD_POLL_MINUTES);
-    let head = match (h.gh)(&Ask::Head {
-        repo: h.repo,
-        branch: &branch,
-    })
-    .and_then(|b| parse_head(&b))
+    let head = match reader
+        .read(
+            watch,
+            &Ask::Head {
+                repo: h.repo,
+                branch: &branch,
+            },
+            lines,
+        )
+        .and_then(|b| parse_head(&b))
     {
         Ok(head) => head,
         Err(e) => {
-            lines.push(format!(
-                "pipeline {}: the head of {remote}/{branch} could not be read: {}",
-                h.slug,
-                trunc(e.trim(), 300)
-            ));
+            lines.push(if reader.exhausted {
+                format!(
+                    "pipeline {}: the head of {remote}/{branch} could not be read as {}: {}; {} is left alone until {}",
+                    h.slug,
+                    reader.tried_text(),
+                    trunc(e.trim(), 300),
+                    h.repo,
+                    watch.unreadable_until
+                )
+            } else {
+                format!(
+                    "pipeline {}: the head of {remote}/{branch} could not be read: {}",
+                    h.slug,
+                    trunc(e.trim(), 300)
+                )
+            });
             return;
         }
     };
@@ -864,11 +1117,16 @@ fn tend_head(h: &HeadPass<'_>, watch: &mut Watch, lines: &mut Vec<String>) {
     if h.pushes.iter().any(|p| p.sha == head.sha) || judged_sha(h.conn, h.slug, &head.sha) {
         return;
     }
-    let runs = match (h.gh)(&Ask::Runs {
-        repo: h.repo,
-        sha: &head.sha,
-    })
-    .and_then(|b| parse_runs(&b))
+    let runs = match reader
+        .read(
+            watch,
+            &Ask::Runs {
+                repo: h.repo,
+                sha: &head.sha,
+            },
+            lines,
+        )
+        .and_then(|b| parse_runs(&b))
     {
         Ok(runs) => runs,
         Err(e) => {
@@ -1222,10 +1480,13 @@ impl Pass<'_> {
             let mut reran = Vec::new();
             let mut refused = String::new();
             for (run, _) in &unread {
-                match (self.gh)(&Ask::Rerun {
-                    repo: self.repo,
-                    id: run.id,
-                }) {
+                match (self.gh)(
+                    &Ask::Rerun {
+                        repo: self.repo,
+                        id: run.id,
+                    },
+                    self.watch.user(),
+                ) {
                     Ok(_) => reran.push(run.id),
                     Err(e) => refused = trunc(e.trim(), 300),
                 }
@@ -1492,16 +1753,22 @@ impl Pass<'_> {
             .iter()
             .take(DETAIL_RUNS)
             .map(|r| {
-                let steps = (self.gh)(&Ask::Jobs {
-                    repo: self.repo,
-                    id: r.id,
-                })
+                let steps = (self.gh)(
+                    &Ask::Jobs {
+                        repo: self.repo,
+                        id: r.id,
+                    },
+                    self.watch.user(),
+                )
                 .map(|b| failed_steps(&b))
                 .unwrap_or_default();
-                let log = match (self.gh)(&Ask::Log {
-                    repo: self.repo,
-                    id: r.id,
-                }) {
+                let log = match (self.gh)(
+                    &Ask::Log {
+                        repo: self.repo,
+                        id: r.id,
+                    },
+                    self.watch.user(),
+                ) {
                     Ok(l) => log_tail(&l),
                     Err(e) => {
                         unread.push(((*r).clone(), e));
@@ -1737,7 +2004,7 @@ mod tests {
     ) -> (Box<Gh<'static>>, std::rc::Rc<RefCell<Vec<String>>>) {
         let log = std::rc::Rc::new(RefCell::new(Vec::new()));
         let seen = log.clone();
-        let f = move |ask: &Ask| -> Result<String, String> {
+        let f = move |ask: &Ask, _: Option<&str>| -> Result<String, String> {
             match ask {
                 Ask::Rerun { repo, id } => {
                     seen.borrow_mut().push(format!("rerun {repo} {id}"));
@@ -2156,11 +2423,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_repository_is_told_once_and_a_non_github_remote_is_skipped() {
+    fn an_unreadable_repository_is_told_once_left_alone_an_hour_and_a_non_github_remote_is_skipped()
+    {
         let s = setup();
         pushed(&s, "2026-10-31T09:50:00Z", SHA);
         let calls = RefCell::new(0);
-        let gh = |_: &Ask| -> Result<String, String> {
+        let gh = |_: &Ask, user: Option<&str>| -> Result<String, String> {
+            assert_eq!(user, None, "the active login is the only account");
             *calls.borrow_mut() += 1;
             Err(
                 "gh run list exited 1: HTTP 403: Resource not accessible by personal access token"
@@ -2168,26 +2437,392 @@ mod tests {
             )
         };
         let lines = tend_pipeline_with(&s, "proj", NOW, "daemon", &gh);
-        // The push's runs, the owner told, and the head of the branch.
-        assert_eq!(lines.len(), 3, "{lines:?}");
-        assert!(
-            lines[2].contains("the head of origin/main could not be read"),
-            "{lines:?}"
+        // The push's runs and the owner told; the head of a repository left
+        // alone is not read.
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            "pipeline proj: the runs of 8f377827f6c6 could not be read as the active gh login: gh run list exited 1: HTTP 403: Resource not accessible by personal access token; o/r is left alone until 2026-10-31T11:00:00Z"
         );
-        assert_eq!(posts(&s).len(), 1);
-        assert_eq!(events(&s, "pipeline.unreadable").len(), 1);
-        let lines = tend_pipeline_with(&s, "proj", "2026-10-31T10:05:00Z", "daemon", &gh);
+        let ps = posts(&s);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(
+            ps[0].str("summary"),
+            "pulse cannot read the workflow runs of o/r: the active gh login needs read access to the repository's Actions"
+        );
+        let unreadable = events(&s, "pipeline.unreadable");
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(unreadable[0]["tried"], json!(["the active gh login"]));
+        assert_eq!(unreadable[0]["until"], "2026-10-31T11:00:00Z");
+        assert_eq!(*calls.borrow(), 1);
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.unreadable_until, "2026-10-31T11:00:00Z");
+        assert_eq!(w.unreadable_told, "o/r");
+        // Inside the hour nothing is asked.
+        assert!(tend_pipeline_with(&s, "proj", "2026-10-31T10:05:00Z", "daemon", &gh).is_empty());
+        assert_eq!(*calls.borrow(), 1);
+        // The hour over: asked once more, the owner not told again.
+        let lines = tend_pipeline_with(&s, "proj", "2026-10-31T11:00:00Z", "daemon", &gh);
         assert_eq!(lines.len(), 1, "told once: {lines:?}");
+        assert_eq!(*calls.borrow(), 2);
         assert_eq!(posts(&s).len(), 1);
-        assert_eq!(*calls.borrow(), 3);
+        assert_eq!(
+            load_watch(&s, "proj").unreadable_until,
+            "2026-10-31T12:00:00Z"
+        );
 
         exec1(
             &s,
             "UPDATE projects SET remote = 'git@gitlab.com:o/r.git' WHERE slug = 'proj'",
             &[],
         );
-        assert!(tend_pipeline_with(&s, "proj", "2026-10-31T10:10:00Z", "daemon", &gh).is_empty());
-        assert_eq!(*calls.borrow(), 3);
+        assert!(tend_pipeline_with(&s, "proj", "2026-10-31T12:10:00Z", "daemon", &gh).is_empty());
+        assert_eq!(*calls.borrow(), 2);
+    }
+
+    /// The machine's gh logins: a fine-grained token is active beside two
+    /// accounts.
+    fn logins() -> Logins {
+        Logins {
+            active: "pat-login".into(),
+            accounts: vec!["pat-login".into(), "octocat".into(), "third".into()],
+        }
+    }
+
+    const NOT_FOUND: &str = "gh run list exited 1: failed to get runs: HTTP 404: Not Found (https://api.github.com/repos/o/r/actions/runs)";
+
+    /// A gh where only the accounts named in `sees` can see the repository
+    /// (`""` is the active login); every ask is logged with the account it
+    /// ran as. The head is pulse's own push `SHA`.
+    fn gh_seen_by(
+        sees: &'static [&'static str],
+        runs: Vec<Value>,
+    ) -> (Box<Gh<'static>>, std::rc::Rc<RefCell<Vec<String>>>) {
+        let log = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let seen = log.clone();
+        let f = move |ask: &Ask, user: Option<&str>| -> Result<String, String> {
+            let who = user.unwrap_or("active");
+            seen.borrow_mut().push(match ask {
+                Ask::Runs { sha, .. } => format!("runs {sha} as {who}"),
+                Ask::Head { branch, .. } => format!("head {branch} as {who}"),
+                Ask::Jobs { id, .. } => format!("jobs {id} as {who}"),
+                Ask::Log { id, .. } => format!("log {id} as {who}"),
+                Ask::Rerun { id, .. } => format!("rerun {id} as {who}"),
+            });
+            if !sees.contains(&user.unwrap_or("")) {
+                return Err(NOT_FOUND.to_string());
+            }
+            Ok(match ask {
+                Ask::Runs { .. } => Value::Array(runs.clone()).to_string(),
+                Ask::Head { .. } => head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z").to_string(),
+                _ => String::new(),
+            })
+        };
+        (Box::new(f), log)
+    }
+
+    #[test]
+    fn an_active_login_that_cannot_see_the_repository_gives_way_to_the_account_that_can() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, log) = gh_seen_by(
+            &["octocat"],
+            vec![run("CI", "push", "completed", "success", 1)],
+        );
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &*gh, &logins);
+        assert_eq!(
+            lines,
+            [
+                "pipeline proj: reading o/r as octocat, since the active gh login pat-login cannot see it".to_string(),
+                "pipeline proj: green at 8f377827f6c6 on origin/main (CI)".to_string(),
+            ]
+        );
+        // The account found reads the head too, with no second try of the
+        // active login.
+        assert_eq!(
+            &*log.borrow(),
+            &[
+                format!("runs {SHA} as active"),
+                format!("runs {SHA} as octocat"),
+                "head main as octocat".to_string()
+            ]
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.gh_user, "octocat");
+        assert!(w.unreadable_until.is_empty());
+        assert!(posts(&s).is_empty());
+        assert!(events(&s, "pipeline.unreadable").is_empty());
+
+        // The next push is read as that account first, and nothing is said
+        // about the choice again.
+        let sha2 = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+        pushed(&s, "2026-10-31T10:05:00Z", sha2);
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T10:11:00Z", "daemon", &*gh, &logins);
+        assert_eq!(
+            lines,
+            ["pipeline proj: green at aaaa1111aaaa on origin/main (CI)".to_string()]
+        );
+        assert_eq!(
+            &log.borrow()[3..],
+            &[
+                format!("runs {sha2} as octocat"),
+                "head main as octocat".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repository_no_account_can_see_is_left_alone_for_an_hour_and_the_owner_told_once() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        let (gh, log) = gh_seen_by(&[], vec![run("CI", "push", "completed", "success", 1)]);
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &*gh, &logins);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            format!(
+                "pipeline proj: the runs of 8f377827f6c6 could not be read as the active gh login pat-login, octocat and third: {NOT_FOUND}; o/r is left alone until 2026-10-31T11:00:00Z"
+            )
+        );
+        // Every account once, and the head not at all.
+        assert_eq!(
+            &*log.borrow(),
+            &[
+                format!("runs {SHA} as active"),
+                format!("runs {SHA} as octocat"),
+                format!("runs {SHA} as third"),
+            ]
+        );
+        let ps = posts(&s);
+        assert_eq!(ps.len(), 1);
+        assert_eq!(
+            ps[0].str("summary"),
+            "pulse cannot read the workflow runs of o/r: none of the gh logins on this machine (the active gh login pat-login, octocat and third) can see it"
+        );
+        assert!(
+            ps[0].str("body").contains(
+                "it tried the active gh login pat-login, octocat and third and none could"
+            ),
+            "{}",
+            ps[0].str("body")
+        );
+        let unreadable = events(&s, "pipeline.unreadable");
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(
+            unreadable[0]["tried"],
+            json!(["pat-login", "octocat", "third"])
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.unreadable_until, "2026-10-31T11:00:00Z");
+        assert!(w.gh_user.is_empty());
+
+        // Inside the hour: no gh call, no line.
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T10:30:00Z", "daemon", &*gh, &logins);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(log.borrow().len(), 3);
+
+        // The hour over: the accounts are tried once more, the owner is not
+        // told again, and the repository waits another hour.
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T11:00:00Z", "daemon", &*gh, &logins);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(log.borrow().len(), 6);
+        assert_eq!(posts(&s).len(), 1);
+        assert_eq!(
+            load_watch(&s, "proj").unreadable_until,
+            "2026-10-31T12:00:00Z"
+        );
+
+        // Given access, the account that has it is found and remembered,
+        // and the repository is no longer left alone.
+        let (gh2, log2) = gh_seen_by(
+            &["third"],
+            vec![run("CI", "push", "completed", "success", 1)],
+        );
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T12:00:00Z", "daemon", &*gh2, &logins);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("pipeline proj: reading o/r as third, since the active gh login pat-login cannot see it"), "{lines:?}");
+        assert_eq!(
+            &*log2.borrow(),
+            &[
+                format!("runs {SHA} as active"),
+                format!("runs {SHA} as octocat"),
+                format!("runs {SHA} as third"),
+                "head main as third".to_string()
+            ]
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.gh_user, "third");
+        assert!(w.unreadable_until.is_empty());
+        assert!(w.unreadable_told.is_empty());
+        assert_eq!(posts(&s).len(), 1);
+    }
+
+    #[test]
+    fn a_remembered_account_that_fails_is_forgotten_and_the_accounts_tried_again() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        save_watch(
+            &s.conn().unwrap(),
+            "proj",
+            &Watch {
+                gh_user: "octocat".into(),
+                ..Default::default()
+            },
+        );
+        // octocat lost its access: the active login is tried as itself,
+        // then the other account by name.
+        let (gh, log) = gh_seen_by(
+            &["third"],
+            vec![run("CI", "push", "completed", "success", 1)],
+        );
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &*gh, &logins);
+        assert_eq!(
+            lines[0], "pipeline proj: reading o/r as third, since octocat cannot see it",
+            "{lines:?}"
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(
+            &*log.borrow(),
+            &[
+                format!("runs {SHA} as octocat"),
+                format!("runs {SHA} as active"),
+                format!("runs {SHA} as third"),
+                "head main as third".to_string()
+            ]
+        );
+        assert_eq!(load_watch(&s, "proj").gh_user, "third");
+        assert!(posts(&s).is_empty());
+
+        // The remembered account fails and the active login sees the
+        // repository now: nothing is remembered any more.
+        let sha2 = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+        pushed(&s, "2026-10-31T10:20:00Z", sha2);
+        let (gh2, log2) = gh_seen_by(&[""], vec![run("CI", "push", "completed", "success", 2)]);
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T10:21:00Z", "daemon", &*gh2, &logins);
+        assert_eq!(
+            lines[0],
+            "pipeline proj: reading o/r as the active gh login pat-login again, since third cannot see it",
+            "{lines:?}"
+        );
+        assert_eq!(
+            &*log2.borrow(),
+            &[
+                format!("runs {sha2} as third"),
+                format!("runs {sha2} as active"),
+                "head main as active".to_string()
+            ]
+        );
+        assert!(load_watch(&s, "proj").gh_user.is_empty());
+    }
+
+    #[test]
+    fn an_account_whose_token_cannot_be_read_is_passed_over_like_one_that_cannot_see() {
+        let s = setup();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        // octocat is logged in but its token cannot be had (the error
+        // `gh_auth::env_as` gives, wrapped by `gh_ask`); third sees the
+        // repository until it is told otherwise.
+        const NO_TOKEN: &str = "gh run list as octocat: gh auth token for octocat exited 1: no oauth token found for github.com account octocat";
+        let third_sees = std::cell::Cell::new(true);
+        let gh = |ask: &Ask, user: Option<&str>| -> Result<String, String> {
+            match user {
+                Some("octocat") => Err(NO_TOKEN.to_string()),
+                Some("third") if third_sees.get() => Ok(match ask {
+                    Ask::Runs { .. } => {
+                        Value::Array(vec![run("CI", "push", "completed", "success", 1)]).to_string()
+                    }
+                    Ask::Head { .. } => {
+                        head_json(SHA, "pulse-bot", "2026-10-31T09:50:00Z").to_string()
+                    }
+                    _ => String::new(),
+                }),
+                _ => Err(NOT_FOUND.to_string()),
+            }
+        };
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &gh, &logins);
+        assert_eq!(
+            lines,
+            [
+                "pipeline proj: reading o/r as third, since the active gh login pat-login cannot see it".to_string(),
+                "pipeline proj: green at 8f377827f6c6 on origin/main (CI)".to_string(),
+            ]
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.gh_user, "third");
+        assert!(w.unreadable_until.is_empty());
+
+        // third loses its access too: the account without a token counts
+        // among those tried, and the repository waits the hour rather than
+        // failing on the token at every poll.
+        third_sees.set(false);
+        let sha2 = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+        pushed(&s, "2026-10-31T10:05:00Z", sha2);
+        let lines = tend_pipeline_as(&s, "proj", "2026-10-31T10:11:00Z", "daemon", &gh, &logins);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with(
+                "pipeline proj: the runs of aaaa1111aaaa could not be read as third, the active gh login pat-login and octocat: "
+            ) && lines[0].ends_with("; o/r is left alone until 2026-10-31T11:11:00Z"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].starts_with("pipeline proj: told the owner ("),
+            "{lines:?}"
+        );
+        let w = load_watch(&s, "proj");
+        assert_eq!(w.unreadable_until, "2026-10-31T11:11:00Z");
+        assert!(w.gh_user.is_empty());
+        let unreadable = events(&s, "pipeline.unreadable");
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(
+            unreadable[0]["tried"],
+            json!(["third", "pat-login", "octocat"])
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_push_pending_finds_the_account_through_the_branch_head() {
+        let s = setup();
+        let (gh, log) = gh_seen_by(
+            &["octocat"],
+            vec![run("CI", "push", "completed", "success", 1)],
+        );
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &*gh, &logins);
+        assert_eq!(
+            lines,
+            [
+                "pipeline proj: reading o/r as octocat, since the active gh login pat-login cannot see it".to_string(),
+                "pipeline proj: green at 8f377827f6c6 on origin/main (pushed by pulse-bot) (CI)".to_string(),
+            ]
+        );
+        assert_eq!(
+            &*log.borrow(),
+            &[
+                "head main as active".to_string(),
+                "head main as octocat".to_string(),
+                format!("runs {SHA} as octocat"),
+            ]
+        );
+        assert_eq!(load_watch(&s, "proj").gh_user, "octocat");
+
+        // A branch that is not there is nobody's access problem: no other
+        // account is tried and the repository is not left alone.
+        let s = setup();
+        let asked = RefCell::new(Vec::new());
+        let gh = |_: &Ask, user: Option<&str>| -> Result<String, String> {
+            asked.borrow_mut().push(user.map(str::to_string));
+            Err("gh api: Branch not found (HTTP 404)".into())
+        };
+        let lines = tend_pipeline_as(&s, "proj", NOW, "daemon", &gh, &logins);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].ends_with(
+                "the head of origin/main could not be read: gh api: Branch not found (HTTP 404)"
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(*asked.borrow(), [None]);
+        assert!(load_watch(&s, "proj").unreadable_until.is_empty());
     }
 
     /// The project checkout's own head: a commit the checkout holds.

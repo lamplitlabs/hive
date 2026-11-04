@@ -32,6 +32,7 @@ pub mod executor;
 pub mod experiment;
 pub mod failure;
 pub mod gcp;
+pub mod gh_auth;
 pub mod hands;
 pub mod heartbeat;
 pub mod heldout;
