@@ -62,6 +62,14 @@ import Testing
         #expect(PageNotification.consolePath("") == "/")
     }
 
+    @Test func theTestNotificationIsOneThePageCouldSendWithBannerAndSound() {
+        let note = PageNotification.test
+        #expect(note.inFront == (banner: true, sound: true), "the test shows its banner and plays the sound even in front")
+        #expect(note.path == "/settings/#notify", "a click opens Settings → Notifications")
+        #expect(note.identifier == "pulse.notify.test", "a second test replaces the first")
+        #expect(!note.title.isEmpty && !note.body.isEmpty)
+    }
+
     @Test func inFrontOnlyTheSoundWhenThePageShowedItsNote() {
         let note = PageNotification(tag: "t", title: "T", body: "", path: "/", sound: true, focused: true)
         #expect(note.inFront == (banner: false, sound: true))

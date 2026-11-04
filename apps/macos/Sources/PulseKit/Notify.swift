@@ -65,6 +65,18 @@ public struct PageNotification: Equatable, Sendable {
         )
     }
 
+    /// Help → Send Test Notification: one the page could have sent, read from
+    /// the same message the console posts to `pulseNotify`, with the sound and
+    /// the banner even while PULSE is in front, so one click shows the owner
+    /// what macOS does with a real one. A click opens Settings → Notifications.
+    public static var test: PageNotification {
+        PageNotification([
+            "kind": "notify", "tag": "test", "title": "PULSE notifications work",
+            "body": "This is how PULSE tells you when something waits for you or work finishes.",
+            "path": "/settings/#notify", "sound": true, "focused": false,
+        ])!
+    }
+
     /// The notification's identifier in Notification Center.
     public var identifier: String { "pulse.notify." + tag }
 

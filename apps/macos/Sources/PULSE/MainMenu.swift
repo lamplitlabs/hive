@@ -194,6 +194,7 @@ enum MainMenu {
         let menu = NSMenu(title: "Help")
         menu.addItem(item("PULSE Help", #selector(AppDelegate.showPulseHelp(_:))))
         menu.addItem(item("Show Console Log", #selector(AppDelegate.showConsoleLog(_:))))
+        menu.addItem(item("Send Test Notification", #selector(AppDelegate.sendTestNotification(_:))))
         return menu
     }
 
