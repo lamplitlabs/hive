@@ -105,7 +105,7 @@ export function reportLanding(j: TaskJob | undefined): { word: string; tone: Ton
   if (!j) return null;
   switch (j.status) {
     case "done":
-      return j.branch ? { word: "Waiting to land", tone: "warn" } : { word: "Landed", tone: "ok" };
+      return j.branch ? { word: "Waiting for merge", tone: "warn" } : { word: "Landed", tone: "ok" };
     case "failed":
       return { word: "Failed", tone: "bad" };
     case "queued":

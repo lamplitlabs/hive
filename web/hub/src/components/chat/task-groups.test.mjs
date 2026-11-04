@@ -60,17 +60,17 @@ test("work done but not on main yet waits to land: a step by its branch, a task 
   assert.equal(jobWaitingToLand("failed", "pulse/iris/job-1"), false);
   assert.equal(jobWaitingToLand("leased", "pulse/iris/job-1"), false);
   const landing = session({ job_status: "done", status: "ended", branch: "pulse/iris/job-1" });
-  assert.deepEqual(sessionWords(landing), { word: "Waiting to land", tone: "wait" });
-  assert.deepEqual(stepWords("done", false, "pulse/iris/job-1"), { word: "Waiting to land", tone: "wait" });
+  assert.deepEqual(sessionWords(landing), { word: "Waiting for merge", tone: "wait" });
+  assert.deepEqual(stepWords("done", false, "pulse/iris/job-1"), { word: "Waiting for merge", tone: "wait" });
   assert.deepEqual(stepWords("done", true, "pulse/iris/job-1"), { word: "Working", tone: "run" }, "a session at it outranks the branch");
   assert.deepEqual(stepWords("done", false, ""), { word: "Done", tone: "ok" });
   // The task: the section sits between working and open; a step waiting to
   // land outranks Done (the task is not on main yet) but not an agent at
   // another step, nor the owner's turn.
   assert.deepEqual(GROUP_ORDER, ["working", "landing", "open", "finished", "archived"]);
-  assert.equal(taskMood(task({ sessions: [landing] })).word, "Waiting to land");
+  assert.equal(taskMood(task({ sessions: [landing] })).word, "Waiting for merge");
   assert.equal(taskGroup(task({ sessions: [landing] })), "landing");
-  assert.equal(taskMood(task({ status: "done", sessions: [landing] })).word, "Waiting to land");
+  assert.equal(taskMood(task({ status: "done", sessions: [landing] })).word, "Waiting for merge");
   assert.equal(taskGroup(task({ status: "done", sessions: [landing] })), "landing");
   assert.equal(taskGroup(task({ status: "cancelled", sessions: [landing] })), "landing");
   assert.equal(taskMood(task({ sessions: [landing, session({ job_status: "leased", status: "running" })] })).word, "Working");
@@ -80,11 +80,11 @@ test("work done but not on main yet waits to land: a step by its branch, a task 
   assert.equal(taskGroup(task({ status: "done", sessions: [session({ job_status: "done", branch: "" })] })), "finished");
   // The task's own page reads the same from its jobs.
   const state = (over = {}) => ({ status: "in_progress", lead: "one-lead", needs_you: false, working: false, landing: true, ...over });
-  assert.equal(taskMoodOf(state()).word, "Waiting to land");
+  assert.equal(taskMoodOf(state()).word, "Waiting for merge");
   assert.equal(taskGroupOf(state()), "landing");
-  assert.equal(taskMoodOf(state({ status: "done" })).word, "Waiting to land");
+  assert.equal(taskMoodOf(state({ status: "done" })).word, "Waiting for merge");
   assert.equal(taskMoodOf(state({ working: true })).word, "Working");
-  assert.equal(taskMoodOf(state({ status: "done", working: true })).word, "Waiting to land", "a done task's running session does not hide the unlanded step");
+  assert.equal(taskMoodOf(state({ status: "done", working: true })).word, "Waiting for merge", "a done task's running session does not hide the unlanded step");
   assert.equal(taskGroupOf(state({ status: "done", working: true })), "landing");
   assert.deepEqual(taskMoodOf(state()), taskMood(task({ sessions: [landing] })));
   // A conversation: the hub's answer puts a finished or idle one in the
@@ -210,7 +210,7 @@ test("a branch a landing is checking reads Reviewing, after waiting to land", ()
   assert.equal(groupOf({ id: "c", status: "idle", reviewing: true, live: { status: "running" } }), "working");
   assert.equal(stepWords("done", false, "pulse/x", true).word, "Reviewing");
   assert.equal(stepWords("done", true, "pulse/x", true).word, "Working");
-  assert.equal(stepWords("done", false, "pulse/x", false).word, "Waiting to land");
+  assert.equal(stepWords("done", false, "pulse/x", false).word, "Waiting for merge");
   assert.equal(taskMoodOf({ status: "done", lead: "", needs_you: false, working: false, landing: true, reviewing: true }).word, "Reviewing");
   assert.equal(taskGroupOf({ status: "done", lead: "", needs_you: false, working: false, reviewing: true }), "landing");
 });

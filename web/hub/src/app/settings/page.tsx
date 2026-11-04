@@ -48,7 +48,7 @@ interface Group {
 // #evolve #daemon #provider #other) are linked from other pages.
 const RUNNER_CLUSTERS: Cluster[] = [
   { title: "How much work runs", keys: ["stop", "capacity", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
-  { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.auto_stash", "landing.parallel", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
+  { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.auto_stash", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
   { title: "Dependencies", keys: ["dependencies.security_updates", "dependencies.major_updates", "dependencies.min_release_age_days", "dependencies.alert_check_minutes"] },
   { title: "Checks on GitHub", keys: ["pipeline.watch", "pipeline.wait_hours"] },
   { title: "Backups", keys: ["backup.to", "backup.every_hours", "backup.keep", "backup.subscription"] },

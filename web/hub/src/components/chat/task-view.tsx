@@ -432,12 +432,7 @@ function TaskBody({
           </span>
         </div>
       ) : null}
-      <TaskDeliveryLine
-        id={t.id}
-        delivery={d.delivery}
-        onChange={() => void reload()}
-        className="mt-0"
-      />
+      <TaskDeliveryLine delivery={d.delivery} className="mt-0" />
       {closed ? (
         <Notice tone="info">
           {t.status === "done"

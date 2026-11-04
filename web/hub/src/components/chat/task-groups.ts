@@ -40,11 +40,11 @@ export function relShort(d: string, now: number): string {
 // finished step whose branch the daemon has still to land, a conversation
 // whose branch holds commits main lacks. The same mood for a step, a task
 // and a conversation, so the section reads as one thing.
-export const WAITING_TO_LAND: Mood = { word: "Waiting to land", tone: "wait", pip: "waiting", dot: "bg-warn" };
+export const WAITING_TO_LAND: Mood = { word: "Waiting for merge", tone: "wait", pip: "waiting", dot: "bg-warn" };
 
 // The step after waiting: a landing has taken the branch and is merging and
 // running the project's checks on it (its pulse-land.lock names the branch).
-// "Working" is an agent at it, "Waiting to land" is the branch asking to
+// "Working" is an agent at it, "Waiting for merge" is the branch asking to
 // land, "Reviewing" is the landing checking it.
 export const REVIEWING: Mood = { word: "Reviewing", tone: "run", pip: "busy", dot: "bg-primary" };
 
