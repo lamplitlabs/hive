@@ -1937,6 +1937,22 @@ pub(crate) fn run_job(
                 } else if !ok {
                     status = "failed".into();
                     summary = format!("{commits} commit(s) but {verify_note}; nothing landed");
+                    // The clone goes when the run ends: keep its commits so a
+                    // retry can start from them instead of from the run record.
+                    let kept = crate::land::keep_failed_work(
+                        &cancel,
+                        &root,
+                        ex.fetch_source(),
+                        &ex.fetch_env(),
+                        &base,
+                        &crate::land::failed_work_branch(agent, &job.str("id")),
+                        &home,
+                        &project.str("slug"),
+                    );
+                    if !kept.is_empty() {
+                        log.add(format!("the failed run's work: {kept}"));
+                        summary.push_str(&format!("; {kept}"));
+                    }
                     // A check that did not run (the disk under the floor, the
                     // lock given up) says nothing about the base either; its
                     // prelude would stop the same way, after the same wait.
@@ -1965,6 +1981,9 @@ pub(crate) fn run_job(
                             "{commits} commit(s) but {verify_note}; the base {} was already red before this job (verify exit {base_rc} on the base tree), so this is not a regression the job introduced; nothing landed",
                             crate::recipe::short(&base, 12)
                         );
+                        if !kept.is_empty() {
+                            summary.push_str(&format!("; {kept}"));
+                        }
                     }
                 } else if !lease_ok(5) {
                     status = "stale".into();
@@ -4240,10 +4259,28 @@ mod tests {
             )
             .unwrap();
             assert_eq!(r.str("status"), "failed", "run: {r:?}");
+            // The clone goes with the run; its commit stays for a retry.
+            let kept = crate::land::failed_work_branch("aurora", &r.str("job_id"));
+            let patch = std::path::Path::new(&s.home)
+                .join("patches")
+                .join("proj")
+                .join(format!("{}.patch", kept.replace('/', "__")));
             assert_eq!(
                 r.str("summary"),
-                "1 commit(s) but verify exit 1; nothing landed",
+                format!(
+                    "1 commit(s) but verify exit 1; nothing landed; its commits are kept on branch {kept} and in {}",
+                    patch.display()
+                ),
                 "the base is green either way"
+            );
+            assert_eq!(
+                run(&root, &["git", "log", "-1", "--format=%s", &kept]).trim(),
+                title,
+                "the retry finds the failed run's commit on {kept}"
+            );
+            assert!(
+                std::fs::read_to_string(&patch).unwrap().contains("exit 1"),
+                "the patch carries the commit"
             );
             std::fs::read_to_string(r.str("log")).unwrap()
         };
@@ -4945,9 +4982,11 @@ mod tests {
         .unwrap();
         assert_eq!(r.str("status"), "failed", "run: {r:?}");
         let summary = r.str("summary");
-        assert_eq!(
-            summary,
-            "1 commit(s) but verify exit 71 (disk full: under daemon.min_free_mb, verification did not run); nothing landed",
+        assert!(
+            summary.starts_with(
+                "1 commit(s) but verify exit 71 (disk full: under daemon.min_free_mb, verification did not run); nothing landed; its commits are kept on branch pulse/aurora/"
+            ),
+            "the unjudged commits stay for the retry: {summary}"
         );
         assert!(
             !summary.contains("already red"),

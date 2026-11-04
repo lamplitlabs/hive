@@ -306,6 +306,82 @@ pub(crate) fn save_branch_patch(
     path.display().to_string()
 }
 
+/// The branch a failed run's commits are kept on in the owner's checkout. It
+/// is not the job's own `pulse/<agent>/<job>`: an in-place retry of the same
+/// job by the same agent lands on that name and would be refused as "already
+/// exists". The sweep removes it after `daemon.sweep_branch_days`, saving a
+/// patch first.
+pub(crate) fn failed_work_branch(agent: &str, job_id: &str) -> String {
+    format!("pulse/{agent}/{job_id}-failed")
+}
+
+/// Keeps the commits of a run whose check failed, so a retry brief that says
+/// "start from branch X" finds X instead of rebuilding the work from the run
+/// record: the clone's HEAD is fetched into the owner's checkout as
+/// [`failed_work_branch`] and saved as a patch under
+/// `<PULSE_HOME>/patches/<slug>/`. The clone is removed right after the run,
+/// so this is the last moment the commits exist. Never fails the run; returns
+/// the clause for its summary ("" when nothing could be kept).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn keep_failed_work(
+    cancel: &pulse_bus::CancellationToken,
+    root: &str,
+    fetch_source: String,
+    fetch_env: &[String],
+    base: &str,
+    branch: &str,
+    home: &str,
+    slug: &str,
+) -> String {
+    if root.is_empty() || base.is_empty() || branch.is_empty() {
+        return String::new();
+    }
+    let exists = crate::util::git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .ok();
+    if !exists {
+        let fetched = crate::proc::run_group(
+            cancel,
+            &[
+                "git".into(),
+                "-C".into(),
+                root.to_string(),
+                "fetch".into(),
+                "-q".into(),
+                "--no-tags".into(),
+                fetch_source,
+                format!("+HEAD:refs/heads/{branch}"),
+            ],
+            "",
+            fetch_env,
+            &[],
+            Duration::from_secs(300),
+        );
+        if !matches!(&fetched, Ok(o) if o.exit_code == 0) {
+            return String::new();
+        }
+    }
+    let patch = save_branch_patch(
+        root.to_string(),
+        base.to_string(),
+        branch.to_string(),
+        home.to_string(),
+        slug.to_string(),
+    );
+    if std::fs::metadata(&patch).map_or(0, |m| m.len()) == 0 {
+        let _ = std::fs::remove_file(&patch);
+        return format!("its commits are kept on branch {branch}");
+    }
+    format!("its commits are kept on branch {branch} and in {patch}")
+}
+
 /// The most commits `replay_from_fork` copies; an experiment branch carries a handful.
 const REPLAY_FORK_MAX_COMMITS: usize = 200;
 
