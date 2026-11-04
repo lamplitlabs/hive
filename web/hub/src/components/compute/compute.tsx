@@ -104,6 +104,37 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
   );
 }
 
+// One settled request as a single line: what, when, and - for a failure - why.
+// Past requests pile up (every failed automatic request is one), so they are
+// rows, not cards.
+export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
+  const note = (r.note ?? "").trim();
+  const failed = r.status === "failed";
+  return (
+    <li className="flex min-w-0 items-start gap-3 rounded-xl border bg-card px-3 py-2.5 text-sm" aria-label={"Request " + r.id + ": " + statusWord(r.status)}>
+      <div className="min-w-0 flex-1" title={r.reason ? "Asked because: " + r.reason.trim() : undefined}>
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <span className="font-medium text-foreground">{r.id}</span>
+          <span className="text-[13px] text-muted-foreground">
+            <Mono>{r.size}</Mono>
+            {" for " + plural(r.hours, "hour") + ", asked by " + r.requested_by}
+          </span>
+          <ProjectLink slug={r.project} className="text-[13px] font-normal text-muted-foreground" />
+          <span className="ml-auto flex items-center gap-2 text-[13px] text-muted-foreground">
+            <StatusBadge status={r.status} />
+            <When d={r.at} />
+          </span>
+        </div>
+        {note ? (
+          <p className={"mt-1 text-[13px] leading-snug anywhere " + (failed ? "text-bad" : "text-muted-foreground")}>{(failed ? "Why it failed: " : "") + note}</p>
+        ) : failed ? (
+          <p className="mt-1 text-[13px] text-muted-foreground">No reason was recorded for this one.</p>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
 const PROVIDER: Record<string, string> = { azure: "Microsoft Azure", aws: "Amazon Web Services", gcp: "Google Cloud", google: "Google Cloud", hetzner: "Hetzner Cloud", digitalocean: "DigitalOcean", ssh: "Your own machines over SSH" };
 export const providerWord = (p?: string | null) => (p ? (PROVIDER[p.toLowerCase()] ?? p.charAt(0).toUpperCase() + p.slice(1)) : "");
 

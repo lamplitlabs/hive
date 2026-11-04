@@ -842,4 +842,40 @@ mod tests {
             "no project: {status} {result:?}"
         );
     }
+
+    #[test]
+    fn an_old_failed_request_reads_its_reason_from_the_daemon_finding() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let h = http::handler(&s);
+        let (status, made) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"one","size":"small","hours":1,"reason":"x"}"#,
+        );
+        assert_eq!(status, 201, "{made:?}");
+        let id = made["request"]["id"].as_str().unwrap().to_string();
+        pulse_tasks::set_compute_status(&s, &id, "failed", "", "daemon").unwrap();
+        let reason = |h: &Handler| {
+            let (_, listed) = http::additions_request(h.clone(), "GET", "/api/v1/compute", "");
+            listed["requests"][0]["note"]
+                .as_str()
+                .unwrap_or("?")
+                .to_string()
+        };
+        assert_eq!(reason(&h), "", "no note and no finding");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, body, created_at) \
+                 VALUES ('p1', 'one', 'runner', 'compute', 'finding', 'daemon', '2026-11-01T00:00:00Z', ?, '', '2026-11-01T00:00:00Z')",
+                [format!("compute {id} failed: pairing did not complete")],
+            )
+            .unwrap();
+        assert_eq!(reason(&h), "pairing did not complete");
+        pulse_tasks::note_compute(&s, &id, "its own note").unwrap();
+        assert_eq!(reason(&h), "its own note", "a kept note wins");
+    }
 }
