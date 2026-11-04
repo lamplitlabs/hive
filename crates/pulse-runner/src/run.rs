@@ -1682,6 +1682,19 @@ pub(crate) fn run_job(
         // did is held against the job, which is done again.
         if (status != "timeout" && status != "lost") || rescued {
             commits = ex.commit_count(&base);
+            // A review's clone stands on the pull request's head once the
+            // agent ran `pulse review checkout`: the commits past the base
+            // are the author's, signed by the author's run key, and the
+            // identity check refused them as this run's (eighteen review
+            // runs failed that way on 2026-11-04 after reviews that had
+            // merged their pull request). A review ends in its verdict
+            // through `pulse review`; nothing of the clone lands.
+            if commits > 0 && crate::review::is_review_job(&job) {
+                log.add(format!(
+                    "{commits} commit(s) in the clone are the pull request's, checked out for the review; a review lands nothing of its own"
+                ));
+                commits = 0;
+            }
             if commits > 0 {
                 changed_files = ex.changed_files(&base);
             }
@@ -4266,6 +4279,71 @@ mod tests {
             "b",
             "the base was checked once"
         );
+    }
+
+    /// The reviewer's clone stands on the pull request's head after
+    /// `pulse review checkout`: the commits past the base are the author's,
+    /// signed by another run's key, and the run lands nothing of them.
+    /// The review's verdict is its outcome.
+    #[test]
+    fn a_review_run_lands_nothing_of_the_pull_request_it_checked_out() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_proj, root) = new_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "review".into(),
+            "Review PR #7: a change of someone else's".into(),
+            "read the diff and give a verdict".into(),
+            1,
+            0,
+            "review:proj:7".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The author's commit, as the pull request's branch brings it into
+        // the clone: not this run's key, not this agent.
+        let worker = "printf 'theirs\\n' > theirs.txt && git add theirs.txt && git -c user.name=other-1 -c user.email=other-1@pulse.local commit -q --no-gpg-sign -m 'theirs' && echo 'SUMMARY: merged #7 after reading the diff'";
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.int("commits"), 0, "run: {r:?}");
+        assert_eq!(r.str("summary"), "merged #7 after reading the diff");
+        assert_eq!(r.str("branch"), "", "run: {r:?}");
+        let log_text = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log_text.contains("1 commit(s) in the clone are the pull request's"),
+            "{log_text}"
+        );
+        assert!(!log_text.contains("identity check"), "{log_text}");
+        let branches = run(&root, &["git", "branch", "--list", "pulse/*"]);
+        assert_eq!(branches.trim(), "", "nothing landed: {branches}");
     }
 
     #[test]

@@ -602,6 +602,13 @@ fn source_of(slug: &str, number: i64) -> String {
     format!("{SOURCE_PREFIX}{slug}:{number}")
 }
 
+/// Whether a job is a pull request review. A review's clone holds the
+/// pull request's own commits once the agent runs `pulse review checkout`,
+/// so the run that carries it lands nothing: its outcome is the verdict.
+pub(crate) fn is_review_job(job: &Row) -> bool {
+    job.str("kind") == "review" && job.str("source").starts_with(SOURCE_PREFIX)
+}
+
 /// A queued or running review job of the project, when there is one.
 fn active_review_job(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Option<Row> {
     crate::util::query_rows(
