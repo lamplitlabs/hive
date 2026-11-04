@@ -471,6 +471,42 @@ the pre-commit check is skipped) and the run's own verification judges it like
 any other commit. The run log says `the runner committed its work for
 verification`; a worker that stopped for a reason of its own keeps its verdict.
 
+### Several branches at once: `landing.batch`
+
+A landing verifies each branch on its own, and on a project whose check takes
+long that serializes the queue: on amistio-template one verify took 1,210 s on
+average (36 timed landings over three days, the longest 1,642 s) and two to
+four finished branches often waited at once, so the last of them sat through
+every verify ahead of it. So when a landing pass finds two or more plain
+pending branches with a verify command to run (`landing.batch`, default `on`;
+`off` lands every branch on its own), it lands them as one: in a throwaway
+worktree of the default branch it merges each member in finished order exactly
+as its own landing would (the same fast-forward and merge-commit rules, the
+`pulse` identity, `out/`-only conflicts resolved by rebuilding the hub bundle,
+`PULSE_RESULT.md` dropped), leaves out a member whose merge conflicts - it
+lands or is refused on its own afterwards - points a synthetic branch
+`pulse/batch/<id>` at the chain and lands that branch like any other: one
+verify of the merged whole, one fast-forward, one push, one `land.batch` event
+(the chain as subject, the batch id and the member jobs and branches in the
+detail). The pass then marks each member landed in it: a `land.landed` event
+of its own, with the commits it added to the chain as `before` and `sha`, the
+batch id and the chain's verify in the detail, and text, note and result post
+on the job's thread that say the branch landed in batch `<id>` with N branches
+and was checked once as the merged whole, so the members leave the queue, show
+on the task page and count for the push exactly as individually landed jobs
+do. Experiments,
+sync and upstream landings, held branches, branches in a retry hold, and
+branches a landing would refuse or treat specially - owner paths, guarded
+files, `docs/context/environment.md`, a lockfile the release-age rule dates -
+never join a batch; a batch counts once against `pulse land --limit`, whatever
+its size. Whatever goes wrong with the chain costs the pass only that one
+attempt: a chain that fails its verify, conflicts, is refused or cannot be set
+up records `land.batch-failed` (the reason and the check's tail in the detail)
+instead of a retry hold, a repair or a result post, its synthetic branch is
+deleted, and the same pass lands the members one by one, where the member's
+own verify names the culprit and the good branches still land. A red default
+branch holds a batch as it holds any landing.
+
 ### Pushing: `landing.push`
 
 Landing moves your local default branch; whether it goes further is your

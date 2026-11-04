@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 function actionTone(a: string): Tone {
   if (a === "mention" || a === "post.question" || a === "post.handoff") return "warn";
   if (a === "hook.failed") return "bad";
-  if (a === "land.pushed" || a === "land.landed") return "ok";
+  if (a === "land.pushed" || a === "land.landed" || a === "land.batch") return "ok";
   if (a === "land.held" || a === "land.reverted") return "warn";
   // Housekeeping: a run's own cleanup, a worker retiring once its run is over
   // and the daemon's sweep are routine, not failures.
@@ -74,6 +74,8 @@ const VERB: Record<string, string> = {
   "task.amended": "changed a task",
   "task.cancelled": "cancelled a task",
   "land.landed": "merged finished work",
+  "land.batch": "merged several finished branches, checked as one",
+  "land.batch-failed": "could not merge several finished branches as one",
   "land.pushed": "pushed merged work",
   "land.held": "held back a merge",
   "land.reverted": "saw merged work reverted",

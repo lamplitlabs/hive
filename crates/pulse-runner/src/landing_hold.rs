@@ -242,10 +242,12 @@ pub(crate) fn push_on(s: &pulse_store::Store) -> bool {
     matches!(s.setting("landing.push", "off").as_str(), "main" | "pr")
 }
 
-/// A landing newer than the project's last push or pull request.
+/// A landing newer than the project's last push or pull request: a branch's
+/// own (`land.landed`) or a batch's (`land.batch`), which moves the default
+/// branch the same way.
 pub(crate) fn push_owed(s: &pulse_store::Store, slug: String) -> bool {
     let Ok(conn) = s.conn() else { return false };
-    let r = crate::util::must_one(&conn, "SELECT COALESCE((SELECT MAX(seq) FROM events WHERE action = 'land.landed' AND json_extract(detail, '$.project') = ?), 0) AS landed,
+    let r = crate::util::must_one(&conn, "SELECT COALESCE((SELECT MAX(seq) FROM events WHERE action IN ('land.landed', 'land.batch') AND json_extract(detail, '$.project') = ?), 0) AS landed,
 		COALESCE((SELECT MAX(seq) FROM events WHERE action IN ('land.pushed', 'land.pr') AND subject = ?), 0) AS pushed", &[&slug, &slug]);
     !r.0.is_empty() && r.int("landed") > r.int("pushed")
 }
