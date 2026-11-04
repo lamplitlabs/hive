@@ -33,7 +33,7 @@ pub mod variants;
 pub use chat::*;
 pub use chat_ddl::CHAT_DDL;
 pub use ctx::{CancellationToken, ContextError};
-pub use daily_cap::{DAILY_CAP_COUNT_SQL, daily_cap_of};
+pub use daily_cap::{DAILY_CAP_COUNT_SQL, DAILY_CAP_JOBS_SQL, daily_cap_of};
 pub use ddl::{DDL, JOB_COLUMNS};
 pub use evolve_ddl::EVOLVE_DDL;
 pub use forget::*;

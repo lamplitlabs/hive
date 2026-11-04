@@ -703,7 +703,7 @@ pub(crate) fn sh_with_timeout(
     crate::landing_context::sh_with_context(&ctx, dir, cmd, budget)
 }
 
-fn git_tree(root: &str, rev: &str) -> String {
+pub(crate) fn git_tree(root: &str, rev: &str) -> String {
     crate::util::git_timeout(
         root,
         Duration::from_secs(10),
@@ -756,7 +756,7 @@ fn verify_memo_now(now: &str) -> chrono::DateTime<chrono::Utc> {
         .unwrap_or_else(|_| chrono::Utc::now())
 }
 
-fn find_verify_memo(
+pub(crate) fn find_verify_memo(
     s: &pulse_store::Store,
     slug: &str,
     tree: &str,
@@ -5575,7 +5575,7 @@ mod tests {
             false,
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &Default::default(),
             &[],
         )

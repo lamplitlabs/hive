@@ -216,6 +216,14 @@ mod tests {
         }
         drop(conn);
         assert_eq!(crate::run::runs_today(&s, &now), 2);
+        // A tick that leased job-two already (its run row r3 is in) and a
+        // third job whose row is not in yet: three jobs, not four.
+        assert_eq!(
+            crate::run::jobs_today_with(&s, &now, &["job-two".into(), "job-three".into()]),
+            3,
+            "a leased job with its run row in counts once"
+        );
+        assert_eq!(crate::run::jobs_today_with(&s, &now, &[]), 2);
         let add = |kind: &str, source: &str| {
             crate::jobs::add_job(
                 &s,
@@ -264,9 +272,12 @@ mod tests {
             "the fleet's job waits\n{}",
             out.string()
         );
+        // The owner's task is the day's third job, past the cap of two: the
+        // tick says so whether or not its run row is in by the time the
+        // tick sums up (the run's thread writes it).
         assert!(
             out.string()
-                .contains("daily cap reached: 2 of 2 jobs today")
+                .contains("daily cap reached: 3 of 2 jobs today")
                 && out.string().contains("set jobs_per_day higher or to 0"),
             "the log names the cap and its cure:\n{}",
             out.string()

@@ -378,7 +378,7 @@ mod tests {
             false,
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &Default::default(),
             &[],
         )
@@ -415,7 +415,7 @@ mod tests {
             false,
             TEST_NOW,
             crate::executor::LOCAL_EXECUTOR,
-            0,
+            &[],
             &Default::default(),
             &[],
         )

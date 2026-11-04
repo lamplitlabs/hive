@@ -69,9 +69,17 @@ pub(crate) trait Executor {
         cmd: &str,
         minutes: i32,
     ) -> (Option<i32>, String);
+    /// Installs the clone's verify-before-commit gate. `check_cmd` is what
+    /// the hook runs - the project's check inside the verify lock, with the
+    /// shared-target-dir touch inside the lock too (`run::wrapped_check`);
+    /// `memo_cmd` is the check as every verifier keys its memo, the bare
+    /// command inside the lock (`run::verify_memo_key`), so a memo the hook
+    /// writes is good for the run's own check, a landing and a base check.
+    #[allow(clippy::too_many_arguments)]
     fn install_pre_commit_hook(
         &self,
-        verify_cmd: &str,
+        check_cmd: &str,
+        memo_cmd: &str,
         recipe: Option<&crate::recipe::Recipe>,
         pins: &[String],
         pulse_home: &str,
@@ -166,12 +174,6 @@ pub(crate) struct LocalExec {
     /// The base of the held run whose clone this run carries on in.
     #[serde(default)]
     pub(crate) resume_base: Option<String>,
-    /// The recipe's `CARGO_TARGET_DIR`, resolved once when the executor is
-    /// built so the hook check and the run-end verify can freshen this
-    /// clone's tracked sources when the target dir is shared with another
-    /// tree (`freshen_sources_for_check`).
-    #[serde(default)]
-    pub(crate) recipe_cargo_target_dir: Option<String>,
 }
 
 /// True when the recipe's `CARGO_TARGET_DIR` points outside the clone: that
@@ -209,15 +211,31 @@ pub(crate) fn check_shares_cargo_target_dir(
         .any(|dir| cargo_target_dir_is_outside_clone(dir, clone_dir))
 }
 
-/// The one command `freshen_sources_for_check` runs before a check: bump the
-/// mtime of every tracked source Cargo could reuse a stale artifact for, so a
-/// check in this clone never runs another tree's binary from a shared
-/// `CARGO_TARGET_DIR`. Registry dependencies are untouched, so the cost is
-/// one workspace rebuild per check, not a cold target dir.
-pub(crate) fn freshen_sources_cmd(clone_dir: &str) -> String {
+/// `check` with the touch that keeps a shared Cargo target dir honest in
+/// front of it: bump the mtime of every tracked source Cargo could reuse a
+/// stale artifact for, so the check rebuilds the workspace crates from the
+/// tree it stands in and never runs another tree's binary. Cargo hashes a
+/// workspace member by its path relative to the workspace root and judges
+/// freshness by mtime, so two clones building into one dir
+/// (`~/.pulse/cache/cargo-target-land/<slug>`) share artifacts, and the one
+/// whose sources are older is served the other's. Relative to the shell's
+/// working directory, so one line serves the clone, the base worktree the
+/// run checks out beside it (`base_worktree_command`) and the hook, and
+/// meant to stand inside the verify lock (`verify_lock::wrap`), after the
+/// wait: the install-time touch it replaces ran hours before the hook's
+/// check, and the touch before the run-end verify ran before a lock wait of
+/// an hour or more; a tree that built in between left newer artifacts, and
+/// on 2026-11-04 two brain runs (job-20261104T053139Z-4a52f6 and -f74846)
+/// passed their pre-commit check on another clone's test binaries, then
+/// failed the run-end check - one with a compile error no flake explains -
+/// after a day's work each. Registry dependencies are untouched, so the cost
+/// is one workspace rebuild per check, not a cold target dir; a failed touch
+/// never blocks the check, one stderr line says so and the check runs as it
+/// is. `whose` names the tree in that line ("the clone's", "the base
+/// tree's").
+pub(crate) fn freshen_before_check(check: &str, whose: &str) -> String {
     format!(
-        "cd {} && git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 touch",
-        crate::util::shell_quote(clone_dir)
+        "(git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 -r touch -c) 2>/dev/null || echo \"pulse: could not touch {whose} tracked sources; the check runs as it is\" >&2\n{check}"
     )
 }
 pub(crate) fn new_local_exec(
@@ -231,7 +249,6 @@ pub(crate) fn new_local_exec(
 ) -> LocalExec {
     let job_id = job.str("id");
     let root = project.str("path");
-    let recipe_cargo_target_dir = recipe_cargo_target_dir(s, &project.str("slug"), &root);
     LocalExec {
         row: r,
         s: Some(s.clone()),
@@ -240,7 +257,6 @@ pub(crate) fn new_local_exec(
         project,
         agent: agent.into(),
         log: log.clone(),
-        recipe_cargo_target_dir,
         root,
         clone_dir: std::path::Path::new(home)
             .join("work")
@@ -255,69 +271,9 @@ pub(crate) fn new_local_exec(
         ..Default::default()
     }
 }
-/// Reads the recipe's `CARGO_TARGET_DIR` the same way the run does, so the
-/// executor alone decides whether its checks share a target dir with another
-/// tree. The value the hook check and the run-end verify use is the same one
-/// the recipe exports to the worker and the check itself; a malformed or
-/// absent recipe simply disables the freshening.
-fn recipe_cargo_target_dir(s: &pulse_store::Store, slug: &str, root: &str) -> Option<String> {
-    let (recipe, _, _) = crate::recipe::read_recipe(s, slug, root, "HEAD");
-    recipe?.env.get("CARGO_TARGET_DIR").cloned()
-}
 impl LocalExec {
     pub(crate) fn name(&self) -> String {
         self.row.str("name")
-    }
-    /// Bumps the mtime of this clone's tracked sources when the check's
-    /// `CARGO_TARGET_DIR` - the recipe's, or the one the project's verify
-    /// command names - is shared with another tree, so the check that
-    /// follows rebuilds the workspace crates from this clone and never
-    /// serves another tree's artifact as fresh. Runs immediately before the
-    /// pre-commit hook's check and the run-end verify; a no-op when the
-    /// target dir lives inside the clone (it can only hold this tree's work)
-    /// or neither names one. A failed touch never blocks the check: the run
-    /// log records it and the check runs as it is.
-    ///
-    /// Without the verify command's own dir a run-end verify of a clone made
-    /// hours earlier reused crates that landings of a newer default branch
-    /// had built into the shared land dir since, and failed tests the branch
-    /// never touched (job-20261102T034659Z-2ad33c: exit 101 on a docs-only
-    /// commit while its base verified green).
-    fn freshen_sources_for_check(&self) {
-        if !check_shares_cargo_target_dir(
-            self.recipe_cargo_target_dir.as_deref(),
-            &self.project.str("verify_cmd"),
-            &self.clone_dir,
-        ) {
-            return;
-        }
-        let cmd = freshen_sources_cmd(&self.clone_dir);
-        let out = crate::proc::run_group(
-            &pulse_bus::CancellationToken::new(),
-            &["/bin/sh".into(), "-c".into(), cmd],
-            "",
-            &crate::proc::environ(),
-            &[],
-            Duration::from_secs(120),
-        );
-        match out {
-            Ok(out) if out.exit_code == 0 => {
-                self.log.add("$ touch the clone's tracked sources (the check's CARGO_TARGET_DIR is shared with another tree)".to_string());
-            }
-            Ok(out) => {
-                self.log.add(format!(
-                    "touch of the clone's tracked sources failed (exit {}); the check runs as it is\n{}{}",
-                    out.exit_code,
-                    tail_str(&out.stdout, 2000),
-                    tail_str(&out.stderr, 2000)
-                ));
-            }
-            Err(e) => {
-                self.log.add(format!(
-                    "touch of the clone's tracked sources failed ({e}); the check runs as it is"
-                ));
-            }
-        }
     }
     pub(crate) fn branch_to_clone(&self) -> String {
         let d = self.project.str("default_branch");
@@ -538,7 +494,6 @@ impl Executor for LocalExec {
             &crate::proc::environ(),
             &BTreeMap::from([("TMPDIR".to_string(), tmp)]),
         );
-        self.freshen_sources_for_check();
         let run = self.beat_during("verify", || {
             crate::proc::run_group(
                 cancel,
@@ -564,24 +519,22 @@ impl Executor for LocalExec {
     }
     fn install_pre_commit_hook(
         &self,
-        verify_cmd: &str,
+        check_cmd: &str,
+        memo_cmd: &str,
         recipe: Option<&crate::recipe::Recipe>,
         pins: &[String],
         pulse_home: &str,
         project: &str,
         agent: &str,
     ) -> Result<()> {
-        if verify_cmd.is_empty() {
+        if check_cmd.is_empty() {
             return Ok(());
         }
-        // Freshen before installing the hook: the installed hook runs the
-        // recipe's check, which must rebuild this clone's crates when its
-        // target dir is shared with another tree.
-        self.freshen_sources_for_check();
         crate::keys::write_pre_commit_hook(
             &self.clone_dir,
             &crate::keys::pre_commit_hook_script(
-                verify_cmd,
+                check_cmd,
+                memo_cmd,
                 recipe,
                 pins,
                 &self.clone_dir,
@@ -999,18 +952,20 @@ impl Executor for SshExec {
     }
     fn install_pre_commit_hook(
         &self,
-        verify_cmd: &str,
+        check_cmd: &str,
+        memo_cmd: &str,
         recipe: Option<&crate::recipe::Recipe>,
         pins: &[String],
         pulse_home: &str,
         project: &str,
         agent: &str,
     ) -> Result<()> {
-        if verify_cmd.is_empty() {
+        if check_cmd.is_empty() {
             return Ok(());
         }
         let script = crate::keys::pre_commit_hook_script(
-            verify_cmd,
+            check_cmd,
+            memo_cmd,
             recipe,
             pins,
             &self.local.clone_dir,
@@ -1497,77 +1452,69 @@ mod tests {
     }
 
     #[test]
-    fn a_verify_command_with_a_shared_target_dir_freshens_the_clone_before_the_check() {
-        let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers::new_store();
-        let mut project = insert_git_project(&s);
-        let root = project.str("path");
-        std::fs::write(std::path::Path::new(&root).join("lib.rs"), "// lib\n").unwrap();
-        // Tracked is enough for `git ls-files`; no commit needed.
-        pulse_testutil::git(&["-C", root.as_str(), "add", "lib.rs"]).unwrap();
-        let source = std::path::Path::new(&root).join("lib.rs");
-        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-        std::fs::File::options()
-            .write(true)
-            .open(&source)
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
-        let mtime = || std::fs::metadata(&source).unwrap().modified().unwrap();
-        let mut r = Row::new();
-        r.insert("name", serde_json::json!("local"));
-        let mut job = Row::new();
-        job.insert("id", serde_json::json!("job-freshen"));
-        let log = RunLog::default();
-        let mut e = new_local_exec(
-            r,
-            &s,
-            &s.home,
-            job,
-            project.clone(),
-            "cinder",
-            &mut log.clone(),
+    fn freshen_before_check_touches_only_tracked_sources_where_the_check_stands() {
+        let cmd = freshen_before_check("cargo test", "the clone's");
+        let (touch, check) = cmd.split_once('\n').unwrap();
+        assert_eq!(check, "cargo test");
+        assert_eq!(
+            touch,
+            "(git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 -r touch -c) 2>/dev/null || echo \"pulse: could not touch the clone's tracked sources; the check runs as it is\" >&2"
         );
-        // The recipe names no target dir (the store has none), so only the
-        // verify command can say the check shares one.
-        assert_eq!(e.recipe_cargo_target_dir, None);
-        e.clone_dir = root.clone();
-
-        // A check that builds inside the clone leaves the sources alone.
-        e.project
-            .insert("verify_cmd", serde_json::json!("cargo test --workspace"));
-        e.freshen_sources_for_check();
-        assert_eq!(mtime(), old);
-        assert!(!log.text().contains("touch the clone"), "{}", log.text());
-
-        // The registered check's shared land dir freshens them.
-        project.insert(
-            "verify_cmd",
-            serde_json::json!(
-                "env CARGO_TARGET_DIR=${PULSE_TEST_FRESHEN_UNSET:-/tmp/pulse-land-shared} sh -c 'cargo test'"
-            ),
-        );
-        e.project = project;
-        e.freshen_sources_for_check();
-        assert!(mtime() > old, "the tracked source kept its old mtime");
-        assert!(
-            log.text().contains("touch the clone's tracked sources"),
-            "{}",
-            log.text()
-        );
+        // No `cd`: the same line serves the clone, the base worktree beside
+        // it and the hook, each from its own working directory.
+        assert!(!touch.contains("cd "), "{touch}");
     }
 
+    /// The touch really bumps the tracked sources and leaves the rest alone,
+    /// and a tracked file that is gone from the tree is not recreated.
     #[test]
-    fn freshen_sources_cmd_touches_only_tracked_sources() {
-        let cmd = freshen_sources_cmd("/tmp/fleet/a");
-        assert_eq!(
-            cmd,
-            "cd /tmp/fleet/a && git ls-files -z -- '*.rs' 'Cargo.toml' '**/Cargo.toml' 'build.rs' '**/build.rs' | xargs -0 touch"
-        );
-        let quoted = freshen_sources_cmd("/tmp/fleet/with space");
+    fn freshen_before_check_bumps_tracked_sources_and_recreates_nothing() {
+        let dir = tempfile::Builder::new()
+            .prefix("pulse-freshen-")
+            .tempdir()
+            .unwrap();
+        let root = dir.path().display().to_string();
+        pulse_testutil::git(&["-C", root.as_str(), "init", "-q"]).unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "// lib\n").unwrap();
+        std::fs::write(dir.path().join("gone.rs"), "// gone\n").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "notes\n").unwrap();
+        pulse_testutil::git(&["-C", root.as_str(), "add", "lib.rs", "gone.rs", "notes.md"])
+            .unwrap();
+        std::fs::remove_file(dir.path().join("gone.rs")).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        for name in ["lib.rs", "notes.md"] {
+            std::fs::File::options()
+                .write(true)
+                .open(dir.path().join(name))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(freshen_before_check("exit 0", "the clone's"))
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
         assert!(
-            quoted.starts_with("cd '/tmp/fleet/with space' && git ls-files -z"),
-            "{quoted}"
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mtime = |name: &str| {
+            std::fs::metadata(dir.path().join(name))
+                .unwrap()
+                .modified()
+                .unwrap()
+        };
+        assert!(
+            mtime("lib.rs") > old,
+            "the tracked source kept its old mtime"
+        );
+        assert_eq!(mtime("notes.md"), old, "a non-source file was touched");
+        assert!(
+            !dir.path().join("gone.rs").exists(),
+            "touch -c recreated a removed file"
         );
     }
 
