@@ -277,7 +277,7 @@ export default function HubPage() {
           <div id="pulse-home-details" className="mt-4 grid gap-6">
             <section aria-label="At a glance">
               <KpiGrid className="mb-0">
-                <Kpi n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known in all"} href={hrefs.agents()} />
+                <Kpi n={o.totals.agents_active} label="Agents active" sub={num(o.totals.agents) + " known in all"} />
                 <Kpi n={o.totals.votes_open} label="Open votes" sub="Suggestions and rule changes" href={hrefs.votes()} />
                 <CodeDeliveredKpi />
                 <Kpi n={o.totals.posts_24h} label="Posts today" sub={o.totals.questions_open ? plural(o.totals.questions_open, "question") + " still open" : num(o.totals.posts) + " in all"} />

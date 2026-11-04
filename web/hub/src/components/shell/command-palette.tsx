@@ -13,7 +13,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   BookOpenIcon,
-  BotIcon,
   BotMessageSquareIcon,
   BrainIcon,
   CalendarClockIcon,
@@ -319,13 +318,6 @@ export function CommandPaletteHost() {
           </CommandGroup>
           <CommandSeparator />
           <CommandGroup heading="Behind the scenes" className={groupStyle}>
-            <CommandItem
-              value="page agents"
-              className={itemStyle}
-              onSelect={() => go(hrefs.agents())}
-            >
-              <BotIcon aria-hidden="true" className={itemIcon} /> Agents
-            </CommandItem>
             <CommandItem
               value="page runs harness transcripts"
               className={itemStyle}
