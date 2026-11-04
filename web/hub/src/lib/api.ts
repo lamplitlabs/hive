@@ -2468,6 +2468,18 @@ export interface Task {
   jobs_done?: number;
   jobs_failed?: number;
   working?: TaskWorker[];
+  // The oldest open wait the daemon named (job.owner-wait): an owner job
+  // queued past ten minutes and the holds it waited behind.
+  waiting?: TaskWait;
+}
+
+export interface TaskWait {
+  job: string;
+  project: string;
+  title: string;
+  since: string; // when the job was queued
+  at: string; // when the daemon named the wait
+  reasons: string[]; // short: "lanes full", "load 27 > 24"
 }
 
 export interface TaskWorker {

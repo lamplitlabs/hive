@@ -1363,6 +1363,9 @@ pub(crate) fn daemon(
     // when it keeps the owner's queued work waiting past one pass, and
     // answers when it lifts.
     let mut idle_holds = crate::idle_hold::IdleHolds::default();
+    // The owner's queued jobs and the holds each has waited behind: one
+    // job.owner-wait event once a job has waited ten minutes (owner_wait.rs).
+    let mut owner_waits = crate::owner_wait::OwnerWaits::default();
     // When the last disk-floor finding was posted; a re-crossing inside
     // DISK_FLOOR_REPOST_MINUTES keeps pausing but does not post again.
     let mut disk_floor_last_post = String::new();
@@ -2690,6 +2693,14 @@ pub(crate) fn daemon(
                 ) {
                     say(&o, line);
                 }
+                let reasons = crate::owner_wait::tick_reasons(
+                    &holds_seen,
+                    cap_was_holding == Some(true),
+                    &reason,
+                );
+                for line in owner_waits.tend(s, &reasons, &now, &actor) {
+                    say(&o, line);
+                }
             }
             if !disk_floor_since.is_empty()
                 && !disk_floor_posted
@@ -3461,6 +3472,61 @@ mod tests {
         assert!(
             crate::diskroom::footprint_mb(&*s.conn().unwrap(), "proj", 2_000_000_000) < 1000,
             "{out}"
+        );
+    }
+
+    /// TASK-067 (c): the owner's job held past ten minutes gets one
+    /// job.owner-wait event naming the hold, through a real tick.
+    #[test]
+    fn daemon_names_the_holds_of_an_owner_job_queued_past_ten_minutes() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.sweep", "off")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
+            .unwrap();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at) VALUES ('job-owner', 'proj', 'task', 'Owner step', 'fake worker only', 'task:TASK-055', 'queued', '2026-09-06T09:40:00Z')",
+            &[],
+        );
+        // Over twice the line: not even the owner's express slot opens.
+        let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(60.2),
+            ..crate::daemon_load::CALM
+        });
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        drop(saturated);
+        assert!(!out.contains("leased "), "{out}");
+        assert!(
+            out.contains("owner job job-owner (proj) waiting since 09:40 UTC: load 60 > 24"),
+            "{out}"
+        );
+        let row = crate::util::query_one(
+            &s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'job.owner-wait' AND subject = 'job-owner'",
+            &[],
+        )
+        .unwrap()
+        .expect("one job.owner-wait event");
+        let d: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
+        assert_eq!(d["reasons"], serde_json::json!(["load 60 > 24"]), "{d}");
+        assert_eq!(d["waited_s"], serde_json::json!(1200), "{d}");
+        let lines = crate::owner_wait::status_lines(&s);
+        assert_eq!(
+            lines,
+            vec!["proj job-owner (Owner step) waiting since 09:40 UTC: load 60 > 24".to_string()]
         );
     }
 

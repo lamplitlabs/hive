@@ -250,6 +250,11 @@ impl Handler {
             row.insert("jobs_done".to_string(), json!(w.done));
             row.insert("jobs_failed".to_string(), json!(w.failed));
             row.insert("working".to_string(), value_from(&w.working));
+            // The owner's wait the daemon named (job.owner-wait): the task's
+            // wait line says since when and what held it.
+            if let Some(wait) = &w.waiting {
+                row.insert("waiting".to_string(), value_from(wait));
+            }
         }
         Ok(())
     }
@@ -2320,6 +2325,25 @@ mod tests {
         assert_eq!(jobs, vec!["job-plain", "job-ui"], "{result:?}");
         assert_eq!(arr(&result, "jobs")[0]["artifacts"], 2, "{result:?}");
         assert_eq!(arr(&result, "jobs")[1]["artifacts"], 0, "{result:?}");
+        // A queued job the daemon named as waiting (job.owner-wait): the
+        // task carries the wait and its reasons for the wait line.
+        assert!(result["task"].get("waiting").is_none(), "{result:?}");
+        s.store
+            .conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO events (at, actor, action, subject, detail) VALUES ('2026-01-01T00:11:00Z', 'daemon', 'job.owner-wait', 'job-plain', '{\"since\":\"2026-01-01T00:00:00Z\",\"waited_s\":660,\"reasons\":[\"lanes full\",\"load 27 > 24\"]}')",
+                [],
+            )
+            .unwrap();
+        let (_, waited) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(waited["task"]["waiting"]["job"], "job-plain", "{waited:?}");
+        assert_eq!(waited["task"]["waiting"]["since"], "2026-01-01T00:00:00Z");
+        assert_eq!(
+            waited["task"]["waiting"]["reasons"],
+            json!(["lanes full", "load 27 > 24"])
+        );
         // Where the lead is, for the status line under the owner's message:
         // idle until its answer job is queued, then in line.
         assert_eq!(result["lead_work"]["state"], "idle", "{result:?}");

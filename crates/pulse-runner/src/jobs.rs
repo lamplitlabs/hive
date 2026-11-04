@@ -417,18 +417,24 @@ pub(crate) fn commit_cap_over_lanes(s: &pulse_store::Store, project: &str) -> Op
     Some(current.max(n * verify + step))
 }
 
-pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
+/// When `job` was last queued: its latest `job.add`, `job.queued` or
+/// `job.requeue` event, else its creation.
+pub(crate) fn job_wait_since(q: &Querier, job: &Row) -> String {
     let since = one_dyn(
         q,
         "SELECT COALESCE(MAX(at), '') AS at FROM events WHERE subject = ? AND action IN ('job.add', 'job.queued', 'job.requeue')",
         &[&job.str("id")],
     )
     .str("at");
-    let start = if since.is_empty() {
+    if since.is_empty() {
         job.str("created_at")
     } else {
         since
-    };
+    }
+}
+
+pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
+    let start = job_wait_since(q, job);
     if start.is_empty() {
         return 0;
     }

@@ -43,8 +43,31 @@ export function taskWorkFocus(detail, at) {
   };
 }
 
+// The owner's task whose queued step the daemon named as waiting past ten
+// minutes (job.owner-wait, crates/pulse-runner/src/owner_wait.rs): its wait
+// line says since when and what held it.
+export const TASK_WAIT_ID = "TASK-001";
+
+export function taskWaitFocus(detail, at) {
+  const job = detail?.jobs?.find((j) => j.status === "queued");
+  if (!job) return null;
+  const since = stamp(at, -2_820_000);
+  return {
+    job: job.id,
+    project: job.project,
+    title: job.title,
+    since,
+    at: stamp(since, 600_000),
+    reasons: ["lanes full", "load 27 > 24"],
+  };
+}
+
 export function taskDetailScenario(detail, at) {
   const task = taskDefaults(detail.task || {});
+  if (task.id === TASK_WAIT_ID) {
+    const waiting = taskWaitFocus(detail, at);
+    return waiting ? { ...detail, task: { ...task, waiting } } : { ...detail, task };
+  }
   if (task.id !== TASK_WORK_ID) return { ...detail, task };
   const work = taskWorkFocus(detail, at);
   if (!work) return { ...detail, task };
@@ -65,6 +88,10 @@ export function taskScenarios(payload, at, details = {}) {
     ...payload,
     tasks: (payload.tasks || []).map((raw) => {
       const task = taskDefaults(raw);
+      if (task.id === TASK_WAIT_ID) {
+        const waiting = details[task.id] && taskWaitFocus(details[task.id], at);
+        return waiting ? { ...task, waiting } : task;
+      }
       if (task.id !== TASK_WORK_ID) return task;
       const detail = taskDetailScenario(details[task.id] || { task, jobs: [] }, at);
       return { ...task, ...Object.fromEntries(countKeys.map((key) => [key, detail.task[key]])), working: detail.task.working };

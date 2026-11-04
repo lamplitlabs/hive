@@ -29,6 +29,10 @@ pub struct Work {
     #[serde(rename = "jobs_failed")]
     pub failed: i32,
     pub working: Vec<Worker>,
+    /// The longest open owner wait among the task's queued jobs
+    /// ([`crate::OWNER_WAIT_EVENT`]): since when, and what held it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<crate::OwnerWait>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,13 +126,30 @@ pub fn work_for(s: &pulse_store::Store, ts: &[Task]) -> Result<BTreeMap<String, 
         jobs.push(j);
     }
     let runs = work_running_runs(s, &active_job_ids)?;
+    let waits = if jobs.iter().any(|j| j.status == "queued") {
+        crate::open_owner_waits(s)?
+            .into_iter()
+            .map(|w| (w.job.clone(), w))
+            .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
     for j in jobs {
         for idx in work_task_indexes(&source_tasks, &job_tasks, &j) {
             let t = &ts[idx];
             let mut w = out.remove(&t.id).unwrap_or_default();
             w.total += 1;
             match j.status.as_str() {
-                "queued" => w.queued += 1,
+                "queued" => {
+                    w.queued += 1;
+                    if let Some(wait) = waits.get(&j.id)
+                        && w.waiting
+                            .as_ref()
+                            .is_none_or(|have| wait.since < have.since)
+                    {
+                        w.waiting = Some(wait.clone());
+                    }
+                }
                 "blocked" => w.blocked += 1,
                 "leased" => w.running += 1,
                 "done" => w.done += 1,
