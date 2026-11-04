@@ -137,7 +137,15 @@ prints the gates, `pulse evolve measure --project P --ref REF` scores a tree
 against the project's public fixtures and the owner's held-out ones (names and
 paths never leave the owner's side), `pulse evolve cycle --project P` takes the
 top voted suggestion, builds it on an experiment branch, measures it, archives
-the row, and hands a passing result to `pulse land`. When the gates allow, the
+the row, and delivers a kept result as a pull request whose body is the
+measurement summary ([Delivery](landing.md)); the reviewer and the project's
+pipeline decide it there like any other branch, the lane's state reads `pr`
+and the result post on the suggestion thread names the pull request until
+the merge finalizes the experiment (a project without an upstream lands it
+locally as before). The experiment branch keeps its `evolve/<id>` name on
+the forge, which the reviewer's rule reads as a branch not of PULSE's own
+making and hands to you ([The complexity rule](review.md#the-complexity-rule)).
+When the gates allow, the
 daemon runs the cycle by itself; the command is the by-hand alternative.
 
 - The evolution archive keeps lineage as well as scores. Each measured
@@ -163,11 +171,14 @@ code. It is off unless the owner sets `evolve.mode=variants`; under the
 default `fixtures` mode nothing below writes anything except `list`, `show`
 and `retire`.
 
-- **Revert scan.** The daemon's landing maintenance checks every
-  `land.landed` sha younger than `evolve.keep_days × 2`. If the default
-  branch no longer contains it, or a newer commit there says `This reverts
-  commit <sha>`, the scan writes one `land.reverted` event for that sha,
-  only once. The git it runs is read-only.
+- **Revert scan.** The daemon's maintenance pass checks every `land.landed`
+  sha younger than `evolve.keep_days × 2`. If the default branch no longer
+  contains it, or a newer commit there says `This reverts commit <sha>`, the
+  scan writes one `land.reverted` event for that sha, only once. The git it
+  runs is read-only. The scan reads the local landing's event, not the
+  `land.merged` of a pull request, so under pull-request delivery
+  ([Delivery](landing.md)) it covers only what landed locally until it is
+  taught the merged ones.
 - **Genome.** A variant is a directory `~/.pulse/variants/<id>/` holding
   `variant.yaml`, `agents/<name>.md`, `skills/<name>/SKILL.md`,
   `instructions.md` and `settings.toml`.
@@ -390,8 +401,13 @@ owner asks per landing, how many landings changed the improver's own crates
 brain, how often the daemon rebuilt itself - for the window and for the
 window of the same length before it, with an `Improver trend` line that names
 the direction that counts as better. A window with fewer than five landings is
-marked a thin comparison. A system that is getting better at improving moves
-those numbers; one that is only busy does not.
+marked a thin comparison. A landing in these rows is the local landing's
+`land.landed` event (with `land.pushed`, `land.held`, `land.conflict` and
+`land.failed-verify` for the attempts); a pull request merged on the forge
+(`land.merged`, [Delivery](landing.md)) is not counted yet, so for a project
+with an upstream these rows go quiet under pull-request delivery until the
+report reads `land.merged`. A system that is getting better at improving
+moves those numbers; one that is only busy does not.
 
 Landing outcomes close the self-change loop after each improver landing. For
 brain projects, the daemon waits `evolve.outcome_hours` (default `24`) after a
@@ -399,7 +415,9 @@ brain projects, the daemon waits `evolve.outcome_hours` (default `24`) after a
 the fleet-wide loop window before the landing with the same-length window after
 it, records a `land.measured` event, and posts a `result` on the landing's
 suggestion thread when the job came from one (otherwise under
-`evolution/landing-outcomes`). The result names landings per worker-hour,
+`evolution/landing-outcomes`). Like the revert scan, this reads `land.landed`
+and not `land.merged`, so a brain that delivers by pull request measures no
+outcomes until it does. The result names landings per worker-hour,
 first-pass share, median lead time, and owner asks per landing across all
 projects. If landings per worker-hour drops by more than 20% and both windows
 have at least 10 landing attempts, the daemon posts a revert `suggestion` with
@@ -407,16 +425,19 @@ the numbers as evidence; it never reverts by itself. A pass measures at most
 five landings, oldest first, so a backlog drains over a few passes instead of
 flooding the board.
 
-Landing, sweeping and binary checks share a maintenance pass outside the
-supervisor tick, so a slow verification does not freeze worker dispatch,
-heartbeats or STOP handling. The pass starts per-project landing workers for
-plain branches, up to `landing.parallel` projects at once (default `4`; `1`
-keeps the old serial pass), and then continues with sweep and binary checks
-instead of waiting for another project's verify command. One worker holds a
-project's landing lock and lands that project's ready branches serially; later
-passes skip a project whose worker is still running. Experiments stay on a
-second thread, the experiment lane, which measures one experiment at a time; a
-ninety-minute measurement therefore holds no plain landing. The lane obeys the
+Delivery, sweeping and binary checks share a maintenance pass outside the
+supervisor tick, so a slow `gh` call or fetch does not freeze worker dispatch,
+heartbeats or STOP handling. The pass pushes every project's ready branches
+and opens or updates their pull requests, polls the open ones and
+fast-forwards each local default branch from its upstream
+([Delivery](landing.md)), queues and settles the pull request reviews
+([The reviewer](review.md)), then continues with sweep and binary checks.
+There is no verify command in the pass and no landing lock for a project
+with an upstream: the per-project landing workers (`landing.parallel`) are
+gone with the verifies they were made to get through, and the batch landing
+(`landing.batch`) runs only for a project without one. Experiments stay on a
+second thread, the experiment lane, which measures one experiment at a time;
+a ninety-minute measurement therefore holds no delivery. The lane obeys the
 load governor: while the machine is saturated (the `machine saturated` hold
 below) it does not start a measurement - the log says `landing experiment
 <branch> (<project>) waits: machine saturated: …` once per hold and the
@@ -426,18 +447,19 @@ its two builds are load like any other. The lane reuses a
 cached baseline when the default-branch commit, fixture hash and TTL still
 match, logging `baseline for <commit7> reused from <at> (score <x>)`; archive
 notes say `baseline: reused <at>` or `baseline: measured`. It measures the
-default branch on a cache miss, then the variant as landing
+default branch on a cache miss, then the variant as the forge
 would merge it - the branch merged onto the current default branch, built
 from git objects alone so neither the checkout nor the branch moves (a branch
 that already contains the default branch, or one that conflicts with it, is
-measured as it is and landing reports the conflict); a variant measured on
+measured as it is and its pull request shows the conflict to the reviewer); a variant measured on
 its stale fork point would miss every fix the default branch gained since,
 and the archive notes `measured as … merged onto …` when that happened. The
 keep rule is asymmetric: a variant whose total score falls more than
 `evolve.tolerance` below the baseline is `discarded` and loses its branch; a
 gain of at least `evolve.tolerance` is `improved`; anything in between is a
-tie, labelled `neutral`. A tie is not a win: it still goes to the same landing
-as any branch, where the project's own check decides it, but the archive,
+tie, labelled `neutral`. A tie is not a win: it still becomes a pull request
+like any kept experiment, where the pipeline and the reviewer decide it, but
+the archive,
 `pulse evolve status`, `report` and `lineage` show it apart from improvements
 and it earns no lineage credit - a tie means the card's hypothesis went
 unmeasured, so the worker brief asks every card to name a check that will move
@@ -456,7 +478,7 @@ NAME, measured again on both trees: … scored as a tie`, and the event
 `evolution.measured_again` records which fixtures were noise and which
 reproduced. Before this, a fixture that scored the same commit `1` one cycle
 and `0` the next discarded three voted experiments on its own. An
-experiment the lane could not land stays queued and is tried again after
+experiment the lane could not measure stays queued and is tried again after
 `lane.retry_minutes` (or `lane.short_retry_minutes` after a lock, STOP,
 network/rate-limit/database-lock/full-disk-style transient), recorded as
 `land.deferred` with the reason and `retry_after_min`. The daemon log says
@@ -470,22 +492,22 @@ is the same `pulse harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt; it runs on `measure_model`
 (`worker_model` while empty). When the daemon restarts on a new
 binary it cancels the lane at once (the next daemon measures again) and gives
-the per-project landing workers ten minutes before cancelling them too; a self-update that
+the delivery pass ten minutes before cancelling it too; a self-update that
 is due while the lane measures waits for the lane instead of throwing the
 measurement away, and the lane starts nothing new until that update has
-built. Cancellation reaches the measurement and verification commands; it
-does not bypass their results or the landing gates. A watchdog bounds the
-pass itself: each pass runs under its own one-hour deadline (every command
-inside has a budget; this bounds their sum), and a pass that overruns is
-cancelled and logged with the stage it was at (`landing <project>`,
-`pushing <project>`, `sweep`, `binary check`) so the next pass can start -
-what landed stays landed, the rest waits for it. A pass still running ten
+built. Cancellation reaches the measurement commands; it does not bypass
+their results or the keep rule. A watchdog bounds the pass itself: each pass
+runs under its own one-hour deadline (every command inside has a budget; this
+bounds their sum), and a pass that overruns is cancelled and logged with the
+stage it was at (`delivery`, `pull request reviews`, `sweep`, `binary
+check`) so the next pass can start - what was pushed stays pushed, the rest
+waits for it. A pass still running ten
 minutes after that cancellation sits in a call no budget reaches; the daemon
 then logs it and exits with code 3 so the service restarts it (not under
 `--no-restart`, which logs once instead). Without this, one wedged pass once
 held every finished job unlanded for ten hours while dispatch went on. The
 daemon's idle wait wakes when a pass ends and takes the pass's result in
-itself (lines, landing holds, the pass cleared) - the ten-hour stall was a
+itself (lines, delivery holds, the pass cleared) - the ten-hour stall was a
 pass that had in fact finished, whose result the wait had received and
 dropped, leaving the pass marked running until the next daemon start. A pass
 whose thread ends without a result is cleared the same way.
@@ -571,22 +593,26 @@ successful run. Its evidence feeds subsequent suggestions in the shared
 project-goal context; it does not create votes or authorize another experiment.
 Failed or provisional runs are not reported as successful measured feedback.
 STOP, loop-off and resource gates can defer this follow-up.
-Finalization requires a landing or discard receipt tied to the current
-project, job, run and archive; an empty or missing branch is not success.
+Finalization requires a delivery (a merged pull request) or discard receipt
+tied to the current project, job, run and archive; an empty or missing
+branch is not success.
 Older archives without that proof remain history, not successful feedback;
 no receipt is backfilled automatically.
 
 The `cycles` count is non-baseline experiment archives since the current
 loop-enable event; kept/discarded totals cover all history. An archive can
-consume a cycle before landing finishes, even if landing later fails. These
-counts are measured attempts, not shipped changes.
+consume a cycle before its pull request merges, even if the pull request is
+later closed. These counts are measured attempts, not shipped changes.
 
 A `done` job or `built` suggestion is not a promise that code shipped:
 answers, ballots and leads can legitimately finish without commits.
-Pending landing jobs count job records, not distinct verified patches.
-The controller must finish accepting a worker's artifacts before its job can
-enter landing; local landing and remote publication remain separate steps.
-Dirty checkouts, Git locks and missing upstreams still hold delivery.
+Jobs with an open pull request count job records, not distinct verified
+patches. The controller must finish accepting a worker's artifacts before its
+branch can be delivered; the pull request and its merge remain separate
+steps. A refused push, a missing upstream or a `gh` account that cannot see
+the repository still hold delivery (`land.pr-held`), and a dirty checkout
+holds the local default branch from following the upstream
+(`land.sync-skipped`).
 
 When the owner is away, ordinary owner-addressed questions are paced like
 other lead work. Evolution stop questions remain visible for the owner but
@@ -611,17 +637,22 @@ record, read with `pulse record show WF-evolve`.
 | `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
-| `landing.base_red_retry_minutes` | `10` minutes | Landing hold retry after a project's default branch itself fails verify. |
-| `landing.setup_repair` | `on` | `on`: a project setup that fails on its own default branch - at a landing, or twice the same way in a worker clone - queues one repair job (source `setup:SLUG`, at most three a day per project) that runs without that setup and fixes the recipe, the lockfile or the tree; `off` only defers the landing and marks the machine unfit, as before. |
+| `review.merge` | `auto` | `auto`: the review job merges a pull request no complexity reason holds back; `ask`: every pull request is handed to you with the reviewer's findings under **Needs your review**, and the reviewer merges nothing ([The reviewer](review.md)). |
+| `review.max_files` | `20` files | A pull request that changes more files than this goes to you instead of merging; generated paths (`web/hub/out/**`, lockfiles, `dist/`, `out/`, `target/`, minified files) are not counted. |
+| `review.max_lines` | `600` lines | A pull request that adds and deletes more lines than this together goes to you instead of merging; the same paths are left out of the count. |
+| `landing.base_red_retry_minutes` | `10` minutes | How long a project's held work waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
+| `landing.setup_repair` | `on` | `on`: a project setup that fails on its own default branch - twice the same way in a worker clone, or at a local landing - queues one repair job (source `setup:SLUG`, at most three a day per project) that runs without that setup and fixes the recipe, the lockfile or the tree; `off` only marks the machine unfit, as before. |
+| `landing.auto_stash` | `on` | A dirty checkout on the default branch is stashed around the daemon's fast-forward from the upstream (and around a local landing); `off` leaves it alone and records `land.sync-skipped` at most once an hour ([Delivery](landing.md#the-local-default-branch-follows-the-upstream)). |
+| `landing.push`, `landing.verify_memo`, `landing.verify_memo_hours`, `landing.batch`, `landing` | as before | Settings of the local landing, kept so an older store's values still parse: `landing.push` is read by nothing (the daemon pushes branches and never the default branch); the verify memo and `landing.batch` steer only the local landing a project without an upstream keeps, and `pulse land --branch B --local`; `landing` (`agents`/`human`, ADR-024) still gates the local landing and the experiment lane; for pull requests `review.merge` is the switch. `landing.parallel` is removed. |
 | `pipeline.watch` | `fix` | What the daemon does with the GitHub Actions runs a push of its own set off ([Pipelines](landing.md#pipelines-what-a-push-set-running-on-github)): `fix` tells you on the project's `runner/pipeline` thread and queues one fix job for a red pipeline; `watch` tells you only; `off` reads nothing. |
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `pulse executor label`. |
 | `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `pulse executor reserve NAME`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
 | `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
-| `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age, and a landing that bumps a lockfile is held until every new version it pins is this old. `0` turns the wait off. |
+| `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age before it is queued, and a local landing holds a branch that pins a younger one; a pull request is not read for versions ([Delivery](landing.md#dependencies-security-alerts-and-the-release-age-rule)). `0` turns the wait off. |
 | `dependencies.alert_check_minutes` | `60` minutes | How often the daemon asks GitHub for a project's open Dependabot alerts. |
-| `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, landing) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
+| `verify.lock` | `off` | `project`: a project's verifications (worker pre-commit hook, post-run check, the reviewer's check) take turns on a machine; `machine`: all of them do. For checkouts that share one build cache. |
 | `baseline.retry_hours` | `6` hours | Baseline measurement retry after a non-transient failed baseline job. |
 | `provider` | `copilot` | The model provider the built-in harness talks to: `copilot` (GitHub device login), `github-models` (GitHub device login or a token), `azure-openai` (Microsoft device login or a key) or one of the API-key providers `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `ollama`, `lmstudio`, `vllm`, or `custom` for any other OpenAI-compatible server (**Other providers** under [The harness](harness.md#the-harness-how-an-agent-runs)). |
 | `provider.<name>.base_url` | the vendor's endpoint (`https://api.openai.com/v1`, `https://api.anthropic.com`, `https://generativelanguage.googleapis.com`, `http://127.0.0.1:11434/v1` for `ollama`, …; empty for `azure-openai` and `custom`) | Where one API-key provider sends its calls; while it keeps its default, the vendor's `*_BASE_URL` environment variable stands in when set. One row per provider name above except `copilot`. |

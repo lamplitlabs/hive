@@ -5,8 +5,8 @@
 What the daemon does on its own when a job fails (ADR-036): every failed job is
 classified from what the runner wrote. A transient failure - the machine, the
 runner or the moment: a lost run, a runner error, an unreachable executor, a
-timeout, a landing conflict or a default branch that was already red before
-the job - runs again after a growing pause (5 min, 15, 45, ... at most 6 h),
+timeout, a branch that no longer merges with the default branch or a default
+branch that was already red before the job - runs again after a growing pause (5 min, 15, 45, ... at most 6 h),
 with its stale branch removed first (a red-base re-run then waits behind the
 project's fix job until the branch is green, so it is not thrown away twice). A deterministic
 failure - the work: a non-zero exit, a reported failure, no report or commits
@@ -21,7 +21,7 @@ job with the same source already carries. When the held job came from a board
 card (a suggestion, handoff or question) the daemon asks the owner once on the
 card's own thread (`Needs the owner: ...`, a question marked for the owner):
 what the worker found, that no more jobs are queued for the card, and the two
-ways to close it - land the change by hand or through an ADR and answer with
+ways to close it - merge the change by hand or through an ADR and answer with
 the commit, or decline the card with a `--resolution declined` answer. In the
 week before this landed, 48 of 140 corrected jobs (34%) re-ran a verdict a
 Tier 1 run could only repeat. An `answer` job is never recovered: a question is
@@ -208,12 +208,12 @@ thread is closed.
 ## Sweep, retention and hygiene
 
 What the daemon does on its own to keep this machine clean: every run and
-landing leaves things that matter only while it is in flight - a clone with
+delivery leaves things that matter only while it is in flight - a clone with
 its dependencies (gigabytes), a signing key and a bundle under
-`~/.pulse/work`, a throwaway landing worktree, a `refs/pulse/landing/<job>`
-holding ref, a run log, a `pulse/<agent>/<job>` branch waiting to land. A run
-that ends removes its own; a runner that died mid-run, a landing killed
-half-way or an older hub does not. So the daemon sweeps once at start and
+`~/.pulse/work`, a task's scratch worktree under the checkout's `.git`, a
+`refs/pulse/landing/<job>` holding ref, a run log, a `pulse/<agent>/<job>`
+branch whose pull request is open. A run that ends removes its own; a runner
+that died mid-run, a pass killed half-way or an older hub does not. So the daemon sweeps once at start and
 then every ten minutes, removing only what the store says nothing holds any
 more: queued or blocked jobs of a project that was removed (`pulse remove
 project` lets a leased job finish, but one whose run is lost would come back
@@ -221,8 +221,8 @@ queued for a project no daemon lists), clones, keys and bundles of jobs in an
 end state (`done`, `failed`, `cancelled`) whose `finished_at` is more than an
 hour old once they have also sat untouched for `daemon.sweep_grace_minutes`
 (default 30; a lost run's go at once),
-landing worktrees whose process is gone (and `git worktree prune`), holding
-refs of landing steps that are over, dead folders under `~/.pulse/worktrees`,
+worktrees whose process is gone (and `git worktree prune`), holding refs of
+runs that are over, dead folders under `~/.pulse/worktrees`,
 measurement clone roots (`~/.pulse/fleet/measure-*`) whose measuring process
 is gone once they have sat for the grace period (a measurement removes its
 own root when it ends; one left behind came from a kill),
@@ -232,10 +232,11 @@ the retention paragraph below), run logs
 older than `daemon.log_keep_days` (default 14), the step transcripts of
 harness sessions that ended more than `daemon.transcript_keep_days` ago
 (default 14; a session keeps its counts, tokens, cost and submission - see
-the retention paragraph below), and `pulse/*` or `evolve/*` branches that no job will land whose last commit
-is older than `daemon.sweep_branch_days` (default 7) - their commits are saved
-under `~/.pulse/patches/<slug>/` first unless they are already on the default
-branch (`land.swept`). The same pass takes the worktrees agents leave behind:
+the retention paragraph below), and `pulse/*` or `evolve/*` branches that no
+job will deliver - no open pull request, no job waiting on them - whose last
+commit is older than `daemon.sweep_branch_days` (default 7); their commits
+are saved under `~/.pulse/patches/<slug>/` first unless they are already on
+the default branch (`land.swept`). The same pass takes the worktrees agents leave behind:
 every worktree a project checkout lists (`git worktree list`) outside the
 runner's own folders under `~/.pulse` - the `../wt/<task>` an agent or a skill made for one piece of
 work and never removed - goes once it is clean and every commit in it is on
@@ -246,8 +247,8 @@ worktree goes - its branch stays with its commits, and a detached HEAD is
 saved as a patch first (`worktree.swept` carries the tip). Untouched means
 nothing moved its folder, its `.git` file, HEAD, index or reflog; a
 `git worktree lock` keeps one for good. Never touched: a run in flight (this daemon's
-dispatches and every `running` run in the store), a branch a `done` job waits
-to land, the checked-out branch, a locked worktree, a worktree with uncommitted
+dispatches and every `running` run in the store), a branch a `done` job's
+pull request is open from, the checked-out branch, a locked worktree, a worktree with uncommitted
 changes or on a branch a job holds, a project checkout of its own, a folder under
 `~/.pulse/worktrees` git still lists, a repository of
 its own, anything under `~/.pulse` the runner did not make, and prepared
@@ -441,7 +442,7 @@ claimed becomes one `improve` job, tried once; its first step is to read the
 thread and the default branch, and a handoff that reports work already landed
 or held by another worker ends that job with a summary, not with another
 handoff. Workers are briefed the same way about their own job: overlap with
-work listed in the brief, or a variable another landing already moved, is
+work listed in the brief, or a variable another merge already moved, is
 recorded as a `finding` naming the commit or the worker, and the job stops -
 a `handoff` is for work a worker began and leaves unfinished, because the
 daemon gives every unclaimed handoff to another worker. When a project's loop is at
@@ -456,13 +457,13 @@ jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
 Role leads (`pulse lead`) sit on their own cadence regardless of the owner's
-quiet: an `rsi` lead reads the loop, a `docs` lead the pages a landing left
+quiet: an `rsi` lead reads the loop, a `docs` lead the pages a merge left
 behind, a `security` lead the dependencies, a `monitor` lead the checks.
 The lead is the project's maintainer, not only its planner: both briefs let
 it fix small things itself in its clone - a flaky test, doc drift, a failing
-scheduled check, a watcher the project lacks - and commit, and the runner lands
-a lead's commits like a worker's (not while the default branch is red; its
-fix job owns that). Answers and plans come first; larger work still goes to
+scheduled check, a watcher the project lacks - and commit, and the runner
+delivers a lead's commits like a worker's, as a pull request (not while the
+default branch is red; its fix job owns that). Answers and plans come first; larger work still goes to
 a job. The standing brief also expects every project to be watched: a lead
 gives every project at least one `check` (its tests, its deploy) and turns a
 look it keeps taking by hand - new issues, a dependency's releases, a
