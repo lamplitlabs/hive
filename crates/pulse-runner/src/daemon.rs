@@ -1359,6 +1359,10 @@ pub(crate) fn daemon(
     // unknown on the first tick, when a question from before a restart may
     // be open.
     let mut cap_was_holding: Option<bool> = None;
+    // The other daemon-wide holds (idle_hold.rs): each tells the owner once
+    // when it keeps the owner's queued work waiting past one pass, and
+    // answers when it lifts.
+    let mut idle_holds = crate::idle_hold::IdleHolds::default();
     // When the last disk-floor finding was posted; a re-crossing inside
     // DISK_FLOOR_REPOST_MINUTES keeps pausing but does not post again.
     let mut disk_floor_last_post = String::new();
@@ -1665,6 +1669,8 @@ pub(crate) fn daemon(
         // Whether the one slot left open is the owner's express slot: the
         // fleet's queued work could not have had it.
         let mut express_slot = false;
+        // The daemon-wide holds this tick's dispatch saw (idle_hold.rs).
+        let mut holds_seen: Vec<crate::idle_hold::Hold> = Vec::new();
         // A panic in the tick body becomes the idle reason, not the daemon's end.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if now[..10.min(now.len())] != last_prune_day {
@@ -2072,9 +2078,17 @@ pub(crate) fn daemon(
             // (restart_fits); a binary change keeps the slots open to the
             // owner's work at least.
             if let Some(hold) = restart_hold.clone().filter(|_| restart_kinds.is_empty()) {
+                holds_seen.push(crate::idle_hold::Hold::new(
+                    &crate::idle_hold::RESTART_DRAIN,
+                    &hold,
+                ));
                 reason = hold;
                 slots.clear();
             } else if let Some(hold) = bulk_hold {
+                holds_seen.push(crate::idle_hold::Hold::new(
+                    &crate::idle_hold::BULK_AWAY,
+                    &hold,
+                ));
                 // The floor's clock stops too: a 0 MB reading from a dangling
                 // link is the disk's absence, not a floor to ask the owner about.
                 disk_floor_was_under = false;
@@ -2098,6 +2112,10 @@ pub(crate) fn daemon(
                 }
                 starved_since.clear();
                 reason = crate::executor::disk_floor_note(s).unwrap_or_default();
+                holds_seen.push(crate::idle_hold::Hold::new(
+                    &crate::idle_hold::DISK_FLOOR,
+                    &reason,
+                ));
                 if let Some((free, floor, _)) = &disk_floor {
                     disk_line = crate::diskroom::console_line(*free, *floor, None);
                 }
@@ -2160,6 +2178,10 @@ pub(crate) fn daemon(
                         owner_running,
                     );
                     if let Some(hold) = verdict.hold {
+                        holds_seen.push(crate::idle_hold::Hold::new(
+                            crate::idle_hold::governor_kind(&hold),
+                            &hold,
+                        ));
                         // Inside a restart window too: the owner's work
                         // starts in any window, and its run anchors the
                         // window rather than outlast it (anchors_restart).
@@ -2187,6 +2209,10 @@ pub(crate) fn daemon(
                             "every slot of this machine is busy with the fleet's work; one express slot stays open for the owner's work"
                                 .to_string(),
                         );
+                        holds_seen.push(crate::idle_hold::Hold::new(
+                            &crate::idle_hold::FLEET_FULL,
+                            load_hold.clone().unwrap_or_default(),
+                        ));
                     } else {
                         // Over the cap is capacity the owner chose not to use, not
                         // a hold: those slots are simply not there this tick.
@@ -2206,7 +2232,17 @@ pub(crate) fn daemon(
                     if let Some(hold) = load_hold.clone() {
                         hold
                     } else if gate.is_empty() {
-                        "every executor slot is busy".to_string()
+                        // Every slot is taken; when the fleet's own work
+                        // holds all of them, a long wait of the owner's is
+                        // the owner's question (idle_hold.rs FLEET_FULL).
+                        let busy = "every executor slot is busy".to_string();
+                        if crate::idle_hold::fleet_holds_every_slot(s) {
+                            holds_seen.push(crate::idle_hold::Hold::new(
+                                &crate::idle_hold::FLEET_FULL,
+                                format!("{busy} with the fleet's own work"),
+                            ));
+                        }
+                        busy
                     } else {
                         gate.clone()
                     }
@@ -2548,6 +2584,26 @@ pub(crate) fn daemon(
                     }
                 }
                 cap_was_holding = Some(holding);
+            }
+            // The other daemon-wide holds, where the idle log said them
+            // above: one owner question once a hold has kept the owner's
+            // queued work waiting past one pass, answered when it lifts.
+            if !o.dry_run
+                && let Some(c) = conn.as_ref()
+            {
+                let owner = crate::idle_hold::owner_waiting(s, &now);
+                for line in idle_holds.tend(
+                    s,
+                    &crate::board::brain_project(c),
+                    &holds_seen,
+                    &owner,
+                    spacing,
+                    &now,
+                    &actor,
+                    std::time::Instant::now(),
+                ) {
+                    say(&o, line);
+                }
             }
             if !disk_floor_since.is_empty()
                 && !disk_floor_posted
