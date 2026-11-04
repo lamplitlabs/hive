@@ -271,7 +271,7 @@ A conversation whose turn a transport `provider_error` cut short (a failed
 send or a broken reply body) resumes once by itself after
 `chat.resume_after_provider_error_secs` (default 90; `0` leaves it idle for the
 next message). `chat.sub_depth` (default 2) and `chat.sub_open` (default 8) cap
-how deep sub-conversations nest and how many a conversation keeps open; `0`
+how deep sub-sessions nest and how many a session keeps open; `0`
 lifts a cap.
 
 An open conversation's agent holds a provider connection and one connection

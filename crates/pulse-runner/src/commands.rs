@@ -87,7 +87,7 @@ fn land_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "dry-run",
         false,
-        "list what a pass would deliver: tasks, jobs, conversation branches, fixes",
+        "list what a pass would deliver: tasks, jobs, session branches, fixes",
     );
     fs.bool_var(
         "propose",

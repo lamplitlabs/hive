@@ -1,7 +1,8 @@
-//! `pulse chat`: the hub's conversations from the command line - list
-//! them, read one, `attach` a project from inside a conversation's own
-//! agent (the brief tells it to), and `wake` a conversation's agent from a
-//! script it left running (the "I am done" signal of a long job).
+//! `pulse session` (alias `pulse chat`): the hub's sessions from the
+//! command line - list them, read one, `attach` a project from inside a
+//! session's own agent (the brief tells it to), and `wake` a session's
+//! agent from a script it left running (the "I am done" signal of a long
+//! job). The store, the wire and the hub's /chat URLs keep the older name.
 use crate::conversation::{CONVERSATION_ENV, WAKE_ACTION, attach_workspace};
 use anyhow::Result;
 use pulse_cli::{Command, Context, FlagSet, errorf, register as cli_register, write_json};
@@ -11,18 +12,18 @@ use std::sync::Once;
 
 static REGISTER: Once = Once::new();
 
-const USAGE: &str = "pulse chat list [--all] [--json]\n       pulse chat show ID [--json]\n       pulse chat attach SLUG [--id ID]\n       pulse chat wake [--id ID] MESSAGE...";
+const USAGE: &str = "pulse session list [--all] [--json]\n       pulse session show ID [--json]\n       pulse session attach SLUG [--id ID]\n       pulse session wake [--id ID] MESSAGE...";
 
 pub fn register() {
     REGISTER.call_once(|| {
         cli_register(Command {
-            name: "chat".into(),
+            name: "session".into(),
             group: "human".into(),
             summary:
-                "the hub's conversations: list them, read one, attach a project from inside one, wake one's agent from a script"
+                "the hub's sessions: list them, read one, attach a project from inside one, wake one's agent from a script"
                     .into(),
             usage: USAGE.into(),
-            aliases: vec![],
+            aliases: vec!["chat".into()],
             no_store: false,
             read_only: false,
             raw: false,
@@ -33,15 +34,15 @@ pub fn register() {
 }
 
 fn flags(fs: &mut FlagSet) {
-    fs.bool_var("all", false, "list archived conversations too");
+    fs.bool_var("all", false, "list archived sessions too");
     fs.string_var(
         "id",
         "",
-        &format!("the conversation to attach or wake (default: ${CONVERSATION_ENV}, set inside a conversation's agent and in the shells it starts)"),
+        &format!("the session to attach or wake (default: ${CONVERSATION_ENV}, set inside a session's agent and in the shells it starts)"),
     );
 }
 
-/// The conversation a verb run from inside an agent's shell means: `--id`,
+/// The session a verb run from inside an agent's shell means: `--id`,
 /// else the environment the harness sets there.
 fn conversation_id(fs: &FlagSet, verb: &str) -> Result<String> {
     let mut id = fs.get_string("id");
@@ -51,9 +52,9 @@ fn conversation_id(fs: &FlagSet, verb: &str) -> Result<String> {
     if id.is_empty() {
         return Err(errorf(
             2,
-            &format!("pulse chat {verb}: which conversation?"),
-            &format!("Run it from inside a conversation's agent (${CONVERSATION_ENV} is set there, and in the scripts it starts) or pass --id."),
-            &format!("pulse chat {verb} --id chat-... ..."),
+            &format!("pulse session {verb}: which session?"),
+            &format!("Run it from inside a session's agent (${CONVERSATION_ENV} is set there, and in the scripts it starts) or pass --id."),
+            &format!("pulse session {verb} --id chat-... ..."),
         )
         .into());
     }
@@ -62,7 +63,13 @@ fn conversation_id(fs: &FlagSet, verb: &str) -> Result<String> {
 
 fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let Some(s) = c.store.clone() else {
-        return Err(errorf(2, "pulse chat: no store", "", "pulse init <project-path>").into());
+        return Err(errorf(
+            2,
+            "pulse session: no store",
+            "",
+            "pulse init <project-path>",
+        )
+        .into());
     };
     let verb = args.first().map(String::as_str).unwrap_or("list");
     match (verb, args.len()) {
@@ -72,7 +79,7 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 return write_json(c.out.as_mut(), &rows);
             }
             if rows.is_empty() {
-                writeln!(c.out, "No conversations yet. Start one in the hub: Chat.")?;
+                writeln!(c.out, "No sessions yet. Start one in the hub: Sessions.")?;
                 return Ok(());
             }
             for r in rows {
@@ -96,9 +103,9 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             let Some(row) = s.chat_get(id)? else {
                 return Err(errorf(
                     2,
-                    &format!("pulse chat show: no conversation {id}"),
+                    &format!("pulse session show: no session {id}"),
                     "",
-                    "pulse chat list --all",
+                    "pulse session list --all",
                 )
                 .into());
             };
@@ -112,7 +119,7 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             writeln!(c.out, "{}  {}", row.id, row.title)?;
             writeln!(
                 c.out,
-                "status {}{}  project {}  branch {}  turns {}  session {}",
+                "status {}{}  project {}  branch {}  turns {}  harness session {}",
                 row.status,
                 if row.note.is_empty() {
                     String::new()
@@ -158,27 +165,27 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             if text.trim().is_empty() {
                 return Err(errorf(
                     2,
-                    "pulse chat wake: the message is empty",
+                    "pulse session wake: the message is empty",
                     "Say what ended and how, in one line; the agent reads the rest from your log file.",
-                    "pulse chat wake \"benchmark done: exit 0, results in /tmp/bench.csv\"",
+                    "pulse session wake \"benchmark done: exit 0, results in /tmp/bench.csv\"",
                 )
                 .into());
             }
             let Some(row) = s.chat_get(&id)? else {
                 return Err(errorf(
                     2,
-                    &format!("pulse chat wake: no conversation {id}"),
+                    &format!("pulse session wake: no session {id}"),
                     "",
-                    "pulse chat list --all",
+                    "pulse session list --all",
                 )
                 .into());
             };
             if row.status == "archived" {
                 return Err(errorf(
                     2,
-                    &format!("pulse chat wake: conversation {id} is archived"),
+                    &format!("pulse session wake: session {id} is archived"),
                     "Nothing listens there any more.",
-                    "pulse chat list",
+                    "pulse session list",
                 )
                 .into());
             }
@@ -189,7 +196,7 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             }
             writeln!(
                 c.out,
-                "Woke conversation {id}: the hub gives its agent a turn on your message."
+                "Woke session {id}: the hub gives its agent a turn on your message."
             )?;
             Ok(())
         }
@@ -203,7 +210,7 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             }
             writeln!(
                 c.out,
-                "Conversation {} now works in {} (project {}, branch {} from {}).",
+                "Session {} now works in {} (project {}, branch {} from {}).",
                 attached.id, attached.cwd, attached.project, attached.branch, attached.base
             )?;
             writeln!(
@@ -215,7 +222,7 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         _ => Err(errorf(
             2,
             &format!(
-                "pulse chat: unknown or incomplete command {:?}",
+                "pulse session: unknown or incomplete command {:?}",
                 args.join(" ")
             ),
             "",
@@ -260,8 +267,8 @@ mod tests {
             now: "2026-11-02T03:00:00Z".into(),
             args: Vec::new(),
         };
-        let cmd = pulse_cli::lookup("chat").unwrap();
-        let mut fs = FlagSet::new("chat");
+        let cmd = pulse_cli::lookup("session").unwrap();
+        let mut fs = FlagSet::new("session");
         (cmd.flags.unwrap())(&mut fs);
         for (name, value) in flags {
             fs.set(name, value).expect("flag");
@@ -307,6 +314,18 @@ mod tests {
     }
 
     #[test]
+    fn session_is_the_name_and_chat_still_works() {
+        register();
+        let session = pulse_cli::lookup("session").expect("pulse session");
+        let chat = pulse_cli::lookup("chat").expect("pulse chat still resolves");
+        assert_eq!(session.name, "session");
+        assert_eq!(chat.name, "session", "chat is an alias of session");
+        assert_eq!(session.aliases, vec!["chat".to_string()]);
+        assert!(session.usage.starts_with("pulse session list"));
+        assert!(!session.summary.contains("conversation"));
+    }
+
+    #[test]
     fn wake_writes_the_bus_event_for_the_conversation_the_shell_belongs_to() {
         let _env = pulse_testutil::env_lock();
         let home = tempfile::tempdir().expect("tempdir");
@@ -319,7 +338,7 @@ mod tests {
         let _guard = pulse_testutil::setenv(CONVERSATION_ENV, "chat-1");
         let (out, err, code) = invoke(&s, &[], &["wake", "build", "passed:", "212 tests ok"]);
         assert_eq!(code, 0, "{err}");
-        assert!(out.starts_with("Woke conversation chat-1:"), "{out}");
+        assert!(out.starts_with("Woke session chat-1:"), "{out}");
         let events = wakes(&s);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].subject, "chat-1");
@@ -334,7 +353,7 @@ mod tests {
         assert!(err.contains("chat-2 is archived"), "{err}");
         let (_, err, code) = invoke(&s, &[("id", "chat-9")], &["wake", "done"]);
         assert_eq!(code, 2);
-        assert!(err.contains("no conversation chat-9"), "{err}");
+        assert!(err.contains("no session chat-9"), "{err}");
         let (_, err, code) = invoke(&s, &[], &["wake", "  "]);
         assert_eq!(code, 2);
         assert!(err.contains("the message is empty"), "{err}");
@@ -352,7 +371,7 @@ mod tests {
         let _guard = pulse_testutil::setenv(CONVERSATION_ENV, "");
         let (_, err, code) = invoke(&s, &[], &["wake", "done"]);
         assert_eq!(code, 2);
-        assert!(err.contains("which conversation?"), "{err}");
+        assert!(err.contains("which session?"), "{err}");
         assert!(err.contains("--id"), "{err}");
         assert!(wakes(&s).is_empty());
     }

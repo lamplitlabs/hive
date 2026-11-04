@@ -651,7 +651,7 @@ A suggestion waits for a second reader; some work should not. The agent in
 a hub conversation works out, with the owner, what the fleet should carry
 next; a job's worker uncovers a follow-up it cannot finish in its run; an
 RSI run finds the next step of a goal. Each of them files a **task**
-itself, the way it starts a helper or a sub-conversation, through the
+itself, the way it starts a helper or a sub-session, through the
 native harness's `task` tool:
 
 - `create` (`project`, `title`, `brief`, `priority?`) files the task on the
