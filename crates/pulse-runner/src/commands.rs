@@ -42,7 +42,7 @@ pub fn register() {
 
         cli_register(Command { name:"plan".into(), group:"runner".into(), summary:"the job planner: turn the tally into queued jobs".into(), usage:"pulse plan [--project SLUG] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_plan, flags:None });
         cli_register(Command { name:"work".into(), group:"runner".into(), summary:"lease the next job and run one worker here".into(), usage:"pulse work [--project SLUG] [--job ID] [--dry-run] [--worker-cmd CMD] [--executor NAME] [--agent A] [--now T]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_work, flags:Some(work_flags) });
-        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--pr] [--propose]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
+        cli_register(Command { name:"land".into(), group:"runner".into(), summary:"merge verified branches into the default branch".into(), usage:"pulse land [--project SLUG] [--branch B] [--all] [--limit N] [--no-verify] [--dry-run] [--propose]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_land, flags:Some(land_flags) });
         cli_register(Command { name:"pipeline".into(), group:"runner".into(), summary:"the GitHub Actions runs of the pushes pulse made and of each project's default branch head, whoever pushed it: what is still watched, the last verdicts (pipeline.watch); --check reads GitHub now instead of waiting for the daemon's pass".into(), usage:"pulse pipeline [--project SLUG] [--all] [--check] [--limit N] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pipeline, flags:Some(pipeline_flags) });
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:"pulse daemon [--interval S] [--once] [--max-loops N] [--max-jobs N] [--dry-run] [--worker-cmd CMD] [--no-restart] [--agent A]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
@@ -76,11 +76,6 @@ fn land_flags(fs: &mut FlagSet) {
     fs.int_var("limit", 5, "at most N branches per project");
     fs.bool_var("no-verify", false, "skip the verify command");
     fs.bool_var("dry-run", false, "list what waits, land nothing");
-    fs.bool_var(
-        "pr",
-        false,
-        "deliver what landed as a pull request from pulse/landed, whatever landing.push says",
-    );
     fs.bool_var(
         "propose",
         false,
@@ -616,42 +611,21 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             )?;
             vec![crate::land::LandResult { state, note }]
         } else {
-            crate::land::land_pending(
-                &s,
-                proj.clone(),
-                actor.clone(),
-                now.clone(),
-                verify,
-                int_flag(fs, "limit"),
-                true,
-            )
+            // Task work no longer lands locally: it goes to the forge as
+            // one pull request per task (task_pr.rs).
+            for line in crate::task_pr::tend_task_prs(&s, std::slice::from_ref(&proj), &now) {
+                c.printf(format_args!("{line}\n"))?;
+            }
+            Vec::new()
         };
         if results.is_empty() {
             c.printf(format_args!("{slug}: nothing waiting\n"))?;
         }
-        let mut landed = false;
         for r in results {
             c.printf(format_args!("{slug} {}: {}\n", r.state, r.note))?;
-            if r.state == "landed" {
-                landed = true;
-            }
             let w = rank.get(r.state.as_str()).copied().unwrap_or(3);
             if w > worst {
                 worst = w;
-            }
-        }
-        if bool_flag(fs, "pr") {
-            pulse_tasks::ask_pull_request(&s, &slug, "", &actor)?;
-        }
-        let (push_lines, note) =
-            crate::landing_hold::push_landed(&s, proj, actor.clone(), now.clone(), landed);
-        for line in &push_lines {
-            c.printf(format_args!("{line}\n"))?;
-        }
-        if !note.is_empty() {
-            c.printf(format_args!("{slug} {note}\n"))?;
-            if worst < 1 {
-                worst = 1;
             }
         }
     }
@@ -1995,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_commit_lands_through_land() {
+    fn worker_commit_lands_only_through_land_branch() {
         let _serial = crate::test_helpers::serial();
         if !std::path::Path::new("/usr/bin/ssh-keygen").exists()
             && !std::path::Path::new("/usr/local/bin/ssh-keygen").exists()
@@ -2039,24 +2013,23 @@ mod tests {
             branches.contains(&format!("pulse/aurora/{}", job.str("id"))),
             "branch not pushed to the checkout: {branches:?}"
         );
-        let (out, err_text, code) = invoke(&s, "land", "proj", &[]);
+        // Plain `pulse land` no longer merges into main: the branch waits
+        // for its task's pull request.
+        let (_out, err_text, code) = invoke(&s, "land", "proj", &[]);
+        assert_eq!(code, 0, "land: {err_text:?}");
+        assert!(
+            !std::path::Path::new(&dir).join("f.txt").exists(),
+            "nothing merges into main locally"
+        );
+        let branch = format!("pulse/aurora/{}", job.str("id"));
+        let (out, err_text, code) = invoke(&s, "land", "proj", &["--branch", &branch]);
         assert!(
             code == 0 && (out.contains("proj landed: ") || out.contains("proj merged: ")),
-            "land: {code} {out:?} {err_text:?}"
+            "land --branch: {code} {out:?} {err_text:?}"
         );
         assert!(
             std::path::Path::new(&dir).join("f.txt").exists(),
             "f.txt not on main after landing"
-        );
-        let n = crate::test_helpers::count(
-            &s,
-            "SELECT COUNT(*) AS n FROM events WHERE action = 'job.landed' OR action = 'land.done' OR action LIKE 'land%'",
-            &[],
-        );
-        assert!(n != 0, "no landing event");
-        assert!(
-            !run(&dir, &["git", "branch", "--list", "pulse/*"]).contains(&job.str("id")),
-            "landed branch not deleted"
         );
     }
 }

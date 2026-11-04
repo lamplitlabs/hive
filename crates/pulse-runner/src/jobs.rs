@@ -58,9 +58,6 @@ pub(crate) struct LeaseOpts {
     /// ([`owner_lane_fits`]) narrows the lease to owner-driven work alone,
     /// and the pairs beside it add nothing.
     pub fits: Vec<(String, String)>,
-    /// Projects whose landing kinds wait behind one source (a red default
-    /// branch and its fix job): `(project, source)` pairs.
-    pub hold_except: Vec<(String, String)>,
     /// Projects of which only the job with one source may be taken (a
     /// project frozen on this machine by a setup failure and its repair
     /// job): `(project, source)` pairs.
@@ -522,18 +519,6 @@ pub(crate) fn lease_job(
             for (project, kind) in &o.fits {
                 vals.push(Box::new(format!("{project}/{kind}")));
             }
-        }
-        let landing_kinds = crate::redbase::LANDING_KINDS
-            .iter()
-            .map(|k| format!("'{k}'"))
-            .collect::<Vec<_>>()
-            .join(",");
-        for (project, source) in &o.hold_except {
-            sql.push_str(&format!(
-                " AND NOT (j.project = ? AND j.kind IN ({landing_kinds}) AND j.source != ?)"
-            ));
-            vals.push(Box::new(project.clone()));
-            vals.push(Box::new(source.clone()));
         }
         for (project, source) in &o.only_source {
             sql.push_str(" AND NOT (j.project = ? AND j.source != ?)");

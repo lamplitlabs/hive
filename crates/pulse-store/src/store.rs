@@ -1913,7 +1913,7 @@ mod tests {
             (
                 "bogus",
                 "1",
-                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, capacity, chat.idle_release_minutes, chat.resume_after_provider_error_secs, chat.sub_depth, chat.sub_open, claim_hours, expiry_days, inbox.retire_days, jobs_per_day, landing, landing.parallel, minutes_per_job, prune_after_days, quorum, records.auto_adopt, stale_days, stop, voice.language, voice.model, worker_model",
+                "Unknown setting 'bogus'. Known: amend_majority, amend_quorum, capacity, chat.idle_release_minutes, chat.resume_after_provider_error_secs, chat.sub_depth, chat.sub_open, claim_hours, expiry_days, inbox.retire_days, jobs_per_day, landing, minutes_per_job, prune_after_days, quorum, records.auto_adopt, stale_days, stop, voice.language, voice.model, worker_model",
             ),
             ("quorum", "x", "quorum takes a whole number, not 'x'"),
             (

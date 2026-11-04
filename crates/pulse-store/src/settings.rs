@@ -61,7 +61,7 @@ pub const HARNESS_RUNNER: &str = "pulse";
 
 pub static DEFAULT_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
     map! {
-    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.idle_release_minutes"=>"15","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","landing.parallel"=>"4","minutes_per_job"=>"10","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","voice.language"=>"auto","voice.model"=>"nemotron-3.5-asr-streaming-0.6b","worker_model"=>"","capacity"=>"auto",
+    "amend_majority"=>"2/3","amend_quorum"=>"40","chat.idle_release_minutes"=>"15","chat.resume_after_provider_error_secs"=>"90","chat.sub_depth"=>"2","chat.sub_open"=>"8","claim_hours"=>"4","expiry_days"=>"14","jobs_per_day"=>"2","inbox.retire_days"=>"7","landing"=>"agents","minutes_per_job"=>"10","prune_after_days"=>"14","quorum"=>"2","records.auto_adopt"=>"0","stale_days"=>"30","stop"=>"0","voice.language"=>"auto","voice.model"=>"nemotron-3.5-asr-streaming-0.6b","worker_model"=>"","capacity"=>"auto",
     }
 });
 pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
@@ -75,7 +75,6 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "voice.language"=>("text",None,[],None,"the language the multilingual speech model is told to expect: auto lets it pick from the audio; a tag such as en-US, de-DE, ja-JP or zh-CN fixes it, which is more accurate when you always speak one language. The English model ignores this"),
         "inbox.retire_days"=>("count",Some(0),[],None,"days before daemon maintenance may close an open owner question only when it is an older duplicate of a newer open question or its job was cancelled; 0 turns the owner-inbox retire sweep off"),
         "minutes_per_job"=>("count",Some(0),[],None,"wall-clock minutes one worker run may take before the runner stops it"),
-        "landing.parallel"=>("count",Some(1),[],None,"projects whose finished branches the daemon may land in parallel; 1 keeps the serial maintenance-pass behaviour"),
         "capacity"=>("text",None,[],None,"how many runs this machine takes at once: auto (the default) works it out from the hardware - the smaller of the physical cores and one run per 3 GB of RAM - and backs off live under load or low memory; a number caps this machine at that many (0 keeps it idle while remote hands work); every paired machine sizes itself the same way and the fleet adds them up. To pause the fleet use pulse stop"),
         "prune_after_days"=>("count",Some(1),[],None,"days without useful output after which an agent is pruned (its history stays)"),
         "claim_hours"=>("count",Some(1),[],None,"hours a board claim stays active before it is treated as stale"),

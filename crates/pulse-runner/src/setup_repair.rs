@@ -55,25 +55,15 @@ pub(crate) fn enabled(s: &pulse_store::Store) -> bool {
     s.setting(SETTING, "on") != "off"
 }
 
-/// The upstream a sync of the default branch merges, as the push step names
-/// it (landing_hold::upstream_ahead_of_default).
-fn upstream_name(s: &pulse_store::Store) -> &'static str {
-    if crate::landing_pr::pr_mode(s) {
-        "origin/pr"
-    } else {
-        "origin/main"
-    }
-}
-
 /// Whether the project's checkout lacks commits its upstream already holds,
 /// read from the tracking ref the last push pass fetched (no network).
-fn checkout_behind_upstream(s: &pulse_store::Store, project: &Row) -> bool {
+fn checkout_behind_upstream(_s: &pulse_store::Store, project: &Row) -> bool {
     let root = project.str("path");
     if root.is_empty() {
         return false;
     }
     let def = crate::baseline::default_branch(project.clone());
-    crate::landing_hold::upstream_ahead_of_default(&root, &def, s)
+    crate::forge::upstream_ahead_of_default(&root, &def)
 }
 
 /// One setup failure at a commit of the default branch, as a landing or a run
@@ -153,10 +143,7 @@ pub(crate) fn plan_repair(
     // own setup failure plans the repair with upstream's tip as the base.
     if !f.sync && checkout_behind_upstream(s, project) {
         return Planned {
-            note: format!(
-                "the checkout is behind its upstream, so no repair job is planned: the sync of {} lands first and plans one if its own setup fails",
-                upstream_name(s)
-            ),
+            note: "the checkout is behind its upstream, so no repair job is planned: the fast-forward from upstream comes first and the next failure plans one if it still fails".into(),
             ..Default::default()
         };
     }
@@ -444,7 +431,9 @@ mod tests {
         assert!(planned.job.is_empty(), "{planned:?}");
         assert!(
             planned.note.contains("behind its upstream")
-                && planned.note.contains("sync of origin/main lands first"),
+                && planned
+                    .note
+                    .contains("fast-forward from upstream comes first"),
             "{planned:?}"
         );
         assert_eq!(
