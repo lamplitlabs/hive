@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { GitPullRequestIcon } from "lucide-react";
+import { ConfirmDialog } from "@/components/pulse/confirm";
 import { Avatar } from "@/components/pulse/who";
 import { deliveryView } from "@/components/tasks/delivery-state";
-import { taskProgress, type Task, type TaskDelivery, type TaskWorker } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { taskProgress, writes, type Task, type TaskDelivery, type TaskWorker } from "@/lib/api";
 import { fmtDate, rel, sentence, truncate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
@@ -90,12 +93,17 @@ export function TaskWorkingLine({ t, compact, className }: { t: Task; compact?: 
 }
 
 // Where the task's code stands: each task gets one pull request on GitHub
-// (branch pulse/task-<id>), opened when its work is done; the daemon polls
-// it and a merge closes the task. Older work may still show landing states.
-export function TaskDeliveryLine({ delivery, className }: { delivery: TaskDelivery | null | undefined; className?: string }) {
+// (branch pulse/task-<id>), opened when its work is done; the reviewer agent
+// merges the simple ones and hands the rest to the owner, whose Merge is a
+// `review.ask` the daemon performs on its next pass - so the line only says
+// "Merging…" after the click, never "Merged" by itself. Older work may still
+// show landing states. `taskId` enables the button; a card without it reads only.
+export function TaskDeliveryLine({ delivery, taskId, className }: { delivery: TaskDelivery | null | undefined; taskId?: string; className?: string }) {
+  const [merge, setMerge] = useState(false);
   const v = deliveryView(delivery);
   if (!v) return null;
   const tone = v.tone;
+  const number = delivery?.number ? "PR #" + delivery.number : "the pull request";
   return (
     <div className={cn("mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border px-3 py-2 text-[13px]", tone === "ok" ? "border-ok/30 bg-ok/10" : tone === "warn" ? "border-warn/35 bg-warn/10" : "bg-card", className)} data-testid="task-delivery">
       <GitPullRequestIcon className={cn("size-4 shrink-0", tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-muted-foreground")} aria-hidden />
@@ -108,6 +116,23 @@ export function TaskDeliveryLine({ delivery, className }: { delivery: TaskDelive
         ) : null}
         {v.after}
       </span>
+      {v.canMerge && taskId ? (
+        <>
+          <Button type="button" size="xs" onClick={() => setMerge(true)} data-testid="task-merge">
+            Merge
+          </Button>
+          <ConfirmDialog
+            open={merge}
+            onOpenChange={setMerge}
+            title={"Merge " + number + " into " + (delivery?.base || "the default branch") + "?"}
+            description="The daemon merges it on GitHub as you."
+            action="Merge"
+            onConfirm={() => writes.mergeTaskPr(taskId)}
+            success={"Merging " + number + "\u2026"}
+            invalidates={(p) => p.startsWith("tasks") || p.startsWith("chat") || p.startsWith("events")}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
