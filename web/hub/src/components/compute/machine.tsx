@@ -223,6 +223,7 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
             </Link>
           ) : null}
         </div>
+        {e.status !== "active" && e.probe_note?.trim() ? <p className={cn("mt-1 text-[13px] leading-snug anywhere", tone === "bad" ? "text-bad" : "text-muted-foreground")}>{"Why: " + e.probe_note.trim()}</p> : null}
       </div>
       {action ? <span className="-my-1 -mr-1 shrink-0">{action}</span> : null}
     </li>
