@@ -1796,11 +1796,7 @@ pub(crate) fn land_branch_with_registry(
                 verify_note = crate::verify_lock::exit_note(*rc);
                 verify_seconds =
                     Some(crate::verify_lock::ran_seconds(&se).unwrap_or(verify_took.as_secs()));
-                tail_text = format!(
-                    "{}{}",
-                    crate::executor::tail(&so, 4000),
-                    crate::executor::tail(&se, 4000)
-                );
+                tail_text = verify_tail(&so, &se);
             } else {
                 verify_note = format!("verify timed out after {minutes} min");
             }
@@ -1964,6 +1960,7 @@ pub(crate) fn land_branch_with_registry(
             if !ok {
                 let patch =
                     save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
+                let log = save_verify_log(&patch, &vc, &so, &se);
                 let failures = verify_failures(&tail_text);
                 let failure_note = if failures.is_empty() {
                     String::new()
@@ -1992,7 +1989,7 @@ pub(crate) fn land_branch_with_registry(
                         &actor,
                         "land.failed-verify",
                         &branch,
-                        serde_json::json!({"project": slug, "patch": patch, "note": verify_note, "failures": failures, "tail": crate::executor::tail(&tail_text, 1500)}),
+                        serde_json::json!({"project": slug, "patch": patch, "log": log, "note": verify_note, "failures": failures, "tail": crate::executor::tail(&tail_text, 1500)}),
                     );
                 }
                 let what = if job.0.is_empty() {
@@ -2002,7 +1999,15 @@ pub(crate) fn land_branch_with_registry(
                 };
                 return Ok((
                     "failed-verify".into(),
-                    format!("{verify_note} on the merged {def}; {what}; patch at {patch}"),
+                    format!(
+                        "{verify_note} on the merged {def}; {what}; patch at {patch}{}{}",
+                        if log.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; the check's whole output at {log}")
+                        },
+                        failures_phrase(&failures)
+                    ),
                 ));
             }
             let tree = if merged_tree.is_empty() {
@@ -2975,11 +2980,7 @@ fn base_verify_red(
         run_cmd.to_string(),
         budget,
     );
-    let tail = format!(
-        "{}{}",
-        crate::executor::tail(&so, 4000),
-        crate::executor::tail(&se, 4000)
-    );
+    let tail = verify_tail(&so, &se);
     if rc.as_deref() == Some(&0) && !tree.is_empty() {
         let _ =
             crate::verify_memo::write(&s.home, slug, &tree, verify_cmd, "base", actor, worktree);
@@ -2990,6 +2991,89 @@ fn base_verify_red(
         Some(&code) if crate::verify_lock::did_not_run(code) => (None, tail),
         _ => (rc.map(|code| *code != 0), tail),
     }
+}
+
+/// The last 4000 characters of a check's stdout and of its stderr, the part a
+/// failed-verify event keeps and `verify_failures` reads. Before the cut, every
+/// command a tool echoed in backticks is squeezed to its first word: cargo
+/// repeats the whole `rustc` invocation of a crate whose build or test binary
+/// failed (`process didn't exit successfully: \`/…/rustc --crate-name … \`
+/// (exit status: 1)`), several thousand characters that pushed the `error:
+/// test failed` line and the test's own output out of the tail, so the event
+/// said `failures: []` and the agent fixing the branch retried blind
+/// (amistio-template, 2026-11-04).
+pub(crate) fn verify_tail(stdout: &str, stderr: &str) -> String {
+    format!(
+        "{}{}",
+        crate::executor::tail(&squeeze_command_echoes(stdout), 4000),
+        crate::executor::tail(&squeeze_command_echoes(stderr), 4000)
+    )
+}
+
+/// A backtick-quoted span longer than this is a command echo, not a message.
+const COMMAND_ECHO_CHARS: usize = 200;
+
+/// Shortens every backtick-quoted span over [`COMMAND_ECHO_CHARS`] to its first
+/// word and an ellipsis, line by line; everything else is kept as it is.
+fn squeeze_command_echoes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let mut rest = line;
+        while let Some(open) = rest.find('`') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('`') else {
+                break;
+            };
+            let quoted = &after[..close];
+            out.push_str(&rest[..open]);
+            if quoted.chars().count() > COMMAND_ECHO_CHARS {
+                let first = quoted.split_whitespace().next().unwrap_or_default();
+                out.push_str(&format!("`{first} …`"));
+            } else {
+                out.push_str(&format!("`{quoted}`"));
+            }
+            rest = &after[close + 1..];
+        }
+        out.push_str(rest);
+    }
+    out
+}
+
+/// Writes the merged check's whole stdout and stderr next to the branch's patch
+/// (`<patch without .patch>.verify.log`), headed by the command, so the agent
+/// fixing the branch reads the failure itself instead of the event's 1500
+/// characters. Returns the path, or nothing when the patch or the write failed.
+fn save_verify_log(patch: &str, verify_cmd: &str, stdout: &str, stderr: &str) -> String {
+    if patch.is_empty() {
+        return String::new();
+    }
+    let path = format!("{}.verify.log", patch.trim_end_matches(".patch"));
+    let text = format!("$ {verify_cmd}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}");
+    match std::fs::write(&path, text) {
+        Ok(()) => path,
+        Err(_) => String::new(),
+    }
+}
+
+/// ` (failed: a, b, c +N more)` for the landing's one line, or nothing.
+fn failures_phrase(failures: &[String]) -> String {
+    if failures.is_empty() {
+        return String::new();
+    }
+    let shown: Vec<String> = failures
+        .iter()
+        .take(3)
+        .map(|f| crate::util::trunc(f, 120))
+        .collect();
+    let more = if failures.len() > 3 {
+        format!(" +{} more", failures.len() - 3)
+    } else {
+        String::new()
+    };
+    format!(" (failed: {}{more})", shown.join(", "))
 }
 
 static VERIFY_HINT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -3497,6 +3581,72 @@ mod tests {
         assert_eq!(
             super::verify_failures(&many).len(),
             super::VERIFY_FAILURES_CAP
+        );
+    }
+
+    #[test]
+    fn verify_tail_keeps_the_failure_lines_cargo_buries_under_its_command_echo() {
+        // A test binary that died: cargo names the failure, then echoes the whole
+        // rustc invocation (thousands of characters), then says the test exited
+        // abnormally. Only the last 4000 characters are kept, so without the
+        // squeeze the failure line is gone and `failures` is empty.
+        let args: String = (0..400)
+            .map(|i| format!(" --extern dep{i}=/home/x/target/debug/deps/libdep{i}.rlib"))
+            .collect();
+        assert!(args.len() > 8000);
+        let stderr = format!(
+            "   Compiling pulse-runner v0.1.0\nerror: test failed, to rerun pass `-p pulse-runner --lib`\n\nCaused by:\n  process didn't exit successfully: `/home/x/.rustup/bin/rustc --crate-name pulse_runner{args}` (exit status: 1)\nnote: test exited abnormally; to see the full output pass --no-capture to the harness.\npulse: verification ran 1457s after waiting 0s for the lock\n"
+        );
+        let stdout =
+            "running 3 tests\ntest a::ok ... ok\ntest land::tests::requeue_keeps_patch ... ok\n";
+        let tail = super::verify_tail(stdout, &stderr);
+        assert!(tail.len() < 1000, "squeezed: {}", tail.len());
+        assert!(
+            tail.contains(
+                "process didn't exit successfully: `/home/x/.rustup/bin/rustc …` (exit status: 1)"
+            ),
+            "{tail}"
+        );
+        assert!(tail.contains("test exited abnormally"), "{tail}");
+        assert!(tail.starts_with("running 3 tests\n"), "{tail}");
+        // Short quoted spans are messages, not echoes, and stay whole.
+        assert!(
+            tail.contains("to rerun pass `-p pulse-runner --lib`"),
+            "{tail}"
+        );
+        assert_eq!(
+            super::verify_failures(&tail),
+            vec!["error: test failed, to rerun pass `-p pulse-runner --lib`".to_string()]
+        );
+        // Without a closing backtick nothing is squeezed and nothing is lost.
+        assert_eq!(
+            super::squeeze_command_echoes("a `b\nc` d `e`"),
+            "a `b\nc` d `e`"
+        );
+    }
+
+    #[test]
+    fn a_failed_verify_keeps_the_whole_output_next_to_the_patch_and_names_the_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let patch = dir.path().join("pulse__chat-x.patch").display().to_string();
+        let log = super::save_verify_log(&patch, "cargo test", "out\n", "error: boom\n");
+        assert_eq!(
+            log,
+            dir.path()
+                .join("pulse__chat-x.verify.log")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "$ cargo test\n\n--- stdout ---\nout\n\n--- stderr ---\nerror: boom\n"
+        );
+        assert_eq!(super::save_verify_log("", "cargo test", "", ""), "");
+        assert_eq!(super::failures_phrase(&[]), "");
+        let five: Vec<String> = (1..=5).map(|i| format!("test t{i} ... FAILED")).collect();
+        assert_eq!(
+            super::failures_phrase(&five),
+            " (failed: test t1 ... FAILED, test t2 ... FAILED, test t3 ... FAILED +2 more)"
         );
     }
 

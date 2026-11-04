@@ -4,6 +4,13 @@ use pulse_cli::{Command, Context};
 use std::io::Write;
 use std::sync::{Arc, Mutex, Once};
 
+// The build-info block `build.rs` stamps this binary with (`BUILD_INFO_TEXT`). It is generated
+// here, in the leaf crate, so that a move of the brain's HEAD recompiles this crate and relinks
+// instead of rebuilding the eighteen crates that depend on `pulse-cli`; `run_streaming` hands
+// it to `pulse_cli::install_build_info`. Taking a `&'static str` to the constant keeps the block
+// in rodata as one literal, which the pair-hands inspection greps out of a hand's binary.
+include!(concat!(env!("OUT_DIR"), "/build_info_const.rs"));
+
 /// One writer shared between the runner and the command's `Context`. Lines
 /// stream through as they are written, which `pulse daemon` and `pulse hub`
 /// need for their service logs.
@@ -167,6 +174,9 @@ pub fn run_streaming(
     err: Box<dyn Write + Send>,
     out_is_tty: bool,
 ) -> i32 {
+    // The stamp goes in before any command runs: `pulse version`, the daemon's heartbeat, the
+    // hub's running view and the self-update smoke test all read it through `pulse_cli`.
+    pulse_cli::install_build_info(BUILD_INFO_TEXT);
     register_all();
     // launchd starts a service with 256 open files allowed; a hub holding a
     // provider and every MCP server per conversation runs out of them and
@@ -569,6 +579,17 @@ mod tests {
         let code = run(&["version"], &mut out, &mut errb);
         if code != 0 || s(&out).trim().is_empty() {
             panic!("version: {code} {:?}", s(&out));
+        }
+        // `run` installs the stamp build.rs generated before it dispatches, so the command
+        // prints the stamped version, and in a git checkout the stamp names the revision.
+        assert!(pulse_cli::read_build_info().is_some(), "no stamp installed");
+        assert_eq!(s(&out).trim(), pulse_cli::version());
+        if Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.git")).exists() {
+            let rev = pulse_cli::revision();
+            assert!(
+                rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()),
+                "revision {rev:?}"
+            );
         }
         out.clear();
         let code = run(&["--json", "version"], &mut out, &mut errb);

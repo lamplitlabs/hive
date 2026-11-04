@@ -116,8 +116,15 @@ tempfile = "3.27"
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+# Thin LTO over 16 codegen units, not fat over one: the daemon rebuilds this
+# profile after every landing on the brain's main (selfupdate.rs), and the
+# fat link of the `pulse` binary alone took 186 s of a 246 s one-crate
+# rebuild on a 12-core machine at -j6 (the daemon's half-core setting). Thin
+# brings that rebuild to 77 s and a from-scratch one to 142 s, for a binary
+# 38 MB instead of 31; the daemon's time goes to its children and the store,
+# not to its own code, so the smaller binary was buying nothing measured.
+lto = "thin"
+codegen-units = 16
 # Keep unwinding: pulse-runner's daemon, compute and landing workers supervise
 # their ticks with catch_unwind/resume_unwind; abort would turn a caught panic
 # into a process exit.

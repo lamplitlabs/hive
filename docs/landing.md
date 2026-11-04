@@ -232,6 +232,27 @@ work could start first after N steps`. The owner's own runs are never held, and
 a project whose default branch is red is left alone: the owner's task waits
 behind the fix job there and holding the fix would only lengthen the wait.
 
+The narrowed lanes are the fleet's, not the owner's. On the brain the check
+takes twenty to twenty-seven minutes against a forty-minute commit cap, so one
+lane of five is open, and the jobs the lead planned from the owner's tasks -
+one and a half to two and a half hours each - serialised behind each other
+through that one lane: four of them sat queued ten to thirteen hours with no
+attempt, and the yield could not help, since the run in the lane was the
+owner's own. So the owner's work (a lead's sitting, an answer, the jobs planned
+from the owner's tasks, `task:…`, the security updates) takes a lane beyond the
+narrowed count at once, bounded by the plain `parallel_per_project` alone, and
+its run's commit cap is widened to cover the checks it shares the lock with -
+`n × the verify median + harness.step_timeout` for `n` work runs in the
+project, never below the configured cap; with the default five-minute step the
+run log says `commit cap widened to 51 min: 2 checks share the verify lock on
+amistio-template (verify ~23 min each)`. The fleet's work keeps the narrowed
+lanes, and a fleet run in the owner's way is still asked to hold, so the lanes
+return to their count and its own commit is not killed waiting on the owner's
+check. The owner's work fits every restart window too (the window names the
+kinds expected to end before the runs in flight, a task on the brain never was
+one, and the same tasks waited through seven windows in a day; see
+[runner.md](runner.md)).
+
 The lead's own sitting is outside its project's count altogether. A sitting
 reads and posts for a minute, plans the owner's work and directs the fleet's;
 with `parallel_per_project 2` and two long fleet `improve` runs in the project,
@@ -327,6 +348,18 @@ shows in `pulse status` and the hub as `landing` (how many branches wait and
 why), and the daemon logs it and writes `land.held` once per change,
 `land.resumed` when the branches land again.
 
+When the branch is charged, the check's whole stdout and stderr are kept next
+to its patch as `~/.pulse/patches/<slug>/<branch>.verify.log`, the
+`land.failed-verify` event carries that path (`log`), the failing lines
+(`failures`) and the last 1500 characters, and the command's own line names
+the first three failures: `verify exit 1 on the merged main; branch removed;
+patch at …; the check's whole output at …verify.log (failed: error: test
+failed, to rerun pass …)`. Before the tail is cut, every command a tool echoed
+in backticks is shortened to its first word: cargo repeats the whole `rustc`
+invocation of a crate whose build or test binary failed, several thousand
+characters that pushed the `error: test failed` line out of the tail, so the
+event said `failures: []` and the agent fixing the branch retried blind.
+
 ### A red default branch
 
 A red default branch is also a plan, not just a hold: the first run or landing
@@ -400,7 +433,9 @@ the same deadline the harness gives the gated commit); research, ballots and
 answers keep the plain limit. The project's idle line says so: `2 of 4 work
 lanes open: the check takes ~10 min and 2 in a row fit the 25 min commit cap
 (harness.commit_timeout)`. A quicker check, a longer commit cap, or
-`verify.lock off` opens the lanes again.
+`verify.lock off` opens the lanes again. The lanes are the fleet's: the owner's
+work takes one beyond the count at once, with its commit cap widened to cover
+the checks it then shares the lock with (see the express lane above).
 
 When the deadline still lands on a worker's `git commit` - the change finished,
 the pre-commit check did not - the runner does not discard the tree: if the

@@ -1163,6 +1163,21 @@ pub(crate) fn with_resume(mut cmd: Vec<String>, trajectory: &str) -> Vec<String>
     cmd
 }
 
+/// The harness command with its gated-commit cap set to `seconds`: the value
+/// after `--commit-timeout` replaced, or the flag added when the command
+/// carries none. For a run starting over its project's narrowed work lanes
+/// (`jobs::commit_cap_over_lanes`), whose commit waits for the other checks
+/// under the verify lock before its own.
+pub(crate) fn with_commit_cap(mut cmd: Vec<String>, seconds: i64) -> Vec<String> {
+    let value = seconds.to_string();
+    match cmd.iter().position(|a| a == "--commit-timeout") {
+        Some(i) if i + 1 < cmd.len() => cmd[i + 1] = value,
+        Some(_) => cmd.push(value),
+        None => cmd.extend(["--commit-timeout".to_string(), value]),
+    }
+    cmd
+}
+
 pub(crate) fn worker_command(
     s: &pulse_store::Store,
     kind: &str,
@@ -2553,6 +2568,43 @@ mod tests {
                 "--resume",
                 "/h/traj.json"
             ]
+        );
+    }
+
+    #[test]
+    fn with_commit_cap_replaces_the_value_or_adds_the_flag() {
+        let cmd = with_commit_cap(
+            vec![
+                "pulse".into(),
+                "harness".into(),
+                "run".into(),
+                "--step-timeout".into(),
+                "900".into(),
+                "--commit-timeout".into(),
+                "2400".into(),
+                "--max-cost".into(),
+                "0".into(),
+            ],
+            3700,
+        );
+        assert_eq!(
+            cmd,
+            vec![
+                "pulse",
+                "harness",
+                "run",
+                "--step-timeout",
+                "900",
+                "--commit-timeout",
+                "3700",
+                "--max-cost",
+                "0"
+            ]
+        );
+        let cmd = with_commit_cap(vec!["pulse".into(), "harness".into(), "run".into()], 3700);
+        assert_eq!(
+            cmd,
+            vec!["pulse", "harness", "run", "--commit-timeout", "3700"]
         );
     }
 

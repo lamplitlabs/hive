@@ -607,6 +607,116 @@ pub(crate) fn defer_measured_keep(s: &pulse_store::Store, project: Row, job: Row
     );
 }
 
+// The run history and queue the restart window's measures are tested
+// against (restart.rs): finished runs `run_fits` measures, queued jobs and
+// dispatches of the owner's and the fleet's work, shared with the daemon
+// loop's own tests.
+
+pub(crate) fn finished_run(
+    s: &pulse_store::Store,
+    n: usize,
+    age_minutes: f64,
+    status: &str,
+    mode: &str,
+    seconds: f64,
+) {
+    let finished = crate::util::plus_minutes(TEST_NOW, -age_minutes);
+    crate::util::exec1(
+        &*s.conn().unwrap(),
+        "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, seconds, mode) VALUES (?, ?, 'aurora', 'proj', ?, ?, ?, ?, ?)",
+        &[
+            &format!("run-{n}"),
+            &format!("job-{n}"),
+            &finished,
+            &finished,
+            &status,
+            &seconds,
+            &mode,
+        ],
+    );
+}
+
+/// The finished job `job-{n}` of `kind` on `proj`, so `run_fits` can
+/// tell the kinds of the runs `finished_run` seeds apart.
+pub(crate) fn finished_job_of_kind(s: &pulse_store::Store, n: usize, kind: &str) {
+    finished_job_on(s, n, "proj", kind);
+}
+
+/// The finished job `job-{n}` of `kind` on `project`.
+pub(crate) fn finished_job_on(s: &pulse_store::Store, n: usize, project: &str, kind: &str) {
+    crate::util::exec1(
+        &*s.conn().unwrap(),
+        "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, ?, ?, 'a job', '', 'done', ?)",
+        &[&format!("job-{n}"), &project, &kind, &TEST_NOW],
+    );
+}
+
+/// A finished real run of a job of `kind` on `proj`.
+pub(crate) fn finished_run_of_kind(s: &pulse_store::Store, n: usize, kind: &str, seconds: f64) {
+    finished_job_of_kind(s, n, kind);
+    finished_run(s, n, 10.0 + n as f64, "done", "real", seconds);
+}
+
+/// The pairs of `project` and each kind in `kinds`.
+pub(crate) fn pairs(project: &str, kinds: &[&str]) -> Vec<(String, String)> {
+    kinds
+        .iter()
+        .map(|kind| (project.to_string(), kind.to_string()))
+        .collect()
+}
+
+/// A store with `projects` registered and active, so `kind_fits` measures them.
+pub(crate) fn store_with_projects(projects: &[&str]) -> crate::test_helpers::TestStore {
+    let s = new_store();
+    let c = s.conn().unwrap();
+    for p in projects {
+        crate::util::exec1(
+            &*c,
+            "INSERT OR IGNORE INTO projects (slug, name, path, added_at, added_by) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', 'owner')",
+            &[p, p, &format!("/tmp/{p}")],
+        );
+    }
+    s
+}
+
+/// A queued job of `kind` on `project` from `source`.
+pub(crate) fn queued_job(
+    s: &pulse_store::Store,
+    id: &str,
+    project: &str,
+    kind: &str,
+    source: &str,
+) {
+    crate::util::exec1(
+        &*s.conn().unwrap(),
+        "INSERT INTO jobs (id, project, kind, title, brief, status, source, created_at) VALUES (?, ?, ?, 'queued', '', 'queued', ?, ?)",
+        &[&id, &project, &kind, &source, &TEST_NOW],
+    );
+}
+
+/// A dispatch of a job of `kind` on `project`, from `source`.
+pub(crate) fn dispatch_of(
+    slot: &str,
+    project: &str,
+    kind: &str,
+    source: &str,
+) -> crate::daemon::Dispatch {
+    let mut job = Row::new();
+    job.0
+        .insert("kind".into(), serde_json::Value::String(kind.into()));
+    job.0
+        .insert("project".into(), serde_json::Value::String(project.into()));
+    job.0
+        .insert("source".into(), serde_json::Value::String(source.into()));
+    crate::daemon::Dispatch {
+        slot: slot.into(),
+        worker: format!("w-{slot}"),
+        job,
+        started_at: TEST_NOW.into(),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -3,6 +3,17 @@
 //! `vX.Y.Z-0.yyyymmddhhmmss-<12hex>` (the patch after the latest reachable
 //! tag) or `v0.0.0-yyyymmddhhmmss-<12hex>` (no tag at all), each with
 //! `+dirty` when the tree has uncommitted changes.
+//!
+//! The script belongs to the `pulse` binary crate, the leaf of the
+//! workspace, and the text it generates reaches `pulse-cli`'s `version()`
+//! and `revision()` through `pulse_cli::install_build_info` at the start of
+//! `pulse::run_streaming`. It used to live in `pulse-cli`, which eighteen
+//! workspace crates depend on, so every commit on the brain's `main` moved
+//! HEAD, reran the script there and recompiled the whole workspace: the
+//! daemon's self-update release build after one such landing rebuilt all 28
+//! workspace crates and took 310 s, about ten times a day with the fleet's
+//! landing rate. Here a HEAD change recompiles this crate and relinks, and
+//! the other crates stay cached.
 
 use std::fs;
 use std::path::Path;
@@ -89,7 +100,9 @@ fn rust_string(value: &str) -> String {
 /// The build-info block embedded in the binary: tab-separated `path`, `mod` and `build` lines,
 /// with a leading '\n' so a grep for `^mod\t...` anchors inside the binary's rodata. `pulse
 /// version`, `revision()` and the pair-hands inspection all read this block, so its layout must
-/// stay stable.
+/// stay stable. The constant is written as one string literal and the binary hands a reference
+/// to it to `install_build_info`, so the whole block lands in rodata as one contiguous run of
+/// bytes, which is what the inspection's grep over a hand's binary relies on.
 fn write_build_info(version: &str, rev: &str, dirty: Option<bool>) {
     let module_version = if rev.is_empty() { "(devel)" } else { version };
     let mut text = format!(
@@ -122,8 +135,8 @@ fn write_build_info(version: &str, rev: &str, dirty: Option<bool>) {
 fn main() {
     println!("cargo:rerun-if-env-changed=PULSE_VERSION");
     // HEAD, its ref and the tags decide the version. `.git/index` is left out on
-    // purpose: every `git status` rewrites it, and a rerun here recompiles this
-    // crate plus everything above it; `+dirty` refreshes whenever HEAD moves.
+    // purpose: every `git status` rewrites it, and a rerun here recompiles and
+    // relinks the binary; `+dirty` refreshes whenever HEAD moves.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/tags");
     if let Some(r) = fs::read_to_string("../../.git/HEAD")

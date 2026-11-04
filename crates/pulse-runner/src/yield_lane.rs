@@ -22,9 +22,21 @@
 //! each time it held, the daemon leased it straight back into the freed lane
 //! (lead jobs lease first on every slot) and asked it to hold again, while
 //! the task never started. So a job that yielded to the owner's job waits,
-//! whatever its kind, until that job has started or left the queue. And no
-//! run is asked to hold for an owner's job the runner's restart window has
-//! no room for (`fits`): the hold would cost the run its step for nothing.
+//! whatever its kind, until that job has started or left the queue. And the
+//! runner's restart window is no reason to leave a fleet run in the way:
+//! owner-driven work fits every window (`lease_job`, `LeaseOpts.fits`), so
+//! the lane freed for it is one it can take - a rule from 2026-11-04, when
+//! an owner's task on the brain queued 13 hours with no attempt because no
+//! window ever had room for a 2.5-hour `task` and no run was asked to hold
+//! for a job the window would not start.
+//!
+//! Since the same day `lease_job` lets the owner's work job past a
+//! project's narrowed lanes at once (one beyond the count, its commit cap
+//! widened for the checks it shares the lock with, `commit_cap_over_lanes`),
+//! so the owner's job leases on the tick it is queued; the fleet run in its
+//! way is still asked to hold, so the lanes return to their count and its
+//! own commit is not killed waiting on the owner's check. Once the owner's
+//! job has leased it is no longer queued, and nothing more is asked for it.
 
 use crate::util::{Row, event_at, must_rows};
 use serde_json::json;
@@ -53,14 +65,14 @@ pub(crate) fn fleet_waits_sql() -> String {
 /// no lane open to it - its work lanes full, or its `parallel_per_project`
 /// slots - asks the youngest fleet run in the way to hold. Returns one log
 /// line per run asked; a run already asked, or past its harness, is not
-/// asked twice and makes no line. `fits` is the daemon's restart window:
-/// the project and kind pairs a run may still start as (empty: any); an
-/// owner's job the window has no room for gets no lane held for it.
+/// asked twice and makes no line. `_fits`, the daemon's restart window, is
+/// no longer consulted: owner-driven work fits every window, so a run in
+/// the way is asked to hold whatever the window names.
 pub(crate) fn yield_lanes_to_owner(
     s: &pulse_store::Store,
     now: &str,
     actor: &str,
-    fits: &[(String, String)],
+    _fits: &[(String, String)],
 ) -> Vec<String> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
@@ -84,13 +96,6 @@ pub(crate) fn yield_lanes_to_owner(
     for owner in waiting {
         let slug = owner.str("project");
         if !seen.insert(slug.clone()) || red.contains_key(&slug) {
-            continue;
-        }
-        if !fits.is_empty()
-            && !fits
-                .iter()
-                .any(|(project, kind)| *project == slug && *kind == owner.str("kind"))
-        {
             continue;
         }
         let lanes = crate::jobs::project_lanes(s, &slug).lanes.max(1);
@@ -277,9 +282,8 @@ mod tests {
         assert!(!hold_requested(&s, &fleet));
 
         let task = queue(&s, "task", "task:TASK-001");
-        // The lane is held by the fleet's run: the owner's task cannot lease...
-        assert!(lease(&s, "borealis", Vec::new()).0.is_empty());
-        // ...so the run is asked to hold, once, with the event on its job.
+        // The lane is held by the fleet's run: the daemon's pass asks the
+        // run to hold, once, with the event on its job...
         let lines = yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
@@ -289,14 +293,20 @@ mod tests {
         assert!(hold_requested(&s, &fleet));
         assert!(yielded(&s, &fleet, &run));
         assert!(!yielded(&s, &fleet, "run-other"));
+        // ...and the owner's task does not wait for the hold to be honoured:
+        // it takes a lane beyond the narrowed count at once (2026-11-04: the
+        // owner's tasks on the brain serialised 10-13 h behind one lane).
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), task);
+        // Leased, the task is waiting no longer: nothing more is asked for
+        // it, and the run already asked is not asked again.
         assert!(
             yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]).is_empty(),
             "a run already asked is not asked again"
         );
 
-        // The run held: its job is queued again, the lane is free, and the
-        // agent that held it takes the owner's task first - the fleet job
-        // waits while the owner's work is queued in its project.
+        // The run held: its job is queued again, and the lane it freed is
+        // the owner's - the fleet job waits on it, for the agent that held
+        // it, until the owner's run is done.
         s.finish_harness_session(
             &format!("h-{fleet}"),
             pulse_store::HARNESS_HELD,
@@ -319,11 +329,17 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), task);
-        // Now the owner's work holds the lane; nothing yields to it, and the
-        // fleet's job waits on the lane as before.
         assert!(yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]).is_empty());
+        assert!(lease(&s, "aurora", Vec::new()).0.is_empty());
         assert!(lease(&s, "cinder", Vec::new()).0.is_empty());
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET status = 'done', lease_agent = '', lease_until = '' WHERE id = ?",
+                [&task],
+            )
+            .unwrap();
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
     }
 
     #[test]
@@ -339,23 +355,54 @@ mod tests {
         let fleet = queue(&s, "improve", "suggestion:abc");
         let research = queue(&s, "reflect", "research:proj:1");
         let task = queue(&s, "task", "task:TASK-001");
+        // The owner's task needs a machine with a word this one lacks; a
+        // restart window alone would not hold it back (the owner's work
+        // fits every window since 2026-11-04).
+        s.conn()
+            .unwrap()
+            .execute("UPDATE jobs SET needs = 'gpu' WHERE id = ?", [&task])
+            .unwrap();
+        let plain = std::collections::BTreeSet::new();
+        let lease_on = |agent: &str,
+                        fits: Vec<(String, String)>,
+                        caps: &std::collections::BTreeSet<String>| {
+            crate::jobs::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                crate::jobs::LeaseOpts {
+                    any_proj: true,
+                    fits,
+                    caps: Some(caps.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
         let improve_only = vec![("proj".to_string(), "improve".to_string())];
-        // A slot that fits improve jobs alone finds the fleet's job, but the
-        // owner's task is queued in the project: the fleet's work waits.
-        assert!(lease(&s, "aurora", improve_only.clone()).0.is_empty());
+        // A slot that fits improve jobs alone, on a machine that cannot take
+        // the task, finds the fleet's job - but the owner's task is queued in
+        // the project: the fleet's work waits.
+        assert!(
+            lease_on("aurora", improve_only.clone(), &plain)
+                .0
+                .is_empty()
+        );
         // Research is not work and passes.
         assert_eq!(
-            lease(
-                &s,
+            lease_on(
                 "aurora",
-                vec![("proj".to_string(), "reflect".to_string())]
+                vec![("proj".to_string(), "reflect".to_string())],
+                &plain
             )
             .str("id"),
             research
         );
-        // Once the owner's task is in flight, the fleet's job leases.
-        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), task);
-        assert_eq!(lease(&s, "cinder", improve_only).str("id"), fleet);
+        // Once the owner's task is in flight, on the machine that offers
+        // the word, the fleet's job leases.
+        let gpu = std::collections::BTreeSet::from(["gpu".to_string()]);
+        assert_eq!(lease_on("borealis", Vec::new(), &gpu).str("id"), task);
+        assert_eq!(lease_on("cinder", improve_only, &plain).str("id"), fleet);
     }
 
     #[test]
@@ -561,7 +608,12 @@ mod tests {
     }
 
     #[test]
-    fn no_hold_for_an_owners_job_the_restart_window_cannot_start() {
+    fn a_fleet_run_in_the_way_is_asked_to_hold_whatever_the_restart_window_names() {
+        // Before 2026-11-04 no run was asked to hold for an owner's job the
+        // restart window had no room for. The window never had room for a
+        // 2.5-hour task on the brain, so the owner's task queued 13 h with
+        // no attempt; now the owner's work fits every window, and the lane
+        // is asked for whatever the window names.
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
@@ -572,19 +624,19 @@ mod tests {
         let fleet = queue(&s, "improve", "suggestion:abc");
         assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
         running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
-        let _task = queue(&s, "task", "task:TASK-001");
-        // The restart window has room for the project's short runs only:
-        // the task could not start in the freed lane, so nothing is held.
+        let task = queue(&s, "task", "task:TASK-001");
+        // The restart window names the project's short runs only: the
+        // fleet's run in the lane is asked to hold all the same...
         let short = vec![("proj".to_string(), "reflect".to_string())];
-        assert!(
-            yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &short).is_empty()
-        );
-        assert!(!hold_requested(&s, &fleet));
-        // With room for the task, the lane is asked for.
-        let fits = vec![("proj".to_string(), "task".to_string())];
-        let lines = yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &fits);
+        let lines = yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &short);
         assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains(&fleet) && lines[0].contains(&task),
+            "{lines:?}"
+        );
         assert!(hold_requested(&s, &fleet));
+        // ...and the owner's task leases through that window.
+        assert_eq!(lease(&s, "borealis", short).str("id"), task);
     }
 
     /// What the run leaves when its hold is honoured: the session and run

@@ -15,7 +15,7 @@ pub use help::{GLOBAL_USAGE, TITLE, edit_distance, help, help_command, suggest};
 pub use signed::{SIGNING_IDENTIFIER, code_signed, executable};
 pub use table::{Style, table};
 pub use version::{
-    BUILD_INFO_TEXT, BuildInfo, BuildSetting, Module, build_version, parse_build_info,
+    BuildInfo, BuildSetting, Module, build_version, install_build_info, parse_build_info,
     read_build_info, revision, version,
 };
 #[cfg(test)]

@@ -51,6 +51,12 @@ pub(crate) struct LeaseOpts {
     pub projects: Vec<String>,
     pub any_proj: bool,
     /// The project and kind pairs the lease may take; empty takes any.
+    /// Owner-driven work ([`OWNER_DRIVEN_SQL`]) fits whatever the pairs
+    /// say: the pairs are the runner's restart window, and a `task` on the
+    /// brain (p90 2.5 h) was never in it, so an owner's task queued 13 h
+    /// through seven windows in a day. The owner-lane marker
+    /// ([`owner_lane_fits`]) narrows the lease to owner-driven work alone,
+    /// and the pairs beside it add nothing.
     pub fits: Vec<(String, String)>,
     /// Projects whose landing kinds wait behind one source (a red default
     /// branch and its fix job): `(project, source)` pairs.
@@ -167,7 +173,11 @@ pub(crate) const WORK_WAITED_HOURS: i32 = 2;
 /// runs, answers, the jobs a lead planned for an owner task
 /// (`task:TASK-NNN` or `task:TASK-NNN:label`), and the security updates the
 /// owner's standing rule queues (`security:` sources, `security.rs`). They
-/// lease before the fleet's own work and alone through the express lane.
+/// lease before the fleet's own work and alone through the express lane;
+/// they are bounded by the plain `parallel_per_project` count alone, not
+/// by a project's narrowed work lanes, and they fit every restart window
+/// (an owner's task on the brain once queued 13 hours with no attempt,
+/// behind one narrowed lane and through the day's restart windows).
 /// A role lead's sittings (`lead-role:` sources) are standing work, not the
 /// owner's, and queue with the fleet.
 pub(crate) const OWNER_DRIVEN_SQL: &str = "((j.kind IN ('lead', 'answer') AND j.source NOT LIKE 'lead-role:%') OR j.source LIKE 'task:%' OR j.source LIKE 'security:%')";
@@ -187,7 +197,11 @@ pub(crate) fn is_owner_driven(job: &Row) -> bool {
 }
 
 /// The `fits` entry that opens a slot to owner-driven jobs alone: the
-/// express lane the load governor keeps open while the machine is saturated.
+/// express lane the load governor keeps open while the machine is saturated,
+/// and the daily cap once it is full. It is the stricter `fits`: with the
+/// marker there, the restart window's pairs beside it are not consulted,
+/// since owner-driven work fits every window anyway and the fleet's is
+/// shut out by the marker.
 const OWNER_LANE: (&str, &str) = ("*", "owner");
 
 pub(crate) fn owner_lane_fits() -> Vec<(String, String)> {
@@ -299,7 +313,8 @@ pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     }
 }
 
-fn minutes_up(seconds: i64) -> i64 {
+/// `seconds` as whole minutes, rounded up.
+pub(crate) fn minutes_up(seconds: i64) -> i64 {
     (seconds + 59) / 60
 }
 
@@ -325,6 +340,49 @@ pub(crate) fn narrowed_lanes(s: &pulse_store::Store) -> Vec<(String, Lanes)> {
         (lanes.lanes < lanes.base).then_some((slug, lanes))
     })
     .collect()
+}
+
+/// How many of `project`'s work jobs ([`WORK_KINDS`]) are leased or running:
+/// the checks a clone's gated commit in the project may wait for under the
+/// verify lock.
+pub(crate) fn occupied_work_jobs(s: &pulse_store::Store, project: &str) -> i64 {
+    let Ok(conn) = s.conn() else {
+        return 0;
+    };
+    i64::from(
+        one_dyn(
+            &conn,
+            &format!(
+                "SELECT COUNT(*) AS n FROM jobs k WHERE k.project = ? AND k.kind IN ({}) AND {OCCUPIED_JOB_SQL}",
+                work_kinds_sql()
+            ),
+            &[&project],
+        )
+        .int("n"),
+    )
+}
+
+/// The commit cap, in seconds, a run starting over `project`'s narrowed work
+/// lanes needs, or None while the project's work is within its lanes. The
+/// owner's work takes a lane beyond the narrowed count at once
+/// ([`lease_job`]), so its clone's gated `git commit` may wait for every
+/// other check in the project before its own: with `n` work jobs in flight
+/// and the check at `v` seconds that is `n * v`, plus a plain step's grace,
+/// never below the cap the harness gives anyway (`harness.commit_timeout`,
+/// never below `harness.step_timeout`). Measured on the brain: one 23-minute
+/// check, two runs sharing the lock, a 40-minute cap - the second commit
+/// would be killed waiting on the first's check.
+pub(crate) fn commit_cap_over_lanes(s: &pulse_store::Store, project: &str) -> Option<i64> {
+    let lanes = project_lanes(s, project);
+    let verify = lanes.verify_seconds?;
+    let n = occupied_work_jobs(s, project);
+    if n <= i64::from(lanes.lanes) {
+        return None;
+    }
+    let step = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
+    let commit = i64::from(crate::util::setting_int(s, "harness.commit_timeout"));
+    let current = step.max(commit);
+    Some(current.max(n * verify + step))
 }
 
 pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
@@ -395,12 +453,18 @@ pub(crate) fn lease_job(
             "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({LEAD_SITTING_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?)"
         );
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
-        // A project whose checks take turns runs only as many work jobs as fit the
-        // commit cap (project_lanes); its research, ballots and answers keep the plain limit.
+        // A project whose checks take turns runs only as many of the fleet's
+        // work jobs as fit the commit cap (project_lanes); its research,
+        // ballots and answers keep the plain limit, and so does the owner's
+        // work: a lane beyond the narrowed count at once, its commit cap
+        // widened for the checks it shares the lock with
+        // (commit_cap_over_lanes). On the brain one lane of five is open, a
+        // task there runs 1.5-2.5 h, and the owner's tasks serialised behind
+        // each other through it for 10-13 h with no attempt.
         let work_kinds = work_kinds_sql();
         for (slug, lanes) in &narrowed {
             sql.push_str(&format!(
-                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
+                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND NOT {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
             ));
             vals.push(Box::new(slug.clone()));
             vals.push(Box::new(lanes.lanes));
@@ -440,21 +504,21 @@ pub(crate) fn lease_job(
         if o.reserved {
             sql.push_str(" AND j.needs != ''");
         }
-        // The owner lane marker and the kinds that fit are both honoured
-        // when both are there (a full daily cap inside a restart window):
-        // the owner's work, and of it only the kinds the window has room for.
+        // Owner-driven work fits every window. The pairs are the runner's
+        // restart window - the kinds expected to end before the runs in
+        // flight - and a task on the brain (p90 2.5 h) was never among them,
+        // so an owner's task queued 13 h with no attempt while the binary
+        // changed seven times in the day. The owner lane marker is the
+        // stricter one: owner-driven work alone, and the pairs beside it
+        // (a full daily cap inside a restart window) add nothing.
         if is_owner_lane(&o.fits) {
             sql.push_str(&format!(" AND {OWNER_DRIVEN_SQL}"));
-        }
-        let kinds: Vec<&(String, String)> = o
-            .fits
-            .iter()
-            .filter(|(project, kind)| !(project == OWNER_LANE.0 && kind == OWNER_LANE.1))
-            .collect();
-        if !kinds.is_empty() {
-            let marks = vec!["?"; kinds.len()].join(",");
-            sql.push_str(&format!(" AND (j.project || '/' || j.kind) IN ({marks})"));
-            for (project, kind) in kinds {
+        } else if !o.fits.is_empty() {
+            let marks = vec!["?"; o.fits.len()].join(",");
+            sql.push_str(&format!(
+                " AND ({OWNER_DRIVEN_SQL} OR (j.project || '/' || j.kind) IN ({marks}))"
+            ));
+            for (project, kind) in &o.fits {
                 vals.push(Box::new(format!("{project}/{kind}")));
             }
         }
@@ -910,6 +974,238 @@ mod tests {
         }
         let second = lease("cinder");
         assert_eq!(second.str("id"), ids[1], "{second:?}");
+    }
+
+    /// `verify.lock` on, a 10-minute check, a 15-minute commit cap: one of
+    /// four work lanes open (the setup of the lanes tests above).
+    fn one_narrowed_lane(s: &pulse_store::Store) {
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "900")
+            .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        record_landing_verify(s, "proj", "2026-09-01T00:00:00Z", 600);
+        assert_eq!(super::project_lanes(s, "proj").lanes, 1);
+    }
+
+    #[test]
+    fn the_owners_work_takes_a_lane_beyond_the_narrowed_count_and_the_fleets_waits() {
+        // 2026-11-04, on the brain: one work lane of five open (a 20-27
+        // minute check against a 40-minute commit cap), and the owner's
+        // tasks, 1.5-2.5 h each, serialised behind each other through it
+        // for 10-13 h with no attempt. The narrowed lanes are the fleet's;
+        // the owner's work is bounded by `parallel_per_project` alone.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_narrowed_lane(&s);
+        // Five slots in the project, one of them a work lane.
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "5")
+            .unwrap();
+        assert_eq!(super::project_lanes(&s, "proj").lanes, 1);
+        for name in ["aurora", "borealis", "cinder", "dusk", "ember"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "proj", "improve", "lead-idle:proj:1", 10);
+        let fleet_2 = queue(&s, "proj", "improve", "lead-idle:proj:2", 10);
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(lease("aurora").str("id"), fleet);
+        // The one lane is the fleet's: its second improve job waits...
+        assert!(lease("borealis").0.is_empty());
+        // ...and the owner's task, planned after, starts at once.
+        let owner = queue(&s, "proj", "task", "task:TASK-001:ui", 80);
+        assert_eq!(
+            lease("borealis").str("id"),
+            owner,
+            "the owner's task waited on a fleet lane"
+        );
+        // So does a second one, and a security update: the plain count of
+        // five is their only bound.
+        let owner_2 = queue(&s, "proj", "task", "task:TASK-002", 80);
+        let security = queue(&s, "proj", "task", "security:proj:Cargo.lock:1", 70);
+        assert_eq!(lease("cinder").str("id"), owner_2);
+        assert_eq!(lease("dusk").str("id"), security);
+        // The fleet's second improve job still waits on the lane the
+        // fleet's first holds, past every owner run.
+        let none = lease("ember");
+        assert!(
+            none.0.is_empty(),
+            "fleet work leased past the narrowed lane: {none:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&s.conn().unwrap(), fleet_2).str("status"),
+            "queued"
+        );
+    }
+
+    #[test]
+    fn the_owners_work_fits_every_restart_window() {
+        // 2026-11-04: the runner's restart window names the kinds expected
+        // to end before the runs in flight. A task on the brain (p90 2.5 h)
+        // was never one of them, and with the binary changing seven times a
+        // day the owner's task queued 13 h with no attempt.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        let owner = queue(&s, "proj", "task", "task:TASK-001", 80);
+        let fleet_improve = queue(&s, "proj", "improve", "lead-idle:proj:1", 10);
+        let fleet_reflect = queue(&s, "proj", "reflect", "reflect:proj:1", 10);
+        let lease = |agent: &str, fits: Vec<(String, String)>| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    fits,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let window = vec![("proj".to_string(), "reflect".to_string())];
+        // The window has room for reflects alone: the owner's task leases
+        // through it anyway, first.
+        assert_eq!(lease("aurora", window.clone()).str("id"), owner);
+        // The fleet's reflect fits the window; its improve job does not.
+        assert_eq!(lease("borealis", window.clone()).str("id"), fleet_reflect);
+        let none = lease("cinder", window);
+        assert!(
+            none.0.is_empty(),
+            "fleet work leased past the window: {none:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&s.conn().unwrap(), fleet_improve).str("status"),
+            "queued"
+        );
+    }
+
+    #[test]
+    fn the_owner_lane_marker_beside_a_window_leases_the_owners_work_alone() {
+        // A full daily cap inside a restart window: the marker is the
+        // stricter of the two, and the pairs beside it add nothing - the
+        // owner's work fits every window, the fleet's is shut out.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "parallel_per_project", "4")
+            .unwrap();
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let owner = queue(&s, "proj", "task", "task:TASK-001", 80);
+        let fleet_improve = queue(&s, "proj", "improve", "lead-idle:proj:1", 10);
+        let mut fits = super::owner_lane_fits();
+        fits.push(("proj".to_string(), "improve".to_string()));
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    fits: fits.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // The owner's task, whose pair the window does not name, leases...
+        assert_eq!(lease("aurora").str("id"), owner);
+        // ...and the fleet's improve job, whose pair it names, does not.
+        let none = lease("borealis");
+        assert!(
+            none.0.is_empty(),
+            "the owner lane leased fleet work: {none:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&s.conn().unwrap(), fleet_improve).str("status"),
+            "queued"
+        );
+    }
+
+    #[test]
+    fn commit_cap_over_lanes_covers_the_checks_a_run_over_the_count_shares_the_lock_with() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_narrowed_lane(&s);
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // Nothing in flight, then one fleet job in the one lane: within the
+        // lanes, the harness's own cap does.
+        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
+        let fleet = queue(&s, "proj", "improve", "lead-idle:proj:1", 10);
+        assert_eq!(lease("aurora").str("id"), fleet);
+        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
+        // The owner's task over the count: its commit may wait for the
+        // fleet's 10-minute check before its own, so two checks and a
+        // 15-minute step's grace - 35 minutes, not the 15-minute cap.
+        let owner = queue(&s, "proj", "task", "task:TASK-001", 80);
+        assert_eq!(lease("borealis").str("id"), owner);
+        assert_eq!(
+            super::commit_cap_over_lanes(&s, "proj"),
+            Some(2 * 600 + 900)
+        );
+        // A third run over the count waits for two checks.
+        let owner_2 = queue(&s, "proj", "task", "task:TASK-002", 80);
+        assert_eq!(lease("cinder").str("id"), owner_2);
+        assert_eq!(
+            super::commit_cap_over_lanes(&s, "proj"),
+            Some(3 * 600 + 900)
+        );
+        // A commit cap four checks fit opens every lane: nobody is over the
+        // count, and the harness's own cap does.
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "2400")
+            .unwrap();
+        assert_eq!(super::project_lanes(&s, "proj").lanes, 4);
+        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
+        // A project without the lock has no median to widen by.
+        s.set_setting(pulse_store::HUMAN_AGENT, "harness.commit_timeout", "900")
+            .unwrap();
+        s.set_setting(
+            pulse_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::OFF,
+        )
+        .unwrap();
+        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
     }
 
     /// A held harness session of `job` by `agent`: what a run leaves when

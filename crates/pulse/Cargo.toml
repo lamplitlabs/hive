@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 description = "PULSE: the store, board, records and runner in one binary"
 default-run = "pulse"
+build = "build.rs"
 
 [[bin]]
 name = "pulse"

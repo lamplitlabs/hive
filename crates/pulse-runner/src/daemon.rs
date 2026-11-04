@@ -223,13 +223,70 @@ impl std::fmt::Debug for DaemonOpts {
     }
 }
 
+/// How long the loop's bodies take, from the top of the loop to the wait
+/// that ends it. Until this was measured the daemon had no number for its
+/// own time: the heartbeat said when the loop last beat and how often, so a
+/// body that spent the dispatch cadence planning looked like a loop that
+/// merely beat late. The heartbeat carries the last body, the slowest and
+/// how many ran over the cadence (`tick`); `pulse status` and the hub show
+/// them. A body over the cadence is said once and again only after one fits,
+/// so a slow planning pass is one line, not one per tick.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct TickTiming {
+    last: Option<Duration>,
+    max: Duration,
+    slow: u32,
+    over: bool,
+}
+
+impl TickTiming {
+    /// Records one body and returns the line to say when it runs over
+    /// `bound` after a body that fit (or as the first body).
+    pub(crate) fn record(
+        &mut self,
+        loops: i32,
+        took: Duration,
+        bound: Duration,
+        pass: bool,
+    ) -> Option<String> {
+        self.last = Some(took);
+        self.max = self.max.max(took);
+        if took <= bound {
+            self.over = false;
+            return None;
+        }
+        self.slow += 1;
+        if std::mem::replace(&mut self.over, true) {
+            return None;
+        }
+        let kind = if pass { "planning pass" } else { "refill tick" };
+        Some(format!(
+            "tick {loops} took {}, over the {} dispatch cadence ({kind}); queued work waited that long for a slot, said again once a tick fits",
+            pulse_cli::format_duration(took),
+            pulse_cli::format_duration(bound)
+        ))
+    }
+
+    /// The heartbeat's `tick` object; nothing before the first body ends.
+    pub(crate) fn beat(&self) -> Option<serde_json::Value> {
+        let last = self.last?;
+        Some(serde_json::json!({
+            "ms": last.as_millis() as u64,
+            "max_ms": self.max.as_millis() as u64,
+            "slow": self.slow,
+        }))
+    }
+}
+
 /// Writes the daemon's heartbeat row.
 /// `passes` counts the planning passes among the `loops`
 /// (`daemon.pass_seconds`); the rest were ticks that only reaped, refilled
 /// slots and watched the stop switch.
-/// `restart` is the pending handover (`restart_beat`) while a newer binary
-/// waits for the runs in flight; the hub reads it to say what the daemon
-/// waits for instead of a bare "restarting".
+/// `restart` is the pending handover (`Restart::beat`, restart.rs) while a
+/// newer binary waits for the runs in flight; the hub reads it to say what
+/// the daemon waits for instead of a bare "restarting".
+/// `tick` is the loop body's timing (`TickTiming::beat`), absent before
+/// the first body ends and in the watchdog's stalled note.
 pub(crate) fn daemon_heartbeat(
     s: &pulse_store::Store,
     loops: i32,
@@ -237,6 +294,7 @@ pub(crate) fn daemon_heartbeat(
     interval: i32,
     note: String,
     restart: Option<serde_json::Value>,
+    tick: Option<serde_json::Value>,
 ) {
     let b = pulse_bus::default();
     let mut beat = serde_json::json!({
@@ -254,6 +312,9 @@ pub(crate) fn daemon_heartbeat(
     });
     if let Some(restart) = restart {
         beat["restart"] = restart;
+    }
+    if let Some(tick) = tick {
+        beat["tick"] = tick;
     }
     // The keep-awake hold and the last sleep noticed (awake.rs), once the
     // loop has ticked; the console reads both from here.
@@ -732,12 +793,6 @@ pub(crate) fn say(o: &DaemonOpts, line: impl AsRef<str>) {
     }
 }
 
-/// How long a daemon whose binary changed on disk keeps dispatching while
-/// runs are in flight (daemon.restart_drain_minutes); zero exits at once.
-pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
-    Duration::from_secs((s.setting_int("daemon.restart_drain_minutes").max(0) as u64) * 60)
-}
-
 /// The least time between two planning passes (`daemon.pass_seconds`). The
 /// loop wakes every `DISPATCH_TICK_SECONDS` while runs are in flight and
 /// whenever a run ends or the bus has news, and each wake used to run the
@@ -752,410 +807,6 @@ pub(crate) fn restart_drain(s: &pulse_store::Store) -> Duration {
 /// at its interval, so `--interval 30` still plans every half minute.
 pub(crate) fn pass_spacing(s: &pulse_store::Store) -> Duration {
     Duration::from_secs(s.setting_int("daemon.pass_seconds").max(0) as u64)
-}
-
-/// How long new runs may still start while a restart is pending: the drain
-/// that is left, or the time until the last of the runs this daemon had in
-/// flight when the restart was armed is expected to end (`anchors` being
-/// their start times and expected lengths, see `anchor_ends`), whichever is
-/// longer. The restart waits for those runs in any case, so a new run that
-/// ends before the slowest of them is expected to delays nothing, while a
-/// daemon that stops dispatching the moment the drain is over idles every
-/// project for as long as that one run takes. The expectation, not the
-/// budget, sets the window: runs end near their kind's measure, and a run
-/// admitted against a two-hour budget while the runs in flight ended within
-/// the half hour held nine idle slots for forty minutes at each release.
-/// Runs started inside the window are not anchors: each would open a fresh
-/// window and the restart would never come while the queue had work.
-pub(crate) fn restart_window(
-    drain_left: Duration,
-    now: &str,
-    anchors: impl IntoIterator<Item = (String, Duration)>,
-) -> Duration {
-    let now = crate::util::must_iso(now);
-    let slowest = anchors
-        .into_iter()
-        .filter(|(started, _)| !started.is_empty())
-        .map(|(started, expected)| {
-            (crate::util::must_iso(&started) + chrono::Duration::seconds(expected.as_secs() as i64)
-                - now)
-                .num_seconds()
-                .max(0) as u64
-        })
-        .max()
-        .unwrap_or(0);
-    drain_left.max(Duration::from_secs(slowest))
-}
-
-/// The runs a pending restart waits for: those in flight when it was armed
-/// (the anchors), or every run in flight once the anchors are done - the
-/// handover waits for all of them.
-fn restart_waits<'a>(
-    inflight: &'a BTreeMap<String, Dispatch>,
-    anchors: &std::collections::BTreeSet<String>,
-) -> Vec<&'a Dispatch> {
-    let anchored: Vec<&Dispatch> = inflight
-        .iter()
-        .filter(|(key, _)| anchors.contains(*key))
-        .map(|(_, d)| d)
-        .collect();
-    if anchored.is_empty() {
-        inflight.values().collect()
-    } else {
-        anchored
-    }
-}
-
-/// The heartbeat's record of a pending restart: since when, how many runs
-/// are in flight, whether new ones still start, and the runs the new build
-/// waits for. A brain run can take an hour and a bare "restarting" read as
-/// stuck for all of it; the console names the run and its age instead.
-pub(crate) fn restart_beat(
-    since: &str,
-    inflight: &BTreeMap<String, Dispatch>,
-    anchors: &std::collections::BTreeSet<String>,
-    dispatching: bool,
-) -> serde_json::Value {
-    let waits: Vec<serde_json::Value> = restart_waits(inflight, anchors)
-        .into_iter()
-        .map(|d| {
-            serde_json::json!({
-                "agent": d.worker,
-                "kind": d.job.str("kind"),
-                "project": d.job.str("project"),
-                "job": d.job.str("id"),
-                "started_at": d.started_at,
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "since": since,
-        "inflight": inflight.len(),
-        "dispatching": dispatching,
-        "waits_for": waits,
-    })
-}
-
-/// Minutes and whole hours as a human writes them ("44m", "1h26m"); never
-/// seconds, which only suggest a precision the note does not need.
-fn minutes_text(secs: u64) -> String {
-    let minutes = secs / 60;
-    if minutes < 60 {
-        format!("{minutes}m")
-    } else {
-        format!("{}h{}m", minutes / 60, minutes % 60)
-    }
-}
-
-/// The heartbeat note of a pending restart: the runs in flight and the ones
-/// the new build waits for, each with how long it has run so far.
-pub(crate) fn restart_note(
-    now: &str,
-    inflight: &BTreeMap<String, Dispatch>,
-    anchors: &std::collections::BTreeSet<String>,
-) -> String {
-    let waits = restart_waits(inflight, anchors);
-    if waits.is_empty() {
-        return format!("restarting: {} in flight", inflight.len());
-    }
-    let now_at = crate::util::must_iso(now);
-    let mut names: Vec<String> = waits
-        .iter()
-        .take(3)
-        .map(|d| {
-            let ran = if d.started_at.is_empty() {
-                String::new()
-            } else {
-                let secs = (now_at - crate::util::must_iso(&d.started_at))
-                    .num_seconds()
-                    .max(0) as u64;
-                format!(" ({} so far)", minutes_text(secs))
-            };
-            format!(
-                "{}'s {} on {}{ran}",
-                d.worker,
-                d.job.str("kind"),
-                d.job.str("project")
-            )
-        })
-        .collect();
-    if waits.len() > 3 {
-        names.push(format!("{} more", waits.len() - 3));
-    }
-    let list = match names.len() {
-        1 => names.remove(0),
-        2 => names.join(" and "),
-        _ => {
-            let last = names.pop().unwrap_or_default();
-            format!("{} and {last}", names.join(", "))
-        }
-    };
-    format!(
-        "restarting: {} in flight; the new build waits for {list}",
-        inflight.len()
-    )
-}
-
-/// Finished runs a measured `run_fits` needs before it trusts the measurement.
-const RUN_FITS_MIN_SAMPLES: usize = 10;
-/// Finished runs the measurement looks back over.
-const RUN_FITS_WINDOW: usize = 50;
-/// Setup and report around the measured worker time of a run.
-const RUN_FITS_MARGIN: Duration = Duration::from_secs(5 * 60);
-
-/// The expected length of a run, by the project and the kind of its job.
-type Fits = BTreeMap<(String, String), Duration>;
-
-/// How long a new run of `kind` on `project` is expected to take, used to
-/// decide whether one still fits inside a restart window: the 90th percentile
-/// of the last fifty real runs of that kind on that project that ran a worker
-/// to an end plus five minutes of setup and report. Under ten such runs the
-/// project borrows the measure of the kind over every project, under ten of
-/// those the measure of all runs together; the budget plus five minutes caps
-/// it and stands in while fewer than ten runs exist at all. Kinds differ by an
-/// order of magnitude - a ballot takes a minute, an improve run half an hour -
-/// and so do projects: an improve run on the brain takes an hour where one on
-/// a blog takes five minutes, so one measure per kind held the blog's runs for
-/// every window and let the brain's overrun it. Runs the window outlives are
-/// waited for anyway, so a low estimate costs one run's overrun before the
-/// restart.
-fn run_fits(s: &pulse_store::Store, project: &str, kind: &str) -> Duration {
-    let cap = run_fits_cap(s);
-    let Ok(conn) = s.conn() else { return cap };
-    (!project.is_empty())
-        .then(|| run_fits_p90(&conn, project, kind))
-        .flatten()
-        .or_else(|| {
-            (!kind.is_empty())
-                .then(|| run_fits_p90(&conn, "", kind))
-                .flatten()
-        })
-        .or_else(|| run_fits_p90(&conn, "", ""))
-        .map(|p90| (p90 + RUN_FITS_MARGIN).min(cap))
-        .unwrap_or(cap)
-}
-
-/// The budget plus the margin: no run is expected to take longer.
-fn run_fits_cap(s: &pulse_store::Store) -> Duration {
-    Duration::from_secs((s.setting_int("minutes_per_job").max(0) as u64) * 60) + RUN_FITS_MARGIN
-}
-
-/// The 90th percentile of the worker time of the last fifty real runs of
-/// `kind` on `project` (every kind, every project when empty) that ran to an
-/// end, once ten exist.
-fn run_fits_p90(
-    conn: &(impl crate::util::Querier + ?Sized),
-    project: &str,
-    kind: &str,
-) -> Option<Duration> {
-    let mut sql = String::from(
-        "SELECT r.seconds FROM runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.finished_at != ''
-         AND r.mode = 'real' AND r.seconds > 0 AND r.status IN ('done', 'failed', 'timeout')",
-    );
-    let limit = RUN_FITS_WINDOW as i64;
-    let mut args: Vec<&dyn rusqlite::ToSql> = Vec::new();
-    if !project.is_empty() {
-        sql.push_str(" AND j.project = ?");
-        args.push(&project);
-    }
-    if !kind.is_empty() {
-        sql.push_str(" AND j.kind = ?");
-        args.push(&kind);
-    }
-    sql.push_str(" ORDER BY r.finished_at DESC LIMIT ?");
-    args.push(&limit);
-    let mut seconds: Vec<f64> = crate::util::must_rows(conn, &sql, &args)
-        .iter()
-        .map(|r| r.float("seconds"))
-        .collect();
-    if seconds.len() < RUN_FITS_MIN_SAMPLES {
-        return None;
-    }
-    seconds.sort_by(f64::total_cmp);
-    let p90 = seconds[(seconds.len() * 9 / 10).min(seconds.len() - 1)];
-    Some(Duration::from_secs(p90.ceil() as u64))
-}
-
-/// The expected length of a run of each kind of job on each active project,
-/// measured once per tick.
-///
-/// A store error is said on stderr instead of swallowed: an empty table
-/// would otherwise close every slot during a restart hold while the daemon
-/// looks merely idle.
-fn kind_fits(s: &pulse_store::Store) -> Fits {
-    kind_fits_result(s).unwrap_or_else(|e| {
-        eprintln!("daemon: run fits unavailable: {e}; holding every kind of run this tick");
-        Fits::new()
-    })
-}
-
-fn kind_fits_result(s: &pulse_store::Store) -> Result<Fits, String> {
-    let projects = s.projects(true).map_err(|e| e.to_string())?;
-    Ok(projects
-        .iter()
-        .flat_map(|p| {
-            pulse_board::JOB_KINDS
-                .iter()
-                .map(move |kind| (p.slug.clone(), kind.to_string()))
-        })
-        .map(|(project, kind)| {
-            let fit = run_fits(s, &project, &kind);
-            ((project, kind), fit)
-        })
-        .collect())
-}
-
-/// The project and kind pairs whose run fits a restart window with `left`
-/// to go: their worker is expected to be done before then, their setup and
-/// report running into the margin the window already holds for the runs in
-/// flight; a pair without a measure needs more than a whole budget of
-/// window. All of them means no hold.
-fn kinds_within(fits: &Fits, left: Duration) -> Vec<(String, String)> {
-    fits.iter()
-        .filter(|(_, fit)| **fit < left + RUN_FITS_MARGIN)
-        .map(|(pair, _)| pair.clone())
-        .collect()
-}
-
-/// The queued work (project, kind pairs of `WORK_KINDS` and experiments on
-/// active projects) a restart armed now would refuse to start while the
-/// runs in flight finish. A self-update build ends in that restart, so it
-/// waits for them to start; with nothing in flight the restart is at once
-/// and refuses nothing.
-fn refused_queued_work(
-    s: &pulse_store::Store,
-    inflight: &BTreeMap<String, Dispatch>,
-    now: &str,
-) -> Vec<(String, String)> {
-    if inflight.is_empty() {
-        return Vec::new();
-    }
-    let Ok(conn) = s.conn() else {
-        return Vec::new();
-    };
-    let queued: Vec<(String, String)> = crate::util::must_rows(
-        &conn,
-        &format!(
-            "SELECT DISTINCT j.project, j.kind FROM jobs j JOIN projects p ON p.slug = j.project
-             WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}, 'experiment')
-             ORDER BY j.project, j.kind",
-            crate::jobs::work_kinds_sql()
-        ),
-        &[],
-    )
-    .iter()
-    .map(|r| (r.str("project"), r.str("kind")))
-    .collect();
-    if queued.is_empty() {
-        return Vec::new();
-    }
-    let fits = kind_fits(s);
-    let anchors = inflight.keys().cloned().collect();
-    let window = restart_window(
-        restart_drain(s),
-        now,
-        anchor_ends(s, inflight, &anchors, &fits),
-    );
-    let within = kinds_within(&fits, window);
-    queued
-        .into_iter()
-        .filter(|pair| !within.contains(pair))
-        .collect()
-}
-
-/// The shortest expected run among the pairs: the window nothing fits.
-fn shortest_fit(fits: &Fits) -> Duration {
-    fits.values().copied().min().unwrap_or_default()
-}
-
-/// The runs that still fit, said by project: "any run on blog, lamplitlabs;
-/// ballot, lead, reflect runs on amistio-template". Projects with the same
-/// fitting kinds share a clause, kinds in the order of
-/// `pulse_board::JOB_KINDS`.
-fn fits_phrase(pairs: &[(String, String)]) -> String {
-    let mut by_project: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (project, kind) in pairs {
-        by_project.entry(project).or_default().push(kind);
-    }
-    let mut groups: BTreeMap<Vec<&str>, Vec<&str>> = BTreeMap::new();
-    for (project, kinds) in by_project {
-        let ordered = pulse_board::JOB_KINDS
-            .iter()
-            .copied()
-            .filter(|kind| kinds.contains(kind))
-            .collect::<Vec<_>>();
-        groups.entry(ordered).or_default().push(project);
-    }
-    let mut clauses = groups
-        .into_iter()
-        .map(|(kinds, projects)| {
-            if kinds.len() == pulse_board::JOB_KINDS.len() {
-                format!("any run on {}", projects.join(", "))
-            } else {
-                format!("{} runs on {}", kinds.join(", "), projects.join(", "))
-            }
-        })
-        .collect::<Vec<_>>();
-    // The broadest clause first.
-    clauses.sort_by_key(|c| !c.starts_with("any run on "));
-    clauses.join("; ")
-}
-
-/// Start time and expected length of the anchor runs still in flight: the
-/// measure of their project and kind, never past the budget that ends them.
-fn anchor_ends(
-    s: &pulse_store::Store,
-    inflight: &BTreeMap<String, Dispatch>,
-    anchors: &std::collections::BTreeSet<String>,
-    fits: &Fits,
-) -> Vec<(String, Duration)> {
-    let budget = Duration::from_secs((s.setting_int("minutes_per_job").max(0) as u64) * 60);
-    let cap = run_fits_cap(s);
-    inflight
-        .iter()
-        .filter(|(key, _)| anchors.contains(*key))
-        .map(|(_, d)| {
-            let fit = fits
-                .get(&(d.job.str("project"), d.job.str("kind")))
-                .copied()
-                .unwrap_or(cap);
-            (d.started_at.clone(), fit.min(budget))
-        })
-        .collect()
-}
-
-/// What the first restart notice says about new runs: none fits the window,
-/// some do (named by project and kind), or all of them.
-fn restart_starts_phrase(
-    pairs: &[(String, String)],
-    all: usize,
-    fits: &Fits,
-    window: Duration,
-    drain: Duration,
-) -> String {
-    if pairs.is_empty() {
-        return format!(
-            "no new run starts (one may take up to {} and would not fit the {} drain)",
-            pulse_cli::format_duration(shortest_fit(fits)),
-            pulse_cli::format_duration(drain)
-        );
-    }
-    let who = if pairs.len() == all {
-        "new runs".to_string()
-    } else {
-        fits_phrase(pairs)
-    };
-    if window > drain {
-        format!(
-            "{who} may start for up to {} while the slowest run in flight is expected to go on",
-            pulse_cli::format_duration(window)
-        )
-    } else {
-        format!(
-            "{who} may start for up to {}",
-            pulse_cli::format_duration(drain)
-        )
-    }
 }
 
 /// Whether the governor would admit work now: read between the polls of an
@@ -1403,23 +1054,11 @@ pub(crate) fn daemon(
     let mut planned_through = pulse_bus::last_id(s).unwrap_or(0);
     let mut prev_idle: BTreeMap<String, String> = BTreeMap::new();
     let mut idle_log = crate::idle_log::IdleLog::default();
-    // Set when the binary changed on disk or the owner asked for a restart
-    // while runs were in flight: the daemon keeps dispatching and landing
-    // for up to daemon.restart_drain_minutes and exits with code 3 as soon
-    // as nothing is in flight (restart handover).
-    let mut restart_pending: Option<std::time::Instant> = None;
-    // The runs in flight when the restart was armed: the window follows them.
-    let mut restart_anchors: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // When the restart was armed, ISO; the heartbeat carries it.
-    let mut restart_since = String::new();
-    // Set when the owner asked for the restart now: the runs in flight were
-    // asked to hold and the wait after the loop is capped (daemon.hold_seconds).
-    let mut restart_forced = false;
-    // Set when the owner asked for a restart without "now": the daemon drains
-    // like a self-update - it starts nothing new and exits with code 3 once
-    // the runs in flight have ended or daemon.restart_drain_minutes is up, so
-    // nothing is held or lost.
-    let mut console_drain = false;
+    // The restart handover (restart.rs): armed when the binary changed on
+    // disk or the owner asked for a restart while runs were in flight, it
+    // says which runs may still start, what the heartbeat waits for and when
+    // this daemon exits with code 3 so the service restarts it.
+    let mut restart = crate::restart::Restart::default();
     // Asks for a restart are read from here on: the ask that restarted the
     // daemon before this one is behind it.
     let restart_asks_after = pulse_bus::last_id(s).unwrap_or(0);
@@ -1487,7 +1126,7 @@ pub(crate) fn daemon(
             Some(Arc::new(move |note: String, dump: String| {
                 let loops = loops_note.load(std::sync::atomic::Ordering::SeqCst);
                 let passes = passes_note.load(std::sync::atomic::Ordering::SeqCst);
-                daemon_heartbeat(&s_note, loops, passes, interval, note.clone(), None);
+                daemon_heartbeat(&s_note, loops, passes, interval, note.clone(), None, None);
                 if let Ok(conn) = s_note.conn() {
                     crate::util::event_at(
                         &conn,
@@ -1512,8 +1151,12 @@ pub(crate) fn daemon(
         dog
     });
     // The heartbeat row plus the watchdog's beat.
-    let heartbeat = |loops: i32, passes: i32, note: &str, restart: Option<serde_json::Value>| {
-        daemon_heartbeat(s, loops, passes, interval, note.to_string(), restart);
+    let heartbeat = |loops: i32,
+                     passes: i32,
+                     note: &str,
+                     restart: Option<serde_json::Value>,
+                     tick: Option<serde_json::Value>| {
+        daemon_heartbeat(s, loops, passes, interval, note.to_string(), restart, tick);
         if let Some(dog) = &dog {
             dog.beat();
         }
@@ -1684,9 +1327,14 @@ pub(crate) fn daemon(
     // The keep-awake hold (daemon.keep_awake) and the sleep watch; the hold
     // follows the setting each tick and goes with this daemon.
     let mut awake = crate::awake::Awake::new();
+    // The loop body's timing; the heartbeat written at the top of a loop
+    // carries the body before it.
+    let mut tick_timing = TickTiming::default();
+    let tick_bound = Duration::from_secs(DISPATCH_TICK_SECONDS as u64);
     loop {
         loops += 1;
         loops_shared.store(loops, std::sync::atomic::Ordering::SeqCst);
+        let tick_began = std::time::Instant::now();
         // The wall clock got ahead of the monotonic clock while the loop
         // waited: the machine slept. Said, recorded as an event, and kept in
         // the heartbeat so the console can explain the lost hours.
@@ -1725,7 +1373,7 @@ pub(crate) fn daemon(
         }
         // A console restart asked with runs in flight drains: once they have
         // all ended, go. (The drain-budget stop is below, with the rest.)
-        if console_drain && restart_pending.is_some() && inflight.is_empty() {
+        if restart.console_draining() && inflight.is_empty() {
             say(
                 &o,
                 "restart asked and nothing is in flight; exiting with code 3 so the service restarts it",
@@ -1816,144 +1464,45 @@ pub(crate) fn daemon(
                         },
                     );
                 }
-                if restart_pending.is_none() {
-                    restart_anchors = inflight.keys().cloned().collect();
-                    restart_since = s.now();
-                }
-                restart_forced = true;
+                restart.force(s, &inflight);
                 leave = ("restart", "restarting now, as asked");
                 break;
             }
-            if restart_pending.is_none() {
-                restart_pending = Some(std::time::Instant::now());
-                restart_anchors = inflight.keys().cloned().collect();
-                restart_since = s.now();
-                say(
-                    &o,
-                    format!(
-                        "restart asked by {} at {}: {} run(s) in flight; draining - nothing new starts and the daemon exits with code 3 once they end or after {}",
-                        ask.actor,
-                        ask.at,
-                        inflight.len(),
-                        pulse_cli::format_duration(restart_drain(s))
-                    ),
-                );
+            if let Some(line) = restart.drain_as_asked(s, &ask, &inflight) {
+                say(&o, line);
             }
-            console_drain = true;
             if inflight.is_empty() {
                 leave = ("restart", "restarting, as asked");
                 break;
             }
-            continue;
+            // The tick goes on with the drain in place: the window closes the
+            // slots (`Restart::hold`), the drain's end is judged
+            // (`Restart::tend`), the heartbeat is written and the loop waits
+            // for a run to end or the dispatch tick. Skipping the rest of the
+            // tick here spun the loop instead - the same ask is read every
+            // tick - through its queries with no wait and no heartbeat for
+            // as long as the runs took, and the drain's own end never came.
         }
-        if o.restart_on_change
+        // A newer binary on disk arms the restart or, once its drain is
+        // over, decides whether this daemon leaves; the console's drain and
+        // a binary changed back are tended here too (`Restart::tend`).
+        let changed = o.restart_on_change
             && !stamp.is_empty()
-            && (BINARY_STAMP.read().expect("binary stamp"))() != stamp
-        {
-            let drain = restart_drain(s);
-            match restart_pending {
-                None if inflight.is_empty() || drain.is_zero() => {
-                    say(
-                        &o,
-                        "pulse changed on disk; exiting with code 3 so the service restarts it",
-                    );
-                    leave = ("restart", "restarting");
-                    break;
-                }
-                None => {
-                    restart_anchors = inflight.keys().cloned().collect();
-                    let fits = kind_fits(s);
-                    let window = restart_window(
-                        drain,
-                        &s.now(),
-                        anchor_ends(s, &inflight, &restart_anchors, &fits),
-                    );
-                    let kinds = kinds_within(&fits, window);
-                    let starts = restart_starts_phrase(&kinds, fits.len(), &fits, window, drain);
-                    say(
-                        &o,
-                        format!(
-                            "pulse changed on disk; {} run(s) in flight finish first and {starts}, then this daemon exits with code 3 so the service restarts it",
-                            inflight.len(),
-                        ),
-                    );
-                    restart_pending = Some(std::time::Instant::now());
-                    restart_since = s.now();
-                }
-                Some(_) if inflight.is_empty() => {
-                    say(
-                        &o,
-                        "pulse changed on disk and nothing is in flight; exiting with code 3 so the service restarts it",
-                    );
-                    leave = ("restart", "restarting");
-                    break;
-                }
-                Some(since) if since.elapsed() >= drain => {
-                    let fits = kind_fits(s);
-                    let left = restart_window(
-                        Duration::ZERO,
-                        &s.now(),
-                        anchor_ends(s, &inflight, &restart_anchors, &fits),
-                    );
-                    if kinds_within(&fits, left).is_empty() {
-                        say(
-                            &o,
-                            format!(
-                                "restart drain of {} over and no new run fits before the slowest of {} run(s) in flight is expected to end; exiting with code 3 after they finish",
-                                pulse_cli::format_duration(drain),
-                                inflight.len()
-                            ),
-                        );
-                        leave = ("restart", "restarting");
-                        break;
-                    }
-                }
-                Some(_) => {}
-            }
-        } else if console_drain && restart_pending.is_some() {
-            // The console asked for a restart (no binary change): drain.
-            if inflight.is_empty() {
-                say(
-                    &o,
-                    "restart asked and nothing is in flight; exiting with code 3 so the service restarts it",
-                );
+            && (BINARY_STAMP.read().expect("binary stamp"))() != stamp;
+        match restart.tend(s, changed, &inflight, &mut idle_log) {
+            crate::restart::Tend::Exits(line) => {
+                say(&o, line);
                 leave = ("restart", "restarting");
                 break;
             }
-            let since = restart_pending.unwrap();
-            let drain = restart_drain(s);
-            if since.elapsed() >= drain {
-                say(
-                    &o,
-                    format!(
-                        "restart drain of {} over with {} run(s) in flight; exiting with code 3 after they finish",
-                        pulse_cli::format_duration(drain),
-                        inflight.len()
-                    ),
-                );
-                leave = ("restart", "restarting");
-                break;
+            crate::restart::Tend::Goes(line) => {
+                if let Some(line) = line {
+                    say(&o, line);
+                }
             }
-        } else if restart_pending.is_some() {
-            // The binary was changed back: the handover is off.
-            restart_pending = None;
-            restart_anchors.clear();
-            restart_since.clear();
         }
         let now = s.now();
-        let (beat_note, restart_record) = if restart_pending.is_some() {
-            (
-                restart_note(&now, &inflight, &restart_anchors),
-                Some(restart_beat(
-                    &restart_since,
-                    &inflight,
-                    &restart_anchors,
-                    true,
-                )),
-            )
-        } else {
-            (String::new(), None)
-        };
+        let (beat_note, restart_record) = restart.heartbeat(&now, &inflight);
         // A bounded daemon (`--once`, the tests' loop limits) plans on every
         // loop: its loops are the passes it was asked for. An interval shorter
         // than the spacing caps it: the owner asked to plan that often.
@@ -1975,7 +1524,13 @@ pub(crate) fn daemon(
         // Read up to here either way: a range with no owner write in it is
         // not read again next tick.
         planned_through = bus_now;
-        heartbeat(loops, passes, &beat_note, restart_record);
+        heartbeat(
+            loops,
+            passes,
+            &beat_note,
+            restart_record,
+            tick_timing.beat(),
+        );
         let mut started: Vec<Dispatch> = Vec::new();
         let mut reason = String::new();
         let mut slots: Vec<String> = Vec::new();
@@ -2083,7 +1638,9 @@ pub(crate) fn daemon(
                     // A changed daemon.build_jobs reaches the next child here.
                     crate::daemon_load::set_build_jobs(limits.build_jobs);
                     binary.governor = Some(limits);
-                    binary.refused_queued = fits_phrase(&refused_queued_work(s, &inflight, &now));
+                    binary.refused_queued = crate::restart::fits_phrase(
+                        &crate::restart::refused_queued_work(s, &inflight, &now),
+                    );
                     let inflight_jobs = inflight
                         .values()
                         .map(|d| (d.job.str("id"), true))
@@ -2326,55 +1883,14 @@ pub(crate) fn daemon(
                 .expect("login gate poisoned"))(s);
             slots = crate::run::executor_slots(s, &now, &busy, !gate.is_empty());
             // The restart window: all kinds of run still fit it (no hold),
-            // only the short ones do (the line names them and the slots
-            // lease nothing else), or none (the slots close).
-            let mut restart_kinds: Vec<(String, String)> = Vec::new();
-            let restart_hold = restart_pending.and_then(|since| {
-                // A console drain starts nothing new: the restart is wanted,
-                // not just a new build, so the runs in flight are waited out.
-                if console_drain {
-                    restart_kinds = Vec::new();
-                    let drain_left = restart_drain(s).saturating_sub(since.elapsed());
-                    return Some(format!(
-                        "restarting as asked: no new runs, draining {} in flight with {} left",
-                        inflight.len(),
-                        pulse_cli::format_duration(drain_left)
-                    ));
-                }
-                let drain_left = restart_drain(s).saturating_sub(since.elapsed());
-                let fits = kind_fits(s);
-                let left = restart_window(
-                    drain_left,
-                    &now,
-                    anchor_ends(s, &inflight, &restart_anchors, &fits),
-                );
-                // Whole seconds, so the idle log sees one line as the countdown moves.
-                let left = Duration::from_secs(left.as_secs());
-                let kinds = kinds_within(&fits, left);
-                if kinds.len() == fits.len() {
-                    return None;
-                }
-                let line = if kinds.is_empty() {
-                    format!(
-                        "restarting: no new runs with {} left of the restart window; {} in flight",
-                        pulse_cli::format_duration(left),
-                        inflight.len()
-                    )
-                } else {
-                    format!(
-                        "restarting: only {} start with {} left of the restart window; {} in flight",
-                        fits_phrase(&kinds),
-                        pulse_cli::format_duration(left),
-                        inflight.len()
-                    )
-                };
-                restart_kinds = kinds;
-                Some(line)
-            });
+            // only the short ones and the owner's work do (the line names
+            // them and the slots lease nothing else), or the owner's work
+            // alone (`restart_fits`). A console drain closes the slots.
+            let (restart_hold, restart_kinds) = restart.hold(s, &now, &inflight);
             // The owner's work goes first in its project (yield_lane): a fleet
-            // run in the way of a queued owner job is asked to hold - but not
-            // for a job the restart window has no room to start, and not at
-            // all while the window starts nothing.
+            // run in the way of a queued owner job is asked to hold in any
+            // restart window, since the owner's work starts in any - but not
+            // during a console drain, which starts nothing.
             let restart_starts_nothing = restart_hold.is_some() && restart_kinds.is_empty();
             if !o.dry_run && !restart_starts_nothing {
                 for line in crate::yield_lane::yield_lanes_to_owner(s, &now, &actor, &restart_kinds)
@@ -2407,6 +1923,9 @@ pub(crate) fn daemon(
             {
                 say(&o, line);
             }
+            // Only a console drain leaves the window with nothing to start
+            // (restart_fits); a binary change keeps the slots open to the
+            // owner's work at least.
             if let Some(hold) = restart_hold.clone().filter(|_| restart_kinds.is_empty()) {
                 reason = hold;
                 slots.clear();
@@ -2496,9 +2015,10 @@ pub(crate) fn daemon(
                         owner_running,
                     );
                     if let Some(hold) = verdict.hold {
-                        // Not during a restart window: the lane's job could
-                        // outlast it.
-                        if verdict.express && restart_kinds.is_empty() {
+                        // Inside a restart window too: the owner's work
+                        // starts in any window, and its run anchors the
+                        // window rather than outlast it (anchors_restart).
+                        if verdict.express {
                             // The slot kept is restricted, so the tick still
                             // counts as held: an empty lane is not starvation.
                             load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
@@ -2510,11 +2030,12 @@ pub(crate) fn daemon(
                             load_held = crate::daemon_load::trim_local_slots(&mut slots, 0);
                             load_hold = Some(hold);
                         }
-                    } else if verdict.express && restart_kinds.is_empty() {
+                    } else if verdict.express {
                         // The cap is full of the fleet's work and none of it
                         // is the owner's: one slot over daemon.max_jobs takes
                         // owner-driven jobs alone, so an answer to the owner
-                        // does not wait out two verifies.
+                        // does not wait out two verifies - nor a restart
+                        // window, which the owner's run anchors.
                         load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
                         express_slot = true;
                         load_hold = Some(
@@ -2663,7 +2184,12 @@ pub(crate) fn daemon(
                             started_at: now.clone(),
                             ..Default::default()
                         };
-                        inflight.insert(dispatch_key(&d.slot, &d.worker, &d.job), d.clone());
+                        let key = dispatch_key(&d.slot, &d.worker, &d.job);
+                        // The owner's run anchors a pending restart: the
+                        // window follows it to its expected end, and the
+                        // kinds that fit keep starting while it runs.
+                        restart.anchor(&key, &d.job);
+                        inflight.insert(key, d.clone());
                         started.push(d.clone());
                         let tx = results_tx.clone();
                         let s_run = s.clone();
@@ -2980,6 +2506,9 @@ pub(crate) fn daemon(
         {
             say(&o, format!("idle: {line}"));
         }
+        if let Some(line) = tick_timing.record(loops, tick_began.elapsed(), tick_bound, full_pass) {
+            say(&o, line);
+        }
         if o.max_loops > 0 && loops >= o.max_loops {
             leave = ("done", "loop limit reached");
             break;
@@ -3077,7 +2606,7 @@ pub(crate) fn daemon(
         Duration::from_secs(((s.setting_int("minutes_per_job") + 5).max(0) as u64) * 60)
     };
     let mut grace = grace_for(result);
-    if restart_forced && result == "restart" {
+    if restart.forced() && result == "restart" {
         grace = hold_cap(s);
     }
     if matches!(result, "interrupted" | "stopped") {
@@ -3110,8 +2639,8 @@ pub(crate) fn daemon(
                     "{note}: waiting for {} run(s) in flight to finish",
                     inflight.len()
                 ),
-                (result == "restart")
-                    .then(|| restart_beat(&restart_since, inflight, &restart_anchors, false)),
+                (result == "restart").then(|| restart.beat(inflight, false)),
+                tick_timing.beat(),
             );
         };
         wait_beat(&inflight);
@@ -3135,7 +2664,7 @@ pub(crate) fn daemon(
                     }
                 },
                 recv(timer.as_ref().unwrap_or(&never_tick)) -> _ => {
-                    if restart_forced && result == "restart" {
+                    if restart.forced() && result == "restart" {
                         say(&o, format!("hold cap of {} over: stopping {} run(s) still in flight; their jobs return to the queue", pulse_cli::format_duration(grace), inflight.len()));
                     } else {
                         say(&o, format!("grace of {} over: killing {} run(s) still in flight", pulse_cli::format_duration(grace), inflight.len()));
@@ -3182,7 +2711,7 @@ pub(crate) fn daemon(
         // them the hold cap, like the runs.
         let drain = if stuck_pass {
             Duration::from_secs(30)
-        } else if restart_forced && result == "restart" {
+        } else if restart.forced() && result == "restart" {
             grace.min(crate::daemon_maintenance::RESTART_DRAIN)
         } else {
             crate::daemon_maintenance::RESTART_DRAIN
@@ -3269,7 +2798,15 @@ pub(crate) fn daemon(
     // The runs in flight are done: the machine may sleep again (a restarted
     // daemon takes its own hold).
     awake.release();
-    daemon_heartbeat(s, loops, passes, interval, beat.to_string(), None);
+    daemon_heartbeat(
+        s,
+        loops,
+        passes,
+        interval,
+        beat.to_string(),
+        None,
+        tick_timing.beat(),
+    );
     // The wake subscription outlives the heartbeat, which therefore counts
     // it among the bus subscribers.
     cancel_wake();
@@ -3304,7 +2841,9 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_completion::with_closed_login_gate;
-    use crate::test_helpers_daemon::{exec1, test_wait};
+    use crate::test_helpers_daemon::{
+        exec1, finished_job_of_kind, finished_run, store_with_projects, test_wait,
+    };
     use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
     use crate::util::file_exists;
 
@@ -3350,19 +2889,6 @@ mod tests {
         assert!(err.contains("meta"), "{err}");
     }
 
-    #[test]
-    fn kind_fits_reports_store_failure_instead_of_empty_table() {
-        let s = new_store();
-        s.conn()
-            .unwrap()
-            .execute("DROP TABLE projects", [])
-            .unwrap();
-        let err =
-            kind_fits_result(&s).expect_err("a missing projects table must surface as an error");
-        assert!(err.contains("projects"), "{err}");
-        // The tick keeps going on an empty table; the error is already said.
-        assert!(kind_fits(&s).is_empty());
-    }
     use std::io::Write;
     use std::time::Duration;
 
@@ -4264,8 +3790,10 @@ mod tests {
     /// in flight, flips the binary stamp once the run is leased and returns
     /// the daemon's output and result once it exits. `history` seeds the
     /// runs `run_fits` measures: none, `fast` (ten runs of ten seconds, one
-    /// measure for every kind) or `kinds` (ten tasks of ten seconds and ten
-    /// improve runs of ten minutes, so only a task fits a short window).
+    /// measure for every kind), `kinds` (ten tasks of ten seconds and ten
+    /// improve runs of ten minutes, so only a task fits a short window) or
+    /// `owner` (none, so no fleet kind fits a short window, and the owner's
+    /// `task:TASK-001` job is queued after the flip beside the fleet's).
     fn restart_with_run_in_flight(
         drain_minutes: &str,
         queue_after_flip: bool,
@@ -4285,13 +3813,16 @@ mod tests {
             s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "none")
                 .unwrap();
             // Ten real runs of ten seconds, two days ago so the daily job cap
-            // does not count them: run_fits measures 10s + 5m.
+            // does not count them: run_fits measures 10s + 5m. `owner` seeds
+            // none: every kind is expected to run to the budget.
             let two_days = 2.0 * 24.0 * 60.0;
-            for n in 0..10 {
-                if history == "kinds" {
-                    finished_job_of_kind(&s, n, "task");
+            if history != "owner" {
+                for n in 0..10 {
+                    if history == "kinds" {
+                        finished_job_of_kind(&s, n, "task");
+                    }
+                    finished_run(&s, n, two_days + n as f64, "done", "real", 10.0);
                 }
-                finished_run(&s, n, two_days + n as f64, "done", "real", 10.0);
             }
             if history == "kinds" {
                 for n in 10..20 {
@@ -4309,7 +3840,7 @@ mod tests {
             drain_minutes,
         )
         .unwrap();
-        let add = |title: &str| {
+        let add_from = |title: &str, source: &str| {
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -4318,12 +3849,13 @@ mod tests {
                 "fake worker only".into(),
                 0,
                 100,
-                "test".into(),
+                source.into(),
                 pulse_store::HUMAN_AGENT.into(),
                 false,
             )
             .unwrap()
         };
+        let add = |title: &str| add_from(title, "test");
         let (slow, _) = add("Slow run");
         let slow_id = slow.str("id");
         let old_stamp = *BINARY_STAMP.read().unwrap();
@@ -4395,6 +3927,12 @@ mod tests {
                         false,
                     )
                     .unwrap();
+                }
+                if history == "owner" {
+                    add_from(
+                        "Owner's task queued after the binary changed",
+                        "task:TASK-001",
+                    );
                 }
                 add("Queued after the binary changed");
             } else {
@@ -4591,6 +4129,26 @@ mod tests {
             !out.contains("requeued"),
             "a drained restart requeues nothing: {out}"
         );
+        // The drain waits like any other tick: the loop that read the ask
+        // once spun through its queries without a wait or a heartbeat for as
+        // long as the run took, which the loop count would show in the
+        // thousands; drained properly it beats, says the hold, and blocks
+        // until the run ends.
+        let beat = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT value FROM meta WHERE key = 'daemon'",
+            &[],
+        );
+        let beat: serde_json::Value = serde_json::from_str(&beat.str("value")).unwrap();
+        let loops = beat["loops"].as_i64().unwrap_or(-1);
+        assert!(
+            (1..50).contains(&loops),
+            "the drain spun the loop {loops} times:\n{out}"
+        );
+        assert!(
+            out.contains("restarting as asked: no new runs, draining 1 in flight with"),
+            "{out}"
+        );
     }
 
     /// A console restart ask answered while a run is in flight: the daemon's
@@ -4693,262 +4251,46 @@ mod tests {
         );
     }
 
-    fn finished_run(
-        s: &pulse_store::Store,
-        n: usize,
-        age_minutes: f64,
-        status: &str,
-        mode: &str,
-        seconds: f64,
-    ) {
-        let finished = crate::util::plus_minutes(TEST_NOW, -age_minutes);
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, seconds, mode) VALUES (?, ?, 'aurora', 'proj', ?, ?, ?, ?, ?)",
-            &[
-                &format!("run-{n}"),
-                &format!("job-{n}"),
-                &finished,
-                &finished,
-                &status,
-                &seconds,
-                &mode,
-            ],
-        );
-    }
-
     #[test]
-    fn run_fits_is_the_budget_until_ten_runs_have_finished() {
-        let s = new_store();
-        for n in 0..9 {
-            finished_run(&s, n, n as f64, "done", "real", 60.0);
-        }
-        // minutes_per_job is 10 in the test store: the budget plus five.
-        assert_eq!(run_fits(&s, "proj", "task"), Duration::from_secs(15 * 60));
-        finished_run(&s, 9, 9.0, "done", "real", 60.0);
-        // The history names no jobs: every project and kind borrows the one measure.
+    fn tick_timing_says_a_slow_body_once_and_carries_it_in_the_heartbeat() {
+        let bound = Duration::from_secs(15);
+        let mut timing = TickTiming::default();
         assert_eq!(
-            run_fits(&s, "proj", "task"),
-            Duration::from_secs(60 + 5 * 60)
+            timing.beat(),
+            None,
+            "nothing measured before the first body"
         );
+        assert_eq!(timing.record(1, Duration::from_secs(2), bound, true), None);
+        let line = timing
+            .record(2, Duration::from_secs(40), bound, true)
+            .expect("the first body over the cadence is said");
         assert_eq!(
-            run_fits(&s, "other", "ballot"),
-            Duration::from_secs(60 + 5 * 60)
+            line,
+            "tick 2 took 40s, over the 15s dispatch cadence (planning pass); queued work waited that long for a slot, said again once a tick fits"
         );
-    }
-
-    /// The finished job `job-{n}` of `kind` on `proj`, so `run_fits` can
-    /// tell the kinds of the runs `finished_run` seeds apart.
-    fn finished_job_of_kind(s: &pulse_store::Store, n: usize, kind: &str) {
-        finished_job_on(s, n, "proj", kind);
-    }
-
-    /// The finished job `job-{n}` of `kind` on `project`.
-    fn finished_job_on(s: &pulse_store::Store, n: usize, project: &str, kind: &str) {
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, ?, ?, 'a job', '', 'done', ?)",
-            &[&format!("job-{n}"), &project, &kind, &TEST_NOW],
-        );
-    }
-
-    /// A finished real run of a job of `kind` on `proj`.
-    fn finished_run_of_kind(s: &pulse_store::Store, n: usize, kind: &str, seconds: f64) {
-        finished_job_of_kind(s, n, kind);
-        finished_run(s, n, 10.0 + n as f64, "done", "real", seconds);
-    }
-
-    /// The pairs of `project` and each kind in `kinds`.
-    fn pairs(project: &str, kinds: &[&str]) -> Vec<(String, String)> {
-        kinds
-            .iter()
-            .map(|kind| (project.to_string(), kind.to_string()))
-            .collect()
-    }
-
-    /// A store with `projects` registered and active, so `kind_fits` measures them.
-    fn store_with_projects(projects: &[&str]) -> crate::test_helpers::TestStore {
-        let s = new_store();
-        let c = s.conn().unwrap();
-        for p in projects {
-            crate::util::exec1(
-                &*c,
-                "INSERT OR IGNORE INTO projects (slug, name, path, added_at, added_by) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', 'owner')",
-                &[p, p, &format!("/tmp/{p}")],
-            );
-        }
-        s
-    }
-
-    #[test]
-    fn run_fits_measures_each_kind_of_job_on_its_own() {
-        let s = store_with_projects(&["proj"]);
-        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
-        // Ten ballots of a minute, ten improve runs of half an hour, and one
-        // lead run of a minute: too few leads to measure, so they borrow the
-        // measure of all kinds together.
-        for n in 0..10 {
-            finished_run_of_kind(&s, n, "ballot", 60.0);
-        }
-        for n in 10..20 {
-            finished_run_of_kind(&s, n, "improve", 1800.0);
-        }
-        finished_run_of_kind(&s, 20, "lead", 60.0);
+        // Still over: quiet, so a slow pass is one line and not one per tick.
         assert_eq!(
-            run_fits(&s, "proj", "ballot"),
-            Duration::from_secs(60 + 5 * 60)
+            timing.record(3, Duration::from_secs(16), bound, false),
+            None
         );
+        let beat = timing.beat().unwrap();
+        assert_eq!(beat["ms"], 16_000);
+        assert_eq!(beat["max_ms"], 40_000);
+        assert_eq!(beat["slow"], 2);
+        // A body that fits reopens the line for the next crossing, and a
+        // refill tick is named as such.
         assert_eq!(
-            run_fits(&s, "proj", "improve"),
-            Duration::from_secs(1800 + 5 * 60)
+            timing.record(4, Duration::from_millis(900), bound, false),
+            None
         );
-        assert_eq!(
-            run_fits(&s, "proj", "lead"),
-            Duration::from_secs(1800 + 5 * 60)
+        let again = timing
+            .record(5, Duration::from_secs(20), bound, false)
+            .unwrap();
+        assert!(
+            again.starts_with("tick 5 took 20s, over the 15s dispatch cadence (refill tick);"),
+            "{again}"
         );
-        let fits = kind_fits(&s);
-        assert_eq!(fits.len(), pulse_board::JOB_KINDS.len());
-        assert_eq!(shortest_fit(&fits), Duration::from_secs(60 + 5 * 60));
-        // Twelve minutes left: a ballot's worker is expected to be done, an
-        // improve run's is not; nothing fits half a minute.
-        assert_eq!(
-            kinds_within(&fits, Duration::from_secs(12 * 60)),
-            pairs("proj", &["ballot"])
-        );
-        assert!(kinds_within(&fits, Duration::from_secs(30)).is_empty());
-        // Forty minutes: every kind fits.
-        assert_eq!(
-            kinds_within(&fits, Duration::from_secs(40 * 60)).len(),
-            pulse_board::JOB_KINDS.len()
-        );
-    }
-
-    #[test]
-    fn run_fits_measures_the_ninetieth_percentile_of_recent_real_runs() {
-        let s = new_store();
-        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
-        // Fifty runs in the window: forty-five of a minute, five of ten.
-        for n in 0..45 {
-            let status = if n % 2 == 0 { "done" } else { "failed" };
-            finished_run(&s, n, 10.0 + n as f64, status, "real", 60.0);
-        }
-        for n in 45..50 {
-            let status = if n == 45 { "timeout" } else { "done" };
-            finished_run(&s, n, 10.0 + n as f64, status, "real", 600.0);
-        }
-        // Neither a dead worker, a setup error, a dry run (all more recent)
-        // nor a real run older than the window moves the estimate.
-        finished_run(&s, 50, 1.0, "lost", "real", 50_000.0);
-        finished_run(&s, 51, 2.0, "error", "real", 50_000.0);
-        finished_run(&s, 52, 3.0, "done", "dry-run", 50_000.0);
-        finished_run(&s, 53, 100.0, "done", "real", 50_000.0);
-        assert_eq!(
-            run_fits(&s, "proj", "task"),
-            Duration::from_secs(600 + 5 * 60)
-        );
-    }
-
-    #[test]
-    fn run_fits_never_exceeds_the_budget() {
-        let s = new_store();
-        for n in 0..10 {
-            finished_run(&s, n, n as f64, "done", "real", 10_000.0);
-        }
-        assert_eq!(run_fits(&s, "proj", "task"), Duration::from_secs(15 * 60));
-    }
-
-    #[test]
-    fn run_fits_measures_a_project_s_own_runs_before_its_kind_s() {
-        let s = store_with_projects(&["brain", "blog", "fresh"]);
-        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
-        // Ten improve runs of an hour on the brain, ten of a minute on the
-        // blog, and a project with no history of its own.
-        for n in 0..10 {
-            finished_job_on(&s, n, "brain", "improve");
-            finished_run(&s, n, 10.0 + n as f64, "done", "real", 3600.0);
-        }
-        for n in 10..20 {
-            finished_job_on(&s, n, "blog", "improve");
-            finished_run(&s, n, 10.0 + n as f64, "done", "real", 60.0);
-        }
-        let hour = Duration::from_secs(3600 + 5 * 60);
-        let minute = Duration::from_secs(60 + 5 * 60);
-        assert_eq!(run_fits(&s, "brain", "improve"), hour);
-        assert_eq!(run_fits(&s, "blog", "improve"), minute);
-        // No history of its own: the kind over every project, whose 90th
-        // percentile is the brain's hour; a kind nobody ran borrows all runs.
-        assert_eq!(run_fits(&s, "fresh", "improve"), hour);
-        assert_eq!(run_fits(&s, "blog", "ballot"), hour);
-        let fits = kind_fits(&s);
-        assert_eq!(fits.len(), 3 * pulse_board::JOB_KINDS.len());
-        // Ten minutes left: only the blog's improve runs fit.
-        let within = kinds_within(&fits, Duration::from_secs(10 * 60));
-        assert_eq!(within, pairs("blog", &["improve"]));
-        assert_eq!(fits_phrase(&within), "improve runs on blog");
-        // Two hours: everything.
-        assert_eq!(
-            kinds_within(&fits, Duration::from_secs(120 * 60)).len(),
-            fits.len()
-        );
-        // The phrase groups projects by what fits and says the broadest first.
-        let mut mixed = pairs("blog", pulse_board::JOB_KINDS);
-        mixed.extend(pairs("fresh", pulse_board::JOB_KINDS));
-        mixed.extend(pairs("brain", &["ballot", "lead", "reflect"]));
-        assert_eq!(
-            fits_phrase(&mixed),
-            "any run on blog, fresh; ballot, reflect, lead runs on brain"
-        );
-    }
-
-    #[test]
-    fn a_self_update_waits_for_queued_work_the_restart_would_refuse() {
-        let s = store_with_projects(&["proj"]);
-        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "120");
-        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "0");
-        // Ten tasks of a minute and ten improve runs of an hour.
-        for n in 0..10 {
-            finished_run_of_kind(&s, n, "task", 60.0);
-        }
-        for n in 10..20 {
-            finished_run_of_kind(&s, n, "improve", 3600.0);
-        }
-        let queued = |n: usize, kind: &str| {
-            crate::util::exec1(
-                &*s.conn().unwrap(),
-                "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, 'proj', ?, 'queued', '', 'queued', ?)",
-                &[&format!("queued-{n}"), &kind, &TEST_NOW],
-            );
-        };
-        queued(1, "improve");
-        queued(2, "task");
-        // A reflect is not work the fleet waits on; it never holds the build.
-        queued(3, "reflect");
-        let dispatch = |slot: &str, kind: &str| {
-            let mut job = Row::new();
-            job.0
-                .insert("kind".into(), serde_json::Value::String(kind.into()));
-            job.0
-                .insert("project".into(), serde_json::Value::String("proj".into()));
-            Dispatch {
-                slot: slot.into(),
-                worker: format!("w-{slot}"),
-                job,
-                started_at: TEST_NOW.into(),
-                ..Default::default()
-            }
-        };
-        // Nothing in flight: the restart is at once and refuses nothing.
-        assert!(refused_queued_work(&s, &BTreeMap::new(), TEST_NOW).is_empty());
-        // A task in flight ends within minutes: its window admits the queued
-        // task but not the hour-long improve run.
-        let mut inflight = BTreeMap::new();
-        inflight.insert("a".to_string(), dispatch("a", "task"));
-        let refused = refused_queued_work(&s, &inflight, TEST_NOW);
-        assert_eq!(refused, pairs("proj", &["improve"]));
-        assert_eq!(fits_phrase(&refused), "improve runs on proj");
-        // An improve run in flight stretches the window to its hour: all fit.
-        inflight.insert("b".to_string(), dispatch("b", "improve"));
-        assert!(refused_queued_work(&s, &inflight, TEST_NOW).is_empty());
+        assert_eq!(timing.beat().unwrap()["slow"], 3);
     }
 
     #[test]
@@ -5286,19 +4628,25 @@ mod tests {
     #[test]
     fn restart_drain_holds_runs_that_would_not_fit() {
         let _serial = crate::test_helpers::serial();
-        // One minute of drain is less than minutes_per_job + 5: the job queued
-        // after the binary changed waits for the next daemon.
+        // One minute of drain is less than minutes_per_job + 5: the fleet's
+        // job (source `test`, not the owner's) queued after the binary
+        // changed waits for the next daemon, while the window stays open to
+        // the owner's work.
         let (s, out, result, slow_id) = restart_with_run_in_flight("1", true, "");
         assert_eq!(result, "restart", "{out}");
         assert!(
             out.contains(
-                "no new run starts (one may take up to 15m0s and would not fit the 1m0s drain)"
+                "only the owner's work starts (one fleet run may take up to 15m0s and would not fit the 1m0s drain)"
             ),
             "{out}"
         );
-        assert!(out.contains("restarting: no new runs with"), "{out}");
+        assert!(
+            out.contains("restarting: only the owner's work starts with"),
+            "{out}"
+        );
         assert_eq!(
-            out.matches("restarting: no new runs with").count(),
+            out.matches("restarting: only the owner's work starts with")
+                .count(),
             1,
             "the hold line should be said once, not per tick: {out}"
         );
@@ -5343,7 +4691,7 @@ mod tests {
             leased_twice.is_some(),
             "the queued job was never leased:\n{out}"
         );
-        if let Some(hold) = out.find("restarting: no new runs with") {
+        if let Some(hold) = out.find("restarting: only the owner's work starts with") {
             assert!(hold > leased_twice.unwrap(), "{out}");
         }
         assert_eq!(
@@ -5367,16 +4715,17 @@ mod tests {
         // A task takes seconds and an improve run ten minutes: inside the
         // window the slow task leaves, the task queued after the binary
         // changed runs while the improve run queued beside it waits for the
-        // next daemon, and the notice names the kind that may start.
+        // next daemon, and the notice names the kind that may start beside
+        // the owner's work, which starts in any window.
         let (s, out, result, _) = restart_with_run_in_flight("1", true, "kinds");
         assert_eq!(result, "restart", "{out}");
         assert!(
-            out.contains("task runs on proj may start for up to ")
+            out.contains("the owner's work and task runs on proj may start for up to ")
                 && out.contains(" while the slowest run in flight is expected to go on"),
             "{out}"
         );
         assert!(
-            out.contains("restarting: only task runs on proj start with "),
+            out.contains("restarting: the owner's work and task runs on proj start with "),
             "{out}"
         );
         assert_eq!(
@@ -5400,193 +4749,43 @@ mod tests {
     }
 
     #[test]
-    fn restart_window_follows_the_slowest_run_in_flight() {
-        let now = TEST_NOW;
-        let ago = |minutes: f64| crate::util::plus_minutes(now, -minutes);
-        let ten = Duration::from_secs(10 * 60);
-        // Nothing anchored: the drain alone.
-        assert_eq!(
-            restart_window(Duration::from_secs(90), now, []),
-            Duration::from_secs(90)
-        );
-        // A run three minutes in, expected to take ten: seven minutes left
-        // beats a ninety-second drain; a longer drain still wins.
-        let three = ago(3.0);
-        assert_eq!(
-            restart_window(Duration::from_secs(90), now, [(three.clone(), ten)]),
-            Duration::from_secs(7 * 60)
-        );
-        assert_eq!(
-            restart_window(Duration::from_secs(30 * 60), now, [(three.clone(), ten)]),
-            Duration::from_secs(30 * 60)
-        );
-        // Several anchors: the one expected to end last sets the window.
-        let eight = ago(8.0);
-        assert_eq!(
-            restart_window(Duration::ZERO, now, [(eight, ten), (three.clone(), ten)]),
-            Duration::from_secs(7 * 60)
-        );
-        // A quick kind started later still ends sooner.
-        let one = ago(1.0);
-        assert_eq!(
-            restart_window(
-                Duration::ZERO,
-                now,
-                [(one, Duration::from_secs(60)), (three, ten)]
-            ),
-            Duration::from_secs(7 * 60)
-        );
-        // Past its expectation: the run is waited for, but opens no window.
-        let eleven = ago(11.0);
-        assert_eq!(
-            restart_window(Duration::ZERO, now, [(eleven, ten)]),
-            Duration::ZERO
-        );
-    }
-
-    #[test]
-    fn anchor_ends_measure_each_run_by_its_kind_never_past_the_budget() {
-        let s = new_store();
-        // minutes_per_job is 10: an unmeasured kind is expected to run to it.
-        let job = |kind: &str| {
-            let mut r = Row::new();
-            r.0.insert("kind".into(), serde_json::Value::String(kind.into()));
-            r.0.insert("project".into(), serde_json::Value::String("proj".into()));
-            r
-        };
-        let dispatch = |slot: &str, kind: &str, started: &str| Dispatch {
-            slot: slot.into(),
-            worker: format!("w-{slot}"),
-            job: job(kind),
-            started_at: started.into(),
-            ..Default::default()
-        };
-        let mut inflight = BTreeMap::new();
-        inflight.insert(
-            "a".to_string(),
-            dispatch("a", "ballot", "2026-01-01T00:00:00Z"),
-        );
-        inflight.insert(
-            "b".to_string(),
-            dispatch("b", "improve", "2026-01-01T00:01:00Z"),
-        );
-        inflight.insert(
-            "c".to_string(),
-            dispatch("c", "task", "2026-01-01T00:02:00Z"),
-        );
-        let anchors: BTreeSet<String> = ["a", "b"].into_iter().map(String::from).collect();
-        let fits: Fits = [
-            (
-                ("proj".to_string(), "ballot".to_string()),
-                Duration::from_secs(6 * 60),
-            ),
-            (
-                ("proj".to_string(), "improve".to_string()),
-                Duration::from_secs(40 * 60),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let ends = anchor_ends(&s, &inflight, &anchors, &fits);
-        assert_eq!(
-            ends,
-            vec![
-                (
-                    "2026-01-01T00:00:00Z".to_string(),
-                    Duration::from_secs(6 * 60)
-                ),
-                (
-                    "2026-01-01T00:01:00Z".to_string(),
-                    Duration::from_secs(10 * 60)
-                ),
-            ],
-            "the run started inside the window is no anchor, and no run outlives its budget"
-        );
-    }
-
-    #[test]
-    fn restart_heartbeat_names_the_runs_the_new_build_waits_for() {
-        let job = |id: &str, kind: &str, project: &str| {
-            let mut r = Row::new();
-            r.0.insert("id".into(), serde_json::Value::String(id.into()));
-            r.0.insert("kind".into(), serde_json::Value::String(kind.into()));
-            r.0.insert("project".into(), serde_json::Value::String(project.into()));
-            r
-        };
-        let dispatch = |worker: &str, job: Row, started: &str| Dispatch {
-            slot: "local".into(),
-            worker: worker.into(),
-            job,
-            started_at: started.into(),
-            ..Default::default()
-        };
-        let mut inflight = BTreeMap::new();
-        inflight.insert(
-            "a".to_string(),
-            dispatch(
-                "fjord",
-                job("job-1", "improve", "amistio-template"),
-                "2026-01-01T06:22:41Z",
-            ),
-        );
-        inflight.insert(
-            "b".to_string(),
-            dispatch(
-                "ember",
-                job("job-2", "reflect", "project-light"),
-                "2026-01-01T07:04:51Z",
-            ),
-        );
-        let anchors: BTreeSet<String> = ["a"].into_iter().map(String::from).collect();
-        let now = "2026-01-01T07:07:30Z";
-        // The anchor alone sets the wait while it runs; its age is rounded to
-        // the minute, and the note stays one line a human can read.
-        assert_eq!(
-            restart_note(now, &inflight, &anchors),
-            "restarting: 2 in flight; the new build waits for fjord's improve on amistio-template (44m so far)"
-        );
-        let beat = restart_beat("2026-01-01T06:42:03Z", &inflight, &anchors, true);
-        assert_eq!(beat["since"], "2026-01-01T06:42:03Z");
-        assert_eq!(beat["inflight"], 2);
-        assert_eq!(beat["dispatching"], true);
-        assert_eq!(
-            beat["waits_for"],
-            serde_json::json!([{
-                "agent": "fjord",
-                "kind": "improve",
-                "project": "amistio-template",
-                "job": "job-1",
-                "started_at": "2026-01-01T06:22:41Z",
-            }])
-        );
-        // Once the anchor is done the handover waits for whatever is left.
-        inflight.remove("a");
-        assert_eq!(
-            restart_note(now, &inflight, &anchors),
-            "restarting: 1 in flight; the new build waits for ember's reflect on project-light (2m so far)"
-        );
-        let beat = restart_beat("", &inflight, &anchors, false);
-        assert_eq!(beat["waits_for"][0]["agent"], "ember");
-        assert_eq!(beat["dispatching"], false);
-        // Many anchors: three are named, the rest counted.
-        for n in 0..4 {
-            inflight.insert(
-                format!("k{n}"),
-                dispatch(
-                    &format!("w{n}"),
-                    job(&format!("job-{n}"), "task", "proj"),
-                    "",
-                ),
-            );
-        }
-        let note = restart_note(now, &inflight, &BTreeSet::new());
+    fn restart_window_starts_the_owner_s_work_while_the_fleet_s_waits() {
+        let _serial = crate::test_helpers::serial();
+        // No history: every kind is expected to run to the budget and none
+        // fits the one-minute drain. The fleet's task queued after the
+        // binary changed waits for the next daemon as before; the owner's
+        // task (`task:TASK-001`), queued beside it, starts inside the
+        // window all the same - on the brain one waited 13 hours through
+        // restart windows that refused its kind.
+        let (s, out, result, _) = restart_with_run_in_flight("1", true, "owner");
+        assert_eq!(result, "restart", "{out}");
         assert!(
-            note.starts_with("restarting: 5 in flight; the new build waits for ember's reflect on project-light (2m so far), w0's task on proj, w1's task on proj and 2 more"),
-            "{note}"
+            out.contains(
+                "only the owner's work starts (one fleet run may take up to 15m0s and would not fit the 1m0s drain)"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("restarting: only the owner's work starts with"),
+            "{out}"
         );
         assert_eq!(
-            restart_note(now, &BTreeMap::new(), &anchors),
-            "restarting: 0 in flight"
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs r JOIN jobs j ON j.id = r.job_id WHERE j.source = 'task:TASK-001' AND r.status = 'done'",
+                &[]
+            ),
+            1,
+            "the owner's task did not run before the handover:\n{out}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE title = 'Queued after the binary changed' AND status = 'queued'",
+                &[]
+            ),
+            1,
+            "the fleet's task started inside a window it does not fit:\n{out}"
         );
     }
 

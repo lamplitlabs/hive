@@ -26,7 +26,16 @@ the maintenance thread) runs at most once per `daemon.pass_seconds` (default
 60), however often the loop wakes, since planning every fifteen seconds under
 four agents cost a quarter of a core for jobs that only queued behind full
 slots. Zero plans on every tick, and a shorter `--interval` caps the spacing.
-The heartbeat the hub shows counts `loops` and `passes` apart.
+The heartbeat the hub shows counts `loops` and `passes` apart, and carries
+the body's own time as `tick` (the last body in milliseconds, the slowest
+since the start and how many ran over the fifteen-second dispatch cadence):
+`pulse status` prints it as `last tick 1200ms (slowest 41000ms, 2 over the
+cadence)`. The daemon says `tick N took 40s, over the 15s dispatch cadence
+(planning pass); queued work waited that long for a slot` once when a body
+crosses the cadence and again only after one fits, so a slow pass is one
+line, not one per tick; before this the heartbeat said when the loop beat
+and how often, and a body that spent its cadence planning looked like a loop
+that merely beat late.
 
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
@@ -71,23 +80,42 @@ a minute and shows the build it runs beside the daemon's under **Settings →
 Running**. The restart is a handover, not a pause: a daemon whose binary
 changed on disk while runs are in flight keeps dispatching, planning and
 landing for up to `daemon.restart_drain_minutes` (default 30), stops starting
-runs of a kind on a project once less of that window is left than such a run
-is expected to take (log line `restarting: only any run on blog, lamplitlabs;
-ballot, reflect, lead runs on amistio-template start with <left> left of the
-restart window; N in flight` while the short runs still fit, then
-`restarting: no new runs with <left> left of the restart window; N in
-flight`, each said once per change rather than per countdown tick; when
-no run could fit the whole window the first notice already says `no new run
-starts`), and exits with code 3 the moment nothing is in flight; its
-heartbeat says `restarting: N in flight` meanwhile. The window is the drain
-or the time until the slowest of the runs that were in flight when the
-binary changed is expected to end, whichever is longer: the restart waits
-for those runs anyway, so a run that ends before the slowest of them is
-expected to delays nothing, while stopping at the end of the drain idled
-every project for as long as that one run took (the first notice then says
-`new runs may start for up to <window> while the slowest run in flight is
-expected to go on`). Runs started inside the window do not extend it. The
-expectation is measured per project and kind of job: the 90th percentile of
+the fleet's runs of a kind on a project once less of that window is left than
+such a run is expected to take (log line `restarting: the owner's work and
+any run on blog, lamplitlabs; ballot, reflect, lead runs on amistio-template
+start with <left> left of the restart window; N in flight` while the short
+runs still fit, then `restarting: only the owner's work starts with <left>
+left of the restart window; N in flight`, each said once per change rather
+than per countdown tick; when no fleet run could fit the whole window the
+first notice already says `only the owner's work starts`), and exits with
+code 3 the moment nothing is in flight; its heartbeat says `restarting: N in
+flight` meanwhile. The owner's work - the lead's sittings, answers, the jobs
+planned from the owner's tasks, the security updates - is never held by the
+window: it starts in every one, and on the express slot the load governor
+keeps open inside one. The window is the drain or the time until the slowest
+of the runs that were in flight when the binary changed is expected to end,
+whichever is longer: the restart waits for those runs anyway, so a run that
+ends before the slowest of them is expected to delays nothing, while
+stopping at the end of the drain idled every project for as long as that one
+run took (the first notice then says `new runs may start for up to <window>
+while the slowest run in flight is expected to go on`). The fleet's runs
+started inside the window do not extend it; an owner's run started inside
+it does, since the restart waits for that run too, so the fleet's short
+kinds keep starting while it runs rather than nine slots idling for its
+length. Once the drain is over and no fleet run fits, the daemon still stays
+while the owner's work is queued, so that work starts under this daemon
+rather than waiting for a window the next one never has - for one more
+drain at most since the stay began or the owner's last run started, since
+work the slots cannot lease here (under a disk floor, behind a project's
+marks, needing a hand this machine is not) would otherwise hold the restart
+for good, and the next daemon starts it first thing; a console's own
+**Restart** (below, without "now") still starts nothing, since the owner
+asked for the restart itself. The measured reason: a task on the brain
+takes two and a half hours against a twenty-minute drain, so the owner's
+tasks never fit a window, and one filed in the console waited thirteen
+hours with no attempt through a day of self-update restarts that refused
+its kind. The expectation is measured per project and kind of job: the 90th
+percentile of
 the last fifty real runs of that kind on that project that ran a worker to an
 end, plus five minutes of setup and report, capped at `minutes_per_job + 5`,
 which also stands in until ten such runs exist (a project with fewer borrows
@@ -113,10 +141,35 @@ apart, and five release builds a day, each followed by a restart window that
 refuses the long kinds of run, were the price of building on every landing -
 the daemon says `building once it has stood for 60 min` once, and a further
 landing restarts the clock, so the burst builds once, from its last commit. Nor
-does it start while an improve, task or experiment job is queued that the
+does it start while a fleet improve, task or experiment job is queued that the
 restart the build ends in would refuse (its run is not expected to end before
 the runs in flight): the daemon says `building once the queued improve runs on
 <project> have started` once and lets them start first, for at most an hour.
+The owner's queued work is never among those: the restart does not refuse
+it, so the build does not wait for it.
+A landing that touches nothing the binary is built from is not built at all:
+the daemon diffs the brain's HEAD against the revision it runs, and when every
+changed path lies outside the crates, the workspace `Cargo.toml` and
+`Cargo.lock`, the toolchain and `.cargo/` files and the console's built output
+under `web/hub/out/` (which pulse-hub embeds into the binary, so a console
+build does change `pulse`), it says `self-update: brain HEAD <rev> differs
+from the running <rev> only outside what the binary is built from (N file(s):
+a, b, c and K more); no build` once and keeps the binary it has. The next
+landing is diffed against the running revision again, not against that one,
+so a change under `crates/` that follows a docs landing is built with both.
+The measured reason: of the 39 landings on the brain's `main` over four days,
+each a release build and a restart, three changed only docs, the README, a
+script or the macOS app. A running binary that does not know its revision (an
+unstamped build) or whose revision the checkout no longer has (rewritten
+history) is built as before. The build is bounded by its silence rather than
+its length: `cargo` is killed once it has printed nothing for ten minutes, and
+the daemon says `self-update: build of <rev> failed: cargo produced no output
+for 10m0s`. A bound on the length cut a full rebuild short (`cargo timed out
+after 10m0s` in the log, after a Cargo.lock bump) and tried again an hour
+later on the cached half, while a one-crate rebuild takes four minutes here,
+three of them the final link of `pulse`, which prints nothing: a build that
+still prints is still compiling. The smoke tests (`version`, `help`) answer
+within a second and keep the ten-minute bound on their length.
 A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
@@ -124,9 +177,14 @@ when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
 restarts onto it after the runs in flight. Set `daemon.self_update` to `off` to keep the build you
 have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
 
-The owner need not wait for the drain. **Restart now** (under **Settings →
+The owner need not wait for the drain. **Restart** (under **Settings →
 Running** and beside the update notice in the Home page's runner controls;
-`POST /api/v1/running/restart`) asks the daemon to restart at once with the
+`POST /api/v1/running/restart`) drains like a self-update by default
+(**Restart when they finish**): nothing new starts, the runs in flight are
+waited out, the daemon keeps its heartbeat and exits with code 3 once they
+end or `daemon.restart_drain_minutes` is up (with nothing in flight it exits
+at once). The dialog's **Hold the runs and restart now instead** (a payload
+of `{"now": true}`) asks the daemon to restart at once with the
 work held rather than cut: every run in flight is asked to hold, its harness
 saves the agent's conversation and exits `held` (code 75), the run settles
 `held`, and its job goes back to the queue with the attempt refunded and the

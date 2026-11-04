@@ -2165,8 +2165,12 @@ fn tell_owner(
 }
 
 /// `held` is passed on to `take_job`: projects the slot may not take now.
-/// `fits` names the project and kind pairs the slot may lease (empty: any);
-/// a window with no room for any lead run leases none.
+/// `fits` names the project and kind pairs the slot may lease (empty: any)
+/// and is left to `lease_job` to decide: the project lead's sittings are
+/// the owner's work and fit every restart window, a role lead's sitting
+/// (`lead-role:` source) is the fleet's and fits by its pair. Refusing
+/// every sitting here while no `lead` pair fit the window kept the project
+/// lead from planning the owner's task through the day's restarts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lead_job_for(
     s: &pulse_store::Store,
@@ -2178,12 +2182,6 @@ pub(crate) fn lead_job_for(
     held: &std::collections::BTreeMap<String, String>,
     fits: &[(String, String)],
 ) -> (String, Row, String) {
-    if !fits.is_empty()
-        && !crate::jobs::is_owner_lane(fits)
-        && !fits.iter().any(|(_, kind)| kind == LEAD_KIND)
-    {
-        return (String::new(), Row::new(), String::new());
-    }
     let Ok(conn) = s.conn() else {
         return (String::new(), Row::new(), String::new());
     };

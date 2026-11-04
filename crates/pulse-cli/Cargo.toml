@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "PULSE: command registry, context, errors, JSON output, help, tables"
-build = "build.rs"
 
 [dependencies]
 pulse-store.workspace = true

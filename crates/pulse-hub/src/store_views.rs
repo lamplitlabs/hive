@@ -451,6 +451,12 @@ impl Handler {
                     if let Some(slept) = beat.get("slept").filter(|a| a.is_object()) {
                         daemon.insert("slept".into(), slept.clone());
                     }
+                    // The loop body's timing (daemon.rs `TickTiming`): the
+                    // last body, the slowest and how many ran over the
+                    // dispatch cadence; absent from older heartbeats.
+                    if let Some(tick) = beat.get("tick").filter(|t| t.is_object()) {
+                        daemon.insert("tick".into(), tick.clone());
+                    }
                 }
                 Err(_) => {
                     daemon.insert("state".into(), json!("unreadable"));

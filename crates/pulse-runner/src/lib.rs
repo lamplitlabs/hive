@@ -73,6 +73,7 @@ pub mod recovery_api;
 pub mod redbase;
 pub mod release_age;
 pub mod research;
+pub(crate) mod restart;
 pub mod resync;
 pub mod retention;
 pub mod retire;

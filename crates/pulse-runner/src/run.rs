@@ -316,7 +316,8 @@ pub(crate) fn daily_cap_reason(done: i32, cap: i32) -> String {
 /// carries - the daemon's disk headroom for the local executor (diskroom.rs);
 /// a project's own marks and blocks come first. `fits` names the project and
 /// kind pairs the call may lease - the daemon's restart window, which short
-/// runs still fit when long ones do not; empty leases any.
+/// runs still fit when long ones do not; empty leases any, and the owner's
+/// work (`OWNER_DRIVEN_SQL`) fits every window.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn take_job(
     s: &pulse_store::Store,
@@ -358,8 +359,9 @@ pub(crate) fn take_job_first(
         return Ok((Row::new(), Row::new(), why));
     }
     // Past the cap the slot still takes the owner's own work (the owner
-    // lane, jobs.rs OWNER_DRIVEN_SQL); the fleet's waits for midnight. The
-    // lease honours the lane marker beside a restart window's kinds.
+    // lane, jobs.rs OWNER_DRIVEN_SQL); the fleet's waits for midnight. With
+    // the marker there the lease is owner-only whatever a restart window's
+    // kinds beside it say: the owner's work fits every window.
     let mut fits = fits.to_vec();
     let mut cap_note = String::new();
     if !dry_run {
@@ -1322,6 +1324,27 @@ pub(crate) fn run_job(
                 agent_spec.as_ref(),
             ),
         };
+        // The owner's work job starts over its project's narrowed lanes
+        // (jobs.rs lease_job), so on this machine its gated commit may wait
+        // for every other check in the project before its own: the harness
+        // command gets a commit cap that covers them. A custom worker's
+        // command is its own, and a hand's checks take turns on the hand.
+        if !custom_worker
+            && !ex.remote()
+            && crate::jobs::is_owner_driven(&job)
+            && crate::jobs::WORK_KINDS.contains(&job.str("kind").as_str())
+            && let Some(cap) = crate::jobs::commit_cap_over_lanes(s, &job.str("project"))
+        {
+            let lanes = crate::jobs::project_lanes(s, &job.str("project"));
+            let checks = crate::jobs::occupied_work_jobs(s, &job.str("project"));
+            log.add(format!(
+                "commit cap widened to {} min: {checks} checks share the verify lock on {} (verify ~{} min each)",
+                crate::jobs::minutes_up(cap),
+                job.str("project"),
+                crate::jobs::minutes_up(lanes.verify_seconds.unwrap_or(0))
+            ));
+            cmd = crate::exec::with_commit_cap(cmd, cap);
+        }
         if let Some(r) = &resume {
             log.add(format!(
                 "carries on held harness session {} ({} steps) from run {}",
