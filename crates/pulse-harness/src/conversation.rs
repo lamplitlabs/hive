@@ -600,6 +600,24 @@ impl Ui for WebUi {
         true
     }
 
+    fn finish_held(&mut self) -> Option<String> {
+        let open: Vec<String> = self
+            .store
+            .chat_children(&self.id, false)
+            .ok()?
+            .into_iter()
+            .filter(|c| c.status != "closed")
+            .map(|c| format!("{} ({})", c.id, c.title))
+            .collect();
+        if open.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "sub-conversations you started are still at work: {}. End this turn without finishing; each one's report arrives here as a message and starts your next turn. Join their results, then finish.",
+            open.join(", ")
+        ))
+    }
+
     fn keep(&mut self, proc: Managed) -> KeepResult {
         match self.runtime.upgrade() {
             Some(rt) => rt.keep(proc),
@@ -3791,6 +3809,21 @@ mod tests {
         path
     }
 
+    /// Waits until the conversation is at rest: idle, ended or closed,
+    /// nothing queued.
+    fn wait_settled(m: &Manager, id: &str) {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            let live = m.live(&row);
+            if ["idle", "ended", "closed"].contains(&live.status.as_str()) && live.queued.is_empty()
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the conversation never settled");
+    }
+
     fn wait_idle(m: &Manager, id: &str) -> Row {
         for _ in 0..400 {
             let row = m.row(id).expect("row");
@@ -6000,6 +6033,54 @@ mod tests {
         );
     }
 
+    /// A conversation cannot finish while a sub-conversation it started is
+    /// still open: the finish tool refuses, naming the child, so the agent
+    /// ends its turn and waits for the report like a harness waits for its
+    /// helper.
+    #[test]
+    fn finish_waits_for_open_sub_conversations() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "chat", "args": {"action": "start", "title": "Part", "text": "Do the part."}},
+                {"tool": "finish", "args": {"summary": "Too early."}},
+                {"content": "Waiting for the part."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let parent = m
+            .create("", "", true, "two parts", "owner")
+            .expect("create");
+        let pid = parent.id.clone();
+        let started = wait_note(&s, &pid, |x| x.get("child").is_some());
+        let cid = started.extra["child"].as_str().unwrap().to_string();
+        let mut refused = false;
+        for _ in 0..400 {
+            let row = m.row(&pid).expect("row");
+            if !row.session_id.is_empty()
+                && s.harness_steps(&row.session_id, -1)
+                    .unwrap()
+                    .iter()
+                    .any(|st| st.content.contains("still at work") && st.content.contains(&cid))
+            {
+                refused = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            refused,
+            "the parent's finish was refused while {cid} was open"
+        );
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
     /// The chat tool starts a sub-conversation in the parent's workspace,
     /// the sub-conversation's finish comes back to the parent as a report
     /// (a note from it that runs a turn there, reopening the finished
@@ -6017,6 +6098,8 @@ mod tests {
             json!([
                 {"tool": "chat", "args": {"action": "start", "title": "Docs check", "text": "Check that the docs match the code."}},
                 {"tool": "finish", "args": {"summary": "Started the docs check."}},
+                {"content": "Waiting on it."},
+                {"tool": "finish", "args": {"summary": "Docs checked."}},
                 {"content": "Done here."}
             ]),
         );
@@ -6057,7 +6140,8 @@ mod tests {
         assert_eq!(report.extra["report"]["child"], cid);
         assert_eq!(report.extra["report"]["title"], "Docs check");
         assert!(
-            report.content.starts_with("Started the docs check."),
+            report.content.starts_with("Docs checked.")
+                || report.content.starts_with("Started the docs check."),
             "{}",
             report.content
         );
@@ -6094,8 +6178,8 @@ mod tests {
 
         // The parent's agent steers the child: a note from the parent in
         // the child's transcript, a turn there, and its reply back.
-        wait_idle(&m, &cid);
-        wait_idle(&m, &pid);
+        wait_settled(&m, &cid);
+        wait_settled(&m, &pid);
         let before = s.chat_messages(&pid, 0).unwrap().last().unwrap().n;
         assert!(m.send_from_parent(&cid, "someone-else", "x").is_err());
         m.send_from_parent(&cid, &pid, "Also check the README.")
