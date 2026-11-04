@@ -40,6 +40,7 @@ pub mod heartbeat;
 pub mod heldout;
 pub mod hygiene;
 pub mod idle;
+pub(crate) mod idle_hold;
 pub mod idle_log;
 pub mod inbox;
 pub mod jobs;

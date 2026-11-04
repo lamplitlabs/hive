@@ -10,13 +10,13 @@
 //! tick the cap holds queued work (`post_cap_reached`), and answers it the
 //! tick the cap lifts - raised, set to 0, or midnight UTC
 //! (`close_cap_notices`) - so the console's owner inbox carries the stop and
-//! its cure.
+//! its cure. The other daemon-wide holds follow the same pattern through
+//! the shared helpers in idle_hold.rs, which this module posts through.
 
 use crate::util::Row;
 
 /// The coalesce kind of the owner question and the area/thread it sits in.
 pub(crate) const ASK_KIND: &str = "daily-cap";
-const AREA: &str = "runner";
 const THREAD: &str = "daily-cap";
 /// The event a post writes on the brain project, with the counts.
 pub(crate) const EVENT: &str = "capacity.daily-cap";
@@ -38,44 +38,28 @@ pub(crate) fn post_cap_reached(
     if brain.0.is_empty() || queued <= 0 || cap <= 0 {
         return Row::default();
     }
-    let slug = brain.str("slug");
-    let summary = crate::util::trunc(
-        &format!(
-            "daily cap reached: {done} of {cap} jobs today, {queued} job(s) wait until midnight UTC; raise jobs_per_day or set it to 0 for no cap"
-        ),
-        230,
+    let summary = format!(
+        "daily cap reached: {done} of {cap} jobs today, {queued} job(s) wait until midnight UTC; raise jobs_per_day or set it to 0 for no cap"
     );
     let body = format!(
         "The fleet has started {done} distinct job(s) today, at or over the daily cap of {cap} (setting `jobs_per_day`), so {queued} queued job(s) wait until midnight UTC; only your own tasks, answers and lead sittings still start. \
 The cap is the budget you set for the fleet's own work, and it stops every machine together. To let the work go on now: `pulse settings set jobs_per_day 0` (no cap) or a higher number, or Settings -> How much work runs in the console. \
 This post closes itself when the cap lifts ({now}).\n"
     );
-    let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
+    crate::idle_hold::ask(
         s,
-        crate::hygiene::DaemonQuestionAsk {
-            project: slug.clone(),
-            ask_kind: ASK_KIND.into(),
-            area: AREA.into(),
-            thread: THREAD.into(),
+        crate::idle_hold::Ask {
+            brain: &brain,
+            ask_kind: ASK_KIND,
+            thread: THREAD,
             summary,
             body,
-            actor: actor.clone(),
-            now: now.clone(),
+            event: EVENT,
+            detail: serde_json::json!({"done": done, "cap": cap, "queued": queued}),
+            now: &now,
+            actor: &actor,
         },
-    ) else {
-        return Row::default();
-    };
-    if let Ok(conn) = s.conn() {
-        crate::util::event_at(
-            &conn,
-            &now,
-            &actor,
-            EVENT,
-            &slug,
-            serde_json::json!({"done": done, "cap": cap, "queued": queued, "post": post.str("id")}),
-        );
-    }
-    post
+    )
 }
 
 /// Answers every open cap question of the brain project: the cap lifted.
@@ -87,37 +71,15 @@ pub(crate) fn close_cap_notices(
     now: &str,
     actor: &str,
 ) -> usize {
-    if brain.0.is_empty() {
-        return 0;
-    }
-    let slug = brain.str("slug");
-    let mut closed = 0;
-    for q in crate::hygiene::open_daemon_questions_of_kind(s, &slug, ASK_KIND) {
-        let id = q.str("id");
-        let summary = crate::util::trunc(&format!("daily cap lifted: {why}"), 230);
-        if crate::board::create_post(
-            s,
-            now.to_string(),
-            crate::board::PostOpts {
-                kind: "answer".into(),
-                project: slug.clone(),
-                area: q.str("area"),
-                thread: q.str("thread"),
-                summary,
-                body: format!("The daily cap no longer holds the queue: {why}. The fleet's work starts again.\nre: {id}\n"),
-                resolution: "answered".into(),
-                on: id,
-                agent: crate::board::actor_agent(s, actor.to_string()),
-                date: now.to_string(),
-                ..Default::default()
-            },
-        )
-        .is_ok()
-        {
-            closed += 1;
-        }
-    }
-    closed
+    crate::idle_hold::answer(
+        s,
+        brain,
+        ASK_KIND,
+        &format!("daily cap lifted: {why}"),
+        &format!("The daily cap no longer holds the queue: {why}. The fleet's work starts again."),
+        now,
+        actor,
+    )
 }
 
 /// What lifted the cap, for the answer: the setting now, against what the
