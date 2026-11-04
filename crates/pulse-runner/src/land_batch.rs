@@ -288,7 +288,7 @@ fn merge_member(worktree: &str, member: &BatchMember, actor: &str) -> bool {
         args.extend(["merge", "--no-ff", "--no-edit", "-m", &msg, branch]);
         merged = crate::util::git_timeout(worktree, Duration::from_secs(300), &args);
     }
-    if !merged.ok() && crate::landing_hold::resolve_hub_out_conflict(worktree, branch) {
+    if !merged.ok() && crate::forge::resolve_hub_out_conflict(worktree, branch) {
         merged =
             crate::util::git_timeout(worktree, Duration::from_secs(30), &["rev-parse", "HEAD"]);
     }

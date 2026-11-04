@@ -1,7 +1,6 @@
-//! Where a task's code stands once its steps are done: on the default branch
-//! only, pushed to the remote, delivered as a pull request, held because the
-//! push did not go through, or still waiting for the landing pass - and the
-//! owner's one-time ask for a pull request. The hub's task sheet shows the
+//! Where a task's code stands once its steps are done: waiting for the
+//! task's pull request, the pull request open, merged, or held because it
+//! could not be opened - plus the older landing states. The hub's task sheet shows the
 //! state with its next step, and the task feed lists the same events, so a
 //! lead agent that reads the feed tells the owner the same story.
 
@@ -22,16 +21,16 @@ pub const PR_ANSWERS: [&str; 3] = ["land.pr", "land.pushed", "land.pr-answered"]
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TaskDelivery {
-    /// `none`: nothing landed yet. `waiting`: a finished step's branch waits
-    /// for the landing pass. `landed`: on the default branch, not delivered
-    /// yet. `held`: landed, but the push or pull request did not go through
-    /// (`note` says why). `asked`: the owner asked for a pull request and
-    /// the daemon opens it on its next pass. `pushed`: on the upstream
-    /// branch. `pr`: a pull request is open (`url`, `number`).
+    /// `none`: nothing finished yet. `waiting`: finished steps' branches
+    /// wait for the task's pull request (opened once every job is done).
+    /// `held`: the pull request could not be opened (`note` says why).
+    /// `pr_open`: the task's pull request is open (`url`, `number`).
+    /// `merged`: it was merged and the task is done. Older work may still
+    /// show `landed`, `pushed`, `pr` or `asked` from the local landings.
     pub state: String,
     /// Landings the task's steps made on the default branch.
     pub landed: i64,
-    /// Finished steps whose branch has not landed yet.
+    /// Finished steps whose branch is not delivered yet.
     pub waiting: i64,
     /// The newest landed commit.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -268,6 +267,31 @@ pub fn task_landings(conn: &rusqlite::Connection, task: &crate::Task) -> Result<
     landings_of(conn, &task_work(conn, task)?)
 }
 
+/// The newest pull-request event of the task's own pull request
+/// (`land.pr`, `land.merged`, `land.pr-closed`, `land.pr-held`, detail
+/// `task`), written by the daemon's per-task delivery.
+fn task_pr_event(
+    conn: &rusqlite::Connection,
+    project: &str,
+    task: &str,
+) -> Result<Option<LandEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, at, actor, action, detail FROM events WHERE subject = ? \
+         AND action IN ('land.pr', 'land.merged', 'land.pr-closed', 'land.pr-held') \
+         AND json_extract(detail, '$.task') = ? ORDER BY seq DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![project, task], |r| {
+        Ok(LandEvent {
+            seq: r.get(0)?,
+            at: r.get(1)?,
+            actor: r.get(2)?,
+            action: r.get(3)?,
+            detail: r.get(4)?,
+        })
+    })?;
+    Ok(rows.next().transpose()?)
+}
+
 /// Where the task's code stands now.
 pub fn delivery_for(s: &pulse_store::Store, task_id: &str) -> Result<TaskDelivery> {
     let (task, _) = crate::get(s, task_id)?;
@@ -279,6 +303,36 @@ pub fn delivery_for(s: &pulse_store::Store, task_id: &str) -> Result<TaskDeliver
         waiting: work.waiting,
         ..TaskDelivery::default()
     };
+    if let Some(e) = task_pr_event(&conn, &task.project, &task.id)? {
+        d.at = e.at.clone();
+        d.url = field(&e.detail, "url");
+        d.number = field(&e.detail, "number").parse().unwrap_or(0);
+        match e.action.as_str() {
+            "land.pr" => {
+                d.state = "pr_open".into();
+                d.remote = format!(
+                    "{}/{}",
+                    field(&e.detail, "remote"),
+                    field(&e.detail, "base")
+                );
+                d.sha = field(&e.detail, "to");
+                (d.pipeline, d.pipeline_job) = pipeline_verdict(s, &conn, &task.project, &d.sha)?;
+                return Ok(d);
+            }
+            "land.merged" => {
+                d.state = "merged".into();
+                return Ok(d);
+            }
+            "land.pr-held" if work.waiting > 0 => {
+                d.state = "held".into();
+                d.note = field(&e.detail, "note");
+                return Ok(d);
+            }
+            // Closed unmerged: the task is back in progress; what its next
+            // jobs leave waits again.
+            _ => {}
+        }
+    }
     let Some(last) = landings.last() else {
         d.state = if work.waiting > 0 { "waiting" } else { "none" }.into();
         return Ok(d);

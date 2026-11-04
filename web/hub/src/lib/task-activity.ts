@@ -137,9 +137,13 @@ export function systemLine(item: ActivityItem): string {
         case "pr":
           return "PULSE put the landed work on a pull request" + (item.status ? " (" + item.status + ")" : "") + (item.text ? ": " + item.text : "") + ".";
         case "pr-asked":
-          return (isOwnerName(item.who) ? "You" : item.who || "Someone") + " asked for a pull request. PULSE opens it on its next landing pass.";
+          return (isOwnerName(item.who) ? "You" : item.who || "Someone") + " asked for a pull request.";
         case "pr-answered":
           return "PULSE found nothing to put on a pull request" + (item.text ? ": " + item.text : "") + ".";
+        case "pr_open":
+          return "PULSE opened the task's pull request" + (item.status ? " (" + item.status + ")" : "") + (item.text ? ": " + item.text : "") + ".";
+        case "merged":
+          return "The task's pull request was merged" + (item.status ? " (" + item.status + ")" : "") + ".";
         case "held":
           return "PULSE held the landing" + (item.text ? ": " + item.text : "") + ".";
         case "deferred":

@@ -60,7 +60,8 @@ pub(crate) struct DaemonMaintenance {
         Option<crossbeam_channel::Receiver<(Vec<String>, Option<BTreeMap<String, String>>)>>,
     pub(crate) lines: Vec<String>,
     pub(crate) held: BTreeMap<String, String>,
-    pub(crate) landings: crate::landing_workers::LandingWorkers,
+    /// Overrides `CANCEL_GRACE` (a short forced drain; tests use milliseconds).
+    pub(crate) cancel_grace: Option<Duration>,
     pub(crate) last_sweep: std::sync::Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
     /// When the reclaim ladder (reclaim.rs) last ran; `None` while the disk
     /// is above the floor so the next crossing is answered at once.
@@ -263,21 +264,11 @@ impl DaemonMaintenance {
         if self.done.is_some() {
             return;
         }
-        let worker_lines = self.drain_landing_workers(s);
-        self.lines.extend(worker_lines);
         self.pending = landing_queue_state(s, projects.clone());
         if let Some(line) = self.start_lane(cancel, s, &projects, &actor, &now, dry) {
             self.lines.push(line);
         }
         binary.measuring = self.lane.is_some();
-        let parallel = crate::landing_workers::landing_parallel(s);
-        let bulk_away = crate::bulk::state(std::path::Path::new(&s.home)).is_missing();
-        if !dry && parallel > 1 && !bulk_away {
-            self.lines.extend(
-                self.landings
-                    .start_projects(cancel, s, &projects, &actor, &now, &self.held),
-            );
-        }
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.done = Some(rx);
         let cancel = cancel.with_timeout(PASS_DEADLINE);
@@ -288,7 +279,6 @@ impl DaemonMaintenance {
         set_stage(Some(&self.pass_stage), "starting");
         let stage = self.pass_stage.clone();
         let s = s.clone();
-        let held = self.held.clone();
         let last_sweep = self.last_sweep.clone();
         let last_reclaim = self.last_reclaim.clone();
         let handle = std::thread::Builder::new()
@@ -300,20 +290,16 @@ impl DaemonMaintenance {
                     // away (bulk.rs) they would only fail on a dangling
                     // link, so the pass keeps to the board.
                     let bulk_away = crate::bulk::state(std::path::Path::new(&s.home)).is_missing();
-                    let (mut lines, held) = if bulk_away || (!dry && parallel > 1) {
-                        (Vec::new(), None)
+                    // A task whose jobs are all done goes to the forge as
+                    // one pull request; open ones are polled for merged or
+                    // closed (task_pr.rs). Nothing merges into the local
+                    // default branch here.
+                    let held: Option<BTreeMap<String, String>> = None;
+                    let mut lines = if bulk_away || dry {
+                        Vec::new()
                     } else {
-                        let (lines, held) = crate::landing_hold::tend_landings_pass(
-                            &cancel,
-                            &s,
-                            projects.clone(),
-                            actor.clone(),
-                            now.clone(),
-                            held,
-                            false,
-                            Some(&stage),
-                        );
-                        (lines, Some(held))
+                        set_stage(Some(&stage), "task pull requests");
+                        crate::task_pr::tend_task_prs(&s, &projects, &now)
                     };
                     if !dry && !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                         if !bulk_away {
@@ -580,7 +566,6 @@ impl DaemonMaintenance {
     }
     pub(crate) fn drain(&mut self, s: &pulse_store::Store) -> Vec<String> {
         let mut lines = std::mem::take(&mut self.lines);
-        lines.extend(self.drain_landing_workers(s));
         lines.extend(self.drain_lane(s));
         let Some(rx) = &self.done else {
             return lines;
@@ -666,7 +651,7 @@ impl DaemonMaintenance {
     ) -> (Vec<String>, bool) {
         let mut lines = std::mem::take(&mut self.lines);
         let mut cut = false;
-        let mut settle = crate::landing_workers::Settle::new(self.landings.cancel_grace());
+        let mut settle = Settle::new(self.cancel_grace.unwrap_or(CANCEL_GRACE));
         if let Some(rx) = self.done.take() {
             let started = self.pass_started.take();
             self.pass_ctx = None;
@@ -693,24 +678,13 @@ impl DaemonMaintenance {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .clone();
-                    lines.push(crate::landing_workers::left_behind_line(
+                    lines.push(left_behind_line(
                         "landing maintenance",
                         &stage,
                         started.map(|at| at.elapsed()).unwrap_or_default(),
                         &killed,
                     ));
                 }
-            }
-        }
-        let (worker_results, worker_cut) =
-            self.landings
-                .finish_settling(ctx, deadline, &mut settle, beat);
-        cut |= worker_cut;
-        for result in worker_results {
-            if result.detached {
-                lines.extend(result.lines);
-            } else {
-                self.apply_landing_worker(s, result, &mut lines);
             }
         }
         if let Some(rx) = self.lane.take() {
@@ -734,7 +708,7 @@ impl DaemonMaintenance {
                 )),
                 Received::Closed => {}
                 Received::LeftBehind(killed) => {
-                    lines.push(crate::landing_workers::left_behind_line(
+                    lines.push(left_behind_line(
                         &format!("landing experiment {job}"),
                         "measuring on the experiment lane",
                         started.map(|at| at.elapsed()).unwrap_or_default(),
@@ -758,39 +732,64 @@ impl DaemonMaintenance {
             )
         }
     }
+}
 
-    pub(crate) fn landing_busy(&self) -> usize {
-        self.landings.busy()
+/// How long what a shutdown cancelled gets to stop on its own before the
+/// commands it waits in are ended.
+pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(30);
+/// How long a thread gets to return once its commands were ended, at most.
+pub(crate) const DETACH_SETTLE: Duration = Duration::from_secs(5);
+
+/// The grace a shutdown gives what it cancelled, shared by every part of
+/// it: counted once from when the cancellation was first seen, so a pass, a
+/// worker and the lane stuck together cost one grace, not three.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Settle {
+    grace: Duration,
+    since: Option<Instant>,
+}
+
+impl Settle {
+    pub(crate) fn new(grace: Duration) -> Self {
+        Settle { grace, since: None }
     }
 
-    fn drain_landing_workers(&mut self, s: &pulse_store::Store) -> Vec<String> {
-        let mut lines = Vec::new();
-        for result in self.landings.drain() {
-            self.apply_landing_worker(s, result, &mut lines);
-        }
-        lines
+    /// When the grace ends; the first call notes the cancellation.
+    pub(crate) fn until(&mut self) -> Instant {
+        *self.since.get_or_insert_with(Instant::now) + self.grace
     }
 
-    fn apply_landing_worker(
-        &mut self,
-        s: &pulse_store::Store,
-        result: crate::landing_workers::LandingWorkerResult,
-        lines: &mut Vec<String>,
-    ) {
-        crate::landing_workers::add_project_seconds(
-            s,
-            &result.slug,
-            result.seconds,
-            result.start_seq,
-        );
-        if let Some(note) = result.hold {
-            self.held.insert(result.slug.clone(), note);
-        } else {
-            self.held.remove(&result.slug);
-        }
-        crate::landing_hold::record_landing_holds(s, self.held.clone(), s.now());
-        lines.extend(result.lines);
+    /// How long a thread gets to return once its commands were ended.
+    pub(crate) fn after_kill(&self) -> Instant {
+        Instant::now() + self.grace.clamp(Duration::from_millis(500), DETACH_SETTLE)
     }
+
+    /// Ends the commands `thread` waits in (see [`crate::proc::end_groups_of`]).
+    pub(crate) fn end_groups_of(&self, thread: &std::thread::Thread) -> Vec<String> {
+        crate::proc::end_groups_of(
+            thread.id(),
+            crate::proc::TIMEOUT_KILL_GRACE.min(self.grace.max(Duration::from_millis(100))),
+        )
+    }
+}
+
+/// The line for a thread a shutdown leaves behind: what, where it was, how
+/// long it ran and which of its commands were ended.
+pub(crate) fn left_behind_line(
+    what: &str,
+    stage: &str,
+    ran: Duration,
+    killed: &[String],
+) -> String {
+    let killed = if killed.is_empty() {
+        String::new()
+    } else {
+        format!(" (ended: {})", killed.join(", "))
+    };
+    format!(
+        "{what}: still at {stage} after {} and its cancellation{killed}; left behind so the daemon can go",
+        pulse_cli::format_duration(Duration::from_secs(ran.as_secs()))
+    )
 }
 
 /// What a bounded receive got.
@@ -815,7 +814,7 @@ pub(crate) fn recv_by<T>(
     ctx: &pulse_bus::CancellationToken,
     deadline: Option<Instant>,
     cut: &mut bool,
-    settle: &mut crate::landing_workers::Settle,
+    settle: &mut Settle,
     thread: Option<&std::thread::Thread>,
     beat: &dyn Fn(),
 ) -> Received<T> {

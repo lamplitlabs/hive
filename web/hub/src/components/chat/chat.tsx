@@ -253,7 +253,7 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
 // section of its most pressing member.
 const GROUP_TITLES: Record<ListGroup, string> = {
   working: "Working",
-  landing: "Waiting to land / reviewing",
+  landing: "Waiting for merge / reviewing",
   open: "Open",
   finished: "Finished",
   archived: "Archived",

@@ -1139,10 +1139,7 @@ pub(crate) fn daemon(
     // Asks for a restart are read from here on: the ask that restarted the
     // daemon before this one is behind it.
     let restart_asks_after = pulse_bus::last_id(s).unwrap_or(0);
-    let mut maintenance = crate::daemon_maintenance::DaemonMaintenance {
-        held: crate::landing_hold::load_landing_holds(s),
-        ..Default::default()
-    };
+    let mut maintenance = crate::daemon_maintenance::DaemonMaintenance::default();
     let mut maintenance_wake = false;
     let mut probes = crate::checkout::CheckoutProbes::default();
     let mut refused = crate::amend::AmendRefusals::new();
@@ -2801,7 +2798,7 @@ pub(crate) fn daemon(
             ),
         }
     }
-    if maintenance.done.is_some() || maintenance.lane.is_some() || maintenance.landing_busy() > 0 {
+    if maintenance.done.is_some() || maintenance.lane.is_some() {
         let waiting = format!("{note}: waiting for landing maintenance to finish");
         say(&o, &waiting);
         enter(waiting.clone());
@@ -2825,7 +2822,7 @@ pub(crate) fn daemon(
         // Once cancelled, what still runs gets this long to stop before the
         // commands it waits in are ended and it is left behind; a restart
         // the owner asked for now gets no more than its hold cap.
-        maintenance.landings.cancel_grace = Some(crate::landing_workers::CANCEL_GRACE.min(drain));
+        maintenance.cancel_grace = Some(crate::daemon_maintenance::CANCEL_GRACE.min(drain));
         // While maintenance is waited for uncancelled it beats the watchdog
         // and watches for the owner: a restart asked during this wait (the
         // hub's "Restart now", pressed because the daemon seems stuck)
@@ -4657,90 +4654,6 @@ mod tests {
         }
     }
 
-    // A landing stuck in a git that never returns (here a hook that sleeps;
-    // on 2026-11-03 an fsmonitor that never answered) no longer holds a
-    // restart: the drain cancels it, its git is ended and the daemon exits
-    // with code 3 within seconds instead of waiting on it for hours.
-    #[test]
-    fn restart_drain_is_not_held_by_a_landing_stuck_in_git() {
-        let _serial = crate::test_helpers::serial();
-        pulse_bus::reset_default();
-        let _env = pulse_testutil::env_lock();
-        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
-        let s = new_store();
-        let (project, repo) = new_bare_repo(&s);
-        crate::test_helpers_daemon::set_setting(&s, "landing", "agents");
-        crate::test_helpers_daemon::set_setting(&s, "daemon.hold_seconds", "1");
-        crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
-        crate::test_helpers_daemon::set_setting(&s, "jobs_per_day", "10");
-        crate::test_helpers_daemon::push_branch(&s, &project, &repo, "pulse/stuck/1");
-        // Every checkout and merge in the landing's worktree now blocks.
-        let started = std::path::Path::new(&s.home).join("hook-started");
-        let hook = format!("#!/bin/sh\ntouch '{}'\nexec sleep 600\n", started.display());
-        for name in ["post-checkout", "post-merge"] {
-            let path = std::path::Path::new(&repo).join(".git/hooks").join(name);
-            std::fs::write(&path, &hook).unwrap();
-            run(".", &["chmod", "+x", &path.display().to_string()]);
-        }
-        let out = OutBuf::new();
-        let opts = DaemonOpts {
-            interval: 300,
-            out: Some(out.writer()),
-            worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
-            restart_on_change: true,
-            ..Default::default()
-        };
-        let s_daemon = s.clone();
-        let cancel = pulse_bus::CancellationToken::new();
-        let cancel_daemon = cancel.clone();
-        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
-        });
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let began = std::time::Instant::now();
-            while !started.exists() {
-                assert!(
-                    began.elapsed() < test_wait(Duration::from_secs(60)),
-                    "the landing never reached its git:\n{}",
-                    out.string()
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            ask_restart(
-                &s,
-                "owner",
-                serde_json::json!({"from": "settings", "now": true}),
-            )
-            .unwrap();
-            let asked = std::time::Instant::now();
-            let result = done_rx
-                .recv_timeout(test_wait(Duration::from_secs(60)))
-                .expect("the daemon did not exit while a landing hung in git");
-            (result, asked.elapsed())
-        }));
-        cancel.cancel();
-        let (result, took) = match result {
-            Ok(got) => got,
-            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
-        };
-        let out = out.string();
-        assert_eq!(result, "restart", "{out}");
-        // The landing's own git budget is 120s; the restart does not wait
-        // for it.
-        assert!(took < Duration::from_secs(60), "exit took {took:?}\n{out}");
-        assert!(
-            out.contains("restarting now, as asked: waiting for landing maintenance to finish")
-                && out.contains("restarting now, as asked: landing maintenance cancelled after 1s"),
-            "{out}"
-        );
-        assert!(
-            out.contains("landing proj: ended git ")
-                || out.contains("landing proj: worker: still at "),
-            "the stuck landing was not named:\n{out}"
-        );
-    }
-
     #[test]
     fn restart_drain_zero_stops_dispatch_at_once() {
         let _serial = crate::test_helpers::serial();
@@ -5685,101 +5598,6 @@ mod tests {
                 std::panic::resume_unwind(panic);
             }
         }
-    }
-
-    #[test]
-    fn daemon_worker_completion_starts_next_landing_pass() {
-        let _serial = crate::test_helpers::serial();
-        pulse_bus::reset_default();
-        let s = new_store();
-        let (_, root) = new_bare_repo(&s);
-        join(&s, "aurora");
-        s.set_setting(pulse_store::HUMAN_AGENT, "landing", "agents")
-            .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "jobs_per_day", "1")
-            .unwrap();
-        let source = format!("reflect:proj:{}", &TEST_NOW[..10]);
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "INSERT INTO jobs (id, project, kind, title, status, source, created_at) VALUES ('daily-reflect', 'proj', 'reflect', 'Already reflected', 'done', ?, ?)",
-            &[&source, &TEST_NOW],
-        );
-        let (job, _) = crate::jobs::add_job(
-            &s,
-            "proj".into(),
-            "task".into(),
-            "One fake change".into(),
-            "one isolated test commit".into(),
-            1,
-            100,
-            "landing-wake".into(),
-            pulse_store::HUMAN_AGENT.into(),
-            false,
-        )
-        .unwrap();
-        let fifo = std::path::Path::new(&s.home).join("worker");
-        let status = std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .expect("mkfifo");
-        assert!(status.success(), "mkfifo failed");
-        let gate = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&fifo)
-            .unwrap();
-        let command = format!(
-            "sh -c {:?}",
-            format!(
-                "read gate < {}; printf change > value.txt && git add value.txt && git commit -q -m 'Fake change' && echo SUMMARY: fake commit",
-                crate::util::shell_quote(&fifo.display().to_string())
-            )
-        );
-        let cancel = pulse_bus::CancellationToken::new();
-        let s_daemon = s.clone();
-        let cancel_daemon = cancel.clone();
-        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let result = daemon(
-                &cancel_daemon,
-                &s_daemon,
-                DaemonOpts {
-                    interval: 300,
-                    max_loops: 2,
-                    worker_cmd: command,
-                    out: Some(OutBuf::new().writer()),
-                    ..Default::default()
-                },
-            );
-            let _ = done_tx.send(result);
-        });
-        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(30));
-        loop {
-            let (_, exists) = s.meta("hygiene").unwrap();
-            if exists {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() <= deadline,
-                "initial maintenance did not finish"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        use std::io::Write as _;
-        (&gate).write_all(b"go\n").unwrap();
-        let result = done_rx
-            .recv_timeout(test_wait(Duration::from_secs(30)))
-            .unwrap_or_else(|_| {
-                cancel.cancel();
-                panic!("fake completion did not wake the supervisor")
-            });
-        let row = crate::jobs::job_row(&*s.conn().unwrap(), job.str("id"));
-        assert!(
-            result == "done"
-                && std::path::Path::new(&root).join("value.txt").exists()
-                && row.str("branch").is_empty(),
-            "worker completion waited for an idle interval instead of starting its landing: {result}, job={row:?}"
-        );
     }
 
     #[test]

@@ -1589,7 +1589,7 @@ pub(crate) fn land_branch_with_registry(
     // only an upstream sync got the rebuild and every other such landing
     // requeued a finished run.
     let mut out_rebuilt = false;
-    if !merged.ok() && crate::landing_hold::resolve_hub_out_conflict(&worktree, &branch) {
+    if !merged.ok() && crate::forge::resolve_hub_out_conflict(&worktree, &branch) {
         out_rebuilt = true;
         merged =
             crate::util::git_timeout(&worktree, Duration::from_secs(30), &["rev-parse", "HEAD"]);
@@ -1977,11 +1977,6 @@ pub(crate) fn land_branch_with_registry(
                         );
                     }
                     set_landing_retry(s, &slug, &retry_at, &note);
-                    if base_red == Some(true) {
-                        let row =
-                            crate::board::project_by_slug(&s.conn().expect("conn"), slug.clone());
-                        crate::redbase::mark_red_base(s, &row, &before, -1, &base_tail, &now);
-                    }
                     return Ok(("deferred".into(), note));
                 }
                 // A sync whose merged result fails only the way the upstream tip
@@ -2895,7 +2890,10 @@ pub(crate) fn land_pending_pass_with_registry(
             };
             crate::land_batch::drop_chain(&project.str("path"), &built.chain);
             spent += 1;
-            let held = crate::landing_hold::landing_held(state.clone());
+            let held = matches!(
+                state.as_str(),
+                "deferred" | "locked" | "stopped" | "unreadable" | "blocked"
+            );
             if state == "landed" {
                 clear_landing_retry(s, &project.str("slug"));
                 batch = Some(built);
@@ -2932,7 +2930,10 @@ pub(crate) fn land_pending_pass_with_registry(
         if member.is_none() {
             spent += 1;
         }
-        let held = crate::landing_hold::landing_held(lr.state.clone());
+        let held = matches!(
+            lr.state.as_str(),
+            "deferred" | "locked" | "stopped" | "unreadable" | "blocked"
+        );
         out.push(lr);
         if held {
             break;
@@ -4013,14 +4014,12 @@ mod tests {
         );
     }
 
+    use crate::test_helpers;
     use crate::test_helpers::*;
     use crate::test_helpers_completion::{
         completion_worker_command, new_completion_job, run_completion,
     };
-    use crate::test_helpers_daemon::{
-        bare_ref, exec1, job_row, must_rows, push_branch, push_fixture, ref_of, set_setting,
-    };
-    use crate::{commands, test_helpers};
+    use crate::test_helpers_daemon::{exec1, job_row, must_rows, ref_of, set_setting};
 
     #[test]
     fn landing_cleanup_removes_the_worktrees_tmpdir() {
@@ -4101,99 +4100,6 @@ mod tests {
         assert!(line.contains("0123456789ab"), "{line}");
         assert!(line.contains("create_post: board unavailable"), "{line}");
         assert!(line.contains("result post could not be written"), "{line}");
-    }
-
-    #[test]
-    fn land_by_hand_pushes_when_asked() {
-        let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
-        let s = test_helpers::new_store();
-        let (proj, repo, bare) = push_fixture(&s);
-        set_setting(&s, "landing.push", "main");
-        push_branch(&s, &proj, &repo, "pulse/worker/1");
-        let out_buf = pulse_cli::Buffer::default();
-        let err_buf = pulse_cli::Buffer::default();
-        let mut ctx = pulse_cli::Context {
-            store: Some((*s).clone()),
-            home: s.home.clone(),
-            out: Box::new(out_buf.clone()),
-            err: Box::new(err_buf),
-            json: false,
-            quiet: false,
-            color: false,
-            agent: String::new(),
-            project: "proj".into(),
-            session: String::new(),
-            now: test_helpers::TEST_NOW.into(),
-            args: Vec::new(),
-        };
-        commands::cmd_land(&mut ctx, &pulse_cli::FlagSet::new("land"), &[]).unwrap();
-        let out = out_buf.string();
-        assert!(
-            out.contains("proj landed:")
-                && out.contains("landing pushed proj: main -> origin/main (1 commit, "),
-            "out {out:?}"
-        );
-        assert_eq!(
-            bare_ref(&bare, "refs/heads/main"),
-            ref_of(&repo, "refs/heads/main")
-        );
-    }
-
-    /// A failed setup leaves a retry hold whose note says `pulse land` retries
-    /// now; the push step's sync read the same hold and waited. By hand, the
-    /// hold is lifted first, so the upstream is merged and pushed at once.
-    #[test]
-    fn land_by_hand_retries_a_held_sync_now() {
-        let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
-        let s = test_helpers::new_store();
-        let (proj, repo, bare) = push_fixture(&s);
-        set_setting(&s, "landing.push", "main");
-        let other = tempfile::tempdir().expect("other").keep().join("other");
-        let other = other.display().to_string();
-        test_helpers::run(".", &["git", "clone", "-q", &bare, &other]);
-        std::fs::write(std::path::Path::new(&other).join("upstream.txt"), "x\n").unwrap();
-        test_helpers::run(&other, &["git", "add", "-A"]);
-        test_helpers::run(&other, &["git", "commit", "-q", "-m", "moved upstream"]);
-        test_helpers::run(&other, &["git", "push", "-q", "origin", "main"]);
-        push_branch(&s, &proj, &repo, "pulse/worker/1");
-        super::set_landing_retry(
-            &s,
-            "proj",
-            &crate::util::plus_minutes(test_helpers::TEST_NOW, 20.0),
-            "setup failed; retry later",
-        );
-        let out_buf = pulse_cli::Buffer::default();
-        let err_buf = pulse_cli::Buffer::default();
-        let mut ctx = pulse_cli::Context {
-            store: Some((*s).clone()),
-            home: s.home.clone(),
-            out: Box::new(out_buf.clone()),
-            err: Box::new(err_buf),
-            json: false,
-            quiet: false,
-            color: false,
-            agent: String::new(),
-            project: "proj".into(),
-            session: String::new(),
-            now: test_helpers::TEST_NOW.into(),
-            args: Vec::new(),
-        };
-        commands::cmd_land(&mut ctx, &pulse_cli::FlagSet::new("land"), &[]).unwrap();
-        let out = out_buf.string();
-        assert!(
-            out.contains("proj landed:")
-                && out.contains("landing synced proj: origin/main merged into main")
-                && !out.contains("merging them waits"),
-            "out {out:?}"
-        );
-        assert_eq!(
-            bare_ref(&bare, "refs/heads/main"),
-            ref_of(&repo, "refs/heads/main")
-        );
-        test_helpers::run(&repo, &["git", "cat-file", "-e", "main:upstream.txt"]);
-        assert!(super::landing_retry_hold(&s, "proj", test_helpers::TEST_NOW).is_none());
     }
 
     #[test]
@@ -4286,11 +4192,6 @@ mod tests {
         assert_eq!(first.len(), 1, "{first:?}");
         assert_eq!(first[0].state, "held", "{}", first[0].note);
         assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
-        assert_eq!(
-            crate::landing_workers::ready_landings(&s, &slug, TEST_NOW),
-            0,
-            "a held branch starts no landing worker"
-        );
         // The branch is still pending for everyone who asks, and `pulse land`
         // by hand still looks at it.
         assert_eq!(super::pending_landings(&s.conn().unwrap(), &slug).len(), 1);
@@ -4304,7 +4205,6 @@ mod tests {
         assert!(quiet.is_empty(), "{quiet:?}");
         let later = crate::util::plus_minutes(TEST_NOW, super::HELD_RECHECK_MINUTES as f64 + 1.0);
         assert!(!super::held_branch_waits(&s, &slug, branch, &later));
-        assert_eq!(crate::landing_workers::ready_landings(&s, &slug, &later), 1);
         let again = super::land_pending(&s, project.clone(), "daemon", &later, false, 0, false);
         assert_eq!(again.len(), 1, "{again:?}");
         assert_eq!(again[0].state, "held");
@@ -4825,10 +4725,6 @@ mod tests {
         assert!(super::held_branch_waits(&s, &slug, branch, TEST_NOW));
         let hour_before = crate::util::plus_hours(eligible_at, -1.0);
         assert!(super::held_branch_waits(&s, &slug, branch, &hour_before));
-        assert_eq!(
-            crate::landing_workers::ready_landings(&s, &slug, &hour_before),
-            0
-        );
         let quiet = super::land_pending_with_registry(
             &s,
             project.clone(),
@@ -4844,7 +4740,6 @@ mod tests {
         // From the date on the rule says ready and the branch lands.
         let after = crate::util::plus_minutes(eligible_at, 1);
         assert!(!super::held_branch_waits(&s, &slug, branch, &after));
-        assert_eq!(crate::landing_workers::ready_landings(&s, &slug, &after), 1);
         let landed = super::land_pending_with_registry(
             &s,
             project.clone(),
@@ -6557,10 +6452,6 @@ mod tests {
             run(&root, &["git", "rev-parse", "--abbrev-ref", "HEAD"]).trim(),
             "main"
         );
-        assert!(
-            crate::landing_hold::push_owed(&s, "proj".into()),
-            "a batch landing owes a push like any other"
-        );
     }
 
     #[test]
@@ -6761,7 +6652,6 @@ mod tests {
 mod auto_stash_tests {
     use crate::test_helpers::*;
     use crate::test_helpers_daemon::{exec1, set_setting};
-    use std::collections::BTreeMap;
 
     /// A landing that fails after the owner's uncommitted work was auto-stashed pops
     /// the stash again: the work is back in the checkout and `git stash list` is
@@ -6811,13 +6701,10 @@ mod auto_stash_tests {
         let readme = std::path::Path::new(&dir).join("README.md");
         std::fs::write(&readme, owner_work).unwrap();
 
-        let (lines, _held) = crate::landing_hold::tend_landings(
-            &s,
-            vec![proj],
-            "daemon".into(),
-            TEST_NOW.into(),
-            BTreeMap::new(),
-        );
+        let lines: Vec<String> = super::land_pending(&s, proj, "daemon", TEST_NOW, true, 0, true)
+            .into_iter()
+            .map(|r| format!("landing {} {}", r.state, r.note))
+            .collect();
         let joined = lines.join("\n");
         if joined.contains("landing landed") {
             panic!("expected the landing to fail verify; lines={lines:?}");
@@ -6898,13 +6785,10 @@ mod auto_stash_tests {
         // The owner edits the same line the branch changes: the pop must conflict.
         std::fs::write(&readme, b"# proj\n\nowner's line\n").unwrap();
 
-        let (lines, _held) = crate::landing_hold::tend_landings(
-            &s,
-            vec![proj],
-            "daemon".into(),
-            TEST_NOW.into(),
-            BTreeMap::new(),
-        );
+        let lines: Vec<String> = super::land_pending(&s, proj, "daemon", TEST_NOW, true, 0, true)
+            .into_iter()
+            .map(|r| format!("landing {} {}", r.state, r.note))
+            .collect();
         let joined = lines.join("\n");
         if !joined.contains("landed") {
             panic!("expected the landing to land; lines={lines:?}");
@@ -7066,13 +6950,10 @@ mod auto_stash_tests {
         let owner_work = b"# proj\n\nowner's work\n";
         std::fs::write(&readme, owner_work).unwrap();
 
-        let (lines, _held) = crate::landing_hold::tend_landings(
-            &s,
-            vec![proj],
-            "daemon".into(),
-            TEST_NOW.into(),
-            BTreeMap::new(),
-        );
+        let lines: Vec<String> = super::land_pending(&s, proj, "daemon", TEST_NOW, true, 0, true)
+            .into_iter()
+            .map(|r| format!("landing {} {}", r.state, r.note))
+            .collect();
         let joined = lines.join("\n");
         if !joined.contains("landed") {
             panic!("expected the landing to land; lines={lines:?}");

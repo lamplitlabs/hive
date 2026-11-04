@@ -20,7 +20,6 @@ const LABELS: Record<string, string> = {
   landing: "Who merges finished work",
   "landing.push": "Push after merging",
   "landing.auto_stash": "Set aside uncommitted changes before merging",
-  "landing.parallel": "Projects merging at once",
   "landing.base_red_retry_minutes": "Try a merge again after a failing main branch (minutes)",
   "landing.setup_repair": "Repair a broken project setup",
   "landing.verify_memo": "Skip checks that already passed",

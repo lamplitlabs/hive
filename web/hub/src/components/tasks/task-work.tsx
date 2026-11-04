@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
 import { GitPullRequestIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Avatar, Mono } from "@/components/pulse/who";
-import { enc, post, taskProgress, type Task, type TaskDelivery, type TaskWorker } from "@/lib/api";
+import { Avatar } from "@/components/pulse/who";
+import { deliveryView } from "@/components/tasks/delivery-state";
+import { taskProgress, type Task, type TaskDelivery, type TaskWorker } from "@/lib/api";
 import { fmtDate, rel, sentence, truncate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
@@ -28,7 +27,7 @@ export function Ago({ d, className }: { d?: string | null; className?: string })
 
 // Why an active task has nobody on it right now, in the runner's own terms
 // (tendTasks): a queued job waits for a free worker, a failed job goes back
-// to the lead, done jobs wait for their branch to land.
+// to the lead, done jobs wait for the task's pull request.
 export function idleLine(t: Task): string | null {
   const p = taskProgress(t);
   if (p.working.length || p.running || (t.status !== "in_progress" && t.status !== "planned")) return null;
@@ -36,7 +35,7 @@ export function idleLine(t: Task): string | null {
   if (p.blocked) return "A step is blocked. The lead agent will sort it out or ask you.";
   if (!p.total) return t.lead ? "The lead agent is planning the steps." : "The lead agent is starting on it.";
   if (p.failed) return "A step failed. The lead agent is planning another way.";
-  return "Every step is done. Waiting to merge the work.";
+  return "Every step is done. Waiting for the pull request.";
 }
 
 // One readable sentence: "cinder is working on Await the price lookup,
@@ -90,94 +89,25 @@ export function TaskWorkingLine({ t, compact, className }: { t: Task; compact?: 
   );
 }
 
-// Where the task's code is once it landed: still on this machine, or on
-// GitHub (pushed, or on the pull request from pulse/landed). The button asks
-// the daemon for a pull request; it answers on its next landing pass, so
-// the line says "asked" until then (ADR-037, the pull request path).
-export function TaskDeliveryLine({ id, delivery, onChange, className }: { id: string; delivery: TaskDelivery | null | undefined; onChange: () => void; className?: string }) {
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState<string | null>(null);
-  if (!delivery || delivery.state === "none") return null;
-  const d = delivery;
-  const sha = d.sha ? <Mono className="text-xs">{d.sha.slice(0, 12)}</Mono> : null;
-  let text: ReactNode;
-  let tone: "neutral" | "ok" | "warn" = "neutral";
-  switch (d.state) {
-    case "waiting":
-      text = d.waiting === 1 ? "One finished step waits to land on the main branch." : d.waiting + " finished steps wait to land on the main branch.";
-      break;
-    case "landed":
-      text = (
-        <>
-          Landed on the main branch on this machine {sha}, not on GitHub yet.{d.note ? " " + d.note : ""}
-        </>
-      );
-      tone = "warn";
-      break;
-    case "held":
-      text = (
-        <>
-          Landed on this machine {sha}, but it did not reach GitHub{d.note ? ": " + d.note : "."}
-        </>
-      );
-      tone = "warn";
-      break;
-    case "asked":
-      text = "A pull request was asked for. PULSE opens it on its next landing pass.";
-      break;
-    case "pushed":
-      text = (
-        <>
-          Pushed to {d.remote || "the remote"} {sha}.
-        </>
-      );
-      tone = "ok";
-      break;
-    case "pr":
-      text = (
-        <>
-          On pull request{" "}
-          {d.url ? (
-            <a href={d.url} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
-              #{d.number}
-            </a>
-          ) : (
-            "#" + d.number
-          )}
-          {d.remote ? " into " + d.remote : ""}, waiting for your merge.
-        </>
-      );
-      tone = "ok";
-      break;
-    default:
-      return null;
-  }
-  const ask = async () => {
-    setBusy(true);
-    setFailed(null);
-    try {
-      await post("tasks/" + enc(id) + "/pull-request", {});
-      onChange();
-    } catch (e) {
-      setFailed(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+// Where the task's code stands: each task gets one pull request on GitHub
+// (branch pulse/task-<id>), opened when its work is done; the daemon polls
+// it and a merge closes the task. Older work may still show landing states.
+export function TaskDeliveryLine({ delivery, className }: { delivery: TaskDelivery | null | undefined; className?: string }) {
+  const v = deliveryView(delivery);
+  if (!v) return null;
+  const tone = v.tone;
   return (
     <div className={cn("mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border px-3 py-2 text-[13px]", tone === "ok" ? "border-ok/30 bg-ok/10" : tone === "warn" ? "border-warn/35 bg-warn/10" : "bg-card", className)} data-testid="task-delivery">
       <GitPullRequestIcon className={cn("size-4 shrink-0", tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-muted-foreground")} aria-hidden />
-      <span className="min-w-0 flex-1 leading-relaxed anywhere">{text}</span>
-      {d.can_ask ? (
-        <Button size="sm" variant="outline" onClick={ask} disabled={busy} title="PULSE pushes the main branch to pulse/landed on GitHub and opens a pull request for you to merge.">
-          <GitPullRequestIcon /> {busy ? "Asking…" : "Open a pull request"}
-        </Button>
-      ) : null}
-      {failed ? (
-        <span role="alert" className="basis-full text-bad">
-          {failed}
-        </span>
-      ) : null}
+      <span className="min-w-0 flex-1 leading-relaxed anywhere">
+        {v.before}
+        {v.link ? (
+          <a href={v.link.href} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
+            {v.link.text}
+          </a>
+        ) : null}
+        {v.after}
+      </span>
     </div>
   );
 }

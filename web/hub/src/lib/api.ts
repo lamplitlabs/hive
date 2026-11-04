@@ -1649,7 +1649,7 @@ export interface Conversation {
   parent: string;
   live?: ConversationLive;
   // Whether the branch holds commits the project's default branch lacks:
-  // work finished or paused but not landed (the list's "Waiting to land"
+  // work finished or paused but not landed (the list's "Waiting for merge"
   // section). Absent from hubs older than the field.
   waiting_to_land?: boolean;
   // A landing is merging and checking the branch now ("Reviewing").
@@ -2507,13 +2507,12 @@ export interface LeadWork {
   read_at: string;
 }
 
-// Where a task's code stands after it landed on the default branch: still
-// on this machine (landed, held: the push did not go through, asked: a pull
-// request was asked for), or on the forge (pushed to the upstream, or on
-// the pull request from pulse/landed). `can_ask` says the owner may ask for
-// a pull request now (POST tasks/{id}/pull-request).
+// Where a task's code stands: each task gets one GitHub pull request
+// (branch pulse/task-<id>) the daemon polls; pr_open (url, number), merged
+// (the task is done), held (note: the PR could not be opened). Older work can
+// still carry the landing states. `can_ask` is kept for the wire only.
 export type TaskDeliveryState =
-  "none" | "waiting" | "landed" | "held" | "asked" | "pushed" | "pr";
+  "none" | "pr_open" | "merged" | "held" | "waiting" | "landed" | "asked" | "pushed" | "pr";
 
 export interface TaskDelivery {
   state: TaskDeliveryState;
