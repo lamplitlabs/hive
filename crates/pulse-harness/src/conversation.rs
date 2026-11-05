@@ -2228,7 +2228,7 @@ impl Manager {
     fn row(&self, id: &str) -> Result<Row> {
         self.store
             .chat_get(id)?
-            .ok_or_else(|| anyhow!("no such conversation: {id}"))
+            .ok_or_else(|| anyhow!("no such session: {id}"))
     }
 
     /// Starts a conversation and sends its first message.
@@ -2333,7 +2333,7 @@ impl Manager {
         }
         let p = self.row(parent)?;
         if p.status == "archived" {
-            bail!("conversation {parent} is archived");
+            bail!("session {parent} is archived");
         }
         let depth = self.store.chat_depth(parent)?;
         let depth_limit = self.store.setting_int(SUB_DEPTH_SETTING);
@@ -2398,7 +2398,7 @@ impl Manager {
             bail!("conversation {id} is not a sub-conversation of this one");
         }
         if row.status == "archived" {
-            bail!("sub-conversation {id} is archived");
+            bail!("sub-session {id} is archived");
         }
         if let Some(rt) = self.running(id)
             && matches!(rt.live().pending, Some(Pending::Question { .. }))
@@ -2586,7 +2586,7 @@ impl Manager {
         }
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         let mut stored: Vec<Value> = Vec::with_capacity(images.len());
         let mut shown: Vec<ImageContent> = Vec::with_capacity(images.len());
@@ -2664,7 +2664,7 @@ impl Manager {
         }
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         let text: String = text.chars().take(WAKE_CHARS).collect();
         let line = format!("Wake from {from}: {text}");
@@ -2733,7 +2733,7 @@ impl Manager {
     pub fn save_attachment(&self, id: &str, name: &str, data: &[u8]) -> Result<Attachment> {
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         if data.is_empty() {
             bail!("Invalid file: the file is empty");
@@ -2775,7 +2775,7 @@ impl Manager {
         let model = model_id(model)?;
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         self.store.chat_set_model(id, &model)
     }
@@ -2789,7 +2789,7 @@ impl Manager {
         let reasoning = reasoning_effort(reasoning)?;
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         self.store.chat_set_reasoning(id, &reasoning)
     }
@@ -2849,7 +2849,7 @@ impl Manager {
     pub fn set_lockdown(&self, id: &str, on: bool) -> Result<()> {
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         self.store.chat_set_lockdown(id, on)?;
         if let Some(rt) = self.running(id) {
@@ -2892,7 +2892,7 @@ impl Manager {
     pub fn close(&self, id: &str) -> Result<()> {
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         if row.status == "closed" {
             return Ok(());
@@ -2927,7 +2927,7 @@ impl Manager {
     pub fn restart_session(&self, id: &str) -> Result<()> {
         let row = self.row(id)?;
         if row.status == "archived" {
-            bail!("conversation {id} is archived");
+            bail!("session {id} is archived");
         }
         let had_session = match self.running(id) {
             Some(rt) => rt.restart_session()?,
@@ -3692,9 +3692,9 @@ fn git_ok(cwd: &Path, args: &[&str]) -> Result<String> {
 pub fn attach_workspace(store: &Store, home: &str, id: &str, project: &str) -> Result<Attached> {
     let row = store
         .chat_get(id)?
-        .ok_or_else(|| anyhow!("no such conversation: {id}"))?;
+        .ok_or_else(|| anyhow!("no such session: {id}"))?;
     if row.status == "archived" {
-        bail!("conversation {id} is archived");
+        bail!("session {id} is archived");
     }
     let p = store
         .project(project)?
@@ -4732,7 +4732,7 @@ mod tests {
         // An archived conversation has nothing to restart.
         m.archive(&row.id).expect("archive");
         let err = m.restart_session(&row.id).expect_err("archived");
-        assert!(err.to_string().contains("is archived"), "{err}");
+        assert_eq!(err.to_string(), format!("session {} is archived", row.id));
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
