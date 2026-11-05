@@ -5862,7 +5862,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let ex = crate::executor::executor_row(&s, "hands-cr-001");
         if ex.0.is_empty()
             || ex.str("status") != "active"
-            || ex.str("admin") != "pulseadmin@203.0.113.5"
+            || ex.str("admin") != "pulseadmin@pulse-cr-001-admin"
         {
             panic!("executor: {ex:?}");
         }
@@ -5870,7 +5870,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             calls.len() == 1
                 && calls[0].name == "hands-cr-001"
-                && calls[0].admin == "pulseadmin@203.0.113.5"
+                && calls[0].admin == "pulseadmin@pulse-cr-001-admin"
                 && calls[0].token == crate::test_helpers_hands::TEST_EXECUTOR_TOKEN,
             "login placement: {calls:?}"
         );
