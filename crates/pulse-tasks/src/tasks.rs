@@ -592,6 +592,48 @@ pub fn set_status(s: &pulse_store::Store, id: &str, status: &str, actor: &str) -
     Ok(get(s, id)?.0)
 }
 
+/// Moves a `planned` task back to `open` so its lead plans it again: the
+/// one step back [`set_status`] does not take, for a task marked planned
+/// with no job carrying its source (`task:<id>` or `task:<id>:<label>`) -
+/// a lead that folded it into another task's job, or set the status before
+/// queueing anything. The `task.status` event carries `why`, so the lead's
+/// next brief and the hub can say what happened.
+pub fn reopen(s: &pulse_store::Store, id: &str, why: &str, actor: &str) -> Result<Task> {
+    if actor.is_empty() {
+        return Err(input(
+            2,
+            "An actor is needed",
+            "every status change records who made it",
+            "pass --agent NAME or set PULSE_AGENT",
+        ));
+    }
+    let (cur, _) = get(s, id)?;
+    if cur.status != "planned" {
+        return Err(input(
+            2,
+            format!("{id} is {}; only a planned task reopens", cur.status),
+            "a task whose work started moves forward or to review",
+            format!("pulse task show {id}"),
+        ));
+    }
+    let now = s.now();
+    let tx = s.begin()?;
+    tx.execute(
+        "UPDATE tasks SET status = 'open', updated_at = ? WHERE id = ?",
+        params![now, id],
+    )?;
+    tx.event(
+        actor,
+        "task.status",
+        id,
+        pulse_store::Detail::json(
+            json!({"project": cur.project, "from": cur.status, "to": "open", "why": why}),
+        )?,
+    )?;
+    tx.commit()?;
+    Ok(get(s, id)?.0)
+}
+
 pub fn set_lead(
     s: &pulse_store::Store,
     id: &str,
