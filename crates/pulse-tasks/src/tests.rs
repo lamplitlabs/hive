@@ -5782,3 +5782,65 @@ fn manifest_command_checks_a_working_copy_and_shows_and_syncs_a_project() {
         .to_string();
     assert!(err.contains("unknown subcommand"), "{err}");
 }
+
+#[test]
+fn an_owner_wait_names_its_holds_until_the_job_is_leased() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let task = new(&s, "demo", "Owner task", "brief", 0, "human").unwrap();
+    let conn = s.conn().unwrap();
+    for (id, title) in [("JOB-wait", "Owner step"), ("JOB-fresh", "Fresh step")] {
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES (?, 'demo', 'improve', ?, ?, 'queued', '2026-09-06T04:40:00Z')",
+            params![id, title, format!("task:{}", task.id)],
+        )
+        .unwrap();
+    }
+    let detail = serde_json::json!({
+        "since": "2026-09-06T04:40:00Z",
+        "waited_s": 660,
+        "reasons": ["lanes full", "load 27 > 24"],
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO events(at, actor, action, subject, detail) VALUES ('2026-09-06T04:51:00Z', 'daemon', ?, 'JOB-wait', ?)",
+        params![OWNER_WAIT_EVENT, detail],
+    )
+    .unwrap();
+    let waits = open_owner_waits(&s).unwrap();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    let w = &waits[0];
+    assert_eq!(
+        (w.job.as_str(), w.project.as_str(), w.title.as_str()),
+        ("JOB-wait", "demo", "Owner step")
+    );
+    assert_eq!(w.reasons, vec!["lanes full", "load 27 > 24"]);
+    assert_eq!(
+        w.line("2026-09-06T05:00:00Z"),
+        "waiting since 04:40 UTC: lanes full, load 27 > 24"
+    );
+    assert_eq!(
+        w.line("2026-09-07T05:00:00Z"),
+        "waiting since 2026-09-06 04:40 UTC: lanes full, load 27 > 24"
+    );
+    // The task's work carries the wait to the hub's wait line.
+    let work = work_for(&s, std::slice::from_ref(&task)).unwrap();
+    assert_eq!(work[&task.id].queued, 2);
+    assert_eq!(work[&task.id].waiting.as_ref(), Some(w));
+    let json = serde_json::to_value(&work[&task.id]).unwrap();
+    assert_eq!(json["waiting"]["reasons"][1], "load 27 > 24");
+    // Leased: the wait is over, and the work says so.
+    conn.execute(
+        "INSERT INTO events(at, actor, action, subject, detail) VALUES ('2026-09-06T05:10:00Z', 'cinder', 'job.lease', 'JOB-wait', '{}')",
+        [],
+    )
+    .unwrap();
+    assert!(open_owner_waits(&s).unwrap().is_empty());
+    let work = work_for(&s, std::slice::from_ref(&task)).unwrap();
+    assert_eq!(work[&task.id].waiting, None);
+    assert!(
+        !serde_json::to_string(&work[&task.id])
+            .unwrap()
+            .contains("waiting")
+    );
+}

@@ -66,15 +66,63 @@ pub(crate) fn fleet_waits_sql() -> String {
 /// line per run asked; a run already asked, or past its harness, is not
 /// asked twice and makes no line. `_fits`, the daemon's restart window, is
 /// no longer consulted: owner-driven work fits every window, so a run in
-/// the way is asked to hold whatever the window names.
+/// the way is asked to hold whatever the window names. Every lane admits
+/// the owner's job here; the daemon asks [`yield_lanes_if_admitted`].
+#[cfg(test)]
 pub(crate) fn yield_lanes_to_owner(
     s: &pulse_store::Store,
     now: &str,
     actor: &str,
     _fits: &[(String, String)],
 ) -> Vec<String> {
+    yield_lanes_if_admitted(s, now, actor, &OwnerAdmission::default()).asked
+}
+
+/// Whether the owner's job could start once a fleet run yields its lane
+/// (docs/owner-reservation.md). `everywhere` is what closes every slot this
+/// tick (a console drain, bulk storage away, the disk floor); `local` what
+/// closes this machine's alone (the login gate, the load governor:
+/// `daemon_load::owner_refusal`). None admits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct OwnerAdmission {
+    pub(crate) everywhere: Option<String>,
+    pub(crate) local: Option<String>,
+}
+
+impl OwnerAdmission {
+    /// Why a lane freed on `executor` would not start the owner's job.
+    fn refusal(&self, executor: &str) -> Option<&str> {
+        self.everywhere.as_deref().or_else(|| {
+            (executor.is_empty() || executor == crate::executor::LOCAL_EXECUTOR)
+                .then_some(self.local.as_deref())
+                .flatten()
+        })
+    }
+}
+
+/// What one yield pass did: the runs it asked to hold, and the owner's jobs
+/// it asked nothing for because the freed lane would not start them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct YieldPass {
+    pub(crate) asked: Vec<String>,
+    pub(crate) refused: Vec<String>,
+}
+
+/// [`yield_lanes_to_owner`] asking only where the owner's job could then
+/// start: a fleet run is held only when `admission` lets the owner's job
+/// into the lane it frees, on the executor it runs on. Before this, a load
+/// over `daemon.max_load` refused the owner's job after every yield, the
+/// held run leased straight back, and the pair repeated every 25-68 s
+/// (TASK-055 on 2026-11-03: 58 holds, no start in ten hours).
+pub(crate) fn yield_lanes_if_admitted(
+    s: &pulse_store::Store,
+    now: &str,
+    actor: &str,
+    admission: &OwnerAdmission,
+) -> YieldPass {
+    let mut pass = YieldPass::default();
     let Ok(conn) = s.conn() else {
-        return Vec::new();
+        return pass;
     };
     let work = crate::jobs::work_kinds_sql();
     let waiting = must_rows(
@@ -86,10 +134,9 @@ pub(crate) fn yield_lanes_to_owner(
         &[],
     );
     if waiting.is_empty() {
-        return Vec::new();
+        return pass;
     }
     let limit = crate::jobs::parallel_per_project(s).max(1);
-    let mut lines = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for owner in waiting {
         let slug = owner.str("project");
@@ -120,14 +167,33 @@ pub(crate) fn yield_lanes_to_owner(
             .filter_map(|k| {
                 let run = crate::util::must_one(
                     &conn,
-                    "SELECT id, started_at FROM runs r WHERE r.job_id = ? AND r.status = 'running' ORDER BY r.started_at DESC, r.id DESC LIMIT 1",
+                    "SELECT id, started_at, executor FROM runs r WHERE r.job_id = ? AND r.status = 'running' ORDER BY r.started_at DESC, r.id DESC LIMIT 1",
                     &[&k.str("id")],
                 );
-                (!run.0.is_empty()).then(|| (run.str("started_at"), run.str("id"), k))
+                (!run.0.is_empty()).then(|| (run.str("started_at"), run.str("id"), k, run.str("executor")))
             })
             .collect::<Vec<_>>();
         fleet.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-        let Some((_, run_id, job)) = fleet.into_iter().next() else {
+        // The youngest run whose lane would start the owner's job; when no
+        // freed lane would, nothing is asked and the pass says why once.
+        let mut refusal = None;
+        let pick =
+            fleet
+                .into_iter()
+                .find(|(_, _, _, executor)| match admission.refusal(executor) {
+                    Some(why) => {
+                        refusal.get_or_insert_with(|| why.to_string());
+                        false
+                    }
+                    None => true,
+                });
+        let Some((_, run_id, job, _)) = pick else {
+            if let Some(why) = refusal {
+                pass.refused.push(format!(
+                    "{slug}: the owner's {} waits for a lane, but no fleet run is asked to hold while the freed lane could not start it: {why}",
+                    owner.str("id")
+                ));
+            }
             continue;
         };
         let asked = s.request_harness_hold_for_run(&run_id).unwrap_or(0);
@@ -142,14 +208,14 @@ pub(crate) fn yield_lanes_to_owner(
             &job.str("id"),
             json!({"project": slug, "run": run_id, "to": owner.str("id")}),
         );
-        lines.push(format!(
+        pass.asked.push(format!(
             "{slug}: {} ({}) holds after its current step so the owner's {} can start; it carries on later",
             job.str("id"),
             job.str("kind"),
             owner.str("id")
         ));
     }
-    lines
+    pass
 }
 
 /// Whether run `run_id` of `job_id` was asked to hold for the owner's work
@@ -260,6 +326,93 @@ mod tests {
         s.set_setting(pulse_store::HUMAN_AGENT, "harness.step_timeout", "900")
             .unwrap();
         assert_eq!(crate::jobs::project_lanes(s, "proj").lanes, 1);
+    }
+
+    #[test]
+    fn no_fleet_run_is_asked_to_hold_while_the_freed_lane_could_not_start_the_owners_job() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_lane(&s);
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let task = queue(&s, "task", "task:TASK-001");
+        let yields = || {
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ?",
+                &[&YIELD_ACTION],
+            )
+        };
+        // The machine would refuse the owner's job once the lane is free
+        // (load over the line with the owner's one run over it in flight):
+        // nothing is asked, no job.yield is written, the refusal is said.
+        let refused = OwnerAdmission {
+            local: Some("machine saturated: load 30.0 on 12 CPUs is over the line 24".into()),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let pass =
+                yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &refused);
+            assert!(pass.asked.is_empty(), "{pass:?}");
+            assert_eq!(pass.refused.len(), 1, "{pass:?}");
+            assert!(
+                pass.refused[0].contains(&task) && pass.refused[0].contains("load 30.0"),
+                "{pass:?}"
+            );
+        }
+        assert_eq!(yields(), 0);
+        assert!(!hold_requested(&s, &fleet));
+        // A hold that closes every slot (a console drain, the disk floor)
+        // refuses the same way, whatever executor the run is on.
+        let drained = OwnerAdmission {
+            everywhere: Some("restarting: waiting for 1 run(s) in flight".into()),
+            ..Default::default()
+        };
+        assert!(
+            yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &drained)
+                .asked
+                .is_empty()
+        );
+        assert_eq!(yields(), 0);
+        // A refusal of this machine alone does not stop a yield on a paired
+        // one: that machine carries its own load.
+        s.conn()
+            .unwrap()
+            .execute("UPDATE runs SET executor = 'hands-1' WHERE id = ?", [&run])
+            .unwrap();
+        let pass = yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &refused);
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert_eq!(yields(), 1);
+        assert!(hold_requested(&s, &fleet));
+        assert!(yielded(&s, &fleet, &run));
+    }
+
+    #[test]
+    fn a_fleet_run_is_asked_to_hold_once_the_machine_would_admit_the_owners_job() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_lane(&s);
+        join(&s, "aurora");
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let task = queue(&s, "task", "task:TASK-001");
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission::default(),
+        );
+        assert!(pass.refused.is_empty(), "{pass:?}");
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(pass.asked[0].contains(&task), "{pass:?}");
+        assert!(yielded(&s, &fleet, &run));
     }
 
     #[test]

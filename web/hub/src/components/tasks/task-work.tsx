@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { taskProgress, writes, type Task, type TaskDelivery, type TaskWorker } from "@/lib/api";
 import { fmtDate, rel, sentence, truncate } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
+import { waitLine } from "@/lib/task-wait";
 import { useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -30,11 +31,12 @@ export function Ago({ d, className }: { d?: string | null; className?: string })
 
 // Why an active task has nobody on it right now, in the runner's own terms
 // (tendTasks): a queued job waits for a free worker, a failed job goes back
-// to the lead, done jobs wait for the task's pull request.
+// to the lead, done jobs wait for the task's pull request. A queued step
+// the daemon named as waiting past ten minutes says what held it.
 export function idleLine(t: Task): string | null {
   const p = taskProgress(t);
   if (p.working.length || p.running || (t.status !== "in_progress" && t.status !== "planned")) return null;
-  if (p.queued) return "The next step is waiting for a free agent.";
+  if (p.queued) return waitLine(t.waiting) ?? "The next step is waiting for a free agent.";
   if (p.blocked) return "A step is blocked. The lead agent will sort it out or ask you.";
   if (!p.total) return t.lead ? "The lead agent is planning the steps." : "The lead agent is starting on it.";
   if (p.failed) return "A step failed. The lead agent is planning another way.";

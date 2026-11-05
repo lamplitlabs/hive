@@ -45,6 +45,11 @@ pub struct StatusReport {
     pub planner: Vec<PlannerNote>,
     pub recovery: Vec<RecoveryNote>,
     pub landing: Vec<LandingNote>,
+    /// The owner's jobs queued past ten minutes and what held them
+    /// (pulse_runner::owner_wait): "proj job-x (Owner step) waiting since
+    /// 04:40 UTC: lanes full, load 27 > 24".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<String>,
     pub settings: Vec<pulse_store::SettingRow>,
 }
 
@@ -728,6 +733,7 @@ pub fn status(s: &pulse_store::Store) -> Result<StatusReport> {
     r.planner = planner_notes(s)?;
     r.recovery = recovery_notes(s)?;
     r.landing = landing_notes(s)?;
+    r.waiting = pulse_runner::owner_wait::status_lines(s);
     Ok(r)
 }
 
@@ -807,6 +813,9 @@ impl StatusReport {
                     label, note.project, note.note, stale
                 ));
             }
+        }
+        for line in &self.waiting {
+            out.push_str(&format!("waiting    {line}\n"));
         }
         out.push_str("settings   ");
         out.push_str(
@@ -1375,6 +1384,40 @@ mod tests {
             "<unknown goal; pulse goal --project q>"
         );
         assert_eq!(setting_text_value("quorum", "2"), "2");
+    }
+
+    #[test]
+    fn status_lists_the_owners_open_waits_with_their_holds() {
+        let (_dir, s) = temporary_store();
+        exec_sql(
+            &s,
+            "INSERT INTO projects (slug, name, path, added_at) VALUES ('proj', 'Proj', '/w/proj', '2026-09-06T00:00:00Z')",
+        );
+        exec_sql(
+            &s,
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES ('job-owner', 'proj', 'task', 'Owner step', 'task:TASK-055', 'queued', '2026-09-06T04:40:00Z')",
+        );
+        let before = status(&s).unwrap();
+        assert!(before.waiting.is_empty());
+        assert!(!before.text().contains("waiting    "));
+        assert!(
+            !serde_json::to_string(&before)
+                .unwrap()
+                .contains("\"waiting\"")
+        );
+        exec_sql(
+            &s,
+            "INSERT INTO events (at, actor, action, subject, detail) VALUES ('2026-09-06T04:51:00Z', 'daemon', 'job.owner-wait', 'job-owner', '{\"since\":\"2026-09-06T04:40:00Z\",\"waited_s\":660,\"reasons\":[\"lanes full\",\"load 27 > 24\"]}')",
+        );
+        let report = status(&s).unwrap();
+        let text = report.text();
+        assert!(
+            text.contains(
+                "waiting    proj job-owner (Owner step) waiting since 04:40 UTC: lanes full, load 27 > 24\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(report.waiting.len(), 1);
     }
 
     #[test]

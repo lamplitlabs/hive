@@ -98,6 +98,23 @@ project kept an improve job queued for a day while fairness saw each project
 served; a kept slot still takes the meta kinds when no work is queued.
 Configured concurrency, daily limits and lead priority remain unchanged.
 
+When one of the owner's jobs (a lead's sitting, an answer, a job planned from
+an owner task, a security update) has waited in the queue for ten minutes
+(`pulse_tasks::OWNER_WAIT_MINUTES`), the daemon writes one `job.owner-wait`
+event on it naming every hold it saw while the job waited, short: `lanes
+full` (every slot busy with the fleet's work), `load 27 > 24`, `memory 300
+MB < 1024 MB`, `restart drain`, `disk floor`, `bulk disk away`, `daily cap
+reached` - or the tick's own idle reason when none of those held it - and
+logs `owner job <id> (<project>) waiting since 04:40 UTC: lanes full, load 27
+> 24`. `pulse status` lists the open ones as `waiting` lines, and the task's
+wait line on the board and the task page reads `The next step has waited
+since 04:40 UTC: lanes full, load 27 > 24.` in place of "waiting for a free
+agent". A wait ends when the job is leased or queued again; the next wait
+gets its own event. On 2026-11-03 the owner's TASK-055 waited from 04:40 to
+15:18 behind full lanes, a load of 26-30 over the line 24 and a restart
+window, and only the daemon's deduped idle log said so
+(crates/pulse-runner/src/owner_wait.rs).
+
 ## Services and self-update
 
 `pulse service install` writes two units: `pulse.daemon` (the fleet) and

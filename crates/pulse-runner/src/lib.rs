@@ -61,6 +61,7 @@ pub mod machines;
 pub mod manifest;
 pub mod multipass;
 pub mod onboard;
+pub mod owner_wait;
 pub mod pair;
 pub mod pair_inspect;
 pub mod pipeline;
