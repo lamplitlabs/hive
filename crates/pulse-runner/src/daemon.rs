@@ -731,6 +731,91 @@ pub(crate) fn rented_caps(s: &pulse_store::Store) -> std::collections::BTreeSet<
     )
 }
 
+/// Why renting again for `project` would only repeat the last rental: the
+/// rented machine the daemon last gave it was marked unfit for a tool the
+/// image lacks, and the project's recipe - the one thing that puts a tool on
+/// a rented machine - has not changed since. Measured on 2026-11-05: CR-064
+/// came up, lacked `cargo` for the brain, sat idle for 30 minutes because
+/// nothing else needed Linux, was released, and the needs path rented CR-065
+/// for the same job within the minute; up to three such machines a day fit
+/// under `compute.max_hours_per_day`, each one as useless as the last. The
+/// line returned goes into the idle note and names the fix.
+pub(crate) fn rental_repeats_lack(
+    s: &pulse_store::Store,
+    project: &str,
+    now: &str,
+) -> Option<String> {
+    let conn = s.conn().ok()?;
+    let since = crate::util::plus_hours(now, -f64::from(crate::recipe::UNFIT_HOURS));
+    let rows = crate::util::must_rows(
+        &conn,
+        "SELECT e.at, e.subject, e.detail FROM events e WHERE e.action = 'executor.unfit' AND e.at >= ? AND EXISTS (SELECT 1 FROM compute_requests c WHERE c.executor = e.subject AND c.executor != '') ORDER BY e.seq DESC LIMIT 200",
+        &[&since],
+    );
+    let (at, executor, tool) = rows.iter().find_map(|r| {
+        let detail: serde_json::Value = serde_json::from_str(&r.str("detail")).ok()?;
+        (detail["project"].as_str() == Some(project)).then(|| {
+            (
+                r.str("at"),
+                r.str("subject"),
+                detail["tool"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+    })?;
+    // Only a missing tool repeats on the next machine for sure: a setup that
+    // fails or a disk that is short may not, and the repair job and the
+    // bigger size are other paths.
+    let bare = tool.strip_prefix("tool:").unwrap_or(&tool);
+    if bare.is_empty() || bare.contains(':') {
+        return None;
+    }
+    let row = crate::util::must_one(&conn, "SELECT * FROM projects WHERE slug = ?", &[&project]);
+    if recipe_changed_since(s, &row, &at) {
+        return None;
+    }
+    Some(format!(
+        "renting again would meet the same lack: {executor} {} for {project} ({at}) and the recipe of {project} has not changed since; a rented machine starts from the image, so pin the tool in `tools:` of {} (`pulse env set --project {project}`), and the daemon rents again",
+        crate::recipe::unfit_phrase(&tool),
+        crate::recipe::RECIPE_PATH
+    ))
+}
+
+/// Whether the recipe the next job of `project` would read is newer than
+/// `at`: the store's copy by its revision time, else the committed file by
+/// its last commit on the default branch.
+fn recipe_changed_since(s: &pulse_store::Store, project: &Row, at: &str) -> bool {
+    let slug = project.str("slug");
+    if let (_, Some(rev)) = crate::recipe::recipe_record(s, &slug) {
+        return rev.at.as_str() > at;
+    }
+    let root = project.str("path");
+    if root.is_empty() {
+        return false;
+    }
+    let mut def = project.str("default_branch");
+    if def.is_empty() {
+        def = "main".to_string();
+    }
+    let spec = format!("refs/heads/{def}");
+    let out = crate::util::git(
+        &root,
+        &[
+            "log",
+            "-1",
+            "--format=%cI",
+            &spec,
+            "--",
+            crate::recipe::RECIPE_PATH,
+        ],
+    );
+    if !out.ok() {
+        return false;
+    }
+    chrono::DateTime::parse_from_rfc3339(out.stdout.trim())
+        .map(|t| t.with_timezone(&chrono::Utc) > crate::util::must_iso(at))
+        .unwrap_or(false)
+}
+
 /// Rents a machine for a waiting queue when the owner pre-authorised it:
 /// `compute.auto_approve` within `compute.max_vms` and
 /// `compute.max_hours_per_day`, one open request at a time, and only for a
@@ -778,24 +863,46 @@ pub(crate) fn auto_compute(
         });
     }
     let since = crate::util::plus_minutes(now, -min_wait);
-    // Only a job the rented machine can run is worth renting one for.
+    // Only a job the rented machine can run is worth renting one for, and
+    // not one whose project the last rented machine already proved too
+    // bare for (`rental_repeats_lack`): the next waiting project gets the
+    // machine instead.
     let (fit, words) = pulse_store::needs::sql_fit("j.needs", &rented_caps(s));
     let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
     for w in &words {
         vals.push(w);
     }
-    let job = crate::util::must_one(
+    let candidates = crate::util::must_rows(
         &conn,
         &format!(
-            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} ORDER BY j.created_at LIMIT 1",
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} ORDER BY j.created_at LIMIT 50",
             crate::jobs::work_kinds_sql()
         ),
         &vals,
     );
-    if job.0.is_empty() {
+    if candidates.is_empty() {
         return Err(why(format!(
             "no improve or task job that a rented Linux machine could run has waited {min_wait} min"
         )));
+    }
+    let mut repeats: Vec<String> = Vec::new();
+    let mut seen_projects = std::collections::BTreeSet::new();
+    let mut job = Row::default();
+    for c in candidates {
+        let project = c.str("project");
+        if !seen_projects.insert(project.clone()) {
+            continue;
+        }
+        match rental_repeats_lack(s, &project, now) {
+            Some(line) => repeats.push(line),
+            None => {
+                job = c;
+                break;
+            }
+        }
+    }
+    if job.0.is_empty() {
+        return Err(why(repeats.join("; ")));
     }
     let reason = format!(
         "{waiting}; {} ({}) is first in line",
@@ -3248,7 +3355,7 @@ mod tests {
     use crate::test_helpers::*;
     use crate::test_helpers_completion::with_closed_login_gate;
     use crate::test_helpers_daemon::{
-        exec1, finished_job_of_kind, finished_run, store_with_projects, test_wait,
+        exec1, finished_job_of_kind, finished_run, queued_job, store_with_projects, test_wait,
     };
     use crate::test_helpers_selfupdate::{head_of, self_update_fixture, wait_self_update_idle};
     use crate::util::file_exists;
@@ -3850,6 +3957,88 @@ mod tests {
             Err(open),
             "a second machine while the first is open"
         );
+    }
+
+    #[test]
+    fn a_lack_the_last_rented_machine_had_is_not_rented_for_again_until_the_recipe_changes() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj", "other"]);
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "1"),
+            ("compute.max_hours_per_day", "0"),
+        ] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        const WAITED: &str = "1 job(s) of proj waited 31 min for a machine that offers linux";
+        queued_job(&s, "j-proj", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        // The rental before this tick: made for proj, paired as hands-cr-1,
+        // marked unfit for lacking cargo, released for idling (CR-064).
+        let first = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("the first rental");
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'released', executor = 'hands-cr-1' WHERE id = ?",
+            &[&first.id],
+        );
+        crate::recipe::mark_unfit(
+            &*s.conn().unwrap(),
+            &crate::util::plus_minutes(TEST_NOW, -40),
+            "hands-cr-1",
+            "proj",
+            "cargo",
+        );
+        let err = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect_err("the same lack again");
+        let NoAutoCompute::Why(why) = &err else {
+            panic!("{err}");
+        };
+        assert!(
+            why.starts_with(
+                "renting again would meet the same lack: hands-cr-1 lacks cargo for proj ("
+            ) && why.contains("pulse env set --project proj"),
+            "{why}"
+        );
+        // A project that never had the machine gets it instead.
+        queued_job(&s, "j-other", "other", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        let second = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("the other project rents");
+        assert_eq!(second.project, "other");
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'released' WHERE id = ?",
+            &[&second.id],
+        );
+        exec1(&s, "DELETE FROM jobs WHERE id = 'j-other'", &[]);
+        // A recipe that pins the tool makes the next machine a different
+        // one, so proj is rented for again.
+        let project = crate::util::must_one(
+            &*s.conn().unwrap(),
+            "SELECT * FROM projects WHERE slug = 'proj'",
+            &[],
+        );
+        crate::env::env_set(
+            &s,
+            project,
+            "---\nrecipe: 1\ntools:\n  - rust@1.95\n---\n".into(),
+            "owner".into(),
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+        let third = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("rents once the recipe changed");
+        assert_eq!(third.project, "proj");
     }
 
     #[test]
