@@ -35,6 +35,9 @@ struct ListEntry {
     state: String,
     job: String,
     reasons: Vec<String>,
+    /// `#N` when the pull request stacks on one that must merge first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stacked_on: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -158,6 +161,28 @@ fn need_open(view: &PrView) -> Result<()> {
     .into())
 }
 
+/// A pull request stacked on another is merged after it, never before:
+/// merging it now would merge it into the branch below, not land it.
+fn need_bottom(s: &pulse_store::Store, project: &Row, number: i64) -> Result<()> {
+    let slug = project.str("slug");
+    let def = crate::baseline::default_branch(project.clone());
+    let Some(below) = s
+        .conn()
+        .ok()
+        .and_then(|c| review::pr_state(&c, &slug, number))
+        .and_then(|(pr, _)| review::stacked_on(&pr, &def))
+    else {
+        return Ok(());
+    };
+    Err(pulse_cli::errorf(
+        2,
+        &format!("Pull request #{number} is stacked on {below}"),
+        &format!("{below} must merge first; merging #{number} now would merge it into {below}'s branch, not land it"),
+        &format!("pulse review merge {}", below.trim_start_matches('#')),
+    )
+    .into())
+}
+
 /// A pull request already decided since its last push takes no second
 /// verdict: the agent issues exactly one. The owner's merge (`--by
 /// owner`) is the answer to a hand-off, so `review.owner` and
@@ -221,6 +246,7 @@ fn list(c: &mut Context) -> Result<()> {
     let mut entries = Vec::new();
     for p in &projects {
         let slug = p.str("slug");
+        let def = crate::baseline::default_branch(p.clone());
         for pr in review::open_prs(&conn, &slug) {
             let job = review::newest_review_job(&conn, &slug, pr.number).map(|(j, _)| j);
             let queued = crate::util::query_rows(
@@ -248,6 +274,7 @@ fn list(c: &mut Context) -> Result<()> {
                 None => ("waiting", String::new()),
             };
             entries.push(ListEntry {
+                stacked_on: review::stacked_on(&pr, &def),
                 pr,
                 project: slug.clone(),
                 state: state.to_string(),
@@ -278,6 +305,9 @@ fn list(c: &mut Context) -> Result<()> {
         }
         if !e.reasons.is_empty() {
             line.push_str(&format!("  for the owner: {}", e.reasons.join("; ")));
+        }
+        if let Some(below) = &e.stacked_on {
+            line.push_str(&format!("  stacked on {below}"));
         }
         writeln!(c.out, "{line}")?;
         writeln!(c.out, "    {}", e.pr.url)?;
@@ -419,6 +449,7 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
         .into());
     }
     need_undecided(s, &slug, number, by == "owner")?;
+    need_bottom(s, &project, number)?;
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let actor = crate::commands::actor_of(c);
@@ -997,5 +1028,46 @@ mod tests {
         let (_, err, code) = invoke(&s, "review", "proj", &["show"]);
         assert_eq!(code, 2);
         assert!(err.contains("Missing pull request number"), "{err}");
+    }
+
+    #[test]
+    fn merge_refuses_a_stacked_pull_request_and_list_says_what_it_stacks_on() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            "daemon",
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "job", "job": "JOB-b", "number": 8,
+                "url": "https://github.com/o/r/pull/8", "head": "pulse/worker/JOB-b",
+                "base": "pulse/task/TASK-001", "stack_on": 7, "to": "abc123", "opened": true,
+                "title": "PR 8 title"}),
+        );
+
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "8", "--by", "owner"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("Pull request #8 is stacked on #7"), "{err}");
+        assert!(err.contains("#7 must merge first"), "{err}");
+        assert!(err.contains("pulse review merge 7"), "{err}");
+        assert!(calls(&log).is_empty(), "{:?}", calls(&log));
+        assert!(events(&s, "review.merged").is_empty());
+        assert!(events(&s, "review.failed").is_empty());
+
+        let (out, _, code) = invoke(&s, "review", "proj", &["list"]);
+        assert_eq!(code, 0);
+        assert!(
+            out.contains("proj #8  PR 8 title  [job JOB-b]  waiting  stacked on #7"),
+            "{out}"
+        );
+        assert!(
+            out.contains("proj #7  PR 7 title  [task TASK-001]  waiting\n"),
+            "{out}"
+        );
     }
 }

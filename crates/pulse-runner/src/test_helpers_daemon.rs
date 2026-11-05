@@ -718,12 +718,13 @@ pub(crate) fn dispatch_of(
 }
 
 /// A `gh` on PATH that answers like GitHub for the delivery pass: `pr
-/// create` numbers pull requests from 7 and remembers each one's head, `pr
-/// list --head` finds the open one for a head, `pr list --state all` and
-/// `pr view N` print the states the test wrote (`set_state`), with each
-/// head's tip read from the bare remote named by `track_remote` and the
-/// forge's judgement of it as the test set it (`set_mergeable`,
-/// `set_checks`), and every call is logged. Drop it to take it off PATH.
+/// create` numbers pull requests from 7 and remembers each one's head and
+/// base, `pr edit N --base` moves the base, `pr list --head` finds the
+/// open one for a head, `pr list --state all` and `pr view N` print the
+/// states the test wrote (`set_state`), with each head's tip read from the
+/// bare remote named by `track_remote` and the forge's judgement of it as
+/// the test set it (`set_mergeable`, `set_checks`), and every call is
+/// logged. Drop it to take it off PATH.
 pub(crate) struct FakeGh {
     dir: std::path::PathBuf,
     _bin: tempfile::TempDir,
@@ -811,6 +812,15 @@ impl FakeGh {
             .trim()
             .to_string()
     }
+
+    /// The base pull request `n` targets: as `pr create` was given it, or
+    /// as the last `pr edit --base` moved it.
+    pub(crate) fn base_of(&self, n: i64) -> String {
+        std::fs::read_to_string(self.dir.join("bases").join(n.to_string()))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
 }
 
 pub(crate) fn fake_gh() -> FakeGh {
@@ -820,6 +830,7 @@ pub(crate) fn fake_gh() -> FakeGh {
         "state",
         "heads",
         "titles",
+        "bases",
         "byhead",
         "oid",
         "mergeable",
@@ -832,10 +843,11 @@ pub(crate) fn fake_gh() -> FakeGh {
         r#"#!/bin/sh
 d='{d}'
 echo "$@" >> "$d/gh.log"
-head=""; title=""; prev=""
+head=""; title=""; base=""; prev=""
 for a in "$@"; do
   [ "$prev" = "--head" ] && head="$a"
   [ "$prev" = "--title" ] && title="$a"
+  [ "$prev" = "--base" ] && base="$a"
   prev="$a"
 done
 key=$(printf '%s' "$head" | tr / _)
@@ -874,8 +886,12 @@ case "$1 $2 $3" in
     echo "[${{out%,}}]" ;;
   "pr create --head")
     n=$(cat "$d/next"); echo $((n + 1)) > "$d/next"
-    echo OPEN > "$d/state/$n"; echo "$head" > "$d/heads/$n"; echo "$title" > "$d/titles/$n"; echo "$n" > "$d/byhead/$key"
+    echo OPEN > "$d/state/$n"; echo "$head" > "$d/heads/$n"; echo "$title" > "$d/titles/$n"; echo "$base" > "$d/bases/$n"; echo "$n" > "$d/byhead/$key"
     echo "https://github.com/o/r/pull/$n" ;;
+  "pr edit "*)
+    [ -e "$d/state/$3" ] || {{ echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }}
+    echo "$base" > "$d/bases/$3"
+    echo "https://github.com/o/r/pull/$3" ;;
   "pr view "*)
     [ -e "$d/state/$3" ] || {{ echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }}
     pr_json "$3" ;;

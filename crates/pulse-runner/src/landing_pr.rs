@@ -274,6 +274,23 @@ pub(crate) fn create_pull_request(
     Ok((number, url))
 }
 
+/// Points pull request `number` at `base`: a pull request stacked on one
+/// that merged or closed moves onto that one's base.
+pub(crate) fn retarget_pull_request(
+    root: &str,
+    repo: &str,
+    number: i64,
+    base: &str,
+) -> Result<(), String> {
+    gh(
+        root,
+        repo,
+        &["pr", "edit", &number.to_string(), "--base", base],
+        Duration::from_secs(60),
+    )
+    .map(|_| ())
+}
+
 /// The fields `pr list` and `pr view` are asked for: the state and head of
 /// each pull request, and what stands between an open one and its merge.
 const PR_FIELDS: &str =

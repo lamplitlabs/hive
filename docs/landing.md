@@ -89,6 +89,55 @@ pushed onto an open pull request after the reviewer asked for changes
 ([The follow-up after changes](review.md#the-follow-up-after-changes)) is a
 `land.pr` with `opened` false and `fix` naming the follow-up job.
 
+## Stacked pull requests
+
+A project's pull requests form one stack. While a pull request of PULSE's
+is open, the next one is built on it rather than beside it: a task's branch
+is rebuilt from the head of the open pull request instead of the default
+branch, a job's, an experiment's or a hand-proposed branch has that head
+merged in (a merge commit on PULSE's own branch, in a scratch worktree),
+and the pull request is opened with `--base` the open pull request's branch.
+Two open pull requests therefore never hold changes to the same lines that
+meet for the first time at merge time. The one a new pull request goes on is
+the **top**: the stacking pull request opened last; its `land.pr` records
+the branch as `base` and the pull request as `stack_on`. A conversation's
+pull request (`pulse/chat-<id>`) is never stacked and never stacked on: the
+hub keeps its branch checked out in a worktree of its own, so nothing is
+merged into it and nothing is built on it. It targets the default branch
+whatever is open, and the next pull request of another kind goes on the
+task or job pull request below it. A `pulse review`'s fix goes onto the pull
+request it fixes, wherever that stands.
+
+The stack is plain git branches and explicit bases, nothing a forge keeps
+for PULSE. When the pull request below merges, the pass moves every pull
+request that targeted its head onto its own base (`gh pr edit <n> --base`;
+the default branch when the merged one was the bottom) and writes a fresh
+`land.pr` for each with the new `base`, `stack_on` for the new one below or
+absent, `opened` false and `retargeted_from` naming the old base; a forge
+failure leaves no event and the next pass tries again. GitHub moves a pull
+request itself when the branch below is deleted; PULSE does not count on it.
+A pull request below that is closed unmerged leaves its commits in the one
+above: that one is moved the same way and its task is told once that it
+carries the closed pull request's commits and may be rebuilt without them or
+merged as it is (`land.pr-unstacked` says the same for a job's, an
+experiment's or a proposed branch's). A merge conflict with the pull request
+below - rather than with the default branch - goes where a conflict went
+before: a task's branch to a rebase job whose brief names the pull request
+it must go onto, a job's branch to a `land.pr-held` hold that names the
+files and the pull request.
+
+Merging a stack needs merge commits, which is what PULSE's reviewer and the
+hub's Merge button use (`gh pr merge --merge`). A squash would land the
+lower pull request as one new commit the upper one does not have, and the
+upper would show the lower's changes again as its own. The reviewer takes
+the stack bottom up: only a pull request whose base is the default branch
+is queued for review (the log says `#8 stacked on #7: reviewed after #7
+merges` for the rest); `pulse review merge 8`, and the Merge button, refuse
+a stacked pull request and name the one that must merge first; `pulse
+review list` shows `stacked on #7` on its line. Nothing you merge yourself
+by hand needs a different order: merge the bottom and the pass moves the
+rest down within a pass.
+
 ## Polling and bookkeeping
 
 Each pass asks GitHub about every pull request PULSE opened and has no verdict
@@ -106,13 +155,14 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   default branch is fast-forwarded from the upstream at once rather than when
   the fetch memo runs out. Whether the reviewer merged it or you did, the
   event is the same; the reviewer's own record is `review.merged`
-  ([The reviewer](review.md)). A conversation's pull request (`pulse/chat-<id>`)
-  finishes the conversation as well: the pass says so on the bus
-  (`chat.finish`, subject the conversation, with the text *pull request #N
-  merged into main; this session is finished*) and the hub's wake loop ends
-  the session there - after a turn in flight, never through it - and writes
-  the text into the transcript; a hub that was down picks the event up from
-  its cursor when it starts ([Chat](console.md#chat)).
+  ([The reviewer](review.md)). The pull requests stacked on it move onto its
+  base ([Stacked pull requests](#stacked-pull-requests)). A conversation's
+  pull request (`pulse/chat-<id>`) finishes the conversation as well: the
+  pass says so on the bus (`chat.finish`, subject the conversation, with the
+  text *pull request #N merged into main; this session is finished*) and the
+  hub's wake loop ends the session there - after a turn in flight, never
+  through it - and writes the text into the transcript; a hub that was down
+  picks the event up from its cursor when it starts ([Chat](console.md#chat)).
 - **Closed without merging** - `land.pr-closed`. The branches are cleared
   too; a task goes back to *in progress* with a message in its conversation
   that says the pull request was closed and that its lead reads why on the
@@ -121,7 +171,8 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   stays on the remote; write here to carry on*) and stays as it was, its
   agent gets no turn; anything else is only the log line. The branch stays
   on the remote, so nothing is lost and nothing delivers it again; a new job
-  of the task makes a new pull request.
+  of the task makes a new pull request. The pull requests stacked on it move
+  onto its base too, carrying its commits, and are told so.
 - **Open** - where the review stands is the reviewer's record
   (`review.queued`, `review.owner`, `review.changes`), and the hub reads both
   ([Where the work stands](#where-the-work-stands-in-the-hub)). What the
@@ -157,7 +208,8 @@ acted on twice, and a head GitHub has not judged yet (`mergeable` `UNKNOWN`,
 or no sha from an older `gh`) waits for the next pass. Four outcomes:
 
 - **Conflicting, and the base merges in cleanly** (`mergeable` `CONFLICTING`
-  or `mergeStateStatus` `DIRTY`: the default branch moved after the head was
+  or `mergeStateStatus` `DIRTY`: the base - the default branch, or the pull
+  request below when the pull request is stacked - moved after the head was
   pushed) - the pass fetches the head and the base, merges the base into the
   head in a scratch worktree of the checkout (`.git/pulse-pr-refresh/<head>`,
   removed whatever happens) and pushes the merge onto the pull request with
@@ -236,14 +288,15 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 
 | Event | When | Detail |
 | --- | --- | --- |
-| `land.pr` | a pull request opened or updated | `project`, `kind` (`task`, `job`, `experiment`, `proposed`), `number`, `url`, `title`, `head`, `base`, `remote`, `from`, `to`, `commits`, `jobs`, `opened`; the ids: `task`, `job`, `experiment` with `archive` and `run_id`, `conversation`; `fix` (the follow-up job) when a follow-up was pushed onto it; `refreshed` true when the pass merged the base into the head |
+| `land.pr` | a pull request opened, updated or moved onto another base | `project`, `kind` (`task`, `job`, `experiment`, `proposed`), `number`, `url`, `title`, `head`, `base`, `remote`, `from`, `to`, `commits`, `jobs`, `opened`; the ids: `task`, `job`, `experiment` with `archive` and `run_id`, `conversation`; `stack_on` (the pull request `base` is the head of) when it is stacked; `fix` (the follow-up job) when a follow-up was pushed onto it; `refreshed` true when the pass merged the base into the head; `retargeted_from` (the old base) when the pull request below merged or closed |
 | `land.pr-refreshed` | an open pull request conflicted with its base and the base was merged into its head and pushed | `project`, `kind`, `number`, `head`, `head_sha` (the tip before), `new_sha` (the merge), `base` |
 | `land.pr-conflict` | an open pull request conflicted with its base and the merge did not go cleanly; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `files` (the paths left unmerged) |
 | `land.pr-checks` | checks failed on an open pull request's head; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `checks` (the failing names) |
 | `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
 | `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
-| `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit), `note` (why) |
-| `land.rebase` | a task's job branch conflicted with the default branch and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job) |
+| `land.pr-unstacked` | a job's, experiment's or proposed pull request was moved off one closed unmerged and carries its commits | `project`, `kind`, `number`, `url`, `head`, `base` (the new one), `closed` (the pull request that was below), `note`; a task's pull request gets a message in the task's conversation instead |
+| `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
+| `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |
 | `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not |
 | `land.sync-skipped` | the local default branch was left behind the upstream because the checkout is dirty and `landing.auto_stash` is off | `project`, `branch`, `upstream`, `behind`, `why`; at most once an hour per project |
 
