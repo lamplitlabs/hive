@@ -223,7 +223,7 @@ pub(crate) fn push_fixture(s: &pulse_store::Store) -> (Row, String, String) {
         .join(format!("origin-{}.git", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(bare.parent().unwrap()).expect("bare parent");
     let bare = bare.display().to_string();
-    run(".", &["git", "init", "--bare", "-q", &bare]);
+    run(".", &["git", "init", "--bare", "-q", "-b", "main", &bare]);
     run(&repo, &["git", "remote", "add", "origin", &bare]);
     run(&repo, &["git", "push", "-q", "-u", "origin", "main"]);
     (proj, repo, bare)
