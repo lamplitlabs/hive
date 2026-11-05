@@ -1519,14 +1519,54 @@ pub fn check_job_brief(
         sched,
         run,
         &format!(
-            "The check `{}` failed ({}) at {now} on {}. Output tail:\n\n{}\n\nMake it pass on the default branch. If the check itself is wrong, fix the script, or end the schedule with `pulse schedule end {} --note WHY` and say why.",
+            "The check `{}` failed ({}) at {now} on {}. {}\n\nMake it pass on the default branch. If the check itself is wrong, fix the script, or end the schedule with `pulse schedule end {} --note WHY` and say why.",
             sched.script,
             exit_text(rc),
             tree.at(),
-            quoted(tail),
+            check_output_quote(tail),
             sched.id
         ),
     )
+}
+
+/// The line `scripts/verify-check.sh` prints on stderr before its summary of
+/// a red run: which chunks failed and which tests.
+const FAILED_CHUNKS_MARKER: &str = "verify-check: failed chunks:";
+
+/// What a red check's brief quotes from its output. When the output holds a
+/// `verify-check: failed chunks:` summary, the lines from the last one on
+/// come first - they name the failing tests - followed by the output before
+/// them, so a long run of compiler or test noise can never push the failing
+/// test's name out of the brief. Each part keeps at most `OUTPUT_TAIL` chars.
+fn check_output_quote(output: &str) -> String {
+    let at = output
+        .rmatch_indices(FAILED_CHUNKS_MARKER)
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let rest = &output[i + FAILED_CHUNKS_MARKER.len()..];
+            (i == 0 || output[..i].ends_with('\n'))
+                && (rest.is_empty() || rest.starts_with('\n') || rest.starts_with("\r\n"))
+        });
+    match at {
+        Some(i) => {
+            let summary: String = output[i..].chars().take(OUTPUT_TAIL).collect();
+            format!(
+                "Failing chunks and tests:\n\n{}\n\nOutput tail before them:\n\n{}",
+                quoted(&summary),
+                quoted(&last_chars(&output[..i], OUTPUT_TAIL))
+            )
+        }
+        None => format!(
+            "Output tail:\n\n{}",
+            quoted(&last_chars(output, OUTPUT_TAIL))
+        ),
+    }
+}
+
+/// The last `n` chars of `s`.
+fn last_chars(s: &str, n: usize) -> String {
+    let skip = s.chars().count().saturating_sub(n);
+    s.chars().skip(skip).collect()
 }
 
 /// The brief of the job a watch queues when its script printed something.
@@ -1848,6 +1888,52 @@ pub fn fire_due(
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod check_brief_tests {
+    use super::{OUTPUT_TAIL, Schedule, Tree, check_job_brief};
+
+    /// A red verify run whose cargo noise alone is longer than the output
+    /// tail still yields a brief that names the failing test, ahead of the
+    /// noise, and the brief stays bounded.
+    #[test]
+    fn check_brief_names_the_failing_test_past_long_noise() {
+        let sched = Schedule {
+            id: "SCHED-009".into(),
+            script: "scripts/verify-check.sh".into(),
+            ..Schedule::default()
+        };
+        let tree = Tree {
+            branch: "main".into(),
+            sha: "0123456789abcdef".into(),
+        };
+        let noise = "   Compiling pulse-noise v0.1.0 (/x/y/z)\n".repeat(OUTPUT_TAIL / 20);
+        let output = format!(
+            "verify-check: failed chunks:\n  stale summary chunk 1: fail\n{noise}[stderr]\n{noise}verify-check: failed chunks:\n  pulse_store chunk 2: fail (exit 101, 1 failed)\nverify-check: failing tests:\n  store::tests::keeps_rows\nverify-check: 1 chunk(s) failed\n"
+        );
+        assert!(output.len() > 2 * OUTPUT_TAIL);
+        let brief = check_job_brief(&sched, 1, 1, "t", &tree, &output);
+        let named = brief.find("    store::tests::keeps_rows").expect(&brief);
+        let noise_at = brief.find("Compiling pulse-noise").expect(&brief);
+        assert!(named < noise_at, "{brief}");
+        assert!(brief.contains("Failing chunks and tests:\n\n    verify-check: failed chunks:\n      pulse_store chunk 2"), "{brief}");
+        assert!(!brief.contains("stale summary"), "{brief}");
+        assert!(brief.len() < 3 * OUTPUT_TAIL, "{}", brief.len());
+
+        let plain = check_job_brief(
+            &sched,
+            1,
+            1,
+            "t",
+            &tree,
+            "abc\nverify-check: failed chunks: inline only\n",
+        );
+        assert!(
+            plain.contains("Output tail:\n\n    abc\n    verify-check: failed chunks: inline only"),
+            "{plain}"
+        );
+    }
 }
 
 #[cfg(test)]
