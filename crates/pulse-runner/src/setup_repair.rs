@@ -415,7 +415,11 @@ mod tests {
         let (p, repo, bare) = push_fixture(&s);
         let other = tempfile::tempdir().expect("other").keep().join("other");
         let other = other.display().to_string();
-        run(".", &["git", "clone", "-q", &bare, &other]);
+        // Name the branch: the fixture's bare origin was made by a plain
+        // `git init --bare`, so its HEAD follows git's default branch
+        // (`master` on git 2.43) and a bare clone would check out an unborn
+        // branch, failing the push of `main` below.
+        run(".", &["git", "clone", "-q", "-b", "main", &bare, &other]);
         std::fs::write(std::path::Path::new(&other).join("renamed.txt"), "x\n").unwrap();
         run(&other, &["git", "add", "-A"]);
         run(&other, &["git", "commit", "-q", "-m", "rename upstream"]);
