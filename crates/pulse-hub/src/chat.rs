@@ -2029,7 +2029,7 @@ mod tests {
             json!({"text": "x", "parent": "chat-missing"}),
         );
         assert_eq!(code, 409, "{raw}");
-        assert!(raw.contains("no such conversation"), "{raw}");
+        assert!(raw.contains("no such session"), "{raw}");
         let child = wait_status(&h, &cid, &["idle"]);
         assert_eq!(child["parent_title"], "Release");
         assert_eq!(child["children"].as_array().unwrap().len(), 0);
@@ -2117,7 +2117,7 @@ mod tests {
             (format!("/api/v1/chat/{id}/image/9999/0"), 404),
             (format!("/api/v1/chat/{id}/image/x/0"), 404),
             // a missing conversation answers like the rest of the chat
-            // surface: 409 with "no such conversation".
+            // surface: 409 with "no such session".
             ("/api/v1/chat/missing/image/1/0".to_string(), 409),
         ] {
             let resp = client.get(format!("{}{path}", srv.url)).send().unwrap();
