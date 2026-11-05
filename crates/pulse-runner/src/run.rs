@@ -549,6 +549,7 @@ pub(crate) fn take_job_first(
             work_first,
             caps: Some(caps.clone()),
             reserved,
+            executor: exrow.str("name"),
             ..Default::default()
         },
     )?;
@@ -1508,7 +1509,51 @@ pub(crate) fn run_job(
         }
         log.add(tail(&out.stdout, 20000));
         log.add(tail(&out.stderr, 20000));
-        if !out.timeout && out.exit_code == pulse_store::HARNESS_HELD_EXIT_CODE && !custom_worker {
+        // The worker finished the job itself (`pulse job finish`) under this
+        // run's lease before the worker command ended: the job's status is
+        // its verdict, whatever stopped the harness afterwards.
+        let finished_by_worker = |c: &rusqlite::Connection| {
+            let cur = crate::jobs::job_row(c, job.str("id"));
+            !is_nil(&cur)
+                && cur.int("generation") == job.int("generation")
+                && cur.str("lease_agent") == agent
+                && ["done", "failed", "cancelled"].contains(&cur.str("status").as_str())
+        };
+        // A held exit that came after the finish is a stop notice on a job
+        // that is already done, whichever worker gave it: the finish stands,
+        // the session is settled, and the run is judged below like any
+        // other. Taken as a hold, the job was requeued over its `done`
+        // (2026-11-05: an owner's task finished at 06:13:37Z, verified, was
+        // requeued at 06:13:50Z by a restart's hold and its 161-step work
+        // was lost to a fresh clone).
+        let mut finished_before_hold = false;
+        if !out.timeout
+            && out.exit_code == pulse_store::HARNESS_HELD_EXIT_CODE
+            && finished_by_worker(&c)
+        {
+            finished_before_hold = true;
+            if let Some(h) = s
+                .held_harness_session_for_job(&job.str("id"))
+                .ok()
+                .flatten()
+                .filter(|h| h.run_id == run_id)
+            {
+                let _ = s.mark_harness_session_resumed(
+                    &h.id,
+                    "not carried on: the worker had finished the job before the hold; nothing is left to do",
+                );
+            }
+            log.add(format!(
+                "the harness exited {} (held) after the worker had finished job {}; the finish stands and the hold is not taken",
+                out.exit_code,
+                job.str("id")
+            ));
+        }
+        if !out.timeout
+            && out.exit_code == pulse_store::HARNESS_HELD_EXIT_CODE
+            && !custom_worker
+            && !finished_before_hold
+        {
             // The harness held for the runner's restart: its trajectory is
             // written and its session is `held`. Nothing is judged; the job
             // goes back to the queue with its clone and the next run carries
@@ -1755,7 +1800,13 @@ pub(crate) fn run_job(
                 .duration_since(launched)
                 .unwrap_or_default()
                 .as_secs();
-            let code = exit_code.unwrap_or(-1);
+            // The held exit after a finish is a stop notice, not a verdict:
+            // the worker's own finish (worker_reported) judges the run.
+            let code = if finished_before_hold {
+                0
+            } else {
+                exit_code.unwrap_or(-1)
+            };
             if code == 5 || owner_cancelled.load(Ordering::SeqCst) || worker_reported == "cancelled"
             {
                 status = "failed".into();
@@ -3158,6 +3209,21 @@ pub(crate) fn pick_worker(
     agent: &str,
     exclude: &[String],
 ) -> Result<String> {
+    pick_worker_on(s, agent, exclude, "")
+}
+
+/// [`pick_worker`] for a slot on `executor` (empty: any machine). A hand's
+/// slot passes the holder of work held on this machine, so the holder stays
+/// free for the local slot that can carry its clone and conversation on:
+/// the hands are offered work before this machine (daemon `slot_order`),
+/// and a holder busy with the fleet's work on a hand frees its held job for
+/// anyone, who starts it over.
+pub(crate) fn pick_worker_on(
+    s: &pulse_store::Store,
+    agent: &str,
+    exclude: &[String],
+    executor: &str,
+) -> Result<String> {
     if !agent.is_empty() {
         return Ok(crate::board::resolve_agent(s, agent.to_string(), true)?
             .map(|a| a.name)
@@ -3179,6 +3245,12 @@ pub(crate) fn pick_worker(
         for x in exclude {
             vals.push(Box::new(x.clone()));
         }
+    }
+    if !executor.is_empty() && executor != crate::executor::LOCAL_EXECUTOR {
+        q.push_str(&format!(
+            "AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id JOIN jobs j ON j.id = h.job_id JOIN projects p ON p.slug = j.project WHERE h.agent = a.name AND h.status = 'held' AND j.status = 'queued' AND p.status = 'active' AND r.executor = '{}') ",
+            crate::executor::LOCAL_EXECUTOR
+        ));
     }
     // A worker with held work waiting in the queue goes first: only it can
     // carry that work on, and nobody else may take it while it is free -
@@ -5243,6 +5315,125 @@ mod tests {
     }
 
     #[test]
+    fn run_job_keeps_the_finish_of_a_worker_that_held_after_finishing_the_job() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        let job = staged_work_job(&s);
+        let job_id = job.str("id");
+        let generation = job.int("generation");
+        // The worker commits, finishes the job (`pulse job finish`, done
+        // here by the test once the commit is in), then is held by the
+        // runner's restart and exits as the harness does when held.
+        let committed = std::path::Path::new(&s.home).join("worker-committed");
+        let hold = std::path::Path::new(&s.home).join("worker-hold");
+        let worker = format!(
+            "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && touch {} && while ! test -e {}; do sleep 0.1; done; exit {}",
+            crate::util::shell_quote(&committed.display().to_string()),
+            crate::util::shell_quote(&hold.display().to_string()),
+            pulse_store::HARNESS_HELD_EXIT_CODE
+        );
+        let run_store = s.clone();
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let r = run_job(
+                &run_store,
+                job,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                    ..Default::default()
+                },
+            );
+            let _ = result_tx.send(r);
+        });
+        let began = std::time::Instant::now();
+        while !committed.exists() {
+            assert!(
+                began.elapsed() < crate::test_helpers_daemon::test_wait(Duration::from_secs(60)),
+                "the worker never committed"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let run_id = {
+            let c = s.conn().unwrap();
+            crate::util::must_one(
+                &c,
+                "SELECT id FROM runs WHERE job_id = ? AND status = 'running'",
+                &[&job_id],
+            )
+            .str("id")
+        };
+        crate::jobs::finish_job(
+            &s,
+            job_id.clone(),
+            "aurora".into(),
+            "done".into(),
+            "added the note".into(),
+            String::new(),
+            generation,
+        )
+        .unwrap();
+        let traj = std::path::Path::new(&s.home).join("traj-finished.json");
+        std::fs::write(&traj, "[]").unwrap();
+        hold_session(
+            &s,
+            "h-finished",
+            &job_id,
+            &run_id,
+            "aurora",
+            &traj.display().to_string(),
+        );
+        std::fs::write(&hold, "").unwrap();
+        let r = result_rx
+            .recv_timeout(crate::test_helpers_daemon::test_wait(Duration::from_secs(
+                120,
+            )))
+            .expect("the run did not settle after the worker exited")
+            .unwrap();
+        // Judged by the finish, not taken as a hold: the commit lands.
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.int("commits"), 1, "run: {r:?}");
+        assert_eq!(r.int("exit_code"), 75, "the run keeps the real exit: {r:?}");
+        let log = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log.contains("the finish stands and the hold is not taken"),
+            "{log}"
+        );
+        let c = s.conn().unwrap();
+        let j = crate::jobs::job_row(&c, job_id.clone());
+        assert_eq!(j.str("status"), "done", "job: {j:?}");
+        let refs = run(
+            &root,
+            &[
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads/pulse/",
+            ],
+        );
+        assert!(refs.contains("pulse/"), "nothing landed: {refs:?}");
+        // The held session is settled, not offered to a next run.
+        let h = s.harness_session_head("h-finished").unwrap().unwrap();
+        assert_eq!(h.status, "resumed", "{h:?}");
+        assert!(
+            h.error.contains("finished the job before the hold"),
+            "{}",
+            h.error
+        );
+        assert!(s.held_harness_session_for_job(&job_id).unwrap().is_none());
+        assert!(
+            crate::test_helpers::work_leftovers(&s.home).is_empty(),
+            "clone kept for a run that is not held"
+        );
+    }
+
+    #[test]
     fn step_budget_stop_is_the_harness_step_limit_exit_alone() {
         let stopped = "harness stopped: step_limit after 150 model calls and 158 commands; format_errors=0; error: stopped at the step budget: 150 model calls";
         assert!(step_budget_stop(false, 1, stopped));
@@ -6327,6 +6518,31 @@ mod tests {
         assert_eq!(
             pick_worker(&s, TEST_NOW, "", &["borealis".into()]).unwrap(),
             "aurora"
+        );
+        // The work was held on this machine: a hand's slot passes borealis,
+        // who stays free for the local slot that carries the clone on.
+        crate::util::exec1(
+            &conn,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-h-held', ?, 'borealis', 'proj', ?, 'held', 'local')",
+            &[&job.str("id"), &TEST_NOW],
+        );
+        assert_eq!(pick_worker_on(&s, "", &[], "hands-1").unwrap(), "aurora");
+        assert_eq!(
+            pick_worker_on(&s, "", &[], crate::executor::LOCAL_EXECUTOR).unwrap(),
+            "borealis"
+        );
+        // Held on a hand, the session carries on nowhere: any slot may take
+        // borealis.
+        crate::util::exec1(
+            &conn,
+            "UPDATE runs SET executor = 'hands-2' WHERE id = 'run-h-held'",
+            &[],
+        );
+        assert_eq!(pick_worker_on(&s, "", &[], "hands-1").unwrap(), "borealis");
+        crate::util::exec1(
+            &conn,
+            "UPDATE runs SET executor = 'local' WHERE id = 'run-h-held'",
+            &[],
         );
         // Once the held work is taken again, nothing pins borealis.
         crate::util::exec1(

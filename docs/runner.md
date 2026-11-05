@@ -185,7 +185,11 @@ harness saves its conversation and exits held within moments, the job
 returns to the queue with the attempt refunded and the next daemon carries
 it on in the same clone, so the handover costs the run a step rather than
 the machine the run's length - log lines `restart: N run(s) in flight, M
-asked to hold (daemon.restart_hold); ...` then one per run. A run past its
+asked to hold (daemon.restart_hold); ...` then one per run. A held job
+waits for the agent that held it while that agent is free, and for this
+machine: a hand keeps no clone between runs, so a hand's slot passes it
+(after the restart of 2026-11-05 a job held at 161 steps went to
+hands-cr-065 and started over). A run past its
 harness - in its run-end check, or a custom worker - has no session to hear
 the hold and runs to its end, since a check stopped midway loses the run and
 its job is done over. The measured reason: on the brain, where a task run
@@ -272,11 +276,21 @@ agent, which the runner dispatches first once it is free and which the queue
 waits for while that agent is active and free - picks
 the conversation back up (`pulse harness run --resume`) with a note of where
 it was interrupted, in the same clone, and the agent carries on instead of
-starting over; the held session is marked `resumed`. A run that cannot hold
+starting over; the held session is marked `resumed`. A hold that reaches the
+harness after the worker finished the job (`pulse job finish`) is a stop
+notice on a job already done: the finish stands, the held exit is not a
+verdict, the session is settled and the run is judged by the finish - taken
+as a hold, the requeue overwrote the `done` (2026-11-05: an owner's task
+finished and verified at 06:13:37Z was requeued at 06:13:50Z and its
+161-step work lost to a fresh clone). A run that cannot hold
 (a custom worker command, a run still in its recipe setup or already in its
 run-end check, a remote executor, an agent gone inactive) is stopped after
 `daemon.hold_seconds` (default 120) and settles `lost`: its job returns to
-the queue and starts over. A delivery pass or measurement in flight gets the
+the queue and starts over. On a hand the stop ends the ssh session the
+worker or the check runs in and the run's clean-up tells the hand to clean
+the job, which ends what the worker left running there; until 2026-11-05 a
+hand's run could not be stopped at all, and a restart with one in flight
+waited on the hand's budget (twenty hours for a task). A delivery pass or measurement in flight gets the
 same cap before it is cancelled; the next daemon delivers or measures again. The
 ask is heard while the daemon waits for its runs too: a daemon whose drain
 is over and that waits for a run past its harness reads the ask every two
