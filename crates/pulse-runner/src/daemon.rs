@@ -5580,12 +5580,22 @@ mod tests {
         )
         .unwrap();
         let out = OutBuf::new();
+        // Two loops, whichever way the first run's end reaches the loop.
+        // Either the bus wakes loop 1 before the result lands (loop 2 then
+        // waits for the run at its head, and loop 3 retires the first
+        // worker and leases the second job), or the result itself ends
+        // loop 1 (loop 2 retires and leases). The limit is checked only at a
+        // loop's foot, so both orders stop right after the second lease and
+        // the drain retires the second worker. A third loop limit let a full
+        // idle pass plan a Daily reflect under load: `pick_worker` spawned a
+        // fresh worker for it before the daily cap (2) refused the lease,
+        // and that worker, never run, stayed active.
         let result = daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
             DaemonOpts {
                 interval: 7,
-                max_loops: 3,
+                max_loops: 2,
                 out: Some(out.writer()),
                 worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                 sleep: Some(std::sync::Arc::new(|_| true)),
