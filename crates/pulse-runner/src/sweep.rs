@@ -78,9 +78,6 @@ pub(crate) struct SweepOpts {
 pub(crate) const PRESSURE_KEEP: Duration = Duration::from_secs(24 * 3600);
 pub(crate) const PRESSURE_CACHE_KEEP: Duration = Duration::from_secs(3600);
 pub(crate) const PRESSURE_VACUUM_FREE: i64 = 64 << 20;
-/// How long a hub conversation stays closed or archived before the sweep
-/// takes its clean worktree (its branch, artifacts and attachments stay).
-pub(crate) const CHAT_WORKTREE_KEEP: Duration = Duration::from_secs(3 * 24 * 3600);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Swept {
@@ -168,6 +165,10 @@ pub(crate) struct Sweeper {
     pub(crate) vacuum_free: i64,
     /// `daemon.build_cache_keep_days`.
     pub(crate) cache_keep: std::time::Duration,
+    /// `daemon.chat_worktree_keep_days`: how long a hub conversation stays
+    /// closed or archived before the sweep takes its clean worktree (its
+    /// branch, artifacts and attachments stay); zero keeps every one.
+    pub(crate) chat_keep: std::time::Duration,
     pub(crate) rep: SweepReport,
     pub(crate) projects: Vec<Row>,
     /// Every project checkout the store knows, active or not: never a sweep target.
@@ -226,6 +227,7 @@ impl Sweeper {
             log_max: (s.setting_int("daemon.log_max_mb").max(0) as u64) << 20,
             vacuum_free: s.setting_int("daemon.vacuum_free_mb").max(0) << 20,
             cache_keep: days("daemon.build_cache_keep_days", 1),
+            chat_keep: days("daemon.chat_worktree_keep_days", 0),
             rep: SweepReport {
                 at: now,
                 dry_run: o.dry_run,
@@ -2138,7 +2140,8 @@ impl Sweeper {
         }
     }
     /// The worktrees of hub conversations (`work/chat/<id>/<slug>`) closed or
-    /// archived for over `CHAT_WORKTREE_KEEP`: each one is a full checkout
+    /// archived for over `daemon.chat_worktree_keep_days` (zero keeps them
+    /// all; disk pressure does not shorten it): each one is a full checkout
     /// with its installs, and closed ones piled up (32 GB for 70 folders).
     /// One goes with `git worktree remove` on the project checkout, then
     /// `worktree prune`, when `git status --porcelain` in it is empty (and,
@@ -2150,6 +2153,9 @@ impl Sweeper {
     /// scratch folder. A worktree another open conversation shares (a
     /// sub-conversation's) is held; a dirty one is held with one line naming it.
     pub(crate) fn sweep_chat_worktrees(&mut self) {
+        if self.chat_keep.is_zero() {
+            return;
+        }
         let Ok(conn) = self.s.conn() else {
             return;
         };
@@ -2187,7 +2193,7 @@ impl Sweeper {
                 continue;
             };
             let ago = (now - since).to_std().unwrap_or_default();
-            if ago < CHAT_WORKTREE_KEEP {
+            if ago < self.chat_keep {
                 continue;
             }
             let shared = rows.iter().any(|o| {
@@ -5187,6 +5193,30 @@ mod tests {
         let recent = seed("chat-recent", "closed", "2026-09-05T10:00:00Z");
         let open = seed("chat-old-idle", "idle", old);
         let tip = run(&root, &["git", "rev-parse", "pulse/chat-chat-old-closed"]);
+
+        // The owner's window decides: five days closed is inside a week, and
+        // zero keeps every conversation checkout.
+        for keep in ["7", "0"] {
+            set_setting(&s, "daemon.chat_worktree_keep_days", keep);
+            let rep = sweep(
+                &s,
+                project_rows(&s),
+                TEST_NOW.into(),
+                SweepOpts {
+                    actor: "daemon".into(),
+                    pressure: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                swept_paths(&rep.removed, "worktree").is_empty(),
+                "keep {keep}: {:?}",
+                rep.removed
+            );
+            assert!(crate::util::file_exists(&gone), "keep {keep} removed it");
+        }
+        set_setting(&s, "daemon.chat_worktree_keep_days", "3");
 
         let dry = sweep(
             &s,
