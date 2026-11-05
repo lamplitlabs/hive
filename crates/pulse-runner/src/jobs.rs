@@ -74,6 +74,16 @@ pub(crate) struct LeaseOpts {
     /// The machine is kept for the work that needs it: only a job with
     /// needs is taken.
     pub reserved: bool,
+    /// The machine taking the job (an executor name; empty leases without
+    /// looking). A job whose held harness session was on this machine
+    /// (`runs.executor` of the held run is `local`) is leased only here: a
+    /// hand keeps no clone between runs, so the same agent offered a hand's
+    /// slot would start the job over. Measured 2026-11-05: after the
+    /// runner's restart, job-…-297ea1, held on the hub at 161 steps, was
+    /// leased to hands-cr-065; `resumable_held_run` settled the session as
+    /// not carried on, the hand's connect was refused, and the second try
+    /// on the hub started from nothing.
+    pub executor: String,
 }
 
 pub(crate) fn queue_onboarding_job(
@@ -603,6 +613,16 @@ pub(crate) fn lease_job(
             owner_driven_sql("k")
         ));
         vals.push(Box::new(agent.clone()));
+        // A job held on this machine (its run's executor is local) carries
+        // on from the clone and conversation kept here; a hand keeps no
+        // clone between runs, so a hand's slot passes it rather than start
+        // it over. A session held on a hand starts over wherever it goes.
+        if !o.executor.is_empty() && o.executor != crate::executor::LOCAL_EXECUTOR {
+            sql.push_str(&format!(
+                " AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}')",
+                crate::executor::LOCAL_EXECUTOR
+            ));
+        }
         // The work this agent holds first - its clone and conversation carry
         // on only under it; then the owner's work; then the jobs that need
         // this kind of machine (fewer machines can take them, so the ones
@@ -1327,6 +1347,68 @@ mod tests {
         );
         let fourth = lease("aurora");
         assert_eq!(fourth.str("id"), held, "{fourth:?}");
+    }
+
+    #[test]
+    fn a_job_held_on_this_machine_is_leased_only_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        join(&s, "borealis");
+        let held = queue(&s, "proj", "improve", "held-work", 5);
+        let other = queue(&s, "proj", "improve", "other-work", 1);
+        hold_session(&s, "h-home", &held, "borealis");
+        let run_on = |run: &str, executor: &str| {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES (?, ?, 'borealis', 'proj', ?, 'held', ?)",
+                &[&run, &held, &crate::test_helpers::TEST_NOW, &executor],
+            );
+        };
+        run_on("run-h-home", crate::executor::LOCAL_EXECUTOR);
+        let lease = |executor: &str| {
+            super::lease_job(
+                &s,
+                "borealis".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let requeue = |id: &str| {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&id],
+            );
+        };
+        // The holder offered a hand's slot passes the job it holds here,
+        // although it is the higher priority and the holder's own, and
+        // takes the other; this machine's slot takes the held job.
+        let on_hand = lease("hands-1");
+        assert_eq!(on_hand.str("id"), other, "{on_hand:?}");
+        requeue(&other);
+        let at_home = lease(crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(at_home.str("id"), held, "{at_home:?}");
+        // A lease that names no machine looks at none of this.
+        requeue(&held);
+        let anywhere = lease("");
+        assert_eq!(anywhere.str("id"), held, "{anywhere:?}");
+        // A session held on a hand kept no clone: any machine starts it over.
+        requeue(&held);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE harness_sessions SET run_id = 'run-h-away' WHERE id = 'h-home'",
+            &[],
+        );
+        run_on("run-h-away", "hands-2");
+        let elsewhere = lease("hands-1");
+        assert_eq!(elsewhere.str("id"), held, "{elsewhere:?}");
     }
 
     fn add_second_project(s: &pulse_store::Store, slug: &str) {

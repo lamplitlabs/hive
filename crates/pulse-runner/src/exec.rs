@@ -621,7 +621,23 @@ impl SshExec {
         stdin: &[u8],
         timeout: Duration,
     ) -> Result<(i32, String, String)> {
-        let (rc, out, err_text) = crate::executor::ssh_run(&self.local.row, args, stdin, timeout)?;
+        self.call_until(&pulse_bus::CancellationToken::new(), args, stdin, timeout)
+    }
+    /// [`call`](Self::call) that `cancel` ends: the ssh session is killed
+    /// and the error carries the cancellation. The worker and the check run
+    /// through this one, so a restart the owner asked for now, a stall or
+    /// the stop grace end a run on a hand like one here; through `call`
+    /// they could not, and the daemon's exit waited on the hand's budget
+    /// (twenty hours for a task) while the hub showed it restarting.
+    pub(crate) fn call_until(
+        &self,
+        cancel: &pulse_bus::CancellationToken,
+        args: &[String],
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> Result<(i32, String, String)> {
+        let (rc, out, err_text) =
+            crate::executor::ssh_run_context(cancel, &self.local.row, args, stdin, timeout)?;
         let shown = if args.len() > 4 { &args[..4] } else { args };
         self.local.log.add(format!(
             "$ ssh {} {}\n{}{}",
@@ -827,11 +843,27 @@ impl Executor for SshExec {
         args.push("--".into());
         args.extend(cmd.iter().cloned());
         self.local.begun = true;
-        let (rc, out, err_text) = self.call(
+        let called = self.call_until(
+            cancel,
             &args,
             &[],
             Duration::from_secs((minutes.max(1) * 60 + 120) as u64),
-        )?;
+        );
+        // Stopped by the runner before the cap: the same outcome as a worker
+        // here (proc.rs), so the run reads as lost and the job goes back to
+        // the queue; `cleanup` then tells the hand to clean the job, which
+        // ends what the worker left running there.
+        if let Err(e) = &called
+            && cancel.is_cancelled()
+        {
+            return Ok(Outcome {
+                timeout: true,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: e.to_string(),
+            });
+        }
+        let (rc, out, err_text) = called?;
         self.local.last_out = Some(out.clone());
         if rc == crate::executor::REMOTE_EXIT_TIMEOUT {
             return Ok(Outcome {
@@ -909,14 +941,14 @@ impl Executor for SshExec {
         cmd: &str,
         minutes: i32,
     ) -> (Option<i32>, String) {
-        let _ = cancel;
         let budget = if minutes <= 0 {
             "1s".to_string()
         } else {
             minutes.to_string()
         };
         let call = self.local.beat_during("verify", || {
-            self.call(
+            self.call_until(
+                cancel,
                 &[
                     "verify".into(),
                     self.local.job.str("id"),
@@ -929,6 +961,9 @@ impl Executor for SshExec {
             )
         });
         match call {
+            // Stopped by the runner before the cap: no verdict, as for a
+            // check here, so run.rs reads the run as lost rather than failed.
+            _ if cancel.is_cancelled() => (None, String::new()),
             Ok((crate::executor::REMOTE_EXIT_TIMEOUT, out, err)) => (
                 None,
                 format!("{}{}", tail_str(&out, 20000), tail_str(&err, 20000)),
@@ -2779,6 +2814,90 @@ mod tests {
         assert!(text.contains("pulse is not on PATH"), "{text}");
         assert!(text.contains("looked in PATH=/usr/bin:/bin"), "{text}");
         assert!(!PULSE_REMOTE_RAN.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// A fake hand that answers every verb at once and, like a real ssh
+    /// child, ends with the cancellation when the caller's token is
+    /// cancelled.
+    fn fake_hand_ssh(
+        cancel: &pulse_bus::CancellationToken,
+        argv: &[String],
+        _stdin: &[u8],
+        _timeout: Duration,
+    ) -> Result<(i32, String, String)> {
+        let verb = argv
+            .last()
+            .and_then(|s| s.strip_prefix("b64 "))
+            .and_then(|s| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.decode(s).ok()
+            })
+            .and_then(|v| {
+                v.split(|b| *b == 0)
+                    .find(|p| !p.is_empty())
+                    .map(|p| String::from_utf8_lossy(p).to_string())
+            })
+            .unwrap_or_default();
+        if cancel.is_cancelled() {
+            return Err(pulse_bus::ContextError::Canceled.into());
+        }
+        match verb.as_str() {
+            "probe" => Ok((0, "hands=ok pulse=ok heartbeat=1".into(), String::new())),
+            _ => Ok((0, String::new(), String::new())),
+        }
+    }
+
+    #[test]
+    fn a_hand_run_the_runner_stops_ends_as_a_stop_not_as_a_result() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("run.key");
+        std::fs::write(&key, b"key").unwrap();
+        let mut row = Row::new();
+        row.insert("name", serde_json::json!("hands"));
+        row.insert("address", serde_json::json!("runner@example.invalid"));
+        let mut job = Row::new();
+        job.insert("id", serde_json::json!("job-remote"));
+        let mut e = SshExec {
+            local: LocalExec {
+                s: Some((*s).clone()),
+                row,
+                job,
+                home: s.home.clone(),
+                agent: "aurora".into(),
+                clone_dir: dir.path().join("clone").display().to_string(),
+                key: key.display().to_string(),
+                ..Default::default()
+            },
+            job_dir: dir.path().display().to_string(),
+            bundle: String::new(),
+        };
+        let old = crate::executor::run_ssh_hook();
+        crate::executor::set_run_ssh(fake_hand_ssh);
+        // Stopped by the runner (a restart asked for now, the stop grace):
+        // the worker reads as cut before its cap, so run.rs loses the run
+        // and requeues the job, and the check gives no verdict.
+        let stopped = pulse_bus::CancellationToken::new();
+        stopped.cancel();
+        let out = e
+            .run_worker(&stopped, &["copilot".into()], &BTreeMap::new(), 1)
+            .unwrap();
+        assert!(out.timeout, "{out:?}");
+        assert_eq!(out.exit_code, -1, "{out:?}");
+        assert!(out.stderr.contains("cancel"), "{out:?}");
+        let (rc, _) = e.verify(&stopped, "true", 1);
+        assert_eq!(rc, None);
+        // Not stopped: the hand's answers stand.
+        let live = pulse_bus::CancellationToken::new();
+        let out = e
+            .run_worker(&live, &["copilot".into()], &BTreeMap::new(), 1)
+            .unwrap();
+        assert!(!out.timeout, "{out:?}");
+        assert_eq!(out.exit_code, 0, "{out:?}");
+        let (rc, _) = e.verify(&live, "true", 1);
+        assert_eq!(rc, Some(0));
+        crate::executor::restore_run_ssh(old);
     }
 
     #[test]

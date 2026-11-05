@@ -2524,7 +2524,8 @@ pub(crate) fn daemon(
                             if !why.is_empty() {
                                 reasons.insert(why, true);
                             }
-                            let worker = match crate::run::pick_worker(s, &now, &o.agent, &names) {
+                            let worker = match crate::run::pick_worker_on(s, &o.agent, &names, slot)
+                            {
                                 Ok(worker) => worker,
                                 Err(e) => {
                                     reasons.insert(crate::run::err_message(&e), true);
