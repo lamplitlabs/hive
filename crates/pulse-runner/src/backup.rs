@@ -224,6 +224,24 @@ pub(crate) fn run_backup_with(s: &pulse_store::Store, o: Opts, run: &Runner) -> 
         out.bytes = bytes;
         out.sha256 = sha;
         out.name = name.clone();
+        if matches!(dest, Destination::Azure { .. })
+            && let Some(want) = crate::azure::azure_principal(s)
+        {
+            // Backups use the machines' Azure account (ADR-070): under a
+            // service principal, nothing goes out as anyone else.
+            let (rc, who, err) = run(
+                "az",
+                &with_subscription(&crate::azure::azure_whoami_args(), &subscription),
+                &[],
+                AZ_TIMEOUT,
+            )?;
+            if rc != 0 {
+                return Err(anyhow!("az account show failed - {}", az_text(&who, &err)));
+            }
+            if let Some(why) = crate::azure::azure_principal_refusal(&want, &who) {
+                return Err(anyhow!(why));
+            }
+        }
         out.location = deliver(&dest, &gz, &name, &subscription, run)?;
         match prune(&dest, &host, keep, &subscription, run) {
             Ok(removed) => out.removed = removed,
@@ -1154,6 +1172,81 @@ mod tests {
             );
         }
         assert_eq!(status(&s)["subscription"], "lamplitlabs-prod-de");
+    }
+
+    #[test]
+    fn azure_backups_under_a_service_principal_refuse_another_sign_in() {
+        let s = new_store();
+        for (k, v) in [
+            ("compute.azure.auth", "service-principal"),
+            (
+                "compute.azure.tenant",
+                "11111111-2222-3333-4444-555555555555",
+            ),
+            (
+                "compute.azure.client_id",
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ),
+            (
+                "compute.azure.client_secret",
+                "op://Infra/pulse-sp/credential",
+            ),
+        ] {
+            s.set_setting("owner", k, v).unwrap();
+        }
+        let who = Arc::new(Mutex::new(String::from(
+            r#"{"tenant":"11111111-2222-3333-4444-555555555555","user":"owner@example.com","type":"user"}"#,
+        )));
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        let (seen, answer) = (calls.clone(), who.clone());
+        let run = move |program: &str,
+                        args: &[String],
+                        env: &[(String, String)],
+                        _: Duration|
+              -> Result<(i32, String, String)> {
+            seen.lock()
+                .unwrap()
+                .push((program.to_string(), args.to_vec(), env.to_vec()));
+            let verb = args.iter().take(4).cloned().collect::<Vec<_>>().join(" ");
+            Ok(match verb.as_str() {
+                v if v.starts_with("account show") => {
+                    (0, answer.lock().unwrap().clone(), String::new())
+                }
+                "storage account keys list" => (0, "s3cr3tkey==\n".into(), String::new()),
+                "storage blob upload --account-name" => (0, String::new(), String::new()),
+                "storage blob list --account-name" => (0, String::new(), String::new()),
+                other => panic!("unexpected az call: {other}"),
+            })
+        };
+        let opts = || Opts {
+            to: "az://acct/pulse-backups".into(),
+            keep: Some(0),
+            actor: "owner".into(),
+            now: TEST_NOW.into(),
+        };
+        let out = run_backup_with(&s, opts(), &run);
+        assert!(!out.ok, "{out:?}");
+        assert!(
+            out.error.contains("not the service principal"),
+            "{}",
+            out.error
+        );
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "nothing is uploaded as the wrong account"
+        );
+        *who.lock().unwrap() = r#"{"tenant":"11111111-2222-3333-4444-555555555555","user":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","type":"servicePrincipal"}"#.into();
+        let out = run_backup_with(&s, opts(), &run);
+        assert!(out.ok, "{out:?}");
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, args, _)| !args.iter().any(|a| a.contains("op://"))),
+            "the secret's reference never reaches az"
+        );
     }
 
     #[test]

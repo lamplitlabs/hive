@@ -2,6 +2,7 @@
 
 pub mod chat;
 pub mod chat_ddl;
+pub mod clouds;
 pub mod ctx;
 pub mod daily_cap;
 pub mod ddl;

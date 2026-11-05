@@ -43,6 +43,7 @@ pub mod automations;
 pub mod board;
 pub mod chat;
 pub mod chat_tasks;
+pub mod clouds;
 pub mod code_deliveries;
 pub mod cred;
 pub mod decisions;

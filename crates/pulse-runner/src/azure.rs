@@ -81,6 +81,79 @@ pub(crate) fn azure_settings(s: &pulse_store::Store, size: String) -> anyhow::Re
     Ok(cfg)
 }
 
+/// The service principal `compute.azure.auth` says this machine signs in
+/// as - (tenant, client id) - or `None` under the owner's own `az login`.
+/// Machines and az:// backups both ask it (ADR-070: one account per cloud).
+pub(crate) fn azure_principal(s: &pulse_store::Store) -> Option<(String, String)> {
+    if s.setting("compute.azure.auth", "login").trim() != "service-principal" {
+        return None;
+    }
+    Some((
+        s.setting("compute.azure.tenant", "").trim().to_string(),
+        s.setting("compute.azure.client_id", "").trim().to_string(),
+    ))
+}
+
+/// `az account show` asking who is signed in, as JSON
+/// `{"tenant": ..., "user": ..., "type": ...}`.
+pub(crate) fn azure_whoami_args() -> Vec<String> {
+    [
+        "account",
+        "show",
+        "--query",
+        "{tenant:tenantId,user:user.name,type:user.type}",
+        "-o",
+        "json",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect()
+}
+
+/// Why the signed-in account is not the configured service principal, or
+/// `None` when it is. `whoami` is what [`azure_whoami_args`] printed.
+pub(crate) fn azure_principal_refusal(want: &(String, String), whoami: &str) -> Option<String> {
+    let (tenant, client_id) = want;
+    let unset: Vec<&str> = [
+        ("compute.azure.tenant", tenant),
+        ("compute.azure.client_id", client_id),
+    ]
+    .into_iter()
+    .filter(|(_, v)| v.is_empty())
+    .map(|(k, _)| k)
+    .collect();
+    if !unset.is_empty() {
+        return Some(format!(
+            "compute.azure.auth is service-principal but {} is empty: set it in Settings > Machines",
+            unset.join(" and ")
+        ));
+    }
+    let v: serde_json::Value = serde_json::from_str(whoami.trim()).unwrap_or_default();
+    let field = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let (got_tenant, got_user, got_type) = (field("tenant"), field("user"), field("type"));
+    if got_type == "servicePrincipal"
+        && got_user.eq_ignore_ascii_case(client_id)
+        && (got_tenant.eq_ignore_ascii_case(tenant) || tenant.contains('.'))
+    {
+        return None;
+    }
+    let who = if got_user.is_empty() {
+        "nobody".to_string()
+    } else {
+        format!(
+            "{} {got_user}",
+            if got_type.is_empty() {
+                "user"
+            } else {
+                got_type.as_str()
+            }
+        )
+    };
+    Some(format!(
+        "az is signed in as {who}, not the service principal {client_id} in tenant {tenant} that compute.azure.auth names: run the sign-in command from Settings > Machines on this machine as the daemon's user"
+    ))
+}
+
 pub(crate) fn azure_vm_name(request_id: String) -> String {
     crate::provider::machine_name(request_id)
 }
@@ -131,6 +204,18 @@ impl AzureProvider {
                 anyhow!(""),
             )
             .map(|_| unreachable!());
+        }
+        if let Some(want) = azure_principal(&s) {
+            let (rc, who, err_text) =
+                (RUN_AZ.read().unwrap())(ctx, cfg.args(&azure_whoami_args()), AZ_SHORT)?;
+            if rc != 0 {
+                return az_err("az account show".into(), rc, who, err_text, anyhow!(""))
+                    .map(|_| unreachable!());
+            }
+            if let Some(why) = azure_principal_refusal(&want, &who) {
+                return Err(anyhow!(why));
+            }
+            log("azure service principal: %s", &[json!(want.1)]);
         }
         log("azure subscription: %s", &[json!(out.trim())]);
         let mut lines = Vec::new();
@@ -798,5 +883,64 @@ impl crate::provider::Provider for AzureProvider {
         s: &pulse_store::Store,
     ) -> anyhow::Result<Vec<crate::provider::Machine>> {
         self.hands_machines(cancel, s)
+    }
+}
+
+#[cfg(test)]
+mod principal_tests {
+    use super::*;
+
+    #[test]
+    fn the_principal_check_names_who_is_signed_in() {
+        let want = ("tenant-1".to_string(), "app-1".to_string());
+        assert_eq!(
+            azure_principal_refusal(
+                &want,
+                r#"{"tenant":"TENANT-1","user":"app-1","type":"servicePrincipal"}"#
+            ),
+            None
+        );
+        let why = azure_principal_refusal(
+            &want,
+            r#"{"tenant":"tenant-1","user":"me@example.com","type":"user"}"#,
+        )
+        .unwrap();
+        assert!(
+            why.contains("user me@example.com") && why.contains("app-1"),
+            "{why}"
+        );
+        let why = azure_principal_refusal(
+            &want,
+            r#"{"tenant":"tenant-2","user":"app-1","type":"servicePrincipal"}"#,
+        )
+        .unwrap();
+        assert!(why.contains("not the service principal"), "{why}");
+        assert!(
+            azure_principal_refusal(&want, "")
+                .unwrap()
+                .contains("nobody")
+        );
+        let why = azure_principal_refusal(&(String::new(), "app-1".into()), "").unwrap();
+        assert!(why.contains("compute.azure.tenant is empty"), "{why}");
+        // A tenant given as its domain cannot be matched to the id az prints.
+        let domain = ("contoso.onmicrosoft.com".to_string(), "app-1".to_string());
+        assert_eq!(
+            azure_principal_refusal(
+                &domain,
+                r#"{"tenant":"tenant-1","user":"app-1","type":"servicePrincipal"}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_owner_login_needs_no_principal() {
+        let s = crate::test_helpers::new_store();
+        assert_eq!(azure_principal(&s), None);
+        s.set_setting("owner", "compute.azure.auth", "service-principal")
+            .unwrap();
+        s.set_setting("owner", "compute.azure.client_id", "app-1")
+            .unwrap();
+        assert_eq!(azure_principal(&s), Some((String::new(), "app-1".into())));
     }
 }

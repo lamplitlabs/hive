@@ -1,0 +1,384 @@
+{
+  "available": true,
+  "backup": {
+    "parts": {},
+    "target": "",
+    "targets": [
+      {
+        "blurb": "Another drive, a network share or a synced folder (iCloud, Dropbox). It must exist already; a drive that is not mounted is refused.",
+        "cloud": "",
+        "fields": [],
+        "id": "folder",
+        "label": "A folder",
+        "parts": [
+          {
+            "help": "An absolute path, or one starting with ~/.",
+            "kind": "identifier",
+            "label": "Folder",
+            "placeholder": "/Volumes/Backup/pulse",
+            "required": true,
+            "setting": "path"
+          }
+        ],
+        "template": "{path}"
+      },
+      {
+        "blurb": "A container in one of your storage accounts, reached with the same Azure sign-in as the machines.",
+        "cloud": "azure",
+        "fields": [
+          {
+            "help": "Only when the storage account is outside the az CLI's default subscription.",
+            "kind": "identifier",
+            "label": "Subscription",
+            "placeholder": "",
+            "required": false,
+            "setting": "backup.subscription"
+          }
+        ],
+        "id": "azure-blob",
+        "label": "Azure Blob Storage",
+        "parts": [
+          {
+            "help": "The storage account name.",
+            "kind": "identifier",
+            "label": "Storage account",
+            "placeholder": "mystorageaccount",
+            "required": true,
+            "setting": "account"
+          },
+          {
+            "help": "The blob container; it must exist.",
+            "kind": "identifier",
+            "label": "Container",
+            "placeholder": "pulse-backups",
+            "required": true,
+            "setting": "container"
+          },
+          {
+            "help": "Optional path in front of each file name.",
+            "kind": "identifier",
+            "label": "Folder in the container",
+            "placeholder": "store",
+            "required": false,
+            "setting": "prefix"
+          }
+        ],
+        "template": "az://{account}/{container}/{prefix}"
+      },
+      {
+        "blurb": "Anything else - rclone, aws s3 cp, scp - run with {file} (the backup's path) and {name} (its file name) filled in.",
+        "cloud": "",
+        "fields": [],
+        "id": "command",
+        "label": "A command",
+        "parts": [
+          {
+            "help": "Must name {file}.",
+            "kind": "identifier",
+            "label": "Command",
+            "placeholder": "rclone copy {file} remote:pulse",
+            "required": true,
+            "setting": "command"
+          }
+        ],
+        "template": "run: {command}"
+      }
+    ],
+    "to": "",
+    "values": {
+      "backup.subscription": ""
+    }
+  },
+  "can_edit": true,
+  "clouds": [
+    {
+      "auth": [
+        {
+          "blurb": "Sign in once in a browser with your own account (OAuth). The az CLI keeps the sign-in on this machine; PULSE uses it as it is.",
+          "fields": [],
+          "id": "login",
+          "label": "Your Azure account",
+          "sign_in": "az login"
+        },
+        {
+          "blurb": "An app registration with a role on the resource group only. PULSE keeps its tenant and client id and where its secret lives - never the secret - and refuses to work while az is signed in as anyone else.",
+          "fields": [
+            {
+              "help": "The Microsoft Entra tenant id (or domain) the app belongs to.",
+              "kind": "identifier",
+              "label": "Tenant",
+              "placeholder": "00000000-0000-0000-0000-000000000000",
+              "required": true,
+              "setting": "compute.azure.tenant"
+            },
+            {
+              "help": "The application (client) id of the app registration.",
+              "kind": "identifier",
+              "label": "Client id",
+              "placeholder": "00000000-0000-0000-0000-000000000000",
+              "required": true,
+              "setting": "compute.azure.client_id"
+            },
+            {
+              "help": "A reference to the client secret in 1Password (op://), the macOS Keychain (keychain://) or a 0600 file (file://). PULSE stores the reference and never reads the secret.",
+              "kind": "reference",
+              "label": "Where the secret lives",
+              "placeholder": "op://VAULT/ITEM/FIELD",
+              "required": true,
+              "setting": "compute.azure.client_secret"
+            }
+          ],
+          "id": "service-principal",
+          "label": "Service principal",
+          "sign_in": "az login --service-principal --tenant {compute.azure.tenant} --username {compute.azure.client_id} --password \"{compute.azure.client_secret}\""
+        }
+      ],
+      "auth_setting": "compute.azure.auth",
+      "auth_value": "login",
+      "backup_target": "azure-blob",
+      "blurb": "Virtual machines in one of your resource groups, made and removed with the Azure CLI (az) on this machine.",
+      "fields": [
+        {
+          "help": "The subscription id or name to create machines in. Empty: the az CLI's default one.",
+          "kind": "identifier",
+          "label": "Subscription",
+          "placeholder": "my-subscription",
+          "required": false,
+          "setting": "compute.azure.subscription"
+        },
+        {
+          "help": "The resource group that holds the machines; created in the region below when missing.",
+          "kind": "identifier",
+          "label": "Resource group",
+          "placeholder": "pulse-hands",
+          "required": true,
+          "setting": "compute.azure.resource_group"
+        },
+        {
+          "help": "The Azure region, e.g. westeurope.",
+          "kind": "identifier",
+          "label": "Region",
+          "placeholder": "westeurope",
+          "required": true,
+          "setting": "compute.azure.location"
+        },
+        {
+          "help": "The VM size each machine gets.",
+          "kind": "identifier",
+          "label": "Machine size",
+          "placeholder": "Standard_B2ms",
+          "required": false,
+          "setting": "compute.azure.vm_size"
+        },
+        {
+          "help": "The VM image alias or URN.",
+          "kind": "identifier",
+          "label": "Image",
+          "placeholder": "Ubuntu2404",
+          "required": false,
+          "setting": "compute.azure.image"
+        }
+      ],
+      "id": "azure",
+      "label": "Microsoft Azure",
+      "missing": [],
+      "values": {
+        "compute.azure.auth": "login",
+        "compute.azure.client_id": "",
+        "compute.azure.client_secret": "",
+        "compute.azure.image": "Ubuntu2404",
+        "compute.azure.location": "westeurope",
+        "compute.azure.resource_group": "pulse-hands",
+        "compute.azure.subscription": "demo-subscription",
+        "compute.azure.tenant": "",
+        "compute.azure.vm_size": "Standard_B2ms"
+      }
+    },
+    {
+      "auth": [
+        {
+          "blurb": "aws configure or aws sso login on this machine; PULSE uses the profile named below, or the default one.",
+          "fields": [],
+          "id": "login",
+          "label": "An AWS CLI profile",
+          "sign_in": "aws sso login"
+        }
+      ],
+      "auth_setting": "",
+      "auth_value": "login",
+      "backup_target": "",
+      "blurb": "EC2 instances made and removed with the AWS CLI (aws) on this machine.",
+      "fields": [
+        {
+          "help": "The AWS CLI profile. Empty: the default one.",
+          "kind": "identifier",
+          "label": "Profile",
+          "placeholder": "default",
+          "required": false,
+          "setting": "compute.aws.profile"
+        },
+        {
+          "help": "The region the instances run in. Empty: the profile's default region.",
+          "kind": "identifier",
+          "label": "Region",
+          "placeholder": "eu-west-1",
+          "required": false,
+          "setting": "compute.aws.region"
+        },
+        {
+          "help": "The EC2 instance type each machine gets.",
+          "kind": "identifier",
+          "label": "Instance type",
+          "placeholder": "t3.medium",
+          "required": false,
+          "setting": "compute.aws.instance_type"
+        },
+        {
+          "help": "An AMI id or an SSM public parameter path.",
+          "kind": "identifier",
+          "label": "Image",
+          "placeholder": "",
+          "required": false,
+          "setting": "compute.aws.image"
+        },
+        {
+          "help": "The subnet id. Empty: the default VPC's default subnet.",
+          "kind": "identifier",
+          "label": "Subnet",
+          "placeholder": "",
+          "required": false,
+          "setting": "compute.aws.subnet"
+        },
+        {
+          "help": "The security group id. Empty: one named pulse-hands, made when missing.",
+          "kind": "identifier",
+          "label": "Security group",
+          "placeholder": "",
+          "required": false,
+          "setting": "compute.aws.security_group"
+        }
+      ],
+      "id": "aws",
+      "label": "Amazon Web Services",
+      "missing": [],
+      "values": {
+        "compute.aws.image": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id",
+        "compute.aws.instance_type": "t3.medium",
+        "compute.aws.profile": "",
+        "compute.aws.region": "",
+        "compute.aws.security_group": "",
+        "compute.aws.subnet": ""
+      }
+    },
+    {
+      "auth": [
+        {
+          "blurb": "Sign in once in a browser; gcloud keeps the sign-in on this machine.",
+          "fields": [],
+          "id": "login",
+          "label": "Your Google account",
+          "sign_in": "gcloud auth login"
+        }
+      ],
+      "auth_setting": "",
+      "auth_value": "login",
+      "backup_target": "",
+      "blurb": "Compute Engine instances made and removed with the Google Cloud CLI (gcloud) on this machine.",
+      "fields": [
+        {
+          "help": "The project the instances are made in. Empty: gcloud's current project.",
+          "kind": "identifier",
+          "label": "Project",
+          "placeholder": "my-project",
+          "required": false,
+          "setting": "compute.gcp.project"
+        },
+        {
+          "help": "The Compute Engine zone, e.g. europe-west4-a.",
+          "kind": "identifier",
+          "label": "Zone",
+          "placeholder": "europe-west4-a",
+          "required": true,
+          "setting": "compute.gcp.zone"
+        },
+        {
+          "help": "The machine type each instance gets.",
+          "kind": "identifier",
+          "label": "Machine type",
+          "placeholder": "e2-medium",
+          "required": false,
+          "setting": "compute.gcp.machine_type"
+        },
+        {
+          "help": "An Ubuntu image family or a full image path.",
+          "kind": "identifier",
+          "label": "Image",
+          "placeholder": "ubuntu-2404-lts-amd64",
+          "required": false,
+          "setting": "compute.gcp.image"
+        },
+        {
+          "help": "The VPC network. Empty: default.",
+          "kind": "identifier",
+          "label": "Network",
+          "placeholder": "default",
+          "required": false,
+          "setting": "compute.gcp.network"
+        }
+      ],
+      "id": "gcp",
+      "label": "Google Cloud",
+      "missing": [
+        "compute.gcp.zone"
+      ],
+      "values": {
+        "compute.gcp.image": "ubuntu-2404-lts-amd64",
+        "compute.gcp.machine_type": "e2-medium",
+        "compute.gcp.network": "",
+        "compute.gcp.project": "",
+        "compute.gcp.zone": ""
+      }
+    },
+    {
+      "auth": [
+        {
+          "blurb": "Multipass runs here; it needs no account.",
+          "fields": [],
+          "id": "local",
+          "label": "No sign-in",
+          "sign_in": ""
+        }
+      ],
+      "auth_setting": "",
+      "auth_value": "local",
+      "backup_target": "",
+      "blurb": "Virtual machines on this computer, made with Multipass. Nothing to sign in to.",
+      "fields": [
+        {
+          "help": "cpus=N,mem=SIZE,disk=SIZE for each machine.",
+          "kind": "identifier",
+          "label": "Size",
+          "placeholder": "cpus=2,mem=4G,disk=32G",
+          "required": false,
+          "setting": "compute.multipass.size"
+        },
+        {
+          "help": "The Multipass image, e.g. 24.04.",
+          "kind": "identifier",
+          "label": "Image",
+          "placeholder": "24.04",
+          "required": false,
+          "setting": "compute.multipass.image"
+        }
+      ],
+      "id": "multipass",
+      "label": "Multipass (this computer)",
+      "missing": [],
+      "values": {
+        "compute.multipass.image": "24.04",
+        "compute.multipass.size": "cpus=2,mem=4G,disk=32G"
+      }
+    }
+  ],
+  "provider": "azure"
+}
