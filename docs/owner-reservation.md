@@ -2,8 +2,8 @@
 
 Design note for TASK-067. The surrounding behaviour, the express lane and the
 yield, is described in [landing.md](landing.md), section *The express lane for
-the owner's work*. This note covers the two rules added on top of it and the
-reasons for them.
+the owner's work*. This note covers the three rules added on top of it and
+the reasons for them.
 
 ## The problem
 
@@ -80,6 +80,26 @@ A restart window does not block the yield, because the owner's work fits
 every restart window: its run anchors the window rather than outlasting it
 (see [runner.md](runner.md)).
 
+## (c) One event per long wait, naming the holds
+
+What the owner could not see on 2026-11-03 was *why* the task waited. On each
+tick the daemon notes, for every owner-driven job still queued, the holds that
+tick's dispatch saw, in the owner's words: `lanes full`, `load 27 > 24`,
+`memory 300 MB < 1024 MB`, `restart drain`, `disk floor`, `bulk disk away`,
+`daily cap reached`. Once a job has waited ten minutes
+(`pulse_tasks::OWNER_WAIT_MINUTES`) the daemon writes one `job.owner-wait`
+event on it with every reason seen so far and logs `owner job <id>
+(<project>) waiting since 04:40 UTC: lanes full, load 27 > 24`
+(`crates/pulse-runner/src/owner_wait.rs`). `pulse status` lists the open
+waits, and the task's wait line on the board and the hub names the reasons
+in place of "waiting for a free agent". A job queued again later is a new
+wait with its own event. The reading side is described in
+[runner.md](runner.md).
+
+With (a) in place the holds such an event names are the ones that still
+refuse the owner: the owner's one run over the line already in flight, the
+kernel's critical memory pressure, a console drain, the disk, the daily cap.
+
 ## Proof
 
 - `daemon_load` unit tests:
@@ -96,6 +116,14 @@ every restart window: its run anchors the window rather than outlasting it
   - `daemon_asks_no_fleet_run_to_yield_while_the_load_would_refuse_the_owners_job`:
     no `job.yield` is written while the load would refuse the owner. Exactly
     one is written once the load would admit the owner.
+  - `daemon_names_the_holds_of_an_owner_job_queued_past_ten_minutes`: with
+    the load pinned at 60 (line 24), the owner's first job starts on the
+    reservation and the owner's next step, queued twenty minutes earlier,
+    gets one `job.owner-wait` event whose reasons read `load 60 > 24`; the
+    `pulse status` line says the same.
+- `owner_wait` unit tests cover the short reasons, the ten-minute line, one
+  event per wait and the status lines; `pulse_tasks::owner_wait` the wait
+  line the board and the hub show.
 - The existing `yield_lane` tests and
   `daemon_lends_the_owner_one_slot_over_a_cap_full_of_fleet_work` still pass.
 - The `idle_hold` load and memory question tests (`a_load_hold_asks_…`,

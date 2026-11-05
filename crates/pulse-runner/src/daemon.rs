@@ -3476,7 +3476,10 @@ mod tests {
     }
 
     /// TASK-067 (c): the owner's job held past ten minutes gets one
-    /// job.owner-wait event naming the hold, through a real tick.
+    /// job.owner-wait event naming the hold, through a real tick. Past twice
+    /// the load line the reservation (a) still starts the owner's one run;
+    /// the owner's next step, queued twenty minutes ago by the store's
+    /// clock, waits behind that run and the load, and the event says so.
     #[test]
     fn daemon_names_the_holds_of_an_owner_job_queued_past_ten_minutes() {
         let _serial = crate::test_helpers::serial();
@@ -3484,18 +3487,23 @@ mod tests {
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.sweep", "off")
-            .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "capacity", "2")
-            .unwrap();
-        s.set_setting(pulse_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
-            .unwrap();
-        crate::util::exec1(
-            &s.conn().unwrap(),
-            "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at) VALUES ('job-owner', 'proj', 'task', 'Owner step', 'fake worker only', 'task:TASK-055', 'queued', '2026-09-06T09:40:00Z')",
-            &[],
-        );
-        // Over twice the line: not even the owner's express slot opens.
+        for (k, v) in [
+            ("daemon.sweep", "off"),
+            ("capacity", "2"),
+            ("daemon.min_free_mb", "0"),
+        ] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        for (id, title, at) in [
+            ("job-owner-first", "Owner's task", "2026-09-06T09:30:00Z"),
+            ("job-owner", "Owner step", "2026-09-06T09:40:00Z"),
+        ] {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at) VALUES (?, 'proj', 'task', ?, 'fake worker only', 'task:TASK-055', 'queued', ?)",
+                &[&id, &title, &at],
+            );
+        }
         let saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             load1: Some(60.2),
             ..crate::daemon_load::CALM
@@ -3508,7 +3516,8 @@ mod tests {
             },
         );
         drop(saturated);
-        assert!(!out.contains("leased "), "{out}");
+        assert!(out.contains("leased job-owner-first after"), "{out}");
+        assert!(!out.contains("leased job-owner after"), "{out}");
         assert!(
             out.contains("owner job job-owner (proj) waiting since 09:40 UTC: load 60 > 24"),
             "{out}"
@@ -3523,6 +3532,15 @@ mod tests {
         let d: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
         assert_eq!(d["reasons"], serde_json::json!(["load 60 > 24"]), "{d}");
         assert_eq!(d["waited_s"], serde_json::json!(1200), "{d}");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'job.owner-wait'",
+                &[]
+            ),
+            1,
+            "the run that started gets no wait event"
+        );
         let lines = crate::owner_wait::status_lines(&s);
         assert_eq!(
             lines,
