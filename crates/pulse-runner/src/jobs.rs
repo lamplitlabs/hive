@@ -168,8 +168,18 @@ pub(crate) fn work_kinds_sql() -> String {
 /// store (a lead plans the board, a review lands a pull request): a hand
 /// has no store, so these lease only on this machine. On 2026-11-05 two
 /// lead jobs and a review leased to a Linux hand failed with "No store at
-/// /home/pulse/.pulse/pulse.sqlite".
-pub(crate) const STORE_KINDS: &[&str] = &[crate::lead::LEAD_KIND, crate::review::KIND];
+/// /home/pulse/.pulse/pulse.sqlite". A reflect works the store too: the
+/// daily reflect reads `pulse record list` and `pulse evolve report`, an
+/// experiment's reflect posts its next card with `pulse post suggestion`, and
+/// a suggestion review records `pulse task review` (the one reflect at
+/// 2026-11-05 that ran on a hand posted no card). Ballot and answer jobs stay
+/// out: their briefs report through `VOTE:` and `SUMMARY:` lines the runner
+/// records, and both finished on hands.
+pub(crate) const STORE_KINDS: &[&str] = &[
+    crate::lead::LEAD_KIND,
+    crate::review::KIND,
+    crate::suggestions::REVIEW_KIND,
+];
 
 /// [`STORE_KINDS`] as a SQL list for `kind NOT IN (...)`.
 pub(crate) fn store_kinds_sql() -> String {
@@ -1440,6 +1450,7 @@ mod tests {
         crate::lead::ensure_lead(&s, "proj".into()).unwrap();
         let lead = queue(&s, "proj", crate::lead::LEAD_KIND, "lead:proj:1", 9);
         let review = queue(&s, "proj", crate::review::KIND, "review:proj:7", 8);
+        let reflect = queue(&s, "proj", "reflect", "reflect:proj:2026-11-05", 7);
         let improve = queue(&s, "proj", "improve", "improve-work", 1);
         let lease = |agent: &str, executor: &str| {
             super::lease_job(
@@ -1461,9 +1472,9 @@ mod tests {
                 &[&status, &id],
             );
         };
-        // A hand's slot passes the review, although it is the higher
-        // priority, and takes the improve job; once only store-bound work
-        // is left it takes nothing.
+        // A hand's slot passes the review and the reflect, although they
+        // are the higher priority, and takes the improve job; once only
+        // store-bound work is left it takes nothing.
         let on_hand = lease("borealis", "hands-1");
         assert_eq!(on_hand.str("id"), improve, "{on_hand:?}");
         set(&improve, "done");
@@ -1475,6 +1486,9 @@ mod tests {
         // This machine's slot takes the review and the lead job.
         let here = lease("borealis", crate::executor::LOCAL_EXECUTOR);
         assert_eq!(here.str("id"), review, "{here:?}");
+        set(&review, "done");
+        let reflect_here = lease("borealis", crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(reflect_here.str("id"), reflect, "{reflect_here:?}");
         let lead_here = lease("proj-lead", crate::executor::LOCAL_EXECUTOR);
         assert_eq!(lead_here.str("id"), lead, "{lead_here:?}");
     }
