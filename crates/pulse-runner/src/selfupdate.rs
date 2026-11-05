@@ -651,13 +651,22 @@ pub(crate) fn build_and_install(
     if let Some(err) = err {
         return self_update_failure(s, rev, env, "smoke".into(), out, err);
     }
+    // The running binary is copied aside and its directory entry replaced,
+    // never renamed: macOS names a process by the current path of its
+    // executable's inode, so a daemon renamed to `pulse.prev` while it
+    // drains its restart hold is a process with no folder grant, and the
+    // Desktop-folder prompt that raised (2026-11-05, 80 min after a
+    // rotation) queued every later pulse request behind it until someone
+    // answered. An unlinked inode keeps reporting the path it was run
+    // from, which the new file at that path satisfies with the same
+    // designated requirement (sign.rs).
     let prev = format!("{}.prev", env.binary);
     let _ = std::fs::remove_file(&prev);
-    if let Err(err) = std::fs::rename(&env.binary, &prev) {
+    if let Err(err) = std::fs::copy(&env.binary, &prev) {
         return self_update_failure(s, rev, env, "install".into(), String::new(), err.into());
     }
     if let Err(err) = std::fs::rename(&new_binary, &env.binary) {
-        let _ = std::fs::rename(&prev, &env.binary);
+        let _ = std::fs::remove_file(&prev);
         return self_update_failure(s, rev, env, "install".into(), String::new(), err.into());
     }
     let now = s.now();
@@ -678,7 +687,7 @@ pub(crate) fn build_and_install(
         env.inflight
     );
     let body = format!(
-        "The brain's default branch landed at `{rev}` while the daemon ran `{}`. The daemon built `{}` from the clean checkout at {repo}, checked that it prints its revision and answers `help`, kept the running binary as `{prev}` and installed the new one at {now}.\n\nThe daemon and the hub restart on the changed file: the daemon after the {} run(s) in flight, the hub within a minute. Roll back with `mv {prev} {}` (the daemon restarts again); `pulse settings set daemon.self_update off` stops these builds (ADR-035).\n",
+        "The brain's default branch landed at `{rev}` while the daemon ran `{}`. The daemon built `{}` from the clean checkout at {repo}, checked that it prints its revision and answers `help`, kept a copy of the running binary as `{prev}` and installed the new one in its place at {now}.\n\nThe daemon and the hub restart on the changed file: the daemon after the {} run(s) in flight, the hub within a minute. Roll back with `mv {prev} {}` (the daemon restarts again); `pulse settings set daemon.self_update off` stops these builds (ADR-035).\n",
         first_non_empty(&[env.revision.clone(), "an unstamped build".into()]),
         env.binary,
         env.inflight,
@@ -1042,6 +1051,11 @@ mod tests {
         reset_self_update();
         let (s, repo, env, _fixture) = self_update_fixture();
         let rev = head_of(&repo);
+        #[cfg(unix)]
+        let running_inode = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&env.binary).unwrap().ino()
+        };
         let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
         assert!(
             lines.len() == 1
@@ -1073,6 +1087,19 @@ mod tests {
             "old binary",
             "pulse.prev = {data:?}"
         );
+        // The copy aside is a new file: the inode the daemon runs from was
+        // not renamed to `pulse.prev` (the macOS folder grant follows the
+        // path of the running inode, selfupdate.rs).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let prev = std::fs::metadata(format!("{}.prev", env.binary)).unwrap();
+            assert_ne!(
+                prev.ino(),
+                running_inode,
+                "pulse.prev is the running inode, renamed"
+            );
+        }
         let data = std::fs::read(&env.binary).unwrap_or_default();
         assert!(
             String::from_utf8_lossy(&data).contains(&format!("dev-{}", &rev[..12])),

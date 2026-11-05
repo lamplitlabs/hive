@@ -244,7 +244,12 @@ later on the cached half, while a one-crate rebuild takes four minutes here,
 three of them the final link of `pulse`, which prints nothing: a build that
 still prints is still compiling. The smoke tests (`version`, `help`) answer
 within a second and keep the ten-minute bound on their length.
-A build that then exits three times early is put back to
+The install keeps a copy of the running binary as `pulse.prev` and puts the
+new file in its place; the running one is never renamed. macOS names a
+process by the current path of the file it runs from, so a daemon renamed to
+`pulse.prev` while it drained its restart hold had no Desktop-folder grant,
+and the prompt that raised (unanswered for eighty minutes, 2026-11-05) held
+every later pulse request behind it. A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
 when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and

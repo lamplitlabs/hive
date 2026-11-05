@@ -2396,11 +2396,15 @@ mod tests {
             .iter()
             .map(|c| c.kind)
             .collect::<Vec<_>>();
-        assert_eq!(
-            kinds,
-            vec!["inspect", "apply", "probe", "undo"],
-            "ssh calls after a failed probe"
-        );
+        // The refused probe is tried again before it counts (the NAT
+        // bursts of executor.rs), then the pairing is undone.
+        let mut want = vec!["inspect", "apply"];
+        want.extend(std::iter::repeat_n(
+            "probe",
+            crate::executor::SSH_CONNECT_RETRIES as usize + 1,
+        ));
+        want.push("undo");
+        assert_eq!(kinds, want, "ssh calls after a failed probe");
         for want in [
             "probe FAILED: unreachable: ssh: connect to host example.invalid port 22: Connection refused",
             "undid the sshd drop-in on example.invalid: dropin=restored-or-removed",

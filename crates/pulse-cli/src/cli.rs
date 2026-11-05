@@ -261,7 +261,11 @@ pub fn errorf(code: i32, what: &str, why: &str, fix: &str) -> Error {
 }
 
 pub fn binary_stamp() -> String {
-    let Ok(exe) = std::env::current_exe() else {
+    // The path is taken once, at the first stamp: a self-update replaces
+    // the file under it, after which Linux reports the running inode as
+    // "pulse (deleted)" and a fresh current_exe() would stat nothing.
+    static EXE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    let Some(exe) = EXE.get_or_init(|| std::env::current_exe().ok()) else {
         return String::new();
     };
     let Ok(st) = std::fs::metadata(exe) else {
