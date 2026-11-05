@@ -60,6 +60,7 @@ impl Handler {
             "leads" => self.addition_leads(w, r, parts),
             "toolkit" => self.addition_toolkit(w, r, parts),
             "compute" => self.addition_compute(w, r, parts),
+            "clouds" => self.addition_clouds(w, r, parts),
             "projects" => return self.addition_projects(w, r, parts),
             "folders" => self.addition_folders(w, r, parts),
             "heldout" => self.addition_heldout(w, r, parts),

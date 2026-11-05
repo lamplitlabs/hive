@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { SectionHeading } from "@/components/pulse/item-card";
 import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/components/pulse/panel";
 import { RunningStrip } from "@/components/settings/running";
+import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
 import { CredentialRow } from "@/components/settings/credential";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { NotificationsCard } from "@/components/settings/notifications";
@@ -24,6 +25,8 @@ interface Cluster {
   keys: string[];
   // A cluster with a provider shows only while compute.provider names it (ADR-042 D6).
   provider?: string;
+  // A form drawn above the cluster's rows (the backup target picker).
+  form?: (canEdit: boolean) => React.ReactNode;
 }
 
 interface Group {
@@ -37,7 +40,7 @@ interface Group {
   // The rows most people need. The rest wait behind "Show N more".
   primary?: string[];
   // A read-only block above the rows (This machine's "which PULSE runs").
-  strip?: () => React.ReactNode;
+  strip?: (canEdit: boolean) => React.ReactNode;
 }
 
 // The sections, in the order the owner needs them: the brake, you, your
@@ -52,14 +55,14 @@ const RUNNER_CLUSTERS: Cluster[] = [
   { title: "Dependencies", keys: ["dependencies.security_updates", "dependencies.major_updates", "dependencies.min_release_age_days", "dependencies.alert_check_minutes"] },
   { title: "Checks on GitHub", keys: ["pipeline.watch", "pipeline.wait_hours"] },
   { title: "Reviewing pull requests", keys: ["review.merge", "review.max_files", "review.max_lines"] },
-  { title: "Backups", keys: ["backup.to", "backup.every_hours", "backup.keep", "backup.subscription"] },
+  { title: "Backups", form: (canEdit) => <BackupSetup canEdit={canEdit} />, keys: ["backup.to", "backup.every_hours", "backup.keep", "backup.subscription"] },
   { title: "Votes on suggestions", keys: ["quorum", "expiry_days", "stale_days", "claim_hours", "board.stale_days", "lead.ballot_hours", "lead.ballot_cap"] },
   { title: "Lead agents", keys: ["lead.idle_hours", "lead.idle_max_jobs", "lead.stuck_thread_jobs", "lead.research_minutes", "lead.research_per_day", "lead.idle_factor", "plan.operating_layer_per_day", "plan.operating_layer_fill"] },
   { title: "Rule changes", keys: ["amend_quorum", "amend_majority"] },
 ];
 const COMPUTE_CLUSTERS: Cluster[] = [
   { title: "Limits", keys: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"] },
-  { title: "Azure details", provider: "azure", keys: ["compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
+  { title: "Azure details", provider: "azure", keys: ["compute.azure.auth", "compute.azure.tenant", "compute.azure.client_id", "compute.azure.client_secret", "compute.azure.subscription", "compute.azure.resource_group", "compute.azure.location", "compute.azure.vm_size", "compute.azure.image"] },
   { title: "AWS details", provider: "aws", keys: ["compute.aws.profile", "compute.aws.region", "compute.aws.instance_type", "compute.aws.image", "compute.aws.subnet", "compute.aws.security_group"] },
   { title: "Google Cloud details", provider: "gcp", keys: ["compute.gcp.project", "compute.gcp.zone", "compute.gcp.machine_type", "compute.gcp.image", "compute.gcp.network"] },
   { title: "Multipass details (virtual machines on this computer)", provider: "multipass", keys: ["compute.multipass.size", "compute.multipass.image"] },
@@ -100,6 +103,7 @@ const GROUPS: Group[] = [
     match: (n) => n.startsWith("compute."),
     clusters: COMPUTE_CLUSTERS,
     primary: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"],
+    strip: (canEdit) => <CloudSetup canEdit={canEdit} />,
   },
   {
     id: "evolve",
@@ -274,7 +278,7 @@ function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle, 
   // Folding one row away saves nothing; show it.
   const open = searching || expanded || !primary || folded < 2;
   const visible = (s: Setting) => open || !!primary?.includes(s.name);
-  const strip = g.strip ? <div className="border-b">{g.strip()}</div> : null;
+  const strip = g.strip && !searching ? <div className="border-b">{g.strip(canEdit)}</div> : null;
   const toggle =
     !searching && primary && folded >= 2 ? (
       <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex w-full items-center gap-2 border-t px-4 py-3 text-left text-sm font-medium text-primary hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5">
@@ -294,14 +298,15 @@ function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle, 
   const loose = rows.filter((s) => !clusters.some((c) => c.keys.includes(s.name))).filter(visible);
   const others = clusters.filter((c) => c.provider && c.provider !== provider).map((c) => COMPUTE_PROVIDERS[c.provider!] ?? c.provider!);
   const chosenName = COMPUTE_PROVIDERS[provider] ?? provider;
-  const blocks: { title: string; note?: string; warn?: boolean; rows: Setting[] }[] = [];
+  const blocks: { title: string; note?: string; warn?: boolean; rows: Setting[]; form?: React.ReactNode }[] = [];
   for (const c of clusters) {
     if (c.provider && c.provider !== provider && !searching) continue;
     const inCluster = rows.filter((s) => c.keys.includes(s.name)).filter(visible);
-    if (!inCluster.length) continue;
+    const form = c.form && !searching ? c.form(canEdit) : undefined;
+    if (!inCluster.length && !form) continue;
     const chosen = c.provider && c.provider === provider;
     const note = chosen && others.length && !searching ? "Only " + chosenName + "'s details are shown. Pick another option under Where extra machines come from to set that one up." : c.provider && !chosen ? "Not in use: these apply only when " + (COMPUTE_PROVIDERS[c.provider] ?? c.provider) + " is chosen." : undefined;
-    blocks.push({ title: c.title, note, warn: !!c.provider && !chosen, rows: inCluster });
+    blocks.push({ title: c.title, note, warn: !!c.provider && !chosen, rows: inCluster, form });
   }
   if (loose.length) blocks.push({ title: "More " + g.title.toLowerCase(), rows: loose });
   return (
@@ -313,6 +318,7 @@ function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle, 
             <h3 className="text-sm font-semibold text-foreground">{b.title}</h3>
             {b.note ? <p className={cn("text-[13px] leading-relaxed anywhere", b.warn ? "text-warn" : "text-muted-foreground")}>{b.note}</p> : null}
           </div>
+          {b.form ? <div>{b.form}</div> : null}
           <div className="divide-y">{b.rows.map(row)}</div>
         </div>
       ))}
