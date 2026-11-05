@@ -243,7 +243,7 @@ pub(crate) fn lead_brief(
     b.push_str(&format!("## What to do\n\n\
 1. For each task: read `pulse task show <id>` (brief, revisions, messages, jobs so far) and the owner's messages above.\n\
 2. Reply to the owner with `pulse msg send --project {slug} --task <id> \"...\"` (or `pulse task reply <id> \"...\"`; `pulse msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap instead of a blank to fill: `--choice \"<your recommendation>\" --choice \"<the alternative>\"` (a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief); ask for written words only when no short list of answers exists. Never repeat a question the owner has not answered yet.\n\
-3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `pulse job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`pulse job add` keeps one open job per source); all of them count as the task's jobs. Every task gets its own job: never fold two tasks into one job - a task is known to be planned only by a job whose source names it, so the task a merged job does not name sits planned with nothing behind it; when two tasks touch the same code, queue one job per task and keep the second waiting on the first (or say in the second's brief what the first lands). The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
+3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `pulse job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`pulse job add` keeps one open job per source); all of them count as the task's jobs. Every task gets its own job: never fold two tasks into one job - a task is known to be planned only by a job whose source names it (or whose brief names it on a `Covers: <id>, <id>` line), so the task a merged job does not name sits planned with nothing behind it; when one change truly does two tasks, queue it under the first task's source and write `Covers: <the other task ids>` on a line of its brief so every task it covers moves with it and closes when it lands; when two tasks touch the same code, queue one job per task and keep the second waiting on the first (or say in the second's brief what the first lands). The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
 4. Set `pulse task status <id> planned` once its jobs exist, and only then: the daemon sends a planned task that no job names back to you (`unplanned`), and to the owner in review when it happens again. Tell the owner \"queued\" only for jobs you queued.\n\
 5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`pulse env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time.\n\
 6. A task whose jobs failed and none runs: read each failure (`pulse task show <id>` lists the results), then queue a corrected job - smaller, or another approach. Inspect the evidence and try to resolve an ordinary blocker yourself; ask a relevant peer for a focused diagnosis when useful. Fix a shared prerequisite once before retrying its dependents, and do not duplicate a recovery already queued by the daemon. When the failure is a decision only the owner can take, `pulse task status <id> review` and tell the owner why in one message that carries the answers to pick (`--choice`); a task with three failed jobs goes to review by itself, with the choices to carry on, close, or change it. The owner's next message on a task in review puts it back in progress and wakes you: act on the answer. When the owner's task has landed, the daemon asks the owner in the chat whether it is what they wanted; an answer of \"Not what I meant\" (or words to that effect) means: read the brief against what landed, say in one message what you will change, and queue it - when you cannot tell what is missing, ask one question that carries the answers to pick.\n"));
@@ -507,6 +507,73 @@ pub(crate) fn away_lead_rules(slug: String, away: Option<AwayBrief>, start: i32)
     (b, n)
 }
 
+/// The brief line by which one job says it also does other tasks:
+/// `Covers: TASK-012, TASK-013`. A job's source names one task; a lead that
+/// deliberately does two tasks in one job names the rest here.
+pub(crate) const COVERS_LINE: &str = "Covers:";
+
+/// The task ids a job's brief names on its [`COVERS_LINE`] lines.
+pub(crate) fn covered_tasks(brief: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    for line in brief.lines() {
+        let line = line.trim().trim_start_matches(['-', '*', ' ']);
+        let Some(rest) = line.strip_prefix(COVERS_LINE) else {
+            continue;
+        };
+        for word in rest.split(|c: char| c == ',' || c.is_whitespace()) {
+            let id = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+            if !id.is_empty() && !ids.iter().any(|i| i == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
+}
+
+/// A task's jobs: those whose source names it ([`pulse_tasks::jobs`]) and
+/// those of its project whose brief names it on a [`COVERS_LINE`] line, so
+/// the task a deliberately shared job covers moves with that job - planned,
+/// in progress, and review or done when it lands - instead of being
+/// reopened as unplanned. Ordered by creation.
+pub(crate) fn task_jobs(
+    s: &pulse_store::Store,
+    t: &pulse_tasks::Task,
+) -> anyhow::Result<Vec<pulse_tasks::Job>> {
+    let mut jobs = pulse_tasks::jobs(s, &t.id)?;
+    let conn = s.conn()?;
+    let like = format!("%{COVERS_LINE}%{}%", t.id);
+    let rows = crate::util::query_rows(
+        &conn,
+        "SELECT id, kind, title, status, lease_agent, branch, priority, created_at, finished_at, result, brief FROM jobs WHERE project = ? AND kind != ? AND brief LIKE ? ORDER BY created_at",
+        &[&t.project, &LEAD_KIND, &like],
+    )?;
+    let mut added = false;
+    for r in rows {
+        if jobs.iter().any(|j| j.id == r.str("id"))
+            || !covered_tasks(&r.str("brief")).contains(&t.id)
+        {
+            continue;
+        }
+        jobs.push(pulse_tasks::Job {
+            id: r.str("id"),
+            kind: r.str("kind"),
+            title: r.str("title"),
+            status: r.str("status"),
+            agent: r.str("lease_agent"),
+            branch: r.str("branch"),
+            priority: r.int("priority"),
+            created_at: r.str("created_at"),
+            finished_at: r.str("finished_at"),
+            result: r.str("result"),
+        });
+        added = true;
+    }
+    if added {
+        jobs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    }
+    Ok(jobs)
+}
+
 pub(crate) fn tally_jobs(jobs: Vec<pulse_tasks::Job>) -> JobsTally {
     let mut t = JobsTally::default();
     for j in &jobs {
@@ -671,7 +738,7 @@ pub(crate) fn lead_due(
         }
         if let Some(at) = reopened_unplanned_at(s, &t, &finished) {
             due.push(DueTask {
-                detail: format!("unplanned: your run {} marked it planned but queued no job for it, so I reopened it at {at}. Queue its own job now with `--source task:{}` (or `task:{}:<label>`); do not fold it into another task's job.", job.str("id"), t.id, t.id),
+                detail: format!("unplanned: your run {} marked it planned but queued no job for it, so I reopened it at {at}. Queue its own job now with `--source task:{}` (or `task:{}:<label>`); do not fold it into another task's job unless that job's brief names it on a `Covers:` line.", job.str("id"), t.id, t.id),
                 why: UNPLANNED_WHY.into(),
                 task: t,
             });
@@ -681,7 +748,7 @@ pub(crate) fn lead_due(
             due.push(DueTask { detail: format!("amended: the owner changed it at {}, after your run {}; read the new revision and plan it.", t.updated_at, job.str("id")), why: "amended".into(), task: t });
             continue;
         }
-        let jobs = pulse_tasks::jobs(s, &t.id)?;
+        let jobs = task_jobs(s, &t)?;
         if jobs.is_empty()
             && let Some(due_task) = lead_failed_due(&conn, &t, &job, &now)
         {
@@ -698,7 +765,7 @@ pub(crate) fn lead_due(
         due.push(DueTask { detail: format!("parked: open since {} with no job; your last run {} ended {} with: {}. Re-check the blocker and plan the jobs, or say what only the owner can answer.", t.created_at, job.str("id"), finished, trunc(&result, 300)), why: "parked".into(), task: t });
     }
     for t in pulse_tasks::list(s, &slug, "in_progress")? {
-        let jobs = pulse_tasks::jobs(s, &t.id)?;
+        let jobs = task_jobs(s, &t)?;
         let mut tally = tally_jobs(jobs.clone());
         if tally.active > 0
             || tally.failed == 0
@@ -1560,7 +1627,7 @@ pub(crate) fn tend_tasks(
             }
         };
         for t in list {
-            let mut jobs = match pulse_tasks::jobs(s, &t.id) {
+            let mut jobs = match task_jobs(s, &t) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -2550,6 +2617,47 @@ mod tests {
         );
         assert!(!ask.choices.is_empty(), "{ask:?}");
         assert_eq!(status(&first.id), "planned");
+
+        // A job that names the other task on a `Covers:` line carries it:
+        // planned with it, not reopened, and to the owner when it lands.
+        let third =
+            pulse_tasks::new(&s, "proj", "Third", "c", 50, crate::util::HUMAN_AGENT).expect("task");
+        let fourth = pulse_tasks::new(&s, "proj", "Fourth", "d", 50, crate::util::HUMAN_AGENT)
+            .expect("task");
+        let (shared, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Third and fourth".into(),
+            format!("do both\n\nCovers: {}", fourth.id),
+            1,
+            50,
+            format!("task:{}", third.id),
+            "proj-lead".into(),
+            false,
+        )
+        .expect("shared job");
+        for t in [&third, &fourth] {
+            pulse_tasks::set_status(&s, &t.id, "planned", "proj-lead").expect("planned");
+        }
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(status(&fourth.id), "planned", "{lines:?}");
+        run_job(&s, &shared, "done", "did both", "2026-09-06T10:00:00Z");
+        let lines = tend_tasks(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(status(&third.id), "review", "{lines:?}");
+        assert_eq!(status(&fourth.id), "review", "{lines:?}");
+    }
+
+    #[test]
+    fn a_covers_line_names_tasks_exactly() {
+        assert_eq!(
+            covered_tasks(
+                "do it\nCovers: TASK-012, TASK-013\n- Covers: `TASK-020`.\nnot Covers: TASK-9"
+            ),
+            vec!["TASK-012", "TASK-013", "TASK-020"]
+        );
+        assert!(covered_tasks("Covers nothing").is_empty());
+        assert!(!covered_tasks("Covers: TASK-0121").contains(&"TASK-012".to_string()));
     }
 
     #[test]
