@@ -87,6 +87,7 @@ pub(crate) fn task_branch(task: &str) -> String {
 /// upstream. Returns the log lines.
 pub(crate) fn tend(s: &pulse_store::Store, projects: &[Row], now: &str) -> Vec<String> {
     let mut lines = Vec::new();
+    lines.extend(retire_landing_holds(s));
     for p in projects {
         if p.str("path").is_empty() {
             continue;
@@ -98,6 +99,43 @@ pub(crate) fn tend(s: &pulse_store::Store, projects: &[Row], now: &str) -> Vec<S
         }
     }
     lines
+}
+
+/// The meta key the local land lane kept its per-project holds under ("1
+/// pending landing job; deferred: main moved while the merge was verified").
+const LANDING_HOLDS_KEY: &str = "landing";
+
+/// Clears the holds the local land lane left in the store. Delivery goes
+/// through pull requests since 4271f214 and nothing writes or lifts those
+/// notes any more; the console kept showing one for amistio-template from
+/// 2026-11-04 as "Can't merge into amistio-template (older note)" a day
+/// after the last landing. Says what it cleared, once.
+fn retire_landing_holds(s: &pulse_store::Store) -> Vec<String> {
+    let Ok((raw, exists)) = s.meta(LANDING_HOLDS_KEY) else {
+        return Vec::new();
+    };
+    if !exists {
+        return Vec::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    crate::util::exec1(
+        &conn,
+        "DELETE FROM meta WHERE key = ?",
+        &[&LANDING_HOLDS_KEY],
+    );
+    let projects = serde_json::from_str::<serde_json::Map<String, Value>>(&raw)
+        .map(|m| m.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let which = if projects.is_empty() {
+        String::new()
+    } else {
+        format!(" for {}", projects.join(", "))
+    };
+    vec![format!(
+        "landing: cleared the hold note{which} the retired land lane left behind; work is delivered as pull requests"
+    )]
 }
 
 /// A task whose jobs are all finished with at least one done job whose
@@ -2921,6 +2959,28 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_daemon::*;
+
+    #[test]
+    fn the_pass_clears_the_hold_note_the_land_lane_left_and_says_so_once() {
+        let s = new_store();
+        s.set_meta(
+            LANDING_HOLDS_KEY,
+            r#"{"amistio-template":{"at":"2026-11-04T13:37:39Z","note":"1 pending landing job; deferred: main moved while the merge was verified; nothing landed, try again"}}"#,
+        )
+        .expect("old hold");
+        let lines = tend(&s, &[], TEST_NOW);
+        assert_eq!(
+            lines,
+            vec![
+                "landing: cleared the hold note for amistio-template the retired land lane left behind; work is delivered as pull requests".to_string()
+            ]
+        );
+        assert!(
+            !s.meta(LANDING_HOLDS_KEY).expect("meta").1,
+            "the note is gone, so the console shows no hold"
+        );
+        assert!(tend(&s, &[], TEST_NOW).is_empty(), "nothing to say twice");
+    }
 
     /// A task with two done jobs on their own branches.
     fn task_with_two_branches(s: &pulse_store::Store, proj: &Row, repo: &str) -> String {
