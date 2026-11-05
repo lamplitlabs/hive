@@ -66,19 +66,16 @@ pub(crate) fn hands_helper_process() {
         Box::new(std::io::stdout()),
         Box::new(std::io::stderr()),
     );
-    let code = match h.hands_main(&args) {
+    // The same mapping as `cmd_hands`, read off the error the way
+    // crates/pulse/src/lib.rs::report does, so this process exits with what
+    // the installed binary exits with.
+    let res = h.hands_main(&args);
+    let code = match crate::hands::hands_outcome(res, &mut h.stderr) {
         Ok(()) => 0,
-        Err(e) => {
-            if e.downcast_ref::<crate::hands::HandsError>().is_some() {
-                eprintln!("{e}");
-                2
-            } else if let Some(exit) = e.downcast_ref::<crate::hands::HandsExit>() {
-                exit.code
-            } else {
-                eprintln!("{e}");
-                1
-            }
-        }
+        Err(e) => e
+            .downcast_ref::<pulse_cli::Error>()
+            .map(|ce| ce.exit_code())
+            .unwrap_or(1),
     };
     std::process::exit(code);
 }

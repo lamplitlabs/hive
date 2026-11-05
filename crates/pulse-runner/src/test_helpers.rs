@@ -89,26 +89,6 @@ pub(crate) fn no_network_github_http(
     Err(anyhow!("Get \"{url}\": no network in tests: {host}"))
 }
 
-/// Helper-process branch for `pulse hands` round trips.
-pub(crate) fn maybe_run_hands_helper() {
-    if std::env::var("PULSE_TEST_HANDS").as_deref() == Ok("1") {
-        let mut h = crate::hands::new_hands(
-            Box::new(std::io::stdin()),
-            Box::new(std::io::stdout()),
-            Box::new(std::io::stderr()),
-        );
-        let args = std::env::args().skip(1).collect::<Vec<_>>();
-        let code = match h.hands_main(&args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("{e}");
-                1
-            }
-        };
-        std::process::exit(code);
-    }
-}
-
 /// The store `new_store` hands a test plus the environment that goes with it: PULSE_HOME and the empty
 /// PULSE_JOB/AGENT/SESSION/PROJECT hold while the fixture lives and revert when it drops,
 /// so a nested fixture or a later test sees the environment it expects. Derefs to the store.
