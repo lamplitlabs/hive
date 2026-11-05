@@ -3885,20 +3885,34 @@ mod tests {
         assert!(idle_wait(&watch, &mut no_bus, sleep, false));
         assert!(began.elapsed() >= sleep);
 
-        // A queued job wakes it as before.
+        // A queued job wakes it as before. The adder queues a job every poll
+        // until the test signals that idle_wait returned, so whenever the
+        // wait takes its snapshot of the queue a later job still changes it;
+        // a timed sleep before one insert raced that snapshot under load.
+        // The wait gets an interval no loaded machine reaches, so only the
+        // wake - never the deadline - can end it in time.
+        let wake_sleep = Duration::from_secs(120);
         let began = std::time::Instant::now();
         let s_add = s.clone();
+        let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(1);
         let adder = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(60));
-            crate::util::exec1(
-                &*s_add.conn().unwrap(),
-                "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES ('queued-1', 'proj', 'task', 'queued', '', 'queued', ?)",
-                &[&TEST_NOW],
-            );
+            let mut n = 0;
+            while let Err(crossbeam_channel::RecvTimeoutError::Timeout) =
+                stop_rx.recv_timeout(Duration::from_millis(20))
+            {
+                n += 1;
+                crate::util::exec1(
+                    &*s_add.conn().unwrap(),
+                    "INSERT INTO jobs (id, project, kind, title, brief, status, created_at) VALUES (?, 'proj', 'task', 'queued', '', 'queued', ?)",
+                    &[&format!("queued-{n}"), &TEST_NOW],
+                );
+            }
         });
-        assert!(idle_wait(&watch, &mut no_bus, sleep, false));
+        let woke = idle_wait(&watch, &mut no_bus, wake_sleep, false);
+        let _ = stop_tx.send(());
         adder.join().unwrap();
-        assert!(began.elapsed() < sleep, "slept through a queued job");
+        assert!(woke);
+        assert!(began.elapsed() < wake_sleep, "slept through a queued job");
 
         // Cancelled: false, so the loop stops.
         cancel.cancel();
