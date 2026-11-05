@@ -156,6 +156,14 @@ executor and the probe outcome (`active`, `drained` or `undone`); refusals
 and failed applies record nothing. `pulse remove executor NAME` is the undo
 for a paired hand.
 
+A hand that stops answering mid-run - three transport errors in a row, such
+as `Connection refused` from a network that drops fresh connections for a
+few seconds - goes `unreachable` and gets no work. The daemon probes it
+again after a minute and doubles the wait after each probe that still fails,
+up to thirty minutes; the first probe that passes puts it back in rotation
+(`executor NAME is reachable again: probe passed, back in rotation: …` in the
+daemon's log). `pulse executor probe NAME` does the same at once.
+
 ### Adding a machine from the console
 
 The Machines page's **Add machine** button is the same three commands behind

@@ -409,33 +409,55 @@ pub(crate) fn split_trailer(s: &str) -> Vec<String> {
         .map(ToOwned::to_owned)
         .collect()
 }
-/// Probe the drained hands that were never active once their `next_probe_at` is empty or due,
-/// as the daemon. A pass activates them (`NEVER_ACTIVE_SQL`); a failure waits the daemon interval
-/// or the first `LOGIN_BACKOFF_MINS` step, whichever is longer. Returns `[name, note]` per hand
-/// that became active.
+/// Probe, as the daemon, the ssh hands whose `next_probe_at` is empty or due: the drained hands
+/// that were never active (`NEVER_ACTIVE_SQL`), which a pass activates and a failure holds for
+/// the daemon interval or the first `LOGIN_BACKOFF_MINS` step, whichever is longer; and the hands
+/// that went `unreachable`, which a pass puts back in rotation and a failure holds for twice the
+/// last wait, from the minute `note_executor_run` set up to `UNREACHABLE_BACKOFF_MAX_MINS`.
+/// Returns `[name, note]` per hand that became active.
 pub(crate) fn reprobe_due(s: &pulse_store::Store, interval: i32, now: &str) -> Vec<[String; 2]> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
-    let names: Vec<String> = conn
+    let due: Vec<(String, String, i32)> = conn
         .prepare(&format!(
-            "SELECT name FROM executors WHERE kind = 'ssh' AND {} AND (next_probe_at = '' OR next_probe_at <= ?) ORDER BY name",
+            "SELECT name, status, backoff_minutes FROM executors WHERE kind = 'ssh' AND ({} OR status = 'unreachable') AND (next_probe_at = '' OR next_probe_at <= ?) ORDER BY name",
             crate::executor::NEVER_ACTIVE_SQL
         ))
         .and_then(|mut q| {
-            q.query_map([now], |r| r.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()
+            q.query_map([now], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i32>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
         })
         .unwrap_or_default();
     let wait = (interval / 60).max(crate::executor::LOGIN_BACKOFF_MINS[0]);
     let mut back = Vec::new();
-    for name in names {
+    for (name, was, backoff) in due {
         let (ok, note) = crate::executor::probe_executor(s, &name, "daemon", now)
             .unwrap_or_else(|e| (false, e.to_string()));
-        let active = crate::executor::executor_row(s, &name).str("status") == "active";
-        if ok && active {
-            back.push([name, format!("first probe passed, now active: {note}")]);
-        } else if crate::executor::executor_row(s, &name).str("status") == "drained" {
+        let status = crate::executor::executor_row(s, &name).str("status");
+        if ok && status == "active" {
+            let what = if was == "unreachable" {
+                "probe passed, back in rotation"
+            } else {
+                "first probe passed, now active"
+            };
+            back.push([name, format!("{what}: {note}")]);
+        } else if status == "unreachable" {
+            let wait = backoff
+                .saturating_mul(2)
+                .clamp(1, crate::executor::UNREACHABLE_BACKOFF_MAX_MINS)
+                .max(interval / 60);
+            let _ = conn.execute(
+                "UPDATE executors SET backoff_minutes = ?, next_probe_at = ? WHERE name = ?",
+                rusqlite::params![wait, crate::util::plus_minutes(now, wait), name],
+            );
+        } else if status == "drained" {
             let _ = conn.execute(
                 "UPDATE executors SET next_probe_at = ? WHERE name = ?",
                 [crate::util::plus_minutes(now, wait), name],
@@ -459,6 +481,19 @@ mod tests {
             0,
             "hands=ok pulse=ok heartbeat=1 git=ok harness=yes keys_ok=yes keys=- remotes=0 disk_free_mb=20480".into(),
             String::new(),
+        ))
+    }
+
+    fn refused_probe(
+        _ctx: &pulse_bus::CancellationToken,
+        _argv: &[String],
+        _stdin: &[u8],
+        _timeout: std::time::Duration,
+    ) -> anyhow::Result<(i32, String, String)> {
+        Ok((
+            crate::executor::SSH_EXIT_UNREACH,
+            String::new(),
+            "ssh: connect to host 20.52.42.230 port 22: Connection refused".into(),
         ))
     }
 
@@ -535,6 +570,87 @@ mod tests {
             crate::executor::executor_row(&s, "vm-new").str("status"),
             "drained"
         );
+    }
+
+    #[test]
+    fn daemon_probes_an_unreachable_hand_again_with_a_growing_wait() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let now = crate::test_helpers::TEST_NOW;
+        let s = crate::test_helpers::new_store();
+        registered_hand(&s);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET status = 'active' WHERE name = 'vm-new'",
+                [],
+            )
+            .unwrap();
+        for _ in 0..crate::executor::UNREACHABLE_AFTER {
+            crate::executor::note_executor_run(
+                &s,
+                now,
+                "vm-new",
+                "error",
+                "ssh: connect to host 20.52.42.230 port 22: Connection refused",
+                true,
+                false,
+            );
+        }
+        let row = crate::executor::executor_row(&s, "vm-new");
+        assert_eq!(row.str("status"), "unreachable");
+        assert_eq!(row.str("next_probe_at"), crate::util::plus_minutes(now, 1));
+        // Not due yet: left alone even though the machine would answer.
+        let old = crate::executor::set_run_ssh(passing_probe);
+        let back = reprobe_due(&s, 30, now);
+        crate::executor::restore_run_ssh(old);
+        assert!(back.is_empty(), "{back:?}");
+        assert_eq!(
+            crate::executor::executor_row(&s, "vm-new").str("status"),
+            "unreachable"
+        );
+        // Due and still refused: the wait doubles and the hand stays unreachable.
+        let t1 = crate::util::plus_minutes(now, 1);
+        let old = crate::executor::set_run_ssh(refused_probe);
+        let back = reprobe_due(&s, 30, &t1);
+        crate::executor::restore_run_ssh(old);
+        assert!(back.is_empty(), "{back:?}");
+        let row = crate::executor::executor_row(&s, "vm-new");
+        assert_eq!(row.str("status"), "unreachable");
+        assert_eq!(row.int("backoff_minutes"), 2);
+        assert_eq!(row.str("next_probe_at"), crate::util::plus_minutes(&t1, 2));
+        // The wait never grows past the cap.
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET backoff_minutes = ?, next_probe_at = ? WHERE name = 'vm-new'",
+                rusqlite::params![crate::executor::UNREACHABLE_BACKOFF_MAX_MINS, t1],
+            )
+            .unwrap();
+        let old = crate::executor::set_run_ssh(refused_probe);
+        reprobe_due(&s, 30, &t1);
+        crate::executor::restore_run_ssh(old);
+        let row = crate::executor::executor_row(&s, "vm-new");
+        assert_eq!(
+            row.int("backoff_minutes"),
+            crate::executor::UNREACHABLE_BACKOFF_MAX_MINS
+        );
+        // Due and answering: back in rotation with a clean slate.
+        let t2 = row.str("next_probe_at");
+        let old = crate::executor::set_run_ssh(passing_probe);
+        let back = reprobe_due(&s, 30, &t2);
+        crate::executor::restore_run_ssh(old);
+        assert_eq!(back.len(), 1, "{back:?}");
+        assert_eq!(back[0][0], "vm-new");
+        assert!(
+            back[0][1].starts_with("probe passed, back in rotation"),
+            "{back:?}"
+        );
+        let row = crate::executor::executor_row(&s, "vm-new");
+        assert_eq!(row.str("status"), "active");
+        assert_eq!(row.int("errors"), 0);
+        assert_eq!(row.int("backoff_minutes"), 0);
+        assert_eq!(row.str("next_probe_at"), "");
     }
 
     #[test]
