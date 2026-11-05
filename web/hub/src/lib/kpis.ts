@@ -1,6 +1,7 @@
-// The Home page's "Over time" panel: what the fleet got done and what it
-// spent, per day, from GET /api/v1/kpis. Pure functions, no DOM, so node
-// --test can check the windows, the trends and the words.
+// The Home page's "Over time" panel: what the fleet got done, what it did
+// on its own against how often it needed the owner, and what it spent, per
+// day, from GET /api/v1/kpis. Pure functions, no DOM, so node --test can
+// check the windows, the trends and the words.
 
 import type { KpiDay, KpisPayload } from "./api";
 
@@ -123,6 +124,10 @@ export interface KpiChartRow {
   sessions: number;
   tokens: number;
   cost: number;
+  reviews: number;
+  findings: number;
+  vuln_fixes: number;
+  owner_asks: number;
 }
 
 export function dayLabel(day: string): string {
@@ -143,6 +148,10 @@ export function kpiChartRows(rows: KpiDay[]): KpiChartRow[] {
     sessions: r.sessions,
     tokens: r.prompt_tokens + r.completion_tokens,
     cost: r.cost,
+    reviews: Number(r.reviews || 0),
+    findings: Number(r.findings || 0),
+    vuln_fixes: Number(r.vuln_fixes || 0),
+    owner_asks: Number(r.owner_asks || 0),
   }));
 }
 
@@ -155,11 +164,54 @@ export function kpiSummaryLine(p: Pick<KpisPayload, "series"> | null | undefined
   return landings.toLocaleString("en-US") + (landings === 1 ? " landing" : " landings") + ", " + tokensText(tokens) + " tokens in " + KPI_RANGE_LABEL[range];
 }
 
+const count = (n: number, one: string, many: string): string => n.toLocaleString("en-US") + " " + (n === 1 ? one : many);
+
+// "(28 merged on their own)", "(1 merged on its own)", "(all merged on
+// their own)"; nothing when none was.
+function mergedNote(reviews: number, merged: number): string {
+  if (merged <= 0) return "";
+  if (merged >= reviews) return reviews === 1 ? " (merged on its own)" : " (all merged on their own)";
+  return " (" + merged.toLocaleString("en-US") + " merged on " + (merged === 1 ? "its" : "their") + " own)";
+}
+
+// What the fleet did without a human, and how often it needed one:
+// "31 reviews (28 merged on their own), 1,454 findings, 56 vulnerability
+// fixes; the owner was asked 290 times in 30 days". A part at zero is left
+// out; a window with work but no ask says so ("never asked the owner");
+// a window with nothing at all says "Nothing on its own yet".
+export function kpiAutonomyLine(p: Pick<KpisPayload, "series"> | null | undefined, range: KpiRange): string {
+  const days = KPI_RANGE_DAYS[range];
+  const w = kpiWindow(p, days);
+  const reviews = sum(w, "reviews");
+  const merged = sum(w, "reviews_merged");
+  const findings = sum(w, "findings");
+  const fixes = sum(w, "vuln_fixes");
+  const asks = sum(w, "owner_asks");
+  const parts: string[] = [];
+  if (reviews > 0) parts.push(count(reviews, "review", "reviews") + mergedNote(reviews, merged));
+  if (findings > 0) parts.push(count(findings, "finding", "findings"));
+  if (fixes > 0) parts.push(count(fixes, "vulnerability fix", "vulnerability fixes"));
+  const when = " in " + KPI_RANGE_LABEL[range];
+  if (!parts.length) return asks > 0 ? "The owner was asked " + count(asks, "time", "times") + when + ", nothing done on its own yet" : "Nothing on its own yet" + when;
+  const done = parts.join(", ");
+  if (asks === 0) return done + "; never asked the owner" + when;
+  return done + "; the owner was asked " + count(asks, "time", "times") + when;
+}
+
+// The share of reviews the agents merged without the owner, in whole
+// percent; null when there was no review to speak of.
+export function reviewsAloneShare(p: Pick<KpisPayload, "series"> | null | undefined, days: number): number | null {
+  const w = kpiWindow(p, days);
+  const reviews = sum(w, "reviews");
+  if (reviews <= 0) return null;
+  return Math.round((Math.min(reviews, sum(w, "reviews_merged")) / reviews) * 100);
+}
+
 // True when the whole payload is zero: a fresh install, or one whose store
 // has not seen a session yet. The panel then shows a hint instead of a
 // flat chart.
 export function kpisEmpty(p: Pick<KpisPayload, "totals"> | null | undefined): boolean {
   const t = p?.totals;
   if (!t) return true;
-  return !(t.sessions || t.jobs_done || t.jobs_failed || t.landings || t.tasks_done || t.prompt_tokens || t.completion_tokens);
+  return !(t.sessions || t.jobs_done || t.jobs_failed || t.landings || t.tasks_done || t.prompt_tokens || t.completion_tokens || t.reviews || t.reviews_merged || t.findings || t.vulns_found || t.vuln_fixes || t.owner_asks);
 }

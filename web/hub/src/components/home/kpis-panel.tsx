@@ -7,14 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sparkline } from "@/components/pulse/charts";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Panel, SkeletonRows } from "@/components/pulse/panel";
-import { KPI_RANGE_DAYS, KPI_RANGE_LABEL, KPI_RANGES, changeText, changeTone, costText, kpiChartRows, kpiFigure, kpiPath, kpiSummaryLine, kpiTokensFigure, kpiWindow, kpisEmpty, perDayText, tokensText, type KpiDirection, type KpiFigure, type KpiKey, type KpiRange } from "@/lib/kpis";
+import { KPI_RANGE_DAYS, KPI_RANGE_LABEL, KPI_RANGES, changeText, changeTone, costText, kpiAutonomyLine, kpiChartRows, kpiFigure, kpiPath, kpiSummaryLine, kpiTokensFigure, kpiWindow, kpisEmpty, perDayText, tokensText, type KpiChartRow, type KpiDirection, type KpiFigure, type KpiKey, type KpiRange } from "@/lib/kpis";
 import { hrefs } from "@/lib/nav";
 import { num } from "@/lib/format";
 import type { KpisPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
-type Lens = "work" | "spend";
-const LENS_LABEL: Record<Lens, string> = { work: "Work", spend: "Spend" };
+type Lens = "work" | "spend" | "autonomy";
+const LENS_LABEL: Record<Lens, string> = { work: "Work", spend: "Spend", autonomy: "Autonomy" };
 const segmented = "h-8! p-0.5";
 const segment = "h-7 px-2.5 text-xs";
 const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.5rem 0.75rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
@@ -23,12 +23,21 @@ const STORAGE = "pulse.home.kpis.range";
 const CHART_STORAGE = "pulse.home.kpis.chart";
 
 // The series the chart draws, in a fixed colour slot each (globals.css).
-const WORK_SERIES: { key: "landings" | "jobs_done" | "tasks_done" | "jobs_failed"; name: string; color: string }[] = [
+type BarSeries = { key: Exclude<keyof KpiChartRow, "day" | "label" | "tokens" | "cost">; name: string; color: string };
+const WORK_SERIES: BarSeries[] = [
   { key: "landings", name: "Landings", color: "var(--series-1)" },
   { key: "jobs_done", name: "Jobs done", color: "var(--series-2)" },
   { key: "tasks_done", name: "Tasks done", color: "var(--series-3)" },
   { key: "jobs_failed", name: "Jobs failed", color: "var(--bad)" },
 ];
+// What the fleet did with no human in the loop, and the asks it did make.
+const AUTONOMY_SERIES: BarSeries[] = [
+  { key: "reviews", name: "Reviews", color: "var(--series-5)" },
+  { key: "findings", name: "Findings", color: "var(--series-7)" },
+  { key: "vuln_fixes", name: "Vulnerabilities fixed", color: "var(--series-6)" },
+  { key: "owner_asks", name: "Owner asked", color: "var(--bad)" },
+];
+const BAR_SERIES: Record<Exclude<Lens, "spend">, BarSeries[]> = { work: WORK_SERIES, autonomy: AUTONOMY_SERIES };
 
 // The cells of the stat strip: what each counts, where it leads and which
 // way is good news. Cost joins only when a provider priced its calls.
@@ -38,6 +47,19 @@ const CELLS: { key: KpiKey; label: string; dir: KpiDirection; href?: string; tex
   { key: "tasks_done", label: "Tasks done", dir: "up-good", href: hrefs.tasks({ status: "done" }), perDay: true },
   { key: "sessions", label: "Agent runs", dir: "neutral", href: hrefs.harness(), perDay: true },
 ];
+
+// The second strip, "On its own": what agents did with no human in the loop
+// - reviews with a verdict, findings posted, vulnerabilities fixed - and,
+// beside them, how often the fleet had to ask the owner (where fewer is
+// better). The sub line carries a companion count from `with`: merged
+// reviews under Reviews, alerts found under Vulnerabilities fixed.
+const ALONE_CELLS: { key: KpiKey; label: string; dir: KpiDirection; href?: string; with?: KpiKey; sub: (n: number, companion: number) => string }[] = [
+  { key: "reviews", label: "Reviews", dir: "up-good", href: hrefs.codeDeliveries(), with: "reviews_merged", sub: (n, merged) => (n > 0 ? num(merged) + " merged without the owner" : "pull requests agents reviewed") },
+  { key: "findings", label: "Findings", dir: "up-good", sub: () => "bugs and evidence agents posted" },
+  { key: "vuln_fixes", label: "Vulnerabilities fixed", dir: "up-good", with: "vulns_found", sub: (_n, found) => num(found) + " found" },
+  { key: "owner_asks", label: "Owner asked", dir: "up-bad", sub: () => "times a human was needed" },
+];
+const FIGURE_KEYS: KpiKey[] = ["landings", "jobs_done", "tasks_done", "sessions", "prompt_tokens", "completion_tokens", "cost", "reviews", "reviews_merged", "findings", "vulns_found", "vuln_fixes", "owner_asks"];
 
 function initialRange(): KpiRange {
   if (typeof window === "undefined") return "7d";
@@ -58,8 +80,10 @@ function cellSub(f: KpiFigure, range: KpiRange, perDay: boolean): string {
 // What the fleet got done and what it spent, per day: landings, jobs, tasks
 // and agent runs (the harness sessions - the hub's "Sessions" page is the
 // chat) with their tokens (and money, when priced), each with
-// a sparkline and a comparison with the window before, then one chart
-// switchable between the work and the spend. The range is remembered, and
+// a sparkline and a comparison with the window before; under them what it
+// did on its own (reviews, findings, vulnerability fixes) against how often
+// it asked the owner; then one chart switchable between the work, the
+// spend and the autonomy. The range is remembered, and
 // so is whether the chart is open: by default the numbers alone show and
 // the chart unfolds on request, so Home stays a briefing, not a dashboard.
 export function KpisPanel({ project, height = 200 }: { project?: string | null; height?: number }) {
@@ -80,7 +104,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
   const p = kpis.data;
   const figures = useMemo(() => {
     const f = {} as Record<KpiKey, KpiFigure>;
-    for (const k of ["landings", "jobs_done", "tasks_done", "sessions", "prompt_tokens", "completion_tokens", "cost"] as KpiKey[]) f[k] = kpiFigure(p, k, days);
+    for (const k of FIGURE_KEYS) f[k] = kpiFigure(p, k, days);
     return f;
   }, [p, days]);
   const tokens = useMemo(() => kpiTokensFigure(p, days), [p, days]);
@@ -93,7 +117,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
       {chart ? (
         <Tabs value={lens} onValueChange={(v) => setLens(v as Lens)}>
           <TabsList className={segmented} aria-label="Chart what">
-            {(["work", "spend"] as Lens[]).map((l) => (
+            {(["work", "spend", "autonomy"] as Lens[]).map((l) => (
               <TabsTrigger key={l} value={l} className={segment}>
                 {LENS_LABEL[l]}
               </TabsTrigger>
@@ -123,14 +147,15 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
   if (kpisEmpty(p)) {
     return (
       <Panel title="Over time" icon={TrendingUpIcon} actions={controls}>
-        <EmptyState title="Nothing measured yet" hint="Landings, finished jobs, done tasks and the tokens agents spend show up here per day once the runner has done a pass.">
+        <EmptyState title="Nothing measured yet" hint="Landings, finished jobs, done tasks, the reviews, findings and vulnerability fixes agents make on their own, and the tokens they spend show up here per day once the runner has done a pass.">
           No runs, jobs or landings in the last {KPI_RANGE_LABEL[range]}.
         </EmptyState>
       </Panel>
     );
   }
 
-  const caption = lens === "work" ? "Landings, jobs and tasks per day, last " + KPI_RANGE_LABEL[range] : (priced ? "Tokens and cost" : "Tokens") + " per day, last " + KPI_RANGE_LABEL[range];
+  const caption = lens === "work" ? "Landings, jobs and tasks per day, last " + KPI_RANGE_LABEL[range] : lens === "autonomy" ? "Reviews, findings, vulnerabilities fixed and times the owner was asked per day, last " + KPI_RANGE_LABEL[range] : (priced ? "Tokens and cost" : "Tokens") + " per day, last " + KPI_RANGE_LABEL[range];
+  const bars = lens === "spend" ? null : BAR_SERIES[lens];
   return (
     <Panel title="Over time" icon={TrendingUpIcon} actions={controls} contentClassName="pt-0">
       <KpiGrid className={"mb-0 rounded-xl " + (priced ? "md:grid-cols-6" : "md:grid-cols-5")}>
@@ -141,6 +166,19 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
         <Kpi n={tokensText(tokens.total)} label="Tokens" href={hrefs.harness()} tone={changeTone(tokens, "up-bad")} spark={tokens.spark.length > 1 ? <Sparkline values={tokens.spark} w={72} h={20} /> : undefined} sub={tokens.total > 0 ? tokensText(figures.prompt_tokens.total) + " in · " + tokensText(figures.completion_tokens.total) + " out · " + changeText(tokens, range) : changeText(tokens, range)} />
         {priced ? <Kpi n={costText(figures.cost.total)} label="Spent" href={hrefs.harness()} tone={changeTone(figures.cost, "up-bad")} spark={figures.cost.spark.length > 1 ? <Sparkline values={figures.cost.spark} w={72} h={20} /> : undefined} sub={changeText(figures.cost, range)} /> : null}
       </KpiGrid>
+      <section aria-labelledby="pulse-home-kpis-alone" className="mt-4 min-w-0">
+        <div className="mb-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <h3 id="pulse-home-kpis-alone" className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">On its own</h3>
+          <p className="min-w-0 text-xs text-muted-foreground anywhere">{kpiAutonomyLine(p, range)}</p>
+        </div>
+        <KpiGrid className="mb-0 rounded-xl">
+          {ALONE_CELLS.map((c) => {
+            const f = figures[c.key];
+            const companion = c.with ? figures[c.with].total : 0;
+            return <Kpi key={c.key} n={f.total} label={c.label} href={c.href} tone={changeTone(f, c.dir)} spark={f.spark.length > 1 ? <Sparkline values={f.spark} w={72} h={20} /> : undefined} sub={c.sub(f.total, companion) + " · " + changeText(f, range)} />;
+          })}
+        </KpiGrid>
+      </section>
       <div className="mt-3 flex justify-end">
         <Button type="button" variant="ghost" size="sm" onClick={() => setChart(!chart)} aria-expanded={chart} aria-controls="pulse-home-kpis-chart" className="text-muted-foreground">
           {chart ? "Hide the chart" : "Show the chart"}
@@ -150,15 +188,15 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
       {chart ? (
       <div id="pulse-home-kpis-chart" style={{ height }} className="mt-1 min-w-0" role="img" aria-label={caption}>
         <ResponsiveContainer width="100%" height="100%">
-          {lens === "work" ? (
+          {bars ? (
             <BarChart data={rows} margin={{ top: 8, right: 8, left: -16, bottom: 0 }} barCategoryGap="28%">
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
               <XAxis dataKey="label" tick={axisTick} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={24} />
               <YAxis tick={axisTick} tickLine={false} axisLine={false} allowDecimals={false} width={44} />
               <ChartTooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--muted)", opacity: 0.5 }} formatter={(v) => num(v as number)} />
               <Legend iconType="circle" iconSize={8} formatter={(v) => <span style={{ color: "var(--muted-foreground)" }}>{v}</span>} wrapperStyle={{ fontSize: 12, overflowWrap: "anywhere", paddingTop: 4 }} />
-              {WORK_SERIES.map((s, i) => (
-                <Bar key={s.key} dataKey={s.key} name={s.name} stackId="a" fill={s.color} stroke="var(--card)" strokeWidth={2} maxBarSize={24} isAnimationActive={false} radius={i === WORK_SERIES.length - 1 ? [4, 4, 0, 0] : 0} />
+              {bars.map((s, i) => (
+                <Bar key={s.key} dataKey={s.key} name={s.name} stackId="a" fill={s.color} stroke="var(--card)" strokeWidth={2} maxBarSize={24} isAnimationActive={false} radius={i === bars.length - 1 ? [4, 4, 0, 0] : 0} />
               ))}
             </BarChart>
           ) : (
@@ -189,7 +227,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
         <thead>
           <tr>
             <th scope="col">Day</th>
-            {lens === "work" ? WORK_SERIES.map((s) => <th key={s.key} scope="col">{s.name}</th>) : <th scope="col">Tokens</th>}
+            {bars ? bars.map((s) => <th key={s.key} scope="col">{s.name}</th>) : <th scope="col">Tokens</th>}
             {lens === "spend" && priced ? <th scope="col">Cost</th> : null}
           </tr>
         </thead>
@@ -197,7 +235,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
           {rows.map((r) => (
             <tr key={r.day}>
               <th scope="row">{r.day}</th>
-              {lens === "work" ? WORK_SERIES.map((s) => <td key={s.key}>{num(r[s.key])}</td>) : <td>{num(r.tokens)}</td>}
+              {bars ? bars.map((s) => <td key={s.key}>{num(r[s.key])}</td>) : <td>{num(r.tokens)}</td>}
               {lens === "spend" && priced ? <td>{costText(r.cost)}</td> : null}
             </tr>
           ))}

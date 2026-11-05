@@ -14,7 +14,13 @@
       "jobs_done": 9,
       "jobs_failed": 0,
       "landings": 3,
-      "tasks_done": 3
+      "tasks_done": 3,
+      "reviews": 1,
+      "reviews_merged": 0,
+      "findings": 9,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 2
     },
     {
       "day": "2026-07-11",
@@ -25,7 +31,13 @@
       "jobs_done": 18,
       "jobs_failed": 2,
       "landings": 5,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 2,
+      "reviews_merged": 2,
+      "findings": 19,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 3
     },
     {
       "day": "2026-07-12",
@@ -36,7 +48,13 @@
       "jobs_done": 8,
       "jobs_failed": 1,
       "landings": 2,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 1,
+      "reviews_merged": 1,
+      "findings": 9,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 2
     },
     {
       "day": "2026-07-13",
@@ -47,7 +65,13 @@
       "jobs_done": 25,
       "jobs_failed": 0,
       "landings": 8,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 3,
+      "reviews_merged": 3,
+      "findings": 27,
+      "vulns_found": 5,
+      "vuln_fixes": 0,
+      "owner_asks": 5
     },
     {
       "day": "2026-07-14",
@@ -58,7 +82,13 @@
       "jobs_done": 18,
       "jobs_failed": 2,
       "landings": 6,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 2,
+      "reviews_merged": 1,
+      "findings": 16,
+      "vulns_found": 0,
+      "vuln_fixes": 3,
+      "owner_asks": 4
     },
     {
       "day": "2026-07-15",
@@ -69,7 +99,13 @@
       "jobs_done": 15,
       "jobs_failed": 1,
       "landings": 4,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 1,
+      "reviews_merged": 1,
+      "findings": 19,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 4
     },
     {
       "day": "2026-07-16",
@@ -80,7 +116,13 @@
       "jobs_done": 23,
       "jobs_failed": 0,
       "landings": 7,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 3,
+      "reviews_merged": 3,
+      "findings": 21,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 3
     },
     {
       "day": "2026-07-17",
@@ -91,7 +133,13 @@
       "jobs_done": 28,
       "jobs_failed": 2,
       "landings": 9,
-      "tasks_done": 1
+      "tasks_done": 1,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 17,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 4
     },
     {
       "day": "2026-07-18",
@@ -102,7 +150,13 @@
       "jobs_done": 15,
       "jobs_failed": 1,
       "landings": 5,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 2,
+      "reviews_merged": 1,
+      "findings": 17,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 3
     },
     {
       "day": "2026-07-19",
@@ -113,7 +167,13 @@
       "jobs_done": 36,
       "jobs_failed": 0,
       "landings": 11,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 5,
+      "reviews_merged": 4,
+      "findings": 24,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 7
     },
     {
       "day": "2026-07-20",
@@ -124,7 +184,13 @@
       "jobs_done": 26,
       "jobs_failed": 2,
       "landings": 8,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 2,
+      "reviews_merged": 2,
+      "findings": 28,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-07-21",
@@ -135,7 +201,13 @@
       "jobs_done": 19,
       "jobs_failed": 1,
       "landings": 6,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 2,
+      "reviews_merged": 2,
+      "findings": 17,
+      "vulns_found": 2,
+      "vuln_fixes": 0,
+      "owner_asks": 5
     },
     {
       "day": "2026-07-22",
@@ -146,7 +218,13 @@
       "jobs_done": 30,
       "jobs_failed": 0,
       "landings": 10,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 5,
+      "reviews_merged": 4,
+      "findings": 34,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 4
     },
     {
       "day": "2026-07-23",
@@ -157,7 +235,13 @@
       "jobs_done": 39,
       "jobs_failed": 2,
       "landings": 12,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 32,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 5
     },
     {
       "day": "2026-07-24",
@@ -168,7 +252,13 @@
       "jobs_done": 23,
       "jobs_failed": 1,
       "landings": 7,
-      "tasks_done": 1
+      "tasks_done": 1,
+      "reviews": 3,
+      "reviews_merged": 3,
+      "findings": 15,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 4
     },
     {
       "day": "2026-07-25",
@@ -179,7 +269,13 @@
       "jobs_done": 28,
       "jobs_failed": 0,
       "landings": 9,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 3,
+      "reviews_merged": 3,
+      "findings": 27,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 5
     },
     {
       "day": "2026-07-26",
@@ -190,7 +286,13 @@
       "jobs_done": 42,
       "jobs_failed": 2,
       "landings": 14,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 4,
+      "findings": 26,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 8
     },
     {
       "day": "2026-07-27",
@@ -201,7 +303,13 @@
       "jobs_done": 36,
       "jobs_failed": 1,
       "landings": 11,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 37,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 8
     },
     {
       "day": "2026-07-28",
@@ -212,7 +320,13 @@
       "jobs_done": 26,
       "jobs_failed": 0,
       "landings": 8,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 3,
+      "reviews_merged": 2,
+      "findings": 21,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 3
     },
     {
       "day": "2026-07-29",
@@ -223,7 +337,13 @@
       "jobs_done": 40,
       "jobs_failed": 2,
       "landings": 13,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 40,
+      "vulns_found": 8,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-07-30",
@@ -234,7 +354,13 @@
       "jobs_done": 45,
       "jobs_failed": 1,
       "landings": 15,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 3,
+      "findings": 33,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 6
     },
     {
       "day": "2026-07-31",
@@ -245,7 +371,13 @@
       "jobs_done": 33,
       "jobs_failed": 0,
       "landings": 10,
-      "tasks_done": 3
+      "tasks_done": 3,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 19,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-01",
@@ -256,7 +388,13 @@
       "jobs_done": 38,
       "jobs_failed": 2,
       "landings": 12,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 6,
+      "reviews_merged": 6,
+      "findings": 35,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 8
     },
     {
       "day": "2026-08-02",
@@ -267,7 +405,13 @@
       "jobs_done": 49,
       "jobs_failed": 1,
       "landings": 16,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 26,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 9
     },
     {
       "day": "2026-08-03",
@@ -278,7 +422,13 @@
       "jobs_done": 33,
       "jobs_failed": 0,
       "landings": 11,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 4,
+      "reviews_merged": 3,
+      "findings": 34,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 4
     },
     {
       "day": "2026-08-04",
@@ -289,7 +439,13 @@
       "jobs_done": 45,
       "jobs_failed": 2,
       "landings": 14,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 30,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-05",
@@ -300,7 +456,13 @@
       "jobs_done": 56,
       "jobs_failed": 1,
       "landings": 18,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-06",
@@ -311,7 +473,13 @@
       "jobs_done": 40,
       "jobs_failed": 0,
       "landings": 13,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 6,
+      "reviews_merged": 5,
+      "findings": 33,
+      "vulns_found": 1,
+      "vuln_fixes": 0,
+      "owner_asks": 7
     },
     {
       "day": "2026-08-07",
@@ -322,7 +490,13 @@
       "jobs_done": 45,
       "jobs_failed": 2,
       "landings": 15,
-      "tasks_done": 1
+      "tasks_done": 1,
+      "reviews": 4,
+      "reviews_merged": 3,
+      "findings": 23,
+      "vulns_found": 0,
+      "vuln_fixes": 3,
+      "owner_asks": 8
     },
     {
       "day": "2026-08-08",
@@ -333,7 +507,13 @@
       "jobs_done": 54,
       "jobs_failed": 1,
       "landings": 17,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 37,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 9
     },
     {
       "day": "2026-08-09",
@@ -344,7 +524,13 @@
       "jobs_done": 38,
       "jobs_failed": 0,
       "landings": 12,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 3,
+      "reviews_merged": 3,
+      "findings": 25,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 4
     },
     {
       "day": "2026-08-10",
@@ -355,7 +541,13 @@
       "jobs_done": 58,
       "jobs_failed": 2,
       "landings": 19,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-11",
@@ -366,7 +558,13 @@
       "jobs_done": 48,
       "jobs_failed": 1,
       "landings": 16,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 6,
+      "reviews_merged": 5,
+      "findings": 30,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-12",
@@ -377,7 +575,13 @@
       "jobs_done": 45,
       "jobs_failed": 0,
       "landings": 14,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 7
     },
     {
       "day": "2026-08-13",
@@ -388,7 +592,13 @@
       "jobs_done": 62,
       "jobs_failed": 2,
       "landings": 20,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 33,
+      "vulns_found": 3,
+      "vuln_fixes": 1,
+      "owner_asks": 8
     },
     {
       "day": "2026-08-14",
@@ -399,7 +609,13 @@
       "jobs_done": 55,
       "jobs_failed": 1,
       "landings": 18,
-      "tasks_done": 1
+      "tasks_done": 1,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 23,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 9
     },
     {
       "day": "2026-08-15",
@@ -410,7 +626,13 @@
       "jobs_done": 45,
       "jobs_failed": 0,
       "landings": 15,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 5,
+      "reviews_merged": 3,
+      "findings": 37,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 5
     },
     {
       "day": "2026-08-16",
@@ -421,7 +643,13 @@
       "jobs_done": 66,
       "jobs_failed": 2,
       "landings": 21,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 6,
+      "reviews_merged": 6,
+      "findings": 26,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-17",
@@ -432,7 +660,13 @@
       "jobs_done": 53,
       "jobs_failed": 1,
       "landings": 17,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-18",
@@ -443,7 +677,13 @@
       "jobs_done": 58,
       "jobs_failed": 0,
       "landings": 19,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 30,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 7
     },
     {
       "day": "2026-08-19",
@@ -454,7 +694,13 @@
       "jobs_done": 66,
       "jobs_failed": 2,
       "landings": 22,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 3,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 8
     },
     {
       "day": "2026-08-20",
@@ -465,7 +711,13 @@
       "jobs_done": 51,
       "jobs_failed": 1,
       "landings": 16,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 33,
+      "vulns_found": 6,
+      "vuln_fixes": 0,
+      "owner_asks": 9
     },
     {
       "day": "2026-08-21",
@@ -476,7 +728,13 @@
       "jobs_done": 62,
       "jobs_failed": 0,
       "landings": 20,
-      "tasks_done": 3
+      "tasks_done": 3,
+      "reviews": 6,
+      "reviews_merged": 6,
+      "findings": 23,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 5
     },
     {
       "day": "2026-08-22",
@@ -487,7 +745,13 @@
       "jobs_done": 73,
       "jobs_failed": 2,
       "landings": 24,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 37,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-23",
@@ -498,7 +762,13 @@
       "jobs_done": 54,
       "jobs_failed": 1,
       "landings": 18,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 4,
+      "findings": 26,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-24",
@@ -509,7 +779,13 @@
       "jobs_done": 66,
       "jobs_failed": 0,
       "landings": 21,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 4,
+      "reviews_merged": 3,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 7
     },
     {
       "day": "2026-08-25",
@@ -520,7 +796,13 @@
       "jobs_done": 77,
       "jobs_failed": 2,
       "landings": 25,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 30,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 8
     },
     {
       "day": "2026-08-26",
@@ -531,7 +813,13 @@
       "jobs_done": 58,
       "jobs_failed": 1,
       "landings": 19,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 6,
+      "reviews_merged": 6,
+      "findings": 40,
+      "vulns_found": 1,
+      "vuln_fixes": 0,
+      "owner_asks": 9
     },
     {
       "day": "2026-08-27",
@@ -542,7 +830,13 @@
       "jobs_done": 69,
       "jobs_failed": 0,
       "landings": 23,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 4,
+      "reviews_merged": 3,
+      "findings": 33,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 5
     },
     {
       "day": "2026-08-28",
@@ -553,7 +847,13 @@
       "jobs_done": 81,
       "jobs_failed": 2,
       "landings": 26,
-      "tasks_done": 1
+      "tasks_done": 1,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 23,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-29",
@@ -564,7 +864,13 @@
       "jobs_done": 62,
       "jobs_failed": 1,
       "landings": 20,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 37,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 6
     },
     {
       "day": "2026-08-30",
@@ -575,7 +881,13 @@
       "jobs_done": 67,
       "jobs_failed": 0,
       "landings": 22,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 26,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 7
     },
     {
       "day": "2026-08-31",
@@ -586,7 +898,13 @@
       "jobs_done": 81,
       "jobs_failed": 2,
       "landings": 27,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 6,
+      "reviews_merged": 5,
+      "findings": 40,
+      "vulns_found": 4,
+      "vuln_fixes": 1,
+      "owner_asks": 8
     },
     {
       "day": "2026-09-01",
@@ -597,7 +915,13 @@
       "jobs_done": 66,
       "jobs_failed": 1,
       "landings": 21,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 30,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 9
     },
     {
       "day": "2026-09-02",
@@ -608,7 +932,13 @@
       "jobs_done": 74,
       "jobs_failed": 0,
       "landings": 24,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 5,
+      "reviews_merged": 4,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 5
     },
     {
       "day": "2026-09-03",
@@ -619,7 +949,13 @@
       "jobs_done": 85,
       "jobs_failed": 2,
       "landings": 28,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 33,
+      "vulns_found": 0,
+      "vuln_fixes": 1,
+      "owner_asks": 6
     },
     {
       "day": "2026-09-04",
@@ -630,7 +966,13 @@
       "jobs_done": 69,
       "jobs_failed": 1,
       "landings": 23,
-      "tasks_done": 1
+      "tasks_done": 1,
+      "reviews": 5,
+      "reviews_merged": 4,
+      "findings": 23,
+      "vulns_found": 2,
+      "vuln_fixes": 0,
+      "owner_asks": 6
     },
     {
       "day": "2026-09-05",
@@ -641,7 +983,13 @@
       "jobs_done": 78,
       "jobs_failed": 0,
       "landings": 25,
-      "tasks_done": 2
+      "tasks_done": 2,
+      "reviews": 6,
+      "reviews_merged": 6,
+      "findings": 37,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 7
     },
     {
       "day": "2026-09-06",
@@ -652,7 +1000,13 @@
       "jobs_done": 89,
       "jobs_failed": 2,
       "landings": 29,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 4,
+      "reviews_merged": 4,
+      "findings": 26,
+      "vulns_found": 0,
+      "vuln_fixes": 2,
+      "owner_asks": 8
     },
     {
       "day": "2026-09-07",
@@ -663,7 +1017,13 @@
       "jobs_done": 79,
       "jobs_failed": 1,
       "landings": 26,
-      "tasks_done": 0
+      "tasks_done": 0,
+      "reviews": 5,
+      "reviews_merged": 5,
+      "findings": 40,
+      "vulns_found": 0,
+      "vuln_fixes": 0,
+      "owner_asks": 9
     }
   ],
   "totals": {

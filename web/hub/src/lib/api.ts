@@ -335,8 +335,10 @@ export interface Timeline {
 }
 
 // One UTC day of GET /api/v1/kpis: what the fleet got done (landings, jobs,
-// tasks) and what it spent (sessions, tokens, cost). Zero-filled, so a quiet
-// day is a row of zeros rather than a gap.
+// tasks), what it did on its own (reviews, findings, vulnerability fixes)
+// against how often it needed the owner, and what it spent (sessions,
+// tokens, cost). Zero-filled, so a quiet day is a row of zeros rather than
+// a gap.
 export interface KpiDay {
   day: string;
   sessions: number;
@@ -345,8 +347,24 @@ export interface KpiDay {
   cost: number;
   jobs_done: number;
   jobs_failed: number;
+  // Local landings and merged pull requests together.
   landings: number;
   tasks_done: number;
+  // Pull-request reviews an agent finished with a verdict: merged, changes
+  // asked for, or handed to the owner.
+  reviews: number;
+  // Of those, the pull requests the agent merged itself, no owner click.
+  reviews_merged: number;
+  // Board `finding` posts by agents (bugs, regressions, evidence, lessons);
+  // the daemon's notices and the owner's posts are not counted.
+  findings: number;
+  // Dependabot vulnerability alerts first seen that day.
+  vulns_found: number;
+  // Security fix jobs (dependency upgrades for those alerts) finished done.
+  vuln_fixes: number;
+  // Posts flagged for the owner: questions, hold stops, "your call" findings
+  // - the times the fleet needed a human.
+  owner_asks: number;
 }
 
 export interface KpisPayload {
