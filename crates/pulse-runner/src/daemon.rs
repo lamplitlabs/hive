@@ -1167,6 +1167,15 @@ pub(crate) fn daemon(
     } else {
         o.agent.clone()
     };
+    let stale_sockets = crate::executor::ssh_sockets_reset();
+    if stale_sockets > 0 {
+        say(
+            &o,
+            format!(
+                "removed {stale_sockets} shared ssh connection socket(s) left by an earlier daemon; sessions reconnect once"
+            ),
+        );
+    }
     let mut loops = 0;
     let mut passes = 0;
     let mut last_prune_day = String::new();

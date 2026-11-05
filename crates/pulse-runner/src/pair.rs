@@ -91,6 +91,8 @@ pub(crate) fn valid_name(name: String) -> bool {
 pub(crate) fn pair_dropin_text() -> String {
     [
         "# The hands' user gets exactly what its authorized_keys line allows and nothing else.",
+        "# The hub runs every session to these hands over one shared connection, so the",
+        "# sessions it has open at once (a job, its steps mirror, a probe) share this bound.",
         "Match User pulse",
         "    PasswordAuthentication no",
         "    AllowAgentForwarding no",
@@ -98,6 +100,7 @@ pub(crate) fn pair_dropin_text() -> String {
         "    X11Forwarding no",
         "    PermitTTY no",
         "    PermitTunnel no",
+        "    MaxSessions 64",
         "",
     ]
     .join("\n")
@@ -2119,22 +2122,14 @@ mod tests {
     }
 
     fn admin_argv() -> Vec<String> {
-        [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=15",
-            "-o",
-            "ClearAllForwardings=yes",
-            "-p",
-            "22",
-            "admin@example.invalid",
-            "sudo -n sh -s",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+        std::iter::once("ssh".to_string())
+            .chain(crate::executor::ssh_options())
+            .chain(
+                ["-p", "22", "admin@example.invalid", "sudo -n sh -s"]
+                    .iter()
+                    .map(|s| s.to_string()),
+            )
+            .collect()
     }
 
     fn hands_argv() -> Vec<String> {

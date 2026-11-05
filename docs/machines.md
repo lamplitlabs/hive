@@ -163,13 +163,31 @@ executor and the probe outcome (`active`, `drained` or `undone`); refusals
 and failed applies record nothing. `pulse remove executor NAME` is the undo
 for a paired hand.
 
+Every ssh session the hub opens to one address (user, host and port)
+shares one connection: the first opens a master that stays ten minutes
+past its last session, the rest attach to it through a socket under
+`PULSE_HOME/ssh`, and a session whose master cannot be reached connects on
+its own, as before (a daemon that starts removes the sockets it finds, since
+a master from before a reboot is gone). The measured reason: of twenty
+fresh connects the hub made to `hands-cr-064` in 77 seconds, the
+carrier-grade NAT it sits behind answered eighteen with a reset before the
+packet left its network - a capture on the machine saw one SYN arrive and
+sent no reset - and the refusals went on for four minutes after the
+pairing's twenty-odd short sessions, while the connection that was up kept
+working; a probe, a job start, a steps mirror and a fetch now cost no new
+connect. The drop-in a pairing writes raises sshd's sessions per connection
+for the hands' user to 64 (the default is ten), so the sessions the hub has
+open at once on one hand share the bound comfortably; a session a full
+master cannot serve is tried again like a refused connect.
+
 A session that never began - the connect refused or timed out, the banner
 exchange cut, as a network behind carrier-grade NAT does to a burst of
-fresh connections for a few seconds - is tried again before anything
-counts it: four more times with a doubling pause (2, 4, 8, 16 s), for every
-ssh the hub makes, the pairing's inspection and apply included (one such
-refusal between the two used to fail the pairing and release a machine
-that had just booted). A hand that still stops answering mid-run - three
+fresh connections - or that a shared connection's master could not serve
+is tried again before anything counts it: four more times with a doubling
+pause (2, 4, 8, 16 s), for every ssh the hub makes, the pairing's
+inspection and apply included (one such refusal between the two used to
+fail the pairing and release a machine that had just booted). A hand that
+still stops answering mid-run - three
 transport errors in a row after those tries - goes `unreachable` and gets
 no work. The daemon probes it
 again after a minute and doubles the wait after each probe that still fails,
