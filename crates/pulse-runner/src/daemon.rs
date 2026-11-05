@@ -720,16 +720,30 @@ impl std::fmt::Display for NoAutoCompute {
     }
 }
 
-/// Rents a machine for a starved queue when the owner pre-authorised it:
+/// What the machine the daemon rents on its own offers: a Linux hand of the
+/// provider's default size, so its OS word and the arch that size runs.
+pub(crate) fn rented_caps(s: &pulse_store::Store) -> std::collections::BTreeSet<String> {
+    let size_setting = pulse_store::compute_size_setting(&s.setting("compute.provider", ""));
+    pulse_store::needs::caps_of(
+        "linux",
+        &pulse_tasks::compute::default_hands_arch(&s.setting(&size_setting, "")),
+        "",
+    )
+}
+
+/// Rents a machine for a waiting queue when the owner pre-authorised it:
 /// `compute.auto_approve` within `compute.max_vms` and
 /// `compute.max_hours_per_day`, one open request at a time, and only for a
-/// work kind (improve, task) that has itself waited `HANDS_WANTED_MINUTES`.
-/// Until now the daemon only posted "hands wanted" to an owner who may be
-/// away for the day while the caps said the machine could be rented.
+/// work kind (improve, task) that has itself waited `min_wait` minutes and
+/// that the rented machine could run. `waiting` says why the queue waits
+/// (every slot here busy, or a need no paired machine meets) and opens the
+/// request's reason. Until now the daemon only posted "hands wanted" to an
+/// owner who may be away for the day while the caps said the machine could
+/// be rented.
 pub(crate) fn auto_compute(
     s: &pulse_store::Store,
-    queued: i32,
-    waited: i32,
+    waiting: &str,
+    min_wait: i32,
     now: &str,
     actor: &str,
 ) -> Result<pulse_tasks::compute::ComputeRequest, NoAutoCompute> {
@@ -763,16 +777,9 @@ pub(crate) fn auto_compute(
             status: open.str("status"),
         });
     }
-    let since = crate::util::plus_minutes(now, -HANDS_WANTED_MINUTES);
-    // The machine the daemon rents is a Linux hand of the provider's default
-    // size: only a job such a machine can run is worth renting one for.
-    let size_setting = pulse_store::compute_size_setting(&s.setting("compute.provider", ""));
-    let rented = pulse_store::needs::caps_of(
-        "linux",
-        &pulse_tasks::compute::default_hands_arch(&s.setting(&size_setting, "")),
-        "",
-    );
-    let (fit, words) = pulse_store::needs::sql_fit("j.needs", &rented);
+    let since = crate::util::plus_minutes(now, -min_wait);
+    // Only a job the rented machine can run is worth renting one for.
+    let (fit, words) = pulse_store::needs::sql_fit("j.needs", &rented_caps(s));
     let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
     for w in &words {
         vals.push(w);
@@ -787,11 +794,11 @@ pub(crate) fn auto_compute(
     );
     if job.0.is_empty() {
         return Err(why(format!(
-            "no improve or task job that a rented Linux machine could run has waited {HANDS_WANTED_MINUTES} min"
+            "no improve or task job that a rented Linux machine could run has waited {min_wait} min"
         )));
     }
     let reason = format!(
-        "{queued} job(s) waited {waited} min with every slot on this machine busy or held; {} ({}) is first in line",
+        "{waiting}; {} ({}) is first in line",
         job.str("id"),
         job.str("kind")
     );
@@ -2570,9 +2577,14 @@ pub(crate) fn daemon(
                 now.clone(),
             );
             // Work that needs a kind of machine none of the paired ones is
-            // waits whatever the slots do; the owner hears once per project
+            // waits whatever the slots do. A need a rented Linux hand meets
+            // rents one when the owner pre-authorised it (before this only a
+            // queue with every slot busy rented, so a Mac with free slots
+            // and a `linux` job told the owner "machine wanted" and left
+            // the job queued for good); the owner hears once per project
             // and needs, after the job has waited long enough not to be a
-            // manifest the owner is still editing.
+            // manifest the owner is still editing, for the needs the daemon
+            // cannot rent or may not.
             if queued > 0
                 && let Some(c) = conn.as_ref()
             {
@@ -2593,10 +2605,56 @@ pub(crate) fn daemon(
                     ) {
                         say(&o, line);
                     }
+                    let rented = rented_caps(s);
+                    let (rentable, owners): (Vec<UnmetNeeds>, Vec<UnmetNeeds>) = unmet
+                        .into_iter()
+                        .partition(|u| pulse_store::needs::met(&u.needs, &rented));
+                    let mut ask = owners;
+                    if !rentable.is_empty() {
+                        let waiting = rentable
+                            .iter()
+                            .map(|u| {
+                                format!(
+                                    "{} job(s) of {} waited {} min for a machine that offers {}, which no paired machine does",
+                                    u.jobs, u.project, u.minutes, u.needs
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        match auto_compute(s, &waiting, NEEDS_WANTED_MINUTES, &now, &actor) {
+                            Ok(req) => say(
+                                &o,
+                                format!(
+                                    "machine wanted: compute request {} ({}, {} for {} h) made for {}: {}",
+                                    req.id, req.status, req.size, req.hours, req.project, req.reason
+                                ),
+                            ),
+                            // A machine is on its way: no question to the owner.
+                            Err(NoAutoCompute::Open { id, status }) if status != "pending" => {
+                                if let Some(line) = idle_log.line(
+                                    "needs-rent",
+                                    &format!("machine wanted: compute request {id} is {status}; waiting for the machine"),
+                                    std::time::Instant::now(),
+                                ) {
+                                    say(&o, line);
+                                }
+                            }
+                            Err(why) => {
+                                if let Some(line) = idle_log.line(
+                                    "needs-rent",
+                                    &format!("machine wanted: the daemon rents none ({why})"),
+                                    std::time::Instant::now(),
+                                ) {
+                                    say(&o, line);
+                                }
+                                ask.extend(rentable);
+                            }
+                        }
+                    }
                     for post in needs_wanted(
                         s,
                         crate::board::brain_project(c),
-                        &unmet,
+                        &ask,
                         now.clone(),
                         actor.clone(),
                     ) {
@@ -2604,6 +2662,7 @@ pub(crate) fn daemon(
                     }
                 } else {
                     idle_log.clear("needs");
+                    idle_log.clear("needs-rent");
                 }
             }
             if !gate.is_empty()
@@ -2744,7 +2803,10 @@ pub(crate) fn daemon(
                 if waited >= HANDS_WANTED_MINUTES {
                     // A machine the owner pre-authorised first; the question
                     // to the owner only when none may be rented.
-                    match auto_compute(s, queued, waited, &now, &actor) {
+                    let waiting = format!(
+                        "{queued} job(s) waited {waited} min with every slot on this machine busy or held"
+                    );
+                    match auto_compute(s, &waiting, HANDS_WANTED_MINUTES, &now, &actor) {
                         Ok(req) => say(
                             &o,
                             format!(
@@ -3719,22 +3781,23 @@ mod tests {
             "UPDATE jobs SET created_at = ? WHERE project = 'proj'",
             &[&crate::util::plus_minutes(TEST_NOW, -31)],
         );
+        const STARVED: &str = "1 job(s) waited 31 min with every slot on this machine busy or held";
         let why = |w: &str| Err(NoAutoCompute::Why(w.into()));
         assert_eq!(
-            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
             why("compute.auto_approve is off")
         );
         s.set_setting(pulse_store::HUMAN_AGENT, "compute.auto_approve", "1")
             .unwrap();
         assert_eq!(
-            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
             why("compute.max_vms 0 reached (0 in use)")
         );
         for (k, v) in [("compute.max_vms", "1"), ("compute.max_hours_per_day", "2")] {
             s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
         }
         assert_eq!(
-            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
             why("compute.max_hours_per_day 2 would be passed (0 h today, 4 h asked)")
         );
         s.set_setting(pulse_store::HUMAN_AGENT, "compute.max_hours_per_day", "0")
@@ -3745,7 +3808,7 @@ mod tests {
             &[],
         );
         assert_eq!(
-            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
             why("no improve or task job that a rented Linux machine could run has waited 30 min")
         );
         exec1(
@@ -3753,7 +3816,8 @@ mod tests {
             "UPDATE jobs SET kind = 'task' WHERE project = 'proj'",
             &[],
         );
-        let req = auto_compute(&s, 1, 31, TEST_NOW, "daemon").expect("no machine rented");
+        let req = auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("no machine rented");
         assert_eq!(
             (req.project.as_str(), req.hours),
             ("proj", AUTO_COMPUTE_HOURS)
@@ -3773,7 +3837,7 @@ mod tests {
             format!("compute request {} is {}", req.id, req.status)
         );
         assert_eq!(
-            auto_compute(&s, 1, 31, TEST_NOW, "daemon"),
+            auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
             Err(open),
             "a second machine while the first is open"
         );
@@ -6998,5 +7062,116 @@ mod tests {
         let unmet = unmet_needs(&s, now);
         assert_eq!(unmet.len(), 1, "{unmet:?}");
         assert_eq!(unmet[0].needs, "windows,visualstudio");
+    }
+
+    #[test]
+    fn a_job_that_needs_linux_rents_a_machine_without_a_starved_queue() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        exec1(&s, "UPDATE projects SET brain = 1 WHERE slug = 'proj'", &[]);
+        // The need is what the rented machine offers and this machine does
+        // not: on a Linux box of the default arch the test rents an ARM size.
+        let local = crate::executor::caps(&crate::executor::local_executor_row(&s));
+        let mut rented = rented_caps(&s);
+        if pulse_store::needs::met(
+            &rented.iter().cloned().collect::<Vec<_>>().join(","),
+            &local,
+        ) {
+            s.set_setting(
+                pulse_store::HUMAN_AGENT,
+                "compute.azure.vm_size",
+                "Standard_E2ps_v5",
+            )
+            .unwrap();
+            rented = rented_caps(&s);
+        }
+        let needs = rented.iter().cloned().collect::<Vec<_>>().join(",");
+        assert!(
+            !pulse_store::needs::met(&needs, &local),
+            "{needs} vs {local:?}"
+        );
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Builds on Linux".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let id = job.str("id");
+        pulse_board::set_job_needs(&s, &id, &needs, "human").unwrap();
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ? WHERE id = ?",
+            &[
+                &crate::util::plus_minutes(TEST_NOW, -(NEEDS_WANTED_MINUTES + 1)),
+                &id,
+            ],
+        );
+        let opts = || DaemonOpts {
+            worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+            ..Default::default()
+        };
+        let requests = || {
+            crate::util::must_rows(
+                &s.conn().unwrap(),
+                "SELECT id, status, requested_by, reason FROM compute_requests ORDER BY id",
+                &[],
+            )
+        };
+        // Not pre-authorised: the owner hears, nothing is rented, the job waits.
+        let out = once_daemon(&s, opts());
+        assert!(
+            out.contains("machine wanted: the daemon rents none (compute.auto_approve is off)")
+                && out.contains(&format!(
+                    "1 job(s) of proj need {needs}, which no active machine offers"
+                ))
+                && !out.contains("leased "),
+            "{out}"
+        );
+        assert!(requests().is_empty(), "{out}");
+        // Pre-authorised within the caps: the machine is rented on the spot,
+        // slots free or not, for the job that waited; the owner is not asked.
+        for (k, v) in [("compute.auto_approve", "1"), ("compute.max_vms", "1")] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let out = once_daemon(&s, opts());
+        let reqs = requests();
+        assert_eq!(reqs.len(), 1, "{out}");
+        assert_eq!(reqs[0].str("requested_by"), "daemon", "{out}");
+        assert!(
+            reqs[0].str("reason").contains(&format!(
+                "1 job(s) of proj waited {} min for a machine that offers {needs}, which no paired machine does; {id} (task) is first in line",
+                NEEDS_WANTED_MINUTES + 1
+            )),
+            "{}\n{out}",
+            reqs[0].str("reason")
+        );
+        assert!(
+            out.contains(&format!(
+                "machine wanted: compute request {} (",
+                reqs[0].str("id")
+            )) && !out.contains("which no active machine offers\nmachine wanted: machine wanted"),
+            "{out}"
+        );
+        // While that request is open no second machine is asked for.
+        let out = once_daemon(&s, opts());
+        assert_eq!(requests().len(), 1, "{out}");
+        assert!(
+            out.contains(&format!(
+                "machine wanted: compute request {} is {}; waiting for the machine",
+                reqs[0].str("id"),
+                reqs[0].str("status")
+            )) || reqs[0].str("status") == "pending",
+            "{out}"
+        );
     }
 }

@@ -63,14 +63,21 @@ machine whose queue holds jobs it cannot take says so in its idle line
 amd64; pulse executor list)`).
 
 **When no machine fits.** A job whose needs no active machine offers waits
-in the queue, and after ten minutes the daemon asks you once per project
-and set of words, on the brain's `runner/machines` thread: pair or label a
-machine that offers them, or change the needs (`pulse job needs`, the
-manifest, `pulse init --needs`). The question stays open until one of those
-happens; a second group of the same words does not ask again. The daemon
-can rent Linux machines by itself (compute requests, `compute.auto_approve`), never
-a Mac, so it rents only when a queued job fits what a rented machine would
-offer (`linux` and the size's architecture), and leaves the rest to you.
+in the queue. After ten minutes, when the needs are what a rented Linux
+machine offers (`linux` and the size's architecture) and
+`compute.auto_approve` is on within `compute.max_vms` and
+`compute.max_hours_per_day`, the daemon rents one on the spot, whether or
+not this machine has free slots (a Mac with idle slots and a `linux` job
+used to tell you "machine wanted" and leave the job queued; the rental only
+came for a queue with every slot busy). For the needs it cannot rent (never
+a Mac, never a label such as `gpu`) or may not (the setting off, a cap
+reached), it asks you once per project and set of words, on the brain's
+`runner/machines` thread: pair or label a machine that offers them, or
+change the needs (`pulse job needs`, the manifest, `pulse init --needs`).
+The question stays open until one of those happens; a second group of the
+same words does not ask again. While a rented machine is on its way the log
+says so (`machine wanted: compute request CR-012 is provisioning; waiting
+for the machine`) and nothing else is asked for.
 
 ```bash
 pulse settings set machine.labels gpu,android          # what this machine offers, beyond its OS and chip and what it finds
@@ -156,9 +163,15 @@ executor and the probe outcome (`active`, `drained` or `undone`); refusals
 and failed applies record nothing. `pulse remove executor NAME` is the undo
 for a paired hand.
 
-A hand that stops answering mid-run - three transport errors in a row, such
-as `Connection refused` from a network that drops fresh connections for a
-few seconds - goes `unreachable` and gets no work. The daemon probes it
+A session that never began - the connect refused or timed out, the banner
+exchange cut, as a network behind carrier-grade NAT does to a burst of
+fresh connections for a few seconds - is tried again before anything
+counts it: four more times with a doubling pause (2, 4, 8, 16 s), for every
+ssh the hub makes, the pairing's inspection and apply included (one such
+refusal between the two used to fail the pairing and release a machine
+that had just booted). A hand that still stops answering mid-run - three
+transport errors in a row after those tries - goes `unreachable` and gets
+no work. The daemon probes it
 again after a minute and doubles the wait after each probe that still fails,
 up to thirty minutes; the first probe that passes puts it back in rotation
 (`executor NAME is reachable again: probe passed, back in rotation: …` in the

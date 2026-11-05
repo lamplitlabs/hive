@@ -24,6 +24,19 @@ pub(crate) const UNREACHABLE_AFTER: i32 = 3;
 /// `pulse executor probe`.
 pub(crate) const UNREACHABLE_BACKOFF_MAX_MINS: i32 = 30;
 pub(crate) const SSH_EXIT_UNREACH: i32 = 255;
+/// How many more times a session that never began is tried, and the first
+/// pause between tries (doubled each time: 2, 4, 8, 16 s, 30 s in all).
+/// Measured 2026-11-05: the hub's carrier-grade NAT refused bursts of fresh
+/// ssh connections for 1 to 14 s at a time; one refusal between the
+/// inspection and the apply failed CR-063's pairing and released a machine
+/// that had just booted, as CR-055..059 went before it, and three in a row
+/// retired hands-cr-062. A connect that fails runs nothing on the far side,
+/// so trying it again repeats no work.
+pub(crate) const SSH_CONNECT_RETRIES: u32 = 4;
+#[cfg(not(test))]
+const SSH_CONNECT_PAUSE: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SSH_CONNECT_PAUSE: Duration = Duration::from_millis(1);
 pub(crate) const REMOTE_EXIT_TIMEOUT: i32 = 124;
 pub(crate) const NATIVE_LOGIN_PROMPT: &str =
     "Reply with exactly one line and run no command: SUMMARY: ok";
@@ -879,6 +892,52 @@ pub(crate) fn restore_run_ssh(old: SshRunner) {
     *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()) = old;
 }
 
+/// Whether ssh's stderr says the session never began: the connect itself
+/// failed (refused, timed out, no route, network unreachable) or the
+/// banner exchange was cut before any authentication. Everything after
+/// that (a host key change, a refused key, the remote command's own exit)
+/// is a different failure that a second try would only repeat.
+pub(crate) fn ssh_connect_failed(err_text: &str) -> bool {
+    [
+        "ssh: connect to host ",
+        "kex_exchange_identification:",
+        "ssh_exchange_identification:",
+        "banner exchange",
+    ]
+    .iter()
+    .any(|mark| err_text.contains(mark))
+}
+
+/// Runs an ssh command line through the hook, trying again while the
+/// session cannot begin ([`ssh_connect_failed`]): up to
+/// [`SSH_CONNECT_RETRIES`] more tries with a doubling pause, which a cancel
+/// cuts short. Returns the last try's result unchanged, so the callers'
+/// exit-255 handling reads as before.
+pub(crate) fn run_ssh_connecting(
+    cancel: &pulse_bus::CancellationToken,
+    argv: &[String],
+    stdin: &[u8],
+    timeout: Duration,
+) -> Result<(i32, String, String)> {
+    let runner = run_ssh_hook();
+    let mut pause = SSH_CONNECT_PAUSE;
+    let mut tries = 0;
+    loop {
+        let res = runner(cancel, argv, stdin, timeout);
+        let again = matches!(
+            &res,
+            Ok((rc, _, err_text)) if *rc == SSH_EXIT_UNREACH && ssh_connect_failed(err_text)
+        ) && tries < SSH_CONNECT_RETRIES
+            && !cancel.is_cancelled();
+        if !again {
+            return res;
+        }
+        tries += 1;
+        let _ = cancel.done().recv_timeout(pause);
+        pause *= 2;
+    }
+}
+
 pub(crate) fn run_process(
     cancel: &pulse_bus::CancellationToken,
     argv: &[String],
@@ -931,8 +990,7 @@ pub(crate) fn ssh_run_context(
     timeout: Duration,
 ) -> Result<(i32, String, String)> {
     let argv = ssh_command(r, args)?;
-    let runner = run_ssh_hook();
-    let res = runner(cancel, &argv, stdin, timeout);
+    let res = run_ssh_connecting(cancel, &argv, stdin, timeout);
     match res {
         Err(err) => {
             if cancel.is_cancelled() {
@@ -998,8 +1056,7 @@ pub(crate) fn admin_ssh_run(
 ) -> Result<(i32, String, String)> {
     let argv = admin_ssh_command(address, remote_command, control_path)?;
     let cancel = pulse_bus::CancellationToken::new();
-    let runner = run_ssh_hook();
-    match runner(&cancel, &argv, stdin, timeout) {
+    match run_ssh_connecting(&cancel, &argv, stdin, timeout) {
         Err(err) => {
             if err
                 .downcast_ref::<std::io::Error>()
@@ -2377,5 +2434,92 @@ mod free_mb_pin_tests {
         assert_eq!(beside, None);
         drop(outer);
         assert_eq!(FREE_MB_PIN.with(std::cell::Cell::get), None);
+    }
+}
+
+#[cfg(test)]
+mod ssh_connect_retry_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A fake ssh that answers from a script of replies, one per call, and
+    /// records how often it was called.
+    fn scripted(replies: Vec<(i32, &'static str)>) -> (SshRunner, Arc<Mutex<usize>>) {
+        let calls = Arc::new(Mutex::new(0));
+        let seen = calls.clone();
+        let replies = Mutex::new(replies.into_iter());
+        let old = set_run_ssh(move |_, _, _, _| {
+            *seen.lock().unwrap() += 1;
+            let (rc, err) = replies
+                .lock()
+                .unwrap()
+                .next()
+                .expect("more ssh calls than replies");
+            Ok((rc, String::new(), err.to_string()))
+        });
+        (old, calls)
+    }
+
+    const REFUSED: &str = "ssh: connect to host 51.116.236.33 port 22: Connection refused";
+
+    #[test]
+    fn a_session_that_never_began_is_tried_again_and_other_failures_are_not() {
+        let _serial = crate::test_helpers::serial();
+        let cancel = pulse_bus::CancellationToken::new();
+        let argv = vec!["ssh".to_string(), "x".into()];
+        // Refused twice inside a NAT burst, then through: the caller sees
+        // the pass and nothing else.
+        let (old, calls) = scripted(vec![(255, REFUSED), (255, REFUSED), (0, "")]);
+        let res = run_ssh_connecting(&cancel, &argv, &[], Duration::from_secs(1));
+        assert_eq!(res.unwrap().0, 0);
+        assert_eq!(*calls.lock().unwrap(), 3);
+        // Refused every time: the tries run out and the refusal is reported.
+        let script = vec![(255, REFUSED); SSH_CONNECT_RETRIES as usize + 1];
+        let (_, calls) = scripted(script);
+        let res = run_ssh_connecting(&cancel, &argv, &[], Duration::from_secs(1));
+        assert_eq!(res.unwrap().0, SSH_EXIT_UNREACH);
+        assert_eq!(*calls.lock().unwrap(), SSH_CONNECT_RETRIES as usize + 1);
+        // A key the host refused, a changed host key, a command's own exit:
+        // the session began (or sshd answered), so nothing is repeated.
+        for (rc, err) in [
+            (255, "pulse@host: Permission denied (publickey)."),
+            (255, "Host key verification failed."),
+            (1, "harness failed"),
+        ] {
+            let (_, calls) = scripted(vec![(rc, err)]);
+            let res = run_ssh_connecting(&cancel, &argv, &[], Duration::from_secs(1));
+            assert_eq!(res.unwrap().0, rc, "{err}");
+            assert_eq!(*calls.lock().unwrap(), 1, "{err}");
+        }
+        // A cancelled caller is not kept waiting for another try.
+        let cancelled = pulse_bus::CancellationToken::new();
+        cancelled.cancel();
+        let (_, calls) = scripted(vec![(255, REFUSED)]);
+        let res = run_ssh_connecting(&cancelled, &argv, &[], Duration::from_secs(1));
+        assert_eq!(res.unwrap().0, SSH_EXIT_UNREACH);
+        assert_eq!(*calls.lock().unwrap(), 1);
+        restore_run_ssh(old);
+    }
+
+    #[test]
+    fn connect_failures_are_told_from_the_rest_of_ssh_stderr() {
+        for began_not in [
+            REFUSED,
+            "ssh: connect to host 20.52.42.230 port 22: Operation timed out",
+            "ssh: connect to host box port 22: No route to host",
+            "kex_exchange_identification: Connection closed by remote host\r\nConnection closed by 1.2.3.4 port 22",
+            "kex_exchange_identification: read: Connection reset by peer",
+            "Connection timed out during banner exchange",
+        ] {
+            assert!(ssh_connect_failed(began_not), "{began_not}");
+        }
+        for began in [
+            "pulse@host: Permission denied (publickey).",
+            "Host key verification failed.",
+            "ssh: Could not resolve hostname nowhere.invalid: nodename nor servname provided",
+            "",
+        ] {
+            assert!(!ssh_connect_failed(began), "{began}");
+        }
     }
 }

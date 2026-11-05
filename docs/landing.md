@@ -707,7 +707,10 @@ hands as one behind busy slots: once an improve or task job has waited half an
 hour that way, the daemon rents a machine itself when `compute.auto_approve` is
 on and `compute.max_vms` and `compute.max_hours_per_day` allow (one open
 request at a time, four hours, `AUTO_COMPUTE_HOURS`), and otherwise posts
-`hands wanted` to the owner once, saying why no machine was rented.
+`hands wanted` to the owner once, saying why no machine was rented. A job
+whose needs only a rented machine meets does not wait for the slots to fill:
+it rents after ten minutes on the same terms (`docs/machines.md`, "When no
+machine fits").
 
 The kernel's memory warning (the level under critical, which a 16 GB laptop
 reports for hours with a browser open) is not a hold: while it stands the
