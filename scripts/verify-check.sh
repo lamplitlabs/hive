@@ -242,6 +242,25 @@ if [ "$bad" -ne 0 ]; then
     echo "verify-check: failing tests (each binary runs from its package directory):"
     sort -u "$work/failed"
   fi
+  # The daemon keeps only the tail of stdout followed by stderr (schedule
+  # OUTPUT_TAIL), and cargo's Compiling/Doc-tests lines fill stderr, so the
+  # report above can fall out of a red run's log. Repeat its gist on stderr,
+  # just before the last line: which chunks failed and which tests.
+  {
+    echo "verify-check: failed chunks:"
+    for f in "$work"/status/*; do
+      [ -f "$f" ] || continue
+      read -r verdict secs passed ignored failed rc expect < "$f"
+      [ "$verdict" = ok ] && continue
+      id=${f##*/}
+      IFS='	' read -r count dir bin name < "$work/suite.${id%.*}"
+      echo "  $name chunk ${id#*.}: $verdict (exit $rc, $failed failed)"
+    done
+    if [ -s "$work/failed" ]; then
+      echo "verify-check: failing tests:"
+      sort -u "$work/failed" | head -n 40
+    fi
+  } >&2
   echo "verify-check: $bad chunk(s) failed" >&2
   exit 1
 fi
