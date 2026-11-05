@@ -24,10 +24,23 @@
 //! The same pass reads the state of every open pull request in one `gh pr
 //! list` per repository. Merged: `land.merged`, the delivered jobs lose
 //! their branch, a task is done, the local branches go and the default
-//! branch is fast-forwarded from the upstream. Closed unmerged:
-//! `land.pr-closed`, the branches are cleared too (the work stays on the
-//! forge's closed pull request; nothing re-delivers it) and a task goes back
-//! to in_progress with a note for its lead.
+//! branch is fast-forwarded from the upstream, and a conversation's session
+//! (`pulse/chat-<id>`) is finished (`chat.finish`, which the hub's wake loop
+//! hands to it). Closed unmerged: `land.pr-closed`, the branches are cleared
+//! too (the work stays on the forge's closed pull request; nothing
+//! re-delivers it), a task goes back to in_progress with a note for its
+//! lead and a conversation gets a note in its transcript, nothing more. A
+//! `gh` failure changes nothing: the pull request is read again next pass.
+//!
+//! An open pull request the forge cannot merge as it stands is looked after
+//! once per head sha (`follow_open`): a head that conflicts with its base
+//! because the base moved gets the base merged in and pushed when that
+//! merge is clean (`land.pr-refreshed`); when it is not, the conflict is
+//! recorded (`land.pr-conflict`) and the origin told - a task through its
+//! messages, a conversation through a `chat.wake` that gives its agent the
+//! turn. Failing checks are recorded (`land.pr-checks`) and told the same
+//! way, once per head, never queued as a job: the next job on the work is
+//! the fix.
 //!
 //! A project without an upstream (two of the fifteen live ones, both on a
 //! feature branch with no remote) can have no pull request: its ready
@@ -913,6 +926,19 @@ fn push(
     head: &str,
     lease: Option<&str>,
 ) -> Result<(), String> {
+    push_rev(s, root, up, &format!("refs/heads/{local}"), head, lease)
+}
+
+/// `push` of any commit the checkout holds (`src`: a ref or a sha) to
+/// `head` on the upstream.
+fn push_rev(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    src: &str,
+    head: &str,
+    lease: Option<&str>,
+) -> Result<(), String> {
     let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
     if !why.is_empty() {
         return Err(why);
@@ -925,18 +951,14 @@ fn push(
         root,
         Duration::from_secs(300),
         &env,
-        &[
-            "push",
-            &force,
-            &up.url,
-            &format!("refs/heads/{local}:refs/heads/{head}"),
-        ],
+        &["push", &force, &up.url, &format!("{src}:refs/heads/{head}")],
     );
     cleanup("", &[]);
     if !pushed.ok() {
         return Err(pulse_cred::redact(
             &format!(
-                "push of {local} to {head} on {} failed: {}",
+                "push of {} to {head} on {} failed: {}",
+                src.strip_prefix("refs/heads/").unwrap_or(src),
                 up.name(),
                 crate::run::squeeze(&format!("{} {}", pushed.stderr, pushed.stdout), 200)
             ),
@@ -1730,10 +1752,427 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         match state.state.as_str() {
             "MERGED" => lines.push(settle_merged(s, project, &pr, &state, now)),
             "CLOSED" => lines.push(settle_closed(s, project, &pr, &state, now)),
+            "OPEN" => lines.extend(follow_open(s, project, &up, &pr, &state, now)),
             _ => {}
         }
     }
     lines
+}
+
+/// An open pull request the forge cannot merge as it stands, looked after
+/// once per head sha: a head that conflicts with its base gets the base
+/// merged in and pushed when that merge is clean, else the conflict is
+/// recorded and the origin told; failing checks are recorded and the origin
+/// told. Each follow-up event carries the head sha it was about, so a head
+/// is never acted on twice, and a head the forge has not judged yet
+/// (`UNKNOWN`, or no sha at all from an older gh) waits for the next pass.
+fn follow_open(
+    s: &pulse_store::Store,
+    project: &Row,
+    up: &Upstream,
+    pr: &Value,
+    st: &crate::landing_pr::PrState,
+    now: &str,
+) -> Vec<String> {
+    let slug = project.str("slug");
+    let number = number_of(pr);
+    let mut lines = Vec::new();
+    if st.head_sha.is_empty() {
+        return lines;
+    }
+    let Ok(conn) = s.conn() else {
+        return lines;
+    };
+    let conflict = st.conflicting()
+        && !followed(
+            &conn,
+            &slug,
+            number,
+            &["land.pr-refreshed", "land.pr-conflict"],
+            &st.head_sha,
+        );
+    let checks = !st.failing_checks.is_empty()
+        && !followed(&conn, &slug, number, &["land.pr-checks"], &st.head_sha);
+    drop(conn);
+    if conflict {
+        lines.push(refresh_pr_branch(s, project, up, pr, st, now));
+    }
+    if checks {
+        lines.push(note_failing_checks(s, project, up, pr, st, now));
+    }
+    lines
+}
+
+/// Whether one of `actions` was already recorded for pull request `number`
+/// at head `sha`.
+fn followed(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    number: i64,
+    actions: &[&str],
+    sha: &str,
+) -> bool {
+    let actions = actions
+        .iter()
+        .map(|a| format!("'{a}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    !crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT seq FROM events WHERE subject = ?1 AND action IN ({actions}) AND json_valid(detail)
+             AND json_extract(detail, '$.number') = ?2 AND json_extract(detail, '$.head_sha') = ?3 LIMIT 1"
+        ),
+        &[&slug, &number, &sha],
+    )
+    .unwrap_or_default()
+    .is_empty()
+}
+
+/// How a pull request's head took its base.
+enum Refreshed {
+    /// The merge was clean and is on the pull request now, at this sha.
+    Pushed(String),
+    /// The merge conflicted in these paths; nothing was pushed.
+    Conflict(Vec<String>),
+}
+
+/// The pull request's head conflicts with its base: the base moved after
+/// the head was pushed. The base is merged into the head in a scratch
+/// worktree and the merge pushed onto the pull request when it is clean
+/// (`land.pr-refreshed`, and a `land.pr` naming the new tip, so the next
+/// push of the work leases on what the pull request holds, as a fix's
+/// does). A merge that conflicts is recorded once for this head
+/// (`land.pr-conflict`, with the paths) and the origin told: the work
+/// itself is at odds with what landed, which is an agent's to resolve. A
+/// head that moved since the forge was read, or a fetch or push that
+/// fails, leaves no record and is read again next pass.
+fn refresh_pr_branch(
+    s: &pulse_store::Store,
+    project: &Row,
+    up: &Upstream,
+    pr: &Value,
+    st: &crate::landing_pr::PrState,
+    now: &str,
+) -> String {
+    let slug = project.str("slug");
+    let root = project.str("path");
+    let kind = kind_of(pr);
+    let number = number_of(pr);
+    let head = if st.head.is_empty() {
+        field_of(pr, "head")
+    } else {
+        st.head.clone()
+    };
+    let base = up.remote_branch.as_str();
+    let url = field_of(pr, "url");
+    let short = crate::recipe::short(&st.head_sha, 12);
+    let line = format!("{kind} pr {slug}: #{number} conflicts with {base} at {short}");
+    match merge_base_into_head(s, &root, up, &head, &st.head_sha) {
+        Ok(Refreshed::Pushed(tip)) => {
+            event(
+                s,
+                now,
+                "land.pr-refreshed",
+                &slug,
+                json!({"project": slug, "kind": kind, "number": number, "head": head,
+                    "head_sha": st.head_sha, "new_sha": tip, "base": base}),
+            );
+            let commits = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(30),
+                &["rev-list", "--count", &format!("{}..{tip}", st.head_sha)],
+            )
+            .stdout
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(1);
+            let mut detail = pr.clone();
+            for (k, v) in [
+                ("project", json!(slug)),
+                ("kind", json!(kind)),
+                ("from", json!(st.head_sha)),
+                ("to", json!(tip)),
+                ("commits", json!(commits)),
+                ("opened", json!(false)),
+                ("refreshed", json!(true)),
+            ] {
+                detail[k] = v;
+            }
+            event(s, now, "land.pr", &slug, detail);
+            format!(
+                "{line}; {base} merged in and pushed, head now {}",
+                crate::recipe::short(&tip, 12)
+            )
+        }
+        Ok(Refreshed::Conflict(files)) => {
+            event(
+                s,
+                now,
+                "land.pr-conflict",
+                &slug,
+                json!({"project": slug, "kind": kind, "number": number, "head": head,
+                    "head_sha": st.head_sha, "base": base, "files": files}),
+            );
+            let files = files.join(", ");
+            let told = tell_origin(
+                s,
+                pr,
+                now,
+                &format!(
+                    "Pull request #{number} ({url}) conflicts with {base} at {short}: {files}. \
+                     {base} moved after {head} was pushed and does not merge in cleanly. \
+                     Bring {base} into {head}, resolve the conflicts keeping the intent of both sides, run the project's check and push; the pull request follows the branch."
+                ),
+            );
+            format!("{line}: {files}; {base} does not merge in cleanly{told}")
+        }
+        Err(note) => format!("{line}; not refreshed: {note}"),
+    }
+}
+
+/// Merges the upstream's base into the pull request's head in a scratch
+/// worktree of the checkout and pushes the merge onto the head, leasing on
+/// the tip the forge named; the worktree goes whatever happens.
+fn merge_base_into_head(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    head: &str,
+    head_sha: &str,
+) -> Result<Refreshed, String> {
+    let base = up.remote_branch.as_str();
+    let remote_sha = fetch_head(s, root, up, head)?;
+    if remote_sha.is_empty() {
+        return Err(format!("{head} is gone from {}", up.name()));
+    }
+    if remote_sha != head_sha {
+        return Err(format!(
+            "{head} moved to {} since the forge was read",
+            crate::recipe::short(&remote_sha, 12)
+        ));
+    }
+    let base_sha = fetch_head(s, root, up, base)?;
+    if base_sha.is_empty() {
+        return Err(format!("{} is gone", up.name()));
+    }
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(120), args);
+    let git_dir = git(&["rev-parse", "--absolute-git-dir"])
+        .stdout
+        .trim()
+        .to_string();
+    if git_dir.is_empty() {
+        return Err(format!("{root} is not a git checkout"));
+    }
+    let wt_path = format!("{git_dir}/pulse-pr-refresh/{}", head.replace('/', "_"));
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    let _ = std::fs::remove_dir_all(&wt_path);
+    let add = git(&["worktree", "add", "--detach", &wt_path, &remote_sha]);
+    if !add.ok() {
+        return Err(format!(
+            "worktree add failed: {}",
+            crate::run::squeeze(&add.stderr, 200)
+        ));
+    }
+    let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
+    let m = in_wt(&[
+        "-c",
+        "user.name=PULSE",
+        "-c",
+        "user.email=pulse@localhost",
+        "merge",
+        "--no-ff",
+        "--no-edit",
+        "-m",
+        &format!("Merge {base} into {head}"),
+        &base_sha,
+    ]);
+    let result = if m.ok() {
+        let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
+        if tip == remote_sha {
+            // The forge's judgement is from before a push that took the
+            // base in already; it judges the head again on its own.
+            Err(format!(
+                "{head} has {} already; the forge's judgement is stale",
+                up.name()
+            ))
+        } else {
+            push_rev(s, root, up, &tip, head, Some(&remote_sha)).map(|()| Refreshed::Pushed(tip))
+        }
+    } else {
+        let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        let _ = in_wt(&["merge", "--abort"]);
+        if unmerged.is_empty() {
+            Err(format!(
+                "merge of {base} into {head} failed: {}",
+                crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
+            ))
+        } else {
+            Ok(Refreshed::Conflict(unmerged))
+        }
+    };
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    result
+}
+
+/// The checks on the pull request's head failed: recorded once for this
+/// head (`land.pr-checks`) and the origin told, so the next job on the work
+/// fixes them. No job is queued here: a new head is judged anew, and a job
+/// per failing run would chase its own pushes.
+fn note_failing_checks(
+    s: &pulse_store::Store,
+    project: &Row,
+    up: &Upstream,
+    pr: &Value,
+    st: &crate::landing_pr::PrState,
+    now: &str,
+) -> String {
+    let slug = project.str("slug");
+    let kind = kind_of(pr);
+    let number = number_of(pr);
+    let head = if st.head.is_empty() {
+        field_of(pr, "head")
+    } else {
+        st.head.clone()
+    };
+    let url = field_of(pr, "url");
+    let short = crate::recipe::short(&st.head_sha, 12);
+    event(
+        s,
+        now,
+        "land.pr-checks",
+        &slug,
+        json!({"project": slug, "kind": kind, "number": number, "head": head,
+            "head_sha": st.head_sha, "base": up.remote_branch, "checks": st.failing_checks}),
+    );
+    let names = st.failing_checks.join(", ");
+    let told = tell_origin(
+        s,
+        pr,
+        now,
+        &format!(
+            "Checks are failing on pull request #{number} ({url}) at {short}: {names}. \
+             A fix on {head} is the next job on this work; the pull request follows the branch."
+        ),
+    );
+    format!("{kind} pr {slug}: #{number} checks failing at {short}: {names}{told}")
+}
+
+/// Tells the pull request's origin what stands in its way: a task through
+/// its messages (its lead reads them and plans the fix), a conversation
+/// through a `chat.wake` on the bus that gives its agent a turn on the text
+/// (the hub's wake loop delivers it, as it does `pulse chat wake`), anything
+/// else only through the pass's log line. Returns the log line's tail.
+fn tell_origin(s: &pulse_store::Store, pr: &Value, now: &str, text: &str) -> String {
+    let slug = field(pr, "project");
+    let task = field(pr, "task");
+    if !task.is_empty() {
+        return match pulse_tasks::send_message(s, slug, task, ACTOR, text) {
+            Ok(_) => format!("; task {task} told"),
+            Err(e) => format!("; task {task} not told: {e}"),
+        };
+    }
+    let Some(id) = told_conversation(s, pr) else {
+        return String::new();
+    };
+    let Ok(conn) = s.conn() else {
+        return String::new();
+    };
+    crate::util::event_at(
+        &conn,
+        now,
+        ACTOR,
+        pulse_harness::conversation::WAKE_ACTION,
+        &id,
+        json!({"text": text}),
+    );
+    format!("; conversation {id} woken")
+}
+
+/// The conversation a pull request came from (the `conversation` of its
+/// `land.pr`), when it still stands where it can be told: there, and not
+/// archived.
+fn told_conversation(s: &pulse_store::Store, pr: &Value) -> Option<String> {
+    let id = field(pr, "conversation").trim();
+    if id.is_empty() {
+        return None;
+    }
+    match s.chat_get(id) {
+        Ok(Some(row)) if row.status != "archived" => Some(id.to_string()),
+        _ => None,
+    }
+}
+
+/// A conversation's pull request merged: its session is finished with the
+/// pull request named. The daemon cannot reach the hub's live session, so
+/// it says so on the bus (`chat.finish`); the hub's wake loop finishes it
+/// there, after a turn in flight rather than through it, and a hub that is
+/// down picks the event up from its cursor when it starts. Returns the log
+/// note, None when the pull request has no conversation to finish.
+fn finish_conversation(
+    s: &pulse_store::Store,
+    pr: &Value,
+    number: i64,
+    url: &str,
+    now: &str,
+) -> Option<String> {
+    let id = told_conversation(s, pr)?;
+    let base = field(pr, "base");
+    let into = if base.is_empty() {
+        String::new()
+    } else {
+        format!(" into {base}")
+    };
+    let text = if url.is_empty() {
+        format!("pull request #{number} merged{into}; this session is finished")
+    } else {
+        format!("pull request #{number} ({url}) merged{into}; this session is finished")
+    };
+    let conn = s.conn().ok()?;
+    crate::util::event_at(
+        &conn,
+        now,
+        ACTOR,
+        pulse_harness::conversation::FINISH_ACTION,
+        &id,
+        json!({"text": text, "number": number, "url": url}),
+    );
+    Some(format!("conversation {id} finished"))
+}
+
+/// A conversation's pull request closed without a merge: a note in its
+/// transcript says so and nothing else changes - the conversation stays as
+/// it is, its agent gets no turn, nothing is marked done. Returns the log
+/// note, None when there is no conversation to tell.
+fn note_conversation_closed(
+    s: &pulse_store::Store,
+    pr: &Value,
+    number: i64,
+    url: &str,
+) -> Option<String> {
+    let id = told_conversation(s, pr)?;
+    let at = if url.is_empty() {
+        String::new()
+    } else {
+        format!(" ({url})")
+    };
+    let text = format!(
+        "Pull request #{number}{at} was closed without merging. Nothing is marked done; the branch stays on the remote. Write here to carry on."
+    );
+    s.chat_add_message(
+        &id,
+        "note",
+        &text,
+        &json!({"pr": {"number": number, "url": url, "state": "closed"}}),
+    )
+    .ok()?;
+    Some(format!("conversation {id} told"))
 }
 
 /// The jobs a pull request delivered: the `jobs` list of its `land.pr`,
@@ -1851,6 +2290,14 @@ fn settle_merged(
         if let Err(e) = pulse_tasks::set_status(s, task, "done", ACTOR) {
             line.push_str(&format!(" (status not changed: {e})"));
         }
+    }
+    let url = if st.url.is_empty() {
+        field(pr, "url")
+    } else {
+        st.url.as_str()
+    };
+    if let Some(note) = finish_conversation(s, pr, number, url, now) {
+        line.push_str(&format!("; {note}"));
     }
     // The merge is on the upstream now; the checkout follows it this pass,
     // not when the two-minute fetch memo runs out.
@@ -1993,10 +2440,13 @@ fn settle_closed(
     let url = field_of(&detail, "url");
     event(s, now, "land.pr-closed", &slug, detail);
     clear_branches(s, &slug, pr);
+    let told = note_conversation_closed(s, pr, number, &url)
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
     let task = field(pr, "task");
     if task.is_empty() {
         return format!(
-            "{kind} pr {slug}: #{number} closed unmerged; the branch stays on the remote"
+            "{kind} pr {slug}: #{number} closed unmerged; the branch stays on the remote{told}"
         );
     }
     let _ = pulse_tasks::set_status(s, task, "in_progress", ACTOR);
@@ -2325,6 +2775,325 @@ mod tests {
         assert!(lines.is_empty(), "{lines:?}");
     }
 
+    /// Moves the upstream's `main` on by one commit writing `file`, made on
+    /// a throwaway branch of the checkout so the local `main` keeps
+    /// following the upstream; returns the new upstream tip.
+    fn move_base_on_forge(repo: &str, bare: &str, file: &str) -> String {
+        run(repo, &["git", "branch", "base-move", "main"]);
+        let tip = commit_on(repo, "base-move", file);
+        run(repo, &["git", "push", "-q", bare, "base-move:main"]);
+        run(repo, &["git", "branch", "-D", "base-move"]);
+        tip
+    }
+
+    /// The messages on `task` whose body has `like` in it.
+    fn task_messages(s: &pulse_store::Store, task: &str, like: &str) -> i32 {
+        count(
+            s,
+            "SELECT COUNT(*) AS n FROM messages WHERE task_id = ? AND body LIKE ?",
+            &[&task, &format!("%{like}%")],
+        )
+    }
+
+    /// The checkout's worktrees besides the root, by path.
+    fn extra_worktrees(repo: &str) -> Vec<String> {
+        run(repo, &["git", "worktree", "list", "--porcelain"])
+            .lines()
+            .filter_map(|l| l.strip_prefix("worktree "))
+            .skip(1)
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn an_open_pull_request_that_conflicts_with_its_base_takes_the_base_in_once_per_head() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        tend_proj(&s, &proj, TEST_NOW);
+        let first = bare_ref(&bare, &format!("refs/heads/{head}"));
+        assert_eq!(last_detail(&s, "land.pr")["to"], first);
+
+        // The base moves on in another file: the forge calls the head
+        // conflicting, the pass merges the base in and pushes.
+        let base = move_base_on_forge(&repo, &bare, "elsewhere.txt");
+        gh.set_mergeable(7, "CONFLICTING");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        let tip = bare_ref(&bare, &format!("refs/heads/{head}"));
+        assert_ne!(tip, first);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "task pr proj: #7 conflicts with main at {}; main merged in and pushed, head now {}",
+                crate::recipe::short(&first, 12),
+                crate::recipe::short(&tip, 12)
+            ))),
+            "{lines:?}"
+        );
+        let parents = run(&repo, &["git", "rev-list", "--parents", "-1", &tip]);
+        assert_eq!(
+            parents.split_whitespace().skip(1).collect::<Vec<_>>(),
+            [first.as_str(), base.as_str()],
+            "a merge of the base into the head as it was"
+        );
+        assert_eq!(events(&s, "land.pr-refreshed"), 1);
+        let refreshed = last_detail(&s, "land.pr-refreshed");
+        assert_eq!(refreshed["kind"], "task");
+        assert_eq!(refreshed["number"], 7);
+        assert_eq!(refreshed["head"], head);
+        assert_eq!(refreshed["head_sha"], first);
+        assert_eq!(refreshed["new_sha"], tip);
+        assert_eq!(refreshed["base"], "main");
+        // The pull request's record names the new tip: the next push onto
+        // it leases on what it holds.
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["to"], tip);
+        assert_eq!(pr["from"], first);
+        assert_eq!(pr["refreshed"], true);
+        assert_eq!(pr["opened"], false);
+        assert_eq!(pr["task"], task);
+        assert_eq!(events(&s, "land.pr-conflict"), 0);
+        assert_eq!(
+            task_messages(&s, &task, "conflicts"),
+            0,
+            "a clean refresh is no news"
+        );
+        assert!(
+            extra_worktrees(&repo).is_empty(),
+            "the scratch worktree is gone"
+        );
+        assert_eq!(status(&s, &task), "in_progress");
+
+        // The forge's listing lags the push and still names the old head:
+        // done for that head already, nothing happens.
+        gh.pin_head_sha(7, &first);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-refreshed"), 1);
+        assert_eq!(bare_ref(&bare, &format!("refs/heads/{head}")), tip);
+        // The listing names the new head but the judgement is stale: the
+        // base is in it already, nothing is pushed or recorded.
+        gh.pin_head_sha(7, "");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("has origin/main already")),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr-refreshed"), 1);
+        assert_eq!(events(&s, "land.pr"), 2);
+        assert_eq!(bare_ref(&bare, &format!("refs/heads/{head}")), tip);
+        gh.set_mergeable(7, "MERGEABLE");
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+
+        // Merged with the base in it: the task is done as ever.
+        merge_on_forge(&gh, &bare, 7);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged; task done")),
+            "{lines:?}"
+        );
+        assert_eq!(status(&s, &task), "done");
+        assert_eq!(ref_of(&repo, "refs/heads/main"), tip);
+    }
+
+    #[test]
+    fn a_conflict_the_base_merge_cannot_settle_is_recorded_once_and_the_task_told() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        tend_proj(&s, &proj, TEST_NOW);
+        let first = bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        // The base rewrites the file a job branch wrote.
+        move_base_on_forge(&repo, &bare, "pulse_worker_a.txt");
+        gh.set_mergeable(7, "CONFLICTING");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "task pr proj: #7 conflicts with main at {}: pulse_worker_a.txt; main does not merge in cleanly; task {task} told",
+                crate::recipe::short(&first, 12)
+            ))),
+            "{lines:?}"
+        );
+        assert_eq!(
+            bare_ref(&bare, &format!("refs/heads/{head}")),
+            first,
+            "nothing pushed"
+        );
+        assert_eq!(events(&s, "land.pr-refreshed"), 0);
+        assert_eq!(events(&s, "land.pr-conflict"), 1);
+        let conflict = last_detail(&s, "land.pr-conflict");
+        assert_eq!(conflict["kind"], "task");
+        assert_eq!(conflict["number"], 7);
+        assert_eq!(conflict["head"], head);
+        assert_eq!(conflict["head_sha"], first);
+        assert_eq!(conflict["base"], "main");
+        assert_eq!(conflict["files"], json!(["pulse_worker_a.txt"]));
+        assert_eq!(task_messages(&s, &task, "conflicts with main"), 1);
+        assert_eq!(task_messages(&s, &task, "pulse_worker_a.txt"), 1);
+        assert_eq!(events(&s, "land.pr"), 1, "the pull request's record stands");
+        assert!(
+            extra_worktrees(&repo).is_empty(),
+            "the scratch worktree is gone"
+        );
+        assert_eq!(status(&s, &task), "in_progress");
+
+        // Still conflicting at the same head: told once.
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-conflict"), 1);
+        assert_eq!(task_messages(&s, &task, "conflicts with main"), 1);
+    }
+
+    #[test]
+    fn failing_checks_on_an_open_pull_request_are_told_once_per_head() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        tend_proj(&s, &proj, TEST_NOW);
+        let first = bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.set_checks(
+            7,
+            &json!([
+                {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "StatusContext", "context": "ci/smoke", "state": "ERROR"}
+            ]),
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "task pr proj: #7 checks failing at {}: build, ci/smoke; task {task} told",
+                crate::recipe::short(&first, 12)
+            ))),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr-checks"), 1);
+        let checks = last_detail(&s, "land.pr-checks");
+        assert_eq!(checks["kind"], "task");
+        assert_eq!(checks["number"], 7);
+        assert_eq!(checks["head_sha"], first);
+        assert_eq!(checks["checks"], json!(["build", "ci/smoke"]));
+        assert_eq!(
+            task_messages(&s, &task, "Checks are failing on pull request #7"),
+            1
+        );
+        assert_eq!(task_messages(&s, &task, "build, ci/smoke"), 1);
+        assert_eq!(status(&s, &task), "in_progress");
+
+        // The same head again: nothing more.
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-checks"), 1);
+
+        // A new head (a fix pushed by hand) whose checks fail too: told
+        // once more.
+        run(&repo, &["git", "branch", "hand", &head]);
+        commit_on(&repo, "hand", "hand.txt");
+        run(
+            &repo,
+            &["git", "push", "-q", &bare, &format!("hand:{head}")],
+        );
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        let second = bare_ref(&bare, &format!("refs/heads/{head}"));
+        assert_ne!(second, first);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 checks failing")
+                && l.contains(&crate::recipe::short(&second, 12))),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr-checks"), 2);
+        assert_eq!(last_detail(&s, "land.pr-checks")["head_sha"], second);
+        assert_eq!(
+            task_messages(&s, &task, "Checks are failing on pull request #7"),
+            2
+        );
+
+        // Checks that pass, or are still running, are no news.
+        gh.set_checks(
+            7,
+            &json!([{"__typename": "CheckRun", "name": "build", "status": "IN_PROGRESS", "conclusion": null}]),
+        );
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+        assert_eq!(events(&s, "land.pr-checks"), 2);
+    }
+
+    #[test]
+    fn a_forge_that_cannot_be_read_changes_nothing() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        tend_proj(&s, &proj, TEST_NOW);
+        let first = bare_ref(&bare, &format!("refs/heads/{head}"));
+        let pr_events = "SELECT COUNT(*) AS n FROM events WHERE action LIKE 'land.pr%' OR action = 'land.merged'";
+        let before = count(&s, pr_events, &[]);
+
+        // Everything the forge would say, said while gh is down: nothing
+        // is heard, nothing recorded, nothing pushed. (The checkout's main
+        // still follows the upstream: that is git, not gh.)
+        move_base_on_forge(&repo, &bare, "elsewhere.txt");
+        gh.set_mergeable(7, "CONFLICTING");
+        gh.set_checks(
+            7,
+            &json!([{"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE"}]),
+        );
+        gh.set_state(7, "MERGED");
+        gh.fail_reads("HTTP 502: Bad Gateway");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| !l.contains("fast-forwarded"))
+                .collect::<Vec<_>>(),
+            [
+                "proj: gh pr list failed: HTTP 502: Bad Gateway",
+                "proj: pull request #7: gh pr view failed: HTTP 502: Bad Gateway"
+            ]
+        );
+        assert_eq!(
+            count(&s, pr_events, &[]) - before,
+            0,
+            "no pull request event while the forge cannot be read"
+        );
+        assert_eq!(bare_ref(&bare, &format!("refs/heads/{head}")), first);
+        assert_eq!(status(&s, &task), "in_progress");
+        assert_eq!(task_messages(&s, &task, "pull request"), 0);
+        assert_eq!(
+            pulse_tasks::delivery_for(&s, &task).unwrap().state,
+            "pr_open"
+        );
+
+        // Heard once gh answers again.
+        gh.heal();
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged; task done")),
+            "{lines:?}"
+        );
+        assert_eq!(status(&s, &task), "done");
+    }
+
     #[test]
     fn a_done_job_of_any_source_is_its_own_pull_request_until_merged() {
         let _serial = crate::test_helpers::serial();
@@ -2500,6 +3269,21 @@ mod tests {
         assert_eq!(ref_of(&repo, "refs/heads/main"), fix_tip);
     }
 
+    /// A conversation row at `id`, as the hub would have made it, so the
+    /// delivery pass finds something to tell.
+    fn seed_conversation(s: &pulse_store::Store, id: &str, repo: &str) {
+        s.chat_create(&pulse_store::Conversation {
+            id: id.into(),
+            title: "a chat".into(),
+            project: "proj".into(),
+            cwd: repo.into(),
+            branch: format!("pulse/chat-{id}"),
+            status: "idle".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
     #[test]
     fn a_conversation_branch_is_proposed_once_its_last_commit_is_ten_minutes_old() {
         let _serial = crate::test_helpers::serial();
@@ -2507,6 +3291,7 @@ mod tests {
         let gh = fake_gh();
         let s = new_store();
         let (proj, repo, bare) = push_fixture(&s);
+        seed_conversation(&s, "abc123", &repo);
         run(&repo, &["git", "branch", "pulse/chat-abc123", "main"]);
         // Two minutes old: the conversation may still be committing.
         let tip = commit_dated(
@@ -2570,7 +3355,8 @@ mod tests {
         let lines = tend_proj(&s, &proj, later);
         assert!(
             lines.iter().any(|l| l.contains("#7 merged")
-                && l.contains("pulse/chat-abc123 kept: a worktree has it checked out")),
+                && l.contains("pulse/chat-abc123 kept: a worktree has it checked out")
+                && l.contains("conversation abc123 finished")),
             "{lines:?}"
         );
         let merged = last_detail(&s, "land.merged");
@@ -2578,9 +3364,108 @@ mod tests {
         assert_eq!(merged["conversation"], "abc123");
         assert_eq!(ref_of(&repo, "refs/heads/pulse/chat-abc123"), tip2);
         assert_eq!(ref_of(&repo, "refs/heads/main"), tip2);
-        // Merged by patch: not proposed again.
+        // The conversation is finished on the bus, where the hub's wake
+        // loop ends its session after any turn in flight; the daemon does
+        // not reach the session itself.
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = 'abc123'",
+                &[&pulse_harness::conversation::FINISH_ACTION],
+            ),
+            1
+        );
+        let finish = last_detail(&s, pulse_harness::conversation::FINISH_ACTION);
+        assert_eq!(finish["number"], 7);
+        assert_eq!(
+            finish["text"],
+            "pull request #7 (https://github.com/o/r/pull/7) merged into main; this session is finished"
+        );
+        // Merged by patch: not proposed again, not finished again.
         assert!(tend_proj(&s, &proj, later).is_empty());
+        assert_eq!(events(&s, pulse_harness::conversation::FINISH_ACTION), 1);
         run(&repo, &["git", "worktree", "remove", "--force", &wt]);
+    }
+
+    #[test]
+    fn a_conversation_hears_of_its_pull_request_conflicting_and_of_it_closing_unmerged() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        seed_conversation(&s, "abc123", &repo);
+        run(&repo, &["git", "branch", "pulse/chat-abc123", "main"]);
+        let tip = commit_dated(
+            &repo,
+            "pulse/chat-abc123",
+            "pulse_chat.txt",
+            "2026-09-06T09:40:00Z",
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            ["proposed pr proj conversation abc123: #7 opened https://github.com/o/r/pull/7"]
+        );
+
+        // The base rewrites the chat's file: the conversation's agent is
+        // woken with the conflict, once for this head.
+        move_base_on_forge(&repo, &bare, "pulse_chat.txt");
+        gh.set_mergeable(7, "CONFLICTING");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(
+                |l| l.contains("proposed pr proj: #7 conflicts with main at")
+                    && l.contains(
+                        "pulse_chat.txt; main does not merge in cleanly; conversation abc123 woken"
+                    )
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr-conflict"), 1);
+        assert_eq!(bare_ref(&bare, "refs/heads/pulse/chat-abc123"), tip);
+        let wakes = "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = 'abc123'";
+        let wake_action = pulse_harness::conversation::WAKE_ACTION;
+        assert_eq!(count(&s, wakes, &[&wake_action]), 1);
+        let wake = last_detail(&s, wake_action);
+        let text = wake["text"].as_str().unwrap_or_default();
+        assert!(
+            text.starts_with(
+                "Pull request #7 (https://github.com/o/r/pull/7) conflicts with main at"
+            ) && text.contains("pulse_chat.txt"),
+            "{text}"
+        );
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+        assert_eq!(count(&s, wakes, &[&wake_action]), 1);
+
+        // Closed without a merge: a note in the transcript, no turn, and
+        // the conversation stands as it was.
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            [
+                "proposed pr proj: #7 closed unmerged; the branch stays on the remote; conversation abc123 told"
+            ]
+        );
+        assert_eq!(events(&s, "land.pr-closed"), 1);
+        let notes = s.chat_messages("abc123", 0).unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].role, "note");
+        assert_eq!(
+            notes[0].content,
+            "Pull request #7 (https://github.com/o/r/pull/7) was closed without merging. Nothing is marked done; the branch stays on the remote. Write here to carry on."
+        );
+        assert_eq!(notes[0].extra["pr"]["number"], 7);
+        assert_eq!(s.chat_get("abc123").unwrap().unwrap().status, "idle");
+        assert_eq!(count(&s, wakes, &[&wake_action]), 1);
+        assert_eq!(events(&s, pulse_harness::conversation::FINISH_ACTION), 0);
+        assert_eq!(bare_ref(&bare, "refs/heads/pulse/chat-abc123"), tip);
+        assert_eq!(events(&s, "land.merged"), 0);
+        // Told once: the closing is settled.
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+        assert_eq!(s.chat_messages("abc123", 0).unwrap().len(), 1);
     }
 
     #[test]

@@ -68,6 +68,11 @@ pub const WAKE_ACTION: &str = "chat.wake";
 /// The meta key under which the hub's wake loop keeps the bus sequence it
 /// has delivered up to, so a wake sent while no hub ran is not lost.
 pub const WAKE_CURSOR_KEY: &str = "chat.wake.cursor";
+/// The bus action the daemon publishes when the pull request a
+/// conversation's branch went out as is merged on the forge; the hub's wake
+/// loop finishes the conversation it names ([`Manager::finish_from`]), the
+/// detail's `text` saying why.
+pub const FINISH_ACTION: &str = "chat.finish";
 /// The row note a turn leaves when PULSE itself stopped it (a hub restart,
 /// a shutdown, a crash) rather than the owner or the agent: the next turn
 /// tells the agent so it checks the workspace before redoing work.
@@ -104,6 +109,9 @@ const CLOSED_BY_OWNER_LINE: &str = "You finished this conversation. Write again 
 /// What the transcript says where the agent finished the conversation;
 /// its summary follows.
 const FINISHED_BY_AGENT_LINE: &str = "The agent finished this conversation:";
+/// What the transcript says where PULSE finished the conversation (its
+/// pull request merged); the reason follows.
+const FINISHED_BY_PULSE_LINE: &str = "PULSE finished this conversation:";
 /// The message the conversation sends itself once when a transport
 /// provider_error cut the last turn.
 const RESUME_AFTER_PROVIDER_ERROR: &str =
@@ -325,13 +333,16 @@ enum Finished {
     Agent(String),
     /// The owner, from the hub or `pulse chat close`.
     Owner,
+    /// PULSE, once the conversation's pull request merged
+    /// ([`FINISH_ACTION`]), with why.
+    Pulse(String),
 }
 
 impl Finished {
     /// The row note while the conversation stands finished.
     fn note(&self) -> String {
         match self {
-            Finished::Agent(summary) => one_line(summary),
+            Finished::Agent(summary) | Finished::Pulse(summary) => one_line(summary),
             Finished::Owner => CLOSED_BY_OWNER_NOTE.to_string(),
         }
     }
@@ -341,6 +352,7 @@ impl Finished {
         match self {
             Finished::Agent(summary) => format!("{FINISHED_BY_AGENT_LINE} {summary}"),
             Finished::Owner => CLOSED_BY_OWNER_LINE.to_string(),
+            Finished::Pulse(why) => format!("{FINISHED_BY_PULSE_LINE} {why}"),
         }
     }
 
@@ -348,7 +360,24 @@ impl Finished {
         match self {
             Finished::Agent(_) => "agent",
             Finished::Owner => "owner",
+            Finished::Pulse(_) => "pulse",
         }
+    }
+
+    /// What the conversation that started this one is told.
+    fn report(&self) -> String {
+        match self {
+            Finished::Agent(summary) => summary.clone(),
+            Finished::Owner => "The owner finished it.".to_string(),
+            Finished::Pulse(why) => format!("PULSE finished it: {why}"),
+        }
+    }
+
+    /// Whether a turn about to start stops at once: the agent's and the
+    /// owner's finish end the work, PULSE's waits for the turn in flight
+    /// to end by itself and never cuts it.
+    fn stops_turns(&self) -> bool {
+        !matches!(self, Finished::Pulse(_))
     }
 }
 
@@ -1323,7 +1352,7 @@ impl Runtime {
             st.turn_from = st.last_step;
             st.turn_started_at = now();
             st.session_id = session_id.clone();
-            if st.closed || st.finish.is_some() {
+            if st.closed || st.finish.as_ref().is_some_and(Finished::stops_turns) {
                 // Closed or finished while the message was on its way to
                 // the agent: the turn stops at its first step instead of
                 // running on.
@@ -1536,7 +1565,7 @@ impl Runtime {
             let text = match f {
                 Finished::Agent(summary) if closing.trim().is_empty() => summary.clone(),
                 Finished::Agent(summary) => format!("{summary}\n\n{closing}"),
-                Finished::Owner => "The owner finished it.".to_string(),
+                other => other.report(),
             };
             report = Some((REPORT_FINISHED, text));
         }
@@ -1966,6 +1995,26 @@ impl Runtime {
         }
     }
 
+    /// PULSE finishes the conversation (its pull request merged). A turn
+    /// in flight is never cut: it runs to its end and the conversation
+    /// stands closed after it (recording it then); otherwise the runtime
+    /// stands closed at once and the caller records it. Says which.
+    fn finish_by_pulse(&self, why: &str) -> bool {
+        let mut st = self.shared.lock();
+        if st.worker {
+            if st.finish.is_none() {
+                st.finish = Some(Finished::Pulse(why.to_string()));
+            }
+            self.shared.bump(&mut st);
+            false
+        } else {
+            st.status = Status::Closed;
+            st.note = Finished::Pulse(why.to_string()).note();
+            self.shared.bump(&mut st);
+            true
+        }
+    }
+
     /// Writes a finish to the store: its transcript line, then the row.
     fn record_finished(&self, f: &Finished) {
         let _ =
@@ -1973,11 +2022,7 @@ impl Runtime {
                 .chat_add_message(&self.id, "note", &f.line(), &json!({"closed": f.by()}));
         let _ = self.store.chat_set_status(&self.id, "closed", &f.note());
         self.write_unsent();
-        let text = match f {
-            Finished::Agent(summary) => summary.clone(),
-            Finished::Owner => "The owner finished it.".to_string(),
-        };
-        self.report_up(REPORT_FINISHED, &text);
+        self.report_up(REPORT_FINISHED, &f.report());
     }
 
     /// Hands a report to the conversation that started this one, when
@@ -2913,6 +2958,39 @@ impl Manager {
             self.deliver_report(&row, REPORT_FINISHED, "The owner finished it.");
         }
         Ok(())
+    }
+
+    /// Finishes the conversation from PULSE's side, `why` saying what
+    /// settled it (the pull request its branch went out as was merged,
+    /// [`FINISH_ACTION`]). Unlike the owner's close, a turn in flight runs
+    /// to its end and nothing queued is dropped: the conversation stands
+    /// closed after it, and a message the owner sends reopens it as ever.
+    /// A conversation already closed is left as it is (false); an archived
+    /// one is an error.
+    pub fn finish_from(&self, id: &str, why: &str) -> Result<bool> {
+        let why = one_line(why);
+        if why.is_empty() {
+            bail!("the finish reason is empty");
+        }
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        if row.status == "closed" {
+            return Ok(false);
+        }
+        let record_now = match self.running(id) {
+            Some(rt) => rt.finish_by_pulse(&why),
+            None => true,
+        };
+        if record_now {
+            let f = Finished::Pulse(why);
+            self.store
+                .chat_add_message(id, "note", &f.line(), &json!({"closed": f.by()}))?;
+            self.store.chat_set_status(id, "closed", &f.note())?;
+            self.deliver_report(&row, REPORT_FINISHED, &f.report());
+        }
+        Ok(true)
     }
 
     /// Starts the conversation's session over from its saved transcript,
@@ -6489,6 +6567,82 @@ mod tests {
             m.create_child(&pid, "", "another").is_err(),
             "archived parent"
         );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// PULSE finishes a conversation whose pull request merged: an idle one
+    /// at once, with its own line; a working one only after its turn ends
+    /// by itself, never cut. Twice adds nothing; the owner's next message
+    /// reopens it; an archived one is refused.
+    #[test]
+    fn pulse_finishes_a_conversation_without_cutting_its_turn() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        assert!(m.finish_from(&id, "  ").is_err(), "a reason is needed");
+
+        // Idle: closed at once, PULSE's line and note.
+        assert!(
+            m.finish_from(&id, "pull request #7 merged")
+                .expect("finish")
+        );
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.status, "closed");
+        assert_eq!(row.note, "pull request #7 merged");
+        let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.role, "note");
+        assert_eq!(
+            last.content,
+            "PULSE finished this conversation: pull request #7 merged"
+        );
+        assert_eq!(last.extra["closed"], "pulse");
+        let before = s.chat_messages(&id, 0).unwrap().len();
+        assert!(!m.finish_from(&id, "again").expect("finish again"));
+        assert_eq!(s.chat_messages(&id, 0).unwrap().len(), before);
+
+        // The owner's message reopens it; a finish during the turn waits
+        // for the reply and closes after it.
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            m.finish_from(&id, "pull request #8 merged")
+                .expect("finish")
+        );
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.note, "pull request #8 merged");
+        assert_eq!(
+            transcript(&s, &id)[before..],
+            [
+                ("user".to_string(), "two".to_string()),
+                ("assistant".to_string(), "Second.".to_string()),
+                (
+                    "note".to_string(),
+                    "PULSE finished this conversation: pull request #8 merged".to_string()
+                ),
+            ],
+            "the turn ran to its reply"
+        );
+
+        m.archive(&id).expect("archive");
+        assert!(m.finish_from(&id, "late").is_err(), "archived");
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }

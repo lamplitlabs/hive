@@ -361,6 +361,8 @@ fn run_command(
     }
     // A script an agent left running says "I am done" with `pulse chat
     // wake`; the loop turns the bus event into a turn of that conversation.
+    // The daemon's `chat.finish` (the conversation's pull request merged)
+    // finishes it through the same loop.
     if let Some(store) = h.store.clone() {
         let chats = chats.clone();
         let wake_ctx = ctx.clone();

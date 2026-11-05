@@ -720,8 +720,10 @@ pub(crate) fn dispatch_of(
 /// A `gh` on PATH that answers like GitHub for the delivery pass: `pr
 /// create` numbers pull requests from 7 and remembers each one's head, `pr
 /// list --head` finds the open one for a head, `pr list --state all` and
-/// `pr view N` print the states the test wrote (`set_state`), and every
-/// call is logged. Drop it to take it off PATH.
+/// `pr view N` print the states the test wrote (`set_state`), with each
+/// head's tip read from the bare remote named by `track_remote` and the
+/// forge's judgement of it as the test set it (`set_mergeable`,
+/// `set_checks`), and every call is logged. Drop it to take it off PATH.
 pub(crate) struct FakeGh {
     dir: std::path::PathBuf,
     _bin: tempfile::TempDir,
@@ -741,9 +743,57 @@ impl FakeGh {
             .collect()
     }
 
+    /// Makes every read of pull requests (`pr list --state`, `pr view`)
+    /// fail with `why` on stderr until [`FakeGh::heal`]: the forge or gh
+    /// being down.
+    pub(crate) fn fail_reads(&self, why: &str) {
+        std::fs::write(self.dir.join("fail"), why).expect("fake gh failure");
+    }
+
+    /// Reads answer again after [`FakeGh::fail_reads`].
+    pub(crate) fn heal(&self) {
+        let _ = std::fs::remove_file(self.dir.join("fail"));
+    }
+
     /// Sets pull request `n`'s state: `OPEN`, `MERGED` or `CLOSED`.
     pub(crate) fn set_state(&self, n: i64, state: &str) {
         std::fs::write(self.dir.join("state").join(n.to_string()), state).expect("pr state");
+    }
+
+    /// Names the bare repository the pull requests' heads live in: each
+    /// head's `headRefOid` is read from it. Without this the fake answers
+    /// no sha, as an older gh would.
+    pub(crate) fn track_remote(&self, bare: &str) {
+        std::fs::write(self.dir.join("bare"), bare).expect("fake gh remote");
+    }
+
+    /// Pins pull request `n`'s `headRefOid` to `sha` whatever the remote
+    /// holds (the forge's listing lagging a push); an empty `sha` unpins
+    /// it.
+    pub(crate) fn pin_head_sha(&self, n: i64, sha: &str) {
+        let path = self.dir.join("oid").join(n.to_string());
+        if sha.is_empty() {
+            let _ = std::fs::remove_file(path);
+        } else {
+            std::fs::write(path, sha).expect("pr head sha");
+        }
+    }
+
+    /// Sets the forge's judgement of pull request `n`'s head:
+    /// `MERGEABLE` (the default), `CONFLICTING` (its merge state then
+    /// `DIRTY`) or `UNKNOWN`.
+    pub(crate) fn set_mergeable(&self, n: i64, mergeable: &str) {
+        std::fs::write(self.dir.join("mergeable").join(n.to_string()), mergeable)
+            .expect("pr mergeable");
+    }
+
+    /// Sets pull request `n`'s `statusCheckRollup`, as gh prints it.
+    pub(crate) fn set_checks(&self, n: i64, rollup: &serde_json::Value) {
+        std::fs::write(
+            self.dir.join("checks").join(n.to_string()),
+            rollup.to_string(),
+        )
+        .expect("pr checks");
     }
 
     /// The head branch pull request `n` was created from.
@@ -766,7 +816,15 @@ impl FakeGh {
 pub(crate) fn fake_gh() -> FakeGh {
     let bin = tempfile::tempdir().expect("fake gh dir");
     let dir = bin.path().to_path_buf();
-    for sub in ["state", "heads", "titles", "byhead"] {
+    for sub in [
+        "state",
+        "heads",
+        "titles",
+        "byhead",
+        "oid",
+        "mergeable",
+        "checks",
+    ] {
         std::fs::create_dir_all(dir.join(sub)).expect("fake gh state dir");
     }
     std::fs::write(dir.join("next"), "7").expect("fake gh counter");
@@ -784,8 +842,21 @@ key=$(printf '%s' "$head" | tr / _)
 pr_json() {{
   st=$(cat "$d/state/$1"); m=null
   [ "$st" = MERGED ] && m='"2026-11-04T07:00:00Z"'
-  printf '{{"number":%s,"state":"%s","mergedAt":%s,"url":"https://github.com/o/r/pull/%s","headRefName":"%s"}}' "$1" "$st" "$m" "$1" "$(cat "$d/heads/$1")"
+  h=$(cat "$d/heads/$1")
+  oid=""
+  if [ -e "$d/oid/$1" ]; then oid=$(cat "$d/oid/$1")
+  elif [ -e "$d/bare" ]; then oid=$(git --git-dir "$(cat "$d/bare")" rev-parse -q --verify "refs/heads/$h" 2>/dev/null)
+  fi
+  mg=MERGEABLE; ms=CLEAN
+  if [ -e "$d/mergeable/$1" ]; then mg=$(cat "$d/mergeable/$1"); [ "$mg" = CONFLICTING ] && ms=DIRTY; fi
+  checks='[]'; [ -e "$d/checks/$1" ] && checks=$(cat "$d/checks/$1")
+  printf '{{"number":%s,"state":"%s","mergedAt":%s,"url":"https://github.com/o/r/pull/%s","headRefName":"%s","headRefOid":"%s","mergeable":"%s","mergeStateStatus":"%s","statusCheckRollup":%s}}' "$1" "$st" "$m" "$1" "$h" "$oid" "$mg" "$ms" "$checks"
 }}
+if [ -e "$d/fail" ]; then
+  case "$1 $2 $3" in
+    "pr list --state"|"pr view "*) cat "$d/fail" >&2; exit 1 ;;
+  esac
+fi
 case "$1 $2 $3" in
   "pr list --head")
     n=$(cat "$d/byhead/$key" 2>/dev/null)
