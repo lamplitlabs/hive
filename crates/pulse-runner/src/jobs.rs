@@ -164,6 +164,22 @@ pub(crate) fn work_kinds_sql() -> String {
         .join(",")
 }
 
+/// The job kinds whose briefs run `pulse` commands against this machine's
+/// store (a lead plans the board, a review lands a pull request): a hand
+/// has no store, so these lease only on this machine. On 2026-11-05 two
+/// lead jobs and a review leased to a Linux hand failed with "No store at
+/// /home/pulse/.pulse/pulse.sqlite".
+pub(crate) const STORE_KINDS: &[&str] = &[crate::lead::LEAD_KIND, crate::review::KIND];
+
+/// [`STORE_KINDS`] as a SQL list for `kind NOT IN (...)`.
+pub(crate) fn store_kinds_sql() -> String {
+    STORE_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// The work class as a SQL list: [`WORK_KINDS`] and the lane's experiments,
 /// the jobs that change the product; the rest (reflect, ballot, lead,
 /// answer, clean...) is the meta work around them.
@@ -617,11 +633,14 @@ pub(crate) fn lease_job(
         // on from the clone and conversation kept here; a hand keeps no
         // clone between runs, so a hand's slot passes it rather than start
         // it over. A session held on a hand starts over wherever it goes.
+        // The kinds whose briefs work this machine's store ([`STORE_KINDS`])
+        // never go to a hand: it has no store to run them against.
         if !o.executor.is_empty() && o.executor != crate::executor::LOCAL_EXECUTOR {
             sql.push_str(&format!(
                 " AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}')",
                 crate::executor::LOCAL_EXECUTOR
             ));
+            sql.push_str(&format!(" AND j.kind NOT IN ({})", store_kinds_sql()));
         }
         // The work this agent holds first - its clone and conversation carry
         // on only under it; then the owner's work; then the jobs that need
@@ -1409,6 +1428,55 @@ mod tests {
         run_on("run-h-away", "hands-2");
         let elsewhere = lease("hands-1");
         assert_eq!(elsewhere.str("id"), held, "{elsewhere:?}");
+    }
+
+    #[test]
+    fn store_bound_kinds_are_leased_only_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        join(&s, "borealis");
+        crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        let lead = queue(&s, "proj", crate::lead::LEAD_KIND, "lead:proj:1", 9);
+        let review = queue(&s, "proj", crate::review::KIND, "review:proj:7", 8);
+        let improve = queue(&s, "proj", "improve", "improve-work", 1);
+        let lease = |agent: &str, executor: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let set = |id: &str, status: &str| {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = ?, lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&status, &id],
+            );
+        };
+        // A hand's slot passes the review, although it is the higher
+        // priority, and takes the improve job; once only store-bound work
+        // is left it takes nothing.
+        let on_hand = lease("borealis", "hands-1");
+        assert_eq!(on_hand.str("id"), improve, "{on_hand:?}");
+        set(&improve, "done");
+        let nothing = lease("borealis", "hands-1");
+        assert!(nothing.str("id").is_empty(), "{nothing:?}");
+        // The lead on a hand's slot passes its lead job too.
+        let lead_on_hand = lease("proj-lead", "hands-1");
+        assert!(lead_on_hand.str("id").is_empty(), "{lead_on_hand:?}");
+        // This machine's slot takes the review and the lead job.
+        let here = lease("borealis", crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(here.str("id"), review, "{here:?}");
+        let lead_here = lease("proj-lead", crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(lead_here.str("id"), lead, "{lead_here:?}");
     }
 
     fn add_second_project(s: &pulse_store::Store, slug: &str) {
