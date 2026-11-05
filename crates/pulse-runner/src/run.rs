@@ -6571,7 +6571,7 @@ mod tests {
             let _ = done_tx.send(());
         });
         failure_gate.wait(&done_rx);
-        crate::test_helpers_heartbeat::heartbeat_eventually(|| {
+        crate::test_helpers_heartbeat::lifecycle_eventually("the daemon's second loop", || {
             let beat = crate::util::must_one(
                 &s.conn().unwrap(),
                 "SELECT json_extract(value, '$.loops') AS loops FROM meta WHERE key = 'daemon'",

@@ -96,6 +96,21 @@ pub(crate) fn heartbeat_eventually(mut ready: impl FnMut() -> bool) {
     panic!("heartbeat evidence did not arrive");
 }
 
+/// Waits for evidence that needs a real worker run to end first (a daemon
+/// loop moving on after its dispatch): the run is a child process, so the
+/// wait takes the lifecycle budget, not the fake clock's ten seconds; under a
+/// full parallel verify the run alone has taken longer than that.
+pub(crate) fn lifecycle_eventually(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + LIFECYCLE_WAIT_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if ready() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("{what} did not happen within {LIFECYCLE_WAIT_TIMEOUT:?}");
+}
+
 /// A scratch directory a test owns: removed, with everything in it, when the
 /// guard drops. `keep` hands the path over to a helper that removes it itself.
 pub(crate) struct Scratch(PathBuf);
