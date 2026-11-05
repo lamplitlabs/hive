@@ -419,7 +419,8 @@ fn task_work(conn: &rusqlite::Connection, task: &crate::Task) -> Result<TaskWork
     let mut waiting = 0;
     let mut stmt = conn.prepare(&format!(
         "SELECT j.id, j.status, j.branch, \
-                (SELECT group_concat(r.branch, '\n') FROM runs r WHERE r.job_id = j.id AND r.branch != '') \
+                (SELECT group_concat(r.branch, '\n') FROM runs r WHERE r.job_id = j.id AND r.branch != ''), \
+                EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.status = 'running') \
          FROM jobs j WHERE j.project = ? AND ({} OR (? != '' AND j.id = ?)) ORDER BY j.created_at, j.id",
         pulse_store::task_source_clause("j.source")
     ))?;
@@ -432,14 +433,18 @@ fn task_work(conn: &rusqlite::Connection, task: &crate::Task) -> Result<TaskWork
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    r.get::<_, i64>(4)? != 0,
                 ))
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, status, branch, run_branches) in rows {
+    for (id, status, branch, run_branches, running) in rows {
         jobs.push(id);
         if !branch.is_empty() {
-            if status == "done" {
+            // The worker marks its job done as its session ends; the branch
+            // it names exists once the run's verification has passed. Until
+            // the run ends the step is still at work, not waiting to land.
+            if status == "done" && !running {
                 waiting += 1;
             }
             if !branches.contains(&branch) {

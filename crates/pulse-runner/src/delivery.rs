@@ -6,7 +6,8 @@
 //! What is delivered, each pass (`tend`):
 //! - a task whose jobs are all finished: the jobs' branches merged onto the
 //!   default branch as `pulse/task-<id>`, one pull request (`land.pr`,
-//!   kind `task`);
+//!   kind `task`); a branch that conflicts with the default branch goes to
+//!   a rebase job on the task once (`land.rebase`) before the task is held;
 //! - every other done job that still has a branch, one pull request each
 //!   from the branch as the agent left it (kind `job`) - 92% of the 260
 //!   landings of the week before this (suggestion, security, lead, schedule,
@@ -107,16 +108,24 @@ fn ready_tasks(s: &pulse_store::Store, slug: &str) -> Vec<ReadyTask> {
         let jobs = crate::util::query_rows(
             &conn,
             &format!(
-                "SELECT id, status, branch FROM jobs WHERE project = ? AND {} ORDER BY created_at, id",
+                "SELECT id, status, branch,
+                    EXISTS (SELECT 1 FROM runs r WHERE r.job_id = jobs.id AND r.status = 'running') AS running
+                 FROM jobs WHERE project = ? AND {} ORDER BY created_at, id",
                 pulse_store::task_source_clause("source")
             ),
             &[&slug, &exact, &like],
         )
         .unwrap_or_default();
-        if jobs
-            .iter()
-            .any(|j| matches!(j.str("status").as_str(), "queued" | "leased" | "blocked"))
-        {
+        // A worker marks its own job done (`pulse job finish ... --branch`)
+        // as its session ends, naming the branch the runner creates only
+        // once the run's verification has passed, up to forty minutes
+        // later. A job whose run is still running is in flight, whatever
+        // its status says: nine of a day's task holds were a branch "not
+        // something we can merge" that existed an hour later.
+        if jobs.iter().any(|j| {
+            matches!(j.str("status").as_str(), "queued" | "leased" | "blocked")
+                || j.int("running") != 0
+        }) {
             continue;
         }
         let branches: Vec<(String, String)> = jobs
@@ -489,6 +498,47 @@ fn work_key(branch: &str, sha: &str) -> String {
     format!("{branch} {}", crate::recipe::short(sha, 12))
 }
 
+/// The hold key of a task's work: every job branch with its sha now, a
+/// branch the checkout has not got by name alone.
+fn task_work_key(root: &str, branches: &[(String, String)]) -> String {
+    branches
+        .iter()
+        .map(|(_, b)| {
+            let sha = rev(root, &format!("refs/heads/{b}"));
+            if sha.is_empty() {
+                b.clone()
+            } else {
+                work_key(b, &sha)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A job branch that does not merge onto the default branch with the
+/// task's other branches: what conflicted, for the job that rebases it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Conflict {
+    job: String,
+    branch: String,
+    sha: String,
+    /// The paths left unmerged, as `git diff --diff-filter=U` names them.
+    files: Vec<String>,
+}
+
+/// Why a task's pull request could not be built this pass.
+#[derive(Debug)]
+enum TaskFault {
+    Conflict(Conflict),
+    Other(String),
+}
+
+impl From<String> for TaskFault {
+    fn from(note: String) -> Self {
+        TaskFault::Other(note)
+    }
+}
+
 /// Delivers what the project has waiting: pull requests when it has an
 /// upstream, local landings when it has none.
 fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
@@ -503,12 +553,11 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
     let mut opened = 0usize;
     for rt in &ready.tasks {
         let task = &rt.task;
-        let key = rt
-            .branches
-            .iter()
-            .map(|(_, b)| b.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
+        // The key names each branch's sha, not the branch alone: a hold
+        // stands until the work changes, and a branch that appears or moves
+        // (a retry's new run) is new work the pass tries again, rather than
+        // waiting for a new job of the task.
+        let key = task_work_key(&root, &rt.branches);
         let Ok(conn) = s.conn() else { break };
         if held_already(&conn, &slug, "task", task, &key) {
             continue;
@@ -522,7 +571,8 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         }
         match deliver_task(s, project, &up, rt, now) {
             Ok(line) => lines.push(line),
-            Err(note) => {
+            Err(TaskFault::Conflict(c)) => lines.push(rebase_or_hold(s, project, rt, &key, c, now)),
+            Err(TaskFault::Other(note)) => {
                 hold(s, now, &slug, json!({"task": task, "work": key}), &note);
                 lines.push(format!("task pr {slug} {task}: held: {note}"));
             }
@@ -908,12 +958,24 @@ fn deliver_task(
     up: &Upstream,
     rt: &ReadyTask,
     now: &str,
-) -> Result<String, String> {
+) -> Result<String, TaskFault> {
     let root = project.str("path");
     let def = crate::baseline::default_branch(project.clone());
     let task = rt.task.as_str();
     let branches = rt.branches.as_slice();
     let head = task_branch(task);
+    // Each branch is resolved here, in the checkout, before anything is
+    // merged: a name git cannot resolve inside the worktree reads as "not
+    // something we can merge", which says nothing about which branch or
+    // why.
+    let mut shas = Vec::with_capacity(branches.len());
+    for (job, b) in branches {
+        let sha = rev(&root, &format!("refs/heads/{b}"));
+        if sha.is_empty() {
+            return Err(format!("{b} (job {job}) is not in {root}").into());
+        }
+        shas.push(sha);
+    }
     let remote_head = match &rt.open {
         Some(_) => {
             let sha = fetch_head(s, &root, up, &head)?;
@@ -922,7 +984,8 @@ fn deliver_task(
                     "{head} (pull request #{}) is gone from {}",
                     rt.open.as_ref().map(number_of).unwrap_or_default(),
                     up.name()
-                ));
+                )
+                .into());
             }
             Some(sha)
         }
@@ -934,7 +997,7 @@ fn deliver_task(
         .trim()
         .to_string();
     if git_dir.is_empty() {
-        return Err(format!("{root} is not a git checkout"));
+        return Err(format!("{root} is not a git checkout").into());
     }
     let wt_path = format!("{git_dir}/pulse-task-pr/{task}");
     let _ = git(&["worktree", "remove", "--force", &wt_path]);
@@ -944,12 +1007,15 @@ fn deliver_task(
         return Err(format!(
             "worktree add failed: {}",
             crate::run::squeeze(&add.stderr, 200)
-        ));
+        )
+        .into());
     }
     let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
-    let mut merges: Vec<(String, String)> = branches
+    // (rev, what it is, the job whose branch it is).
+    let mut merges: Vec<(String, String, Option<usize>)> = branches
         .iter()
-        .map(|(_, b)| (b.clone(), b.clone()))
+        .enumerate()
+        .map(|(i, (_, b))| (shas[i].clone(), b.clone(), Some(i)))
         .collect();
     if let Some(sha) = &remote_head {
         merges.push((
@@ -958,10 +1024,11 @@ fn deliver_task(
                 "{head} as pull request #{} has it",
                 rt.open.as_ref().map(number_of).unwrap_or_default()
             ),
+            None,
         ));
     }
-    let mut result: Result<(), String> = Ok(());
-    for (rev, what) in &merges {
+    let mut result: Result<(), TaskFault> = Ok(());
+    for (rev, what, which) in &merges {
         let contained = in_wt(&["merge-base", "--is-ancestor", rev, "HEAD"]);
         if contained.ok() {
             continue;
@@ -979,11 +1046,26 @@ fn deliver_task(
             rev,
         ]);
         if !m.ok() {
+            let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
             let _ = in_wt(&["merge", "--abort"]);
-            result = Err(format!(
-                "{what} does not merge cleanly onto {def} with the task's other branches: {}",
-                crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
-            ));
+            result = Err(match which {
+                Some(i) if !unmerged.is_empty() => TaskFault::Conflict(Conflict {
+                    job: branches[*i].0.clone(),
+                    branch: what.clone(),
+                    sha: rev.clone(),
+                    files: unmerged,
+                }),
+                _ => TaskFault::Other(format!(
+                    "{what} does not merge cleanly onto {def} with the task's other branches: {}",
+                    crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
+                )),
+            });
             break;
         }
     }
@@ -1009,6 +1091,123 @@ fn deliver_task(
         now,
     )?
     .line)
+}
+
+/// How many times a task's conflicting branch is handed to a job before the
+/// owner is asked: the rebase job starts from the default branch as it is,
+/// so a second conflict means the work itself is at odds with what landed.
+const REBASES_PER_TASK: usize = 1;
+
+/// A job branch that conflicts with the default branch is work for an
+/// agent before it is a question for the owner: a `task` job on the same
+/// task is queued to bring the branch over onto the default branch and
+/// resolve the conflict, the conflicting job keeps its result but loses the
+/// branch (the task's pull request opens from the rebased one), and
+/// `land.rebase` says so. After `REBASES_PER_TASK` such jobs the task is
+/// held with the conflict named, as before.
+fn rebase_or_hold(
+    s: &pulse_store::Store,
+    project: &Row,
+    rt: &ReadyTask,
+    key: &str,
+    c: Conflict,
+    now: &str,
+) -> String {
+    let slug = project.str("slug");
+    let def = crate::baseline::default_branch(project.clone());
+    let task = rt.task.as_str();
+    let files = c.files.join(", ");
+    let note = format!(
+        "{} (job {}) does not merge cleanly onto {def} with the task's other branches: conflicts in {files}",
+        c.branch, c.job
+    );
+    let Ok(conn) = s.conn() else {
+        return format!("task pr {slug} {task}: {note}");
+    };
+    let rebases = crate::util::query_rows(
+        &conn,
+        "SELECT detail FROM events WHERE subject = ? AND action = 'land.rebase' AND json_valid(detail)
+         AND json_extract(detail, '$.task') = ? ORDER BY seq DESC",
+        &[&slug, &task],
+    )
+    .unwrap_or_default();
+    if rebases.len() >= REBASES_PER_TASK {
+        let last: Value = serde_json::from_str(&rebases[0].str("detail")).unwrap_or(Value::Null);
+        drop(conn);
+        let note = format!(
+            "{note}; job {} already rebased the task's work once, so this one is for you",
+            field(&last, "follow_up")
+        );
+        hold(s, now, &slug, json!({"task": task, "work": key}), &note);
+        return format!("task pr {slug} {task}: held: {note}");
+    }
+    let job = crate::util::must_one(&conn, "SELECT * FROM jobs WHERE id = ?", &[&c.job]);
+    drop(conn);
+    let short = crate::recipe::short(&c.sha, 12);
+    let brief = format!(
+        "Branch `{branch}` (job {job_id}, commit {short}) is finished work for task {task} ({title}), but it no longer merges onto `{def}`: {files} conflict with what landed on `{def}` after the branch was cut.\n\n\
+         Start from the current `{def}`, bring the branch's commits over (`git cherry-pick` the commits `{def}..{short}` has, or rebase the branch), resolve the conflicts keeping the intent of both sides, run the project's check, and commit on your own branch. \
+         Leave `{branch}` as it is; the task's pull request opens from your branch once it merges cleanly.\n\n\
+         The job's own account of its work:\n\n{result}",
+        branch = c.branch,
+        job_id = c.job,
+        title = rt.title,
+        result = crate::run::squeeze(&job.str("result"), 1200),
+    );
+    let queued = crate::jobs::add_job(
+        s,
+        slug.clone(),
+        "task".into(),
+        format!("Rebase {} onto {def}: {}", c.branch, rt.title),
+        brief,
+        job.int("tier").max(1),
+        job.int("priority"),
+        format!("task:{task}"),
+        ACTOR.into(),
+        false,
+    );
+    let follow_up = match queued {
+        Ok((j, _)) => j.str("id"),
+        Err(e) => {
+            let note = format!("{note}; no job could be queued to rebase it: {e}");
+            hold(s, now, &slug, json!({"task": task, "work": key}), &note);
+            return format!("task pr {slug} {task}: held: {note}");
+        }
+    };
+    if let Ok(conn) = s.conn() {
+        let _ = conn.execute(
+            "UPDATE jobs SET branch = '', result = result || ? WHERE id = ? AND project = ?",
+            rusqlite::params![
+                format!(
+                    "\n\nIts branch {} conflicts with {def} in {files}; job {follow_up} rebases it.",
+                    c.branch
+                ),
+                c.job,
+                slug
+            ],
+        );
+    }
+    event(
+        s,
+        now,
+        "land.rebase",
+        &slug,
+        json!({
+            "project": slug, "task": task, "job": c.job, "branch": c.branch, "sha": c.sha,
+            "files": c.files, "follow_up": follow_up,
+        }),
+    );
+    let _ = pulse_tasks::send_message(
+        s,
+        &slug,
+        task,
+        ACTOR,
+        &format!(
+            "Branch {} of job {} conflicts with {def} in {files}; job {follow_up} rebases it before the task's pull request opens.",
+            c.branch, c.job
+        ),
+    );
+    format!("task pr {slug} {task}: {note}; job {follow_up} rebases it")
 }
 
 /// Fetches the upstream's `head` into `refs/remotes/<remote>/<head>` and
@@ -2463,6 +2662,202 @@ mod tests {
         assert!(gh.calls().is_empty());
         assert!(tend_proj(&s, &proj, TEST_NOW).is_empty(), "not retried");
         assert_eq!(events(&s, "land.pr-held"), 1);
+    }
+
+    /// The worker marks its job done itself, naming the branch the runner
+    /// creates only after the run's verification: while that run is still
+    /// running the task is in flight, not held on a branch that is not
+    /// there yet.
+    #[test]
+    fn a_task_whose_job_is_still_running_waits_for_the_run_instead_of_being_held() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let b = job_row_by_branch(&s, "pulse/worker/b");
+        let tip = ref_of(&repo, "refs/heads/pulse/worker/b");
+        run(&repo, &["git", "branch", "-D", "pulse/worker/b"]);
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES ('run-b', ?, 'worker', 'proj', ?, 'running')",
+            &[&b, &TEST_NOW],
+        );
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-held"), 0, "nothing held");
+        assert!(gh.calls().is_empty());
+
+        // The run ends with the branch in place: one pull request, both jobs.
+        run(&repo, &["git", "branch", "pulse/worker/b", &tip]);
+        exec1(
+            &s,
+            "UPDATE runs SET status = 'done', finished_at = ? WHERE id = 'run-b'",
+            &[&TEST_NOW],
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        assert_eq!(
+            last_detail(&s, "land.pr")["jobs"].as_array().map(Vec::len),
+            Some(2)
+        );
+    }
+
+    /// A job branch that conflicts with the default branch goes to a rebase
+    /// job on the same task, once; the task's pull request opens from the
+    /// rebased branch, and a second conflict is held for the owner.
+    #[test]
+    fn a_conflicting_task_branch_is_handed_to_a_rebase_job_once_then_held() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let b = job_row_by_branch(&s, "pulse/worker/b");
+        // main changes the file b's commit adds, so b no longer merges.
+        commit_on(&repo, "main", "pulse_worker_b.txt");
+        run(&repo, &["git", "push", "-q", "origin", "main"]);
+        let b_tip = ref_of(&repo, "refs/heads/pulse/worker/b");
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "task pr proj {task}: pulse/worker/b (job {b}) does not merge cleanly onto main"
+            )) && l.contains("conflicts in pulse_worker_b.txt")
+                && l.contains("rebases it")),
+            "{lines:?}"
+        );
+        assert!(
+            gh.calls().is_empty(),
+            "no pull request yet: {:?}",
+            gh.calls()
+        );
+        assert_eq!(events(&s, "land.pr-held"), 0);
+        let rebase = last_detail(&s, "land.rebase");
+        assert_eq!(rebase["task"], task);
+        assert_eq!(rebase["job"], b);
+        assert_eq!(rebase["sha"], b_tip);
+        assert_eq!(rebase["files"], json!(["pulse_worker_b.txt"]));
+        let follow_up = rebase["follow_up"].as_str().unwrap().to_string();
+        let fu = job_row(&s, &follow_up);
+        assert_eq!(fu.str("status"), "queued");
+        assert_eq!(fu.str("source"), format!("task:{task}"));
+        assert!(
+            fu.str("title")
+                .starts_with("Rebase pulse/worker/b onto main:"),
+            "{}",
+            fu.str("title")
+        );
+        assert!(
+            fu.str("brief")
+                .contains("conflict with what landed on `main`"),
+            "{}",
+            fu.str("brief")
+        );
+        assert_eq!(
+            job_row(&s, &b).str("branch"),
+            "",
+            "b's branch is the rebase job's now"
+        );
+        assert!(
+            job_row(&s, &b)
+                .str("result")
+                .contains(&format!("job {follow_up} rebases it"))
+        );
+        assert_eq!(status(&s, &task), "in_progress");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM messages WHERE task_id = ? AND body LIKE '%rebases it%'",
+                &[&task]
+            ),
+            1
+        );
+        // The rebase job is queued: the task waits for it.
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+
+        // The rebase job finishes on a branch cut from main: one pull
+        // request from a and the rebased work.
+        run(&repo, &["git", "branch", "pulse/worker/rebased", "main"]);
+        let c_tip = commit_on(&repo, "pulse/worker/rebased", "rebased.txt");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = 'pulse/worker/rebased' WHERE id = ?",
+            &[&TEST_NOW, &follow_up],
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        let pr = last_detail(&s, "land.pr");
+        let mut jobs = jobs_of(&pr);
+        jobs.sort();
+        let mut want = vec![job_row_by_branch(&s, "pulse/worker/a"), follow_up.clone()];
+        want.sort();
+        assert_eq!(jobs, want, "a and the rebased work, not b");
+        run(
+            &repo,
+            &[
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                &c_tip,
+                pr["to"].as_str().unwrap(),
+            ],
+        );
+
+        // A later job of the task conflicts too: the task's one rebase is
+        // spent, so this one is held for the owner, with the conflict named.
+        let d = push_branch(&s, &proj, &repo, "pulse/worker/d");
+        exec1(
+            &s,
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{task}"), &d.str("id")],
+        );
+        commit_on(&repo, "main", "pulse_worker_d.txt");
+        run(&repo, &["git", "push", "-q", "origin", "main"]);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("held:")
+                && l.contains("conflicts in pulse_worker_d.txt")
+                && l.contains(&format!(
+                    "job {follow_up} already rebased the task's work once"
+                ))),
+            "{lines:?}"
+        );
+        let held = last_detail(&s, "land.pr-held");
+        assert_eq!(held["task"], task);
+        assert_eq!(
+            job_row(&s, &d.str("id")).str("branch"),
+            "pulse/worker/d",
+            "kept"
+        );
+        assert_eq!(events(&s, "land.rebase"), 1);
+        assert!(
+            tend_proj(&s, &proj, TEST_NOW).is_empty(),
+            "held once per sha"
+        );
+        assert_eq!(events(&s, "land.pr-held"), 1);
+    }
+
+    fn job_row_by_branch(s: &pulse_store::Store, branch: &str) -> String {
+        crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT id FROM jobs WHERE branch = ?",
+            &[&branch],
+        )
+        .str("id")
     }
 
     #[test]
