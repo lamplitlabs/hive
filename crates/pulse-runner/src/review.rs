@@ -7,12 +7,17 @@
 //!
 //! The complexity rule ([`reasons_for`]) is computed here, in code, before
 //! the job is queued: a pull request the owner asked to see (`review.merge`
-//! `ask`), one over `review.max_files` / `review.max_lines`, one touching a
-//! guarded path, one that mostly deletes, or one not from a PULSE branch
-//! is reviewed all the same, but the agent may only hand it to the owner
-//! with its findings. The rule lives in code rather than in the brief so
-//! the agent cannot talk itself past it, and so the hub can show the owner
-//! why a pull request waits for them.
+//! `ask`), one touching a guarded path, or one not from a PULSE branch is
+//! reviewed all the same, but the agent may only hand it to the owner with
+//! its findings. The rule lives in code rather than in the brief so the
+//! agent cannot talk itself past it, and so the hub can show the owner why
+//! a pull request waits for them. Size is not a reason ([`care_for`]): a
+//! pull request over `review.max_files` / `review.max_lines`, or one that
+//! mostly deletes, is read file by file and merged by the reviewer when
+//! the whole diff is what the title and body say. On 2026-11-04 the two
+//! pull requests size alone handed to the owner (a blog post with its
+//! data, 81 dictionary entries) carried the reviewer's own "fine to merge"
+//! and then waited a day for a click.
 //!
 //! One review job per project at a time: a review clones the project and
 //! runs its check, and two reviews of pull requests that may conflict with
@@ -450,30 +455,9 @@ pub(crate) fn reasons_for(s: &pulse_store::Store, pr: &PrView) -> Vec<String> {
     if s.setting("review.merge", "auto").trim() == "ask" {
         reasons.push("the owner asked to merge every pull request".to_string());
     }
-    let max_files = crate::util::setting_int(s, "review.max_files").max(1) as i64;
-    let max_lines = crate::util::setting_int(s, "review.max_lines").max(1) as i64;
-    let counted: Vec<&(String, i64, i64)> = pr
-        .files
-        .iter()
-        .filter(|(p, _, _)| !generated_path(p))
-        .collect();
-    let files = counted.len() as i64;
-    let added: i64 = counted.iter().map(|(_, a, _)| a).sum();
-    let deleted: i64 = counted.iter().map(|(_, _, d)| d).sum();
-    let lines = added + deleted;
-    if files > max_files || lines > max_lines {
-        reasons.push(format!(
-            "{files} files / {lines} lines changed (limit {max_files} files / {max_lines} lines)"
-        ));
-    }
     let paths: Vec<String> = pr.files.iter().map(|(p, _, _)| p.clone()).collect();
     for p in guarded_paths(&paths, &pr.head) {
         reasons.push(format!("touches {p}"));
-    }
-    if deleted > 200 && deleted > 2 * added {
-        reasons.push(format!(
-            "removes more than it adds ({deleted} lines removed, {added} added)"
-        ));
     }
     // PULSE's own heads are `pulse/...` (jobs, tasks, conversations) and
     // `evolve/<id>` (a kept experiment, already measured against its card);
@@ -489,6 +473,38 @@ pub(crate) fn reasons_for(s: &pulse_store::Store, pr: &PrView) -> Vec<String> {
         ));
     }
     reasons
+}
+
+/// What the reviewer must read with extra care: the shape of the change,
+/// not a bar to merging it. More than `review.max_files` files or
+/// `review.max_lines` lines (generated paths left out), or a change that
+/// mostly deletes, is still the reviewer's to merge once every file of it
+/// is explained by the title and body; what it cannot account for goes to
+/// the owner through the verdict, as for any other pull request.
+pub(crate) fn care_for(s: &pulse_store::Store, pr: &PrView) -> Vec<String> {
+    let mut care = Vec::new();
+    let max_files = crate::util::setting_int(s, "review.max_files").max(1) as i64;
+    let max_lines = crate::util::setting_int(s, "review.max_lines").max(1) as i64;
+    let counted: Vec<&(String, i64, i64)> = pr
+        .files
+        .iter()
+        .filter(|(p, _, _)| !generated_path(p))
+        .collect();
+    let files = counted.len() as i64;
+    let added: i64 = counted.iter().map(|(_, a, _)| a).sum();
+    let deleted: i64 = counted.iter().map(|(_, _, d)| d).sum();
+    let lines = added + deleted;
+    if files > max_files || lines > max_lines {
+        care.push(format!(
+            "{files} files / {lines} lines changed (the usual reading is {max_files} files / {max_lines} lines)"
+        ));
+    }
+    if deleted > 200 && deleted > 2 * added {
+        care.push(format!(
+            "removes more than it adds ({deleted} lines removed, {added} added)"
+        ));
+    }
+    care
 }
 
 /// True for a branch PULSE itself pushes: `pulse/<agent>/<job>`,
@@ -513,6 +529,7 @@ pub(crate) fn review_brief(
     pr: &OpenPr,
     view: &PrView,
     reasons: &[String],
+    care: &[String],
     verify_cmd: &str,
 ) -> String {
     let n = pr.number;
@@ -541,6 +558,12 @@ pub(crate) fn review_brief(
             "You may merge it yourself when it is correct, safe, in scope and its check is green."
                 .into(),
         );
+        if !care.is_empty() {
+            b.push(format!(
+                "Read it with extra care: {}. Size is not a reason to hand it over: go file by file, and merge only when every file is what the title and body say and the check is green; a file the body does not account for, or anything you cannot judge, goes to the owner with `pulse review owner {n} --note`.",
+                care.join("; ")
+            ));
+        }
     } else {
         b.push("You may NOT merge this pull request. Hand it to the owner because:".into());
         for r in reasons {
@@ -704,7 +727,14 @@ pub(crate) fn queue_review(
     } else {
         &view.title
     };
-    let brief = review_brief(&slug, pr, view, reasons, &verify_cmd_of(s, &slug));
+    let brief = review_brief(
+        &slug,
+        pr,
+        view,
+        reasons,
+        &care_for(s, view),
+        &verify_cmd_of(s, &slug),
+    );
     let (job, _) = crate::jobs::add_job(
         s,
         slug.clone(),
@@ -1488,26 +1518,28 @@ mod tests {
             (0..21).map(|i| (format!("src/f{i}.rs"), 1, 0)).collect();
         let files: Vec<(&str, i64, i64)> =
             many.iter().map(|(p, a, d)| (p.as_str(), *a, *d)).collect();
-        let r = reasons_for(&s, &view_of(7, "pulse/x/y", &files));
+        let big = view_of(7, "pulse/x/y", &files);
+        assert!(
+            reasons_for(&s, &big).is_empty(),
+            "size alone never hands a pull request to the owner"
+        );
         assert_eq!(
-            r,
-            ["21 files / 21 lines changed (limit 20 files / 600 lines)"]
+            care_for(&s, &big),
+            ["21 files / 21 lines changed (the usual reading is 20 files / 600 lines)"]
         );
 
-        let r = reasons_for(
-            &s,
-            &view_of(
-                7,
-                "pulse/x/y",
-                &[("src/a.rs", 400, 201), ("web/hub/out/x.js", 5000, 5000)],
-            ),
+        let long = view_of(
+            7,
+            "pulse/x/y",
+            &[("src/a.rs", 400, 201), ("web/hub/out/x.js", 5000, 5000)],
         );
+        assert!(reasons_for(&s, &long).is_empty());
         assert_eq!(
-            r,
-            ["1 files / 601 lines changed (limit 20 files / 600 lines)"]
+            care_for(&s, &long),
+            ["1 files / 601 lines changed (the usual reading is 20 files / 600 lines)"]
         );
         set_setting(&s, "review.max_lines", "700");
-        assert!(reasons_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 400, 201)])).is_empty());
+        assert!(care_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 400, 201)])).is_empty());
 
         let r = reasons_for(
             &s,
@@ -1540,12 +1572,13 @@ mod tests {
             "the owner's paths are guarded on a pulse/ branch"
         );
 
-        let r = reasons_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 10, 250)]));
+        let mostly_deletes = view_of(7, "pulse/x/y", &[("src/a.rs", 10, 250)]);
+        assert!(reasons_for(&s, &mostly_deletes).is_empty());
         assert_eq!(
-            r,
+            care_for(&s, &mostly_deletes),
             ["removes more than it adds (250 lines removed, 10 added)"]
         );
-        assert!(reasons_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 100, 150)])).is_empty());
+        assert!(care_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 100, 150)])).is_empty());
 
         let r = reasons_for(&s, &view_of(7, "feature/by-hand", &[("src/a.rs", 1, 0)]));
         assert_eq!(r, ["opened by a human/other tool (branch feature/by-hand)"]);
@@ -1557,6 +1590,31 @@ mod tests {
         set_setting(&s, "review.merge", "ask");
         let r = reasons_for(&s, &view_of(7, "pulse/x/y", &[("src/a.rs", 1, 0)]));
         assert_eq!(r, ["the owner asked to merge every pull request"]);
+    }
+
+    #[test]
+    fn a_large_pull_request_gets_a_brief_that_reads_with_care_and_may_merge() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let pr = OpenPr {
+            kind: "job".into(),
+            number: 7,
+            url: "https://github.com/o/r/pull/7".into(),
+            title: "PR 7 title".into(),
+            head: "pulse/x/y".into(),
+            base: "main".into(),
+            ..Default::default()
+        };
+        let view = view_of(7, "pulse/x/y", &[("data/words.json", 900, 100)]);
+        let care = care_for(&s, &view);
+        let brief = review_brief("proj", &pr, &view, &[], &care, "npm test");
+        assert!(brief.contains("You may merge it yourself"), "{brief}");
+        assert!(
+            brief.contains("Read it with extra care: 1 files / 1000 lines changed"),
+            "{brief}"
+        );
+        assert!(brief.contains("`pulse review merge 7`"), "{brief}");
+        assert!(!brief.contains("You may NOT merge"), "{brief}");
     }
 
     #[test]

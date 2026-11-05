@@ -1076,8 +1076,8 @@ upstream and `pulse land --branch B --local` ([Moving from the local
 landing](#moving-from-the-local-landing)). A pull request carries no
 release-age reading today: the watcher already waits for a patched version to
 be the rule's age before it queues the update, and a pull request that bumps
-a lockfile is read by the reviewer like any other - its rule counts files,
-lines and guarded paths, not versions ([The complexity
+a lockfile is read by the reviewer like any other - its rule looks at
+guarded paths and who pushed the branch, not versions ([The complexity
 rule](review.md#the-complexity-rule)). A lockfile change you want to see
 before it merges is one to set `review.merge=ask` for, until the pull request
 body carries the versions and their ages.
