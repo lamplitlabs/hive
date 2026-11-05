@@ -78,6 +78,9 @@ pub(crate) struct SweepOpts {
 pub(crate) const PRESSURE_KEEP: Duration = Duration::from_secs(24 * 3600);
 pub(crate) const PRESSURE_CACHE_KEEP: Duration = Duration::from_secs(3600);
 pub(crate) const PRESSURE_VACUUM_FREE: i64 = 64 << 20;
+/// How long a hub conversation stays closed or archived before the sweep
+/// takes its clean worktree (its branch, artifacts and attachments stay).
+pub(crate) const CHAT_WORKTREE_KEEP: Duration = Duration::from_secs(3 * 24 * 3600);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Swept {
@@ -289,6 +292,7 @@ impl Sweeper {
         for proj in self.projects.clone() {
             self.sweep_checkout(proj);
         }
+        self.sweep_chat_worktrees();
         self.sweep_harness_steps();
         self.sweep_trajectories();
         self.sweep_runner_sessions();
@@ -2133,6 +2137,224 @@ impl Sweeper {
                 crate::util::git_timeout(&root, Duration::from_secs(30), &["worktree", "prune"]);
         }
     }
+    /// The worktrees of hub conversations (`work/chat/<id>/<slug>`) closed or
+    /// archived for over `CHAT_WORKTREE_KEEP`: each one is a full checkout
+    /// with its installs, and closed ones piled up (32 GB for 70 folders).
+    /// One goes with `git worktree remove` on the project checkout, then
+    /// `worktree prune`, when `git status --porcelain` in it is empty (and,
+    /// for a closed one, its work is on the default branch). Its
+    /// branch (`branch_hold` keeps a conversation's branch while the
+    /// conversation exists), `artifacts/` and `attachments/` stay; the
+    /// row's cwd and branch are cleared, so the next message the owner writes
+    /// re-adds the worktree from the branch (`attach_workspace`) instead of a
+    /// scratch folder. A worktree another open conversation shares (a
+    /// sub-conversation's) is held; a dirty one is held with one line naming it.
+    pub(crate) fn sweep_chat_worktrees(&mut self) {
+        let Ok(conn) = self.s.conn() else {
+            return;
+        };
+        let rows = crate::util::query_rows(
+            &conn,
+            "SELECT id, project, cwd, branch, status, updated_at, last_at FROM conversations WHERE cwd != '' ORDER BY id",
+            &[],
+        )
+        .unwrap_or_default();
+        drop(conn);
+        let chat_root = Path::new(&self.home).join("work").join("chat");
+        let now = crate::util::must_iso(&self.now);
+        let mut done: Vec<String> = Vec::new();
+        for row in &rows {
+            let (id, slug, cwd, branch) = (
+                row.str("id"),
+                row.str("project"),
+                row.str("cwd"),
+                row.str("branch"),
+            );
+            if !matches!(row.str("status").as_str(), "closed" | "archived")
+                || slug.is_empty()
+                || branch.is_empty()
+                || done.iter().any(|d| d == &cwd)
+                || !crate::util::is_inside(&cwd, &chat_root.display().to_string())
+                || !Path::new(&cwd).join(".git").is_file()
+            {
+                continue;
+            }
+            let since = [row.str("updated_at"), row.str("last_at")]
+                .iter()
+                .filter_map(|t| crate::util::parse_iso(t).ok())
+                .max();
+            let Some(since) = since else {
+                continue;
+            };
+            let ago = (now - since).to_std().unwrap_or_default();
+            if ago < CHAT_WORKTREE_KEEP {
+                continue;
+            }
+            let shared = rows.iter().any(|o| {
+                o.str("id") != id
+                    && !matches!(o.str("status").as_str(), "closed" | "archived")
+                    && same_path(&o.str("cwd"), &cwd)
+            });
+            if shared {
+                self.held(
+                    "worktree".into(),
+                    cwd,
+                    slug,
+                    format!("conversation {id} is closed, but an open conversation works in it"),
+                );
+                continue;
+            }
+            let Some(proj) = self.projects.iter().find(|p| p.str("slug") == slug) else {
+                continue;
+            };
+            let root = proj.str("path");
+            let def = match proj.str("default_branch").as_str() {
+                "" | "HEAD" => "main".to_string(),
+                x => x.to_string(),
+            };
+            let status = crate::util::git_timeout(
+                &cwd,
+                Duration::from_secs(120),
+                &["status", "--porcelain"],
+            );
+            let changes = status
+                .stdout
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count() as i32;
+            if !status.ok() || changes > 0 {
+                let why = if status.ok() {
+                    format!(
+                        "conversation {id} closed, but {changes} uncommitted {} in it; commit or discard them by hand",
+                        crate::util::plural(changes, "change")
+                    )
+                } else {
+                    format!(
+                        "conversation {id} closed, but git cannot read it ({})",
+                        first_line(&status.stderr)
+                    )
+                };
+                self.held("worktree".into(), cwd, slug, why);
+                continue;
+            }
+            let tip = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(30),
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+            .stdout
+            .trim()
+            .to_string();
+            // A closed conversation with work not on the default branch stays
+            // on the Chat page's "Waiting to land" list, which reads the row's
+            // branch: it keeps its worktree until the work lands. An archived
+            // one is off every list and takes no messages; its branch stays.
+            if row.str("status") == "closed" && !self.chat_landed(&root, &branch, &def) {
+                self.held(
+                    "worktree".into(),
+                    cwd,
+                    slug,
+                    format!("conversation {id} closed, but {branch} has commits not on {def}"),
+                );
+                continue;
+            }
+            let item = Swept {
+                kind: "worktree".into(),
+                path: cwd.clone(),
+                project: slug.clone(),
+                why: format!(
+                    "conversation {id} {} {} ago; {branch}, artifacts and attachments stay",
+                    row.str("status"),
+                    round_duration(ago)
+                ),
+                bytes: disk_usage(cwd.clone()),
+                patch: String::new(),
+            };
+            done.push(cwd.clone());
+            if self.o.dry_run {
+                self.rep.removed.push(item);
+                continue;
+            }
+            crate::proc::kill_tree_under(Path::new(&cwd));
+            // Without --force git checks again that nothing uncommitted is in it.
+            let rm = crate::util::git_timeout(
+                &root,
+                Duration::from_secs(300),
+                &["worktree", "remove", &cwd],
+            );
+            if !rm.ok() {
+                done.pop();
+                self.held(
+                    "worktree".into(),
+                    cwd,
+                    slug,
+                    format!(
+                        "conversation {id} closed, but git would not remove it ({})",
+                        first_line(&rm.stderr)
+                    ),
+                );
+                continue;
+            }
+            let _ =
+                crate::util::git_timeout(&root, Duration::from_secs(30), &["worktree", "prune"]);
+            for o in rows.iter().filter(|o| same_path(&o.str("cwd"), &cwd)) {
+                if let Err(err) = self
+                    .s
+                    .chat_set_workspace(&o.str("id"), &o.str("project"), "", "")
+                {
+                    self.failed(
+                        format!(
+                            "conversation {}: worktree removed, row not cleared: {err}",
+                            o.str("id")
+                        ),
+                        vec![],
+                    );
+                }
+            }
+            if let Ok(conn) = self.s.conn() {
+                crate::util::event_at(
+                    &conn,
+                    &self.now,
+                    &self.o.actor,
+                    "worktree.swept",
+                    &cwd,
+                    serde_json::json!({"project": slug, "branch": branch, "tip": tip, "conversation": id, "why": item.why}),
+                );
+            }
+            self.rep.removed.push(item);
+        }
+    }
+    /// True when every commit of `branch` is on `def`, by ancestry or by
+    /// patch (`git cherry`: a rebased or squash-merged branch).
+    fn chat_landed(&mut self, root: &str, branch: &str, def: &str) -> bool {
+        let tip = crate::util::git_timeout(
+            root,
+            Duration::from_secs(30),
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .stdout
+        .trim()
+        .to_string();
+        if tip.is_empty() {
+            return false;
+        }
+        if self.on_default(root, &tip, def) {
+            return true;
+        }
+        let cherry =
+            crate::util::git_timeout(root, Duration::from_secs(30), &["cherry", def, branch]);
+        cherry.ok() && !cherry.stdout.lines().any(|l| l.starts_with('+'))
+    }
     /// True under the folders whose worktrees and clones have passes of their own
     /// (landing worktrees under work/, worktrees/, fleet and measurement clones).
     pub(crate) fn runner_owned(&self, path: &str) -> bool {
@@ -2469,6 +2691,14 @@ impl Sweeper {
     pub(crate) fn branch_hold(&mut self, branch: String, head: String) -> String {
         if branch == head {
             return "checked out".into();
+        }
+        // A conversation's branch is where its worktree comes back from when
+        // the owner writes again (`attach_workspace`), whether or not the
+        // sweep took the worktree: it stays while the conversation does.
+        if let Some(id) = branch.strip_prefix(pulse_harness::conversation::BRANCH_PREFIX)
+            && self.s.chat_get(id).ok().flatten().is_some()
+        {
+            return format!("conversation {id} keeps it");
         }
         let Ok(conn) = self.s.conn() else {
             return String::new();
@@ -4898,6 +5128,133 @@ mod tests {
                 .any(|l| l.starts_with("swept worktree ") && l.contains("every commit is on main")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn sweep_chat_worktrees_of_long_closed_conversations() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        let (_, root) = new_bare_repo(&s);
+        let chat = Path::new(&s.home).join("work").join("chat");
+        // A conversation as the hub makes it: a worktree of the project on
+        // pulse/chat-<id> under work/chat/<id>/proj, artifacts and
+        // attachments beside it; `updated` is when its status last moved.
+        let seed = |id: &str, status: &str, updated: &str| -> String {
+            let dir = chat.join(id);
+            mkdir_file(dir.join("artifacts").join("shot.png"), "png");
+            mkdir_file(dir.join("attachments").join("spec.txt"), "spec");
+            let wt = dir.join("proj").display().to_string();
+            let branch = format!("pulse/chat-{id}");
+            run(
+                &root,
+                &["git", "worktree", "add", "-q", "-b", &branch, &wt, "main"],
+            );
+            s.chat_create(&pulse_store::Conversation {
+                id: id.into(),
+                title: id.into(),
+                project: "proj".into(),
+                cwd: wt.clone(),
+                branch,
+                status: status.into(),
+                ..Default::default()
+            })
+            .unwrap();
+            s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE conversations SET updated_at = ?1, last_at = ?1 WHERE id = ?2",
+                    params![updated, id],
+                )
+                .unwrap();
+            wt
+        };
+        let old = "2026-09-01T10:00:00Z";
+        let gone = seed("chat-old-closed", "closed", old);
+        let archived = seed("chat-old-archived", "archived", old);
+        let dirty = seed("chat-old-dirty", "closed", old);
+        mkdir_file(Path::new(&dirty).join("notes.md"), "not committed");
+        let unlanded = seed("chat-old-unlanded", "closed", old);
+        mkdir_file(Path::new(&unlanded).join("work.txt"), "work");
+        run(&unlanded, &["git", "add", "-A"]);
+        run(&unlanded, &["git", "commit", "-q", "-m", "unlanded work"]);
+        let archived_unlanded = seed("chat-old-archived-unlanded", "archived", old);
+        mkdir_file(Path::new(&archived_unlanded).join("work.txt"), "work");
+        run(&archived_unlanded, &["git", "add", "-A"]);
+        run(
+            &archived_unlanded,
+            &["git", "commit", "-q", "-m", "archived work"],
+        );
+        let recent = seed("chat-recent", "closed", "2026-09-05T10:00:00Z");
+        let open = seed("chat-old-idle", "idle", old);
+        let tip = run(&root, &["git", "rev-parse", "pulse/chat-chat-old-closed"]);
+
+        let dry = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(crate::util::file_exists(&gone), "a dry run removes nothing");
+
+        let rep = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                actor: "daemon".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        let mut removed = swept_paths(&rep.removed, "worktree");
+        removed.sort();
+        let mut want = vec![gone.clone(), archived.clone(), archived_unlanded.clone()];
+        want.sort();
+        assert_eq!(removed, want);
+        let mut planned = swept_paths(&dry.removed, "worktree");
+        planned.sort();
+        assert_eq!(planned, want, "the dry run names what the sweep takes");
+        for kept in [&dirty, &unlanded, &recent, &open] {
+            assert!(crate::util::file_exists(kept), "{kept} removed");
+        }
+        assert!(held_why(&rep.held, &dirty).contains("1 uncommitted change"));
+        // Commits not on main stay on the kept branch: nothing is lost.
+        assert!(
+            run(
+                &root,
+                &["git", "log", "--format=%s", "pulse/chat-chat-old-unlanded"]
+            )
+            .contains("unlanded work")
+        );
+        assert!(swept_paths(&rep.removed, "branch").is_empty());
+        // Only the checkout goes: the branch, the artifacts and the
+        // attachments stay, and git forgets the worktree.
+        assert!(!Path::new(&gone).exists());
+        assert_eq!(
+            run(&root, &["git", "rev-parse", "pulse/chat-chat-old-closed"]),
+            tip
+        );
+        let dir = chat.join("chat-old-closed");
+        assert!(dir.join("artifacts").join("shot.png").is_file());
+        assert!(dir.join("attachments").join("spec.txt").is_file());
+        assert!(!run(&root, &["git", "worktree", "list"]).contains(&gone));
+        let row = s.chat_get("chat-old-closed").unwrap().unwrap();
+        assert_eq!((row.cwd.as_str(), row.branch.as_str()), ("", ""));
+        assert_eq!(row.project, "proj");
+
+        // The owner writes again: the worktree comes back from the branch.
+        let back =
+            pulse_harness::conversation::attach_workspace(&s, &s.home, "chat-old-closed", "proj")
+                .unwrap();
+        assert!(back.created);
+        assert_eq!(back.cwd, gone);
+        assert_eq!(back.branch, "pulse/chat-chat-old-closed");
+        assert_eq!(run(&gone, &["git", "rev-parse", "HEAD"]), tip);
     }
 
     #[test]
