@@ -3939,6 +3939,25 @@ fn delivery_follows_a_landing_to_the_forge() {
             params![format!("task:{id}:page")],
         )
         .unwrap();
+    // The worker said done; its run is still verifying, so the branch it
+    // named is not there to land yet.
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES \
+             ('run-imp', 'JOB-imp', 'worker', 'demo', '2026-10-30T13:00:00Z', 'running')",
+            [],
+        )
+        .unwrap();
+    let d = delivery_for(&s, &id).unwrap();
+    assert_eq!((d.state.as_str(), d.waiting), ("none", 0), "{d:?}");
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE runs SET status = 'done', branch = 'pulse/worker/JOB-imp' WHERE id = 'run-imp'",
+            [],
+        )
+        .unwrap();
     let d = delivery_for(&s, &id).unwrap();
     assert_eq!(
         (d.state.as_str(), d.waiting, d.landed, d.can_ask),

@@ -36,7 +36,11 @@ land`. It delivers four kinds of work:
 
 What is not delivered: a job's branch while another job of its task is still
 queued or running (the task is one pull request, so the reviewer reads the
-whole change once), a job that ended without a commit (there is nothing to
+whole change once) - and a job counts as running while its run is, whatever
+its status says, because the worker marks the job done itself when its
+session ends and names the branch the runner creates only once the run's
+verification has passed, up to forty minutes later (nine holds in one day
+were a task "branch" that did not exist yet) - a job that ended without a commit (there is nothing to
 deliver; the job is simply done), a failed run (its commits were never
 verified; the job is retried as before, see [Recovery](recovery.md)), and a
 `review` job, which changes nothing in the project and has no branch of its
@@ -176,7 +180,8 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr` | a pull request opened or updated | `project`, `kind` (`task`, `job`, `experiment`, `proposed`), `number`, `url`, `title`, `head`, `base`, `remote`, `from`, `to`, `commits`, `jobs`, `opened`; the ids: `task`, `job`, `experiment` with `archive` and `run_id`, `conversation`; `fix` (the follow-up job) when a follow-up was pushed onto it |
 | `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
 | `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
-| `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branch list), `note` (why) |
+| `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit), `note` (why) |
+| `land.rebase` | a task's job branch conflicted with the default branch and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job) |
 | `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not |
 | `land.sync-skipped` | the local default branch was left behind the upstream because the checkout is dirty and `landing.auto_stash` is off | `project`, `branch`, `upstream`, `behind`, `why`; at most once an hour per project |
 
@@ -195,15 +200,22 @@ they are taught `land.merged`.
 
 A branch the pass cannot deliver is held with `land.pr-held` and the reason in
 `note`, shown on the task's conversation and on the hub's row, and tried again
-only when the work changes (a new job of the task finishes, the branch moves
-to a new commit) or when you propose the branch by hand with `pulse land
+only when the work changes (a new job of the task finishes, a branch of it
+appears or moves to a new commit) or when you propose the branch by hand with `pulse land
 --branch` - a hold is not retried blind every tick, because the reasons below
 do not clear by themselves:
 
-- **The task's branches do not merge together**: two jobs of one task changed
-  the same lines. The note names the branch and the conflict; the lead reads
-  it on the task and plans a job that resolves it on top of the others (its
-  branch then joins the task's pull request).
+- **A task's branch does not merge onto the default branch**: the branch was
+  cut before something else landed on the same lines, or two jobs of one task
+  changed them. The first time, the pass does not hold the task: it queues a
+  `task` job on the same task - "Rebase `<branch>` onto `<default>`: `<task
+  title>`", with the conflicting files and the job's own account of its work
+  in the brief - records `land.rebase`, tells the task's conversation, and the
+  conflicting job keeps its result but loses the branch, so the task's pull
+  request opens from the rebased one once that job finishes. A second
+  conflict on the same task is held with the note naming the branch, the
+  files and the rebase job that already ran: the work itself is at odds with
+  what landed, and that is yours to settle.
 - **The push was refused**: a credential that cannot be resolved
   ([Credentials](#credentials)), a branch protection, a network that is down.
   The note carries git's words with secrets removed.
