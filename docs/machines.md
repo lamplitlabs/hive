@@ -139,7 +139,10 @@ block is printed). Then, in this order:
   its own next step: a probe that lacks only the harness login leaves the
   hand paired and waiting (`paired NAME: drained (the harness login comes
   next)`, the report ok, the `pair.applied` event marked `login_next`), the
-  daemon places the login and probes again, and that probe decides. When the
+  daemon places the login and probes again, and that probe decides. The
+  login goes through the same `Host NAME-admin` alias the pairing used, and
+  that alias is the admin address the executor keeps: the machine answers to
+  the hands key alone, and only the alias block names it. When the
   hand does not answer
   at all - ssh refused, the forced command missing, the wrong workdir - the
   undo script runs over the admin session (the drop-in this run wrote is

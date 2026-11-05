@@ -453,7 +453,12 @@ pub(crate) fn provision_finish(
             crate::compute::redact_secrets(&crate::pair::pair_failure_reason(&rep.lines))
         ));
     }
-    crate::executor::set_executor_admin(&s, &req.executor, &m.address);
+    // The admin address the hub keeps, and the login step uses, is the alias the pairing just
+    // spoke through: its `Host` block names the hands key, which is the only key the machine
+    // knows (`write_admin_alias`). CR-060 (2026-11-05) paired through the alias and then placed
+    // the login at the bare `pulseadmin@<ip>`, which ssh answered with "Permission denied
+    // (publickey)"; the machine was released over a key it had.
+    crate::executor::set_executor_admin(&s, &req.executor, &admin);
     // The login. The caps hold a request without a source before anything is bought, so one is
     // expected here; a source that went away meanwhile leaves a machine that cannot work.
     let (tok, origin) = crate::token::login_source(&s)?;
@@ -475,7 +480,7 @@ pub(crate) fn provision_finish(
         &s,
         &s.now(),
         &req.executor,
-        &m.address,
+        &admin,
         &mut rdr,
         false,
         false,
@@ -1196,11 +1201,25 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
     }
 
     /// An ssh fake that answers the hands' probe with `reply` and everything else (cloud-init,
-    /// the login) with `pulse-ready`.
+    /// the login) with `pulse-ready`. Like the machine PULSE buys, it knows the hands key
+    /// alone, which only the `<name>-admin` alias block names: a bare `user@ip` address gets
+    /// ssh's "Permission denied (publickey)" (exit 255), the answer CR-060 got.
     fn install_probe_ssh(reply: &'static str) -> crate::executor::SshRunner {
         crate::executor::set_run_ssh(move |_, argv: &[String], _, _| {
             if argv.last().is_some_and(|a| a == "b64 cHJvYmUA") {
                 return Ok((0, reply.to_string(), String::new()));
+            }
+            if let Some(target) = argv.iter().find(|a| a.contains('@'))
+                && target
+                    .split('@')
+                    .nth(1)
+                    .is_some_and(|h| h.chars().all(|c| c.is_ascii_digit() || c == '.'))
+            {
+                return Ok((
+                    255,
+                    String::new(),
+                    format!("{target}: Permission denied (publickey)."),
+                ));
             }
             Ok((0, "pulse-ready\n".into(), String::new()))
         })
@@ -1246,13 +1265,13 @@ pulse-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOC
         assert!(
             ex.str("status") == "active"
                 && ex.str("probe_note").starts_with("ok:")
-                && ex.str("admin") == "pulseadmin@203.0.113.5",
+                && ex.str("admin") == "pulseadmin@pulse-cr-001-admin",
             "executor after the login: {ex:?}\n{log}"
         );
         let placed = place_login_calls();
         assert!(
-            placed.len() == 1 && placed[0].admin == "pulseadmin@203.0.113.5",
-            "login placement: {placed:?}"
+            placed.len() == 1 && placed[0].admin == "pulseadmin@pulse-cr-001-admin",
+            "the login goes through the alias the pairing used: {placed:?}"
         );
         assert!(az.deleted().is_empty(), "the machine was released: {log}");
         let (_, mrow) = crate::compute::load_machine(&s, &req.id);
