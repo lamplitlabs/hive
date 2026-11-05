@@ -9,6 +9,10 @@ particular - so a job can say what it **needs** and a machine says what it
 **offers**, and the daemon puts each job on a machine that offers everything
 it needs, keeping the scarce machines for the work that needs them.
 
+Some jobs never leave this machine whatever they need: lead, review,
+reflect and suggestion-review jobs run `pulse` commands against this
+machine's store, and a hand has no store, so they lease only here.
+
 Needs and offers are the same plain lowercase words, with no fixed list:
 `macos`, `linux`, `windows`; `arm64`, `amd64`; `xcode`, `docker`, `gpu`,
 `android`, the name of a tool. The common spellings fold into one
