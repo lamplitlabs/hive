@@ -79,6 +79,16 @@ pub fn manifest_dir(compiled: &str) -> std::path::PathBuf {
 }
 
 /// Environment for test git invocations: hook vars stripped and host config disabled.
+///
+/// With the host's config gone, git falls back to the user name and the
+/// hostname for an identity. A Linux executor's account often has neither
+/// a full name nor a domain, so a test commit failed there with "Author
+/// identity unknown"; a fixed test identity makes every test commit work
+/// on any host. A caller that sets its own after this still wins.
+/// The identity goes in as config entries (`GIT_CONFIG_COUNT`, appended
+/// to any the environment already carries), not as `GIT_AUTHOR_*`, which
+/// are hook variables this list must never carry; a caller's own
+/// `GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win over them.
 pub fn git_env() -> Vec<String> {
     let mut env =
         pulse_gitenv::strip_hook(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect());
@@ -87,6 +97,20 @@ pub fn git_env() -> Vec<String> {
         "GIT_CONFIG_GLOBAL={}",
         if cfg!(windows) { "NUL" } else { "/dev/null" }
     ));
+    let count = env
+        .iter()
+        .find_map(|kv| kv.strip_prefix("GIT_CONFIG_COUNT="))
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    env.retain(|kv| !kv.starts_with("GIT_CONFIG_COUNT="));
+    for (i, (key, value)) in [("user.name", "t"), ("user.email", "t@x")]
+        .into_iter()
+        .enumerate()
+    {
+        env.push(format!("GIT_CONFIG_KEY_{}={key}", count + i));
+        env.push(format!("GIT_CONFIG_VALUE_{}={value}", count + i));
+    }
+    env.push(format!("GIT_CONFIG_COUNT={}", count + 2));
     env
 }
 
@@ -141,6 +165,7 @@ mod tests {
             ("GIT_WORK_TREE", "/tmp/x"),
             ("GIT_INDEX_FILE", "/tmp/x/index"),
             ("GIT_AUTHOR_NAME", "hook"),
+            ("GIT_CONFIG_COUNT", ""),
             ("PULSE_TESTUTIL_KEEP", "1"),
         ];
         let previous: Vec<(&str, Option<String>)> = set
@@ -163,6 +188,9 @@ mod tests {
             ("PULSE_TESTUTIL_KEEP=1".to_string(), false),
             ("GIT_CONFIG_NOSYSTEM=1".to_string(), false),
             (format!("GIT_CONFIG_GLOBAL={dev_null}"), false),
+            ("GIT_CONFIG_COUNT=2".to_string(), false),
+            ("GIT_CONFIG_KEY_0=user.name".to_string(), false),
+            ("GIT_CONFIG_VALUE_1=t@x".to_string(), false),
         ]);
         for kv in &env {
             if let Some(seen) = want.get_mut(kv) {

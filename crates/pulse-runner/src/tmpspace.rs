@@ -17,6 +17,9 @@ pub(crate) fn worker_tmp_dir(env: &[String]) -> String {
 pub(crate) fn free_space(dir: &str) -> Result<u64> {
     (*FREE_SPACE.read().unwrap())(dir)
 }
+// statvfs counts blocks in a u32 on macOS and a u64 on Linux, so the widening
+// is needed on one and a no-op clippy flags on the other.
+#[allow(clippy::useless_conversion)]
 pub(crate) fn real_free_space(dir: &str) -> Result<u64> {
     let st = nix::sys::statvfs::statvfs(std::path::Path::new(dir))?;
     Ok(u64::from(st.blocks_available()) * st.fragment_size())

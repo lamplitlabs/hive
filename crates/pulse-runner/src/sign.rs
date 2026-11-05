@@ -133,10 +133,11 @@ mod tests {
         assert!(out.is_empty());
         assert_eq!(std::fs::read_to_string(&binary).unwrap(), "not a mach-o");
 
+        // Off macOS the test ends here; ending it with a `return` left the
+        // shared reset below unreachable, which clippy refuses on Linux.
         #[cfg(not(target_os = "macos"))]
         {
             *SIGNING_SYSTEM.write().unwrap() = String::new();
-            return;
         }
 
         #[cfg(target_os = "macos")]
@@ -217,7 +218,7 @@ mod tests {
                     && !std::path::Path::new(&(build + ".signing")).exists(),
                 "running-binary sign: {said}"
             );
+            *SIGNING_SYSTEM.write().unwrap() = String::new();
         }
-        *SIGNING_SYSTEM.write().unwrap() = String::new();
     }
 }

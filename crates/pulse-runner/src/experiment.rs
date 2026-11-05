@@ -1429,7 +1429,7 @@ mod tests {
             .join(format!("origin-{}.git", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
         let bare = bare.display().to_string();
-        run(".", &["git", "init", "--bare", "-q", &bare]);
+        run(".", &["git", "init", "--bare", "-q", "-b", "main", &bare]);
         run(&root, &["git", "remote", "add", "origin", &bare]);
         run(&root, &["git", "push", "-q", "-u", "origin", "main"]);
         let branch = job.str("branch");
