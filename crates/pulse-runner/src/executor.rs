@@ -15,6 +15,14 @@ use std::time::{Duration, Instant};
 
 pub(crate) const LOCAL_EXECUTOR: &str = "local";
 pub(crate) const UNREACHABLE_AFTER: i32 = 3;
+/// The longest an unreachable hand waits between the daemon's probes: the
+/// minute `note_executor_run` sets, doubled per failed probe, up to this.
+/// hands-cr-062 went unreachable after three refused connections inside one
+/// CGNAT burst (2026-11-05) and stayed so with `next_probe_at` long past,
+/// because nothing probed an unreachable hand and the daemon places work on
+/// active ones only; a blip of seconds retired a machine until a human ran
+/// `pulse executor probe`.
+pub(crate) const UNREACHABLE_BACKOFF_MAX_MINS: i32 = 30;
 pub(crate) const SSH_EXIT_UNREACH: i32 = 255;
 pub(crate) const REMOTE_EXIT_TIMEOUT: i32 = 124;
 pub(crate) const NATIVE_LOGIN_PROMPT: &str =
