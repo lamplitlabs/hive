@@ -472,7 +472,7 @@ fn plan_ask_answers(
             q.body.clone()
         };
         let brief = format!(
-            "Project {origin} asked this project (question {} on {origin}'s thread {}/{}, tagged @{slug}):\n\n{body}\n\nInvestigate in this clone ({slug}) and write the answer as SUMMARY:; the runner posts it on {origin}'s thread as an answer from {slug}. If only a human can answer it, write QUESTION: with what you need and stop.",
+            "Project {origin} asked this project (question {} on {origin}'s thread {}/{}, tagged @{slug}):\n\n{body}\n\nInvestigate in this clone ({slug}) and write the answer as SUMMARY:; the runner posts it on {origin}'s thread as an answer from {slug}. The question above is complete as written: answer from it and this clone, with no board lookup (`pulse board`, `pulse show`) first. If only a human can answer it, write QUESTION: with what you need and stop.",
             q.id, q.area, q.thread
         );
         let (job, is_new) = crate::jobs::add_job(
@@ -904,7 +904,7 @@ pub(crate) fn plan_jobs_with_tally(
                 continue;
             }
             let brief = format!(
-                "Question {} in thread {}/{}:\n\n{}\n\nInvestigate in the clone and write the answer as SUMMARY:; the runner posts it. If only a human can answer it, write QUESTION: with what you need and stop.",
+                "Question {} in thread {}/{}:\n\n{}\n\nInvestigate in the clone and write the answer as SUMMARY:; the runner posts it. The question above is complete as written: answer from it and the clone, with no board lookup (`pulse board`, `pulse show`) first. If only a human can answer it, write QUESTION: with what you need and stop.",
                 q.str("id"),
                 q.str("area"),
                 q.str("thread"),
