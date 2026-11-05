@@ -38,7 +38,7 @@ and subject to the same deny rules and output cap as a shell command:
 | `fetch` | one web page from a host the owner allowed, as text (**Web pages**, below) |
 | `web_search` | a web search, numbered results with title, address and snippet (**Web search**, below) |
 | `subagent` | a bounded helper run on a self-contained sub-task, its report back as the observation (**Helpers**, below) |
-| `chat` | in a hub conversation only: `start` a sub-conversation with a title and a brief, `send` it a message, `read` its last messages (**Sub-conversations** under **Chat** in [The owner's path](console.md#the-console-for-the-owner)) |
+| `chat` | in a hub session only: `start` a sub-session with a title and a brief, `send` it a message, `read` its last messages (**Sub-sessions** under **Sessions** in [The owner's path](console.md#the-console-for-the-owner)) |
 
 A reply may carry **several calls**, and every one gets its own
 observation, so a model reads three files in one turn instead of three.
@@ -346,18 +346,18 @@ and usage count against the parent's budgets; a child that loses the clone ends
 the parent with `sandbox_lost` too. `harness.subagents` (`on`) turns it off,
 `--no-subagents` for one run. A helper never sees the tool; a job's brief is
 still written for one agent and the lead still plans with jobs, not helpers. A
-hub conversation has the `chat` tool beside it for the other shape of
-delegation: a **sub-conversation** is not bounded by the parent's turn - it is
-a conversation of its own with its own session, page and budget, in the
+hub session has the `chat` tool beside it for the other shape of
+delegation: a **sub-session** is not bounded by the parent's turn - it is
+a session of its own with its own harness session, page and budget, in the
 parent's worktree, that the owner can open and steer, and it reports back to
-the parent as notes that wake it (**Chat** in [The owner's
-path](console.md#the-console-for-the-owner)). A conversation's brief tells the agent to
+the parent as notes that wake it (**Sessions** in [The owner's
+path](console.md#the-console-for-the-owner)). A session's brief tells the agent to
 split a request with several parts, or with one part that takes a while, and
 which to pick for each: a helper for a bounded self-contained sub-task whose
 answer it needs now (a survey of the code, a suite run summarised), a
-sub-conversation for a part that should keep going and be watched on its own
+sub-session for a part that should keep going and be watched on its own
 while it answers the owner, one per independent part when there are several; a
-sub-conversation's own brief says to do its part itself.
+sub-session's own brief says to do its part itself.
 
 ### Web pages
 

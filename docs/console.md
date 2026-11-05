@@ -259,9 +259,9 @@ task on the spot. You can suggest work yourself from the same panel - an agent
 reviews it the same way - and withdraw a suggestion of yours while it waits.
 See [Suggested work](board.md#suggested-work-pulse-task-suggest).
 
-## Chat
+## Sessions
 
-A conversation with an agent that works while you watch, the way the Copilot
+A session with an agent that works while you watch, the way the Copilot
 and Claude Code apps do, so the hub is the one place you ask for work. Type
 what you want and press Start: the hub runs the agent itself (the same harness
 jobs use, with the model the project runs on) and the page shows the turn in
@@ -282,7 +282,7 @@ tool, on by default) show one level in, with the helper's report.
 
 The agent keeps going turn after turn; when it needs you it stops and one card
 appears - a question with its choices stacked full width, or a tool it wants to
-run - and the conversation says **Asked you** in the list and the tab title
+run - and the session says **Asked you** in the list and the tab title
 counts what waits (the transcript does not echo the question above the card;
 the steps fold while it waits). Answer in a word or a sentence, **Allow once**,
 **Always allow** or **Deny** with a reason the agent reads; nothing else
@@ -290,7 +290,7 @@ blocks.
 
 **Auto** (on by default) lets tools run
 without asking, as the daemon's own jobs do; switch it off for a
-conversation you want to watch step by step, and flipping it on while an
+session you want to watch step by step, and flipping it on while an
 approval waits grants it.
 
 Messages typed while a turn runs wait in line and go next - shown as *Queued*
@@ -302,41 +302,41 @@ in line stays in the transcript with a note that it never reached the agent.
 The controls sit in one place, under the message box the way the Copilot app
 keeps them: the **Model** picker (also on the start form) chooses the model
 from the ones the harness lists (the provider's default when you leave it) and
-changing it mid-conversation takes effect on the next turn, which starts a
+changing it mid-session takes effect on the next turn, which starts a
 fresh session with the transcript carried over; the **Effort** picker beside it
 (also on the start form) asks the model for a reasoning effort - `minimal` to
 `xhigh`, *Model default* to send nothing - and leaves the `harness.reasoning`
 setting in charge when you leave it, with the same next-turn restart; **Auto**
 and **Stop** sit beside them.
 
-A conversation has an end: the agent calls its `finish` tool with a one-line
+A session has an end: the agent calls its `finish` tool with a one-line
 summary when the request is done (the brief tells it to, and to give its
 closing reply after), or you press **Finish** (which stops a running turn), and
-the conversation is marked *Finished* with the summary as its note; your next
+the session is marked *Finished* with the summary as its note; your next
 message reopens it, so nothing is lost.
 
 The list is one list, grouped by state - **Needs your review** (a pull request
 the reviewer handed to you, with its reasons and the **Merge** button; these
 stay at the very top), **Working** (running or waiting on you), **In review**
 (nobody at it, and its work is on its way through a pull request: a task's
-once its jobs are done, a conversation's once its `pulse/chat-<id>` branch
+once its jobs are done, a session's once its `pulse/chat-<id>` branch
 holds commits the default branch lacks - before the pull request is opened,
 while it is open or being reviewed, while changes are made and while a merge
 you asked for runs; the row moves to *Finished* or *Open* the moment the pull
 request is merged or closed), **Open** (idle
 between turns), **Finished** (the latest eight, *Show all* for the rest) and
-**Archived** when shown (put away is your word, so an archived conversation
+**Archived** when shown (put away is your word, so an archived session
 stays there whatever its branch holds) - so the ones that need you stay on
 top, ordered by what moved last. *Waiting to land* and *Reviewing* were the
 groups of the local landing; nothing waits to land now. A task the project's
-team works on is a row like any conversation - its title, a team mark after
+team works on is a row like any session - its title, a team mark after
 it, its state in the list's words (*Working* while a step's agent runs, *Asked you* when the lead
-stopped for you - counted in the tab title with the conversations that
+stopped for you - counted in the tab title with the sessions that
 wait - *Waiting for its pull request* once its steps are done, then the
 pull request's own word: *Pull request open*, *In review*, *Needs your
 review* when the reviewer handed it to you, *Changes requested*, *Merging*,
 *Review failed* - *Planned*, *Done*, *Cancelled*) - with
-the steps the lead cut as lines under it the way sub-conversations sit under
+the steps the lead cut as lines under it the way sub-sessions sit under
 their parent: the agent on each (a dashed circle until one takes it), its
 state (*Waiting*, *Starting*, *Working*; a done step whose branch is not
 merged yet reads where the task's pull request stands - *Waiting for its pull
@@ -345,23 +345,23 @@ requested*, *Merging*, *Review failed*; then *Done*, *Failed*, *Blocked*) and
 when it last moved; a finished task folds its steps
 (*N steps · show*).
 
-A conversation's title follows the conversation: it starts as the first line
+A session's title follows the session: it starts as the first line
 you wrote, and after each reply the agent asks its model for a short name of
 what the talk is about now and renames the row (the list and the tab title
 pick it up on the next poll). Rename one yourself and it is yours - the agent
 leaves it alone from then on.
 
 Opening a task, or a step without an agent yet, opens the task in place the way
-a conversation opens (`?task=TASK-NNN` in the address, so a link lands on it):
+a session opens (`?task=TASK-NNN` in the address, so a link lands on it):
 a header with its state, project and lead, **Finish** and **Cancel** beside it
 (the title opens the brief for editing); under it the task's whole feed as the
-conversation (see **Tasks** above) - what you asked on the right, the lead's
+session (see **Tasks** above) - what you asked on the right, the lead's
 replies on the left with any choices it offers as buttons, a step agent's
 report back framed with where its work stands, and each run as a live chapter
 under the agent doing it, its commands and words arriving as it works - and a
 box to answer or steer, which the lead reads on its next turn (a finished task
 says so and takes no more); the canvas beside it (below, the same one a
-conversation has) opens with the **Steps** - who is on each, how far they are,
+session has) opens with the **Steps** - who is on each, how far they are,
 the one whose run is on the canvas marked - and **What you asked** with the
 task's history and facts, and while a step's agent works, that run's plan,
 terminal, the files it edits and the pages it reads open there by themselves,
@@ -369,19 +369,19 @@ the canvas following whichever step is working now. A step's row opens its run
 on the Harness page. Finished tasks stay listed a week, all of them with **Show
 archived**.
 
-A conversation can hold **sub-conversations** of its own: whole
-conversations - their own transcript, session and page, opened and steered like
+A session can hold **sub-sessions** of its own: whole
+sessions - their own transcript, session and page, opened and steered like
 any other - that its agent starts with the `chat` tool (`start` with a title
 and a brief) for a part of the work worth a page of its own - a long check, a
 second opinion, a piece that should keep going while it answers you - or that
-you start from the **Sub-conversations** panel on its page (**Start one**: a
+you start from the **Sub-sessions** panel on its page (**Start one**: a
 title and the brief). The agent's brief tells it to fan work out rather than do
 all of it in one thread: a request with several parts, or with one part that
 takes a while, is split - the agent keeps the decision, the join and the answer
 to you, and hands the rest to a helper inside its turn (the `subagent` tool,
-for a bounded lookup or a long check summarised) or to sub-conversations, one
+for a bounded lookup or a long check summarised) or to sub-sessions, one
 per independent part, running at the same time on their own files; only a
-request small enough for a few tool calls is done alone. A sub-conversation
+request small enough for a few tool calls is done alone. A sub-session
 inherits the parent's project,
 worktree and branch (it works in the same folder, so it attaches nothing of its
 own), model, effort and **Auto**; what it does comes back to the parent as a
@@ -392,27 +392,27 @@ agent (reopening it if it had finished) so it can read the report and answer,
 steer the child (`send`) or read its last messages (`read`); a parent's steer
 shows in the child on the right as *From <parent>* and answers a question the
 child was asking if one waits. Two levels deep at most and eight open
-sub-conversations to a parent by default - `chat.sub_depth` and `chat.sub_open`
+sub-sessions to a parent by default - `chat.sub_depth` and `chat.sub_open`
 under Settings, `0` lifting a cap (each level is a paid session, and each open
-sub-conversation a live one in the parent's worktree, so the defaults stay); an
+sub-session a live one in the parent's worktree, so the defaults stay); an
 archived parent takes no new ones and its reports are dropped, while archiving
-a parent leaves its sub-conversations in place. In the list each
-sub-conversation is a line under its parent with its own state, the parent's
-card taking the family's most pressing state, and a sub-conversation's header
+a parent leaves its sub-sessions in place. In the list each
+sub-session is a line under its parent with its own state, the parent's
+card taking the family's most pressing state, and a sub-session's header
 says *part of <parent>* with the way back.
 
 The start form is the same form whoever does the work - one box, one
-**Start** - and asks **Who does it**: *One agent* starts a conversation as
+**Start** - and asks **Who does it**: *One agent* starts a session as
 before; *The project's team* gives a task - the whole text is the brief, its
 first line (without list or heading marks, cut at a word past 120 characters)
-the title, priority 10 - and the lead agent answers in the task's conversation,
+the title, priority 10 - and the lead agent answers in the task's session,
 which opens at once. A task needs a project, so *Let the agent decide* steps
 aside for that choice; the model, effort and auto-approve controls belong to a
-single conversation and hide, the project's settings governing the team.
+single session and hide, the project's settings governing the team.
 
-An open conversation is three columns on a desktop - the list, the transcript,
+An open session is three columns on a desktop - the list, the transcript,
 and the **canvas** - and on a phone the canvas sits under the message box; the
-open conversation fits the window - the transcript scrolls inside its card, the
+open session fits the window - the transcript scrolls inside its card, the
 message box stays on screen, the list and the canvas scroll on their own - and
 a page left open across a PULSE update reloads itself when it reconnects to the
 new hub (the stream names its build in an `X-Pulse-Version` header), so no tab
@@ -430,8 +430,8 @@ the page - with **Open** for the real one), and a plan it writes opens
 **Plan** with its items ticked as they finish; while the agent works the newest
 of these comes to the front, and a tab you pick yourself stays in front for
 half a minute so the agent cannot pull it from under you. **+** opens the rest:
-**Changes**, **Artifacts**, **Sub-conversations** and **Project** (the three
-that apply open with the conversation), a **Files** list of every file the
+**Changes**, **Artifacts**, **Sub-sessions** and **Project** (the three
+that apply open with the session), a **Files** list of every file the
 session touched and the branch changed, **Pages** of every page it read, and
 **Links** - the URLs in the transcript and in what the agent read, the hub's
 own first. A closed tab stays closed (a file the agent edits again comes back),
@@ -439,7 +439,7 @@ tabs behind the front one keep only their icons when the strip gets crowded,
 and a terminal, file, page or diff in front widens the canvas by itself -
 the ⤢ button at the strip's end holds it wide or narrow until your next pick.
 A run that is over opens its tabs without bringing one forward, so an old
-conversation opens on its Changes, not on a stale terminal. Files come from
+session opens on its Changes, not on a stale terminal. Files come from
 the session's worktree through `GET
 /api/v1/harness/sessions/ID/file?path=REL` - a path inside that folder only
 (no `..`, nothing under `.git` or the hub's private folder, symlinks that
@@ -472,7 +472,7 @@ puts the ask into the composer.
 
 Attach files with the paper clip, by dropping them on the composer or by
 pasting them: up to 8 MB each and twelve per message, kept outside the branch
-under the conversation's own folder, named in the message with their paths so
+under the session's own folder, named in the message with their paths so
 the agent reads them; a message with files and no words asks it to look at
 them. When a provider breaks off mid-reply (the connection drops, the body
 stops decoding) the harness asks for the reply again, twice, before the turn
@@ -513,10 +513,10 @@ branch of that project's default branch, so your checkout stays clean. A Cargo
 project builds the way the daemon's own runs do: into one shared target per
 project, `~/.pulse/cache/cargo-target/<slug>/chat` (the worktree's `target/` is
 a link to it), with `CARGO_BUILD_JOBS` at `daemon.build_jobs` (else half the
-CPUs), no debug info and no incremental caches - before this one conversation's
+CPUs), no debug info and no incremental caches - before this one session's
 `cargo test` wrote a 5.9 GB `target/` of its own on every core and, with the
 daemon's runs beside it, took a 16 GB laptop down; a variable you export to the
-hub's environment still wins, and a folder you pointed a conversation at keeps
+hub's environment still wins, and a folder you pointed a session at keeps
 its own `target/`.
 
 The **Changes** tab is the list of changed files, the way the Copilot and
@@ -532,7 +532,7 @@ message box never move, so you read and keep talking, and the list reloads
 itself when the branch moves. **Open PR for review** asks the agent to run the
 check and then `pulse land --project <slug> --branch pulse/chat-<id>`: the
 branch is pushed and a pull request opened against the upstream default
-branch, and nothing is merged locally. A conversation's branch left alone for
+branch, and nothing is merged locally. A session's branch left alone for
 ten minutes after its last commit is proposed the same way by the daemon's
 next pass, so finished work does not wait for the button. The review job
 reads the pull request, runs the check, and merges it or hands it to you
@@ -541,12 +541,12 @@ branch from the upstream.
 
 Leave the project on **Let the agent decide** and the agent starts in a scratch
 folder with the list of your projects and their goals in its brief, reads
-around, and attaches the one the work belongs to by itself with `pulse chat
+around, and attaches the one the work belongs to by itself with `pulse session
 attach <slug>` - the move takes effect after that turn, the transcript carries
-over, and the conversation carries on in the worktree without being asked; one
-that spans several projects attaches each in turn. Conversations with no
+over, and the session carries on in the worktree without being asked; one
+that spans several projects attaches each in turn. Sessions with no
 project share one memory file, `~/.pulse/memory/conversations.md`, so what one
-learns the next one knows (a conversation on a project uses that project's
+learns the next one knows (a session on a project uses that project's
 memory, as its jobs do), and every brief tells the agent that the owner's words
 are PULSE's own - RSI, lead, board, ballot, evolve, land - and to look a word
 up before asking what it means: `pulse ask --all "..."` answers from the shared
@@ -560,30 +560,30 @@ pick one and it opens as a tab on the canvas - images at their size, Markdown
 rendered, text as text, HTML and PDF in a frame, anything else as a download
 (every tab has **Download** too).
 
-Each conversation is one harness session at a time (the **Harness** page shows
-it too, with cost); when a session ends (a limit, a provider error) the
-conversation says so and the next message starts a new session with the whole
+Each session runs on one harness session at a time (the **Harness** page
+shows it too, with cost); when that harness session ends (a limit, a provider
+error) the page says so and the next message starts a new one with the whole
 transcript carried over. **Restart session** does the same on your say-so,
-without a hub restart: the session ends where it stands (a turn in flight has
-to be stopped first), the transcript and the workspace stay, and the next
-message reloads the conversation from the saved transcript - the way out of a
-session whose memory holds something the provider refuses. A reply the
+without a hub restart: the harness session ends where it stands (a turn in
+flight has to be stopped first), the transcript and the workspace stay, and
+the next message reloads it from the saved transcript - the way out of a
+harness session whose memory holds something the provider refuses. A reply the
 provider cut mid-stream is asked for again rather than kept; a transcript
 that already carries a tool call whose arguments are not JSON from one (the
 provider then refuses every request with it: *Invalid JSON format in tool call
 arguments*) is repaired as it loads, and a running session repairs its own
 history on that refusal and sends the request again, saying so in a note.
-**Archive** puts a conversation away for good (no message reopens it) and
+**Archive** puts a session away for good (no message reopens it) and
 leaves its branch and folder where they are; `pulse remove project <slug>
 --forget` drops its rows with the project's.
 
-Everything is yours to script: `pulse chat list [--all]`, `pulse chat show
-<id>` and `pulse chat wake [--id <id>] <message>` print or do what the page shows, and `/api/v1/chat` (`GET` for the
+Everything is yours to script: `pulse session list [--all]`, `pulse session show
+<id>` and `pulse session wake [--id <id>] <message>` (`pulse chat` is the same command) print or do what the page shows, and `/api/v1/chat` (`GET` for the
 list - `conversations`, and `tasks` with each task's thread summed up and one
 entry per job with its latest harness session, the tasks in progress plus a
 week of finished ones, every one with `?all=1` - `POST` to start (`parent` with
-a conversation's id makes a sub-conversation of it: 409 when there is no such
-conversation, refused when it is archived, two levels down or has eight open
+a session's id makes a sub-session of it: 409 when there is no such
+session, refused when it is archived, two levels down or has eight open
 ones), `GET /chat/<id>?since=N&after=N` for the transcript and live steps past
 what you hold, with `parent_title` and the `children` it holds, `/message` with
 an optional `attachments` list of uploaded names and an optional `images` list
@@ -601,22 +601,22 @@ session, from the transcript; 409 while a turn runs), `/auto`, `/attach`,
 `/upload` takes `Content-Type: application/json` (415 otherwise) and a JSON
 object body (400 when empty; send `{}` to `/archive`, `/close`, `/restart`,
 `/cancel` and `/api/v1/running/restart`). The agents run inside the hub process: restarting
-the hub ends their turns, and the conversation picks up from its transcript on
-the next message. A conversation needs a signed-in model (**Settings →
+the hub ends their turns, and the session picks up from its transcript on
+the next message. A session needs a signed-in model (**Settings →
 Harness**); without one the first turn says so instead of working.
 
-A conversation's agent does not sit through work that runs for hours or days;
+A session's agent does not sit through work that runs for hours or days;
 it hands the wait over and is woken. A command it started with `bash
 background:true` goes past the turn with `process notify ID`: the agent ends
 its turn, the process keeps running inside the hub, and when it ends a note
 with its exit code and last output starts the next turn (closing or archiving
-the conversation stops what it kept; a hub restart ends it with a note saying
+the session stops what it kept; a hub restart ends it with a note saying
 so). Anything the agent cannot hold - a script it wrote, a cron job, a hook at
 the end of a pipeline, a job on another machine - says "I am done" with `pulse
-chat wake "what ended and how"`: the conversation's id comes from
+session wake "what ended and how"`: the session's id comes from
 `$PULSE_CONVERSATION` (set in every shell the agent starts) or `--id`, the
 command publishes a `chat.wake` event on the bus, and the hub turns it into a
-turn of that conversation (a wake sent while no hub runs is delivered when the
+turn of that session (a wake sent while no hub runs is delivered when the
 next one starts; the hub keeps its place in `chat.wake.cursor`). The transcript
 shows both as notes.
 
@@ -731,10 +731,10 @@ off until you turn them on:
   a drafted constitution or evaluators, a gate step), a task whose lead waits
   for your reply, and a conversation whose agent asks you something or asks
   to run a tool.
-- **When a task or conversation finishes**: a task done, a conversation its
-  agent finished, and an agent's reply that ended its turn. A sub-conversation
-  reports to its parent, not to you; a conversation you closed yourself and
-  the conversation or task you are looking at stay quiet.
+- **When a task or session finishes**: a task done, a session its
+  agent finished, and an agent's reply that ended its turn. A sub-session
+  reports to its parent, not to you; a session you closed yourself and
+  the session or task you are looking at stay quiet.
 - **Play a sound**: a short two-note chime the page makes itself (no sound
   file). Browsers start sound only after a click or a key press on the page,
   so the chime waits for your first one after a reload; until then the

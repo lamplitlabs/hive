@@ -250,7 +250,7 @@ too) and *Merged*. A finished step whose branch still waits for the task's
 pull request reads *Waiting for its pull request*. The Chat page's list
 groups the rows the same way: **Needs your review** at the top, then
 **Working**, then **In review** for work that has a pull request and nobody
-waiting on you, then the rest ([Chat](console.md#chat)). The old *Waiting to
+waiting on you, then the rest ([Sessions](console.md#sessions)). The old *Waiting to
 land* and *Reviewing* groups are gone with the local landing they described.
 
 ## By hand

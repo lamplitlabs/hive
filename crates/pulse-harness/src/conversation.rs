@@ -614,7 +614,7 @@ impl Ui for WebUi {
             return None;
         }
         Some(format!(
-            "sub-conversations you started are still at work: {}. End this turn without finishing; each one's report arrives here as a message and starts your next turn. Join their results, then finish.",
+            "sub-sessions you started are still at work: {}. End this turn without finishing; each one's report arrives here as a message and starts your next turn. Join their results, then finish.",
             open.join(", ")
         ))
     }
@@ -624,7 +624,7 @@ impl Ui for WebUi {
             Some(rt) => rt.keep(proc),
             None => Err(Box::new((
                 proc,
-                "this conversation is closing; nothing outlives the turn".into(),
+                "this session is closing; nothing outlives the turn".into(),
             ))),
         }
     }
@@ -697,7 +697,7 @@ impl Ui for WebUi {
                 .create_child(&self.id, title, text)
                 .map(|row| {
                     format!(
-                        "Started sub-conversation {} ({:?}). It works in your workspace and every reply it makes reaches you as a message from it; the owner sees it on its own page too. Carry on with your own work meanwhile, or end your turn and wait for it.",
+                        "Started sub-session {} ({:?}). It works in your workspace and every reply it makes reaches you as a message from it; the owner sees it on its own page too. Carry on with your own work meanwhile, or end your turn and wait for it.",
                         row.id, row.title
                     )
                 })
@@ -933,7 +933,7 @@ impl Runtime {
         if self.shared.lock().closed {
             return Err(Box::new((
                 proc,
-                "this conversation is closing; nothing outlives the turn".into(),
+                "this session is closing; nothing outlives the turn".into(),
             )));
         }
         if let Some(code) = proc.exit() {
@@ -943,7 +943,7 @@ impl Runtime {
             )));
         }
         let line = format!(
-            "{} `{}` now runs past this turn (pid {}, running for {}); the conversation is woken with its exit and last output when it ends. Reply or end the turn; you are not blocked on it.",
+            "{} `{}` now runs past this turn (pid {}, running for {}); the session is woken with its exit and last output when it ends. Reply or end the turn; you are not blocked on it.",
             proc.id,
             one_line(&proc.command),
             proc.pid(),
@@ -2329,17 +2329,17 @@ impl Manager {
     pub fn create_child(&self, parent: &str, title: &str, text: &str) -> Result<Row> {
         let text = text.trim();
         if text.is_empty() {
-            bail!("the sub-conversation's brief is empty");
+            bail!("the sub-session's brief is empty");
         }
         let p = self.row(parent)?;
         if p.status == "archived" {
-            bail!("conversation {parent} is archived");
+            bail!("session {parent} is archived");
         }
         let depth = self.store.chat_depth(parent)?;
         let depth_limit = self.store.setting_int(SUB_DEPTH_SETTING);
         if depth_limit > 0 && depth as i64 >= depth_limit {
             bail!(
-                "this conversation already stands {depth} levels down; sub-conversations go {depth_limit} levels deep at most - do this part here, or with the subagent tool"
+                "this session already stands {depth} levels down; sub-sessions go {depth_limit} levels deep at most - do this part here, or with the subagent tool"
             );
         }
         let open_limit = self.store.setting_int(SUB_OPEN_SETTING);
@@ -2351,7 +2351,7 @@ impl Manager {
             .count();
         if open_limit > 0 && open as i64 >= open_limit {
             bail!(
-                "this conversation already has {open} sub-conversations open; finish or archive one before starting another"
+                "this session already has {open} sub-sessions open; finish or archive one before starting another"
             );
         }
         let title = if title.trim().is_empty() {
@@ -2377,7 +2377,7 @@ impl Manager {
         let _ = self.store.chat_add_message(
             parent,
             "note",
-            &format!("Started sub-conversation: {}", row.title),
+            &format!("Started sub-session: {}", row.title),
             &json!({"child": row.id, "title": row.title}),
         );
         self.send(&row.id, text)?;
@@ -2395,10 +2395,10 @@ impl Manager {
         }
         let row = self.row(id)?;
         if row.parent != parent {
-            bail!("conversation {id} is not a sub-conversation of this one");
+            bail!("session {id} is not a sub-session of this one");
         }
         if row.status == "archived" {
-            bail!("sub-conversation {id} is archived");
+            bail!("sub-session {id} is archived");
         }
         if let Some(rt) = self.running(id)
             && matches!(rt.live().pending, Some(Pending::Question { .. }))
@@ -2407,7 +2407,7 @@ impl Manager {
         }
         let rt = self.runtime(&row);
         rt.enqueue(Queued {
-            text: format!("Message from the conversation that started you ({parent}):\n{text}"),
+            text: format!("Message from the session that started you ({parent}):\n{text}"),
             images: Vec::new(),
             row: Some((text.to_string(), json!({"from": parent}))),
             report: true,
@@ -2432,7 +2432,7 @@ impl Manager {
         }
         let text = text.trim();
         let prompt = format!(
-            "Report from sub-conversation {:?} ({}) - {}:\n{}\n\n(Steer it with the chat tool: action send, id {}; read it: action read, id {}. It works in your workspace.)",
+            "Report from sub-session {:?} ({}) - {}:\n{}\n\n(Steer it with the chat tool: action send, id {}; read it: action read, id {}. It works in your workspace.)",
             child.title,
             child.id,
             report_phrase(kind),
@@ -2458,7 +2458,7 @@ impl Manager {
         if id.is_empty() {
             let children = self.store.chat_children(parent, false)?;
             if children.is_empty() {
-                return Ok("No sub-conversations yet.".to_string());
+                return Ok("No sub-sessions yet.".to_string());
             }
             let lines: Vec<String> = children
                 .iter()
@@ -2481,7 +2481,7 @@ impl Manager {
         }
         let row = self.row(id)?;
         if row.parent != parent {
-            bail!("conversation {id} is not a sub-conversation of this one");
+            bail!("session {id} is not a sub-session of this one");
         }
         let live = self.live(&row);
         let mut out = format!(
@@ -3410,7 +3410,7 @@ fn restart_hint(store: &Store, id: &str, row_note: &str) -> Option<String> {
         return None;
     }
     let mut hint = String::from(
-        "PULSE restarted while you were working on your previous turn in this conversation, so that turn may be missing from your context; the workspace keeps whatever it changed.",
+        "PULSE restarted while you were working on your previous turn in this session, so that turn may be missing from your context; the workspace keeps whatever it changed.",
     );
     let messages = store.chat_messages(id, 0).unwrap_or_default();
     let cut = messages.iter().rev().find(|m| m.extra["restart"] == true);
@@ -3687,14 +3687,14 @@ fn git_ok(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Makes (or finds) the conversation's worktree of `project` and records
-/// it on the row. Used by the manager and by `pulse chat attach` from
+/// it on the row. Used by the manager and by `pulse session attach` from
 /// inside the agent's own commands.
 pub fn attach_workspace(store: &Store, home: &str, id: &str, project: &str) -> Result<Attached> {
     let row = store
         .chat_get(id)?
-        .ok_or_else(|| anyhow!("no such conversation: {id}"))?;
+        .ok_or_else(|| anyhow!("no such session: {id}"))?;
     if row.status == "archived" {
-        bail!("conversation {id} is archived");
+        bail!("session {id} is archived");
     }
     let p = store
         .project(project)?
@@ -3783,37 +3783,37 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
     let mut b = String::new();
     if row.parent.is_empty() {
         b.push_str(&format!(
-            "You are working with the owner of PULSE in a conversation from the hub (conversation {}). \
+            "You are working with the owner of PULSE in a session from the hub (session {}). \
              Keep going until the request is done; use the question tool only for a decision that is the owner's. \
              Report progress in short plain words, and say what you did when you finish. \
-             When the request is complete (or the owner says it is), call the finish tool with a one-line summary, then give your closing reply: the conversation is marked finished, and the owner's next message reopens it.\n",
+             When the request is complete (or the owner says it is), call the finish tool with a one-line summary, then give your closing reply: the session is marked finished, and the owner's next message reopens it.\n",
             row.id
         ));
     } else {
         b.push_str(&format!(
-            "You are working in sub-conversation {} of conversation {}: the agent of that conversation started you for one part of its work, and the owner of PULSE can read and write here too. \
-             Your brief follows below. Every reply you make is delivered to the conversation that started you, so reply when there is something to report and keep replies to the point; a message marked as from that conversation is its agent steering you. \
+            "You are working in sub-session {} of session {}: the agent of that session started you for one part of its work, and the owner of PULSE can read and write here too. \
+             Your brief follows below. Every reply you make is delivered to the session that started you, so reply when there is something to report and keep replies to the point; a message marked as from that session is its agent steering you. \
              Use the question tool only for a decision that is the owner's. \
              When the part is done, call the finish tool with a one-line summary, then give your closing reply: that summary and reply are your report.\n",
             row.id, row.parent
         ));
     }
     b.push_str(&format!(
-        "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in ${ARTIFACTS_ENV} ({}); the hub shows that folder beside this conversation.\n",
+        "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in ${ARTIFACTS_ENV} ({}); the hub shows that folder beside this session.\n",
         artifacts.display()
     ));
     b.push_str("The `pulse` command is on PATH.\n");
     b.push_str(
         "Work that runs for hours or days (a benchmark, a soak, a long build, a job on another machine) is not waited for inside a turn. \
          Two ways to be woken when it ends. A command you started with bash background:true is handed over with process notify ID: it keeps running after your turn ends and a note with its exit code and last output starts your next turn. \
-         Anything else - a script you wrote, a cron job, a hook at the end of a pipeline - runs `pulse chat wake \"what ended and how\"` when it is done (the conversation's id comes from $PULSE_CONVERSATION, set in every shell you start, or --id), and that message starts your next turn. \
+         Anything else - a script you wrote, a cron job, a hook at the end of a pipeline - runs `pulse session wake \"what ended and how\"` when it is done (the session's id comes from $PULSE_CONVERSATION, set in every shell you start, or --id), and that message starts your next turn. \
          Either way end your turn after starting the work and say so; do not poll with process wait or sleep.\n",
     );
     if row.lockdown {
         b.push_str(
-            "LOCKDOWN (sandbox) MODE. This conversation runs inside a sandbox and nothing reaches outside this machine: the network is off (only localhost answers), writes land only in your worktree and the temp and build folders, credentials and private keys cannot be read, and there is no fetch, web_search or MCP tool. \
+            "LOCKDOWN (sandbox) MODE. This session runs inside a sandbox and nothing reaches outside this machine: the network is off (only localhost answers), writes land only in your worktree and the temp and build folders, credentials and private keys cannot be read, and there is no fetch, web_search or MCP tool. \
              Commands that would reach a remote (git push/fetch/pull/clone, curl or ssh to a host, pulse land, publishing, sign-in) are refused, and the sandbox refuses an attempt that slips past the words. \
-             Do the work from what is in the worktree and on this machine; commit here, and leave the pull request to the owner after they take the conversation out of lockdown. \
+             Do the work from what is in the worktree and on this machine; commit here, and leave the pull request to the owner after they take the session out of lockdown. \
              When something cannot be done without the outside, say so plainly instead of working around the sandbox.\n",
         );
     }
@@ -3827,21 +3827,21 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         b.push_str(
             "Fan the work out rather than doing all of it in this one thread. A request with several parts, or with one part that takes a while (a survey of the code, a long check, a review, a second thing to build), is split: keep what needs you - the decision, the join, the answer to the owner - and hand the rest out, in parallel where the parts are independent. \
              Two ways. The subagent tool runs a helper inside this turn on one bounded, self-contained sub-task and returns its report: use it whenever you would otherwise read many files or sit through a long command yourself (find every caller of X, run the suite and summarise the failures, survey a crate). \
-             The chat tool with action start, a title and a full brief starts a sub-conversation: a whole conversation in your workspace with its own page in the hub, for a part that should keep going while you work on another, or that the owner may want to watch or steer; several may run at once. \
+             The chat tool with action start, a title and a full brief starts a sub-session: a whole session in your workspace with its own page in the hub, for a part that should keep going while you work on another, or that the owner may want to watch or steer; several may run at once. \
              Its replies reach you as messages from it between your turns; action read shows its state and last replies, action send steers it or answers its question. Reply or end your turn while it works - you are not blocked on it. \
-             Both work in your worktree on your branch: give each part its own files and a brief with everything it needs (it sees nothing of this conversation), and do the join yourself. \
+             Both work in your worktree on your branch: give each part its own files and a brief with everything it needs (it sees nothing of this session), and do the join yourself. \
              Only a request small enough for a few tool calls is done here by you alone. \
-             Work that is not this conversation's to do - a feature or a fix bigger than this request, a follow-up for later, work in another project - is a task: the task tool (action create, a title and a brief that says what, why and how it is proved) files it on PULSE's board under this conversation's name, and the project's lead plans it into jobs on its next pass, as it does the owner's; tell the owner which tasks you filed. File a task for work the fleet should carry, not for what you can do here now.\n",
+             Work that is not this session's to do - a feature or a fix bigger than this request, a follow-up for later, work in another project - is a task: the task tool (action create, a title and a brief that says what, why and how it is proved) files it on PULSE's board under this session's name, and the project's lead plans it into jobs on its next pass, as it does the owner's; tell the owner which tasks you filed. File a task for work the fleet should carry, not for what you can do here now.\n",
         );
     } else {
         b.push_str(
-            "Do your part yourself. The subagent tool runs a helper inside this turn for a bounded lookup or a long check summarised; the chat tool (action start) hands a part of your brief to a sub-conversation of your own only when that part is itself big enough to need a page, and most are not.\n",
+            "Do your part yourself. The subagent tool runs a helper inside this turn for a bounded lookup or a long check summarised; the chat tool (action start) hands a part of your brief to a sub-session of your own only when that part is itself big enough to need a page, and most are not.\n",
         );
     }
     if !row.parent.is_empty() {
         b.push_str(&format!(
-            "Workspace: you work in {}, the same folder{} as the conversation that started you, on its branch{}: commit on that branch and leave landing to it. \
-             Do not run `pulse chat attach`; this sub-conversation stays where its parent is.\n",
+            "Workspace: you work in {}, the same folder{} as the session that started you, on its branch{}: commit on that branch and leave landing to it. \
+             Do not run `pulse session attach`; this sub-session stays where its parent is.\n",
             row.cwd,
             if row.project.is_empty() {
                 String::new()
@@ -3878,12 +3878,12 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         b.push_str(&format!(
             "When the work is complete and verified, or when the owner asks, `pulse land --project {} --branch {}` pushes the branch and opens a pull request against {} for review; another agent reviews and merges it, or asks the owner when it is complex. \
              The daemon opens that pull request on its own once your last commit is ten minutes old, so commit only what is ready. \
-             Other projects: `pulse chat attach SLUG` moves this conversation into that project's worktree after your reply.\n",
+             Other projects: `pulse session attach SLUG` moves this session into that project's worktree after your reply.\n",
             row.project, row.branch, base
         ));
     } else {
         b.push_str(
-            "This conversation is not attached to a project yet. Decide what the request is about and act:\n",
+            "This session is not attached to a project yet. Decide what the request is about and act:\n",
         );
         if projects.is_empty() {
             b.push_str("- No projects are registered; help from here, or tell the owner to run `pulse add project`.\n");
@@ -3894,7 +3894,7 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
             }
         }
         b.push_str(
-            "- Work inside one project's code: run `pulse chat attach SLUG`, then end your reply; the conversation moves into your own worktree of that project (its own branch) and carries on there in the next turn by itself.\n\
+            "- Work inside one project's code: run `pulse session attach SLUG`, then end your reply; the session moves into your own worktree of that project (its own branch) and carries on there in the next turn by itself.\n\
              - Work for the fleet rather than for you now, or work across several projects: file it with the task tool (action create, project SLUG, a title and a brief saying what and why), one task per project, and say which tasks you made.\n\
              - A question about a project or about PULSE: answer it from the shared board and the store - `pulse ask --all \"...\"`, `pulse status`, `pulse task list --project SLUG`, `pulse goal show --project SLUG`, `pulse ask --project SLUG \"...\"` - and the checkouts (read them where they are; do not edit them).\n\
              - Ask with the question tool only when the project really cannot be told from the request and the board does not say.\n",
@@ -5428,7 +5428,7 @@ mod tests {
         let text = brief_text(&loose, &projects, art);
         assert!(text.contains("not attached to a project yet"));
         assert!(text.contains("- demo: Demo, /srv/demo"));
-        assert!(text.contains("pulse chat attach SLUG"));
+        assert!(text.contains("pulse session attach SLUG"));
         assert!(text.contains("file it with the task tool (action create, project SLUG"));
         assert!(!text.contains("pulse task new"));
         assert!(text.contains("$PULSE_ARTIFACTS (/tmp/art)"));
@@ -5463,7 +5463,7 @@ mod tests {
         assert!(text.contains("Fan the work out rather than doing all of it in this one thread"));
         assert!(text.contains("The subagent tool runs a helper inside this turn"));
         assert!(text.contains(
-            "The chat tool with action start, a title and a full brief starts a sub-conversation"
+            "The chat tool with action start, a title and a full brief starts a sub-session"
         ));
         assert!(text.contains("in parallel where the parts are independent"));
         assert!(text.contains(
@@ -5472,7 +5472,7 @@ mod tests {
         // Work beyond the conversation goes to the board as a task under
         // the conversation's name, for the lead to plan.
         assert!(text.contains("is a task: the task tool (action create"));
-        assert!(text.contains("files it on PULSE's board under this conversation's name"));
+        assert!(text.contains("files it on PULSE's board under this session's name"));
         assert!(!text.contains("Do your part yourself"));
         // A sub-conversation does its part itself: it may run a helper, but
         // another level of sub-conversations is the exception.
@@ -5485,11 +5485,20 @@ mod tests {
             ..Row::default()
         };
         let text = brief_text(&child, &projects, art);
-        assert!(text.contains("You are working in sub-conversation chat-2 of conversation chat-1"));
+        assert!(text.contains("You are working in sub-session chat-2 of session chat-1"));
         assert!(text.contains("Do your part yourself"));
         assert!(text.contains("only when that part is itself big enough to need a page"));
         assert!(!text.contains("Fan the work out"));
-        assert!(text.contains("Do not run `pulse chat attach`"));
+        assert!(text.contains("Do not run `pulse session attach`"));
+        // The agent hears one word for what the hub calls a session.
+        for t in [
+            brief_text(&loose, &projects, art),
+            brief_text(&attached, &projects, art),
+            brief_text(&child, &projects, art),
+        ] {
+            assert!(!t.contains("conversation"), "{t}");
+            assert!(!t.contains("pulse chat "), "{t}");
+        }
         // A lockdown conversation is told what the sandbox holds back.
         assert!(!text.contains("LOCKDOWN (sandbox) MODE"));
         let locked = Row {
@@ -6325,7 +6334,7 @@ mod tests {
         // The child: the parent's row, inherited.
         let started = wait_note(&s, &pid, |x| x.get("child").is_some());
         let cid = started.extra["child"].as_str().unwrap().to_string();
-        assert_eq!(started.content, "Started sub-conversation: Docs check");
+        assert_eq!(started.content, "Started sub-session: Docs check");
         let child = m.row(&cid).expect("child row");
         assert_eq!(child.parent, pid);
         assert_eq!(child.created_by, pid);
@@ -6450,7 +6459,7 @@ mod tests {
             .create_child(&pid, "", "a second")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("1 sub-conversations open"), "{err}");
+        assert!(err.contains("1 sub-sessions open"), "{err}");
         s.set_setting("test", SUB_DEPTH_SETTING, "1").unwrap();
         let err = m
             .create_child(&child.id, "", "a grandchild")
