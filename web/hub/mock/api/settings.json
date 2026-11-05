@@ -1261,6 +1261,18 @@
     },
     {
       "choices": null,
+      "default": "3",
+      "description": "days a hub conversation stays closed or archived before the sweep removes its clean checkout under PULSE_HOME/work/chat/<id> to give the disk back; its branch, artifacts and attachments stay, and the owner's next message there checks the branch out again (and the project reinstalls its dependencies); a dirty checkout, or a closed one whose branch has commits not on the default branch, is held; 0 keeps every conversation checkout",
+      "kind": "count",
+      "min": 0,
+      "name": "daemon.chat_worktree_keep_days",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "3"
+    },
+    {
+      "choices": null,
       "default": "30",
       "description": "days run logs, saved patches and work files of jobs this store does not know are kept before the sweep removes them",
       "kind": "count",
