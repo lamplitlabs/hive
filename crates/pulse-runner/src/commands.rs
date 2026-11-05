@@ -1700,19 +1700,8 @@ pub(crate) fn cmd_hands(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Resu
     let out = std::mem::replace(&mut c.out, Box::new(std::io::sink()));
     let err = std::mem::replace(&mut c.err, Box::new(std::io::sink()));
     let mut h = crate::hands::new_hands(Box::new(std::io::stdin()), out, err);
-    match h.hands_main(args) {
-        Ok(()) => Ok(()),
-        Err(err) if err.downcast_ref::<crate::hands::HandsError>().is_some() => {
-            let he = err.downcast_ref::<crate::hands::HandsError>().unwrap();
-            writeln!(h.stderr, "{he}")?;
-            Err(pulse_cli::errorf(2, "", "", "").into())
-        }
-        Err(err) if err.downcast_ref::<crate::hands::HandsExit>().is_some() => {
-            let hx = err.downcast_ref::<crate::hands::HandsExit>().unwrap();
-            Err(pulse_cli::errorf(hx.code, "", "", "").into())
-        }
-        Err(err) => Err(err),
-    }
+    let res = h.hands_main(args);
+    crate::hands::hands_outcome(res, &mut h.stderr)
 }
 
 pub(crate) fn cmd_pair(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {

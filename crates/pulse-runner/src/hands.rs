@@ -61,6 +61,36 @@ impl std::fmt::Display for HandsExit {
     }
 }
 impl std::error::Error for HandsExit {}
+/// What a hands verb's outcome means to the process that ran it: `Ok` for a
+/// verb that finished and for a `run`, `verify`, or `tool` whose command
+/// exited 0; otherwise a `pulse_cli::Error` carrying the command's own exit,
+/// 2 after writing the refusal for a `HandsError`, 1 after writing any other
+/// error. The installed binary and the tests' helper process both go through
+/// here. The hub reads `verify … -- test -s run.key` as "the key is in place"
+/// only on exit 0, and the first job sent to a freshly provisioned Azure hand
+/// (hands-cr-062, 2026-11-05) failed that preflight with the key intact:
+/// `cmd_hands` wrapped `HandsExit { code: 0 }` in `errorf(0)`, whose
+/// `exit_code` reads 0 as 1, so `verify … -- true` replayed by hand came back
+/// 1 while `exit 7` came back 7. The test double mapped the code itself and
+/// never saw the difference, which is why there is one mapping now.
+pub(crate) fn hands_outcome(res: Result<()>, stderr: &mut dyn Write) -> Result<()> {
+    let Err(err) = res else {
+        return Ok(());
+    };
+    if let Some(hx) = err.downcast_ref::<HandsExit>() {
+        return if hx.code == 0 {
+            Ok(())
+        } else {
+            Err(pulse_cli::errorf(hx.code, "", "", "").into())
+        };
+    }
+    if let Some(he) = err.downcast_ref::<HandsError>() {
+        writeln!(stderr, "{he}")?;
+        return Err(pulse_cli::errorf(2, "", "", "").into());
+    }
+    writeln!(stderr, "{err:#}")?;
+    Err(pulse_cli::errorf(1, "", "", "").into())
+}
 pub(crate) struct Hands {
     pub(crate) workdir: String,
     pub(crate) home: String,
@@ -849,6 +879,30 @@ mod tests {
         }
         let err = h.hands_main(&["tool".into()]).unwrap_err().to_string();
         assert!(err.contains("tool CHECK"), "{err}");
+    }
+
+    #[test]
+    fn hands_outcome_exits_with_the_commands_own_code_zero_included() {
+        let exit_of = |res: Result<()>, stderr: &mut Vec<u8>| match hands_outcome(res, stderr) {
+            Ok(()) => 0,
+            Err(e) => e
+                .downcast_ref::<pulse_cli::Error>()
+                .map(|ce| ce.exit_code())
+                .unwrap_or(-1),
+        };
+        let mut stderr = Vec::new();
+        assert_eq!(exit_of(Ok(()), &mut stderr), 0);
+        assert_eq!(exit_of(Err(anyhow!(HandsExit { code: 0 })), &mut stderr), 0);
+        assert_eq!(exit_of(Err(anyhow!(HandsExit { code: 7 })), &mut stderr), 7);
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(exit_of(Err(hands_die("bad base")), &mut stderr), 2);
+        assert_eq!(
+            String::from_utf8_lossy(&stderr).trim(),
+            "pulse-hands: bad base"
+        );
+        stderr.clear();
+        assert_eq!(exit_of(Err(anyhow!("disk gone")), &mut stderr), 1);
+        assert!(String::from_utf8_lossy(&stderr).contains("disk gone"));
     }
 
     #[test]
