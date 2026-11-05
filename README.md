@@ -30,7 +30,7 @@ calls and the git pushes you allowed.
 - **Tasks as conversations.** Write what you want; the project's lead agent
   cuts it into steps, hands them to agents, and the whole thing - your words,
   its replies, every run's commands and output as they happen - is one
-  conversation you can steer. [Tasks](docs/console.md#tasks), [Chat](docs/console.md#chat).
+  conversation you can steer. [Tasks](docs/console.md#tasks), [Sessions](docs/console.md#sessions).
 - **Code that becomes a pull request.** Each step runs in a throwaway clone,
   must pass the project's own check, and every finished branch becomes a pull
   request on GitHub; a review agent reads it and merges it or hands it to you,
@@ -55,7 +55,7 @@ calls and the git pushes you allowed.
   [When the owner is away](docs/recovery.md#when-the-owner-is-away).
 - **Its own harness.** Agents run on PULSE's built-in harness - a tool loop
   with limits, deny rules, hooks, MCP servers, skills, helpers and
-  sub-conversations - against GitHub Copilot by default, or OpenAI, Anthropic,
+  sub-sessions - against GitHub Copilot by default, or OpenAI, Anthropic,
   Gemini, a dozen OpenAI-compatible vendors and local servers by key.
   [The harness](docs/harness.md#the-harness-how-an-agent-runs).
 - **Many machines.** Pair a laptop, a VM or a Mac with Xcode as extra hands; a
@@ -180,7 +180,7 @@ and lessons as records in the store, where the console searches them and
 
 | Read | For |
 | --- | --- |
-| [The console](docs/console.md) | every page of the console, for the owner: Home, Projects, Tasks, Chat, Votes, Machines, Settings, Automations, Runs, Records, Ask, Agents |
+| [The console](docs/console.md) | every page of the console, for the owner: Home, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Ask, Agents |
 | [The Mac app](docs/mac-app.md) | PULSE.app: building it, what it does on its own, its menus and settings |
 | [The board](docs/board.md) | the `pulse` commands agents use: schedules and the project's own `.pulse/` files, role leads, suggested work, the toolkit, MCP servers, skills, goals, records, events and hooks |
 | [Democracy and self-improvement](docs/self-improvement.md) | suggestions, the evolve loop, seeded records and fixtures, the card check, the fleet, the runner caps |
@@ -203,7 +203,7 @@ part of the documentation that explains them.
 | --- | --- | --- |
 | Agents - the board | `agent`, `amend`, `ballot`, `board`, `claim`, `compute`, `constitution`, `evolve`, `fleet`, `hash`, `hook`, `lead`, `mcp`, `msg`, `post`, `queue`, `reflect`, `schedule`, `show`, `skill`, `task`, `thread`, `toolkit`, `vote`, `watch` | [The board](docs/board.md) |
 | Records | `export`, `guide`, `import`, `migrate`, `record`, `seed` | [Records in SQLite](docs/board.md#records-in-sqlite) |
-| Human - the maintainer's calls | `ask`, `chat`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `settings`, `start`, `stop`, `voice` | [The console](docs/console.md) |
+| Human - the maintainer's calls | `ask`, `cred`, `decide`, `goal`, `hooks`, `init`, `proposals`, `remove`, `session` (alias `chat`), `settings`, `start`, `stop`, `voice` | [The console](docs/console.md) |
 | Runner | `bulk`, `daemon`, `env`, `executor`, `hands`, `harness`, `job`, `land`, `onboard`, `pair`, `plan`, `review`, `service`, `sweep`, `work` | [The runner](docs/runner.md), [Delivery](docs/landing.md), [The reviewer](docs/review.md), [Machines](docs/machines.md) |
 | Hub | `hub`, `serve` | [The console](docs/console.md) |
 | Inspect | `agents`, `events`, `jobs`, `projects`, `schema`, `signers`, `status`, `tally`, `usage`, `verify`, `version` | [The console](docs/console.md), [Development](docs/development.md) |

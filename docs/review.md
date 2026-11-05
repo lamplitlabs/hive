@@ -184,7 +184,7 @@ with the follow-up's id; the verdict is `review.changes` with the job id in
 A pull request handed to you is **Needs your review** in the hub: on the
 task's delivery line (*Needs your review: PR #n — <reasons>. <the review>*),
 at the top of the Chat page's list in a group of its own
-([Chat](console.md#chat)), and on the project's pull request card, with a
+([Sessions](console.md#sessions)), and on the project's pull request card, with a
 link to the pull request and a **Merge** button. The button asks once
 (*Merge PR #n into <base>? The daemon merges it on GitHub as you.*) and
 records `review.ask {action: merge}`; the hub merges nothing itself. The
@@ -287,7 +287,7 @@ The hub reads both sets to place a pull request: `land.pr` puts it at *open*,
 reasons), `review.owner` at *needs your review*, `review.ask` at *merging*,
 `review.changes` at *changes requested*, `review.failed` at *review failed*,
 and `review.merged`, `land.merged` or `land.pr-closed` settle it
-([Chat](console.md#chat)).
+([Sessions](console.md#sessions)).
 
 ## Settings
 

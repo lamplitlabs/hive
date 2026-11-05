@@ -272,7 +272,7 @@ pub fn subagent_tool(agents: &[AgentDef]) -> Tool {
     Tool {
         name: SUBAGENT_TOOL.to_string(),
         description: format!(
-            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own, inside this turn, and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this conversation. Reach for it before reading many files or sitting through a long command yourself: surveying part of the code, finding every caller of something, running a suite and summarising the failures. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls.{}",
+            "Delegate one self-contained sub-task to a helper agent with the same tools in the same clone; it works on its own, inside this turn, and returns a report. Give it everything it needs in task (goal, files, what to report back): it does not see this session. Reach for it before reading many files or sitting through a long command yourself: surveying part of the code, finding every caller of something, running a suite and summarising the failures. Default budget: {SUBAGENT_DEFAULT_STEPS} model calls.{}",
             describe_for_tool(agents)
         ),
         parameters: json!({"type":"object","properties":properties,"required":["task"]}),
@@ -997,7 +997,7 @@ pub fn question_tool() -> Tool {
 pub fn finish_tool() -> Tool {
     Tool {
         name: FINISH_TOOL.into(),
-        description: "Mark this conversation finished: the owner's request is complete, verified, and nothing waits on them. Call it once, then give your closing reply. Not for ending a turn, not when you are blocked or asked a question - only when the whole request is done. Refused while a sub-conversation you started is still open: end the turn, wait for its report, join it, then finish. The owner can reopen the conversation by writing again.".into(),
+        description: "Mark this session finished: the owner's request is complete, verified, and nothing waits on them. Call it once, then give your closing reply. Not for ending a turn, not when you are blocked or asked a question - only when the whole request is done. Refused while a sub-session you started is still open: end the turn, wait for its report, join it, then finish. The owner can reopen the session by writing again.".into(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -1011,14 +1011,14 @@ pub fn finish_tool() -> Tool {
 pub fn chat_tool() -> Tool {
     Tool {
         name: CHAT_TOOL.into(),
-        description: "Sub-conversations: a separate agent in a conversation of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this conversation) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message and starts your next turn; you cannot finish until every one you started has reported. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it to split a request with several parts - one sub-conversation per independent part, running at the same time, each on its own files - and for a part that keeps going while you answer the owner: a long check, a review, a second thing to build. A quick lookup whose answer you need now is the subagent tool instead.".into(),
+        description: "Sub-sessions: a separate agent in a session of its own that the owner can open and steer in the hub, working in your workspace alongside you. `start` gives it a complete brief (it knows nothing of this session) and returns at once with its id; you carry on, and when it finishes its summary arrives here as a message and starts your next turn; you cannot finish until every one you started has reported. `send` steers one that is running or reopens one that finished; `read` shows one's state and replies (no id: lists them all). Use it to split a request with several parts - one sub-session per independent part, running at the same time, each on its own files - and for a part that keeps going while you answer the owner: a long check, a review, a second thing to build. A quick lookup whose answer you need now is the subagent tool instead.".into(),
         parameters: json!({
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["start", "send", "read"], "description": "start a sub-conversation, send it a message, or read it"},
+                "action": {"type": "string", "enum": ["start", "send", "read"], "description": "start a sub-session, send it a message, or read it"},
                 "text": {"type": "string", "description": "start: the full brief, with the goal, what is already known, and what to report back; send: the message"},
                 "title": {"type": "string", "description": "start: a short title for the hub's list (default: the brief's first line)"},
-                "id": {"type": "string", "description": "send, read: the sub-conversation's id, as `start` returned it"}
+                "id": {"type": "string", "description": "send, read: the sub-session's id, as `start` returned it"}
             },
             "required": ["action"]
         }),
@@ -3270,13 +3270,13 @@ impl Agent {
         });
         let obs = if closed {
             Observation {
-                output: "The conversation is marked finished; it closes after this turn. Give your closing reply now: what was done and where it landed. The owner can reopen it by writing again.".to_string(),
+                output: "The session is marked finished; it closes after this turn. Give your closing reply now: what was done and where it landed. The owner can reopen it by writing again.".to_string(),
                 duration: start.elapsed(),
                 ..Observation::default()
             }
         } else {
             Observation {
-                output: "There is no conversation to finish here. Just give your closing reply."
+                output: "There is no session to finish here. Just give your closing reply."
                     .to_string(),
                 exit_code: 1,
                 duration: start.elapsed(),
@@ -3308,12 +3308,12 @@ impl Agent {
             "read" => ChatRequest::Read { id },
             "start" => {
                 return self.tool_error(
-                    "chat: start needs text, the sub-conversation's full brief".to_string(),
+                    "chat: start needs text, the sub-session's full brief".to_string(),
                 );
             }
             "send" => {
                 return self.tool_error(
-                    "chat: send needs id (the sub-conversation) and text (the message)".to_string(),
+                    "chat: send needs id (the sub-session) and text (the message)".to_string(),
                 );
             }
             _ => {
@@ -3363,7 +3363,7 @@ impl Agent {
                 ..Observation::default()
             },
             None => Observation {
-                output: "There are no sub-conversations to have here: do the work yourself, or use the subagent tool for a helper.".to_string(),
+                output: "There are no sub-sessions to have here: do the work yourself, or use the subagent tool for a helper.".to_string(),
                 exit_code: 1,
                 duration: start.elapsed(),
                 ..Observation::default()
@@ -15016,7 +15016,7 @@ mod tests {
         assert!(matches!(&turn, Turn::Reply(t) if t == "ok"), "{turn:?}");
         let replies: BTreeMap<String, String> = tool_replies(&h).into_iter().collect();
         assert!(
-            replies["f3"].contains("no conversation to finish"),
+            replies["f3"].contains("no session to finish"),
             "{}",
             replies["f3"]
         );
