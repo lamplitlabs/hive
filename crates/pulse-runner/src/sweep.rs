@@ -2697,7 +2697,7 @@ pub(crate) fn cargo_target_dir_from_verify(cmd: &str) -> Option<String> {
             let mut value = &rest[pos + needle.len()..];
             if let Some(stripped) = value.strip_prefix('"') {
                 let end = stripped.find('"')?;
-                return Some(stripped[..end].to_string());
+                return Some(expand_home(&stripped[..end]));
             }
             if let Some(stripped) = value.strip_prefix('\'') {
                 let end = stripped.find('\'')?;
@@ -2711,10 +2711,10 @@ pub(crate) fn cargo_target_dir_from_verify(cmd: &str) -> Option<String> {
                 .unwrap_or(value.len());
             value = &value[..end];
             if let Some(expanded) = expand_default_parameter(value) {
-                return nonempty(expanded);
+                return nonempty(expand_home(&expanded));
             }
             if !value.is_empty() {
-                return Some(value.to_string());
+                return Some(expand_home(value));
             }
         }
         rest = &rest[pos + needle.len()..];
@@ -2764,6 +2764,29 @@ fn expand_default_parameter(value: &str) -> Option<String> {
         Ok(v) if !(empty_counts_as_unset && v.is_empty()) => Some(v),
         _ => Some(default.to_string()),
     }
+}
+
+/// `$HOME` or `${HOME}` opening a target dir, read as the check's shell
+/// reads it. One registered check serves the hub and the Linux hands, and a
+/// hand's home is not the hub's: the brain's check once named its shared
+/// target as an absolute Mac path, which the first rented hand (hands-cr-064,
+/// 2026-11-05) could not create, so its check could never have run there.
+/// Written from `$HOME`, the same line builds under each machine's own home,
+/// and the sweep and the freshen gate, which run here, read the hub's.
+/// Nothing else is expanded; a name that merely starts with HOME is not it.
+fn expand_home(value: &str) -> String {
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => h,
+        _ => return value.to_string(),
+    };
+    for prefix in ["${HOME}", "$HOME"] {
+        if let Some(rest) = value.strip_prefix(prefix)
+            && (rest.is_empty() || rest.starts_with('/'))
+        {
+            return format!("{home}{rest}");
+        }
+    }
+    value.to_string()
 }
 
 fn cargo_target_allowed(target: &Path, project: &Path, home: &Path) -> bool {
@@ -4059,10 +4082,38 @@ mod tests {
             .as_deref(),
             Some("/t/land")
         );
-        // Any other parameter shape is left to the absolute-path gate.
+        // `$HOME` opens the value as the check's shell would read it: one
+        // registered check names the shared target under each machine's
+        // own home (the brain's, since hands-cr-064 could not create its
+        // Mac path). A name that only starts with HOME, or a single-quoted
+        // value, is left alone, as is any other parameter shape.
+        let home = std::env::var("HOME").unwrap();
         assert_eq!(
             cargo_target_dir_from_verify("CARGO_TARGET_DIR=${HOME}/t cargo test").as_deref(),
-            Some("${HOME}/t")
+            Some(format!("{home}/t").as_str())
+        );
+        assert_eq!(
+            cargo_target_dir_from_verify(&format!(
+                "env CARGO_TARGET_DIR=${{{name}:-$HOME/.pulse/cache/cargo-target-land/p}} sh scripts/verify-check.sh"
+            ))
+            .as_deref(),
+            Some(format!("{home}/.pulse/cache/cargo-target-land/p").as_str())
+        );
+        assert_eq!(
+            cargo_target_dir_from_verify("env CARGO_TARGET_DIR=\"$HOME/t\" cargo test").as_deref(),
+            Some(format!("{home}/t").as_str())
+        );
+        assert_eq!(
+            cargo_target_dir_from_verify("env CARGO_TARGET_DIR='$HOME/t' cargo test").as_deref(),
+            Some("$HOME/t")
+        );
+        assert_eq!(
+            cargo_target_dir_from_verify("CARGO_TARGET_DIR=$HOMEWORK/t cargo test").as_deref(),
+            Some("$HOMEWORK/t")
+        );
+        assert_eq!(
+            cargo_target_dir_from_verify("CARGO_TARGET_DIR=${HOME:+x}/t cargo test").as_deref(),
+            Some("${HOME:+x}/t")
         );
     }
 

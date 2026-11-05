@@ -79,6 +79,22 @@ same words does not ask again. While a rented machine is on its way the log
 says so (`machine wanted: compute request CR-012 is provisioning; waiting
 for the machine`) and nothing else is asked for.
 
+**What a rented machine has.** It starts from the image: git, Python 3,
+build tools, mise. Everything else a project's jobs need comes from the
+project's environment recipe (`docs/context/environment.md`, `pulse env
+set`): the setup installs its `tools:` pins through mise on the machine's
+first job (`rust@1.95` took 22 s on a Standard_B2ms), and the registered
+check should name any shared directory from `$HOME`, since a hand's home is
+not the hub's (an absolute Mac path cannot be created there). A project
+whose recipe pins nothing and whose setup needs a tool the image lacks marks
+the machine unfit, which then idles and is released; the daemon does not
+rent again for that project until the recipe changes - the idle line says
+`renting again would meet the same lack: hands-cr-064 lacks cargo for
+amistio-template … pin the tool in tools:` - and rents for the next waiting
+project instead. Measured before this rule: CR-064 lacked `cargo` for the
+brain, was released after 30 idle minutes, and CR-065 was rented for the
+same job within the minute.
+
 ```bash
 pulse settings set machine.labels gpu,android          # what this machine offers, beyond its OS and chip and what it finds
 pulse settings set machine.reserve on                  # this machine takes only the jobs that need something it offers
