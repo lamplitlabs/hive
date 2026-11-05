@@ -274,6 +274,11 @@ pub(crate) fn create_pull_request(
     Ok((number, url))
 }
 
+/// The fields `pr list` and `pr view` are asked for: the state and head of
+/// each pull request, and what stands between an open one and its merge.
+const PR_FIELDS: &str =
+    "number,state,mergedAt,url,headRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup";
+
 /// What the forge says of one pull request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PrState {
@@ -283,6 +288,24 @@ pub(crate) struct PrState {
     pub(crate) merged_at: String,
     pub(crate) url: String,
     pub(crate) head: String,
+    /// The head branch's tip as the forge has it (`headRefOid`).
+    pub(crate) head_sha: String,
+    /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN` (the forge has not judged
+    /// the head yet).
+    pub(crate) mergeable: String,
+    /// `CLEAN`, `DIRTY` (conflicts), `BLOCKED`, `BEHIND`, `UNSTABLE`,
+    /// `HAS_HOOKS` or `UNKNOWN`.
+    pub(crate) merge_state: String,
+    /// The names of the checks on the head that failed, were cancelled,
+    /// timed out or want action, from `statusCheckRollup`.
+    pub(crate) failing_checks: Vec<String>,
+}
+
+impl PrState {
+    /// The head conflicts with its base as the forge sees it.
+    pub(crate) fn conflicting(&self) -> bool {
+        self.mergeable == "CONFLICTING" || self.merge_state == "DIRTY"
+    }
 }
 
 fn pr_state(v: &serde_json::Value) -> PrState {
@@ -298,7 +321,43 @@ fn pr_state(v: &serde_json::Value) -> PrState {
         merged_at: field("mergedAt"),
         url: field("url"),
         head: field("headRefName"),
+        head_sha: field("headRefOid"),
+        mergeable: field("mergeable"),
+        merge_state: field("mergeStateStatus"),
+        failing_checks: failing_checks(v.get("statusCheckRollup")),
     }
+}
+
+/// The checks of a `statusCheckRollup` that did not pass: a check run
+/// (`name`, `conclusion`) or a commit status (`context`, `state`). A check
+/// still running, skipped or neutral is not failing.
+fn failing_checks(rollup: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(list) = rollup.and_then(|r| r.as_array()) else {
+        return Vec::new();
+    };
+    let text = |e: &serde_json::Value, k: &str| {
+        e.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    list.iter()
+        .filter(|e| {
+            matches!(
+                text(e, "conclusion").as_str(),
+                "FAILURE" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
+            ) || matches!(text(e, "state").as_str(), "ERROR" | "FAILURE")
+        })
+        .map(|e| {
+            let name = text(e, "name");
+            if name.is_empty() {
+                text(e, "context")
+            } else {
+                name
+            }
+        })
+        .filter(|n| !n.is_empty())
+        .collect()
 }
 
 /// The repository's newest 200 pull requests in every state, one process
@@ -310,14 +369,7 @@ pub(crate) fn list_prs(root: &str, repo: &str) -> Result<BTreeMap<i64, PrState>,
         root,
         repo,
         &[
-            "pr",
-            "list",
-            "--state",
-            "all",
-            "--json",
-            "number,state,mergedAt,url,headRefName",
-            "--limit",
-            "200",
+            "pr", "list", "--state", "all", "--json", PR_FIELDS, "--limit", "200",
         ],
         Duration::from_secs(90),
     )?;
@@ -336,13 +388,7 @@ pub(crate) fn view_pr(root: &str, repo: &str, number: i64) -> Result<PrState, St
     let out = gh(
         root,
         repo,
-        &[
-            "pr",
-            "view",
-            &number.to_string(),
-            "--json",
-            "number,state,mergedAt,url,headRefName",
-        ],
+        &["pr", "view", &number.to_string(), "--json", PR_FIELDS],
         Duration::from_secs(60),
     )?;
     let v: serde_json::Value =
@@ -502,5 +548,40 @@ exit 1
             ),
             "gh pr create failed: HTTP 403: Resource not accessible by integration"
         );
+    }
+
+    /// The forge's judgement of an open pull request is read from both
+    /// shapes a `statusCheckRollup` entry takes, and an answer without the
+    /// fields (an older gh, a fake) reads as not judged.
+    #[test]
+    fn pr_state_reads_what_stands_between_a_pull_request_and_its_merge() {
+        let st = pr_state(&serde_json::json!({
+            "number": 7, "state": "OPEN", "mergedAt": null, "url": "u", "headRefName": "h",
+            "headRefOid": "abc", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY",
+            "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "CheckRun", "name": "slow", "status": "IN_PROGRESS", "conclusion": null},
+                {"__typename": "CheckRun", "name": "late", "status": "COMPLETED", "conclusion": "TIMED_OUT"},
+                {"__typename": "StatusContext", "context": "ci/legacy", "state": "ERROR"},
+                {"__typename": "StatusContext", "context": "ci/ok", "state": "SUCCESS"}
+            ]
+        }));
+        assert_eq!(st.head_sha, "abc");
+        assert!(st.conflicting());
+        assert_eq!(st.failing_checks, ["build", "late", "ci/legacy"]);
+
+        let st = pr_state(&serde_json::json!({
+            "number": 8, "state": "OPEN", "mergedAt": null, "url": "u", "headRefName": "h"
+        }));
+        assert_eq!(st.head_sha, "");
+        assert!(!st.conflicting());
+        assert!(st.failing_checks.is_empty());
+        let st = pr_state(&serde_json::json!({
+            "number": 9, "state": "OPEN", "headRefOid": "def", "mergeable": "MERGEABLE",
+            "mergeStateStatus": "BLOCKED", "statusCheckRollup": []
+        }));
+        assert!(!st.conflicting(), "blocked on review is not a conflict");
+        assert!(st.failing_checks.is_empty());
     }
 }

@@ -92,7 +92,9 @@ pushed onto an open pull request after the reviewer asked for changes
 ## Polling and bookkeeping
 
 Each pass asks GitHub about every pull request PULSE opened and has no verdict
-for yet (`gh pr view <n> --json state,mergedAt,url`):
+for yet (one `gh pr list --state all` per repository, `gh pr view <n>` for a
+number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
+`headRefOid`, `mergeable`, `mergeStateStatus` and `statusCheckRollup`):
 
 - **Merged** - `land.merged`, with `merged_at` from GitHub. The jobs' branches
   are cleared (nothing of the work waits any more; the hub's row leaves *In
@@ -104,16 +106,28 @@ for yet (`gh pr view <n> --json state,mergedAt,url`):
   default branch is fast-forwarded from the upstream at once rather than when
   the fetch memo runs out. Whether the reviewer merged it or you did, the
   event is the same; the reviewer's own record is `review.merged`
-  ([The reviewer](review.md)).
+  ([The reviewer](review.md)). A conversation's pull request (`pulse/chat-<id>`)
+  finishes the conversation as well: the pass says so on the bus
+  (`chat.finish`, subject the conversation, with the text *pull request #N
+  merged into main; this session is finished*) and the hub's wake loop ends
+  the session there - after a turn in flight, never through it - and writes
+  the text into the transcript; a hub that was down picks the event up from
+  its cursor when it starts ([Chat](console.md#chat)).
 - **Closed without merging** - `land.pr-closed`. The branches are cleared
   too; a task goes back to *in progress* with a message in its conversation
   that says the pull request was closed and that its lead reads why on the
-  pull request and plans what comes next. The branch stays on the remote, so
-  nothing is lost and nothing delivers it again; a new job of the task makes
-  a new pull request.
-- **Open** - nothing to do here. Where the review stands is the reviewer's
-  record (`review.queued`, `review.owner`, `review.changes`), and the hub
-  reads both ([Where the work stands](#where-the-work-stands-in-the-hub)).
+  pull request and plans what comes next. A conversation gets a note in its
+  transcript (*closed without merging; nothing is marked done; the branch
+  stays on the remote; write here to carry on*) and stays as it was, its
+  agent gets no turn; anything else is only the log line. The branch stays
+  on the remote, so nothing is lost and nothing delivers it again; a new job
+  of the task makes a new pull request.
+- **Open** - where the review stands is the reviewer's record
+  (`review.queued`, `review.owner`, `review.changes`), and the hub reads both
+  ([Where the work stands](#where-the-work-stands-in-the-hub)). What the
+  reviewer cannot fix - a head the base moved away from, checks that fail -
+  is looked after here, once per head ([After the pull request
+  opens](#after-the-pull-request-opens)).
 
 The pass remembers what it delivered in the event log alone: the newest of
 `land.pr`, `land.merged` and `land.pr-closed` for a task, job or branch says
@@ -133,6 +147,51 @@ same selection serves the pull requests, the reviewer's `pulse review`
 commands and the pipeline watcher below; git's own push and fetch use the
 machine's credentials or `push.credential`, never `gh`
 ([Credentials](#credentials)).
+
+## After the pull request opens
+
+An open pull request is not left to wait. The same poll reads what stands
+between each one and its merge, and the pass acts on it once per head sha:
+every follow-up event names the `head_sha` it was about, so a head is never
+acted on twice, and a head GitHub has not judged yet (`mergeable` `UNKNOWN`,
+or no sha from an older `gh`) waits for the next pass. Four outcomes:
+
+- **Conflicting, and the base merges in cleanly** (`mergeable` `CONFLICTING`
+  or `mergeStateStatus` `DIRTY`: the default branch moved after the head was
+  pushed) - the pass fetches the head and the base, merges the base into the
+  head in a scratch worktree of the checkout (`.git/pulse-pr-refresh/<head>`,
+  removed whatever happens) and pushes the merge onto the pull request with
+  `--force-with-lease` on the tip GitHub named. `land.pr-refreshed` records
+  it (`head_sha` the old tip, `new_sha` the merge), and a `land.pr` naming
+  the new tip follows, as a follow-up push writes one, so the next push onto
+  the branch leases on what the pull request holds and the reviewer reads the
+  new head. Nobody is told: there was nothing to decide.
+- **Conflicting, and the merge conflicts** - nothing is pushed; `land.pr-conflict`
+  records the paths left unmerged (`files`) and the origin is told: a task
+  through a message in its conversation (its lead reads it and plans the fix;
+  the message names the pull request, the sha, the paths and what to do), a
+  conversation through a `chat.wake` on the bus with the same text (its agent
+  gets a turn on it, as on any wake), a job or an experiment only through the
+  daemon log line. No job is queued: the work itself is at odds with what
+  landed, which is the agent's to resolve. A head that moved since GitHub
+  was read, or a fetch or push that fails, leaves no record and is read
+  again next pass.
+- **Checks failing** (a `statusCheckRollup` entry concluded `FAILURE`,
+  `CANCELLED`, `TIMED_OUT`, `ACTION_REQUIRED` or `STARTUP_FAILURE`, or a
+  status in state `ERROR` or `FAILURE`) - `land.pr-checks` records the names
+  (`checks`) and the origin is told the same way, once for this head: *checks
+  are failing on pull request #N at <sha>: names; a fix on the branch is the
+  next job on this work*. A new head is judged anew and told anew; a run
+  still in progress, or green, is no news.
+- **Anything else open** - nothing; where the review stands is the
+  reviewer's ([The reviewer](review.md)).
+
+A conflict GitHub reports before the pull request opens is the per-task
+delivery's: a job branch that will not rebase onto the default branch gets a
+rebase job (`land.rebase`, [When delivery fails](#when-delivery-fails)); the
+follow-up here is for the base moving away after the pull request opened. A
+GitHub call that fails leaves everything as it was - no event, no push, no
+message - and the next pass reads again.
 
 ## The local default branch follows the upstream
 
@@ -177,7 +236,10 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 
 | Event | When | Detail |
 | --- | --- | --- |
-| `land.pr` | a pull request opened or updated | `project`, `kind` (`task`, `job`, `experiment`, `proposed`), `number`, `url`, `title`, `head`, `base`, `remote`, `from`, `to`, `commits`, `jobs`, `opened`; the ids: `task`, `job`, `experiment` with `archive` and `run_id`, `conversation`; `fix` (the follow-up job) when a follow-up was pushed onto it |
+| `land.pr` | a pull request opened or updated | `project`, `kind` (`task`, `job`, `experiment`, `proposed`), `number`, `url`, `title`, `head`, `base`, `remote`, `from`, `to`, `commits`, `jobs`, `opened`; the ids: `task`, `job`, `experiment` with `archive` and `run_id`, `conversation`; `fix` (the follow-up job) when a follow-up was pushed onto it; `refreshed` true when the pass merged the base into the head |
+| `land.pr-refreshed` | an open pull request conflicted with its base and the base was merged into its head and pushed | `project`, `kind`, `number`, `head`, `head_sha` (the tip before), `new_sha` (the merge), `base` |
+| `land.pr-conflict` | an open pull request conflicted with its base and the merge did not go cleanly; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `files` (the paths left unmerged) |
+| `land.pr-checks` | checks failed on an open pull request's head; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `checks` (the failing names) |
 | `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
 | `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
 | `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit), `note` (why) |

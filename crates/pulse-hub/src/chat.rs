@@ -64,7 +64,9 @@ const WAKE_RECV: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Turns every `chat.wake` event (`pulse chat wake`, run by a script an
 /// agent left running) into a turn of the conversation it names
-/// ([`Manager::wake`]), until the hub stops. The bus sequence delivered up
+/// ([`Manager::wake`]), and every `chat.finish` (the daemon's delivery pass
+/// saw the conversation's pull request merged) into its finish
+/// ([`Manager::finish_from`]), until the hub stops. The bus sequence delivered up
 /// to is kept in the store (`chat.wake.cursor`), so a wake sent while no
 /// hub ran reaches its agent when the next hub starts.
 pub(crate) fn wake_loop(
@@ -72,7 +74,7 @@ pub(crate) fn wake_loop(
     store: &pulse_store::Store,
     chats: &Chats,
 ) {
-    use pulse_harness::conversation::{WAKE_ACTION, WAKE_CURSOR_KEY};
+    use pulse_harness::conversation::{FINISH_ACTION, WAKE_ACTION, WAKE_CURSOR_KEY};
     let since = match store
         .meta(WAKE_CURSOR_KEY)
         .ok()
@@ -94,7 +96,7 @@ pub(crate) fn wake_loop(
         store.clone(),
         since,
         pulse_bus::Filter {
-            actions: vec![WAKE_ACTION.to_string()],
+            actions: vec![WAKE_ACTION.to_string(), FINISH_ACTION.to_string()],
             ..Default::default()
         },
         std::time::Duration::from_secs(1),
@@ -116,16 +118,22 @@ pub(crate) fn wake_loop(
     }
 }
 
-/// Hands one `chat.wake` event to its conversation; a wake for a
-/// conversation that is gone or archived is dropped with a log line, not
-/// an error that stops the loop.
+/// Hands one `chat.wake` event to its conversation as a turn, or one
+/// `chat.finish` (the daemon saw the conversation's pull request merged)
+/// as its finish; an event for a conversation that is gone or archived is
+/// dropped with a log line, not an error that stops the loop.
 pub(crate) fn deliver_wake(m: &Manager, event: &pulse_bus::Event) {
     let text = serde_json::from_str::<Value>(&event.detail)
         .ok()
         .and_then(|d| d.get("text").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_else(|| event.detail.clone());
-    if let Err(err) = m.wake(&event.subject, &text, &event.actor) {
-        eprintln!("chat wake {}: {err:#}", event.subject);
+    let done = if event.action == pulse_harness::conversation::FINISH_ACTION {
+        m.finish_from(&event.subject, &text).map(|_| ())
+    } else {
+        m.wake(&event.subject, &text, &event.actor)
+    };
+    if let Err(err) = done {
+        eprintln!("{} {}: {err:#}", event.action, event.subject);
     }
 }
 
@@ -1319,6 +1327,58 @@ mod tests {
         ts.event("x", WAKE_ACTION, "chat-nowhere", json!({"text": "hello?"}))
             .expect("event");
         std::thread::sleep(Duration::from_millis(50));
+        ctx.cancel();
+        worker.join().expect("the wake loop ends with the token");
+    }
+
+    /// The daemon's `chat.finish` (the conversation's pull request merged)
+    /// reaches the conversation through the same loop: it stands closed,
+    /// finished by PULSE with the reason, and the page says so.
+    #[test]
+    fn a_chat_finish_event_on_the_bus_finishes_the_conversation() {
+        use pulse_harness::conversation::FINISH_ACTION;
+        let _env = pulse_testutil::env_lock();
+        let ts = additions_store(false);
+        let (h, _script) = fake_handler(&ts, json!([{"content": "Committed the fix."}]));
+        let (code, body, raw) = call(
+            &h,
+            "POST",
+            "/api/v1/chat",
+            json!({"text": "fix the login", "title": ""}),
+        );
+        assert_eq!(code, 201, "{raw}");
+        let id = body["conversation"]["id"].as_str().unwrap().to_string();
+        wait_status(&h, &id, &["idle"]);
+        let ctx = pulse_bus::CancellationToken::new();
+        let loop_ctx = ctx.clone();
+        let loop_store = ts.store.clone();
+        let loop_chats = h.chats.clone();
+        let worker = std::thread::spawn(move || wake_loop(&loop_ctx, &loop_store, &loop_chats));
+        // The loop starts from the bus's end when it has no cursor yet.
+        for _ in 0..200 {
+            if ts
+                .meta(pulse_harness::conversation::WAKE_CURSOR_KEY)
+                .is_ok_and(|(_, f)| f)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        ts.event(
+            "daemon",
+            FINISH_ACTION,
+            &id,
+            json!({"text": "pull request #7 merged: https://github.com/o/r/pull/7"}),
+        )
+        .expect("event");
+        let body = wait_last(
+            &h,
+            &id,
+            "PULSE finished this conversation: pull request #7 merged: https://github.com/o/r/pull/7",
+        );
+        assert_eq!(body["live"]["status"], "closed");
+        let last = body["messages"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["extra"]["closed"], "pulse");
         ctx.cancel();
         worker.join().expect("the wake loop ends with the token");
     }
