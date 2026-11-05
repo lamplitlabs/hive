@@ -317,6 +317,64 @@ pub fn signers_text(s: &pulse_store::Store) -> String {
     .map(|r| signers_line(&r.str("agent"), &r.str("pubkey")))
     .collect()
 }
+/// The refs in `root` whose commits a landing does not answer for: the
+/// project's default branch as it stands now and PULSE's own `pulse/*`
+/// branches, less a conversation's (`pulse/chat-*`, which nothing is built
+/// on) and `ref_` itself. A worker that builds on a sibling's unmerged
+/// branch carries commits signed by the sibling's run key: on 2026-11-05
+/// cinder-15 put TASK-078 on TASK-077's commit, whose pull request merged
+/// while the run was on, and the landing refused the whole branch as not
+/// this run's. Those commits passed this check when their own branch landed,
+/// and the delivery stacks the pull request on the sibling's; only the
+/// commits past these refs are this run's to answer for.
+pub(crate) fn accepted_refs(root: &str, default_branch: &str, ref_: &str) -> Vec<String> {
+    let own = if ref_.starts_with("refs/") {
+        ref_.to_string()
+    } else {
+        format!("refs/heads/{ref_}")
+    };
+    let default_branch = if default_branch.is_empty() {
+        "main"
+    } else {
+        default_branch
+    };
+    let out = crate::util::git_timeout(
+        root,
+        Duration::from_secs(60),
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            &format!("refs/heads/{default_branch}"),
+            "refs/heads/pulse/",
+        ],
+    );
+    if !out.ok() {
+        return Vec::new();
+    }
+    out.stdout
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && *r != own && !r.starts_with("refs/heads/pulse/chat-"))
+        .map(str::to_string)
+        .collect()
+}
+/// How many commits `base..ref_` adds past `accepted`: the ones this run
+/// answers for. Zero when git cannot say.
+pub(crate) fn own_commit_count(root: &str, base: &str, ref_: &str, accepted: &[String]) -> i32 {
+    let mut args = vec!["rev-list", "--count", ref_, "--not", base];
+    args.extend(accepted.iter().map(String::as_str));
+    args.push("--");
+    crate::util::git_timeout(root, Duration::from_secs(60), &args)
+        .stdout
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+/// The commits `base..ref_` adds past `accepted` (see `accepted_refs`) that
+/// do not carry this run's identity: unsigned or signed by another key,
+/// another author, another agent or job in the trailers. Empty when the
+/// landing may go on.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn landing_problems(
     root: &str,
     base: &str,
@@ -325,6 +383,7 @@ pub(crate) fn landing_problems(
     job_id: &str,
     pubkey: &str,
     signers_path: &str,
+    accepted: &[String],
 ) -> Vec<String> {
     if let Err(e) = std::fs::write(signers_path, signers_line(agent, pubkey)) {
         return vec![format!("could not write the allowed-signers file: {e}")];
@@ -332,19 +391,21 @@ pub(crate) fn landing_problems(
     let _ = std::fs::set_permissions(signers_path, std::fs::Permissions::from_mode(0o600));
     let format = "%H%x1f%G?%x1f%an%x1f%ae%x1f%(trailers:key=Pulse-Agent,valueonly,separator=%x1d)%x1f%(trailers:key=Pulse-Job,valueonly,separator=%x1d)%x1e";
     let allowed = format!("gpg.ssh.allowedSignersFile={signers_path}");
-    let out = crate::util::git_timeout(
-        root,
-        Duration::from_secs(120),
-        &[
-            "-c",
-            "gpg.ssh.program=ssh-keygen",
-            "-c",
-            &allowed,
-            "log",
-            &format!("--format={format}"),
-            &format!("{base}..{ref_}"),
-        ],
-    );
+    let format_arg = format!("--format={format}");
+    let mut args = vec![
+        "-c",
+        "gpg.ssh.program=ssh-keygen",
+        "-c",
+        &allowed,
+        "log",
+        &format_arg,
+        ref_,
+        "--not",
+        base,
+    ];
+    args.extend(accepted.iter().map(String::as_str));
+    args.push("--");
+    let out = crate::util::git_timeout(root, Duration::from_secs(120), &args);
     let _ = std::fs::remove_file(signers_path);
     if !out.ok() {
         return vec![format!(

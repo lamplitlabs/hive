@@ -5295,6 +5295,7 @@ mod tests {
             &job.str("id"),
             &pubkey,
             signers.path().join("signers").to_str().unwrap(),
+            &[],
         );
         assert!(
             problems.is_empty(),
