@@ -216,7 +216,9 @@ the runs in flight): the daemon says `building once the queued improve runs on
 The owner's queued work is never among those: the restart does not refuse
 it, so the build does not wait for it.
 A merge that touches nothing the binary is built from is not built at all:
-the daemon diffs the brain's HEAD against the revision it runs, and when every
+the daemon diffs the brain's HEAD against the revision it runs - or, when a
+build or a hand install already waits for its restart, against that installed
+revision, since it is the one the daemon runs next - and when every
 changed path lies outside the crates, the workspace `Cargo.toml` and
 `Cargo.lock`, the toolchain and `.cargo/` files and the console's sources
 under `web/hub/` (`src/`, `public/` and the package and config files;
@@ -224,9 +226,11 @@ pulse-hub's build script builds the export from them and embeds it into the
 binary, so a console change does change `pulse`; the mock API does not), it
 says `self-update: brain HEAD <rev> differs from the running <rev> only
 outside what the binary is built from (N file(s):
-a, b, c and K more); no build` once and keeps the binary it has. The next
-merge is diffed against the running revision again, not against that one,
-so a change under `crates/` that follows a docs merge is built with both.
+a, b, c and K more); no build` (`the installed <rev>` when that was the
+base) once and keeps the binary it has. The next
+merge is diffed against the running or installed revision again, not against
+that one, so a change under `crates/` that follows a docs merge is built with
+both.
 The measured reason: of the 39 landings on the brain's `main` over four days,
 each a release build and a restart, three changed only docs, the README, a
 script or the macOS app. A running binary that does not know its revision (an
