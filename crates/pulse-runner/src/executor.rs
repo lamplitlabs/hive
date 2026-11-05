@@ -60,6 +60,79 @@ static SSH_OPTIONS: &[&str] = &[
     "-o",
     "ClearAllForwardings=yes",
 ];
+/// Seconds a shared connection stays open past its last session; the
+/// daemon's five-minute tick keeps a machine in use inside it.
+const SSH_SHARED_PERSIST_SECONDS: u32 = 600;
+/// The longest socket path a shared connection is given; a unix socket path
+/// is bound at 104 bytes on macOS, and ssh's `%C` hash takes 40 of them.
+const SSH_SOCKET_DIR_MAX: usize = 60;
+
+/// The directory of the shared connections' sockets, `PULSE_HOME/ssh`,
+/// made on the way; None when no home resolves or the path would be too
+/// long for a socket, in which case every session connects on its own.
+pub(crate) fn ssh_socket_dir() -> Option<String> {
+    let home = pulse_store::resolve_home("").ok()?;
+    let dir = format!("{}/ssh", home.trim_end_matches('/'));
+    if dir.len() > SSH_SOCKET_DIR_MAX {
+        return None;
+    }
+    std::fs::create_dir_all(&dir).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Some(dir)
+}
+
+/// Removes the shared connections' sockets, for a daemon that starts: a
+/// master from before a reboot is gone and its socket would turn every
+/// session to that machine into a single connection with a warning until
+/// someone deleted it; a master that still runs ends itself once idle.
+pub(crate) fn ssh_sockets_reset() -> usize {
+    let Some(dir) = ssh_socket_dir() else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
+/// The options every ssh command line to a machine starts with. Every
+/// session to one address (user, host, port) shares one connection: the
+/// first opens a master that stays [`SSH_SHARED_PERSIST_SECONDS`] past its
+/// last session, the rest attach through its socket under
+/// [`ssh_socket_dir`]; a session whose master cannot be reached connects
+/// on its own, as before. Measured 2026-11-05 on the hub: of twenty fresh
+/// connects to hands-cr-064 in 77 s, the carrier-grade NAT the hub sits
+/// behind answered eighteen with a reset before the packet left its
+/// network (a capture on the machine saw one SYN arrive and sent no
+/// reset), and the refusals went on for four minutes after a pairing's
+/// twenty-odd short sessions, while the connection that was up kept
+/// working. One connection per machine is what the NAT allows for; a
+/// probe, a job start, a steps mirror and a fetch then cost no connect at
+/// all.
+pub(crate) fn ssh_options() -> Vec<String> {
+    let mut opts: Vec<String> = SSH_OPTIONS.iter().map(|s| s.to_string()).collect();
+    if let Some(dir) = ssh_socket_dir() {
+        opts.extend(
+            [
+                "ControlMaster=auto".to_string(),
+                format!("ControlPersist={SSH_SHARED_PERSIST_SECONDS}"),
+                format!("ControlPath={dir}/%C"),
+                "ServerAliveInterval=30".to_string(),
+                "ServerAliveCountMax=3".to_string(),
+            ]
+            .into_iter()
+            .flat_map(|o| ["-o".to_string(), o]),
+        );
+    }
+    opts
+}
 static LOGIN_FAULT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(^|\n)not logged in:|not_logged_in|re-?authenticat|not logged in|authenticat|unauthori[sz]ed|\b401\b|Copilot Requests|log ?in").unwrap()
 });
@@ -831,7 +904,7 @@ pub(crate) fn ssh_command(r: &Row, args: &[String]) -> Result<Vec<String>> {
         payload.push(0);
     }
     let mut cmd = vec!["ssh".to_string()];
-    cmd.extend(SSH_OPTIONS.iter().map(|s| s.to_string()));
+    cmd.extend(ssh_options());
     cmd.extend([
         "-p".to_string(),
         port.to_string(),
@@ -893,16 +966,24 @@ pub(crate) fn restore_run_ssh(old: SshRunner) {
 }
 
 /// Whether ssh's stderr says the session never began: the connect itself
-/// failed (refused, timed out, no route, network unreachable) or the
-/// banner exchange was cut before any authentication. Everything after
-/// that (a host key change, a refused key, the remote command's own exit)
-/// is a different failure that a second try would only repeat.
+/// failed (refused, timed out, no route, network unreachable), the
+/// banner exchange was cut before any authentication, or the shared
+/// connection's master took the session request and could not serve it
+/// (the master's connection died under it, or the machine's sshd has its
+/// ten sessions per connection open, which a later try finds freed).
+/// Everything after that (a host key change, a refused key, the remote
+/// command's own exit) is a different failure that a second try would
+/// only repeat.
 pub(crate) fn ssh_connect_failed(err_text: &str) -> bool {
     [
         "ssh: connect to host ",
         "kex_exchange_identification:",
         "ssh_exchange_identification:",
         "banner exchange",
+        "mux_client_request_session:",
+        "mux_client_hello_exchange:",
+        "mux_client_read_exactly:",
+        "mux_client_request_alive:",
     ]
     .iter()
     .any(|mark| err_text.contains(mark))
@@ -1034,7 +1115,7 @@ pub(crate) fn admin_ssh_command(
 ) -> Result<Vec<String>> {
     let (user, host, port) = parse_ssh_address(address)?;
     let mut cmd = vec!["ssh".to_string()];
-    cmd.extend(SSH_OPTIONS.iter().map(|s| s.to_string()));
+    cmd.extend(ssh_options());
     if !control_path.is_empty() {
         cmd.extend(["-o".to_string(), format!("ControlPath={control_path}")]);
     }
@@ -2510,6 +2591,8 @@ mod ssh_connect_retry_tests {
             "kex_exchange_identification: Connection closed by remote host\r\nConnection closed by 1.2.3.4 port 22",
             "kex_exchange_identification: read: Connection reset by peer",
             "Connection timed out during banner exchange",
+            "mux_client_request_session: session request failed: Session open refused by peer",
+            "mux_client_read_exactly: read error: Connection reset by peer",
         ] {
             assert!(ssh_connect_failed(began_not), "{began_not}");
         }
@@ -2517,9 +2600,59 @@ mod ssh_connect_retry_tests {
             "pulse@host: Permission denied (publickey).",
             "Host key verification failed.",
             "ssh: Could not resolve hostname nowhere.invalid: nodename nor servname provided",
+            "ControlSocket /tmp/x already exists, disabling multiplexing",
             "",
         ] {
             assert!(!ssh_connect_failed(began), "{began}");
         }
+    }
+
+    #[test]
+    fn every_session_to_a_machine_shares_one_connection() {
+        let _guard = pulse_testutil::env_lock();
+        let home = tempfile::Builder::new()
+            .prefix("ph")
+            .tempdir_in("/tmp")
+            .expect("home");
+        let _home = pulse_testutil::setenv("PULSE_HOME", home.path());
+        let opts = ssh_options();
+        // The home is read back resolved (`/tmp` is a link on macOS).
+        let dir = format!(
+            "{}/ssh",
+            std::fs::canonicalize(home.path()).expect("home").display()
+        );
+        let pairs: Vec<(&str, &str)> = opts
+            .chunks(2)
+            .map(|c| (c[0].as_str(), c[1].as_str()))
+            .collect();
+        assert!(
+            pairs.contains(&("-o", "ControlMaster=auto"))
+                && pairs.contains(&("-o", "ControlPersist=600"))
+                && pairs.contains(&("-o", &*format!("ControlPath={dir}/%C")))
+                && pairs.contains(&("-o", "BatchMode=yes")),
+            "{opts:?}"
+        );
+        assert!(
+            std::fs::metadata(&dir).is_ok_and(|m| m.is_dir()),
+            "{dir} was not made"
+        );
+        let mut hand = Row::new();
+        hand.insert("address", json!("pulse@hands-two"));
+        let argv = ssh_command(&hand, &["probe".to_string()]).expect("argv");
+        assert!(argv.iter().any(|a| a == "ControlMaster=auto"), "{argv:?}");
+
+        // A socket left behind is removed when a daemon starts.
+        std::fs::write(format!("{dir}/deadbeef"), "").expect("socket");
+        assert_eq!(ssh_sockets_reset(), 1);
+        assert!(std::fs::read_dir(&dir).expect("dir").next().is_none());
+
+        // A home too deep for a socket path gives plain sessions.
+        let deep = home.path().join("x".repeat(SSH_SOCKET_DIR_MAX));
+        let _home = pulse_testutil::setenv("PULSE_HOME", &deep);
+        let opts = ssh_options();
+        assert!(
+            !opts.iter().any(|o| o.starts_with("Control")) && opts.len() == SSH_OPTIONS.len(),
+            "{opts:?}"
+        );
     }
 }

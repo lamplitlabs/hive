@@ -143,17 +143,7 @@ pub(crate) fn tail_str(s: &str, n: usize) -> String {
     crate::executor::tail(s, n)
 }
 fn ssh_options() -> Vec<String> {
-    [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=15",
-        "-o",
-        "ClearAllForwardings=yes",
-    ]
-    .into_iter()
-    .map(ToOwned::to_owned)
-    .collect()
+    crate::executor::ssh_options()
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct LocalExec {
