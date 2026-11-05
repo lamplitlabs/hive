@@ -21,6 +21,16 @@
 //!   `experiment`), and a branch named by hand (`pulse land --branch`, kind
 //!   `proposed`).
 //!
+//! The pull requests of a project form one stack (`stack_top`): a new pull
+//! request is built on the head of the newest open one and targets it
+//! (`base`, `stack_on` in its `land.pr`), so two open pull requests never
+//! hold changes to the same lines that only meet at merge time. The stack
+//! is plain git branches and explicit bases, nothing of the forge's: when
+//! the pull request below merges or closes, the one above is moved onto
+//! its base (`retarget_stacked`), and the reviewer takes the stack bottom
+//! up (`review.rs`). A conversation's pull request (`pulse/chat-<id>`)
+//! stays out of the stack: the hub keeps its branch checked out.
+//!
 //! The same pass reads the state of every open pull request in one `gh pr
 //! list` per repository. Merged: `land.merged`, the delivered jobs lose
 //! their branch, a task is done, the local branches go and the default
@@ -528,8 +538,8 @@ fn task_work_key(root: &str, branches: &[(String, String)]) -> String {
         .join(" ")
 }
 
-/// A job branch that does not merge onto the default branch with the
-/// task's other branches: what conflicted, for the job that rebases it.
+/// A job branch that does not merge onto the task's base with the task's
+/// other branches: what conflicted, for the job that rebases it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Conflict {
     job: String,
@@ -537,12 +547,230 @@ struct Conflict {
     sha: String,
     /// The paths left unmerged, as `git diff --diff-filter=U` names them.
     files: Vec<String>,
+    /// What the branch was being merged onto.
+    base: Base,
+}
+
+/// What a pull request targets: the default branch, or the head of the open
+/// pull request it stacks on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Base {
+    /// The branch the pull request targets on the upstream.
+    branch: String,
+    /// That branch's tip as the work was built on it; empty for the default
+    /// branch, whose local copy is the start.
+    sha: String,
+    /// The pull request whose head `branch` is; 0 for the default branch.
+    stack_on: i64,
+}
+
+impl Base {
+    /// The upstream's default branch, as every pull request targeted before
+    /// the stack.
+    fn default_branch(up: &Upstream) -> Self {
+        Base {
+            branch: up.remote_branch.clone(),
+            sha: String::new(),
+            stack_on: 0,
+        }
+    }
+
+    fn stacked(&self) -> bool {
+        self.stack_on != 0
+    }
+
+    /// The git rev the work starts from or is merged with: the checkout's
+    /// default branch `def` (it follows the upstream), or the stacked head.
+    fn rev(&self, def: &str) -> String {
+        if self.sha.is_empty() {
+            format!("refs/heads/{def}")
+        } else {
+            self.sha.clone()
+        }
+    }
+
+    /// The base in words: `main`, or `pulse/task-X (pull request #N)`.
+    fn describe(&self) -> String {
+        if self.stacked() {
+            format!("{} (pull request #{})", self.branch, self.stack_on)
+        } else {
+            self.branch.clone()
+        }
+    }
+}
+
+/// Whether a pull request takes part in the stack: every kind but a
+/// conversation's (`pulse/chat-<id>`), whose branch the hub keeps checked
+/// out in a worktree of its own - nothing may rebuild it, and nothing is
+/// built on it.
+fn stacks(pr: &Value) -> bool {
+    field(pr, "conversation").is_empty() && !field(pr, "head").starts_with("pulse/chat-")
+}
+
+/// The top of the project's stack, as its newest `land.pr`: the open pull
+/// request opened last, of the kinds that stack. A new pull request is
+/// built on its head. None when nothing stacking is open.
+fn stack_top(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Option<Value> {
+    open_prs_in_order(q, slug)
+        .into_iter()
+        .filter(|(_, d)| stacks(d))
+        .max_by_key(|(first, _)| *first)
+        .map(|(_, d)| d)
+}
+
+/// The hold key of work built on the stack's top names the top too: a hold
+/// stands until the work or the stack changes.
+fn stack_key(key: String, top: Option<&Value>) -> String {
+    match top {
+        Some(t) => format!("{key} on #{}", number_of(t)),
+        None => key,
+    }
+}
+
+/// The base a new pull request gets when the stack is not empty: the top's
+/// head as the upstream has it now (fetched, so a commit the reviewer or
+/// the owner pushed onto it is built on too).
+fn stack_base(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    top: &Value,
+) -> Result<Base, String> {
+    let branch = field_of(top, "head");
+    let stack_on = number_of(top);
+    let sha = fetch_head(s, root, up, &branch)?;
+    if sha.is_empty() {
+        return Err(format!(
+            "{branch} (pull request #{stack_on}, which the work would stack on) is gone from {}",
+            up.remote
+        ));
+    }
+    Ok(Base {
+        branch,
+        sha,
+        stack_on,
+    })
+}
+
+/// The branch an open pull request targets on record: the default branch,
+/// or the head of the pull request it stacks on.
+fn base_branch_of<'a>(pr: &'a Value, up: &'a Upstream) -> &'a str {
+    match pr.get("base").and_then(Value::as_str) {
+        Some(b) if !b.is_empty() => b,
+        _ => up.remote_branch.as_str(),
+    }
+}
+
+/// The base an open pull request has on record: the default branch, or the
+/// head of the pull request it stacks on, fetched so a rebuild starts from
+/// what the upstream holds.
+fn recorded_base(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    pr: &Value,
+) -> Result<Base, String> {
+    let branch = base_branch_of(pr, up).to_string();
+    if branch == up.remote_branch {
+        return Ok(Base::default_branch(up));
+    }
+    let stack_on = pr.get("stack_on").and_then(Value::as_i64).unwrap_or(0);
+    let sha = fetch_head(s, root, up, &branch)?;
+    if sha.is_empty() {
+        return Err(format!(
+            "{branch} (pull request #{stack_on}, which pull request #{} stacks on) is gone from {}",
+            number_of(pr),
+            up.remote
+        ));
+    }
+    Ok(Base {
+        branch,
+        sha,
+        stack_on,
+    })
+}
+
+/// Builds `branch` on the stack's top: the top's head merged into the
+/// branch in a scratch worktree (the branch is PULSE's own, so a merge
+/// commit on it is fine) and the local ref moved to the merge. Returns the
+/// branch's tip, unchanged when it holds the top already. A merge that
+/// conflicts names the paths and the pull request, and moves nothing.
+fn take_in(root: &str, branch: &str, sha: &str, base: &Base) -> Result<String, String> {
+    if is_ancestor(root, &base.sha, sha) {
+        return Ok(sha.to_string());
+    }
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(120), args);
+    let git_dir = git(&["rev-parse", "--absolute-git-dir"])
+        .stdout
+        .trim()
+        .to_string();
+    if git_dir.is_empty() {
+        return Err(format!("{root} is not a git checkout"));
+    }
+    let wt_path = format!("{git_dir}/pulse-stack/{}", branch.replace('/', "_"));
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    let _ = std::fs::remove_dir_all(&wt_path);
+    let add = git(&["worktree", "add", "--detach", &wt_path, sha]);
+    if !add.ok() {
+        return Err(format!(
+            "worktree add failed: {}",
+            crate::run::squeeze(&add.stderr, 200)
+        ));
+    }
+    let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
+    let what = base.describe();
+    let m = in_wt(&[
+        "-c",
+        "user.name=PULSE",
+        "-c",
+        "user.email=pulse@localhost",
+        "merge",
+        "--no-ff",
+        "--no-edit",
+        "-m",
+        &format!("Merge {what} into {branch}"),
+        &base.sha,
+    ]);
+    let result = if m.ok() {
+        let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
+        let moved = git(&["update-ref", &format!("refs/heads/{branch}"), &tip, sha]);
+        if moved.ok() {
+            Ok(tip)
+        } else {
+            Err(format!(
+                "{branch} could not be moved onto {what}: {}",
+                crate::run::squeeze(&moved.stderr, 200)
+            ))
+        }
+    } else {
+        let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        let _ = in_wt(&["merge", "--abort"]);
+        Err(if unmerged.is_empty() {
+            format!(
+                "merge of {what} into {branch} failed: {}",
+                crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
+            )
+        } else {
+            format!(
+                "{branch} does not merge cleanly onto {what}, which it would stack on: conflicts in {}",
+                unmerged.join(", ")
+            )
+        })
+    };
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    result
 }
 
 /// Why a task's pull request could not be built this pass.
 #[derive(Debug)]
 enum TaskFault {
-    Conflict(Conflict),
+    Conflict(Box<Conflict>),
     Other(String),
 }
 
@@ -570,8 +798,13 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         // stands until the work changes, and a branch that appears or moves
         // (a retry's new run) is new work the pass tries again, rather than
         // waiting for a new job of the task.
-        let key = task_work_key(&root, &rt.branches);
         let Ok(conn) = s.conn() else { break };
+        let top = if rt.open.is_none() {
+            stack_top(&conn, &slug)
+        } else {
+            None
+        };
+        let key = stack_key(task_work_key(&root, &rt.branches), top.as_ref());
         if held_already(&conn, &slug, "task", task, &key) {
             continue;
         }
@@ -582,9 +815,11 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
             }
             opened += 1;
         }
-        match deliver_task(s, project, &up, rt, now) {
+        match deliver_task(s, project, &up, rt, top.as_ref(), now) {
             Ok(line) => lines.push(line),
-            Err(TaskFault::Conflict(c)) => lines.push(rebase_or_hold(s, project, rt, &key, c, now)),
+            Err(TaskFault::Conflict(c)) => {
+                lines.push(rebase_or_hold(s, project, rt, &key, *c, now))
+            }
             Err(TaskFault::Other(note)) => {
                 hold(s, now, &slug, json!({"task": task, "work": key}), &note);
                 lines.push(format!("task pr {slug} {task}: held: {note}"));
@@ -616,8 +851,15 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
             continue;
         }
         let sha = rev(&root, &format!("refs/heads/{branch}"));
-        let key = work_key(&branch, &sha);
         let Ok(conn) = s.conn() else { break };
+        // A fix goes onto the pull request it fixes, wherever that stands
+        // in the stack; only a pull request of the job's own stacks.
+        let top = if rj.fix_of.is_none() {
+            stack_top(&conn, &slug)
+        } else {
+            None
+        };
+        let key = stack_key(work_key(&branch, &sha), top.as_ref());
         let next = next_for(&conn, &root, &slug, "job", &id, &sha, &key);
         drop(conn);
         if next == Next::Nothing {
@@ -632,7 +874,7 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
                     }
                     opened += 1;
                 }
-                deliver_job(s, project, &up, job, &sha, next, now).map(|d| d.line)
+                deliver_job(s, project, &up, job, &sha, next, top.as_ref(), now).map(|d| d.line)
             }
         };
         match res {
@@ -668,6 +910,7 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
             &cb.sha,
             cb.conversation(),
             next,
+            None,
             now,
         ) {
             Ok(d) => lines.push(d.line),
@@ -812,6 +1055,9 @@ struct Work<'a> {
     head: String,
     /// The pushed sha.
     sha: String,
+    /// What the pull request targets: the default branch, or the head of
+    /// the open pull request it stacks on.
+    base: Base,
     /// The pull request already open for the work, as its `land.pr` detail.
     open: Option<Value>,
     /// The tip the push expects to find on the remote, when it is known to
@@ -828,8 +1074,8 @@ pub(crate) struct Delivered {
     pub(crate) line: String,
 }
 
-/// Pushes the work's branch to the upstream and opens its pull request, or
-/// finds the one open for it, then records `land.pr`.
+/// Pushes the work's branch to the upstream and opens its pull request on
+/// its base, or finds the one open for it, then records `land.pr`.
 fn deliver_work(
     s: &pulse_store::Store,
     project: &Row,
@@ -851,7 +1097,7 @@ fn deliver_work(
         let base = crate::util::git_timeout(
             &root,
             Duration::from_secs(20),
-            &["merge-base", &format!("refs/heads/{def}"), &work.sha],
+            &["merge-base", &work.base.rev(&def), &work.sha],
         );
         if base.ok() && !base.stdout.trim().is_empty() {
             base.stdout.trim().to_string()
@@ -874,7 +1120,7 @@ fn deliver_work(
             &root,
             &up.repo,
             &work.head,
-            &up.remote_branch,
+            &work.base.branch,
         )? {
             Some((n, u)) => (n, u, false),
             None => {
@@ -882,7 +1128,7 @@ fn deliver_work(
                     &root,
                     &up.repo,
                     &work.head,
-                    &up.remote_branch,
+                    &work.base.branch,
                     &work.title,
                     &work.body,
                 )?;
@@ -891,8 +1137,11 @@ fn deliver_work(
         },
     };
     let mut detail = json!({"project": slug, "kind": work.kind, "number": number, "url": url,
-        "head": work.head, "base": up.remote_branch, "remote": up.remote, "from": from, "to": work.sha,
+        "head": work.head, "base": work.base.branch, "remote": up.remote, "from": from, "to": work.sha,
         "jobs": work.jobs, "commits": commits, "opened": opened, "title": work.title});
+    if work.base.stacked() {
+        detail["stack_on"] = json!(work.base.stack_on);
+    }
     for (k, v) in &work.ids {
         detail[*k] = json!(v);
     }
@@ -902,12 +1151,17 @@ fn deliver_work(
         .first()
         .map(|(k, v)| format!("{k} {v}"))
         .unwrap_or_else(|| work.head.clone());
+    let on = if opened && work.base.stacked() {
+        format!(" on #{}", work.base.stack_on)
+    } else {
+        String::new()
+    };
     Ok(Delivered {
         number,
         url: url.clone(),
         opened,
         line: format!(
-            "{} pr {slug} {what}: #{number} {} {url}",
+            "{} pr {slug} {what}: #{number} {}{on} {url}",
             work.kind,
             if opened { "opened" } else { "updated" }
         ),
@@ -968,17 +1222,20 @@ fn push_rev(
     Ok(())
 }
 
-/// Builds `pulse/task-<id>` from the default branch plus every job branch,
-/// pushes it and opens (or finds) its pull request. When the task's pull
-/// request is open already, the rebuilt branch also takes in whatever the
-/// pull request's head holds beyond the job branches (a reviewer's or the
-/// owner's commits on the forge), so a follow-up job never pushes those
-/// away, and the push expects that head.
+/// Builds `pulse/task-<id>` from its base plus every job branch, pushes
+/// it and opens (or finds) its pull request. The base is the default branch,
+/// or the head of the stack's top `top` when another pull request is open:
+/// the task's then stacks on it. When the task's pull request is open
+/// already, the base is the one on record, and the rebuilt branch also
+/// takes in whatever the pull request's head holds beyond the job branches
+/// (a reviewer's or the owner's commits on the forge), so a follow-up job
+/// never pushes those away, and the push expects that head.
 fn deliver_task(
     s: &pulse_store::Store,
     project: &Row,
     up: &Upstream,
     rt: &ReadyTask,
+    top: Option<&Value>,
     now: &str,
 ) -> Result<String, TaskFault> {
     let root = project.str("path");
@@ -986,6 +1243,12 @@ fn deliver_task(
     let task = rt.task.as_str();
     let branches = rt.branches.as_slice();
     let head = task_branch(task);
+    let base = match (&rt.open, top) {
+        (Some(open), _) => recorded_base(s, &root, up, open)?,
+        (None, Some(top)) => stack_base(s, &root, up, top)?,
+        (None, None) => Base::default_branch(up),
+    };
+    let start = base.rev(&def);
     // Each branch is resolved here, in the checkout, before anything is
     // merged: a name git cannot resolve inside the worktree reads as "not
     // something we can merge", which says nothing about which branch or
@@ -1024,7 +1287,7 @@ fn deliver_task(
     let wt_path = format!("{git_dir}/pulse-task-pr/{task}");
     let _ = git(&["worktree", "remove", "--force", &wt_path]);
     let _ = std::fs::remove_dir_all(&wt_path);
-    let add = git(&["worktree", "add", "--force", "-B", &head, &wt_path, &def]);
+    let add = git(&["worktree", "add", "--force", "-B", &head, &wt_path, &start]);
     if !add.ok() {
         return Err(format!(
             "worktree add failed: {}",
@@ -1077,14 +1340,16 @@ fn deliver_task(
                 .collect();
             let _ = in_wt(&["merge", "--abort"]);
             result = Err(match which {
-                Some(i) if !unmerged.is_empty() => TaskFault::Conflict(Conflict {
+                Some(i) if !unmerged.is_empty() => TaskFault::Conflict(Box::new(Conflict {
                     job: branches[*i].0.clone(),
                     branch: what.clone(),
                     sha: rev.clone(),
                     files: unmerged,
-                }),
+                    base: base.clone(),
+                })),
                 _ => TaskFault::Other(format!(
-                    "{what} does not merge cleanly onto {def} with the task's other branches: {}",
+                    "{what} does not merge cleanly onto {} with the task's other branches: {}",
+                    base.describe(),
                     crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
                 )),
             });
@@ -1107,6 +1372,7 @@ fn deliver_task(
             local: head.clone(),
             head,
             sha: tip,
+            base,
             open: rt.open.clone(),
             lease: remote_head,
         },
@@ -1116,17 +1382,18 @@ fn deliver_task(
 }
 
 /// How many times a task's conflicting branch is handed to a job before the
-/// owner is asked: the rebase job starts from the default branch as it is,
-/// so a second conflict means the work itself is at odds with what landed.
+/// owner is asked: the rebase job starts from the base as it is, so a
+/// second conflict means the work itself is at odds with what landed.
 const REBASES_PER_TASK: usize = 1;
 
-/// A job branch that conflicts with the default branch is work for an
-/// agent before it is a question for the owner: a `task` job on the same
-/// task is queued to bring the branch over onto the default branch and
-/// resolve the conflict, the conflicting job keeps its result but loses the
-/// branch (the task's pull request opens from the rebased one), and
-/// `land.rebase` says so. After `REBASES_PER_TASK` such jobs the task is
-/// held with the conflict named, as before.
+/// A job branch that conflicts with the task's base - the default branch,
+/// or the pull request the task's stacks on - is work for an agent before
+/// it is a question for the owner: a `task` job on the same task is queued
+/// to bring the branch over onto the base and resolve the conflict, the
+/// conflicting job keeps its result but loses the branch (the task's pull
+/// request opens from the rebased one), and `land.rebase` says so. After
+/// `REBASES_PER_TASK` such jobs the task is held with the conflict named,
+/// as before.
 fn rebase_or_hold(
     s: &pulse_store::Store,
     project: &Row,
@@ -1136,11 +1403,12 @@ fn rebase_or_hold(
     now: &str,
 ) -> String {
     let slug = project.str("slug");
-    let def = crate::baseline::default_branch(project.clone());
     let task = rt.task.as_str();
     let files = c.files.join(", ");
+    let onto = c.base.describe();
+    let def = c.base.branch.as_str();
     let note = format!(
-        "{} (job {}) does not merge cleanly onto {def} with the task's other branches: conflicts in {files}",
+        "{} (job {}) does not merge cleanly onto {onto} with the task's other branches: conflicts in {files}",
         c.branch, c.job
     );
     let Ok(conn) = s.conn() else {
@@ -1166,9 +1434,20 @@ fn rebase_or_hold(
     let job = crate::util::must_one(&conn, "SELECT * FROM jobs WHERE id = ?", &[&c.job]);
     drop(conn);
     let short = crate::recipe::short(&c.sha, 12);
+    // A stacked task's branch goes onto the pull request below, not onto
+    // the default branch: the brief says which, and that the worker has
+    // to fetch it.
+    let which = if c.base.stacked() {
+        format!(
+            " - the head of open pull request #{}, which the task's pull request stacks on; fetch it from the upstream first",
+            c.base.stack_on
+        )
+    } else {
+        String::new()
+    };
     let brief = format!(
         "Branch `{branch}` (job {job_id}, commit {short}) is finished work for task {task} ({title}), but it no longer merges onto `{def}`: {files} conflict with what landed on `{def}` after the branch was cut.\n\n\
-         Start from the current `{def}`, bring the branch's commits over (`git cherry-pick` the commits `{def}..{short}` has, or rebase the branch), resolve the conflicts keeping the intent of both sides, run the project's check, and commit on your own branch. \
+         Start from the current `{def}`{which}, bring the branch's commits over (`git cherry-pick` the commits `{def}..{short}` has, or rebase the branch), resolve the conflicts keeping the intent of both sides, run the project's check, and commit on your own branch. \
          Leave `{branch}` as it is; the task's pull request opens from your branch once it merges cleanly.\n\n\
          The job's own account of its work:\n\n{result}",
         branch = c.branch,
@@ -1216,7 +1495,7 @@ fn rebase_or_hold(
         &slug,
         json!({
             "project": slug, "task": task, "job": c.job, "branch": c.branch, "sha": c.sha,
-            "files": c.files, "follow_up": follow_up,
+            "files": c.files, "follow_up": follow_up, "base": def,
         }),
     );
     let _ = pulse_tasks::send_message(
@@ -1225,7 +1504,7 @@ fn rebase_or_hold(
         task,
         ACTOR,
         &format!(
-            "Branch {} of job {} conflicts with {def} in {files}; job {follow_up} rebases it before the task's pull request opens.",
+            "Branch {} of job {} conflicts with {onto} in {files}; job {follow_up} rebases it before the task's pull request opens.",
             c.branch, c.job
         ),
     );
@@ -1291,7 +1570,35 @@ fn task_body(task: &str, title: &str, branches: &[(String, String)]) -> String {
     b
 }
 
-/// One done job's branch as the agent left it, as one pull request.
+/// The base of a stand-alone branch's pull request and the branch's tip
+/// once built on it: a pull request to open stacks on `top`, whose head is
+/// merged into the branch (`take_in`); one open already keeps the base on
+/// record and the branch as it is. A branch some worktree has checked out
+/// is left as it is too, on the default branch: moving it would move the
+/// checkout under whoever works there.
+fn stacked_tip(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    branch: &str,
+    sha: &str,
+    next: &Next,
+    top: Option<&Value>,
+) -> Result<(Base, String), String> {
+    match (next, top) {
+        (Next::Update(d), _) => Ok((recorded_base(s, root, up, d)?, sha.to_string())),
+        (_, Some(top)) if !worktree_branches(root).iter().any(|b| b == branch) => {
+            let base = stack_base(s, root, up, top)?;
+            let tip = take_in(root, branch, sha, &base)?;
+            Ok((base, tip))
+        }
+        _ => Ok((Base::default_branch(up), sha.to_string())),
+    }
+}
+
+/// One done job's branch as the agent left it, as one pull request - built
+/// on the stack's top `top` when one is open.
+#[allow(clippy::too_many_arguments)]
 fn deliver_job(
     s: &pulse_store::Store,
     project: &Row,
@@ -1299,10 +1606,13 @@ fn deliver_job(
     job: &Row,
     sha: &str,
     next: Next,
+    top: Option<&Value>,
     now: &str,
 ) -> Result<Delivered, String> {
+    let root = project.str("path");
     let id = job.str("id");
     let branch = job.str("branch");
+    let (base, tip) = stacked_tip(s, &root, up, &branch, sha, &next, top)?;
     let title = {
         let t = job.str("title");
         if t.trim().is_empty() {
@@ -1323,7 +1633,8 @@ fn deliver_job(
             body: job_body(job),
             local: branch.clone(),
             head: branch,
-            sha: sha.to_string(),
+            sha: tip,
+            base,
             open: match next {
                 Next::Update(d) => Some(d),
                 _ => None,
@@ -1445,6 +1756,8 @@ fn deliver_fix(
 }
 
 /// A branch proposed as it is: a conversation's, or one named by hand.
+/// A branch named by hand stacks on `top`; a conversation's never does
+/// (the hub has it checked out, so nothing is merged into it).
 #[allow(clippy::too_many_arguments)]
 fn deliver_proposed(
     s: &pulse_store::Store,
@@ -1454,10 +1767,14 @@ fn deliver_proposed(
     sha: &str,
     conversation: Option<String>,
     next: Next,
+    top: Option<&Value>,
     now: &str,
 ) -> Result<Delivered, String> {
     let root = project.str("path");
     let def = crate::baseline::default_branch(project.clone());
+    let top = if conversation.is_some() { None } else { top };
+    let (base, sha) = stacked_tip(s, &root, up, branch, sha, &next, top)?;
+    let sha = sha.as_str();
     let subject = crate::util::git_timeout(
         &root,
         Duration::from_secs(10),
@@ -1508,6 +1825,7 @@ fn deliver_proposed(
             local: branch.to_string(),
             head: branch.to_string(),
             sha: sha.to_string(),
+            base,
             open: match next {
                 Next::Update(d) => Some(d),
                 _ => None,
@@ -1546,7 +1864,16 @@ pub(crate) fn propose_branch(
         ));
     }
     let sha = rev(&root, &format!("refs/heads/{branch}"));
+    let conversation = branch
+        .strip_prefix("pulse/chat-")
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
     let conn = s.conn().map_err(|e| e.to_string())?;
+    let top = if conversation.is_some() {
+        None
+    } else {
+        stack_top(&conn, &slug)
+    };
     let next = next_for(
         &conn,
         &root,
@@ -1554,7 +1881,7 @@ pub(crate) fn propose_branch(
         "head",
         branch,
         &sha,
-        &work_key(branch, &sha),
+        &stack_key(work_key(branch, &sha), top.as_ref()),
     );
     drop(conn);
     if next == Next::Nothing {
@@ -1572,11 +1899,17 @@ pub(crate) fn propose_branch(
             ),
         });
     }
-    let conversation = branch
-        .strip_prefix("pulse/chat-")
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    deliver_proposed(s, project, &up, branch, &sha, conversation, next, now)
+    deliver_proposed(
+        s,
+        project,
+        &up,
+        branch,
+        &sha,
+        conversation,
+        next,
+        top.as_ref(),
+        now,
+    )
 }
 
 /// A kept experiment's branch as a pull request, from the experiment lane:
@@ -1603,6 +1936,7 @@ pub(crate) fn deliver_experiment(
         return Err(format!("branch {branch} is not in {root}"));
     }
     let conn = s.conn().map_err(|e| e.to_string())?;
+    let top = stack_top(&conn, &slug);
     let next = next_for(
         &conn,
         &root,
@@ -1610,22 +1944,23 @@ pub(crate) fn deliver_experiment(
         "job",
         &id,
         &sha,
-        &work_key(&branch, &sha),
+        &stack_key(work_key(&branch, &sha), top.as_ref()),
     );
     drop(conn);
+    if next == Next::Nothing {
+        let conn = s.conn().map_err(|e| e.to_string())?;
+        let d = open_pr_for_job(&conn, &slug, &id).ok_or_else(|| {
+            format!(
+                "{branch} was delivered at {} already",
+                crate::recipe::short(&sha, 12)
+            )
+        })?;
+        return Ok((number_of(&d), field_of(&d, "url"), false));
+    }
+    let (base, sha) = stacked_tip(s, &root, &up, &branch, &sha, &next, top.as_ref())?;
     let open = match next {
-        Next::Nothing => {
-            let conn = s.conn().map_err(|e| e.to_string())?;
-            let d = open_pr_for_job(&conn, &slug, &id).ok_or_else(|| {
-                format!(
-                    "{branch} was delivered at {} already",
-                    crate::recipe::short(&sha, 12)
-                )
-            })?;
-            return Ok((number_of(&d), field_of(&d, "url"), false));
-        }
         Next::Update(d) => Some(d),
-        Next::Open => None,
+        _ => None,
     };
     let title = {
         let t = job.str("title");
@@ -1659,6 +1994,7 @@ pub(crate) fn deliver_experiment(
             local: branch.clone(),
             head: branch,
             sha,
+            base,
             open,
             lease: None,
         },
@@ -1671,14 +2007,23 @@ pub(crate) fn deliver_experiment(
 /// newest `land.pr` per number with no `land.merged` or `land.pr-closed`
 /// after it.
 fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<Value> {
+    open_prs_in_order(q, slug)
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect()
+}
+
+/// `open_prs` with, for each, the seq of the `land.pr` that opened it: the
+/// order the stack was built in, which a later push does not change.
+fn open_prs_in_order(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(i64, Value)> {
     let rows = crate::util::query_rows(
         q,
-        "SELECT action, detail FROM events WHERE subject = ? AND action IN ('land.pr', 'land.merged', 'land.pr-closed')
+        "SELECT seq, action, detail FROM events WHERE subject = ? AND action IN ('land.pr', 'land.merged', 'land.pr-closed')
          AND json_valid(detail) ORDER BY seq",
         &[&slug],
     )
     .unwrap_or_default();
-    let mut by_number: BTreeMap<i64, (String, Value)> = BTreeMap::new();
+    let mut by_number: BTreeMap<i64, (i64, String, Value)> = BTreeMap::new();
     for r in rows {
         let d: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
         let n = number_of(&d);
@@ -1686,21 +2031,26 @@ fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<Value> 
             continue;
         }
         let action = r.str("action");
+        let seq = i64::from(r.int("seq"));
         match by_number.get(&n) {
             // A later land.pr of a settled number is a new pull request's
             // push only when the forge reused the number, which it does not;
             // it is the push of new commits recorded after the merge was
             // seen, and the merge stands.
-            Some((prev, _)) if prev != "land.pr" && action == "land.pr" => {}
+            Some((_, prev, _)) if prev != "land.pr" && action == "land.pr" => {}
+            Some((first, prev, _)) if prev == "land.pr" => {
+                let first = *first;
+                by_number.insert(n, (first, action, d));
+            }
             _ => {
-                by_number.insert(n, (action, d));
+                by_number.insert(n, (seq, action, d));
             }
         }
     }
     by_number
         .into_values()
-        .filter(|(a, _)| a == "land.pr")
-        .map(|(_, d)| d)
+        .filter(|(_, a, _)| a == "land.pr")
+        .map(|(first, _, d)| (first, d))
         .collect()
 }
 
@@ -1750,8 +2100,14 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
             },
         };
         match state.state.as_str() {
-            "MERGED" => lines.push(settle_merged(s, project, &pr, &state, now)),
-            "CLOSED" => lines.push(settle_closed(s, project, &pr, &state, now)),
+            "MERGED" => {
+                lines.push(settle_merged(s, project, &pr, &state, now));
+                lines.extend(retarget_stacked(s, project, &up, &pr, &listed, false, now));
+            }
+            "CLOSED" => {
+                lines.push(settle_closed(s, project, &pr, &state, now));
+                lines.extend(retarget_stacked(s, project, &up, &pr, &listed, true, now));
+            }
             "OPEN" => lines.extend(follow_open(s, project, &up, &pr, &state, now)),
             _ => {}
         }
@@ -1864,11 +2220,11 @@ fn refresh_pr_branch(
     } else {
         st.head.clone()
     };
-    let base = up.remote_branch.as_str();
+    let base = base_branch_of(pr, up);
     let url = field_of(pr, "url");
     let short = crate::recipe::short(&st.head_sha, 12);
     let line = format!("{kind} pr {slug}: #{number} conflicts with {base} at {short}");
-    match merge_base_into_head(s, &root, up, &head, &st.head_sha) {
+    match merge_base_into_head(s, &root, up, &head, &st.head_sha, base) {
         Ok(Refreshed::Pushed(tip)) => {
             event(
                 s,
@@ -1940,8 +2296,8 @@ fn merge_base_into_head(
     up: &Upstream,
     head: &str,
     head_sha: &str,
+    base: &str,
 ) -> Result<Refreshed, String> {
-    let base = up.remote_branch.as_str();
     let remote_sha = fetch_head(s, root, up, head)?;
     if remote_sha.is_empty() {
         return Err(format!("{head} is gone from {}", up.name()));
@@ -1954,7 +2310,7 @@ fn merge_base_into_head(
     }
     let base_sha = fetch_head(s, root, up, base)?;
     if base_sha.is_empty() {
-        return Err(format!("{} is gone", up.name()));
+        return Err(format!("{base} is gone from {}", up.remote));
     }
     let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(120), args);
     let git_dir = git(&["rev-parse", "--absolute-git-dir"])
@@ -2049,7 +2405,7 @@ fn note_failing_checks(
         "land.pr-checks",
         &slug,
         json!({"project": slug, "kind": kind, "number": number, "head": head,
-            "head_sha": st.head_sha, "base": up.remote_branch, "checks": st.failing_checks}),
+            "head_sha": st.head_sha, "base": base_branch_of(pr, up), "checks": st.failing_checks}),
     );
     let names = st.failing_checks.join(", ");
     let told = tell_origin(
@@ -2173,6 +2529,103 @@ fn note_conversation_closed(
     )
     .ok()?;
     Some(format!("conversation {id} told"))
+}
+
+/// Moves the pull requests stacked on a settled one onto its base: each
+/// open pull request whose `base` is the settled head is retargeted on the
+/// forge (`gh pr edit --base`) and gets a fresh `land.pr` with the new base
+/// (`retargeted_from` names the old one), so delivery and the reviewer see
+/// where it stands. The forge may move them itself when it deletes a merged
+/// branch; PULSE does not count on it. One retargeted because the pull
+/// request below was closed unmerged carries that one's commits now, which
+/// its task is told once (`land.pr-unstacked` for the other kinds). A
+/// failure of the forge leaves no event, so the next pass tries again.
+fn retarget_stacked(
+    s: &pulse_store::Store,
+    project: &Row,
+    up: &Upstream,
+    settled: &Value,
+    listed: &BTreeMap<i64, crate::landing_pr::PrState>,
+    closed: bool,
+    now: &str,
+) -> Vec<String> {
+    let slug = project.str("slug");
+    let root = project.str("path");
+    let head = field_of(settled, "head");
+    let settled_number = number_of(settled);
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let open = open_prs(&conn, &slug);
+    drop(conn);
+    let above: Vec<&Value> = open
+        .iter()
+        .filter(|pr| number_of(pr) != settled_number && field(pr, "base") == head)
+        .collect();
+    if above.is_empty() {
+        return Vec::new();
+    }
+    // The new base is the settled pull request's own, while that is still
+    // an open pull request's head; the default branch otherwise.
+    let (base, stack_on) = {
+        let b = field_of(settled, "base");
+        let on = settled.get("stack_on").and_then(Value::as_i64).unwrap_or(0);
+        let still_open = on != 0
+            && open.iter().any(|pr| number_of(pr) == on)
+            && listed.get(&on).is_none_or(|st| st.state == "OPEN");
+        if !b.is_empty() && b != up.remote_branch && still_open {
+            (b, on)
+        } else {
+            (up.remote_branch.clone(), 0)
+        }
+    };
+    let mut lines = Vec::new();
+    for pr in above {
+        let n = number_of(pr);
+        let kind = kind_of(pr);
+        // One merged or closed too settles in this very pass.
+        if listed.get(&n).is_some_and(|st| st.state != "OPEN") {
+            continue;
+        }
+        if let Err(e) = crate::landing_pr::retarget_pull_request(&root, &up.repo, n, &base) {
+            lines.push(format!(
+                "{kind} pr {slug}: #{n} not retargeted from {head} to {base}: {e}"
+            ));
+            continue;
+        }
+        let mut d = pr.clone();
+        d["base"] = json!(base);
+        if stack_on != 0 {
+            d["stack_on"] = json!(stack_on);
+        } else if let Some(o) = d.as_object_mut() {
+            o.remove("stack_on");
+        }
+        d["opened"] = json!(false);
+        d["retargeted_from"] = json!(head);
+        event(s, now, "land.pr", &slug, d);
+        let mut line = format!("{kind} pr {slug}: #{n} retargeted from {head} to {base}");
+        if closed {
+            let note = format!(
+                "Pull request #{n} was stacked on #{settled_number}, which was closed unmerged; #{n} now carries #{settled_number}'s commits as well as its own. Rebuild it without them, or merge it as it is."
+            );
+            let task = field_of(pr, "task");
+            if task.is_empty() {
+                event(
+                    s,
+                    now,
+                    "land.pr-unstacked",
+                    &slug,
+                    json!({"project": slug, "kind": kind, "number": n, "url": field_of(pr, "url"),
+                        "head": field_of(pr, "head"), "base": base, "closed": settled_number, "note": note}),
+                );
+            } else {
+                let _ = pulse_tasks::send_message(s, &slug, &task, ACTOR, &note);
+            }
+            line.push_str(&format!("; it carries #{settled_number}'s commits"));
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 /// The jobs a pull request delivered: the `jobs` list of its `land.pr`,
@@ -2471,9 +2924,25 @@ mod tests {
 
     /// A task with two done jobs on their own branches.
     fn task_with_two_branches(s: &pulse_store::Store, proj: &Row, repo: &str) -> String {
-        let task =
-            pulse_tasks::new(s, "proj", "Add the thing", "b", 0, pulse_store::HUMAN_AGENT).unwrap();
-        for name in ["pulse/worker/a", "pulse/worker/b"] {
+        task_with_branches(
+            s,
+            proj,
+            repo,
+            "Add the thing",
+            &["pulse/worker/a", "pulse/worker/b"],
+        )
+    }
+
+    /// A task in progress with one done job per branch named.
+    fn task_with_branches(
+        s: &pulse_store::Store,
+        proj: &Row,
+        repo: &str,
+        title: &str,
+        names: &[&str],
+    ) -> String {
+        let task = pulse_tasks::new(s, "proj", title, "b", 0, pulse_store::HUMAN_AGENT).unwrap();
+        for name in names {
             let j = push_branch(s, proj, repo, name);
             exec1(
                 s,
@@ -3802,6 +4271,347 @@ mod tests {
             propose_branch(&s, &proj, "nope", TEST_NOW)
                 .unwrap_err()
                 .contains("is not in")
+        );
+    }
+
+    /// A task delivered while #7 is open: `pulse/task-<id>` is built on #7's
+    /// head, its pull request targets #7's branch and records the stack.
+    fn stacked_task(
+        s: &pulse_store::Store,
+        proj: &Row,
+        repo: &str,
+        bare: &str,
+        gh: &FakeGh,
+    ) -> (String, String, String) {
+        let first = task_with_two_branches(s, proj, repo);
+        let lines = tend_proj(s, proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{first}: #7 opened https"))),
+            "{lines:?}"
+        );
+        assert_eq!(gh.base_of(7), "main");
+        let first_head = bare_ref(bare, &format!("refs/heads/{}", task_branch(&first)));
+
+        let second = task_with_branches(s, proj, repo, "Add the other thing", &["pulse/worker/c"]);
+        let lines = tend_proj(s, proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{second}: #8 opened on #7 https"))),
+            "{lines:?}"
+        );
+        let second_head = bare_ref(bare, &format!("refs/heads/{}", task_branch(&second)));
+        run(
+            repo,
+            &[
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                &first_head,
+                &second_head,
+            ],
+        );
+        assert_eq!(gh.base_of(8), task_branch(&first));
+        let pr = last_detail(s, "land.pr");
+        assert_eq!(pr["number"], 8);
+        assert_eq!(pr["task"], second);
+        assert_eq!(pr["base"], task_branch(&first));
+        assert_eq!(pr["stack_on"], 7);
+        assert_eq!(pr["from"], first_head, "counted from the base, not main");
+        assert!(tend_proj(s, proj, TEST_NOW).is_empty());
+        (first, second, first_head)
+    }
+
+    #[test]
+    fn a_second_task_pull_request_stacks_on_the_open_one_and_moves_onto_main_when_it_merges() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let (first, second, _) = stacked_task(&s, &proj, &repo, &bare, &gh);
+        let first_branch = task_branch(&first);
+
+        // The bottom merges: #8 is moved onto main on the forge and on
+        // record, and the reviewer takes it next.
+        merge_on_forge(&gh, &bare, 7);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged; task done")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == &format!("task pr proj: #8 retargeted from {first_branch} to main")),
+            "{lines:?}"
+        );
+        assert!(
+            gh.calls().contains(&"pr edit 8".to_string()),
+            "{:?}",
+            gh.calls()
+        );
+        assert_eq!(gh.base_of(8), "main");
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["number"], 8);
+        assert_eq!(pr["task"], second);
+        assert_eq!(pr["base"], "main");
+        assert!(pr.get("stack_on").is_none(), "{pr}");
+        assert_eq!(pr["retargeted_from"], first_branch);
+        assert_eq!(pr["opened"], false);
+        assert_eq!(status(&s, &first), "done");
+        assert_eq!(status(&s, &second), "in_progress");
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+
+        let lines = crate::review::tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#8 queued for review")),
+            "{lines:?}"
+        );
+
+        merge_on_forge(&gh, &bare, 8);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#8 merged; task done")),
+            "{lines:?}"
+        );
+        assert_eq!(status(&s, &second), "done");
+    }
+
+    #[test]
+    fn a_task_stacked_on_a_pull_request_closed_unmerged_is_told_once() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let (first, second, _) = stacked_task(&s, &proj, &repo, &bare, &gh);
+        let told = |task: &str| {
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM messages WHERE task_id = ? AND body LIKE '%was stacked on #7%'",
+                &[&task],
+            )
+        };
+
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 closed unmerged; task back in progress")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                == &format!(
+                    "task pr proj: #8 retargeted from {} to main; it carries #7's commits",
+                    task_branch(&first)
+                )),
+            "{lines:?}"
+        );
+        assert_eq!(gh.base_of(8), "main");
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["number"], 8);
+        assert_eq!(pr["base"], "main");
+        assert!(pr.get("stack_on").is_none(), "{pr}");
+        assert_eq!(told(&second), 1);
+        assert_eq!(told(&first), 0);
+        assert_eq!(
+            events(&s, "land.pr-unstacked"),
+            0,
+            "a task is told, not an event"
+        );
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(told(&second), 1);
+    }
+
+    #[test]
+    fn a_job_pull_request_takes_in_the_stack_top_and_is_unstacked_when_it_closes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let first = task_with_two_branches(&s, &proj, &repo);
+        tend_proj(&s, &proj, TEST_NOW);
+        let first_head = bare_ref(&bare, &format!("refs/heads/{}", task_branch(&first)));
+        let job = push_branch(&s, &proj, &repo, "pulse/sec/x");
+        let id = job.str("id");
+        exec1(
+            &s,
+            "UPDATE jobs SET kind = 'security', source = 'security:proj:2026-09-06' WHERE id = ?",
+            &[&id],
+        );
+        let tip = ref_of(&repo, "refs/heads/pulse/sec/x");
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #8 opened on #7 https://github.com/o/r/pull/8"
+            )]
+        );
+        let pushed = bare_ref(&bare, "refs/heads/pulse/sec/x");
+        assert_ne!(pushed, tip, "the top was merged in");
+        assert_eq!(ref_of(&repo, "refs/heads/pulse/sec/x"), pushed);
+        run(
+            &repo,
+            &["git", "merge-base", "--is-ancestor", &first_head, &pushed],
+        );
+        run(
+            &repo,
+            &["git", "merge-base", "--is-ancestor", &tip, &pushed],
+        );
+        assert_eq!(gh.base_of(8), task_branch(&first));
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["kind"], "job");
+        assert_eq!(pr["base"], task_branch(&first));
+        assert_eq!(pr["stack_on"], 7);
+        assert_eq!(pr["to"], pushed);
+        assert_eq!(pr["from"], first_head);
+        assert!(
+            crate::util::git_timeout(&repo, Duration::from_secs(10), &["worktree", "list"])
+                .stdout
+                .lines()
+                .count()
+                == 1,
+            "the scratch worktree is gone"
+        );
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+
+        // The bottom is closed unmerged: #8 moves onto main carrying #7's
+        // commits, which `land.pr-unstacked` says, once.
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l
+                == &format!(
+                    "job pr proj: #8 retargeted from {} to main; it carries #7's commits",
+                    task_branch(&first)
+                )),
+            "{lines:?}"
+        );
+        assert_eq!(gh.base_of(8), "main");
+        let un = last_detail(&s, "land.pr-unstacked");
+        assert_eq!(un["number"], 8);
+        assert_eq!(un["closed"], 7);
+        assert_eq!(un["base"], "main");
+        assert!(
+            un["note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("#8 was stacked on #7, which was closed unmerged"),
+            "{un}"
+        );
+        assert_eq!(last_detail(&s, "land.pr")["base"], "main");
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+        assert_eq!(events(&s, "land.pr-unstacked"), 1);
+    }
+
+    #[test]
+    fn a_conversation_pull_request_neither_stacks_nor_is_stacked_on() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let first = task_with_two_branches(&s, &proj, &repo);
+        tend_proj(&s, &proj, TEST_NOW);
+        run(&repo, &["git", "branch", "pulse/chat-abc123", "main"]);
+        let tip = commit_dated(
+            &repo,
+            "pulse/chat-abc123",
+            "chat.txt",
+            "2026-09-06T09:58:00Z",
+        );
+        let later = "2026-09-06T10:08:30Z";
+        let lines = tend_proj(&s, &proj, later);
+        assert_eq!(
+            lines,
+            ["proposed pr proj conversation abc123: #8 opened https://github.com/o/r/pull/8"]
+        );
+        assert_eq!(gh.base_of(8), "main");
+        assert_eq!(
+            bare_ref(&bare, "refs/heads/pulse/chat-abc123"),
+            tip,
+            "nothing merged in"
+        );
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["base"], "main");
+        assert!(pr.get("stack_on").is_none(), "{pr}");
+
+        // The next pull request stacks on the task's, not the conversation's.
+        let job = push_branch(&s, &proj, &repo, "pulse/sec/x");
+        let id = job.str("id");
+        exec1(
+            &s,
+            "UPDATE jobs SET kind = 'security', source = 'security:proj:2026-09-06' WHERE id = ?",
+            &[&id],
+        );
+        let lines = tend_proj(&s, &proj, later);
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #9 opened on #7 https://github.com/o/r/pull/9"
+            )]
+        );
+        assert_eq!(gh.base_of(9), task_branch(&first));
+        assert_eq!(last_detail(&s, "land.pr")["stack_on"], 7);
+    }
+
+    #[test]
+    fn a_task_branch_conflicting_with_the_stack_top_goes_to_a_rebase_job_naming_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let first = task_with_two_branches(&s, &proj, &repo);
+        tend_proj(&s, &proj, TEST_NOW);
+        let second =
+            task_with_branches(&s, &proj, &repo, "Add the other thing", &["pulse/worker/c"]);
+        // c adds the file a's commit adds, with other content: it merges
+        // onto main, not onto #7's head.
+        commit_on(&repo, "pulse/worker/c", "pulse_worker_a.txt");
+        let c = job_row_by_branch(&s, "pulse/worker/c");
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        let onto = format!("{} (pull request #7)", task_branch(&first));
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "task pr proj {second}: pulse/worker/c (job {c}) does not merge cleanly onto {onto}"
+            )) && l.contains("rebases it")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            gh.calls()
+                .iter()
+                .filter(|c| c.starts_with("pr create"))
+                .count(),
+            1
+        );
+        let rebase = last_detail(&s, "land.rebase");
+        assert_eq!(rebase["task"], second);
+        assert_eq!(rebase["base"], task_branch(&first));
+        let fu = job_row(&s, rebase["follow_up"].as_str().unwrap());
+        assert_eq!(
+            fu.str("title"),
+            format!(
+                "Rebase pulse/worker/c onto {}: Add the other thing",
+                task_branch(&first)
+            )
+        );
+        assert!(
+            fu.str("brief").contains(
+                "the head of open pull request #7, which the task's pull request stacks on"
+            ),
+            "{}",
+            fu.str("brief")
         );
     }
 }

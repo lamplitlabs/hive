@@ -78,6 +78,9 @@ pub(crate) struct OpenPr {
     pub job: String,
     pub head: String,
     pub base: String,
+    /// The pull request `base` is the head of, when the pull request stacks
+    /// on one (`delivery.rs`); 0 when it targets the default branch.
+    pub stack_on: i64,
     /// The head commit the pull request was last pushed at.
     pub sha: String,
     /// The event's sequence number: later verdicts are the ones after it.
@@ -101,9 +104,25 @@ impl OpenPr {
             job: s("job"),
             head: s("head"),
             base: s("base"),
+            stack_on: detail["stack_on"].as_i64().unwrap_or(0),
             sha: s("to"),
             seq,
         }
+    }
+}
+
+/// What a pull request stacks on, when it does not target the default
+/// branch `def`: `#N` for the pull request below, or the base branch when
+/// the `land.pr` did not name one. Such a pull request is reviewed and
+/// merged after the one below, never before: merging it would merge it
+/// into the branch below, not land it.
+pub(crate) fn stacked_on(pr: &OpenPr, def: &str) -> Option<String> {
+    if pr.base.is_empty() || pr.base == def {
+        None
+    } else if pr.stack_on != 0 {
+        Some(format!("#{}", pr.stack_on))
+    } else {
+        Some(pr.base.clone())
     }
 }
 
@@ -845,6 +864,9 @@ pub(crate) fn merge_as_owner(
 
 /// `gh pr merge --merge --delete-branch`, then `review.merged`; on a gh
 /// failure `review.failed` with the error. Returns the pull request's url.
+/// A pull request stacked on another is refused before gh is asked, and
+/// without a `review.failed`: it is not a failure of the merge, only its
+/// turn has not come, and an owner's ask stands until it does.
 pub(crate) fn merge(
     s: &pulse_store::Store,
     project: &Row,
@@ -859,6 +881,12 @@ pub(crate) fn merge(
         .ok()
         .and_then(|c| pr_state(&c, &slug, number))
         .map(|(pr, _)| pr);
+    let def = crate::baseline::default_branch(project.clone());
+    if let Some(below) = known.as_ref().and_then(|p| stacked_on(p, &def)) {
+        return Err(format!(
+            "pull request #{number} is stacked on {below}; {below} must merge first"
+        ));
+    }
     let url = known.as_ref().map(|p| p.url.clone()).unwrap_or_default();
     let repo = repo_of(project, &url);
     let result = gh(
@@ -902,7 +930,9 @@ pub(crate) fn merge(
 /// One project's pass: review jobs that ended without a verdict become
 /// `review.failed`; then, when no review job is queued or running, the
 /// oldest open pull request gets one (or, after `MAX_ATTEMPTS` failed
-/// reviews of its head, goes to the owner).
+/// reviews of its head, goes to the owner). A pull request stacked on
+/// another waits: the stack is reviewed bottom up, and delivery moves it
+/// onto the default branch when the one below merges.
 fn tend_project(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
     let slug = project.str("slug");
     let Ok(conn) = s.conn() else {
@@ -912,6 +942,7 @@ fn tend_project(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String>
     if open.is_empty() {
         return Vec::new();
     }
+    let def = crate::baseline::default_branch(project.clone());
     let mut lines = Vec::new();
     let mut settled_now = std::collections::BTreeSet::new();
     for pr in &open {
@@ -925,6 +956,13 @@ fn tend_project(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String>
     }
     for pr in &open {
         if settled_now.contains(&pr.number) {
+            continue;
+        }
+        if let Some(below) = stacked_on(pr, &def) {
+            lines.push(format!(
+                "review {slug}: #{} stacked on {below}: reviewed after {below} merges",
+                pr.number
+            ));
             continue;
         }
         if attempts_at(&conn, &slug, pr) >= MAX_ATTEMPTS {
@@ -2041,5 +2079,69 @@ mod tests {
         // The project's own checkout is refused.
         let err = checkout_into(&s, &proj, &view, &repo).unwrap_err();
         assert!(err.contains("project's own checkout"), "{err}");
+    }
+
+    /// A pull request stacked on another waits for it: no review while it
+    /// targets the branch below, no merge either; once delivery moves it
+    /// onto main (a fresh `land.pr`), it is reviewed like any other.
+    #[test]
+    fn a_stacked_pull_request_is_reviewed_and_merged_after_the_one_below() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        event(
+            &s,
+            TEST_NOW,
+            "reviewer",
+            "review.owner",
+            "proj",
+            json!({"project": "proj", "number": 7, "url": "u", "reasons": ["big"]}),
+        );
+        event(
+            &s,
+            TEST_NOW,
+            "daemon",
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "job", "job": "JOB-b", "number": 8,
+                "url": "https://github.com/o/r/pull/8", "head": "pulse/worker/JOB-b",
+                "base": "pulse/task/TASK-001", "stack_on": 7, "to": "abc123", "opened": true,
+                "title": "PR 8 title"}),
+        );
+
+        let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+        assert_eq!(
+            lines,
+            ["review proj: #8 stacked on #7: reviewed after #7 merges"]
+        );
+        assert!(jobs_of(&s, "review").is_empty());
+        assert_eq!(
+            merge_as_owner(&s, &proj, 8, TEST_NOW).unwrap_err(),
+            "pull request #8 is stacked on #7; #7 must merge first"
+        );
+        assert!(calls(&log).is_empty(), "{:?}", calls(&log));
+        assert!(events(&s, "review.failed").is_empty());
+
+        // Delivery moved #8 onto main.
+        event(
+            &s,
+            TEST_NOW,
+            "daemon",
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "job", "job": "JOB-b", "number": 8,
+                "url": "https://github.com/o/r/pull/8", "head": "pulse/worker/JOB-b",
+                "base": "main", "to": "abc123", "opened": false,
+                "retargeted_from": "pulse/task/TASK-001", "title": "PR 8 title"}),
+        );
+        let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#8 queued for review")),
+            "{lines:?}"
+        );
+        assert_eq!(jobs_of(&s, "review").len(), 1);
     }
 }
