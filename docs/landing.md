@@ -844,7 +844,10 @@ goes back to the queue. While a mark holds queued jobs, the daemon's idle line
 says so (`no queued job; 3 queued wait: 3 for blog (local cannot set up
 Gemfile.lock); …`) with the probe command, instead of a bare `no queued job`
 over a queue nobody can see. The login check the daemon runs on an executor is
-a two-step harness run that must answer `SUMMARY: ok`.
+a two-step harness run asked for the one line `SUMMARY: ok`; it passes when the
+provider answered, which includes a run that spent its two steps on a command
+and stopped at the budget after one or more model calls - the login held, the
+model merely wandered. A run the provider never answered fails the check.
 
 ### A red default branch
 
