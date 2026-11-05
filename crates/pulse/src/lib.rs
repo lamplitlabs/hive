@@ -584,7 +584,10 @@ mod tests {
         // prints the stamped version, and in a git checkout the stamp names the revision.
         assert!(pulse_cli::read_build_info().is_some(), "no stamp installed");
         assert_eq!(s(&out).trim(), pulse_cli::version());
-        if Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.git")).exists() {
+        if pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.git")
+            .exists()
+        {
             let rev = pulse_cli::revision();
             assert!(
                 rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()),
