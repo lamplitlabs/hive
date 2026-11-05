@@ -234,6 +234,14 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         w!("{}", job.str("brief"));
         w!("");
     }
+    if o.remote && job.str("kind") == "answer" {
+        // A hand has no store: `pulse board`/`pulse show` there only fail
+        // with "No store at", so the answer job is told what it already has.
+        w!(
+            "This machine has no PULSE store, so do not run `pulse` commands (`pulse board`, `pulse show`, `pulse post`, `pulse claim` or any other): they fail with \"No store at\". The question above is all the board holds for you. Answer it from this clone and print the answer as your SUMMARY: line; the runner posts it on the question's thread for you."
+        );
+        w!("");
+    }
     let earlier = earlier_attempt(store, &jid, agent);
     if let Some(e) = &earlier {
         write_earlier_attempt_section(&mut b, e, &project.str("default_branch"), o.remote);
@@ -2111,6 +2119,51 @@ mod tests {
         assert!(
             !brief.contains("pulse job finish"),
             "remote brief requires a store-backed finish command"
+        );
+    }
+
+    #[test]
+    fn remote_answer_brief_says_the_runner_posts_and_forbids_pulse_commands() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let (project, _) = new_repo(&s);
+        let brief_for = |kind: &str, remote: bool| {
+            let mut job = Row::new();
+            job.insert("id", serde_json::json!("job-answer"));
+            job.insert("kind", serde_json::json!(kind));
+            job.insert("tier", serde_json::json!(0));
+            must_write_brief(BriefOpts {
+                job,
+                project: project.clone(),
+                agent: "aurora".into(),
+                clone: "/clone".into(),
+                minutes: 10,
+                remote,
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                ..Default::default()
+            })
+        };
+        let notice = "do not run `pulse` commands (`pulse board`, `pulse show`";
+        let remote = brief_for("answer", true);
+        for want in [
+            notice,
+            "\"No store at\"",
+            "the runner posts it on the question's thread for you",
+        ] {
+            assert!(
+                remote.contains(want),
+                "remote answer lacks {want:?}:\n{remote}"
+            );
+        }
+        assert!(
+            !brief_for("answer", false).contains(notice),
+            "a local answer job has a store and may read the board"
+        );
+        assert!(
+            !brief_for("task", true).contains(notice),
+            "the notice is for answer jobs only"
         );
     }
 
