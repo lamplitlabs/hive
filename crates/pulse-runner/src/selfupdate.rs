@@ -220,7 +220,18 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
     if !co.due(&st, &env) {
         return lines;
     }
-    co.diff_from(&env.revision);
+    // The binary the daemon runs next is the installed one when a build or a
+    // hand install already waits for its restart: a landing is neutral
+    // against that, not against the older running one. On 2026-11-05 a
+    // hand-installed 1355fb59 waited for the runs in flight while #76 landed
+    // one script; measured from the running 930e1454 the diff spanned
+    // every crate and the settle clock started for a build nobody needed.
+    let base = if st.installed.is_empty() {
+        env.revision.clone()
+    } else {
+        st.installed.clone()
+    };
+    co.diff_from(&base);
     let bench = Bench::read(std::path::Path::new(&s.home), &env, &co.rev);
     let settle = s.setting_int("daemon.self_update_settle_minutes").max(0);
     match gate(&mut st, settle, &now, &env, &co, &bench) {
@@ -265,11 +276,14 @@ pub(crate) struct Checkout {
     pub(crate) branch: String,
     pub(crate) default_branch: String,
     pub(crate) dirty: bool,
-    /// The paths `git diff --name-only <running> <HEAD>` names, from the
-    /// workspace root, when the running revision is known to the checkout.
+    /// The paths `git diff --name-only <base> <HEAD>` names, from the
+    /// workspace root, when the base revision is known to the checkout.
     /// None when it is not (an unstamped build, rewritten history) or the
     /// diff was not run; the pass then builds as it did before the diff.
     pub(crate) changed: Option<Vec<String>>,
+    /// The revision `changed` was measured from: the one installed and
+    /// waiting for its restart when there is one, else the running one.
+    pub(crate) base: String,
 }
 
 impl Checkout {
@@ -290,6 +304,7 @@ impl Checkout {
             branch: branch.stdout.trim().to_string(),
             dirty: !status.stdout.trim().is_empty(),
             changed: None,
+            base: String::new(),
             repo,
             default_branch,
         })
@@ -302,13 +317,14 @@ impl Checkout {
         self.rev != st.installed && self.rev != env.revision && self.rev != st.neutral_rev
     }
 
-    /// Fills `changed` with the paths that differ between `running` and
-    /// HEAD when git can tell; an unknown running revision leaves it None.
-    pub(crate) fn diff_from(&mut self, running: &str) {
-        if running.is_empty() {
+    /// Fills `changed` with the paths that differ between `base` and HEAD
+    /// when git can tell; an unknown base revision leaves it None.
+    pub(crate) fn diff_from(&mut self, base: &str) {
+        if base.is_empty() {
             return;
         }
-        let diff = crate::util::git(&self.repo, &["diff", "--name-only", running, &self.rev]);
+        self.base = base.to_string();
+        let diff = crate::util::git(&self.repo, &["diff", "--name-only", base, &self.rev]);
         if diff.ok() {
             self.changed = Some(
                 diff.stdout
@@ -406,9 +422,15 @@ pub(crate) fn gate(
     // restart the daemon for nothing; three of the brain's last 39 did.
     if co.neutral() {
         st.neutral_rev = rev.clone();
+        let (base, word) = if !co.base.is_empty() && co.base != env.revision {
+            (co.base.as_str(), "installed")
+        } else {
+            (env.revision.as_str(), "running")
+        };
         return Gate::Wait(neutral_line(
             &rev,
-            &env.revision,
+            base,
+            word,
             co.changed.as_deref().unwrap_or_default(),
         ));
     }
@@ -492,9 +514,11 @@ pub(crate) fn gate(
     Gate::Build
 }
 
-/// The line a neutral landing is said with: how many paths changed and
-/// the first three of them, so the log shows what the landing was.
-fn neutral_line(rev: &str, running: &str, changed: &[String]) -> String {
+/// The line a neutral landing is said with: the revision it was measured
+/// from (`word` says whether that one runs or waits installed), how many
+/// paths changed and the first three of them, so the log shows what the
+/// landing was.
+fn neutral_line(rev: &str, base: &str, word: &str, changed: &[String]) -> String {
     let files = match changed.len() {
         0 => "the trees are identical".to_string(),
         n => {
@@ -512,9 +536,9 @@ fn neutral_line(rev: &str, running: &str, changed: &[String]) -> String {
         }
     };
     format!(
-        "brain HEAD {} differs from the running {} only outside what the binary is built from ({files}); no build",
+        "brain HEAD {} differs from the {word} {} only outside what the binary is built from ({files}); no build",
         short_rev(rev.to_string()),
-        short_rev(running.to_string())
+        short_rev(base.to_string())
     )
 }
 
@@ -1615,8 +1639,23 @@ mod tests {
             lines.len() == 1 && lines[0].contains(&format!("pulse rebuilt from {}", &out[..12])),
             "built: {lines:?}"
         );
-        // An unstamped running binary cannot be diffed against: a docs
-        // landing builds, as before the diff.
+        // A docs landing on top of the build that waits for its restart is
+        // measured from that installed revision, not the running one: no
+        // build.
+        let on_top = land(&repo, "docs/on-top.md", "# on top\n", "docs on top");
+        let lines = tend_binary(&s, at(6.5), env.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "brain HEAD {} differs from the installed {} only outside",
+                    &on_top[..12],
+                    &out[..12]
+                )),
+            "docs on top of the installed build: {lines:?}"
+        );
+        // An unstamped running binary with nothing installed cannot be
+        // diffed against: a docs landing builds, as before the diff.
+        crate::test_helpers_selfupdate::reset_self_update();
         let unstamped = land(&repo, "docs/more.md", "# more\n", "more docs");
         env.revision.clear();
         let lines = tend_binary(&s, at(7.0), env.clone());
@@ -1656,6 +1695,7 @@ mod tests {
             default_branch: "main".into(),
             dirty: false,
             changed: Some(vec!["README.md".into(), "scripts/verify-check.sh".into()]),
+            base: "a".repeat(40),
         };
         let mut st = SelfUpdateState::default();
         // Neutral: remembered, said, and quiet from then on.
@@ -1693,6 +1733,27 @@ mod tests {
         );
         assert_eq!(st.installed, co.rev);
         assert_eq!(gate(&mut st, 15, TEST_NOW, &env, &co, &bench), Gate::Quiet);
+        // A landing on top of the installed one that touches no input is
+        // neutral against the installed revision, not the running one: no
+        // settle clock, no build, and the line names what it was measured
+        // from.
+        let installed = co.rev.clone();
+        co.rev = "f".repeat(40);
+        co.base = installed.clone();
+        co.changed = Some(vec!["scripts/verify-check.sh".into()]);
+        assert_eq!(
+            gate(&mut st, 15, TEST_NOW, &env, &co, &bench),
+            Gate::Wait(format!(
+                "brain HEAD {} differs from the installed {} only outside what the binary is built from (1 file(s): scripts/verify-check.sh); no build",
+                "f".repeat(12),
+                "c".repeat(12)
+            ))
+        );
+        assert!(
+            st.settle_rev.is_empty(),
+            "no settle clock for a neutral landing"
+        );
+        co.base = env.revision.clone();
         // An input among the paths: the settle clock runs from the first
         // sight of this HEAD, and the build goes once it has stood.
         co.rev = "d".repeat(40);
