@@ -1030,10 +1030,10 @@ impl ComputeHarness {
         assert_eq!(paired.opts.workdir, crate::provider::HANDS_WORKDIR);
         let ex = crate::executor::executor_row(s, "hands-cr-001");
         assert_eq!(ex.str("status"), "active", "executor: {ex:?}");
-        assert_eq!(ex.str("admin"), format!("pulseadmin@{ip}"));
+        assert_eq!(ex.str("admin"), "pulseadmin@pulse-cr-001-admin");
         let placed = PLACE_LOGIN_CALLS.lock().unwrap().clone();
         assert_eq!(placed.len(), 1, "login placement: {placed:?}");
-        assert_eq!(placed[0].admin, format!("pulseadmin@{ip}"));
+        assert_eq!(placed[0].admin, "pulseadmin@pulse-cr-001-admin");
         let known = std::fs::read_to_string(format!("{}/.ssh/known_hosts", self.hub_home))
             .expect("known hosts");
         let host_key = TEST_HOST_KEY
