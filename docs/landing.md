@@ -108,6 +108,22 @@ whatever is open, and the next pull request of another kind goes on the
 task or job pull request below it. A `pulse review`'s fix goes onto the pull
 request it fixes, wherever that stands.
 
+A worker may build on the stack itself: a follow-up task whose brief names
+the sibling's branch and commit (TASK-078 on TASK-077's, 2026-11-05) puts
+its clone on that commit and commits on top. The landing's identity check
+(ADR-022) then answers only for the commits past the default branch as it
+stands now and past PULSE's own `pulse/*` branches - never a conversation's
+`pulse/chat-*`, which nothing is built on, and never the branch under check
+itself. The sibling's commits passed that check when their own branch
+landed, and carry their own run's signature for `pulse verify`; the run log
+says `N of the M commit(s) are already on the project's own branches` and
+the delivery stacks the pull request on the sibling's as it would any other.
+Until 2026-11-05 the check judged every commit past the clone's base as this
+run's, and refused the whole branch with `authored by quartz-14, not
+cinder-15` after 24 minutes of finished work - also when the sibling's pull
+request had merged while the run was on, since the base stays where the
+clone started.
+
 The stack is plain git branches and explicit bases, nothing a forge keeps
 for PULSE. When the pull request below merges, the pass moves every pull
 request that targeted its head onto its own base (`gh pr edit <n> --base`;

@@ -3037,6 +3037,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "JOB-1",
             &pubkey,
             signers.to_str().unwrap(),
+            &[],
         );
         assert!(own.is_empty(), "own commit refused: {own:?}");
         let wrong_job = crate::keys::landing_problems(
@@ -3047,6 +3048,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "JOB-2",
             &pubkey,
             signers.to_str().unwrap(),
+            &[],
         );
         assert!(
             !wrong_job.is_empty() && wrong_job.join(" ").contains("JOB-1"),
@@ -3064,7 +3066,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 "aurora",
                 "JOB-1",
                 &other,
-                signers.to_str().unwrap()
+                signers.to_str().unwrap(),
+                &[],
             )
             .is_empty(),
             "another run's key accepted"
@@ -3077,7 +3080,8 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 "bob",
                 "JOB-1",
                 &pubkey,
-                signers.to_str().unwrap()
+                signers.to_str().unwrap(),
+                &[],
             )
             .is_empty(),
             "another agent accepted"
@@ -3088,6 +3092,127 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         );
         crate::keys::remove_run_key(key_path.to_str().unwrap());
         assert!(!key_path.exists(), "key not removed");
+    }
+    /// A worker that built on a sibling's unmerged commit lands only what it
+    /// added: the sibling's commit is exempt once it sits on one of PULSE's
+    /// own branches or on the default branch, never when it sits only on a
+    /// conversation's branch, and never when it sits nowhere PULSE owns.
+    #[test]
+    fn landing_answers_only_for_the_commits_past_the_project_s_own_branches() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = crate::test_helpers::new_store();
+        let (_, dir) = crate::test_helpers::new_bare_repo(&s);
+        let clone_dir = tempfile::tempdir().unwrap();
+        let clone = clone_dir.path().join("clone");
+        crate::test_helpers::run(".", &["git", "clone", "-q", &dir, clone.to_str().unwrap()]);
+        let root = clone.to_str().unwrap().to_string();
+        let git = |args: &[&str]| {
+            let mut argv = vec!["git"];
+            argv.extend_from_slice(args);
+            crate::test_helpers::run(&clone, &argv).trim().to_string()
+        };
+        let commit = |file: &str, msg: &str| {
+            std::fs::write(clone.join(file), format!("{file}\n")).unwrap();
+            for args in [vec!["add", file], vec!["commit", "-q", "-m", msg]] {
+                let out = std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&clone)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "git failed: {}\n{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        };
+        let base = git(&["rev-parse", "HEAD"]);
+        let keys = tempfile::tempdir().unwrap();
+        let aurora_key = keys.path().join("aurora.key");
+        crate::keys::make_run_key(aurora_key.to_str().unwrap(), "aurora", "run-1").unwrap();
+        crate::keys::configure_clone_identity(
+            &root,
+            "aurora",
+            aurora_key.to_str().unwrap(),
+            &crate::keys::provenance_hook("aurora", "JOB-1", crate::executor::LOCAL_EXECUTOR),
+        )
+        .unwrap();
+        git(&["switch", "-q", "-c", "work"]);
+        commit("a.txt", "aurora's change");
+        let sibling = git(&["rev-parse", "HEAD"]);
+        let bob_key = keys.path().join("bob.key");
+        let bob = crate::keys::make_run_key(bob_key.to_str().unwrap(), "bob", "run-2").unwrap();
+        crate::keys::configure_clone_identity(
+            &root,
+            "bob",
+            bob_key.to_str().unwrap(),
+            &crate::keys::provenance_hook("bob", "JOB-3", crate::executor::LOCAL_EXECUTOR),
+        )
+        .unwrap();
+        commit("b.txt", "bob's change on top");
+        let signers = keys.path().join("signers").display().to_string();
+        let check = |accepted: &[String]| {
+            crate::keys::landing_problems(
+                &root, &base, "work", "bob", "JOB-3", &bob, &signers, accepted,
+            )
+        };
+        let refused = check(&[]);
+        assert!(
+            refused.iter().any(|p| p.contains("authored by aurora")),
+            "the sibling's commit on no branch of PULSE's was accepted: {refused:?}"
+        );
+        // The default branch at the base exempts nothing past it.
+        let accepted = crate::keys::accepted_refs(&root, "main", "work");
+        assert_eq!(accepted, vec!["refs/heads/main".to_string()]);
+        assert!(
+            !check(&accepted).is_empty(),
+            "main at the base exempted the sibling's commit"
+        );
+        // The sibling's commit on its landed branch: exempt.
+        git(&["branch", "pulse/aurora/JOB-1", &sibling]);
+        let accepted = crate::keys::accepted_refs(&root, "main", "work");
+        assert_eq!(
+            accepted,
+            vec![
+                "refs/heads/main".to_string(),
+                "refs/heads/pulse/aurora/JOB-1".to_string()
+            ]
+        );
+        assert!(check(&accepted).is_empty(), "{:?}", check(&accepted));
+        assert_eq!(
+            crate::keys::own_commit_count(&root, &base, "work", &accepted),
+            1,
+            "bob answers for his own commit alone"
+        );
+        assert_eq!(crate::keys::own_commit_count(&root, &base, "work", &[]), 2);
+        git(&["branch", "-D", "pulse/aurora/JOB-1"]);
+        // The sibling's pull request merged while the run was on: exempt.
+        git(&["branch", "-f", "main", &sibling]);
+        let accepted = crate::keys::accepted_refs(&root, "main", "work");
+        assert_eq!(accepted, vec!["refs/heads/main".to_string()]);
+        assert!(check(&accepted).is_empty(), "{:?}", check(&accepted));
+        git(&["branch", "-f", "main", &base]);
+        // A conversation's branch is never built on: not exempt.
+        git(&["branch", "pulse/chat-20261105T120000-abcdef", &sibling]);
+        let accepted = crate::keys::accepted_refs(&root, "main", "work");
+        assert_eq!(accepted, vec!["refs/heads/main".to_string()]);
+        assert!(
+            !check(&accepted).is_empty(),
+            "a chat branch exempted the sibling's commit"
+        );
+        // The branch under check never exempts itself, named either way.
+        git(&["branch", "pulse/bob/JOB-3", "work"]);
+        for own in ["pulse/bob/JOB-3", "refs/heads/pulse/bob/JOB-3"] {
+            let accepted = crate::keys::accepted_refs(&root, "main", own);
+            assert_eq!(accepted, vec!["refs/heads/main".to_string()], "{own}");
+        }
     }
     #[test]
     fn owner_paths_touched() {

@@ -2098,6 +2098,16 @@ pub(crate) fn run_job(
                                 .join(format!("{}.signers", job.str("id")))
                                 .display()
                                 .to_string();
+                            // Commits already on the default branch or on
+                            // another of PULSE's branches are not this
+                            // run's to answer for: the worker built on a
+                            // sibling's unmerged work, which the delivery
+                            // stacks the pull request on.
+                            let accepted = crate::keys::accepted_refs(
+                                &root,
+                                &crate::baseline::default_branch(project.clone()),
+                                &holding,
+                            );
                             let problems = crate::keys::landing_problems(
                                 &root,
                                 &base,
@@ -2106,6 +2116,7 @@ pub(crate) fn run_job(
                                 &job.str("id"),
                                 &pubkey,
                                 &signers,
+                                &accepted,
                             );
                             if !problems.is_empty() {
                                 status = "failed".into();
@@ -2124,6 +2135,15 @@ pub(crate) fn run_job(
                                     problems.join("\n")
                                 ));
                             } else {
+                                let own = crate::keys::own_commit_count(
+                                    &root, &base, &holding, &accepted,
+                                );
+                                if own < commits {
+                                    log.add(format!(
+                                        "identity check (ADR-022): {} of the {commits} commit(s) are already on the project's own branches, which the worker built on; the {own} this run added carry its identity",
+                                        commits - own
+                                    ));
+                                }
                                 crate::util::git_check(
                                     &root,
                                     &["update-ref", &format!("refs/heads/{branch}"), &holding],
