@@ -199,10 +199,14 @@ master cannot serve is tried again like a refused connect.
 A session that never began - the connect refused or timed out, the banner
 exchange cut, as a network behind carrier-grade NAT does to a burst of
 fresh connections - or that a shared connection's master could not serve
-is tried again before anything counts it: four more times with a doubling
-pause (2, 4, 8, 16 s), for every ssh the hub makes, the pairing's
+is tried again before anything counts it: five more times with a doubling
+pause (2, 4, 8, 16, 32 s - a minute in all, which outlasts the burst a
+daemon restart itself causes when every probe, lead and worker it starts
+opens a fresh connection at once), for every ssh the hub makes, the pairing's
 inspection and apply included (one such refusal between the two used to
-fail the pairing and release a machine that had just booted). A hand that
+fail the pairing and release a machine that had just booted; four tries used
+to run out inside the restart burst and fail a lead's task three times on a
+healthy hand). A hand that
 still stops answering mid-run - three
 transport errors in a row after those tries - goes `unreachable` and gets
 no work. The daemon probes it

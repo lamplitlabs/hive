@@ -25,14 +25,20 @@ pub(crate) const UNREACHABLE_AFTER: i32 = 3;
 pub(crate) const UNREACHABLE_BACKOFF_MAX_MINS: i32 = 30;
 pub(crate) const SSH_EXIT_UNREACH: i32 = 255;
 /// How many more times a session that never began is tried, and the first
-/// pause between tries (doubled each time: 2, 4, 8, 16 s, 30 s in all).
-/// Measured 2026-11-05: the hub's carrier-grade NAT refused bursts of fresh
-/// ssh connections for 1 to 14 s at a time; one refusal between the
+/// pause between tries (doubled each time: 2, 4, 8, 16, 32 s, a minute in
+/// all). Measured 2026-11-05: the hub's carrier-grade NAT refused bursts of
+/// fresh ssh connections for 1 to 14 s at a time; one refusal between the
 /// inspection and the apply failed CR-063's pairing and released a machine
 /// that had just booted, as CR-055..059 went before it, and three in a row
-/// retired hands-cr-062. A connect that fails runs nothing on the far side,
+/// retired hands-cr-062. The burst after a daemon restart is longer: the
+/// shared connection's master dies with the daemon and every probe, lead
+/// and worker the new daemon starts opens a fresh connection at once, which
+/// the NAT refused for 30 to 55 s after the 03:12, 06:14 and 07:03 restarts
+/// that day; four tries (30 s) ran out inside it and failed the lead's task
+/// three times on a healthy hands-cr-062, so the fifth try carries the
+/// window past a minute. A connect that fails runs nothing on the far side,
 /// so trying it again repeats no work.
-pub(crate) const SSH_CONNECT_RETRIES: u32 = 4;
+pub(crate) const SSH_CONNECT_RETRIES: u32 = 5;
 #[cfg(not(test))]
 const SSH_CONNECT_PAUSE: Duration = Duration::from_secs(2);
 #[cfg(test)]
