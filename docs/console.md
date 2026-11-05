@@ -50,11 +50,18 @@ this machine**.
 what it spent, per day - landings, jobs done, tasks done and agent runs,
 each with a sparkline, a per-day rate and the change against the window
 before; tokens in and out (and money, when a provider prices its calls);
-then one chart switchable between the work and the spend over the last 7,
-14 or 30 days. It reads `GET /api/v1/kpis?days=N[&project=SLUG]`, one
-zero-filled row per UTC day from the harness sessions (the **Runs** page),
-the jobs table and the `land.landed` / `task.status` events; `days` is
-1..90 (default 30).
+then a second row, **On its own**, for the work nobody had to ask for or
+approve: pull-request reviews agents finished (and how many they merged
+without the owner's click), the findings they posted - bugs, regressions,
+evidence - the vulnerabilities fixed (with how many Dependabot alerts
+were found), and, beside them, how often the fleet asked the owner
+instead; then one chart switchable between the work, the autonomy and
+the spend over the last 7, 14 or 30 days. It reads
+`GET /api/v1/kpis?days=N[&project=SLUG]`, one zero-filled row per UTC
+day from the harness sessions (the **Runs** page), the jobs table, the
+`land.landed` / `land.merged` / `task.status` / `review.*` /
+`security.alerts` events and the board's `finding` and `for_owner` posts;
+`days` is 1..90 (default 30).
 
 ### For you
 
