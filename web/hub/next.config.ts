@@ -1,20 +1,14 @@
 import type { NextConfig } from "next";
 
 // Static export: the pulse hub embeds web/hub/out (rust-embed in
-// crates/pulse-hub/src/server.rs) and serves out/<route>/index.html. The dev-only rewrite proxies /api to a
+// crates/pulse-hub/src/server.rs; crates/pulse-hub/build.rs runs this build,
+// so out/ is a build product and never committed) and serves
+// out/<route>/index.html. The dev-only rewrite proxies /api to a
 // running `pulse hub --no-browser --port 8787`; `output: "export"` ignores
 // rewrites at build time, which is what we want (every API call is relative).
 const hubPort = process.env.PULSE_HUB_PORT ?? "8787";
 
 const dev = process.env.NODE_ENV === "development";
-
-// Where the export lands. Unset (the default, `npm run build`) writes out/,
-// the committed tree the binary embeds. `npm run check` sets it to
-// .next/check-out so a verify run builds without rewriting out/; that dir is
-// gitignored and `next build` deletes it with the rest of .next next time.
-// Under `output: "export"`, Next reads distDir as the export directory and
-// keeps its own build state in .next.
-const outDir = process.env.PULSE_HUB_OUT_DIR;
 
 const nextConfig: NextConfig = {
   output: "export",
@@ -23,7 +17,6 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   // `next dev` would otherwise write AGENTS.md and CLAUDE.md here; agent instructions are store records, never files in the tree.
   agentRules: false,
-  ...(outDir ? { distDir: outDir } : {}),
   ...(dev
     ? {
         // Without this, dev would 308 /api/v1/x -> /api/v1/x/ before proxying.

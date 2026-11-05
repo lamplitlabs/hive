@@ -1,4 +1,5 @@
-# The static export out/ IS committed (the pulse hub embeds it; a human builds the binary without Node).
+# The static export out/ is a build product (crates/pulse-hub/build.rs builds it, the pulse hub embeds it); it is never committed.
+/out/
 /node_modules
 /.next/
 /build

@@ -1,6 +1,7 @@
 //! PULSE: the HTTP API and SSE the console uses, with the embedded console.
 //!
-//! `web/hub/out` is embedded via rust-embed in server.rs.
+//! `web/hub/out`, the console's static export that build.rs builds from
+//! `web/hub/src`, is embedded via rust-embed in server.rs.
 
 #![allow(unused_imports)]
 

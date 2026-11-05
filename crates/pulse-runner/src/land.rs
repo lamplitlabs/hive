@@ -1628,17 +1628,6 @@ pub(crate) fn land_branch_with_registry(
             ],
         );
     }
-    // A conflict confined to the hub's generated export is not a conflict
-    // between the sources: the export is rebuilt from the merged src and
-    // the landing goes on (landing_hold.rs), for any branch, where before
-    // only an upstream sync got the rebuild and every other such landing
-    // requeued a finished run.
-    let mut out_rebuilt = false;
-    if !merged.ok() && crate::forge::resolve_hub_out_conflict(&worktree, &branch) {
-        out_rebuilt = true;
-        merged =
-            crate::util::git_timeout(&worktree, Duration::from_secs(30), &["rev-parse", "HEAD"]);
-    }
     if !merged.ok() {
         crate::util::git_timeout(&worktree, Duration::from_secs(60), &["merge", "--abort"]);
         let patch = save_branch_patch(root.clone(), base, branch.clone(), home, slug.clone());
@@ -2293,9 +2282,6 @@ pub(crate) fn land_branch_with_registry(
     if !replay_note.is_empty() {
         detail.insert("replayed".into(), serde_json::json!(replay_note));
     }
-    if out_rebuilt {
-        detail.insert("hub_out_rebuilt".into(), serde_json::json!(true));
-    }
     if let Some(secs) = verify_seconds {
         detail.insert("verify_seconds".into(), serde_json::json!(secs));
     }
@@ -2352,14 +2338,11 @@ pub(crate) fn land_branch_with_registry(
         project.str("verify_cmd")
     };
     let def_copy = def.clone();
-    let mut replayed = if replay_note.is_empty() {
+    let replayed = if replay_note.is_empty() {
         String::new()
     } else {
         format!(", {replay_note}")
     };
-    if out_rebuilt {
-        replayed.push_str(", web/hub/out rebuilt from the merged src");
-    }
     let shown = ui
         .as_ref()
         .map(|u| u.landing_sentence())
@@ -5866,115 +5849,6 @@ mod tests {
         assert_eq!(worker.model, "m");
         assert_eq!(worker.run_id, "run-code-delivery");
         assert_eq!(worker.executor, "local");
-    }
-
-    /// Two branches that both touched the hub's source regenerate its
-    /// export, and the export always conflicts: the landing rebuilds it from
-    /// the merged src and lands instead of requeueing the finished run.
-    #[test]
-    fn a_conflict_confined_to_the_hub_export_is_rebuilt_and_lands() {
-        let _serial = crate::test_helpers::serial();
-        let _env = pulse_testutil::env_lock();
-        let s = test_helpers::new_store();
-        let (project, root) = new_repo(&s);
-        join(&s, "aurora");
-        let write = |path: &str, body: &str| {
-            let full = std::path::Path::new(&root).join(path);
-            std::fs::create_dir_all(full.parent().unwrap()).expect("parent");
-            std::fs::write(full, body).expect("write");
-        };
-        // A buildable hub skeleton whose build, like `next build`, makes
-        // out/ itself and writes what src holds.
-        write("web/hub/src/app.css", "base\n");
-        write("web/hub/out/index.html", "built: base\n");
-        write(
-            "web/hub/package.json",
-            "{\"name\":\"t\",\"version\":\"0.0.0\",\"scripts\":{\"build\":\"node -e \\\"const fs=require('fs');fs.mkdirSync('out',{recursive:true});fs.writeFileSync('out/index.html','built: '+fs.readFileSync('src/app.css','utf8'))\\\"\"}}\n",
-        );
-        write(
-            "web/hub/package-lock.json",
-            "{\"name\":\"t\",\"version\":\"0.0.0\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"t\",\"version\":\"0.0.0\"}}}\n",
-        );
-        run(&root, &["git", "add", "-A"]);
-        run(&root, &["git", "commit", "-q", "-m", "seed hub"]);
-        let branch = "pulse/aurora/job-hub-conflict";
-        run(&root, &["git", "switch", "-q", "-c", branch]);
-        write("web/hub/src/app.css", "base\nbranch rule\n");
-        write("web/hub/out/index.html", "built: base\nbranch rule\n");
-        run(&root, &["git", "add", "-A"]);
-        run(&root, &["git", "commit", "-q", "-m", "branch hub change"]);
-        run(&root, &["git", "switch", "-q", "main"]);
-        // Main moved too, on a line of src the branch did not touch, and
-        // regenerated the same export file: src merges clean, out/ does not.
-        write("web/hub/src/app.css", "main rule\nbase\n");
-        write("web/hub/out/index.html", "built: main rule\nbase\n");
-        run(&root, &["git", "add", "-A"]);
-        run(&root, &["git", "commit", "-q", "-m", "main hub change"]);
-        let (job, _) = crate::jobs::add_job(
-            &s,
-            "proj".into(),
-            "task".into(),
-            "Hub change".into(),
-            "do it".into(),
-            1,
-            0,
-            "task:TASK-002".into(),
-            pulse_store::HUMAN_AGENT.into(),
-            false,
-        )
-        .unwrap();
-        exec1(
-            &s,
-            "UPDATE jobs SET status = 'done', branch = ?, lease_agent = ? WHERE id = ?",
-            &[&branch, &"aurora", &job.str("id")],
-        );
-        let (state, note) = super::land_branch(
-            &s,
-            project,
-            branch.into(),
-            "daemon".into(),
-            TEST_NOW.into(),
-            super::LandOpts {
-                job: job_row(&s, &job.str("id")),
-                verify: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(state, "landed", "note {note}");
-        assert!(
-            note.contains("web/hub/out rebuilt from the merged src"),
-            "note {note}"
-        );
-        let src = run(&root, &["git", "show", "HEAD:web/hub/src/app.css"]);
-        assert_eq!(src, "main rule\nbase\nbranch rule\n", "src merged clean");
-        let out = run(&root, &["git", "show", "HEAD:web/hub/out/index.html"]);
-        assert_eq!(
-            out, "built: main rule\nbase\nbranch rule\n",
-            "export rebuilt from the merged src, not either side's copy"
-        );
-        let detail = must_rows(
-            &s,
-            "SELECT detail FROM events WHERE action = 'land.landed'",
-            &[],
-        )[0]
-        .str("detail");
-        let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
-        assert_eq!(detail["hub_out_rebuilt"], true, "detail={detail}");
-        assert!(
-            must_rows(
-                &s,
-                "SELECT action FROM events WHERE action = 'land.conflict'",
-                &[]
-            )
-            .is_empty(),
-            "no conflict was charged"
-        );
-        assert_eq!(
-            job_row(&s, &job.str("id")).str("status"),
-            "done",
-            "the job was not requeued"
-        );
     }
 
     /// A finished job whose branch `pulse/aurora/<name>` adds `file` with
