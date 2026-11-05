@@ -100,12 +100,12 @@ verdict since its last push: a review gives exactly one.
 
 ## The complexity rule
 
-Before the review job runs, the daemon reads the pull request's size and
-paths and lists the reasons a person should decide it. Any one reason means
-the brief says *You may NOT merge this pull request*: the reviewer still
-reads the diff and leaves its findings, but ends with `pulse review owner`
-rather than a merge, and `pulse review merge` refuses it. The reasons are in
-the brief, in `review.queued`, in `pulse review list` and `show`, and in the
+Before the review job runs, the daemon reads the pull request's paths and
+lists the reasons a person should decide it. Any one reason means the brief
+says *You may NOT merge this pull request*: the reviewer still reads the
+diff and leaves its findings, but ends with `pulse review owner` rather
+than a merge, and `pulse review merge` refuses it. The reasons are in the
+brief, in `review.queued`, in `pulse review list` and `show`, and in the
 hub's **Needs your review** row, which a pull request enters the moment its
 review is queued with a reason - you need not wait for the reading to merge
 it, though the reading is what you get for waiting.
@@ -113,9 +113,7 @@ it, though the reading is what you get for waiting.
 | Reason (as the reviewer and the hub word it) | Why |
 | --- | --- |
 | `the owner asked to merge every pull request` | `review.merge` is `ask` |
-| `<F> files / <L> lines changed (limit 20 files / 600 lines)` | more than `review.max_files` files, or more than `review.max_lines` lines added and deleted together: a change that large is one the reviewer cannot hold in one reading. The count leaves out generated paths - anything under `web/hub/out/`, lockfiles (`*.lock`, `Cargo.lock`, `package-lock.json`), minified files (`.min.` in the name) and any path with a `dist`, `out` or `target` segment - so a rebuilt bundle or a lockfile bump is not what makes a pull request large |
 | `touches <path>` | a guarded path: the files the landing refused to agents (`docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/STOP`, `.github/workflows/`) and, for a branch under `pulse/`, the owner's paths too (`docs/decisions/`, `.github/`, `.pulse/agents/`, `.pulse/roles/`, `.pulse/kinds/`); `.env*` files other than `.example` and `.sample`; anything whose name contains `secret`, `credential`, `password`, `.pem`, `id_rsa` or `id_ed25519`; the other forges' CI files (`.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, `.circleci/`). An agent's merge must never move these on its own |
-| `removes more than it adds (<D> lines removed, <A> added)` | over 200 lines deleted and more than twice as many as added: a large deletion is as often a mistake as a cleanup, and git cannot tell which |
 | `opened by a human/other tool (branch <head>)` | the head branch is not under `pulse/`: a branch you proposed with `pulse land --branch`, or an experiment's `evolve/<id>` branch, which keeps its name on the forge. The reviewer reviews it - findings, a drafted review - and never merges it |
 | `the reviewer failed twice` | two review jobs of the same head ended without a verdict ([When the review fails](#when-the-review-fails)); this one is not read from the diff but from the attempts |
 
@@ -123,6 +121,24 @@ A pull request whose only reason is `review.merge=ask` is the common case
 when you want to approve everything yourself; the others are the shape of a
 change, not its content, so the reviewer's findings beside the diff are what
 you read.
+
+Size is not a reason. A pull request over `review.max_files` files or
+`review.max_lines` lines (added and deleted together, generated paths left
+out: anything under `web/hub/out/`, lockfiles - `*.lock`, `Cargo.lock`,
+`package-lock.json` - minified files with `.min.` in the name, and any path
+with a `dist`, `out` or `target` segment), or one that removes more than it
+adds (over 200 lines deleted and more than twice as many as added), gets a
+*Read it with extra care* line in its brief and in `pulse review show`
+instead: `<F> files / <L> lines changed (the usual reading is 20 files /
+600 lines)`, `removes more than it adds (<D> lines removed, <A> added)`.
+The reviewer goes file by file and merges when every file is what the title
+and body say and the check is green; a file the body does not account for,
+or anything it cannot judge, goes to you through `pulse review owner` with
+what it found, as for any other pull request. Until 2026-11-04 size was a
+reason, and the two pull requests it handed over that day - a blog post
+with its data, 81 dictionary entries - carried the reviewer's own "fine to
+merge" and waited a day for a click; a large change the reviewer has read
+and can account for is the reviewer's to merge.
 
 ## The verdict commands
 
@@ -135,10 +151,10 @@ number (`7` or `#7`); `--json` gives the same as data.
 | Command | What it does |
 | --- | --- |
 | `pulse review list [--project S]` | the pull requests PULSE opened that wait for a verdict, every project's when no project is given: `<project> #<n>  <title>  [task T\|job J\|experiment\|proposed]  waiting\|queued\|running\|failed (<job>)  for the owner: <reasons>` and the url on the next line; `No open PULSE pull requests.` when there are none |
-| `pulse review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: PULSE task T` (or job, experiment, proposed; `not a PULSE pull request` for one PULSE did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
+| `pulse review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: PULSE task T` (or job, experiment, proposed; `not a PULSE pull request` for one PULSE did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `pulse review diff <n>` | the diff against the base, from the forge |
 | `pulse review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
-| `pulse review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to; records `review.merged`, or `review.failed` when `gh` could not merge |
+| `pulse review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge |
 | `pulse review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
 | `pulse review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
@@ -206,10 +222,12 @@ pull request somebody merged or closed meanwhile asks for nothing.
 
 To see every pull request before it merges, set `pulse settings review.merge
 ask`: the reviewer still reads each one and leaves its findings, so what you
-get is a reviewed pull request and a button, not a bare diff. To let the
-reviewer merge more, raise `review.max_files` and `review.max_lines`; the
-guarded paths and the human-branch reason cannot be turned off. The hub's
-Settings page has the three under **Reviewing pull requests**.
+get is a reviewed pull request and a button, not a bare diff.
+`review.max_files` and `review.max_lines` set where the brief starts asking
+for the file-by-file reading ([The complexity rule](#the-complexity-rule));
+they do not hand anything to you. The guarded paths and the human-branch
+reason cannot be turned off. The hub's Settings page has the three under
+**Reviewing pull requests**.
 
 The reviewer reads the pull requests PULSE opened and no others. A branch of
 yours gets the same reading when you propose it (`pulse land --project S

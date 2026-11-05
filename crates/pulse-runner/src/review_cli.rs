@@ -45,6 +45,7 @@ struct ShowOut<'a> {
     kind: &'a str,
     task: &'a str,
     reasons: &'a [String],
+    care: &'a [String],
 }
 
 fn store(c: &Context) -> Result<&pulse_store::Store> {
@@ -158,8 +159,15 @@ fn need_open(view: &PrView) -> Result<()> {
 }
 
 /// A pull request already decided since its last push takes no second
-/// verdict: the agent issues exactly one.
-fn need_undecided(s: &pulse_store::Store, slug: &str, number: i64) -> Result<()> {
+/// verdict: the agent issues exactly one. The owner's merge (`--by
+/// owner`) is the answer to a hand-off, so `review.owner` and
+/// `review.changes` stand open to it; only a merge is final.
+fn need_undecided(
+    s: &pulse_store::Store,
+    slug: &str,
+    number: i64,
+    owner_merge: bool,
+) -> Result<()> {
     let Some((_, action)) = s
         .conn()
         .ok()
@@ -167,7 +175,9 @@ fn need_undecided(s: &pulse_store::Store, slug: &str, number: i64) -> Result<()>
     else {
         return Ok(());
     };
-    if action == "land.pr" {
+    if action == "land.pr"
+        || (owner_merge && matches!(action.as_str(), "review.owner" | "review.changes"))
+    {
         return Ok(());
     }
     Err(pulse_cli::errorf(
@@ -282,6 +292,7 @@ fn show(c: &mut Context, number: i64) -> Result<()> {
     let view = fetch_view(s, &project, number)?;
     let pr = known_pr(s, &slug, number, &view);
     let reasons = review::reasons_for(s, &view);
+    let care = review::care_for(s, &view);
     if c.json {
         return pulse_cli::write_json(
             &mut c.out,
@@ -291,6 +302,7 @@ fn show(c: &mut Context, number: i64) -> Result<()> {
                 kind: &pr.kind,
                 task: &pr.task,
                 reasons: &reasons,
+                care: &care,
             },
         );
     }
@@ -322,6 +334,9 @@ fn show(c: &mut Context, number: i64) -> Result<()> {
             c.out,
             "May be merged by the reviewer when correct, safe, in scope and green."
         )?;
+        for care in &care {
+            writeln!(c.out, "Read with extra care: {care}")?;
+        }
     } else {
         writeln!(c.out, "For the owner (do not merge):")?;
         for r in &reasons {
@@ -403,7 +418,7 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
         )
         .into());
     }
-    need_undecided(s, &slug, number)?;
+    need_undecided(s, &slug, number, by == "owner")?;
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let actor = crate::commands::actor_of(c);
@@ -452,7 +467,7 @@ fn changes(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     let project = project_of(c)?;
     let s = store(c)?;
     let slug = project.str("slug");
-    need_undecided(s, &slug, number)?;
+    need_undecided(s, &slug, number, false)?;
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let pr = known_pr(s, &slug, number, &view);
@@ -482,7 +497,7 @@ fn owner(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     let project = project_of(c)?;
     let s = store(c)?;
     let slug = project.str("slug");
-    need_undecided(s, &slug, number)?;
+    need_undecided(s, &slug, number, false)?;
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let pr = known_pr(s, &slug, number, &view);
@@ -664,6 +679,83 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn the_owner_merges_a_pull_request_handed_to_them() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        std::fs::write(
+            &view,
+            view_json(7, "feature/by-hand", &[("src/a.rs", 5, 2)], "OPEN"),
+        )
+        .unwrap();
+        let (out, err, code) = invoke(
+            &s,
+            "review",
+            "proj",
+            &["owner", "7", "--note", "fine from my side"],
+        );
+        assert_eq!(code, 0, "{out} {err}");
+        assert_eq!(events(&s, "review.owner").len(), 1);
+
+        // The hand-off is the verdict the agent owed; the owner's merge is
+        // the answer to it, not a second verdict.
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7", "--by", "owner"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("Merged #7"), "{out}");
+        assert!(
+            calls(&log).iter().any(|c| c == "pr merge 7"),
+            "{:?}",
+            calls(&log)
+        );
+        let merged = events(&s, "review.merged");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["by"], "owner");
+
+        // The agent itself still issues exactly one verdict.
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("already has a verdict"), "{err}");
+    }
+
+    #[test]
+    fn a_large_pull_request_is_the_reviewers_to_merge() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        std::fs::write(
+            &view,
+            view_json(
+                7,
+                "pulse/worker/JOB-a",
+                &[("data/words.json", 900, 100), ("src/a.rs", 5, 2)],
+                "OPEN",
+            ),
+        )
+        .unwrap();
+        let (out, _, code) = invoke(&s, "review", "proj", &["show", "7"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("May be merged by the reviewer"), "{out}");
+        assert!(
+            out.contains("Read with extra care: 2 files / 1007 lines changed"),
+            "{out}"
+        );
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(
+            calls(&log).iter().any(|c| c == "pr merge 7"),
+            "{:?}",
+            calls(&log)
+        );
+        assert_eq!(events(&s, "review.merged").len(), 1);
     }
 
     #[test]
