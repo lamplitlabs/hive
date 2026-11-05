@@ -17,7 +17,8 @@ pub(crate) const LOCAL_EXECUTOR: &str = "local";
 pub(crate) const UNREACHABLE_AFTER: i32 = 3;
 pub(crate) const SSH_EXIT_UNREACH: i32 = 255;
 pub(crate) const REMOTE_EXIT_TIMEOUT: i32 = 124;
-pub(crate) const NATIVE_LOGIN_PROMPT: &str = "Reply with exactly one line: SUMMARY: ok";
+pub(crate) const NATIVE_LOGIN_PROMPT: &str =
+    "Reply with exactly one line and run no command: SUMMARY: ok";
 pub(crate) const LOGIN_CHECK_MINUTES: i32 = 2;
 pub(crate) const LOGIN_EXPIRY_WARN: i32 = 7;
 pub(crate) const GITHUB_API: &str = "https://api.github.com";
@@ -50,6 +51,14 @@ static SSH_ADDRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static EXPIRY_DATE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\d{4}-\d{2}-\d{2})").unwrap());
+/// The closing line of a harness run that spent a budget of its own, with the
+/// number of model calls the provider answered before it stopped.
+static STOPPED_AFTER_CALLS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"SUMMARY: harness stopped: (?:step_limit|time_limit|cost_limit|format_error) after (\d+) model calls",
+    )
+    .unwrap()
+});
 
 #[derive(Debug, Clone)]
 pub struct ExecutorUnreachable {
@@ -1231,6 +1240,34 @@ pub(crate) fn expiry_warning(expires: &str, now: &str, days: i32) -> String {
     }
 }
 
+/// What the login check's run proved: `ok` when the provider answered, `refused`
+/// when the harness names the login as the fault, `failed` otherwise. A run that
+/// ended on its own budget still answered: the closing line counts the model
+/// calls, and one or more means the stored login was accepted and the model
+/// spoke; what it spent the steps on is the model's affair, not the login's.
+/// CR-061 (2026-11-05) placed its login, the light model answered twice and used
+/// the two-step budget on a command instead of the one-line reply, and the
+/// machine was released over a login that worked.
+pub(crate) fn login_check_verdict(rc: i32, out: &str, err_text: &str) -> &'static str {
+    if rc == 0 && out.contains("SUMMARY:") {
+        return "ok";
+    }
+    if STOPPED_AFTER_CALLS_RE
+        .captures(out)
+        .and_then(|c| c[1].parse::<u32>().ok())
+        .is_some_and(|calls| calls >= 1)
+    {
+        return "ok";
+    }
+    let said = fault_line(&(err_text.to_string() + "\n" + out), 200);
+    if rc == 4 || err_text.trim().to_lowercase().starts_with("not logged in:") || login_fault(&said)
+    {
+        "refused"
+    } else {
+        "failed"
+    }
+}
+
 pub(crate) fn login_check_command(s: &pulse_store::Store) -> Vec<String> {
     let mut cmd = vec![
         "pulse".to_string(),
@@ -1356,17 +1393,8 @@ pub(crate) fn login_check(
                 Ok((code, out, err_text)) => {
                     rc = code;
                     said = fault_line(&(err_text.clone() + "\n" + &out), 200);
-                    if rc == 0 && out.contains("SUMMARY:") {
-                        ok = true;
-                        kind = "ok".to_string();
-                    } else if rc == 4
-                        || err_text.trim().to_lowercase().starts_with("not logged in:")
-                        || login_fault(&said)
-                    {
-                        kind = "refused".to_string();
-                    } else {
-                        kind = "failed".to_string();
-                    }
+                    kind = login_check_verdict(code, &out, &err_text).to_string();
+                    ok = kind == "ok";
                 }
             }
             let _ = ssh_run(&r, &["clean".into(), job], &[], Duration::from_secs(60));
@@ -1374,7 +1402,12 @@ pub(crate) fn login_check(
     }
     let seconds = started.elapsed().as_secs() as i32;
     let worker = "harness";
-    let note = if ok {
+    let note = if ok && rc != 0 {
+        format!(
+            "login ok: {worker} answered in {seconds}s, then stopped at its budget: {}",
+            cut(&said, 120)
+        )
+    } else if ok {
         format!("login ok: {worker} answered in {seconds}s")
     } else if kind == "refused" {
         format!(
@@ -2256,6 +2289,55 @@ pub(crate) fn login_expiry(s: &pulse_store::Store, name: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+#[cfg(test)]
+mod login_check_verdict_tests {
+    use super::login_check_verdict;
+
+    const CR_061: &str = "SUMMARY: harness stopped: step_limit after 2 model calls and 1 commands; format_errors=0; error: stopped at the step budget: 2 model calls\n";
+
+    #[test]
+    fn a_run_that_spent_its_budget_after_the_model_answered_proves_the_login() {
+        assert_eq!(login_check_verdict(1, CR_061, ""), "ok");
+        assert_eq!(
+            login_check_verdict(
+                1,
+                "SUMMARY: harness stopped: time_limit after 1 model calls and 3 commands; format_errors=0\n",
+                ""
+            ),
+            "ok"
+        );
+        assert_eq!(login_check_verdict(0, "SUMMARY: ok\n", ""), "ok");
+    }
+
+    #[test]
+    fn a_run_the_provider_never_answered_is_not_a_login() {
+        assert_eq!(
+            login_check_verdict(
+                1,
+                "SUMMARY: harness stopped: step_limit after 0 model calls and 0 commands; format_errors=0\n",
+                ""
+            ),
+            "failed"
+        );
+        assert_eq!(
+            login_check_verdict(
+                4,
+                "SUMMARY: harness stopped: not_logged_in after 0 model calls and 0 commands; format_errors=0\n",
+                "not logged in: run pulse harness login"
+            ),
+            "refused"
+        );
+        assert_eq!(
+            login_check_verdict(
+                3,
+                "SUMMARY: harness stopped: provider_error after 0 model calls and 0 commands; format_errors=0; error: 401 Unauthorized\n",
+                ""
+            ),
+            "refused"
+        );
+    }
 }
 
 #[cfg(test)]
