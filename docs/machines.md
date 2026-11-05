@@ -255,6 +255,24 @@ machine is ready), which is what the card on the Machines page shows under
 the reason. The hub serving one project
 (`pulse hub --project`) takes requests for that project only.
 
+### Choosing a cloud
+
+Settings → Machines opens with **Where machines come from**: one card per
+cloud, drawn from the cloud registry (`crates/pulse-store/src/clouds/`, one
+module per cloud; `GET /api/v1/clouds` answers it with the stored values and
+what is still missing). Each cloud names its auth modes and the settings it
+needs; picking one writes `compute.provider` and those settings, nothing else.
+Azure signs in either as the owner (`compute.azure.auth=login`, a browser
+`az login`) or as a service principal (`service-principal`, with
+`compute.azure.tenant`, `compute.azure.client_id` and
+`compute.azure.client_secret` - a reference such as `keychain://` or
+`op://`, never the secret, which PULSE does not read); under a service
+principal the runner refuses to provision or to deliver an `az://` backup
+while `az` is signed in as any other identity. **Where backups go** reads the
+same registry's backup targets (a folder, Azure Blob Storage, a command) and
+composes `backup.to` from their parts. A new cloud is one new module listed
+in `clouds::clouds()` plus its settings.
+
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) still reads
 the machine and prints the apply, undo and commit scripts and the local
 changes without applying any of it. For installed hands it loads or builds

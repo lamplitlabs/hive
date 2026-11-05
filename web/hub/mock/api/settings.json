@@ -676,6 +676,57 @@
       "value": "Ubuntu2404"
     },
     {
+      "choices": [
+        "login",
+        "service-principal"
+      ],
+      "default": "login",
+      "description": "how this machine signs in to Azure for machines and az:// backups: login (az login with your own account, the default) or service-principal (az login --service-principal as the app compute.azure.client_id in compute.azure.tenant; the runner refuses to provision or back up while az is signed in as anyone else)",
+      "kind": "choice",
+      "min": null,
+      "name": "compute.azure.auth",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "login"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "Microsoft Entra tenant id (or domain) of the service principal; read only when compute.azure.auth is service-principal",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.tenant",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "application (client) id of the service principal; read only when compute.azure.auth is service-principal",
+      "kind": "identifier",
+      "min": null,
+      "name": "compute.azure.client_id",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "where the service principal's secret lives, as a reference and never the secret itself: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. PULSE never reads it; the console fills it into the az login --service-principal command you run on this machine",
+      "kind": "reference",
+      "min": null,
+      "name": "compute.azure.client_secret",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": ""
+    },
+    {
       "choices": null,
       "default": "",
       "description": "Azure region, e.g. westeurope",

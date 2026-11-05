@@ -1400,6 +1400,69 @@ export interface CredReport {
   fingerprint?: string;
 }
 
+// ----- the cloud registry (ADR-070): GET /api/v1/clouds -------------------
+
+// One value a cloud reads, a store setting shown as a labelled field. A
+// `reference` field holds where a secret lives (op://, keychain://,
+// file://), never the secret. For a backup target's `parts`, `setting` is
+// the part's slot in `template`, not a store setting.
+export interface CloudField {
+  setting: string;
+  label: string;
+  help: string;
+  kind: "identifier" | "reference" | string;
+  required: boolean;
+  placeholder: string;
+}
+
+// One way this machine signs in; `sign_in` is the command the owner runs,
+// with {setting} slots.
+export interface CloudAuthMode {
+  id: string;
+  label: string;
+  blurb: string;
+  sign_in: string;
+  fields: CloudField[];
+}
+
+export interface Cloud {
+  id: string;
+  label: string;
+  blurb: string;
+  auth_setting: string;
+  auth: CloudAuthMode[];
+  fields: CloudField[];
+  backup_target: string;
+  // What the store holds now.
+  auth_value: string;
+  values: Record<string, string>;
+  missing: string[];
+}
+
+export interface BackupTarget {
+  id: string;
+  label: string;
+  blurb: string;
+  cloud: string;
+  parts: CloudField[];
+  template: string;
+  fields: CloudField[];
+}
+
+export interface CloudsPayload {
+  available: boolean;
+  can_edit: boolean;
+  provider: string;
+  clouds: Cloud[];
+  backup: {
+    to: string;
+    target: string;
+    parts: Record<string, string>;
+    values: Record<string, string>;
+    targets: BackupTarget[];
+  };
+}
+
 export interface CredPayload {
   available: boolean;
   can_edit: boolean;
