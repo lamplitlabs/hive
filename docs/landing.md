@@ -162,7 +162,7 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   text *pull request #N merged into main; this session is finished*) and the
   hub's wake loop ends the session there - after a turn in flight, never
   through it - and writes the text into the transcript; a hub that was down
-  picks the event up from its cursor when it starts ([Chat](console.md#chat)).
+  picks the event up from its cursor when it starts ([Sessions](console.md#sessions)).
 - **Closed without merging** - `land.pr-closed`. The branches are cleared
   too; a task goes back to *in progress* with a message in its conversation
   that says the pull request was closed and that its lead reads why on the
@@ -306,7 +306,7 @@ reviewer](review.md#events). Older stores hold the events of the local flow -
 `land.landed`, `land.batch`, `land.pushed`, `land.synced`, `land.held`,
 `land.failed-verify`, `land.deferred`, `land.conflict` - as history; only a
 project without an upstream writes `land.landed` now. The goal review counts
-`land.landed` and `land.merged` alike ([Goals](goals.md)); the loop report's
+`land.landed` and `land.merged` alike ([Goal review](board.md#goal-review-how-far-the-work-has-moved-it)); the loop report's
 landing counts and the code-delivery report still read `land.landed` only,
 so for a project with an upstream they count nothing under this flow until
 they are taught `land.merged`.
