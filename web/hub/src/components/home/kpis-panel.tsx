@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { TrendingUpIcon } from "lucide-react";
+import { ChevronDownIcon, TrendingUpIcon } from "lucide-react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sparkline } from "@/components/pulse/charts";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Panel, SkeletonRows } from "@/components/pulse/panel";
@@ -19,6 +20,7 @@ const segment = "h-7 px-2.5 text-xs";
 const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.5rem 0.75rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
 const axisTick = { fill: "var(--muted-foreground)", fontSize: 11 };
 const STORAGE = "pulse.home.kpis.range";
+const CHART_STORAGE = "pulse.home.kpis.chart";
 
 // The series the chart draws, in a fixed colour slot each (globals.css).
 const WORK_SERIES: { key: "landings" | "jobs_done" | "tasks_done" | "jobs_failed"; name: string; color: string }[] = [
@@ -43,6 +45,11 @@ function initialRange(): KpiRange {
   return (KPI_RANGES as string[]).includes(v || "") ? (v as KpiRange) : "7d";
 }
 
+function initialChart(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(CHART_STORAGE) === "open";
+}
+
 function cellSub(f: KpiFigure, range: KpiRange, perDay: boolean): string {
   const change = changeText(f, range);
   return perDay && f.total > 0 ? perDayText(f.perDay) + " · " + change : change;
@@ -52,10 +59,17 @@ function cellSub(f: KpiFigure, range: KpiRange, perDay: boolean): string {
 // and agent runs (the harness sessions - the hub's "Sessions" page is the
 // chat) with their tokens (and money, when priced), each with
 // a sparkline and a comparison with the window before, then one chart
-// switchable between the work and the spend. The range is remembered.
+// switchable between the work and the spend. The range is remembered, and
+// so is whether the chart is open: by default the numbers alone show and
+// the chart unfolds on request, so Home stays a briefing, not a dashboard.
 export function KpisPanel({ project, height = 200 }: { project?: string | null; height?: number }) {
   const [range, setRangeState] = useState<KpiRange>(initialRange);
   const [lens, setLens] = useState<Lens>("work");
+  const [chart, setChartState] = useState<boolean>(initialChart);
+  const setChart = (open: boolean) => {
+    setChartState(open);
+    window.localStorage.setItem(CHART_STORAGE, open ? "open" : "closed");
+  };
   // Ask for two windows so the comparison has something to compare with.
   const kpis = useApi<KpisPayload>(kpiPath(Math.min(90, KPI_RANGE_DAYS[range] * 2), project), { refresh: 60000 });
   const setRange = (r: KpiRange) => {
@@ -76,15 +90,17 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
   const controls = (
     <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
       {p ? <span className="mr-1 text-[13px]">{kpiSummaryLine(p, range)}</span> : null}
-      <Tabs value={lens} onValueChange={(v) => setLens(v as Lens)}>
-        <TabsList className={segmented} aria-label="Chart what">
-          {(["work", "spend"] as Lens[]).map((l) => (
-            <TabsTrigger key={l} value={l} className={segment}>
-              {LENS_LABEL[l]}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+      {chart ? (
+        <Tabs value={lens} onValueChange={(v) => setLens(v as Lens)}>
+          <TabsList className={segmented} aria-label="Chart what">
+            {(["work", "spend"] as Lens[]).map((l) => (
+              <TabsTrigger key={l} value={l} className={segment}>
+                {LENS_LABEL[l]}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      ) : null}
       <Tabs value={range} onValueChange={(v) => setRange(v as KpiRange)}>
         <TabsList className={segmented} aria-label="Over time range">
           {KPI_RANGES.map((r) => (
@@ -117,7 +133,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
   const caption = lens === "work" ? "Landings, jobs and tasks per day, last " + KPI_RANGE_LABEL[range] : (priced ? "Tokens and cost" : "Tokens") + " per day, last " + KPI_RANGE_LABEL[range];
   return (
     <Panel title="Over time" icon={TrendingUpIcon} actions={controls} contentClassName="pt-0">
-      <KpiGrid className={"mb-4 rounded-xl " + (priced ? "md:grid-cols-6" : "md:grid-cols-5")}>
+      <KpiGrid className={"mb-0 rounded-xl " + (priced ? "md:grid-cols-6" : "md:grid-cols-5")}>
         {CELLS.map((c) => {
           const f = figures[c.key];
           return <Kpi key={c.key} n={c.text ? c.text(f.total) : f.total} label={c.label} href={c.href} tone={changeTone(f, c.dir)} spark={f.spark.length > 1 ? <Sparkline values={f.spark} w={72} h={20} /> : undefined} sub={cellSub(f, range, !!c.perDay)} />;
@@ -125,7 +141,14 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
         <Kpi n={tokensText(tokens.total)} label="Tokens" href={hrefs.harness()} tone={changeTone(tokens, "up-bad")} spark={tokens.spark.length > 1 ? <Sparkline values={tokens.spark} w={72} h={20} /> : undefined} sub={tokens.total > 0 ? tokensText(figures.prompt_tokens.total) + " in · " + tokensText(figures.completion_tokens.total) + " out · " + changeText(tokens, range) : changeText(tokens, range)} />
         {priced ? <Kpi n={costText(figures.cost.total)} label="Spent" href={hrefs.harness()} tone={changeTone(figures.cost, "up-bad")} spark={figures.cost.spark.length > 1 ? <Sparkline values={figures.cost.spark} w={72} h={20} /> : undefined} sub={changeText(figures.cost, range)} /> : null}
       </KpiGrid>
-      <div style={{ height }} className="min-w-0" role="img" aria-label={caption}>
+      <div className="mt-3 flex justify-end">
+        <Button type="button" variant="ghost" size="sm" onClick={() => setChart(!chart)} aria-expanded={chart} aria-controls="pulse-home-kpis-chart" className="text-muted-foreground">
+          {chart ? "Hide the chart" : "Show the chart"}
+          <ChevronDownIcon className={"size-4 transition-transform motion-reduce:transition-none " + (chart ? "rotate-180" : "")} aria-hidden />
+        </Button>
+      </div>
+      {chart ? (
+      <div id="pulse-home-kpis-chart" style={{ height }} className="mt-1 min-w-0" role="img" aria-label={caption}>
         <ResponsiveContainer width="100%" height="100%">
           {lens === "work" ? (
             <BarChart data={rows} margin={{ top: 8, right: 8, left: -16, bottom: 0 }} barCategoryGap="28%">
@@ -158,6 +181,8 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
           )}
         </ResponsiveContainer>
       </div>
+      ) : null}
+      {chart ? (
       <div className="sr-only">
         <table>
           <caption>{caption}</caption>
@@ -179,6 +204,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
           </tbody>
         </table>
       </div>
+      ) : null}
     </Panel>
   );
 }
