@@ -46,9 +46,6 @@ node_modules/
 .turbo/
 .vite/
 out/
-# The hub UI's static export is committed so a human builds the binary without Node.
-!web/hub/out/
-!web/hub/out/**
 .nyc_output/
 
 # .NET

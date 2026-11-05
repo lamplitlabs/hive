@@ -27,20 +27,30 @@ pub(crate) const RESTORED_MARKER: &str = ".restored";
 /// the workspace root. A landing that touches none of them is not built:
 /// of the 39 landings on the brain's main over four days, each of which
 /// cost a release build and a restart, three changed only docs, the
-/// README, a script or the macOS app. `web/hub/out/` is here because
-/// pulse-hub embeds that folder into the binary through rust_embed (the
-/// `folder` attribute in crates/pulse-hub/src/server.rs points at
-/// `../../web/hub/out`), so a console build changes `pulse` too. The test
-/// `every_embedded_path_is_a_binary_input` walks the crates for
-/// `include_str!`, `include_bytes!` and rust_embed folders and fails when
-/// one lies outside this list.
+/// README, a script or the macOS app. The console's sources are here
+/// because pulse-hub embeds its static export, `web/hub/out`, into the
+/// binary through rust_embed (the `folder` attribute in
+/// crates/pulse-hub/src/server.rs), and that export is not committed:
+/// crates/pulse-hub/build.rs builds it from exactly these paths under
+/// `web/hub` (its `INPUTS` list) whenever one of them changed, so a landing
+/// that touches one of them changes `pulse` too, and one that touches only
+/// `web/hub/mock` does not. The test `every_embedded_path_is_a_binary_input`
+/// walks the crates for `include_str!`, `include_bytes!` and rust_embed
+/// folders and fails when one lies outside this list.
 pub(crate) const BINARY_INPUTS: &[&str] = &[
     "crates/",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain",
     ".cargo/",
-    "web/hub/out/",
+    "web/hub/src/",
+    "web/hub/public/",
+    "web/hub/package.json",
+    "web/hub/package-lock.json",
+    "web/hub/next.config.ts",
+    "web/hub/tsconfig.json",
+    "web/hub/postcss.config.mjs",
+    "web/hub/components.json",
 ];
 
 /// Whether a path from the workspace root is one of [`BINARY_INPUTS`] or
@@ -1564,9 +1574,9 @@ mod tests {
         land(&repo, "apps/macos/Info.plist", "<plist/>\n", "app");
         let five = land(
             &repo,
-            "web/hub/src/app.tsx",
-            "export {}\n",
-            "console source",
+            "web/hub/mock/api/status.json",
+            "{}\n",
+            "console mock fixture",
         );
         let lines = tend_binary(&s, at(4.0), env.clone());
         assert!(
@@ -1580,13 +1590,14 @@ mod tests {
                 && !file_exists(&format!("{}.prev", env.binary)),
             "something was built for a neutral landing"
         );
-        // The console's built output is embedded in the binary: it builds,
+        // The console's source is built into the binary (pulse-hub's build
+        // script exports it and rust_embed embeds the export): it builds,
         // diffed against the running revision, so the docs come along.
         let out = land(
             &repo,
-            "web/hub/out/index.html",
-            "<html/>\n",
-            "console build",
+            "web/hub/src/app/page.tsx",
+            "export default function Page() {}\n",
+            "console source",
         );
         let lines = tend_binary(&s, at(5.0), env.clone());
         assert_eq!(
@@ -1737,9 +1748,14 @@ mod tests {
             ("Cargo.lock", true),
             ("rust-toolchain.toml", true),
             (".cargo/config.toml", true),
-            ("web/hub/out/index.html", true),
-            ("web/hub/src/app.tsx", false),
-            ("web/hub/package.json", false),
+            ("web/hub/src/app/page.tsx", true),
+            ("web/hub/public/fonts/a.woff2", true),
+            ("web/hub/package.json", true),
+            ("web/hub/package-lock.json", true),
+            ("web/hub/next.config.ts", true),
+            ("web/hub/out/index.html", false),
+            ("web/hub/mock/api/status.json", false),
+            ("web/hub/src/lib/api.test.mjs", true),
             ("README.md", false),
             ("docs/runner.md", false),
             ("scripts/verify-check.sh", false),
@@ -1803,10 +1819,13 @@ mod tests {
     }
 
     /// Every file a crate embeds into the binary must lie under a prefix in
-    /// BINARY_INPUTS, or a landing that changes it would not be rebuilt.
+    /// BINARY_INPUTS, or a landing that changes it would not be rebuilt. The
+    /// console's export is the exception: pulse-hub's build script writes
+    /// it from the web/hub inputs, so those must be in the list instead.
     #[test]
     fn every_embedded_path_is_a_binary_input() {
         use std::path::{Component, Path, PathBuf};
+        const HUB_EXPORT: &str = "web/hub/out/";
         let root = fold(&pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../.."));
         let mut files = Vec::new();
         sources(&root.join("crates"), &mut files);
@@ -1856,11 +1875,35 @@ mod tests {
         }
         let paths: Vec<&str> = hits.iter().map(|(path, _)| path.as_str()).collect();
         assert!(
-            paths.contains(&"crates/pulse-records/seed/bundle.json")
-                && paths.contains(&"web/hub/out/"),
+            paths.contains(&"crates/pulse-records/seed/bundle.json") && paths.contains(&HUB_EXPORT),
             "the scan missed the embeds it is known to find: {paths:?}"
         );
         for (path, at) in &hits {
+            // A build product, not an input: the web/hub paths the list
+            // names must be the ones the script builds it from (its INPUTS
+            // list), no more and no fewer.
+            if path == HUB_EXPORT {
+                let script = std::fs::read_to_string(root.join("crates/pulse-hub/build.rs"))
+                    .expect("read crates/pulse-hub/build.rs");
+                let list = script
+                    .split_once("const INPUTS: &[&str] = &[")
+                    .and_then(|(_, rest)| rest.split_once("];"))
+                    .map(|(list, _)| list)
+                    .expect("crates/pulse-hub/build.rs declares INPUTS");
+                let mut script_inputs: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+                script_inputs.sort_unstable();
+                let mut listed: Vec<&str> = BINARY_INPUTS
+                    .iter()
+                    .filter_map(|input| input.strip_prefix("web/hub/"))
+                    .map(|input| input.trim_end_matches('/'))
+                    .collect();
+                listed.sort_unstable();
+                assert_eq!(
+                    listed, script_inputs,
+                    "the web/hub paths in BINARY_INPUTS and the INPUTS crates/pulse-hub/build.rs builds the export from differ: keep the two lists the same"
+                );
+                continue;
+            }
             assert!(
                 is_binary_input(path),
                 "{at} embeds {path}, which no prefix in BINARY_INPUTS covers: add its prefix to BINARY_INPUTS in selfupdate.rs so a landing that changes it is rebuilt"

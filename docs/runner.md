@@ -218,10 +218,12 @@ it, so the build does not wait for it.
 A merge that touches nothing the binary is built from is not built at all:
 the daemon diffs the brain's HEAD against the revision it runs, and when every
 changed path lies outside the crates, the workspace `Cargo.toml` and
-`Cargo.lock`, the toolchain and `.cargo/` files and the console's built output
-under `web/hub/out/` (which pulse-hub embeds into the binary, so a console
-build does change `pulse`), it says `self-update: brain HEAD <rev> differs
-from the running <rev> only outside what the binary is built from (N file(s):
+`Cargo.lock`, the toolchain and `.cargo/` files and the console's sources
+under `web/hub/` (`src/`, `public/` and the package and config files;
+pulse-hub's build script builds the export from them and embeds it into the
+binary, so a console change does change `pulse`; the mock API does not), it
+says `self-update: brain HEAD <rev> differs from the running <rev> only
+outside what the binary is built from (N file(s):
 a, b, c and K more); no build` once and keeps the binary it has. The next
 merge is diffed against the running revision again, not against that one,
 so a change under `crates/` that follows a docs merge is built with both.

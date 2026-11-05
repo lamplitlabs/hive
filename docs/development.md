@@ -28,11 +28,26 @@ cd web/hub && npm install
 npm run dev                                  # http://localhost:3000, talks to the `pulse hub` API
 pulse hub --no-browser --port 8787           # the API (PULSE_HUB_PORT overrides the dev proxy target)
 npm run dev:mock                             # or the mock API alone
-npm run build                                # regenerates out/, which crates/pulse-hub embeds (rust-embed)
-npm run check                                # typecheck + lint + a scratch build (.next/check-out); leaves out/ untouched
+npm run build                                # the static export, out/, which crates/pulse-hub embeds (rust-embed)
+npm run check                                # typecheck + lint + build + test
 ```
 
-Commit `web/hub/out/` together with the source change that produced it.
+The export `web/hub/out/` is a build product and is not committed: cargo
+builds it. `crates/pulse-hub/build.rs` runs whenever `web/hub/src/`,
+`web/hub/public/` or one of `package.json`, `package-lock.json`,
+`next.config.ts`, `tsconfig.json`, `postcss.config.mjs` and
+`components.json` changed since the last build (the same paths
+`BINARY_INPUTS` in `crates/pulse-runner/src/selfupdate.rs` lists, which tell
+the daemon a landing changed the binary); it runs `npm ci` when
+`node_modules/` is missing or older than `package-lock.json`, then
+`npm run build`, and a failed console build fails the cargo build rather
+than shipping a stale bundle. Building `pulse` with a console therefore
+needs Node.js 22+; without `npm` on PATH the binary still builds, with a
+one-page placeholder that says so, and cargo prints a warning; such a build
+is not cached, so the first build after Node is installed makes the console
+(`server::tests::embedded_export` fails on a placeholder, so a verify run
+needs Node). `PULSE_HUB_SKIP_BUILD=1 cargo build` skips npm and embeds
+whatever `out/` already holds, for work on the Rust side.
 The Mac app has its own check, `apps/macos/scripts/check.sh` (see
 [The Mac app](mac-app.md#the-mac-app)); it is outside the Cargo workspace and the verify
 command.
@@ -105,9 +120,9 @@ crates/pulse-harness           the built-in agent harness: the bash-tool loop, l
 crates/pulse-runner            daemon, planner, workers, delivery and review, executors, leads, compute providers, experiments, recovery, hygiene sweep
 crates/pulse-evolve            the self-improvement loop: fixtures, measure, archive, cycle, reflect, fleet, usage
 crates/pulse-inspect           status, projects, jobs, agents, events, settings, schema, verify, signers
-crates/pulse-hub               the HTTP API and SSE the console uses; embeds web/hub/out
+crates/pulse-hub               the HTTP API and SSE the console uses; its build.rs builds and it embeds the console export, web/hub/out
 crates/pulse-testutil          shared test helpers
-web/hub/                       the console (source, mock API, committed static export, rust-embed)
+web/hub/                       the console (source, mock API; the static export out/ is built by cargo, not committed)
 apps/macos/                    the Mac app: a Swift package (PulseKit decides, the AppKit shell shows), build.sh, check.sh
 docs/                          the reference, one file per part (the README's Documentation table lists them)
 docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)

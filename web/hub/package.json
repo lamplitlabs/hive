@@ -2,11 +2,11 @@
   "name": "hub",
   "type": "module",
   "//": [
-    "PULSE hub UI - the owner's console. Next.js App Router + Tailwind v4 + shadcn/ui, exported statically to out/ which the pulse binary embeds (crates/pulse-hub/src/server.rs, rust-embed). out/ is committed on purpose: cargo build needs no Node.",
+    "PULSE hub UI - the owner's console. Next.js App Router + Tailwind v4 + shadcn/ui, exported statically to out/ which the pulse binary embeds (crates/pulse-hub/src/server.rs, rust-embed). out/ is a build product, never committed: crates/pulse-hub/build.rs runs `npm run build` (after `npm ci` when node_modules is missing or older than package-lock.json) whenever cargo builds pulse-hub and src/, public/ or one of the config files here changed; without Node the binary gets a placeholder page, PULSE_HUB_SKIP_BUILD=1 embeds the out/ already on disk.",
     "dev:        `npm run dev` on :3000 proxies /api/* to the pulse hub - run `pulse hub --no-browser --port 8787` first (PULSE_HUB_PORT overrides the port).",
     "dev:mock:   `npm run dev:mock` runs mock/server.mjs (fixtures in mock/api/**.json, writes answered in memory, SSE at /api/v1/events/stream) on :8787 and next dev on :3000. No hub needed.",
-    "build:      `npm run build` = static export to out/ stamped at out/.build-stamp (commit out/ after UI changes; src/lib/bundle-freshness.test.mjs fails while out/ is older than src/). `npm run serve:out` serves out/ plus the mock API on :8787 (the same layout the pulse hub serves) for a last look at the export.",
-    "check:      `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + a build exported to the scratch dir PULSE_HUB_OUT_DIR=.next/check-out (gitignored, eslint-ignored; see next.config.ts), so verifying never rewrites the committed out/. Only `npm run build` regenerates out/ and its stamp. All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
+    "build:      `npm run build` = static export to out/ (gitignored). `npm run serve:out` serves out/ plus the mock API on :8787 (the same layout the pulse hub serves) for a last look at the export.",
+    "check:      `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + build + test. All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
     "routes:     / (hub), /project/?slug=&tab=, /tasks/, /votes/?project=&status=&kind=, /records/?id=, /compute/, /settings/, /harness/, /connections/?project=&tab= - state in search params, no dynamic segments.",
     "design:     \"the daily briefing\" - plain words (src/lib/words.ts is the vocabulary: runner, machines, private tests, statusWord()), marigold only for what waits on the owner, flat cards, details folded. Tokens live in src/app/globals.css (oklch palette from .github/assets/pulse-logo.svg; teal primary, marigold `you`, series colours for charts). Atkinson Hyperlegible Next and Mono are vendored in public/fonts (latin + latin-ext, OFL-atkinson-*.txt alongside) so the export needs no network at build or run time.",
     "overrides:  hono is a transitive dev dependency (shadcn -> @modelcontextprotocol/sdk). The override pins it to the newest patched release that was at least 3 days old when adopted (the owner's release-age rule, 2026-10-26); bump or drop the pin when a newer release is old enough. minimatch 11.0.3 is forced over every consumer (Dependabot #34, GHSA-g3hv-75wg-m249; owner-allowed major, 2026-11-01). v11 dropped the default export and makeRe, so eslint-plugin-react/import/jsx-a11y rules that call minimatch() (react/no-danger, react/forbid-component-props, react/jsx-pascal-case, react/jsx-handler-names, react/no-unstable-nested-components, import/order, import/no-internal-modules, import/no-extraneous-dependencies, jsx-a11y/label-has-associated-control) throw if enabled - none is in the eslint-config-next set used here; drop the pin once those plugins depend on minimatch >= 11.0.1."
@@ -18,13 +18,13 @@
     "dev:mock": "node mock/server.mjs & MOCK=$!; PULSE_HUB_PORT=${PULSE_HUB_PORT:-8787} next dev; kill $MOCK",
     "mock": "node mock/server.mjs",
     "mock:generate": "node mock/generate.mjs",
-    "build": "next build && node scripts/write-build-stamp.mjs",
+    "build": "next build",
     "start": "next start",
     "serve:out": "MOCK_STATIC=out PULSE_HUB_PORT=${PULSE_HUB_PORT:-8787} node mock/server.mjs",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'src/**/*.test.mjs' 'mock/*.test.mjs'",
-    "check": "npm run typecheck && npm run lint && PULSE_HUB_OUT_DIR=.next/check-out npm run build && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run build && npm run test"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

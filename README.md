@@ -74,11 +74,11 @@ calls and the git pushes you allowed.
 
 ## Five minutes to the first task
 
-You need a Rust toolchain (stable, 1.95+; [rustup](https://rustup.rs)) and a
-GitHub account with a Copilot seat, or an API key for another provider.
-Nothing else: no Node, no Python, no other agent tool to install or keep
-logged in. The console is built and committed under `web/hub/out/` and
-embedded in the binary.
+You need a Rust toolchain (stable, 1.95+; [rustup](https://rustup.rs)),
+Node.js 22+ (the build exports the console, `web/hub/`, and embeds it in the
+binary; without Node the binary builds with a placeholder page in its place)
+and a GitHub account with a Copilot seat, or an API key for another provider.
+Nothing else: no Python, no other agent tool to install or keep logged in.
 
 1. **Install.** The repository is private, so the clone needs your git
    credentials (an SSH key or a token registered with your account).
@@ -155,9 +155,9 @@ the console's words and gives the store's in parentheses.
 **The store is the truth.** Tasks, messages, posts, votes, decisions, plans,
 guides, lessons, settings and every event live in one SQLite file, written by
 the console and the `pulse` commands through the same helpers and read back
-by both. A repository holds its code, this README and `docs/`, the console's
-built export (`web/hub/out/`) and - when a project wants them - its `.pulse/`
-automations and skill folders; nothing else of PULSE's is committed.
+by both. A repository holds its code, this README and `docs/` and - when a
+project wants them - its `.pulse/` automations and skill folders; nothing
+else of PULSE's is committed.
 
 **The code.** A Cargo workspace; each crate has one job.
 
@@ -168,7 +168,7 @@ automations and skill folders; nothing else of PULSE's is committed.
 | The board and tasks | `pulse-board` (posts, agents, projects, jobs), `pulse-tasks` (tasks, messages, schedules, the `.pulse/` manifest files, compute requests), `pulse-tally` (digest, ballot, proposals, amendments, constitution), `pulse-goals` with `pulse-goals-command`, `pulse-ask` |
 | The runner | `pulse-runner` (daemon, planner, workers, delivery and review, executors, leads, compute providers, recovery, sweep), `pulse-evolve` (fixtures, measure, archive, cycle, fleet), `pulse-codedelivery` (delivery evidence), `pulse-cred` with `pulse-cred-command` and `pulse-cred-setup` (credentials), `pulse-hooks`, `pulse-gitenv` |
 | The harness | `pulse-harness` (the tool loop, limits, deny rules, sessions), `pulse-provider` with `pulse-provider-copilot`, `-openai`, `-anthropic`, `-gemini` and `-fake`, `pulse-mcp` (MCP servers and skills) |
-| The console | `pulse-hub` (the HTTP API, server-sent events, the embedded console), `web/hub` (Next.js and Tailwind, exported to `web/hub/out/`) |
+| The console | `pulse-hub` (the HTTP API, server-sent events, the embedded console, the build script that exports it), `web/hub` (Next.js and Tailwind, exported to `web/hub/out/` at build time) |
 | Inspection and tests | `pulse-inspect` (status, jobs, agents, events, schema, verify), `pulse-testutil` |
 
 ## Documentation

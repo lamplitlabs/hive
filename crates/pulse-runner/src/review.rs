@@ -394,8 +394,7 @@ pub(crate) fn pr_diff(
 /// `review.max_lines` (a hub rebuild alone is thousands of lines).
 pub(crate) fn generated_path(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
-    path.starts_with(crate::forge::HUB_OUT_PREFIX)
-        || name.ends_with(".lock")
+    name.ends_with(".lock")
         || name == "Cargo.lock"
         || name == "package-lock.json"
         || name.contains(".min.")
