@@ -1598,6 +1598,7 @@ mod tests {
             ),
             "proj's client needs the port other's API binds in its default config.".to_string(),
             "Investigate in this clone (other) and write the answer as SUMMARY:; the runner posts it on proj's thread as an answer from other.".to_string(),
+            "The question above is complete as written: answer from it and this clone, with no board lookup (`pulse board`, `pulse show`) first.".to_string(),
         ] {
             assert!(brief.contains(&want), "brief lacks {want:?}:\n{brief}");
         }
