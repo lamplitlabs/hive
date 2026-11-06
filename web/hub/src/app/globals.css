@@ -245,7 +245,7 @@
   --awake: oklch(0.55 0.13 55);
 
   /* semantic tones - dark enough to carry 12px words on white or their own 10% tint (>= 4.8:1) */
-  --ok: oklch(0.5 0.12 155);
+  --ok: oklch(0.48 0.12 155);
   --warn: oklch(0.54 0.16 40);
   --bad: oklch(0.52 0.19 27);
   --info: oklch(0.5 0.12 242);
@@ -1304,7 +1304,7 @@ html[data-awake="holding"] body::before {
     border: 1px solid var(--lock-line);
     background-color: color-mix(in oklch, var(--lock) 10%, transparent);
     color: var(--lock);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.02em;
     line-height: 1;
@@ -1412,7 +1412,7 @@ html[data-awake="holding"] body::before {
 
 /* Markdown bodies (records, briefs, chat). Readable first. */
 .prose-pulse {
-  @apply text-[15px] leading-[1.65] anywhere;
+  @apply text-base leading-[1.6] anywhere;
   max-width: 75ch;
 }
 .prose-pulse > :first-child {

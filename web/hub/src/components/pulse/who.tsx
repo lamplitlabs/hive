@@ -73,7 +73,7 @@ export function Provenance({ ok, missing }: { ok?: number; missing?: string[] })
 
 // Commands, paths and ids - the only text set in the mono face.
 export function Mono({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <span className={cn("rounded-md bg-muted px-1.5 py-0.5 font-mono text-[12.5px] text-foreground/85 anywhere", className)}>{children}</span>;
+  return <span className={cn("rounded-md bg-muted px-1.5 py-0.5 font-mono text-[13px] text-foreground/85 anywhere", className)}>{children}</span>;
 }
 
 export function When({ d, className, exact }: { d?: string | null; className?: string; exact?: boolean }) {
@@ -139,7 +139,7 @@ export function ThreadLink({ slug, k, className }: { slug: string; k: string; cl
 
 export function PostLink({ slug, id, label, className }: { slug: string; id: string; label?: string; className?: string }) {
   return (
-    <Link href={hrefs.post(slug, id)} title={id} className={cn(label ? "underline-offset-2 hover:underline anywhere" : "font-mono text-[12px] hover:underline anywhere", className)}>
+    <Link href={hrefs.post(slug, id)} title={id} className={cn(label ? "underline-offset-2 hover:underline anywhere" : "font-mono text-xs hover:underline anywhere", className)}>
       {label || id}
     </Link>
   );

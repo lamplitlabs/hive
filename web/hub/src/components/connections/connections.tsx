@@ -2,32 +2,41 @@
 
 import { useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { BookOpenIcon, KeyRoundIcon, LogOutIcon, PencilIcon, PlugIcon, PlugZapIcon, PlusIcon, PowerIcon, PowerOffIcon } from "lucide-react";
+import { BookOpenIcon, KeyRoundIcon, LogOutIcon, MoreHorizontalIcon, PencilIcon, PlugZapIcon, PlusIcon, PowerIcon, PowerOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ProjectAvatar } from "@/components/pulse/avatar";
 import { showApiError } from "@/components/pulse/confirm";
-import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { Disclosure, EmptyState, ErrorNotice, PageTitle, SkeletonRows } from "@/components/pulse/panel";
-import { Mono, StatusBadge, When } from "@/components/pulse/who";
+import { CardGrid, ItemCard, ItemCardTitle } from "@/components/pulse/item-card";
+import { KindTile } from "@/components/pulse/kind-tile";
+import { LogoTile } from "@/components/pulse/logo";
+import { PageHeader } from "@/components/pulse/page-header";
+import { Disclosure, EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/pulse/panel";
+import { SectionHeading } from "@/components/pulse/section-heading";
+import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
+import { StatusBadge } from "@/components/pulse/status-badge";
+import { Mono, When } from "@/components/pulse/who";
 import { ConnectDialog, McpServerDialog, SignInDialog, refreshMcp } from "@/components/connections/mcp-dialogs";
 import { SkillDialog, SkillViewDialog, refreshSkills } from "@/components/connections/skill-dialogs";
-import { ToolkitGallery } from "@/components/project/toolkit";
-import { query, skillRepoPath, writes, type McpOptions, type McpServer, type McpServersPayload, type ProjectsPayload, type Skill, type SkillsPayload, type ToolkitPayload, type ToolkitProject } from "@/lib/api";
+import { connectionState, dedupeSuggestions, servesProjects, skillUseText, toolCountText, unconnectedSuggestions } from "@/components/connections/connections-state";
+import { ToolkitGallery, refreshToolkit } from "@/components/project/toolkit";
+import { query, skillRepoPath, writes, type McpAuth, type McpOptions, type McpServer, type McpServersPayload, type McpTransport, type ProjectsPayload, type Skill, type SkillsPayload, type ToolSuggestion, type ToolkitPayload, type ToolkitProject } from "@/lib/api";
 import { num, plural } from "@/lib/format";
-import { DEFAULT_OPTIONS, TRANSPORT_SHORT, authLabel, checkReason, endpoint, lastCheck, scopeLabel, scopeTitle, sortScoped, toolNames } from "@/lib/mcp";
+import { DEFAULT_OPTIONS, TRANSPORT_SHORT, authLabel, checkReason, endpoint, lastCheck, scopeLabel, scopeTitle, sortScoped, toolNames, type McpForm } from "@/lib/mcp";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-// Connections: what agents can reach beyond the repository. A tool
-// connection (an MCP server) is the bridge to another system - issues,
-// feedback, docs, environments; a skill is a reusable set of instructions.
-// Both are for every project unless one project is named - the Add dialogs
-// start at "All projects" whatever the page filter says - and both reach
-// agents through their brief.
-
-type Tab = "mcp" | "skills";
+// Connections (spec "Connections"): the tools and skills agents can use.
+// A tool connection (an MCP server) is the bridge to another system -
+// issues, feedback, docs, environments; a skill is a reusable set of
+// instructions. Both are for every project unless one project is named -
+// the Add dialogs start at "All projects" whatever the page filter says -
+// and both reach agents through their brief. The page: what PULSE suggests
+// first (one click adds it), the tool cards, then the skills; a card opens
+// its details beside the list.
 
 // A quiet fold for the terminal side of things.
 function Fold({ summary, children }: { summary: string; children: React.ReactNode }) {
@@ -38,32 +47,79 @@ function Fold({ summary, children }: { summary: string; children: React.ReactNod
   );
 }
 
-// What the projects' checkouts ask for and do not have yet, one illustrated
-// card each; the page filter narrows it to one project.
-function Suggested({ project, kind }: { project: string; kind: "tool" | "skill" }) {
+// The wizard's details step, filled from a suggestion (the same shape
+// project/toolkit.tsx builds; kept here so this page can open it directly).
+function toolForm(t: ToolSuggestion): Partial<McpForm> {
+  return {
+    name: t.name,
+    project: t.scope === "shared" ? "" : t.project,
+    transport: t.transport as McpTransport,
+    command: t.command,
+    args: t.args.join("\n"),
+    url: t.url,
+    auth: t.auth as McpAuth,
+    auth_header: t.auth_header,
+    note: t.about + " Suggested by pulse toolkit for " + t.project + ".",
+  };
+}
+
+// The first row of the page: tools the projects' checkouts ask for and do
+// not have yet, one logo card each, with a one-click Add that opens the
+// wizard at its details step, filled in. Hidden when nothing is suggested.
+function SuggestedTools({ project, servers, onAdd }: { project: string; servers: McpServer[]; onAdd: (t: ToolSuggestion) => void }) {
   const q = useApi<ToolkitPayload>(project ? "toolkit?project=" + encodeURIComponent(project) : "toolkit", { refresh: 120000 });
   const d = q.data;
   if (!d) return null;
   const groups: ToolkitProject[] = d.projects ?? [{ project: d.project, tools: d.tools ?? [], skills: d.skills ?? [] }];
-  const rows = groups.filter((g) => (kind === "tool" ? g.tools.length : g.skills.length) > 0);
+  const rows = dedupeSuggestions(unconnectedSuggestions(groups.flatMap((g) => g.tools), servers));
   if (!rows.length) return null;
-  const total = rows.reduce((n, g) => n + (kind === "tool" ? g.tools.length : g.skills.length), 0);
   return (
-    <section className="grid gap-3 rounded-2xl border border-dashed bg-card/40 p-4" aria-label={"Suggested " + (kind === "tool" ? "tools" : "skills")}>
-      <div>
-        <p className="text-sm font-medium text-foreground">{kind === "tool" ? "Tools PULSE suggests" : "Skills PULSE suggests"}</p>
-        <p className="text-[13px] leading-relaxed text-muted-foreground">
-          {plural(total, kind === "tool" ? "tool connection" : "drafted skill") + " from what " + (rows.length === 1 ? rows[0].project + " shows" : plural(rows.length, "project") + " show")}
-          {kind === "tool" ? " - a service the manifests name, with the client that reaches it." : " - how to set it up, check it, ship it, written from the files."} Pick a card to read why.
-        </p>
-      </div>
+    <section aria-label="Suggested for your projects" className="min-w-0">
+      <SectionHeading count={rows.length} note="What the projects' files name and nothing reaches yet. One click adds it.">
+        Suggested for your projects
+      </SectionHeading>
+      <CardGrid cols={3}>
+        {rows.map((t) => (
+          <article key={t.name} className="flex min-w-0 items-start gap-3 rounded-lg border border-dashed bg-card/60 p-4" aria-label={"Suggested tool " + t.title}>
+            <LogoTile name={t.name} size={40} title={t.title} />
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-sm font-semibold leading-5">{t.title || t.name}</h3>
+              <p className="mt-0.5 line-clamp-2 text-[13px] leading-5 text-muted-foreground anywhere" title={t.why}>
+                {t.why || t.about}
+              </p>
+              <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <ProjectAvatar slug={t.project} size={20} />
+                <span className="truncate">{t.project + (t.also.length ? " and " + plural(t.also.length, "other project") : "")}</span>
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="shrink-0" onClick={() => onAdd(t)} aria-label={"Add " + (t.title || t.name)}>
+              <PlusIcon /> Add
+            </Button>
+          </article>
+        ))}
+      </CardGrid>
+    </section>
+  );
+}
+
+// Skills the projects' shapes suggest, as the gallery toolkit.tsx draws.
+function SuggestedSkills({ project }: { project: string }) {
+  const q = useApi<ToolkitPayload>(project ? "toolkit?project=" + encodeURIComponent(project) : "toolkit", { refresh: 120000 });
+  const d = q.data;
+  if (!d) return null;
+  const groups: ToolkitProject[] = d.projects ?? [{ project: d.project, tools: d.tools ?? [], skills: d.skills ?? [] }];
+  const rows = groups.filter((g) => g.skills.length > 0);
+  if (!rows.length) return null;
+  const total = rows.reduce((n, g) => n + g.skills.length, 0);
+  return (
+    <Disclosure variant="row" summary={<span className="text-sm font-medium">{"Skills PULSE suggests"}</span>} hint={plural(total, "drafted skill")} contentClassName="mt-3 grid gap-3">
       {rows.map((g) => (
         <div key={g.project} className="grid gap-2">
           {rows.length > 1 ? <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{g.project}</p> : null}
-          <ToolkitGallery project={g.project} tools={g.tools} skills={g.skills} canDecide only={kind} />
+          <ToolkitGallery project={g.project} tools={g.tools} skills={g.skills} canDecide only="skill" />
         </div>
       ))}
-    </section>
+    </Disclosure>
   );
 }
 
@@ -72,22 +128,23 @@ export function ConnectionsPageClient() {
   const router = useRouter();
   const pathname = usePathname();
   const project = sp.get("project") || "";
-  const tab: Tab = sp.get("tab") === "skills" ? "skills" : "mcp";
   const servers = useApiServers(project);
   const options = useApiOptions();
   const skills = useApiSkills(project);
   const projects = useApiProjects();
+  const [openId, setOpenId] = useOpenItem("open");
   const [addMcp, setAddMcp] = useState(false);
+  const [preset, setPreset] = useState<Partial<McpForm> | null>(null);
   const [editMcp, setEditMcp] = useState<McpServer | null>(null);
   const [connecting, setConnecting] = useState<McpServer | null>(null);
   const [signingIn, setSigningIn] = useState<McpServer | null>(null);
   const [addSkill, setAddSkill] = useState(false);
   const [editSkill, setEditSkill] = useState<Skill | null>(null);
   const [viewSkill, setViewSkill] = useState<Skill | null>(null);
-  const go = (next: { project?: string; tab?: Tab }) => {
+  const go = (next: { project?: string }) => {
     const p = next.project ?? project;
-    const t = next.tab ?? tab;
-    router.replace(pathname + query({ project: p || undefined, tab: t === "mcp" ? undefined : t }), { scroll: false });
+    // `tab` was the old split of this page; a link that still carries it lands on the same page.
+    router.replace(pathname + query({ project: p || undefined, open: openId || undefined }), { scroll: false });
   };
   const opts = options.data ?? DEFAULT_OPTIONS;
   const serverRows = sortScoped(servers.data?.servers ?? []);
@@ -95,145 +152,153 @@ export function ConnectionsPageClient() {
   const enabledServers = serverRows.filter((s) => s.status === "enabled").length;
   const enabledSkills = skillRows.filter((k) => k.status === "enabled").length;
   const scopeNote = project ? " Showing " + project + "'s own and the ones every project shares." : "";
+  const open = openId ? (serverRows.find((s) => s.id === openId) ?? null) : null;
+  // The skills section is this page's second half; `?tab=skills` links from before scroll to it.
+  const skillsFirst = sp.get("tab") === "skills";
+
+  const filter = (
+    <Select value={project || "all"} onValueChange={(v) => go({ project: v === "all" ? "" : v })}>
+      <SelectTrigger id="connections-project" aria-label="Project" className="w-full sm:w-44">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">All projects</SelectItem>
+        {(projects.data?.projects ?? []).map((p) => (
+          <SelectItem key={p.slug} value={p.slug}>
+            {p.slug}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
 
   return (
-    <Tabs value={tab} onValueChange={(v) => go({ tab: v as Tab })} className="min-w-0 gap-0">
-      <PageTitle
-        icon={PlugIcon}
-        sub="Tools and skills your agents can use. A tool connection (MCP server) lets agents reach another system; a skill is a reusable set of instructions."
-        actions={
-          <>
-            <Button variant={tab === "mcp" ? "default" : "outline"} onClick={() => setAddMcp(true)}>
-              <PlusIcon /> Add a tool
+    <div className="flex min-w-0 items-start gap-0">
+      <main className="min-w-0 flex-1">
+        <PageHeader
+          title="Connections"
+          subtitle="Tools and skills your agents can use"
+          action={
+            <Button onClick={() => setAddMcp(true)}>
+              <PlusIcon /> Add connection
             </Button>
-            <Button variant={tab === "skills" ? "default" : "outline"} onClick={() => setAddSkill(true)}>
-              <PlusIcon /> Add a skill
-            </Button>
-          </>
-        }
-        bar={
-          <TabsList variant="line" aria-label="Connections" className="w-full justify-start">
-            <TabsTrigger value="mcp" className="flex-none gap-1.5">
-              Tools <span className="tnum text-muted-foreground">{servers.data ? num(serverRows.length) : ""}</span>
-            </TabsTrigger>
-            <TabsTrigger value="skills" className="flex-none gap-1.5">
-              Skills <span className="tnum text-muted-foreground">{skills.data ? num(skillRows.length) : ""}</span>
-            </TabsTrigger>
-          </TabsList>
-        }
-      >
-        Connections
-      </PageTitle>
-      <div className="mb-4 flex min-w-0">
-        <Select value={project || "all"} onValueChange={(v) => go({ project: v === "all" ? "" : v })}>
-          <SelectTrigger id="connections-project" aria-label="Project" className="w-full sm:w-48">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All projects</SelectItem>
-            {(projects.data?.projects ?? []).map((p) => (
-              <SelectItem key={p.slug} value={p.slug}>
-                {p.slug}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+          }
+        />
 
-      <TabsContent value="mcp" className="grid min-w-0 gap-4">
-        {servers.error && !servers.data ? (
-          <ErrorNotice error={servers.error} onRetry={() => void servers.reload()}>
-            {"The tool connections didn't load (" + servers.error + "). Check that PULSE is running, then try again."}
-          </ErrorNotice>
-        ) : null}
-        {!servers.data && !servers.error ? (
-          <SkeletonRows n={4} />
-        ) : servers.data && serverRows.length === 0 ? (
-          <>
-            <EmptyState
-              title={project ? "No tools for " + project + " yet" : "No tools connected yet"}
-              icon={<PlugIcon className="size-[18px]" />}
+        <div className="grid min-w-0 gap-8 [&>*]:min-w-0">
+          <SuggestedTools
+            project={project}
+            servers={serverRows}
+            onAdd={(t) => {
+              setPreset(toolForm(t));
+            }}
+          />
+
+          <section aria-label="Tools" id="tools" className={cn(skillsFirst && "order-2")}>
+            <SectionHeading count={servers.data ? serverRows.length : undefined} note={serverRows.length ? (enabledServers === serverRows.length ? (serverRows.length === 1 ? "It is on." : "All on.") : num(enabledServers) + " of " + num(serverRows.length) + " on.") + scopeNote : undefined} action={filter}>
+              Tools
+            </SectionHeading>
+            {servers.error && !servers.data ? (
+              <ErrorNotice error={servers.error} onRetry={() => void servers.reload()} />
+            ) : !servers.data ? (
+              <SkeletonRows n={3} />
+            ) : serverRows.length === 0 ? (
+              <EmptyState
+                title="No tool connection yet"
+                action={
+                  <Button onClick={() => setAddMcp(true)}>
+                    <PlusIcon /> Add connection
+                  </Button>
+                }
+              >
+                Connect the systems your agents should reach: issues, docs, a browser, your database. PULSE fills in the details for the usual ones.
+              </EmptyState>
+            ) : (
+              <CardGrid cols={3}>
+                {serverRows.map((s) => (
+                  <ServerCard key={s.id} s={s} selected={s.id === openId} onOpen={() => setOpenId(s.id)} onConnect={setConnecting} onEdit={setEditMcp} onSignIn={setSigningIn} />
+                ))}
+              </CardGrid>
+            )}
+            {serverRows.length ? (
+              <div className="mt-3">
+                <Fold summary="How agents use these">
+                  <p>
+                    Agents call a tool with <Mono>pulse mcp call NAME TOOL</Mono> and see what it offers with <Mono>pulse mcp tools NAME</Mono>. The tools that are on are named in every agent&apos;s brief.
+                  </p>
+                </Fold>
+              </div>
+            ) : null}
+          </section>
+
+          <section aria-label="Skills" id="skills" className={cn(skillsFirst && "order-1")}>
+            <SectionHeading
+              count={skills.data ? skillRows.length : undefined}
+              note={skillRows.length ? (enabledSkills === skillRows.length ? (skillRows.length === 1 ? "It is on." : "All on.") : num(enabledSkills) + " of " + num(skillRows.length) + " on.") + " Agents read one before work it covers." : undefined}
               action={
-                <Button size="sm" onClick={() => setAddMcp(true)}>
-                  <PlusIcon /> Add a tool
+                <Button size="sm" variant="outline" onClick={() => setAddSkill(true)}>
+                  <PlusIcon /> Add skill
                 </Button>
               }
             >
-              Connect a tool so agents can reach another system, like your issue tracker, user feedback or docs. Once it is on and connects, agents see what it offers in their brief.
-            </EmptyState>
-            <Fold summary="Prefer the terminal?">
-              <p>Add a tool from a shell on this machine, for example GitHub:</p>
-              <Mono className="block w-fit max-w-full">pulse mcp add --name github --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-github --auth env --auth-header GITHUB_PERSONAL_ACCESS_TOKEN --secret op://PULSE/github-mcp/token</Mono>
-            </Fold>
-          </>
-        ) : servers.data ? (
-          <>
-            <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-              {enabledServers === serverRows.length ? (serverRows.length === 1 ? "It is on." : "All " + num(serverRows.length) + " are on.") : num(enabledServers) + " of " + num(serverRows.length) + " are on."} Agents see the tools that are on in their brief.{scopeNote}
-            </p>
-            <CardGrid cols={2}>
-              {serverRows.map((s) => (
-                <ServerCard key={s.id} s={s} onConnect={setConnecting} onEdit={setEditMcp} onSignIn={setSigningIn} />
-              ))}
-            </CardGrid>
-            <Fold summary="How agents use these">
-              <p>
-                Agents on this machine list what a tool offers with <Mono>pulse mcp tools NAME</Mono> and use it with <Mono>pulse mcp call NAME TOOL --args &apos;{"{...}"}&apos;</Mono>.
-              </p>
-              <p>Agents on other machines can&apos;t reach these tools directly. When they need something from one, they ask their lead agent for it in a finding.</p>
-            </Fold>
-          </>
-        ) : null}
-        <Suggested project={project} kind="tool" />
-      </TabsContent>
+              Skills
+            </SectionHeading>
+            {skills.error && !skills.data ? (
+              <ErrorNotice error={skills.error} onRetry={() => void skills.reload()} />
+            ) : !skills.data ? (
+              <SkeletonRows n={3} />
+            ) : skillRows.length === 0 ? (
+              <EmptyState
+                title="No skill yet"
+                action={
+                  <Button variant="outline" onClick={() => setAddSkill(true)}>
+                    <PlusIcon /> Add skill
+                  </Button>
+                }
+              >
+                A skill is a page of instructions agents read before work it covers: how to ship, how to test the UI, what a good PR looks like here.
+              </EmptyState>
+            ) : (
+              <CardGrid cols={3}>
+                {skillRows.map((k) => (
+                  <SkillCard key={k.id} k={k} onView={setViewSkill} onEdit={setEditSkill} />
+                ))}
+              </CardGrid>
+            )}
+            <div className="mt-3 grid gap-2">
+              <SuggestedSkills project={project} />
+              {skillRows.length ? (
+                <Fold summary="How agents use these">
+                  <p>
+                    Agents read a skill with <Mono>pulse skill show NAME</Mono>; each read is counted. They add their own with <Mono>pulse skill add</Mono>.
+                  </p>
+                </Fold>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      </main>
 
-      <TabsContent value="skills" className="grid min-w-0 gap-4">
-        {skills.error && !skills.data ? (
-          <ErrorNotice error={skills.error} onRetry={() => void skills.reload()}>
-            {"The skills didn't load (" + skills.error + "). Check that PULSE is running, then try again."}
-          </ErrorNotice>
-        ) : null}
-        {!skills.data && !skills.error ? (
-          <SkeletonRows n={3} />
-        ) : skills.data && skillRows.length === 0 ? (
-          <>
-            <EmptyState
-              title={project ? "No skills for " + project + " yet" : "No skills yet"}
-              icon={<BookOpenIcon className="size-[18px]" />}
-              action={
-                <Button size="sm" onClick={() => setAddSkill(true)}>
-                  <PlusIcon /> Add a skill
-                </Button>
-              }
-            >
-              A skill is a set of instructions agents read before work it covers: a setup, a debugging path, a release check. Agents also add their own when they finish something others will repeat.
-            </EmptyState>
-            <Fold summary="Prefer the terminal?">
-              <p>Add a skill from a shell on this machine:</p>
-              <Mono className="block w-fit max-w-full">pulse skill add --name release-check --description &apos;How to verify a release before tagging&apos; --file docs/release-check.md</Mono>
-            </Fold>
-          </>
-        ) : skills.data ? (
-          <>
-            <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-              {enabledSkills === skillRows.length ? (skillRows.length === 1 ? "It is on." : "All " + num(skillRows.length) + " are on.") : num(enabledSkills) + " of " + num(skillRows.length) + " are on."} Agents are told about the skills that are on and read one before work it covers.{scopeNote}
-            </p>
-            <CardGrid cols={2}>
-              {skillRows.map((k) => (
-                <SkillCard key={k.id} k={k} onView={setViewSkill} onEdit={setEditSkill} />
-              ))}
-            </CardGrid>
-            <Fold summary="How agents use these">
-              <p>
-                Agents read a skill with <Mono>pulse skill show NAME</Mono>; each read is counted. They add their own with <Mono>pulse skill add</Mono>.
-              </p>
-            </Fold>
-          </>
-        ) : null}
-        <Suggested project={project} kind="skill" />
-      </TabsContent>
+      <SidePanel open={!!open} onClose={() => setOpenId(null)} width="detail" title={open?.name ?? "Tool"} subtitle={open ? scopeTitle(open.project) : undefined} lead={open ? <LogoTile name={open.name} size={28} /> : undefined}>
+        {open ? <ServerDetails s={open} onConnect={setConnecting} onEdit={setEditMcp} onSignIn={setSigningIn} /> : null}
+      </SidePanel>
 
       <McpServerDialog open={addMcp} onOpenChange={setAddMcp} options={opts} onSignIn={setSigningIn} />
+      {preset ? (
+        <McpServerDialog
+          open
+          onOpenChange={(o) => {
+            if (!o) {
+              setPreset(null);
+              refreshToolkit();
+              refreshMcp();
+            }
+          }}
+          options={opts}
+          initial={preset}
+          onSignIn={setSigningIn}
+        />
+      ) : null}
       <McpServerDialog open={!!editMcp} onOpenChange={(o) => (o ? null : setEditMcp(null))} options={opts} server={editMcp} />
       <ConnectDialog
         server={connecting}
@@ -266,7 +331,7 @@ export function ConnectionsPageClient() {
               }
         }
       />
-    </Tabs>
+    </div>
   );
 }
 
@@ -285,33 +350,13 @@ function useApiProjects() {
   return useApi<ProjectsPayload>("projects", { refresh: 60000 });
 }
 
-// ----- cards -----------------------------------------------------------------
+// ----- tools -----------------------------------------------------------------
 
-function CardHead({ icon: Icon, name, id, status, off }: { icon: React.ComponentType<{ className?: string }>; name: React.ReactNode; id: string; status: string; off: boolean }) {
-  return (
-    <div className="flex min-w-0 items-start justify-between gap-3">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", off ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary")} aria-hidden>
-          <Icon className="size-[18px]" />
-        </span>
-        <div className="min-w-0">
-          {/* The id stays out of sight: it is in the tooltip for the rare time it's needed. */}
-          <ItemCardTitle className={cn(off && "text-muted-foreground")}>
-            <span title={"Id " + id}>{name}</span>
-          </ItemCardTitle>
-        </div>
-      </div>
-      <StatusBadge status={status} className="mt-0.5 shrink-0" />
-    </div>
-  );
-}
-
-function ServerCard({ s, onConnect, onEdit, onSignIn }: { s: McpServer; onConnect: (s: McpServer) => void; onEdit: (s: McpServer) => void; onSignIn: (s: McpServer) => void }) {
+// Turn on / off and sign out, the writes a tool card and its details share.
+function useServerWrites(s: McpServer) {
   const [busy, setBusy] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const on = s.status === "enabled";
-  const oauth = s.auth === "oauth";
-  const signedIn = !!s.sign_in?.signed_in;
   const signOut = async () => {
     setSigningOut(true);
     try {
@@ -337,76 +382,196 @@ function ServerCard({ s, onConnect, onEdit, onSignIn }: { s: McpServer; onConnec
       setBusy(false);
     }
   };
-  const where = endpoint(s);
-  const auth = s.auth !== "none" ? authLabel(s.auth) + (s.auth_header ? " (" + s.auth_header + ")" : "") : authLabel("none");
+  return { on, busy, signingOut, toggle, signOut };
+}
+
+// The projects a connection serves: a stack of small avatars, or the words
+// "All projects".
+function Serves({ project, className }: { project: string; className?: string }) {
+  const slugs = servesProjects(project);
+  if (!slugs.length) return <span className={className}>All projects</span>;
   return (
-    <ItemCard ariaLabel={"Tool " + s.name} className="gap-3">
-      <CardHead icon={PlugIcon} name={s.name} id={s.id} status={s.status} off={!on} />
-      <ItemCardBody clamp={2}>{s.note || "No description yet. Edit it to tell agents what this tool is for and when to use it."}</ItemCardBody>
-      <CheckLine server={s} />
-      {oauth ? <SignInLine server={s} /> : null}
-      <ItemCardMeta>
-        <span>{scopeTitle(s.project)}</span>
-        <span className="flex min-w-0 max-w-full items-center gap-1.5" title={TRANSPORT_SHORT[s.transport] + ": " + (where || "no address") + ". Sign-in: " + auth + (s.secret_ref ? ", secret from " + s.secret_ref : "") + "."}>
-          <span className="shrink-0">{TRANSPORT_SHORT[s.transport]}</span>
-          <span className="min-w-0 truncate font-mono text-xs">{where || "no address"}</span>
-        </span>
-      </ItemCardMeta>
-      <ItemCardActions className="border-t border-border/70 pt-3">
-        {oauth && !signedIn ? (
-          <Button size="sm" onClick={() => onSignIn(s)} aria-label={"Sign in to " + s.name}>
+    <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)} aria-label={scopeTitle(project)}>
+      <span className="flex -space-x-1">
+        {slugs.slice(0, 4).map((p) => (
+          <Tooltip key={p}>
+            <TooltipTrigger asChild>
+              <span className="inline-flex rounded-[5px] ring-2 ring-card" role="img" aria-label={"Project " + p}>
+                <ProjectAvatar slug={p} size={20} />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{p}</TooltipContent>
+          </Tooltip>
+        ))}
+      </span>
+      {slugs.length > 4 ? <span>{"+" + (slugs.length - 4)}</span> : slugs.length === 1 ? <span className="truncate">{slugs[0]}</span> : null}
+    </span>
+  );
+}
+
+// One tool connection as a card (spec "Connections"): its logo, name, state
+// as an icon + word, the projects it serves and how many tools the last
+// check found. Turn off / Edit live in the "…" menu; the card opens its
+// details beside the list.
+function ServerCard({ s, selected, onOpen, onConnect, onEdit, onSignIn }: { s: McpServer; selected: boolean; onOpen: () => void; onConnect: (s: McpServer) => void; onEdit: (s: McpServer) => void; onSignIn: (s: McpServer) => void }) {
+  const { on, busy, signingOut, toggle, signOut } = useServerWrites(s);
+  const state = connectionState(s);
+  const oauth = s.auth === "oauth";
+  const signedIn = !!s.sign_in?.signed_in;
+  const tools = toolCountText(s.last_check_note);
+  return (
+    <ItemCard onOpen={onOpen} active={selected} ariaLabel={"Open " + s.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && "opacity-80")}>
+      <div className="flex min-w-0 items-start gap-3">
+        <LogoTile name={s.name} size={40} />
+        <div className="min-w-0 flex-1">
+          <ItemCardTitle className="text-base font-semibold leading-6 tracking-tight">
+            <span title={"Id " + s.id}>{s.name}</span>
+          </ItemCardTitle>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+            <StatusBadge status={state.status} label={state.label} size="sm" title={state.detail || undefined} />
+            {tools ? <span className="tnum">{tools}</span> : null}
+          </div>
+        </div>
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="-my-1 -mr-2 shrink-0" aria-label="More">
+                  <MoreHorizontalIcon />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>More</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onConnect(s)}>
+              <PlugZapIcon /> {s.last_check_at ? "Check now" : "Connect now"}
+            </DropdownMenuItem>
+            {oauth && !signedIn ? (
+              <DropdownMenuItem onSelect={() => onSignIn(s)}>
+                <KeyRoundIcon /> Sign in
+              </DropdownMenuItem>
+            ) : null}
+            {oauth && signedIn ? (
+              <DropdownMenuItem onSelect={() => void signOut()} disabled={signingOut}>
+                <LogOutIcon /> Sign out
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem onSelect={() => onEdit(s)}>
+              <PencilIcon /> Edit
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => void toggle()} disabled={busy}>
+              {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <p className="line-clamp-2 text-[13px] leading-5 text-muted-foreground anywhere">{s.note || "No description yet. Edit it to tell agents what this tool is for and when to use it."}</p>
+      <div className="mt-auto flex min-w-0 items-center gap-3 text-[13px] text-muted-foreground">
+        <Serves project={s.project} />
+        {oauth && !signedIn && on ? (
+          <Button size="xs" className="ml-auto" onClick={() => onSignIn(s)} aria-label={"Sign in to " + s.name}>
             <KeyRoundIcon /> Sign in
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" onClick={() => onConnect(s)} aria-label={"Check the connection to " + s.name}>
+      </div>
+    </ItemCard>
+  );
+}
+
+// A tool's details in the side panel: what it is, the last check, the
+// sign-in, where it is reached, and the same actions as the card's menu.
+function ServerDetails({ s, onConnect, onEdit, onSignIn }: { s: McpServer; onConnect: (s: McpServer) => void; onEdit: (s: McpServer) => void; onSignIn: (s: McpServer) => void }) {
+  const { on, busy, signingOut, toggle, signOut } = useServerWrites(s);
+  const state = connectionState(s);
+  const oauth = s.auth === "oauth";
+  const signedIn = !!s.sign_in?.signed_in;
+  const where = endpoint(s);
+  const auth = s.auth !== "none" ? authLabel(s.auth) + (s.auth_header ? " (" + s.auth_header + ")" : "") : authLabel("none");
+  const tools = toolNames(s.last_check_note || "");
+  return (
+    <div className="grid min-w-0 gap-5 text-sm">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <StatusBadge status={state.status} label={state.label} title={state.detail || undefined} />
+        {state.detail && state.kind !== "connected" ? <span className="min-w-0 text-[13px] text-muted-foreground anywhere">{checkReason(state.detail)}</span> : null}
+      </div>
+      <p className="leading-relaxed text-foreground anywhere">{s.note || "No description yet. Edit it to tell agents what this tool is for and when to use it."}</p>
+      <div className="flex flex-wrap gap-2">
+        {oauth && !signedIn ? (
+          <Button size="sm" onClick={() => onSignIn(s)}>
+            <KeyRoundIcon /> Sign in
+          </Button>
+        ) : null}
+        <Button size="sm" variant="outline" onClick={() => onConnect(s)}>
           <PlugZapIcon /> {s.last_check_at ? "Check now" : "Connect now"}
         </Button>
-        <span className="ml-auto flex flex-wrap gap-1">
-          {oauth && signedIn ? (
-            <Button size="sm" variant="ghost" onClick={() => void signOut()} disabled={signingOut} aria-label={"Sign out of " + s.name}>
-              <LogOutIcon /> Sign out
-            </Button>
-          ) : null}
-          <Button size="sm" variant="ghost" onClick={() => onEdit(s)} aria-label={"Edit " + s.name}>
-            <PencilIcon /> Edit
+        <Button size="sm" variant="ghost" onClick={() => onEdit(s)}>
+          <PencilIcon /> Edit
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => void toggle()} disabled={busy}>
+          {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
+        </Button>
+        {oauth && signedIn ? (
+          <Button size="sm" variant="ghost" onClick={() => void signOut()} disabled={signingOut}>
+            <LogOutIcon /> Sign out
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => void toggle()} disabled={busy} aria-label={(on ? "Turn off " : "Turn on ") + s.name}>
-            {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
-          </Button>
-        </span>
-      </ItemCardActions>
-    </ItemCard>
+        ) : null}
+      </div>
+      <section className="min-w-0">
+        <SectionHeading as="h3" className="mb-2">
+          Last check
+        </SectionHeading>
+        <CheckLine server={s} />
+        {tools.length ? (
+          <ul className="mt-2 flex flex-wrap gap-1" aria-label="Tools">
+            {tools.map((t) => (
+              <li key={t} className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs">
+                {t}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+      {oauth ? (
+        <section className="min-w-0">
+          <SectionHeading as="h3" className="mb-2">
+            Sign-in
+          </SectionHeading>
+          <SignInLine server={s} />
+        </section>
+      ) : null}
+      <section className="min-w-0">
+        <SectionHeading as="h3" className="mb-2">
+          How it is reached
+        </SectionHeading>
+        <Kv
+          className="text-[13px]"
+          rows={[
+            ["Serves", <Serves key="p" project={s.project} />],
+            ["Transport", TRANSPORT_SHORT[s.transport]],
+            ["Address", where ? <Mono key="w">{where}</Mono> : <span key="w" className="text-muted-foreground">no address</span>],
+            ["Sign-in", auth + (s.secret_ref ? ", secret from " + s.secret_ref : "")],
+            ["Id", <Mono key="i">{s.id}</Mono>],
+          ]}
+        />
+      </section>
+    </div>
   );
 }
 
 // "Connected 1 month ago. 12 tools, including list_issues, get_issue and
 // create_issue." / "Failed 1 month ago: PULSE couldn't read the secret.";
 // the raw note in the tooltip.
-// The sign-in an `auth: oauth` server has on this machine, from the grant
-// file the daemon reads - not from the last check, which may be older.
-function SignInLine({ server }: { server: McpServer }) {
-  const signedIn = !!server.sign_in?.signed_in;
-  // The daemon's note names the terminal command when nothing is signed in;
-  // here the Sign in button is the step, so the line only states the fact.
-  const raw = server.sign_in?.note || "";
-  const note = signedIn ? raw.charAt(0).toUpperCase() + raw.slice(1) : /grant unreadable/.test(raw) ? "The saved sign-in can't be read. Sign in again." : "Not signed in on this machine yet.";
-  return (
-    <p className="flex min-w-0 items-start gap-2 text-sm leading-relaxed" title={raw || undefined}>
-      <KeyRoundIcon className={cn("mt-[3px] size-3.5 shrink-0", signedIn ? "text-ok" : "text-muted-foreground/60")} aria-hidden />
-      <span className={cn("min-w-0 anywhere", signedIn ? "text-foreground" : "text-muted-foreground")}>{(note || "Signed in on this machine").replace(/[.\s]*$/, ".")}</span>
-    </p>
-  );
-}
-
 function CheckLine({ server }: { server: McpServer }) {
   const c = lastCheck(server);
-  const tools = server.last_check_ok ? toolNames(server.last_check_note) : [];
+  const tools = toolNames(server.last_check_note || "");
+  const reason = c.tone === "bad" ? checkReason(c.detail) : "";
   const shown = tools.slice(0, 3);
   const rest = tools.length - shown.length;
-  const reason = c.tone === "bad" ? checkReason(c.detail) : "";
   return (
     <p className="flex min-w-0 items-start gap-2 text-sm leading-relaxed" title={server.last_check_note || undefined}>
-      <span className={cn("mt-[7px] size-2 shrink-0 rounded-full", c.tone === "ok" ? "bg-ok" : c.tone === "bad" ? "bg-bad" : "bg-muted-foreground/40")} aria-hidden />
+      <PlugZapIcon className={cn("mt-[3px] size-3.5 shrink-0", c.tone === "ok" ? "text-ok" : c.tone === "bad" ? "text-bad" : "text-muted-foreground/60")} aria-hidden />
       <span className="min-w-0 anywhere">
         {server.last_check_at ? (
           <>
@@ -424,8 +589,29 @@ function CheckLine({ server }: { server: McpServer }) {
   );
 }
 
+// The sign-in an `auth: oauth` server has on this machine, from the grant
+// file the daemon reads - not from the last check, which may be older.
+function SignInLine({ server }: { server: McpServer }) {
+  const signedIn = !!server.sign_in?.signed_in;
+  // The daemon's note names the terminal command when nothing is signed in;
+  // here the Sign in button is the step, so the line only states the fact.
+  const raw = server.sign_in?.note || "";
+  const note = signedIn ? raw.charAt(0).toUpperCase() + raw.slice(1) : /grant unreadable/.test(raw) ? "The saved sign-in can't be read. Sign in again." : "Not signed in on this machine yet.";
+  return (
+    <p className="flex min-w-0 items-start gap-2 text-sm leading-relaxed" title={raw || undefined}>
+      <KeyRoundIcon className={cn("mt-[3px] size-3.5 shrink-0", signedIn ? "text-ok" : "text-muted-foreground/60")} aria-hidden />
+      <span className={cn("min-w-0 anywhere", signedIn ? "text-foreground" : "text-muted-foreground")}>{note || (signedIn ? "Signed in on this machine." : "Not signed in on this machine yet.")}</span>
+    </p>
+  );
+}
+
 const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1]);
 
+// ----- skills ----------------------------------------------------------------
+
+// One skill as a card: the skill tile, its name and state, where it applies
+// and how often it was read. Edit / Turn off in the "…" menu; the card
+// opens the skill to read.
 function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void; onEdit: (k: Skill) => void }) {
   const [busy, setBusy] = useState(false);
   const on = k.status === "enabled";
@@ -447,33 +633,53 @@ function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void
   const by = k.created_by === "human" || k.created_by === "owner" ? "you" : k.created_by;
   const repoPath = skillRepoPath(k);
   return (
-    <ItemCard onOpen={() => onView(k)} ariaLabel={"Read the skill " + k.name} className="gap-3">
-      <CardHead icon={BookOpenIcon} name={k.name} id={k.id} status={k.status} off={!on} />
-      <ItemCardBody clamp={2}>{k.description}</ItemCardBody>
-      <ItemCardMeta>
-        <span>{scopeTitle(k.project)}</span>
-        <span>{k.uses ? "Read " + (k.uses === 1 ? "once" : num(k.uses) + " times") : "Not read yet"}</span>
-        {repoPath ? <span className="anywhere">{"Kept by the repository: " + repoPath}</span> : by ? <span>{"Added by " + by}</span> : null}
-        <span>
+    <ItemCard onOpen={() => onView(k)} ariaLabel={"Read the skill " + k.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && "opacity-80")}>
+      <div className="flex min-w-0 items-start gap-3">
+        <KindTile kind="skill" size={40} />
+        <div className="min-w-0 flex-1">
+          <ItemCardTitle className="text-base font-semibold leading-6 tracking-tight">
+            <span title={"Id " + k.id}>{k.name}</span>
+          </ItemCardTitle>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+            {on ? <StatusBadge status="enabled" label="On" size="sm" /> : <StatusBadge status="disabled" label="Off" size="sm" />}
+            <span>{skillUseText(k)}</span>
+          </div>
+        </div>
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="-my-1 -mr-2 shrink-0" aria-label="More">
+                  <MoreHorizontalIcon />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>More</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onView(k)}>
+              <BookOpenIcon /> Read
+            </DropdownMenuItem>
+            {repoPath ? null : (
+              <DropdownMenuItem onSelect={() => onEdit(k)}>
+                <PencilIcon /> Edit
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => void toggle()} disabled={busy}>
+              {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <p className="line-clamp-2 text-[13px] leading-5 text-muted-foreground anywhere">{k.description}</p>
+      <div className="mt-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+        <Serves project={k.project} />
+        <span className="ml-auto truncate" title={repoPath ? "Kept by the repository: " + repoPath : by ? "Added by " + by : undefined}>
           {"Updated "}
           <When d={k.updated_at} />
         </span>
-      </ItemCardMeta>
-      <ItemCardActions className="border-t border-border/70 pt-3">
-        <Button size="sm" variant="outline" onClick={() => onView(k)} aria-label={"Read " + k.name}>
-          <BookOpenIcon /> Read
-        </Button>
-        <span className="ml-auto flex flex-wrap gap-1">
-          {repoPath ? null : (
-            <Button size="sm" variant="ghost" onClick={() => onEdit(k)} aria-label={"Edit " + k.name}>
-              <PencilIcon /> Edit
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" onClick={() => void toggle()} disabled={busy} aria-label={(on ? "Turn off " : "Turn on ") + k.name}>
-            {on ? <PowerOffIcon /> : <PowerIcon />} {on ? "Turn off" : "Turn on"}
-          </Button>
-        </span>
-      </ItemCardActions>
+      </div>
     </ItemCard>
   );
 }

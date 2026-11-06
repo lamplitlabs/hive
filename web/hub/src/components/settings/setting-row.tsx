@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
-import { CirclePauseIcon, EraserIcon, EyeOffIcon, PlayIcon, RotateCcwIcon } from "lucide-react";
+import { CirclePauseIcon, EraserIcon, EyeOffIcon, PlayIcon, RotateCcwIcon, ShieldAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Clamp } from "@/components/pulse/clamp";
 import { ConfirmDialog } from "@/components/pulse/confirm";
+import { StatusBadge } from "@/components/pulse/status-badge";
 import { Mono, ToneBadge, When } from "@/components/pulse/who";
 import { cn } from "@/lib/utils";
 import { writes, type Runner, type Setting } from "@/lib/api";
@@ -69,7 +70,7 @@ export function RowMeta({ s, className }: { s: Setting; className?: string }) {
       )}
       {!atDefault && !s.secret ? (
         <span>
-          Default: <span className="font-mono text-[12px] text-foreground/75">{s.default || "empty"}</span>
+          Default: <span className="font-mono text-xs text-foreground/75">{s.default || "empty"}</span>
         </span>
       ) : null}
       <SettingKey name={s.name} />
@@ -122,7 +123,7 @@ export function SettingKey({ name, className }: { name: string; className?: stri
   if (!show) return null;
   return (
     <span className={cn("min-w-0 text-xs text-muted-foreground anywhere", className)} title={PULSE_SETTING}>
-      Key: <code className="font-mono text-[12px] text-muted-foreground/90">{name}</code>
+      Key: <code className="font-mono text-xs text-muted-foreground/90">{name}</code>
     </span>
   );
 }
@@ -134,7 +135,7 @@ export function RowHead({ s, title, badge, children }: { s: Setting; title?: Rea
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="text-[15px] font-medium leading-snug text-foreground anywhere">{title ?? settingLabel(s.name)}</span>
+        <span className="text-sm font-medium leading-snug text-foreground anywhere">{title ?? settingLabel(s.name)}</span>
         {s.secret ? (
           <ToneBadge tone="neutral" className="gap-1" title="Saved on this machine, never shown here or to agents">
             <EyeOffIcon className="size-3" aria-hidden /> Private
@@ -142,7 +143,7 @@ export function RowHead({ s, title, badge, children }: { s: Setting; title?: Rea
         ) : null}
         {badge}
       </div>
-      {children ?? <Clamp lines={2}>{settingHelp(s.name, s.description)}</Clamp>}
+      {children ?? <Clamp lines={2} className="text-[13px] text-muted-foreground">{settingHelp(s.name, s.description)}</Clamp>}
       <RowMeta s={s} className="mt-0.5" />
     </div>
   );
@@ -185,7 +186,7 @@ export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; ca
   const warning = warn ? warn(dirty ? draft : s.value) : "";
   const pendingWarning = warn && pending !== null ? warn(pending) : "";
   return (
-    <div className="grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-x-8">
+    <div className="grid gap-3 px-4 py-3 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-x-8">
       <RowHead s={s} title={label} />
       <div className="flex min-w-0 flex-col gap-1.5 md:max-w-[22rem] md:items-end">
         <div className="flex min-w-0 flex-wrap items-center gap-2 md:justify-end">
@@ -287,9 +288,10 @@ export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; ca
   );
 }
 
-// The emergency brake (the `stop` key): one sentence on what is happening
-// now and one button that does the opposite. Same write as the switch it
-// replaces - setSetting("stop", "1"|"0") behind a confirm.
+// The emergency brake (the `stop` key), as the Danger zone card at the top
+// of General: a heading row, one sentence on what is happening now, a
+// status word and one button that does the opposite. Same write as the
+// switch it replaces - setSetting("stop", "1"|"0") behind a confirm.
 export function PauseCard({ s, canEdit }: { s: Setting; canEdit: boolean }) {
   const [pending, setPending] = useState<string | null>(null);
   const paused = s.value === "1";
@@ -300,30 +302,36 @@ export function PauseCard({ s, canEdit }: { s: Setting; canEdit: boolean }) {
   const live = state === "running" || state === "alive";
   const off = !!runner.data && !live;
   return (
-    <div className={cn("flex min-w-0 flex-wrap items-start gap-4 rounded-2xl border bg-card p-4 sm:items-center sm:p-5", paused && "border-bad/40 bg-bad/[0.05]")}>
-      <span className={cn("flex size-10 shrink-0 items-center justify-center rounded-full", paused ? "bg-bad/10 text-bad" : live ? "bg-ok/10 text-ok" : "bg-muted text-muted-foreground")} aria-hidden>
-        {paused ? <CirclePauseIcon className="size-5" /> : <PlayIcon className="size-[18px]" />}
-      </span>
-      <div className="min-w-0 flex-1 basis-60">
-        <p className="text-base font-semibold leading-snug text-foreground">{paused ? "All work is paused" : live ? "Agents are working normally" : "Nothing is paused"}</p>
-        <p className="mt-0.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-          {paused
-            ? "No new agent work starts on this machine until you resume. Nothing is lost while it waits."
-            : off
-              ? "The runner is off, so agents can't start new work right now anyway. Pausing keeps them from starting once it runs again."
-              : "Your emergency brake. Pausing stops agents from starting new work on this machine; runs already going finish first."}
-        </p>
-        <RowMeta s={s} className="mt-1" />
+    <div className="grid min-w-0 gap-3 rounded-lg border border-status-failed/40 bg-status-failed-soft/30 p-4 sm:p-5">
+      <h3 className="flex items-center gap-2 text-sm font-semibold leading-snug text-foreground">
+        <ShieldAlertIcon className="size-4 shrink-0 text-status-failed" aria-hidden />
+        Danger zone
+      </h3>
+      <div className="flex min-w-0 flex-wrap items-start gap-x-4 gap-y-3 sm:items-center">
+        <div className="min-w-0 flex-1 basis-60">
+          <p className="text-sm font-medium leading-snug text-foreground">{paused ? "All work is paused" : live ? "Agents are working normally" : "Nothing is paused"}</p>
+          <p className="mt-0.5 max-w-2xl text-[13px] leading-relaxed text-muted-foreground">
+            {paused
+              ? "No new agent work starts on this machine until you resume. Nothing is lost while it waits."
+              : off
+                ? "The runner is off, so agents can't start new work right now anyway. Pausing keeps them from starting once it runs again."
+                : "Your emergency brake. Pausing stops agents from starting new work on this machine; runs already going finish first."}
+          </p>
+          <RowMeta s={s} className="mt-1" />
+        </div>
+        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
+          {paused ? <StatusBadge status="warning" label="Paused" /> : <StatusBadge status="done" label="Running" />}
+          {paused ? (
+            <Button className="flex-1 sm:flex-none" disabled={!canEdit} onClick={() => setPending("0")}>
+              <PlayIcon /> Resume work
+            </Button>
+          ) : (
+            <Button variant="outline" className="flex-1 text-bad hover:text-bad sm:flex-none" disabled={!canEdit} onClick={() => setPending("1")}>
+              <CirclePauseIcon /> Pause all work
+            </Button>
+          )}
+        </div>
       </div>
-      {paused ? (
-        <Button className="w-full sm:w-auto" disabled={!canEdit} onClick={() => setPending("0")}>
-          <PlayIcon /> Resume work
-        </Button>
-      ) : (
-        <Button variant="outline" className="w-full text-bad hover:text-bad sm:w-auto" disabled={!canEdit} onClick={() => setPending("1")}>
-          <CirclePauseIcon /> Pause all work
-        </Button>
-      )}
       <ConfirmDialog
         open={pending !== null}
         onOpenChange={(o) => !o && setPending(null)}

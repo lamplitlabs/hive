@@ -15,9 +15,12 @@ export function SectionHeading({
   icon: Icon,
   as: Heading = "h2",
   id,
+  countTone = "neutral",
 }: {
   children: React.ReactNode;
   count?: number | string;
+  // Marigold only for the things that wait on the owner (spec "Count chip").
+  countTone?: "neutral" | "you";
   action?: React.ReactNode;
   note?: React.ReactNode;
   className?: string;
@@ -32,7 +35,7 @@ export function SectionHeading({
         <Heading id={id} className="flex min-w-0 shrink-0 items-center gap-2 text-base font-semibold leading-6 tracking-tight">
           {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden /> : null}
           <span className="truncate">{children}</span>
-          {hasCount ? <span className="tnum inline-flex h-5 shrink-0 items-center rounded-md bg-muted px-1.5 text-xs font-medium text-muted-foreground">{count}</span> : null}
+          {hasCount ? <span className={cn("tnum inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-xs font-medium", countTone === "you" ? "bg-you-soft text-you-ink" : "bg-muted text-muted-foreground")}>{count}</span> : null}
         </Heading>
         {note ? <p className="min-w-0 flex-1 truncate text-sm leading-6 text-muted-foreground max-sm:basis-full">{note}</p> : null}
       </div>

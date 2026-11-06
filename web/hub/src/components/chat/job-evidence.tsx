@@ -26,7 +26,7 @@ import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 const CHIP =
-  "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground";
+  "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground";
 const LINK =
   "inline-flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline";
 

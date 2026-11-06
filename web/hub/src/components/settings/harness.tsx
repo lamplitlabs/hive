@@ -12,11 +12,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Disclosure, ErrorNotice, Notice } from "@/components/pulse/panel";
+import { BrandLogo, LogoTile } from "@/components/pulse/logo";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import { EMPTY_CHOICE, SettingKey } from "@/components/settings/setting-row";
-import { connectedWords, ProviderGlyph, ProviderWizard } from "@/components/settings/provider-wizard";
+import { connectedWords, ProviderWizard } from "@/components/settings/provider-wizard";
+import { contextChip, modelFamily } from "@/components/settings/settings-state";
 import { errorText, writes, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessProviderInfo, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
+import { logoFor } from "@/lib/logos";
 import { hrefs } from "@/lib/nav";
 import { CONNECT_PROVIDER_EVENT, providerInfo } from "@/lib/providers";
 import { settingHelp, settingLabel } from "@/lib/setting-labels";
@@ -67,6 +70,13 @@ function modelLabel(m: HarnessModel) {
   return m.name || m.id;
 }
 
+// The 16 px brand mark before a model's name: the vendor's when known, else
+// the one its id names (gpt-, claude-, gemini-...); nothing when neither matches.
+function ModelLogo({ m }: { m: HarnessModel }) {
+  const id = logoFor(m.vendor) ?? logoFor(m.id);
+  return id ? <BrandLogo id={id} size={16} className="text-muted-foreground" /> : null;
+}
+
 function saveSetting(name: string, value: string) {
   return writes.setSetting(name, value).then(() => {
     invalidate("harness");
@@ -91,8 +101,8 @@ function Block({ title, note, children, right, className }: { title: React.React
     <div className={cn("grid gap-3 border-t px-4 py-4 first:border-t-0 sm:px-5", className)}>
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="min-w-0">
-          <h3 className="text-[15px] font-semibold leading-snug">{title}</h3>
-          {note ? <p className="mt-0.5 max-w-2xl text-sm leading-relaxed text-muted-foreground anywhere">{note}</p> : null}
+          <h3 className="text-sm font-semibold leading-snug">{title}</h3>
+          {note ? <p className="mt-0.5 max-w-2xl text-[13px] leading-relaxed text-muted-foreground anywhere">{note}</p> : null}
         </div>
         {right ? <div className="flex flex-wrap items-center gap-2">{right}</div> : null}
       </div>
@@ -133,9 +143,19 @@ function ModelSelect({ name, label, note, current, models, disabled }: { name: "
   // The light, measuring and Ask models fall back to another one when empty.
   const sameAs = name === "light_model" || name === "measure_model" ? "Same as the main model" : name === "ask.model" ? "Same as the light model" : null;
   const selectValue = sameAs && !current ? SAME_MODEL : ids.has(current) ? current : "__custom__";
-  // The closed picker shows the model's name only; ids and badges stay in the list.
+  // The closed picker shows the model's logo and name only; ids and badges stay in the list.
   const known = models.find((m) => m.id === current);
-  const shown = selectValue === SAME_MODEL && sameAs ? sameAs : known ? modelLabel(known) : current || "The default model";
+  const shown =
+    selectValue === SAME_MODEL && sameAs ? (
+      sameAs
+    ) : known ? (
+      <span className="flex min-w-0 items-center gap-2">
+        <ModelLogo m={known} />
+        <span className="truncate">{modelLabel(known)}</span>
+      </span>
+    ) : (
+      current || "The default model"
+    );
   // Typing an id is the rare path: folded unless the current model isn't in the list, or there is no list.
   const [typing, setTyping] = useState<boolean | null>(null);
   const typeOpen = typing ?? ((!!current && !known) || models.length === 0);
@@ -160,17 +180,28 @@ function ModelSelect({ name, label, note, current, models, disabled }: { name: "
         </SelectTrigger>
         <SelectContent>
           {sameAs ? <SelectItem value={SAME_MODEL}>{sameAs}</SelectItem> : null}
-          {models.map((m) => (
-            <SelectItem key={m.id} value={m.id}>
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span>{modelLabel(m)}</span>
-                <span className="text-xs text-muted-foreground">{m.id}</span>
-                {m.premium > 1 ? <Badge variant="outline" title="Uses more model credits per call">{"×" + m.premium}</Badge> : null}
-                {m.preview ? <Badge variant="outline">Preview</Badge> : null}
-                {m.default ? <Badge variant="secondary">Default</Badge> : null}
-              </span>
-            </SelectItem>
-          ))}
+          {models.map((m) => {
+            const family = modelFamily(m.id);
+            const context = contextChip(m.context_window);
+            return (
+              <SelectItem key={m.id} value={m.id}>
+                <span className="flex min-w-0 items-center gap-2">
+                  <ModelLogo m={m} />
+                  <span>{modelLabel(m)}</span>
+                  <span className="text-xs text-muted-foreground">{m.id}</span>
+                  {family !== "Other" ? <Badge variant="outline">{family}</Badge> : null}
+                  {context ? (
+                    <Badge variant="outline" className="font-mono" title={num(m.context_window) + " tokens of context"}>
+                      {context}
+                    </Badge>
+                  ) : null}
+                  {m.premium > 1 ? <Badge variant="outline" title="Uses more model credits per call">{"×" + m.premium}</Badge> : null}
+                  {m.preview ? <Badge variant="outline">Preview</Badge> : null}
+                  {m.default ? <Badge variant="secondary">Default</Badge> : null}
+                </span>
+              </SelectItem>
+            );
+          })}
           {!ids.has(current) && current ? <SelectItem value="__custom__">{current}</SelectItem> : null}
         </SelectContent>
       </Select>
@@ -400,7 +431,7 @@ function PromptEditor() {
               }}
               rows={10}
               spellCheck={false}
-              className={cn("min-h-48 font-mono text-[12.5px] leading-relaxed", !d.custom && !dirty && "bg-muted/40 text-muted-foreground")}
+              className={cn("min-h-48 font-mono text-[13px] leading-relaxed", !d.custom && !dirty && "bg-muted/40 text-muted-foreground")}
             />
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" size="sm" onClick={() => save(draft, "System prompt saved.")} disabled={saving || !dirty}>
@@ -434,7 +465,7 @@ function RowSummary({ title, note, badge }: { title: string; note: string; badge
   return (
     <span className="block min-w-0">
       <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="text-[15px] font-semibold leading-snug">{title}</span>
+        <span className="text-sm font-semibold leading-snug">{title}</span>
         {badge}
       </span>
       <span className="mt-0.5 block text-sm font-normal leading-relaxed text-muted-foreground">{note}</span>
@@ -488,12 +519,12 @@ function ProviderBlock({ h, runner, expired, commands, onReload }: { h: HarnessS
   };
   return (
     <Block title="Model provider" note="Where agents get their models. Keys and sign-ins stay on this machine.">
-      <div className={cn("grid gap-4 rounded-xl border p-4", signedIn ? "bg-card" : "border-warn/40 bg-warn/5")}>
+      <div className={cn("grid gap-4 rounded-lg border p-4", signedIn ? "bg-card" : "border-warn/40 bg-warn/5")}>
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3">
-          <ProviderGlyph name={p.name} title={info.title} className="size-10 text-sm" />
+          <LogoTile id={logoFor(p.name)} name={info.title} size={40} color="brand" title={info.title} />
           <div className="min-w-0 flex-1 basis-56">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="text-[15px] font-semibold">{info.title}</span>
+              <span className="text-sm font-semibold">{info.title}</span>
               <ToneBadge tone={signedIn ? "ok" : "warn"} dot>
                 {signedIn ? "Connected" : expired ? "Sign-in expired" : "Not connected"}
               </ToneBadge>
@@ -611,7 +642,7 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
   };
 
   return (
-    <div className={cn("min-w-0 overflow-hidden rounded-2xl border bg-card", className)}>
+    <div className={cn("min-w-0 overflow-hidden rounded-lg border bg-card", className)}>
       {h.error && !d ? (
         <div className="p-4 sm:p-5">
           <ErrorNotice error={h.error} onRetry={() => void h.reload()} />

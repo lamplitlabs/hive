@@ -39,7 +39,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       }
       toastOptions={{
         classNames: {
-          toast: "cn-toast pop rounded-2xl border bg-popover shadow-pop",
+          toast: "cn-toast pop rounded-xl border bg-popover shadow-pop",
         },
       }}
       {...props}

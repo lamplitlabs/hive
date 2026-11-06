@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/pulse/markdown";
+import { Kbd } from "@/components/pulse/shortcut-help";
 import { errorText, writes, type AskSource, type AskStatus, type Org } from "@/lib/api";
 import { ASK_MAX_QUESTION, ASK_STARTERS, type AskMessage, answerMessage, elapsedWord, factsOnlyHint, historyForRequest, readHistory, trimHistory, writeHistory } from "@/lib/ask";
 import { hrefs } from "@/lib/nav";
@@ -113,7 +114,8 @@ export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<Re
       {variant === "sidebar" ? (
         <>
           <span className="collapsed:sr-only">Ask</span>
-          <kbd aria-hidden="true" className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground collapsed:hidden">⌘J</kbd>
+          {/* The same Kbd as the Search row above it, so the two hints match. */}
+          <Kbd className="pointer-events-none ml-auto collapsed:hidden">⌘J</Kbd>
         </>
       ) : null}
     </Button>
@@ -179,7 +181,7 @@ function AskConversation({ pageProject, projects, commonsSlug }: { pageProject: 
   return (
     <>
       <SheetHeader className="shrink-0 gap-2 border-b px-5 pt-5 pb-4 pr-14">
-        <SheetTitle className="flex items-center gap-2 text-[17px]">
+        <SheetTitle className="flex items-center gap-2 text-base">
           <BotMessageSquareIcon aria-hidden className="size-5 text-primary" />
           Ask
         </SheetTitle>
@@ -205,7 +207,7 @@ function AskConversation({ pageProject, projects, commonsSlug }: { pageProject: 
                 No model signed in: facts only
               </Badge>
             ) : (
-              <Badge variant="outline" className="max-w-full truncate font-mono text-[11px]" title={"Answers come from " + modelWord + " via " + (status.provider.label || status.provider.name)}>
+              <Badge variant="outline" className="max-w-full truncate font-mono text-xs" title={"Answers come from " + modelWord + " via " + (status.provider.label || status.provider.name)}>
                 {modelWord}
               </Badge>
             )
@@ -292,7 +294,7 @@ function AskThread({ project, scope, signedOut, draft, setDraft }: { project: st
             {messages.map((m, i) => (
               <li key={m.at + i} className={cn("grid gap-1.5", m.role === "user" && "justify-items-end")}>
                 {m.role === "user" ? (
-                  <div className="max-w-[88%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm whitespace-pre-wrap text-primary-foreground anywhere">{m.content}</div>
+                  <div className="max-w-[88%] rounded-lg rounded-br-md bg-primary px-3.5 py-2 text-sm whitespace-pre-wrap text-primary-foreground anywhere">{m.content}</div>
                 ) : (
                   <AnswerBubble m={m} />
                 )}
@@ -382,22 +384,22 @@ function AskThread({ project, scope, signedOut, draft, setDraft }: { project: st
 
 function AnswerBubble({ m }: { m: Extract<AskMessage, { role: "assistant" }> }) {
   return (
-    <div className="grid max-w-full gap-2 rounded-2xl rounded-bl-md border bg-card px-4 py-3">
+    <div className="grid max-w-full gap-2 rounded-lg rounded-bl-md border bg-card px-4 py-3">
       {m.facts_only ? (
         <p className="text-xs text-warn">{factsOnlyHint(m.note)}</p>
       ) : null}
       <Markdown source={m.content} className="text-sm" />
       {m.sources.length ? (
         <div className="grid gap-1 border-t pt-2">
-          <p className="text-[11px] font-medium text-muted-foreground">Based on</p>
+          <p className="text-xs font-medium text-muted-foreground">Based on</p>
           <ul className="grid gap-1">
             {m.sources.map((s) => {
               const href = sourceHref(s);
               const label = (
                 <>
-                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground">{sourceWord(s)}</span>
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">{sourceWord(s)}</span>
                   <span className="min-w-0 flex-1 truncate">{s.summary || s.id}</span>
-                  <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">{s.date ? s.date.slice(0, 10) : s.id}</span>
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">{s.date ? s.date.slice(0, 10) : s.id}</span>
                 </>
               );
               return (
@@ -418,7 +420,7 @@ function AnswerBubble({ m }: { m: Extract<AskMessage, { role: "assistant" }> }) 
         </div>
       ) : null}
       {!m.facts_only && (m.model || m.elapsed_ms) ? (
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {[m.model, elapsedWord(m.elapsed_ms)].filter(Boolean).join(" · ")}
         </p>
       ) : null}

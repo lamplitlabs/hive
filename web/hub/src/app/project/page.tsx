@@ -3,29 +3,37 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FolderInputIcon, MoreHorizontalIcon, PencilLineIcon, Trash2Icon } from "lucide-react";
+import { FolderInputIcon, GitBranchIcon, HistoryIcon, LayoutDashboardIcon, ListChecksIcon, MessagesSquareIcon, MoreHorizontalIcon, PencilLineIcon, PlusIcon, ScaleIcon, Trash2Icon, TrendingUpIcon, UsersIcon, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PageTitle, EmptyState, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
-import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
-import { Mono, When } from "@/components/pulse/who";
-import { CommonsLine, ProjectCard, workingRows } from "@/components/pulse/cards";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
+import { SectionHeading } from "@/components/pulse/section-heading";
+import { ProjectAvatar } from "@/components/pulse/avatar";
+import { BrandLogo } from "@/components/pulse/logo";
+import { StatusBadge } from "@/components/pulse/status-badge";
+import { Avatar, Mono, When } from "@/components/pulse/who";
+import { CommonsLine, ProjectCard } from "@/components/pulse/cards";
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
-import { NewTaskButton } from "@/components/tasks/task-dialogs";
+import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { AddProjectButton, MoveDialog, RemoveDialog, RenameDialog, RestoreButton } from "@/components/project/project-dialogs";
-import { AmendmentsTab, ChatTab, CleanupTab, EnvTab, EvolutionTab, NoticesTab, OverviewTab, ProposalsTab, SuggestionsTab, TasksTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
+import { AmendmentsTab, ChatTab, CleanupTab, EvolutionTab, ForYouTab, HistoryActivity, NoticesTab, OverviewTab, SuggestionsTab, TasksTab, TeamTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
+import { posterNames, projectHealth, repoChip, tabCountLabel, type CountedTab } from "@/components/project/project-state";
 import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from "@/lib/nav";
-import { allProjects, projectPath, registeredProjects, type Org, type ProjectCardData, type ProjectGoalPayload, type ProjectsPayload, type RegisteredProject, type Task, type TasksPayload } from "@/lib/api";
+import { allProjects, projectPath, registeredProjects, type Org, type Overview, type ProjectInfo, type ProjectsPayload, type RegisteredProject, type TasksPayload } from "@/lib/api";
+import { failedJobsPath, type FailedJobsPage } from "@/lib/job-repair";
 import { useApi } from "@/lib/use-api";
 import { useInbox } from "@/components/pulse/inbox";
-import { ProjectMascot } from "@/components/pulse/mascots";
-import { num, plural } from "@/lib/format";
+import { gateStep } from "@/components/pulse/evolve";
+import { num } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { ArchiveIcon, FolderOpenIcon, UsersIcon } from "lucide-react";
+import { ArchiveIcon, FolderOpenIcon } from "lucide-react";
 
 type BoardSub = "threads" | "suggestions" | "amendments" | "notices";
-type HistorySub = "timeline" | "env" | "cleanup";
+type HistorySub = "timeline" | "cleanup";
+type TeamSub = "team" | "env";
 
 const BOARD_SUBS: { id: BoardSub; label: string; note: string }[] = [
   { id: "threads", label: "Threads", note: "Where agents pick up work, ask each other questions and report what they found." },
@@ -36,12 +44,31 @@ const BOARD_SUBS: { id: BoardSub; label: string; note: string }[] = [
 
 const HISTORY_SUBS: { id: HistorySub; label: string; note: string }[] = [
   { id: "timeline", label: "Timeline", note: "Everything that happened here, newest first." },
-  { id: "env", label: "Setup and records", note: "How agents build and run the project, its rules, and the records they keep." },
   { id: "cleanup", label: "Cleanup", note: "" },
 ];
 
+const TEAM_SUBS: { id: TeamSub; label: string; note: string }[] = [
+  { id: "team", label: "Team and tools", note: "The lead agents who run this project and the tools and skills they work with." },
+  { id: "env", label: "Setup and records", note: "How agents build and run the project, its rules, and the records they keep." },
+];
+
 const boardSub = (v: string | null | undefined): BoardSub => (v === "suggestions" || v === "amendments" || v === "notices" ? v : "threads");
-const historySub = (v: string | null | undefined): HistorySub => (v === "env" ? "env" : v === "cleanup" ? "cleanup" : "timeline");
+const historySub = (v: string | null | undefined): HistorySub => (v === "cleanup" ? "cleanup" : "timeline");
+const teamSub = (v: string | null | undefined): TeamSub => (v === "env" ? "env" : "team");
+
+// The tab strip's icons, one per section (spec "Project" - tabs with icons
+// and counts). The ids come from lib/nav.ts so links and aliases agree.
+const TAB_ICON: Record<ProjectCanonicalTab, LucideIcon> = {
+  overview: LayoutDashboardIcon,
+  "for-you": ScaleIcon,
+  work: ListChecksIcon,
+  board: MessagesSquareIcon,
+  evolution: TrendingUpIcon,
+  team: UsersIcon,
+  history: HistoryIcon,
+};
+
+const isCounted = (id: ProjectCanonicalTab): id is CountedTab => id === "for-you" || id === "work" || id === "board";
 
 export default function ProjectPage() {
   return (
@@ -62,12 +89,16 @@ function ProjectScreen() {
   const subParam = sp.get("sub") || resolved.sub;
   const board = boardSub(subParam);
   const history = historySub(subParam);
+  const team = teamSub(subParam);
   const thread = sp.get("thread");
   const post = sp.get("post");
   const task = sp.get("task");
   const org = useApi<Org>("org");
-  const goal = useApi<ProjectGoalPayload>(slug && slug !== "commons" ? projectPath(slug, "goal") : null, { refresh: 60000 });
   const taskSummary = useApi<TasksPayload>(slug ? "tasks?project=" + encodeURIComponent(slug) : null, { refresh: 30000 });
+  // The header's repository chip and the faces of the agents who post here.
+  const info = useApi<ProjectInfo>(slug && slug !== "commons" ? projectPath(slug, "project") : null, { refresh: 60000 });
+  const ov = useApi<Overview>(slug ? projectPath(slug, "overview") : null);
+  const failed = useApi<FailedJobsPage>(slug && slug !== "commons" ? failedJobsPath(slug, "", 1) : null, { refresh: 30000 });
   // The registry (inactive rows included) only matters on the picker.
   const reg = useApi<ProjectsPayload>(!slug ? "projects" : null, { refresh: false });
   // The one "for you" count, shared with the home page and the sidebar.
@@ -75,6 +106,7 @@ function ProjectScreen() {
   const [removing, setRemoving] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [newTask, setNewTask] = useState(false);
 
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
@@ -99,7 +131,7 @@ function ProjectScreen() {
   useEffect(() => {
     if (!slug) return;
     const wanted = tab === "overview" ? null : tab;
-    const wantedSub = tab === "board" ? board : tab === "history" ? history : null;
+    const wantedSub = tab === "board" ? board : tab === "history" ? history : tab === "team" && team !== "team" ? team : null;
     if ((tabParam || null) === wanted && (sp.get("sub") || null) === wantedSub) return;
     const q = new URLSearchParams(sp.toString());
     if (wanted) q.set("tab", wanted);
@@ -107,7 +139,7 @@ function ProjectScreen() {
     if (wantedSub) q.set("sub", wantedSub);
     else q.delete("sub");
     router.replace(pathname + (q.toString() ? "?" + q.toString() : ""), { scroll: false });
-  }, [slug, tab, board, history, tabParam, sp, router, pathname]);
+  }, [slug, tab, board, history, team, tabParam, sp, router, pathname]);
 
   if (!slug) {
     const projects = registeredProjects(org.data);
@@ -119,7 +151,7 @@ function ProjectScreen() {
           Projects
         </PageTitle>
         {!org.data && org.loading ? (
-          <SkeletonRows n={4} className="[&>*]:h-24 [&>*]:rounded-2xl" />
+          <SkeletonRows n={4} className="[&>*]:h-24 [&>*]:rounded-lg" />
         ) : (
           <div className="grid gap-10">
             {projects.length ? (
@@ -136,7 +168,7 @@ function ProjectScreen() {
             {commons ? <CommonsLine c={commons} /> : null}
             {inactive.length ? (
               <section aria-label="Removed projects">
-                <SectionHeading count={inactive.length} note="PULSE no longer works on these. Their posts and history are kept, and you can bring one back.">
+                <SectionHeading icon={ArchiveIcon} count={inactive.length} note="PULSE no longer works on these. Their posts and history are kept, and you can bring one back.">
                   Removed projects
                 </SectionHeading>
                 <CardGrid cols={3}>
@@ -163,12 +195,6 @@ function ProjectScreen() {
   // beside it once the two differ, so a renamed project is still findable.
   const name = (card?.name || "").trim();
   const title = isCommons ? "Shared board" : name && name !== slug ? name : slug;
-  const goalText = (card?.goal_preview || goal.data?.goal?.text || "").trim();
-  const sub = isCommons
-    ? "The shared board is for work that touches more than one project. Agents from every project post, ask and vote here."
-    : card && !card.present
-      ? "Its folder " + card.path + " is not on this disk, so agents cannot work on it. If it moved or was cloned again, point PULSE to the new folder."
-      : goalText || (card?.path ? "Software project at " + card.path : card?.name && card.name !== card.slug ? card.name : "A software project PULSE works on.");
   const counts: Partial<Record<ProjectCanonicalTab, number>> = card ? { "for-you": forYou, work: openTasks, board: card.threads_open } : {};
   const removed = () => setParams({ slug: null, tab: null, sub: null, thread: null, post: null, task: null });
 
@@ -180,55 +206,86 @@ function ProjectScreen() {
       <>
         <PageTitle icon={FolderOpenIcon}>Project not found</PageTitle>
         <EmptyState
-          icon={<FolderOpenIcon className="size-[18px]" />}
-          title={<>There&apos;s no project called &ldquo;{slug}&rdquo;</>}
+          title={"PULSE doesn't know a project called " + slug}
           action={
-            <Button asChild size="sm">
-              <Link href="/project/">See all projects</Link>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/project/">All projects</Link>
             </Button>
           }
         >
-          {gone ? "It was removed. You can bring it back from the list of removed projects." : "The link may be old, or the project was removed or renamed. The list of projects has every one PULSE works on."}
+          {gone ? "It was removed. You can bring it back from the projects list." : org.error ? "The project list didn't load: " + org.error : "Check the link, or pick the project from the list."}
         </EmptyState>
       </>
     );
   }
 
+  const chip = isCommons ? null : repoChip(info.data, card);
+  const step = card && !isCommons ? gateStep(slug, inbox.gateOf(card)) : null;
+  const health = card
+    ? isCommons
+      ? forYou
+        ? { status: "waiting", label: forYou === 1 ? "1 thing waits for you" : forYou + " things wait for you" }
+        : { status: "ok", label: "All quiet" }
+      : projectHealth(card, { forYou, step: step?.label ?? null, failed: failed.error ? 0 : failed.data?.historical_total ?? 0 })
+    : null;
+  const posters = posterNames(ov.data?.agents ?? card?.active_claims ?? []);
+
   return (
     <Tabs value={tab} onValueChange={(v) => setParams({ tab: v === "overview" ? null : v, sub: null, thread: null, post: null })} className="gap-0">
-      <PageTitle
-        className="mb-8"
-        badge={
-          card && !card.present ? (
-            <span className="rounded-full bg-bad/10 px-2.5 py-0.5 text-[13px] font-medium text-bad">Missing on disk</span>
-          ) : undefined
-        }
-        sub={
-          card || !org.loading ? (
-            <>
-              <p className="line-clamp-2" title={goalText && !isCommons ? "Project goal: " + goalText : undefined}>
-                {card ? sub : org.error ? "This project didn't load: " + org.error : "PULSE doesn't know a project called " + slug + "."}
-              </p>
-              {card ? <StatusLine card={card} commons={isCommons} forYou={forYou} openTasks={taskSummary.data ? openList : null} slug={slug} /> : null}
-            </>
-          ) : (
-            "Loading the project…"
-          )
-        }
-        actions={
-          isCommons || !card ? null : (
-            <>
+      <header className="mb-6 min-w-0 pt-5 sm:pt-6" aria-label={title}>
+        <div className="flex min-w-0 items-start justify-between gap-x-4 gap-y-3 max-sm:flex-wrap">
+          <div className="flex min-w-0 flex-1 items-start gap-3.5">
+            {isCommons ? (
+              <span className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden>
+                <UsersIcon className="size-6" />
+              </span>
+            ) : (
+              <ProjectAvatar slug={slug} name={name || slug} size={48} className="shrink-0" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+                <h1 className="min-w-0 truncate text-2xl font-semibold leading-8 tracking-tight anywhere" title={title}>
+                  {title}
+                </h1>
+                {!isCommons && title !== slug ? <Mono className="text-[13px] text-muted-foreground">{slug}</Mono> : null}
+                {health ? <StatusBadge status={health.status} label={health.label} size="sm" /> : null}
+              </div>
+              <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
+                {isCommons ? (
+                  <span>The shared board is for work that touches more than one project. Agents from every project post, ask and vote here.</span>
+                ) : card && !card.present ? (
+                  <span className="anywhere">
+                    Its folder <Mono>{card.path}</Mono> is not on this disk, so agents cannot work on it. If it moved or was cloned again, point PULSE to the new folder.
+                  </span>
+                ) : chip ? (
+                  <RepoChip chip={chip} head={info.data?.head} />
+                ) : card ? (
+                  <span className="anywhere">Software project at <Mono>{card.path}</Mono></span>
+                ) : (
+                  <span>Loading the project…</span>
+                )}
+                {posters.shown.length ? <Posters names={posters.shown} more={posters.more} /> : null}
+              </div>
+            </div>
+          </div>
+          {isCommons || !card ? null : (
+            <div className="flex shrink-0 items-center gap-2 max-sm:w-full max-sm:justify-end sm:pt-1">
               {card.present ? null : (
-                <Button onClick={() => setMoving(true)}>
+                <Button variant="outline" onClick={() => setMoving(true)}>
                   <FolderInputIcon /> Point to its folder
                 </Button>
               )}
               <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="icon" aria-label={"More actions for " + slug}>
-                    <MoreHorizontalIcon />
-                  </Button>
-                </DropdownMenuTrigger>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="icon" aria-label={"More actions for " + slug}>
+                        <MoreHorizontalIcon />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>More actions</TooltipContent>
+                </Tooltip>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuItem onSelect={() => setRenaming(true)}>
                     <PencilLineIcon /> Rename project…
@@ -242,38 +299,32 @@ function ProjectScreen() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <NewTaskButton size="default" variant={card.present ? "default" : "outline"} project={slug} onCreated={(t) => setParams({ tab: "work", task: t.id })} />
-            </>
-          )
-        }
-        bar={<SectionTabs tab={tab} counts={counts} />}
-      >
-        <span className="inline-flex min-w-0 items-center gap-3">
-          {isCommons ? (
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground" aria-hidden>
-              <UsersIcon className="size-5" />
-            </span>
-          ) : (
-            <ProjectAvatar slug={slug} />
+              <Button onClick={() => setNewTask(true)} disabled={!card.present} title={card.present ? undefined : "Point PULSE to the project's folder first."}>
+                <PlusIcon /> New task
+              </Button>
+            </div>
           )}
-          <span className="min-w-0 anywhere">
-            {title}
-            {!isCommons && title !== slug ? <span className="ml-2 align-middle font-mono text-[13px] font-normal text-muted-foreground">{slug}</span> : null}
-          </span>
-        </span>
-      </PageTitle>
+        </div>
+        <div className="mt-4 min-w-0">
+          <SectionTabs tab={tab} counts={counts} />
+        </div>
+      </header>
 
-      <div role="tabpanel" aria-label={PROJECT_TABS.find((t) => t.id === tab)?.label ?? tab}>
-        {tab === "overview" ? <OverviewTab slug={slug} canDecide={canDecide} /> : null}
-        {tab === "for-you" ? <ProposalsTab slug={slug} canDecide={canDecide} /> : null}
-        {tab === "work" ? <WorkTab slug={slug} task={task} setParams={setParams} /> : null}
-        {tab === "board" ? <BoardTab slug={slug} value={board} onValueChange={(next) => setParams({ tab: "board", sub: next, thread: null, post: null })} thread={thread} setParams={setParams} /> : null}
-        {tab === "evolution" ? <EvolutionTab slug={slug} canDecide={canDecide} /> : null}
-        {tab === "history" ? <HistoryTab slug={slug} value={history} onValueChange={(next) => setParams({ tab: "history", sub: next })} /> : null}
+      {/* A thread or a post opens in a side panel docked to the right of the tab's content (a sheet below a desktop). */}
+      <div className="flex min-w-0 items-start gap-0 lg:gap-6">
+        <div role="tabpanel" aria-label={PROJECT_TABS.find((t) => t.id === tab)?.label ?? tab} className="min-w-0 flex-1">
+          {tab === "overview" ? <OverviewTab slug={slug} canDecide={canDecide} /> : null}
+          {tab === "for-you" ? <ForYouTab slug={slug} canDecide={canDecide} /> : null}
+          {tab === "work" ? <WorkTab slug={slug} task={task} setParams={setParams} /> : null}
+          {tab === "board" ? <BoardTab slug={slug} value={board} onValueChange={(next) => setParams({ tab: "board", sub: next, thread: null, post: null })} thread={thread} setParams={setParams} /> : null}
+          {tab === "evolution" ? <EvolutionTab slug={slug} canDecide={canDecide} /> : null}
+          {tab === "team" ? <TeamSection slug={slug} value={team} canDecide={canDecide} onValueChange={(next) => setParams({ tab: "team", sub: next === "team" ? null : next })} /> : null}
+          {tab === "history" ? <HistoryTab slug={slug} value={history} onValueChange={(next) => setParams({ tab: "history", sub: next })} /> : null}
+        </div>
+        <ThreadSheet slug={slug} threadKey={post ? null : thread} onClose={() => setParams({ thread: null })} />
+        <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
       </div>
-
-      <ThreadSheet slug={slug} threadKey={thread} onClose={() => setParams({ thread: null })} />
-      <PostSheet slug={slug} postId={post} onClose={() => setParams({ post: null })} />
+      {card && !isCommons ? <NewTaskDialog open={newTask} onOpenChange={setNewTask} project={slug} onCreated={(t) => setParams({ tab: "work", task: t.id })} /> : null}
       {card && !isCommons ? <RemoveDialog open={removing} onOpenChange={setRemoving} kind="project" name={slug} onApplied={removed} /> : null}
       {card && !isCommons ? <RenameDialog open={renaming} onOpenChange={setRenaming} slug={slug} name={card.name || slug} /> : null}
       {card && !isCommons ? <MoveDialog open={moving} onOpenChange={setMoving} slug={slug} name={card.name || slug} path={card.path} present={card.present} /> : null}
@@ -281,37 +332,87 @@ function ProjectScreen() {
   );
 }
 
-// The project's sections as underlined tabs. On a phone the six don't fit:
-// the strip scrolls sideways with a fading edge, and it scrolls itself (not
-// the page) so the open section is always in view, also when a link opened it.
+// The repository chip under the title: the host's logo (GitHub when the
+// remote is one, a branch icon otherwise), owner/name and the branch.
+function RepoChip({ chip, head }: { chip: ReturnType<typeof repoChip>; head?: string }) {
+  if (!chip) return null;
+  const body = (
+    <>
+      {chip.host === "github" ? <BrandLogo id="github" size={16} /> : <GitBranchIcon className="size-4" aria-hidden />}
+      <span className="truncate font-medium text-foreground">{chip.name}</span>
+      {chip.branch ? (
+        <>
+          <span aria-hidden className="text-muted-foreground/60">·</span>
+          <span className="inline-flex min-w-0 items-center gap-1 truncate">
+            {chip.host === "github" ? <GitBranchIcon className="size-3.5 shrink-0" aria-hidden /> : null}
+            <Mono className="truncate text-[13px]">{chip.branch}</Mono>
+          </span>
+        </>
+      ) : null}
+    </>
+  );
+  const cls = "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-[13px]";
+  const label = (chip.host === "github" ? "GitHub repository " : "Repository ") + chip.name + (chip.branch ? ", branch " + chip.branch : "") + (head ? ", at commit " + head.slice(0, 8) : "");
+  return chip.href ? (
+    <a href={chip.href} target="_blank" rel="noreferrer" className={cn(cls, "hover:bg-muted/70 hover:text-foreground")} title={label} aria-label={label + " (opens in a new tab)"}>
+      {body}
+    </a>
+  ) : (
+    <span className={cls} title={label} aria-label={label}>
+      {body}
+    </span>
+  );
+}
+
+// The agents who post here, five faces and a "+N" for the rest.
+function Posters({ names, more }: { names: string[]; more: number }) {
+  return (
+    <span className="inline-flex items-center" aria-label={"Agents here: " + names.join(", ") + (more ? " and " + more + " more" : "")} title={names.join(", ") + (more ? " and " + more + " more" : "")}>
+      <span className="flex items-center -space-x-1.5">
+        {names.map((n) => (
+          <Avatar key={n} seed={n} size={22} className="ring-2 ring-background" />
+        ))}
+      </span>
+      {more ? <span className="tnum ml-1.5 text-xs font-medium text-muted-foreground">+{num(more)}</span> : null}
+    </span>
+  );
+}
+
+// The project's sections as underlined tabs with an icon and a count each.
+// On a phone the seven don't fit: the strip scrolls sideways with a fading
+// edge, and it scrolls itself (not the page) so the open section is always
+// in view, also when a link opened it.
 function SectionTabs({ tab, counts }: { tab: ProjectCanonicalTab; counts: Partial<Record<ProjectCanonicalTab, number>> }) {
   const strip = useRef<HTMLDivElement>(null);
   const countKey = PROJECT_TABS.map((t) => counts[t.id as ProjectCanonicalTab] || 0).join(",");
   useEffect(() => {
     const c = strip.current;
     const el = c?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
-    if (!c || !el || c.scrollWidth <= c.clientWidth) return;
-    const box = c.getBoundingClientRect();
-    const r = el.getBoundingClientRect();
-    if (r.left < box.left) c.scrollLeft += r.left - box.left - 16;
-    else if (r.right > box.right - 32) c.scrollLeft += r.right - box.right + 40;
-    // The counts arrive after the first paint and widen the tabs, so it checks again then.
+    if (!c || !el) return;
+    const pad = 16;
+    const left = el.offsetLeft - c.offsetLeft;
+    const right = left + el.offsetWidth;
+    if (left < c.scrollLeft + pad) c.scrollTo({ left: Math.max(0, left - pad), behavior: "smooth" });
+    else if (right > c.scrollLeft + c.clientWidth - pad) c.scrollTo({ left: right - c.clientWidth + pad, behavior: "smooth" });
   }, [tab, countKey]);
   return (
     <div ref={strip} className="scroll-strip min-w-0 max-w-full">
-      <TabsList variant="line" className="w-full min-w-max justify-start pr-8 sm:pr-0" aria-label="Project sections">
+      <TabsList aria-label="Project sections">
         {PROJECT_TABS.map((t) => {
           const id = t.id as ProjectCanonicalTab;
-          const n = counts[id] || 0;
+          const Icon = TAB_ICON[id];
+          const n = counts[id];
+          const you = id === "for-you";
           return (
-            <TabsTrigger key={t.id} value={t.id} className="flex-none px-2 text-sm sm:px-3">
-              {t.label}
+            <TabsTrigger key={id} value={id} className="gap-1.5 px-3">
+              <Icon className="size-4 shrink-0" aria-hidden />
+              <span>{t.label}</span>
               {n ? (
                 <>
-                  <span aria-hidden className={cn("tnum inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", id === "for-you" ? "bg-you text-[oklch(0.3_0.06_60)]" : "bg-muted text-muted-foreground")}>
+                  <span aria-hidden className={cn("tnum inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-xs font-semibold", you ? "bg-kind-marigold-soft text-kind-marigold" : "bg-muted text-muted-foreground")}>
                     {num(n)}
                   </span>
-                  <span className="sr-only">{", " + countLabel(id, n)}</span>
+                  {isCounted(id) ? <span className="sr-only">{", " + tabCountLabel(id, n)}</span> : null}
                 </>
               ) : null}
             </TabsTrigger>
@@ -322,59 +423,15 @@ function SectionTabs({ tab, counts }: { tab: ProjectCanonicalTab; counts: Partia
   );
 }
 
-// What a tab's count means, for screen readers ("3 things wait for you").
-function countLabel(id: ProjectCanonicalTab, n: number): string {
-  if (id === "for-you") return n === 1 ? "1 thing waits for you" : plural(n, "thing") + " wait for you";
-  return plural(n, id === "work" ? "open task" : "open thread");
-}
-
-// The project's state in a few words, each with its dot: what waits for
-// you (marigold), the work in motion (teal) and self-improvement (violet).
-function StatusLine({ card, commons, forYou, openTasks: tasks, slug }: { card: ProjectCardData; commons: boolean; forYou: number; openTasks: Task[] | null; slug: string }) {
-  // The same "who is on what" the Working now panel shows: task workers and live claims, one per agent.
-  const agents = workingRows(card.active_claims ?? [], tasks ?? [], slug).length || (card.claims_active ? 1 : 0);
-  const openTasks = tasks ? tasks.length : null;
-  const loopOn = card.loop === "1" || card.loop === "on";
-  const items: { text: React.ReactNode; dot: string; strong?: boolean }[] = [];
-  if (forYou)
-    items.push({
-      text: (
-        <Link href={hrefs.project(slug, "for-you")} className="underline-offset-2 hover:underline">
-          {forYou === 1 ? "1 thing waits for you" : plural(forYou, "thing") + " wait for you"}
-        </Link>
-      ),
-      dot: "bg-you",
-      strong: true,
-    });
-  else items.push({ text: "Nothing waits for you", dot: "bg-ok" });
-  if (!commons && openTasks !== null) items.push({ text: openTasks ? plural(openTasks, "open task") : "No open tasks", dot: openTasks ? "bg-primary" : "bg-muted-foreground/40" });
-  items.push({ text: agents ? (agents === 1 ? "1 agent working" : plural(agents, "agent") + " working") : "No agents working", dot: agents ? "bg-primary" : "bg-muted-foreground/40" });
-  if (commons) {
-    const q = card.questions_open + (card.owner_questions ?? 0);
-    items.push({ text: q ? plural(q, "open question") : "No open questions", dot: q ? "bg-warn" : "bg-muted-foreground/40" });
-  } else if (card.stop_present) items.push({ text: "Self-improvement stopped", dot: "bg-bad" });
-  else items.push({ text: loopOn ? "Self-improvement on" : "Self-improvement off", dot: loopOn ? "bg-accent-2" : "bg-muted-foreground/40" });
-  return (
-    <ul className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm" aria-label="Project status">
-      {items.map((it, i) => (
-        <li key={i} className={cn("inline-flex items-center gap-2", it.strong ? "font-medium text-foreground" : "text-muted-foreground")}>
-          <span className={cn("size-2 shrink-0 rounded-full", it.dot)} aria-hidden />
-          {it.text}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function WorkTab({ slug, task, setParams }: { slug: string; task: string | null; setParams: (patch: Record<string, string | null | undefined>) => void }) {
   return (
     <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(380px,1fr)]">
       <section aria-label="Tasks" className="min-w-0">
-        <SectionHeading note="What you asked for, and how far each task has come.">Tasks</SectionHeading>
+        <SectionHeading icon={ListChecksIcon} note="What you asked for, and how far each task has come.">Tasks</SectionHeading>
         <TasksTab slug={slug} onOpen={(id) => setParams({ task: id })} activeId={task} />
       </section>
       <section aria-label="Sessions" className="min-h-[520px] min-w-0">
-        <SectionHeading note="Talk with the lead agent about the project or one task.">Sessions</SectionHeading>
+        <SectionHeading icon={MessagesSquareIcon} note="Talk with the lead agent about the project or one task.">Sessions</SectionHeading>
         <ChatTab slug={slug} taskId={task} onPickTask={(id) => setParams({ task: id })} />
       </section>
     </div>
@@ -405,6 +462,31 @@ function BoardTab({ slug, value, onValueChange, thread, setParams }: { slug: str
   );
 }
 
+// Team & tools: the leads and the toolkit, with the project's setup and
+// records (the old History > "Setup and records") one segment away.
+function TeamSection({ slug, value, onValueChange, canDecide }: { slug: string; value: TeamSub; onValueChange: (next: TeamSub) => void; canDecide: boolean }) {
+  const note = TEAM_SUBS.find((s) => s.id === value)?.note;
+  return (
+    <Tabs value={value} onValueChange={(next) => onValueChange(teamSub(next))} className="gap-0">
+      <div className="mb-5 grid gap-2">
+        <div className="scroll-strip min-w-0 max-w-full">
+          <TabsList aria-label="Team and tools sections">
+            {TEAM_SUBS.map((s) => (
+              <TabsTrigger key={s.id} value={s.id} className="px-3">
+                {s.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+        {note ? <p className="text-sm text-muted-foreground">{note}</p> : null}
+      </div>
+      <TeamTab slug={slug} sub={value} canDecide={canDecide} />
+    </Tabs>
+  );
+}
+
+// History: the timeline first, then notices and the posting activity that
+// used to crowd the Overview; cleanup keeps its own segment.
 function HistoryTab({ slug, value, onValueChange }: { slug: string; value: HistorySub; onValueChange: (next: HistorySub) => void }) {
   const note = HISTORY_SUBS.find((s) => s.id === value)?.note;
   return (
@@ -421,15 +503,18 @@ function HistoryTab({ slug, value, onValueChange }: { slug: string; value: Histo
         </div>
         {note ? <p className="text-sm text-muted-foreground">{note}</p> : null}
       </div>
-      {value === "timeline" ? <TimelineTab slug={slug} /> : null}
-      {value === "env" ? <EnvTab slug={slug} /> : null}
+      {value === "timeline" ? (
+        <div className="grid gap-10">
+          <section aria-label="Timeline" className="min-w-0">
+            <SectionHeading icon={HistoryIcon}>Timeline</SectionHeading>
+            <TimelineTab slug={slug} />
+          </section>
+          <HistoryActivity slug={slug} />
+        </div>
+      ) : null}
       {value === "cleanup" ? <CleanupTab slug={slug} /> : null}
     </Tabs>
   );
-}
-
-function ProjectAvatar({ slug }: { slug: string }) {
-  return <ProjectMascot slug={slug} size={40} className="pop" />;
 }
 
 // One removed project: PULSE no longer works on it, its history is kept,
@@ -438,8 +523,7 @@ function InactivePick({ p, onRestored }: { p: RegisteredProject; onRestored: (sl
   return (
     <ItemCard ariaLabel={p.slug + " (removed)"}>
       <ItemCardHeader right={p.last_seen ? <span>Last seen <When d={p.last_seen} /></span> : null}>
-        <ItemCardKind icon={ArchiveIcon}>Removed</ItemCardKind>
-        {!p.present ? <span className="text-bad">Folder is missing</span> : null}
+        <ItemCardKind>Removed</ItemCardKind>
       </ItemCardHeader>
       <ItemCardTitle>{p.slug}</ItemCardTitle>
       {p.name && p.name !== p.slug ? <ItemCardBody clamp={1}>{p.name}</ItemCardBody> : null}

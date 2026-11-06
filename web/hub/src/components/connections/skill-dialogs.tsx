@@ -227,12 +227,12 @@ function SkillWizard({ project, initial, close, lockRef }: { project: string; in
 
         {step === "check" ? (
           <div className="grid gap-3">
-            <div className="rounded-xl border bg-muted/40 px-4 py-3 text-sm">
+            <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm">
               <span className="font-mono text-[13px] font-semibold">{f.name.trim()}</span>
               <span className="text-muted-foreground"> · {scopeLabel(f.project)} · </span>
               {f.description.trim()}
             </div>
-            <div className="max-h-[45dvh] overflow-y-auto rounded-xl border px-4 py-3">
+            <div className="max-h-[45dvh] overflow-y-auto rounded-lg border px-4 py-3">
               <Markdown source={f.body} />
             </div>
             {/\u2026|\.\.\./.test(f.body) ? <Notice tone="warn">The instructions still have gaps (…) from the template. Go back and fill them in, or agents will read them as they are.</Notice> : null}
@@ -244,7 +244,7 @@ function SkillWizard({ project, initial, close, lockRef }: { project: string; in
             <span className="inline-flex size-12 items-center justify-center rounded-full bg-ok/12 text-ok">
               <CheckCircle2Icon aria-hidden className="size-7" />
             </span>
-            <p className="text-lg font-semibold">Agents know about it now</p>
+            <p className="text-xl font-semibold">Agents know about it now</p>
             <p className="max-w-md text-sm text-muted-foreground">{"Agents of " + scopeLabel(added.project) + " see " + added.name + " in their brief from their next job, and read it before work it covers."}</p>
           </div>
         ) : null}
@@ -439,7 +439,7 @@ export function SkillViewDialog({ skill, onOpenChange, onEdit }: { skill: Skill 
                 <When d={skill.updated_at} />
               </span>
             </div>
-            <div className="rounded-xl border px-4 py-3">
+            <div className="rounded-lg border px-4 py-3">
               <Markdown source={skill.body} />
             </div>
             <p className="text-xs text-muted-foreground">

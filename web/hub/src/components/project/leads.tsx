@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { showApiError } from "@/components/pulse/confirm";
 import { Panel } from "@/components/pulse/panel";
-import { Mono, ToneBadge, When } from "@/components/pulse/who";
+import { StatusBadge } from "@/components/pulse/status-badge";
+import { Mono, When } from "@/components/pulse/who";
 import { RoleMascot } from "@/components/project/lead-mascots";
 import { writes, type Lead, type LeadGap, type LeadInput, type LeadRole, type LeadsPayload } from "@/lib/api";
 import { num, plural } from "@/lib/format";
@@ -74,7 +75,7 @@ export function LeadsPanel({ slug, canDecide = true }: { slug: string; canDecide
       ) : (
         <div className="grid gap-4">
           {leads.length ? (
-            <ul className="grid gap-3">
+            <ul className="grid gap-3 md:grid-cols-2" aria-label="Seated leads">
               {leads.map((l) => (
                 <LeadRow key={l.id} lead={l} busy={busy} canDecide={canDecide} act={act} />
               ))}
@@ -104,7 +105,7 @@ export function LeadsPanel({ slug, canDecide = true }: { slug: string; canDecide
               }}
             />
           ) : (
-            <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+            <p className="text-[13px] leading-relaxed text-muted-foreground">
               From a shell: <Mono>{"pulse lead add --project " + slug + " --role <role>"}</Mono>
               {" - a built-in role by its name, or a word of your own with "}
               <Mono>{"--title '…' --brief '…'"}</Mono>.
@@ -121,15 +122,13 @@ function LeadRow({ lead: l, busy, canDecide, act }: { lead: Lead; busy: string; 
   const mine = busy.startsWith(l.id + ":");
   const every = everyText(l.every_minutes);
   return (
-    <li className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-xl border bg-card/60 px-4 py-3">
-      <div className="flex min-w-0 flex-1 basis-64 items-start gap-3">
+    <li className="flex min-w-0 flex-col gap-3 rounded-lg border bg-card p-4">
+      <div className="flex min-w-0 items-start gap-3">
         <RoleMascot role={l.role} size={44} mood={paused ? "asleep" : "idle"} title={l.title} className={cn("mt-0.5", paused && "opacity-70 saturate-50")} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-foreground">{l.title}</span>
-            <ToneBadge tone={paused ? "neutral" : "ok"} dot>
-              {paused ? "Paused" : "Active"}
-            </ToneBadge>
+            <StatusBadge status={paused ? "paused" : "active"} label={paused ? "Paused" : "Active"} size="sm" />
             <Mono>{l.agent}</Mono>
           </div>
           <p className="mt-1 text-[13px] text-muted-foreground">
@@ -180,13 +179,13 @@ function LeadRow({ lead: l, busy, canDecide, act }: { lead: Lead; busy: string; 
 
 function GapRow({ gap: g, busy, canDecide, onSeat }: { gap: LeadGap; busy: boolean; canDecide: boolean; onSeat: () => void }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-xl border border-dashed bg-card/40 px-4 py-3">
+    <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-lg border border-dashed bg-card/40 p-4">
       <div className="flex min-w-0 flex-1 basis-64 items-start gap-3">
         <RoleMascot role={g.role} size={44} title={g.title} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground">{g.title}</p>
           <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">{g.why}</p>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
+          <p className="mt-1 text-[13px] text-muted-foreground">
             Or from a shell: <Mono>{g.command}</Mono>
           </p>
         </div>
@@ -231,7 +230,7 @@ function SeatGallery({ slug, roles, suggested, busy, onClose, onSeat }: { slug: 
     if (custom && customOk) return onSeat({ project: slug, role: word.trim(), title: title.trim(), brief: brief.trim(), every }, title.trim());
   };
   return (
-    <div className="grid gap-3 rounded-2xl border bg-card/40 p-3 sm:p-4" role="group" aria-label="Seat a lead">
+    <div className="grid gap-3 rounded-lg border bg-card/40 p-3 sm:p-4" role="group" aria-label="Seat a lead">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-foreground">Who should sit next?</p>
@@ -248,12 +247,12 @@ function SeatGallery({ slug, roles, suggested, busy, onClose, onSeat }: { slug: 
         <RoleCard index={roles.length} role={word.trim() && custom ? word.trim() : "custom"} title="A word of your own" every={custom ? every : ""} picked={custom} custom onPick={() => choose(CUSTOM)} />
       </ul>
       {chosen ? (
-        <div key={chosen.role} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-xl border bg-card px-4 py-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+        <div key={chosen.role} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-lg border bg-card p-4 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
           <div className="min-w-0 flex-1 basis-72">
             <p className="text-sm text-foreground">
               <span className="font-medium">{chosen.title}</span> {chosen.about}.
             </p>
-            <p className="mt-1 text-[12.5px] text-muted-foreground">
+            <p className="mt-1 text-[13px] text-muted-foreground">
               {"Sits " + everyWord(chosen.every) + " as "}
               <Mono>{slug + "-lead-" + chosen.role}</Mono>
               {suggested.has(chosen.role) ? <span className="ml-1.5 text-you-ink">{"· suggested: " + suggested.get(chosen.role)}</span> : null}
@@ -265,7 +264,7 @@ function SeatGallery({ slug, roles, suggested, busy, onClose, onSeat }: { slug: 
         </div>
       ) : custom ? (
         <form
-          className="grid gap-3 rounded-xl border bg-card px-4 py-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
+          className="grid gap-3 rounded-lg border bg-card p-4 animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
           onSubmit={(e) => {
             e.preventDefault();
             void submit();
@@ -278,12 +277,12 @@ function SeatGallery({ slug, roles, suggested, busy, onClose, onSeat }: { slug: 
             <div className="grid content-start gap-1.5">
               <Label htmlFor="lead-word">Role word</Label>
               <Input id="lead-word" value={word} placeholder="content" autoFocus spellCheck={false} autoComplete="off" onChange={(e) => setWord(e.target.value.toLowerCase())} aria-invalid={word.trim() !== "" && (!wordOk || taken)} />
-              <p className="text-[12px] text-muted-foreground">{taken ? "That is a built-in role; pick its card." : "Lowercase letters, digits, hyphens."}</p>
+              <p className="text-xs text-muted-foreground">{taken ? "That is a built-in role; pick its card." : "Lowercase letters, digits, hyphens."}</p>
             </div>
             <div className="grid content-start gap-1.5">
               <Label htmlFor="lead-title">Title</Label>
               <Input id="lead-title" value={title} placeholder="Content lead" onChange={(e) => setTitle(e.target.value)} />
-              <p className="text-[12px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {"Its agent will be "}
                 <Mono>{slug + "-lead-" + (wordOk ? word.trim() : "<word>")}</Mono>
               </p>
@@ -309,7 +308,7 @@ function SeatGallery({ slug, roles, suggested, busy, onClose, onSeat }: { slug: 
             <Textarea id="lead-brief" value={brief} rows={3} placeholder="Write one post a week in docs/blog, in the project's voice; keep the archive page true to what is there; a post a reader could not follow is a bug." onChange={(e) => setBrief(e.target.value)} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[12.5px] text-muted-foreground">
+            <p className="text-[13px] text-muted-foreground">
               The same as <Mono>{"pulse lead add --project " + slug + " --role " + (wordOk ? word.trim() : "<word>") + " --title '…' --brief '…' --every " + every}</Mono>
             </p>
             <Button size="sm" type="submit" disabled={busy || !customOk}>
@@ -331,7 +330,7 @@ function RoleCard({ index, role, title, every, picked, suggested, custom, onPick
         aria-pressed={picked}
         data-picked={picked}
         className={cn(
-          "mascot-card lift relative flex h-full w-full flex-col items-center gap-1.5 rounded-2xl border bg-card px-2 pt-4 pb-3 text-center outline-none transition-[transform,border-color,box-shadow] duration-300 ease-[var(--ease-out-soft)] focus-visible:ring-2 focus-visible:ring-ring/60",
+          "mascot-card lift relative flex h-full w-full flex-col items-center gap-1.5 rounded-lg border bg-card px-2 pt-4 pb-3 text-center outline-none transition-[transform,border-color,box-shadow] duration-300 ease-[var(--ease-out-soft)] focus-visible:ring-2 focus-visible:ring-ring/60",
           picked ? "-translate-y-0.5 border-primary shadow-md ring-2 ring-primary/25" : "hover:-translate-y-0.5",
           custom && !picked && "border-dashed",
         )}
@@ -352,7 +351,7 @@ function RoleCard({ index, role, title, every, picked, suggested, custom, onPick
         ) : null}
         <RoleMascot role={role} size={64} mood={picked ? "picked" : "idle"} title={title} />
         <span className="mt-0.5 text-[13px] leading-tight font-medium text-foreground">{title}</span>
-        <span className="text-[11.5px] text-muted-foreground">{every ? everyWord(every) : "your words"}</span>
+        <span className="text-xs text-muted-foreground">{every ? everyWord(every) : "your words"}</span>
       </button>
     </li>
   );

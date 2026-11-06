@@ -70,19 +70,19 @@ export function FadingStrip({ children, className }: { children: React.ReactNode
 }
 
 export function Lead({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <p className={cn("mb-4 max-w-3xl text-[15px] leading-relaxed text-muted-foreground anywhere", className)}>{children}</p>;
+  return <p className={cn("mb-4 max-w-3xl text-sm leading-relaxed text-muted-foreground anywhere", className)}>{children}</p>;
 }
 
 // A titled block of related things. The title says what is inside; actions
 // sit on the right of the title row; `footer` carries a quiet note.
 export function Panel({ title, actions, children, className, contentClassName, dense, icon: Icon, footer }: { title?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; className?: string; contentClassName?: string; dense?: boolean; icon?: React.ComponentType<{ className?: string }>; footer?: React.ReactNode }) {
   return (
-    <Card className={cn("enter min-w-0 gap-0 rounded-2xl py-0", className)}>
+    <Card className={cn("enter min-w-0 gap-0 rounded-lg py-0", className)}>
       {title !== undefined ? (
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border/70 px-4 py-3 [.border-b]:pb-3 sm:px-5">
           <div className="flex min-w-0 flex-1 basis-36 items-center gap-2">
             {Icon ? <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
-            <CardTitle className="min-w-0 text-[15px] font-semibold leading-snug tracking-tight anywhere">{title}</CardTitle>
+            <CardTitle className="min-w-0 text-base font-semibold leading-snug tracking-tight anywhere">{title}</CardTitle>
           </div>
           {actions ? <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 text-[13px] leading-relaxed text-muted-foreground anywhere">{actions}</div> : null}
         </CardHeader>
@@ -238,9 +238,9 @@ export function SkeletonPage({ rows = 3 }: { rows?: number }) {
         <Skeleton className="h-9 w-64 rounded-lg" />
       </div>
       <Skeleton className="h-5 w-full max-w-xl rounded-md" />
-      <Skeleton className="mt-2 h-20 rounded-2xl" />
+      <Skeleton className="mt-2 h-20 rounded-lg" />
       {Array.from({ length: rows }).map((_, i) => (
-        <Skeleton key={i} className="h-36 rounded-2xl" />
+        <Skeleton key={i} className="h-36 rounded-lg" />
       ))}
     </div>
   );
@@ -291,7 +291,7 @@ export function Kpi({ n, label, sub, href, tone = "neutral", spark, icon: Icon }
       </div>
       <div className="mt-1.5 flex min-w-0 items-center gap-2">
         {KPI_DOT[tone] ? <span className={cn("size-2 shrink-0 rounded-full", KPI_DOT[tone])} aria-hidden /> : null}
-        <span key={value} title={value} className={cn("tick line-clamp-2 min-w-0 origin-left text-[22px] font-semibold leading-tight tracking-tight anywhere", KPI_TONE[tone])}>{value}</span>
+        <span key={value} title={value} className={cn("tick line-clamp-2 min-w-0 origin-left text-xl font-semibold leading-tight tracking-tight anywhere", KPI_TONE[tone])}>{value}</span>
       </div>
       {sub ? <div title={typeof sub === "string" ? sub : undefined} className="mt-1 text-xs leading-relaxed text-muted-foreground anywhere">{sub}</div> : null}
     </>
@@ -309,7 +309,7 @@ export function Kpi({ n, label, sub, href, tone = "neutral", spark, icon: Icon }
 // A stat strip: one bordered block, cells divided by hairlines. Two columns
 // on a phone, four from tablets up (override with className).
 export function KpiGrid({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("mb-6 grid min-w-0 grid-cols-2 overflow-hidden rounded-2xl border bg-card md:grid-cols-4", className)}>{children}</div>;
+  return <div className={cn("mb-6 grid min-w-0 grid-cols-2 overflow-hidden rounded-lg border bg-card md:grid-cols-4", className)}>{children}</div>;
 }
 
 export function Toolbar({ children, className }: { children: React.ReactNode; className?: string }) {

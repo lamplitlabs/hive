@@ -38,6 +38,8 @@ export function useDesktop(): boolean {
 
 const WIDTH = {
   detail: "lg:w-[480px]",
+  // A run's step timeline (spec "Runs"): wider than a detail, narrower than reading.
+  run: "lg:w-[560px]",
   reading: "lg:w-[640px]",
 } as const;
 
@@ -56,7 +58,7 @@ export function SidePanel({
 }: {
   open: boolean;
   onClose: () => void;
-  width?: "detail" | "reading";
+  width?: "detail" | "run" | "reading";
   title: React.ReactNode;
   subtitle?: React.ReactNode;
   lead?: React.ReactNode;
@@ -101,7 +103,7 @@ export function SidePanel({
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            Close <kbd className="ml-1 rounded border bg-muted px-1 font-mono text-[10px]">Esc</kbd>
+            Close <kbd className="ml-1 rounded border bg-muted px-1 font-mono text-xs">Esc</kbd>
           </TooltipContent>
         </Tooltip>
       </div>

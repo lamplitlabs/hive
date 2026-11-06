@@ -155,7 +155,7 @@ export function RunningStrip() {
         </ToneBadge>
         <p className="min-w-0 flex-1 basis-64 leading-relaxed text-muted-foreground anywhere">{st.text}</p>
       </div>
-      <Kv rows={rows} className="rounded-xl bg-muted/50 px-4 py-3" />
+      <Kv rows={rows} className="rounded-lg bg-muted/50 px-4 py-3" />
       {d.signed === false ? (
         <p className="flex min-w-0 max-w-2xl items-start gap-2 leading-relaxed anywhere">
           <TriangleAlertIcon className="mt-[3px] size-4 shrink-0 text-warn" aria-hidden />

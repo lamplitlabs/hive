@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronRightIcon, CpuIcon } from "lucide-react";
 import { daemonControlState, daemonHeadline } from "@/components/pulse/daemon-control-state";
+import { BrandLogo, logoFor } from "@/components/pulse/logo";
 import type { HarnessStatus, Runner, ServicePayload, SettingsPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { providerInfo } from "@/lib/providers";
@@ -11,21 +12,24 @@ import { cn } from "@/lib/utils";
 import { RailTip } from "./rail-tip";
 
 // The two facts every page should show without a click, at the foot of the
-// sidebar: can agents work on this machine (the runner, with what it is
-// doing), and which model provider they use (and whether it is connected).
-// Each line links to where it is fixed - the runner controls on Home, the
-// provider card or the Connect a provider wizard in Settings. On the rail
-// they shrink to two dots with the same words as tooltips.
+// sidebar (spec "App shell" - Status card): can agents work on this machine
+// (the runner, Cpu icon and its state), and which model provider they use
+// (its logo and the main model). Each line links to where it is fixed - the
+// runner controls on Home, the provider card or the Connect a provider wizard
+// in Settings. On the rail they shrink to the two icons with a tone dot and
+// the same words as tooltips.
 
 type Tone = "ok" | "warn" | "bad" | "neutral";
 const DOT: Record<Tone, string> = { ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", neutral: "bg-muted-foreground/50" };
 
 export interface StatusLine {
-  key: string;
+  key: "runner" | "provider";
   label: string;
   sub: string;
   tone: Tone;
   href: string;
+  /** The provider's name as the harness reports it, for its logo. */
+  provider?: string;
 }
 
 function plural(n: number, one: string, many = one + "s") {
@@ -64,6 +68,7 @@ export function useSystemStatus(): StatusLine[] {
         sub: connected ? (h.models.worker ? h.models.worker : "Default model") : expired ? "Sign-in expired" : "Not connected",
         tone: connected ? "ok" : "warn",
         href: connected ? hrefs.settings("harness") : "/settings/?connect=" + encodeURIComponent(p.name) + "#harness",
+        provider: p.name,
       }
     : harness.error && !h
       ? { key: "provider", label: "Model provider", sub: "Couldn't check", tone: "neutral", href: hrefs.settings("harness") }
@@ -72,18 +77,39 @@ export function useSystemStatus(): StatusLine[] {
   return providerLine ? [runnerLine, providerLine] : [runnerLine];
 }
 
-export function SystemStatus() {
+// The line's glyph: the Cpu for the runner, the provider's brand mark (or a
+// neutral monogram when the brand has none) for the model provider. A tone
+// dot sits in the glyph's corner so the state reads at a glance on the rail.
+function StatusGlyph({ line }: { line: StatusLine }) {
+  const logo = line.key === "provider" ? logoFor(line.provider ?? line.label) : null;
+  return (
+    <span className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+      {line.key === "runner" ? (
+        <CpuIcon aria-hidden className="size-4" strokeWidth={1.75} />
+      ) : logo ? (
+        <BrandLogo id={logo} size={16} title={line.label} />
+      ) : (
+        <span aria-hidden className="text-xs font-semibold leading-none tracking-tight text-muted-foreground">
+          {(line.label || "?").slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <span aria-hidden className={cn("absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2 ring-sidebar", DOT[line.tone])} />
+    </span>
+  );
+}
+
+export function SystemStatus({ className }: { className?: string }) {
   const lines = useSystemStatus();
   return (
-    <div className="grid gap-0.5 rounded-xl border bg-card p-1 collapsed:border-0 collapsed:bg-transparent collapsed:p-0">
+    <div className={cn("grid gap-0.5 rounded-lg border bg-card p-1 collapsed:border-0 collapsed:bg-transparent collapsed:p-0", className)}>
       {lines.map((l) => (
         <RailTip key={l.key} label={l.label} hint={l.sub || undefined}>
           <Link
             href={l.href}
-            className="group flex min-w-0 items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:justify-center collapsed:px-0 collapsed:py-2"
+            className="group flex min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:justify-center collapsed:px-0 collapsed:py-1.5"
             aria-label={l.label + (l.sub ? ": " + l.sub : "")}
           >
-            <span aria-hidden className={cn("size-2 shrink-0 rounded-full", DOT[l.tone])} />
+            <StatusGlyph line={l} />
             <span className="min-w-0 flex-1 collapsed:sr-only">
               <span className="block truncate text-[13px] font-medium leading-tight text-foreground">{l.label}</span>
               {l.sub ? <span className={cn("block truncate text-xs leading-tight", l.tone === "warn" || l.tone === "bad" ? "text-warn" : "text-muted-foreground")}>{l.sub}</span> : null}

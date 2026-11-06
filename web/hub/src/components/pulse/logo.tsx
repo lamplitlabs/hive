@@ -25,7 +25,7 @@ export function BrandLogo({ id, size = 16, color = "mono", className, title }: {
 }
 
 const TILE = {
-  28: { tile: "size-7 rounded-md text-[11px]", logo: 16 as const },
+  28: { tile: "size-7 rounded-md text-xs", logo: 16 as const },
   40: { tile: "size-10 rounded-md text-sm", logo: 20 as const },
 } as const;
 

@@ -25,7 +25,7 @@ function ordinal(n: number): string {
   return n + (n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th");
 }
 
-const whoName = (r: { agent?: string | null; name?: string | null; session?: string | null }) => {
+export const whoName = (r: { agent?: string | null; name?: string | null; session?: string | null }) => {
   const n = r.agent || r.name || r.session || "";
   return n === "human" || n === "owner" ? "you" : agentName(n) || "an agent";
 };
@@ -33,7 +33,7 @@ const whoName = (r: { agent?: string | null; name?: string | null; session?: str
 // The badge matches the line under it: an "agreed" suggestion whose votes
 // cancel out is tied, not agreed, and one whose voting closed short no
 // longer needs votes.
-function voteBadge(s: Suggestion, quorum: number, now: number): React.ReactNode {
+export function voteBadge(s: Suggestion, quorum: number, now: number): React.ReactNode {
   if (s.status === "eligible" && !s.job && s.score <= 0) return <ToneBadge tone="neutral">{s.up === s.down ? "Tied" : "Voted down"}</ToneBadge>;
   if (s.status !== "eligible" && s.status !== "rejected" && !s.job && (quorum - s.voters > 0 || s.status === "needs votes")) {
     const exp = expiresAt(s);
@@ -58,7 +58,7 @@ function gateWords(gate: string, score: number): string {
 const DUP = /\bdup(?:licate)?\s+of\s+(\S+)/i;
 
 // What happens to a suggestion next, in one sentence.
-function nextStep(s: Suggestion, quorum: number, now: number): { text: string; tone: Tone; icon: React.ComponentType<{ className?: string }>; title?: string } | null {
+export function nextStep(s: Suggestion, quorum: number, now: number): { text: string; tone: Tone; icon: React.ComponentType<{ className?: string }>; title?: string } | null {
   const gate = (s.gate || "").trim();
   if (s.status === "rejected") return { text: "Turned down", tone: "neutral", icon: CircleSlashIcon };
   if (s.job) {
@@ -90,7 +90,7 @@ function nextStep(s: Suggestion, quorum: number, now: number): { text: string; t
   return null;
 }
 
-const TONE_ICON: Record<Tone, string> = {
+export const TONE_ICON: Record<Tone, string> = {
   ok: "text-ok",
   warn: "text-warn",
   bad: "text-bad",
@@ -165,7 +165,7 @@ export function SuggestionCard({ s, quorum, slug, detail }: { s: Suggestion; quo
 
 // Why some votes on a rule change don't count, in words: one reason reads as
 // a sentence, several as a short list.
-function uncountedText(a: Amendment): string {
+export function uncountedText(a: Amendment): string {
   const total = a.uncounted_self + a.uncounted_hash_mismatch + a.uncounted_no_read_line;
   if (!total) return "";
   const reasons: [number, string, string, string][] = [

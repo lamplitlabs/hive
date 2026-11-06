@@ -45,12 +45,12 @@ export function GoalReviewCard({ slug, canEdit, onEdit }: { slug: string; canEdi
   const blurb = r.verdict === "on-track" && caveat ? "Work reaches the goal, with something to fix below." : v.blurb;
   const leadScore = r.lead && r.lead.fresh && r.lead.score !== null ? r.lead.score : null;
   return (
-    <section aria-label="Goal review" className="enter grid gap-4 rounded-2xl border border-border/70 bg-card/60 p-4 sm:p-5">
+    <section aria-label="Goal review" className="enter grid gap-4 rounded-lg border border-border/70 bg-card/60 p-4 sm:p-5">
       <div className="flex flex-wrap items-start gap-4">
         <ScoreRing score={r.scored ? r.score : null} tone={v.tone} />
         <div className="grid min-w-0 flex-1 basis-56 gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="flex items-center gap-1.5 text-[15px] font-semibold tracking-tight">
+            <h3 className="flex items-center gap-1.5 text-base font-semibold tracking-tight">
               <GaugeIcon className="size-4 text-muted-foreground" aria-hidden /> Goal review
             </h3>
             <ToneBadge tone={v.tone} dot>{v.word}</ToneBadge>
@@ -221,7 +221,7 @@ function ProposalCard({ slug, r, canDecide }: { slug: string; r: GoalReview; can
         <When d={p.date} />
         <Link href={hrefs.post(slug, p.post)} className="ml-auto underline underline-offset-2">Open the post</Link>
       </div>
-      <blockquote className="whitespace-pre-wrap border-l-2 border-info/50 pl-3 text-[14px] leading-relaxed anywhere">{p.text}</blockquote>
+      <blockquote className="whitespace-pre-wrap border-l-2 border-info/50 pl-3 text-sm leading-relaxed anywhere">{p.text}</blockquote>
       {p.why ? <p className="leading-relaxed text-muted-foreground anywhere"><span className="font-medium text-foreground">Why:</span> {p.why}</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-muted-foreground">Taking it replaces the goal above; dismissing it tells the lead to keep the current one.</span>

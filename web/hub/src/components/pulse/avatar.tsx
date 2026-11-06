@@ -10,7 +10,7 @@ export { initialsOf, hueOf, avatarColors } from "./avatar-state";
 // or the project's own image when it has one. Agents keep their robot faces
 // (who.tsx Avatar).
 const PROJECT_SIZE = {
-  20: "size-5 rounded-[5px] text-[9px]",
+  20: "size-5 rounded-[5px] text-xs",
   32: "size-8 rounded-md text-xs",
   48: "size-12 rounded-lg text-base",
 } as const;
@@ -33,8 +33,8 @@ export function ProjectAvatar({ slug, name, size = 32, src, className }: { slug:
 
 // The owner: round, initials on ink. One person, one mark.
 const OWNER_SIZE = {
-  20: "size-5 text-[9px]",
-  24: "size-6 text-[10px]",
+  20: "size-5 text-xs",
+  24: "size-6 text-xs",
   32: "size-8 text-xs",
   48: "size-12 text-base",
 } as const;

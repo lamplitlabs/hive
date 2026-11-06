@@ -3,8 +3,13 @@
 import Link from "next/link";
 import { useState } from "react";
 import { AlertTriangleIcon, GitMergeIcon, ServerIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ProjectAvatar } from "@/components/pulse/avatar";
+import { LogoTile } from "@/components/pulse/logo";
 import { Disclosure, EmptyState, Kv, Notice, Panel, SkeletonRows } from "@/components/pulse/panel";
+import { StatusBadge } from "@/components/pulse/status-badge";
 import { When } from "@/components/pulse/who";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, statusTone, type Tone } from "@/lib/format";
@@ -12,6 +17,8 @@ import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
 import type { Executor, LandingHold, Runner } from "@/lib/api";
+import { machineLabels, machineLogoKey, machineProjects, slotsMeter } from "./compute-state";
+import { Meter } from "./meter";
 
 // ----- the machine ---------------------------------------------------------
 
@@ -36,7 +43,7 @@ export function MachinePanel({ r, heading = true, machines = true, error }: { r:
     </Link>
   );
   const shell = (body: React.ReactNode) => (
-    <Panel title={heading ? "This machine" : undefined} icon={ServerIcon} actions={heading ? settings : undefined}>
+    <Panel title={heading ? "This machine" : undefined} icon={ServerIcon} actions={heading ? settings : undefined} className="rounded-lg">
       {body}
     </Panel>
   );
@@ -157,7 +164,7 @@ function WorkerHold({ hold }: { hold: string | undefined }) {
   if (!hold) return null;
   const first = sentence(hold.split(":")[0].replace(/^workers\b/i, "agents").trim());
   return (
-    <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-warn/35 bg-warn/[0.08] px-3.5 py-2.5 text-sm leading-relaxed" aria-label="workers held" title={hold}>
+    <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-warn/35 bg-warn/[0.08] px-3.5 py-2.5 text-sm leading-relaxed" aria-label="workers held" title={hold}>
       <AlertTriangleIcon className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
       <span className="min-w-0 anywhere">
         {first + ". "}
@@ -179,7 +186,7 @@ export function LandingHolds({ holds }: { holds: LandingHold[] | undefined }) {
   return (
     <ul className="mt-3 grid gap-1.5" aria-label="landing held">
       {holds.map((h) => (
-        <li key={h.project} className="flex min-w-0 items-start gap-2.5 rounded-xl border border-warn/35 bg-warn/[0.08] px-3.5 py-2.5 text-sm leading-relaxed">
+        <li key={h.project} className="flex min-w-0 items-start gap-2.5 rounded-lg border border-warn/35 bg-warn/[0.08] px-3.5 py-2.5 text-sm leading-relaxed">
           <GitMergeIcon className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
           <span className="min-w-0 anywhere">
             <span className="font-medium">{"Can't merge into " + h.project + ". "}</span>
@@ -215,7 +222,7 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
   const offers = (e.offers || "").replace("(reserved)", "").trim();
   const tip = [e.address && "Address: " + e.address, e.workdir && "Folder: " + e.workdir, "Kind: " + e.kind, "Status: " + e.status, e.errors ? "Errors: " + e.errors + (e.backoff_minutes ? ", next try in " + e.backoff_minutes + " min" : "") : ""].filter(Boolean).join("\n");
   return (
-    <li className="flex min-w-0 items-start gap-3 rounded-xl border bg-card px-3 py-2.5 text-sm">
+    <li className="flex min-w-0 items-start gap-3 rounded-lg border bg-card px-3 py-2.5 text-sm">
       <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", DOT[tone])} aria-hidden />
       <div className="min-w-0 flex-1" title={tip}>
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
@@ -238,5 +245,96 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
       </div>
       {action ? <span className="-my-1 -mr-1 shrink-0">{action}</span> : null}
     </li>
+  );
+}
+
+// The words on a machine card: its kind, where it is reached, and how it
+// is doing - for the card's tooltip.
+function cardTip(e: Executor): string {
+  return [e.address && "Address: " + e.address, e.workdir && "Folder: " + e.workdir, "Kind: " + e.kind, "Status: " + e.status, e.errors ? "Errors: " + e.errors + (e.backoff_minutes ? ", next try in " + e.backoff_minutes + " min" : "") : "", e.status !== "active" && e.probe_note?.trim() ? "Why: " + e.probe_note.trim() : ""].filter(Boolean).join("\n");
+}
+
+// One machine as a card in the "All machines" grid (spec "Machines"): the
+// system's or cloud provider's mark, its name and state, a slots meter,
+// its labels as chips and the projects it serves as a stack of avatars.
+// `provider` is the cloud the runner provisions on (caps.provider), so a
+// requested machine shows that provider's mark. `action` holds a Remove menu.
+export function MachineCard({ e, provider, action, className }: { e: Executor; provider?: string | null; action?: React.ReactNode; className?: string }) {
+  const logoKey = machineLogoKey(e, provider);
+  const slots = slotsMeter(e);
+  const labels = machineLabels(e.offers);
+  const projects = machineProjects(e.projects);
+  const reserved = Boolean(e.reserved) || /\(reserved\)/.test(e.offers || "");
+  const local = e.kind === "local" || e.name === "local";
+  const why = e.status !== "active" ? e.probe_note?.trim() : "";
+  return (
+    <article className={cn("enter flex min-w-0 flex-col gap-3 rounded-lg border bg-card p-4 text-sm", className)} aria-label={"Machine " + e.name} title={cardTip(e)}>
+      <div className="flex min-w-0 items-start gap-3">
+        <LogoTile name={logoKey} size={40} title={kindWord(e)} fallback={<ServerIcon className="size-5" strokeWidth={1.75} aria-hidden />} />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="min-w-0 truncate text-base font-semibold leading-6 tracking-tight">{e.name}</h3>
+            {action ? <span className="-my-1 ml-auto shrink-0">{action}</span> : null}
+          </div>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+            <StatusBadge status={e.status} size="sm" title={e.probe_note || undefined} />
+            <span>{kindWord(e)}</span>
+            {e.last_probe_at ? (
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden>·</span>
+                <span>Checked</span> <When d={e.last_probe_at} />
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+      <Meter label="Slots" pct={slots.pct} text={slots.text} title={slots.total ? plural(slots.used, "slot") + " in use of " + slots.total : "This machine has no agent slots"} />
+      {labels.length || reserved ? (
+        <ul className="flex min-w-0 flex-wrap gap-1" aria-label="Offers" title="What this machine offers; a project asks for these words in its .pulse/pulse.yaml needs:">
+          {labels.map((l) => (
+            <li key={l}>
+              <Badge variant="secondary" shape="chip">
+                {l}
+              </Badge>
+            </li>
+          ))}
+          {reserved ? (
+            <li>
+              <Badge variant="outline" shape="chip" title="Takes only the jobs that need something it offers">
+                Reserved
+              </Badge>
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+      <div className="mt-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+        {projects.length ? (
+          <span className="inline-flex items-center gap-1.5" aria-label={"Only " + projects.join(", ")}>
+            <span className="flex -space-x-1">
+              {projects.slice(0, 5).map((p) => (
+                <Tooltip key={p}>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex rounded-[5px] ring-2 ring-card" role="img" aria-label={"Project " + p}>
+                      <ProjectAvatar slug={p} size={20} />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{p}</TooltipContent>
+                </Tooltip>
+              ))}
+            </span>
+            {projects.length > 5 ? <span>{"+" + (projects.length - 5)}</span> : null}
+            <span>{projects.length === 1 ? "Only " + projects[0] : "Only " + plural(projects.length, "project")}</span>
+          </span>
+        ) : (
+          <span>All projects</span>
+        )}
+        {local ? (
+          <Link href={hrefs.settings("daemon")} className="ml-auto underline-offset-2 hover:text-foreground hover:underline" title="Settings → This machine: what it offers, and whether it is reserved for the work that needs it">
+            Change what it offers
+          </Link>
+        ) : null}
+      </div>
+      {why ? <p className={cn("text-[13px] leading-snug anywhere", statusTone(e.status) === "bad" ? "text-bad" : "text-muted-foreground")}>{"Why: " + why}</p> : null}
+    </article>
   );
 }

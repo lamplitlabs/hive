@@ -43,14 +43,14 @@ export function hueOf(slug: string | null | undefined): number {
 }
 
 // The avatar's colours as CSS: a mid-light background in the hue and ink
-// chosen for contrast. Every hue sits at L=0.62 C=0.12, dark enough for
+// chosen for contrast. Every hue sits at L=0.52 C=0.12, dark enough for
 // white text (>= 4.5:1 against white at that lightness for all 8 hues
 // except amber, which gets ink text).
 export function avatarColors(slug: string | null | undefined): { background: string; color: string } {
   const h = hueOf(slug);
   const light = h === 70; // amber reads better with dark ink
   return {
-    background: light ? `oklch(0.82 0.13 ${h})` : `oklch(0.56 0.12 ${h})`,
+    background: light ? `oklch(0.82 0.13 ${h})` : `oklch(0.52 0.12 ${h})`,
     color: light ? "oklch(0.26 0.04 262)" : "#fff",
   };
 }
