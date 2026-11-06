@@ -246,7 +246,19 @@ the default branch waits `daemon.sweep_branch_days` untouched, then only the
 worktree goes - its branch stays with its commits, and a detached HEAD is
 saved as a patch first (`worktree.swept` carries the tip). Untouched means
 nothing moved its folder, its `.git` file, HEAD, index or reflog; a
-`git worktree lock` keeps one for good. Never touched: a run in flight (this daemon's
+`git worktree lock` keeps one for good. A hub conversation's checkout
+(`~/.pulse/work/chat/<id>/<project>`, a full worktree with its installs on
+`pulse/chat-<id>`) goes once the conversation has been closed or archived for
+`daemon.chat_worktree_keep_days` (default 3; 0 keeps every one, and disk
+pressure never shortens it) and `git status` in it is clean: `git worktree
+remove`, then `worktree prune`, and the row's folder and branch are cleared.
+The branch, `artifacts/` and `attachments/` stay, and the owner's next message
+in a closed one checks the branch out again (the project reinstalls its
+dependencies).
+Held, with the reason under `pulse sweep --held`: a dirty checkout, a closed
+one whose branch has commits not on the default branch (it is still waiting to
+land), and one an open conversation - a sub-conversation - still works in.
+Never touched: a run in flight (this daemon's
 dispatches and every `running` run in the store), a branch a `done` job's
 pull request is open from, the checked-out branch, a locked worktree, a worktree with uncommitted
 changes or on a branch a job holds, a project checkout of its own, a folder under
