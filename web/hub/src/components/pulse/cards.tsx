@@ -5,7 +5,7 @@ import { useState } from "react";
 import { CheckIcon, ChevronRightIcon, CirclePauseIcon, MessageCircleQuestionIcon, MessageSquareTextIcon, ShieldAlertIcon, UsersIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
-import { DecideButtons } from "./decide-buttons";
+import { AnswerBox, DecideButtons } from "./decide-buttons";
 import { Sparkline } from "./charts";
 import { EmptyState } from "./panel";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "./item-card";
@@ -17,7 +17,7 @@ import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { COMMONS_HINT, evolveGate, projectLabel, taskProgress, writes, type Claim, type EvolveGate, type OwnerQuestion, type PostRef, type ProjectCardData, type Proposal, type Task, type TaskWorker } from "@/lib/api";
 import { gateStep, type GateStep } from "./evolve";
-import { askTitle, decisionLabels } from "@/lib/owner-questions";
+import { askTitle, decisionLabels, isOpenQuestion } from "@/lib/owner-questions";
 
 // ----- project card ------------------------------------------------------
 
@@ -196,6 +196,8 @@ export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; 
   const lead = firstSentence(body);
   const hasMore = body.length > lead.length + 1;
   const labels = decisionLabels(body, stop ? { yes: "Yes, carry on", no: "No, keep it paused" } : { yes: "Yes", no: "No" });
+  // "Which…?" can't be answered with Yes: it gets a box for the answer.
+  const open = !stop && isOpenQuestion(q.summary, body);
   return (
     <ItemCard highlight={!q.stale} ariaLabel={(q.kind === "finding" ? "Your call: " : "Question for you: ") + q.summary}>
       <ItemCardHeader right={<When d={q.date} />}>
@@ -215,10 +217,17 @@ export function QuestionCard({ q, slug, canDecide = true }: { q: OwnerQuestion; 
           <span>About <PostLink slug={s} id={q.on_post} label="an earlier post" className="text-foreground" /></span>
         </ItemCardMeta>
       ) : null}
-      <ItemCardActions>
-        <OnTheBoard slug={s} id={q.id} thread={q.thread_key} />
-        <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} yesLabel={labels.yes} noLabel={labels.no} />
-      </ItemCardActions>
+      {open ? (
+        <ItemCardActions>
+          <AnswerBox id={q.id} summary={title} canDecide={canDecide} />
+          <OnTheBoard slug={s} id={q.id} thread={q.thread_key} />
+        </ItemCardActions>
+      ) : (
+        <ItemCardActions>
+          <OnTheBoard slug={s} id={q.id} thread={q.thread_key} />
+          <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} yesLabel={labels.yes} noLabel={labels.no} />
+        </ItemCardActions>
+      )}
     </ItemCard>
   );
 }

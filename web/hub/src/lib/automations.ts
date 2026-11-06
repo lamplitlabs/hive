@@ -525,13 +525,56 @@ export function stateWords(
 ): { text: string; tone: "ok" | "bad" | "neutral" } | null {
   if (!isScriptKind(s.kind) || !s.state) return null;
   if (s.state === "green" || s.state === "ok")
-    return { text: s.kind === "check" ? "green" : "quiet", tone: "ok" };
+    return { text: s.kind === "check" ? "passing" : "quiet", tone: "ok" };
   return {
     text:
-      (s.state === "red" ? "red" : s.state) +
-      (s.fails > 1 ? " ×" + s.fails : ""),
+      (s.state === "red" ? "failing" : s.state) +
+      (s.fails > 1 ? ", " + s.fails + " times in a row" : ""),
     tone: "bad",
   };
+}
+
+// The words a problem from the hub uses for a field of the entry, in the
+// form's own words: "needs `every`" reads "needs how often it runs".
+const FIELD_WORDS: Record<string, string> = {
+  every: "how often it runs",
+  at: "time of day",
+  kind: "kind",
+  brief: "brief",
+  script: "script",
+  skill: "skill",
+  name: "name",
+  title: "title",
+  run_as: "who runs it",
+  times: "how many times",
+  tier: "how it lands",
+  priority: "priority",
+};
+
+// A problem as a sentence: field names in plain words, no backticks, a
+// capital at the start and a full stop at the end.
+export function plainProblem(text: string): string {
+  let t = text.trim().replace(/`([^`]+)`(, the cadence)?/g, (_, word: string) => FIELD_WORDS[word] ?? word);
+  t = t.charAt(0).toUpperCase() + t.slice(1);
+  return /[.!?)]$/.test(t) ? t : t + ".";
+}
+
+// A moment in the viewer's own time, e.g. "Tue 14:05"; "" when unreadable.
+export function localWhen(iso: string, now: Date = new Date()): string {
+  const d = new Date(/Z$|[+-]\d{2}:\d{2}$/.test(iso) ? iso : iso + "Z");
+  if (isNaN(d.getTime())) return "";
+  const sameDay = d.toDateString() === now.toDateString();
+  return d.toLocaleString(undefined, sameDay ? { hour: "2-digit", minute: "2-digit" } : { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+// A UTC time of day (02:00) in the viewer's time zone (04:00), or "" when
+// it isn't one or the viewer is on UTC anyway.
+export function utcClockLocal(hhmm: string, today: Date = new Date()): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) return "";
+  const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), Number(m[1]), Number(m[2])));
+  if (isNaN(d.getTime()) || d.getTimezoneOffset() === 0) return "";
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 // Rows the page shows: live ones first, ended last, each group as the hub

@@ -151,6 +151,38 @@ export function threadName(key?: string | null): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : k;
 }
 
+// An agent's id as the owner reads it. Leads are named after their project
+// and role in the store ("demo-app-lead", "demo-app-lead-security", see
+// pulse-tasks leads.rs agent_name); workers after their model and number
+// ("fable-worker-1"). Plain codenames ("cinder") are already names and stay
+// as they are. With `project`, a lead of that project drops the project
+// from its name ("Lead" rather than "demo-app lead" on demo-app's page).
+const LEAD_ROLES: Record<string, string> = {
+  rsi: "Self-improvement lead",
+  docs: "Docs lead",
+  security: "Security lead",
+  monitor: "Monitoring lead",
+  tests: "Test lead",
+  deps: "Dependencies lead",
+};
+
+export function agentName(id?: string | null, project?: string): string {
+  const a = (id || "").trim();
+  if (!a) return "";
+  if (a === "human" || a === "owner") return "You";
+  if (a === "daemon") return "The runner";
+  const role = /^(.+)-lead-([a-z0-9][a-z0-9-]*)$/.exec(a);
+  if (role) {
+    const name = LEAD_ROLES[role[2]] ?? role[2].charAt(0).toUpperCase() + role[2].slice(1).replace(/-/g, " ") + " lead";
+    return project === undefined || project === role[1] ? name : name + " of " + role[1];
+  }
+  const lead = /^(.+)-lead$/.exec(a);
+  if (lead) return project === lead[1] ? "Project lead" : lead[1] + " lead";
+  const worker = /^([a-z0-9]+)-worker(?:-(\d+))?$/.exec(a);
+  if (worker) return worker[1].charAt(0).toUpperCase() + worker[1].slice(1) + " worker" + (worker[2] ? " " + worker[2] : "");
+  return a;
+}
+
 // Change tiers: how much say the owner has before an agent acts.
 export function tierWord(t?: string | number | null): { short: string; long: string } {
   const n = String(t ?? "").replace(/^t(ier)?\s*/i, "");

@@ -46,12 +46,12 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Markdown } from "@/components/pulse/markdown";
-import { Disclosure, EmptyState, ErrorNotice, Kv, Notice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { Disclosure, EmptyState, ErrorNotice, Kv, Notice, PageTitle, SkeletonRows } from "@/components/pulse/panel";
 import { ProjectLink, When } from "@/components/pulse/who";
 import type { HarnessModel, HarnessModelsResponse, HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
 import { api, apiHref, enc, errorText, query, writes } from "@/lib/api";
 import { num, parseDate, plural, sentence, span } from "@/lib/format";
-import { statusWord } from "@/lib/words";
+import { agentName, statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi, useLiveEvents, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -315,7 +315,7 @@ function RunRow({ r, selected, onSelect, models }: { r: HarnessSession; selected
         <span className="min-w-0 text-[15px] font-semibold leading-snug text-foreground anywhere">{r.job_title || r.job_id}</span>
         <span className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] leading-relaxed text-muted-foreground">
           {r.project ? <span>{r.project}</span> : null}
-          {r.agent ? <span>{r.agent}</span> : null}
+          {r.agent ? <span title={r.agent}>{agentName(r.agent)}</span> : null}
           <span title={model.tip}>{model.name}</span>
           <span title={plural(r.steps, "step") + ", " + plural(r.calls, "model call")}>{plural(r.steps, "step")}</span>
           {remote ? <span title="The machine (executor) the run happened on">{"On " + remote}</span> : null}
@@ -985,7 +985,7 @@ export function HarnessPageClient() {
       ) : null}
       {!sessions.data ? (
         sessions.error ? null : (
-          <SkeletonPage rows={3} />
+          <SkeletonRows n={5} className="[&>*]:h-16 [&>*]:rounded-xl" />
         )
       ) : rows.length === 0 ? (
         hasFilters ? (

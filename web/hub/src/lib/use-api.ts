@@ -121,7 +121,12 @@ export function useApi<T>(path: string | null, opts: { refresh?: number | false 
   );
   const snapshot = useCallback(() => (path ? (cache.get(path)?.version ?? 0) : -1), [path]);
   const version = useSyncExternalStore(subscribe, snapshot, () => -1);
-  const e = path ? cache.get(path) : undefined;
+  // While hydrating React hands back the server snapshot (-1): render what
+  // the server rendered - nothing loaded yet - even when the cache already
+  // holds the answer (a Suspense boundary hydrates after the shell's effects
+  // fetched it), then React re-renders with the data. Reading the cache
+  // here instead made the page's first client render differ from its HTML.
+  const e = path && version !== -1 ? cache.get(path) : undefined;
 
   // Visibility-aware polling: skip while hidden, refetch once when the tab
   // comes back if the entry aged past the interval.

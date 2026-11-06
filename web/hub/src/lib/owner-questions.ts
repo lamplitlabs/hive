@@ -20,6 +20,15 @@ export function decisionLabels(body: string | undefined, fallback: { yes: string
   return { yes: pick("Yes") ?? fallback.yes, no: pick("No") ?? fallback.no };
 }
 
+// A question the owner answers in words rather than with yes or no: it asks
+// which, what, how, where, who, when or why, and the post names no `Yes:` /
+// `No:` buttons of its own. "Which payment sandbox should the fixtures hit?"
+// can't be answered with "Yes"; "Should we upgrade?" can.
+export function isOpenQuestion(summary: string | undefined, body: string | undefined): boolean {
+  if (/^\s*\*{0,2}(Yes|No)\*{0,2}:/m.test(body || "")) return false;
+  return /^\s*(which|what|how|where|who|whom|whose|when|why)\b/i.test(summary || "");
+}
+
 // What the card calls a post that waits for the owner, by its kind: a
 // question is asked, a finding or a handoff is put to the owner for a call.
 export function askTitle(kind: string | undefined, asker: string): string {

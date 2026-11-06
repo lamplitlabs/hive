@@ -1,8 +1,22 @@
 //! PULSE: Anthropic Claude model provider (Messages API).
 //!
-//! The key comes from [`ApiKeyLogin`]: the private file
-//! `<home>/private/providers/anthropic.json` when the owner pasted one, else
-//! `ANTHROPIC_API_KEY`. Requests go to `POST /v1/messages` and
+//! Four ways in, tried in this order:
+//!
+//! 1. A pasted Console API key, kept in the private file
+//!    `<home>/private/providers/anthropic.json` and sent as `x-api-key`.
+//! 2. The Anthropic sign-in: `ant auth login` - Anthropic's own CLI - signs
+//!    the owner in to the Anthropic Console in the browser and keeps the
+//!    OAuth profile under `~/.config/anthropic`. PULSE stores only a marker
+//!    (`anthropic-signin.json`: the profile and a label, never a token) and
+//!    asks `ant auth print-credentials --access-token` for a short-lived
+//!    token when it needs one, sent as `Authorization: Bearer` with the
+//!    `anthropic-beta: oauth-2025-04-20` header. Usage bills to the Console
+//!    organisation, like an API key. A Claude Pro or Max subscription sign-in
+//!    is not offered: Anthropic keeps claude.ai logins to its own apps.
+//! 3. `ANTHROPIC_API_KEY` from the environment (`x-api-key`).
+//! 4. `ANTHROPIC_AUTH_TOKEN` from the environment (bearer).
+//!
+//! Requests go to `POST /v1/messages` and
 //! `GET /v1/models` under the base URL named by the
 //! `provider.anthropic.base_url` setting, else `ANTHROPIC_BASE_URL`, else
 //! [`DEFAULT_BASE_URL`]. The harness speaks the OpenAI chat shape, so each
@@ -12,26 +26,32 @@
 //! blocks, and consecutive same-role turns are merged because the Messages API
 //! wants strict user/assistant alternation.
 
+mod signin;
+
 use anyhow::{Result, anyhow};
-use pulse_provider::apikey::{ApiKeyLogin, KeySource};
+use pulse_provider::apikey::{ApiKeyLogin, KeySource, SOURCE_ENVIRONMENT, key_user};
 use pulse_provider::http::{
     DEFAULT_BACKOFFS, configured_base_url, decode_error, error_from_response, is_unauthorized,
     network_error, success_body, trim_base_url, unauthorized_error, with_retries,
 };
 use pulse_provider::{
-    CancelToken, ImageContent, LogFn, Login, LoginExporter, Logouter, Message, Model, Options,
-    Provider, ProviderError, Request, Response, Role, TokenLogin, ToolCall, Usage,
-    default_http_client, err_not_logged_in, provider_max_body_bytes, provider_retry_after_cap,
-    redact, remember_secret,
+    CancelToken, DEVICE_COMPLETE, DEVICE_EXPIRED, DEVICE_PENDING, DeviceFlow, DeviceLogin,
+    ImageContent, LogFn, Login, LoginExporter, Logouter, Message, Model, Options, Provider,
+    ProviderError, Request, Response, Role, TokenLogin, ToolCall, Usage, default_http_client,
+    err_not_logged_in, private_provider_path, provider_max_body_bytes, provider_retry_after_cap,
+    read_private_json, redact, remember_secret, write_private_json,
 };
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+pub use signin::{
+    ANT_BIN_ENV, AntCli, CliChild, CliOutput, INSTALL_HINT, PROFILE_ENV, SignInMarker, SystemCli,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, Once};
+use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -48,6 +68,29 @@ pub const BASE_URL_SETTING: &str = "provider.anthropic.base_url";
 pub const BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
 /// The environment variable the key is borrowed from when none is stored.
 pub const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+/// The environment variable a bearer token is borrowed from last of all.
+pub const AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
+/// The source word of a login that comes from the Anthropic sign-in.
+pub const SOURCE_ANTHROPIC_SIGNIN: &str = "anthropic sign-in";
+/// The beta header every bearer (OAuth) request carries.
+pub const OAUTH_BETA: &str = "oauth-2025-04-20";
+/// How long a token the CLI handed out is reused before asking again.
+pub const SIGNIN_TOKEN_TTL: Duration = Duration::from_secs(4 * 60);
+/// The start of an OAuth token, such as the Claude Pro or Max subscription
+/// token `claude setup-token` prints: never accepted as a pasted key.
+pub const SUBSCRIPTION_TOKEN_PREFIX: &str = "sk-ant-oat";
+/// The sentence the status card shows while no way in is known.
+const SIGN_IN_HINT: &str = "Sign in with Anthropic or paste an Anthropic Claude API key in Settings -> Harness, or run pulse harness login --provider anthropic";
+/// The sentence of a sign-in the CLI no longer answers for.
+const SIGNIN_ENDED: &str = "The Anthropic sign-in ended. Sign in again.";
+/// The sentence of a sign-in whose token the API refused.
+const SIGNIN_REFUSED: &str = "The Anthropic sign-in was refused. Sign in again.";
+/// How long the CLI may take to hand out a token on a request path.
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long the status card waits for the CLI.
+const STATUS_TOKEN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the browser sign-in start waits for the CLI to print its link.
+const URL_WAIT: Duration = Duration::from_secs(2);
 /// The `anthropic-version` header every request sends.
 pub const API_VERSION: &str = "2023-06-01";
 /// The `max_tokens` sent when the request names none; the API requires one.
@@ -102,6 +145,9 @@ pub struct Anthropic {
     http: Client,
     keys: ApiKeyLogin,
     log: Option<LogFn>,
+    env: Option<pulse_provider::EnvFn>,
+    cli: Arc<dyn AntCli>,
+    url_wait: Duration,
     base: String,
     max_body_bytes: usize,
     retry_after_cap: Duration,
@@ -113,6 +159,30 @@ pub struct Anthropic {
 struct Inner {
     models: Vec<Model>,
     models_at: Option<Instant>,
+    /// The token the CLI last handed out, and when.
+    token: Option<(String, Instant)>,
+    /// When the API last refused a sign-in token.
+    signin_refused_at: Option<Instant>,
+}
+
+/// How one request authenticates.
+#[derive(Clone, Debug)]
+enum Auth {
+    /// A Console API key, sent as `x-api-key`.
+    Key(String),
+    /// An OAuth access token, sent as `Authorization: Bearer`.
+    Bearer(String),
+}
+
+/// The way in a call uses, in precedence order.
+enum Credential {
+    /// A pasted key (the private file) or `ANTHROPIC_API_KEY`.
+    Key(KeySource),
+    /// The Anthropic sign-in: a token from the CLI.
+    SignIn(SignInMarker),
+    /// `ANTHROPIC_AUTH_TOKEN`.
+    Bearer(String),
+    None,
 }
 
 impl Anthropic {
@@ -123,11 +193,15 @@ impl Anthropic {
         };
         let home = resolve_home(&options)?;
         let base = configured_base(&options.settings, |key| options.env(key));
-        let keys = ApiKeyLogin::new(NAME, LABEL, home, [API_KEY_ENV], options.env.clone());
+        let keys = ApiKeyLogin::new(NAME, LABEL, home, [API_KEY_ENV], options.env.clone())
+            .with_sign_in_hint(SIGN_IN_HINT);
         Ok(Self {
             http,
             keys,
             log: options.log.clone(),
+            env: options.env.clone(),
+            cli: Arc::new(SystemCli::new(options.env.clone())),
+            url_wait: URL_WAIT,
             base,
             max_body_bytes: provider_max_body_bytes(&options.settings),
             retry_after_cap: provider_retry_after_cap(&options.settings),
@@ -136,9 +210,16 @@ impl Anthropic {
         })
     }
 
-    fn chat_once(&self, token: &str, body: Vec<u8>) -> Result<Response> {
+    fn env(&self, key: &str) -> String {
+        self.env
+            .as_ref()
+            .map(|f| f(key))
+            .unwrap_or_else(|| std::env::var(key).unwrap_or_default())
+    }
+
+    fn chat_once(&self, auth: &Auth, body: Vec<u8>) -> Result<Response> {
         let url = self.endpoint("/v1/messages")?;
-        let res = self.send(self.http.post(url).headers(self.headers(token)?).body(body))?;
+        let res = self.send(self.http.post(url).headers(self.headers(auth)?).body(body))?;
         let request_id = header_string(res.headers(), "request-id");
         let data = success_body(NAME, res, self.max_body_bytes)?;
         let out: MessagesResponse =
@@ -146,14 +227,14 @@ impl Anthropic {
         Ok(out.into_response(request_id))
     }
 
-    fn fetch_models(&self, cancel: &CancelToken, token: &str) -> Result<Vec<Model>> {
+    fn fetch_models(&self, cancel: &CancelToken, auth: &Auth) -> Result<Vec<Model>> {
         let log = |line: &str| self.note(line);
         let mut items: Vec<ModelItem> = Vec::new();
         let mut after_id = String::new();
         for _ in 0..MAX_MODEL_PAGES {
             let url = self.models_url(&after_id)?;
             let page: ModelsPage = with_retries(NAME, cancel, &self.backoffs, &log, || {
-                self.get_json(token, url.clone())
+                self.get_json(auth, url.clone())
             })?;
             let next = page
                 .last_id
@@ -171,8 +252,8 @@ impl Anthropic {
         Ok(map_models(items))
     }
 
-    fn get_json<T: DeserializeOwned>(&self, token: &str, url: Url) -> Result<T> {
-        let res = self.send(self.http.get(url).headers(self.headers(token)?))?;
+    fn get_json<T: DeserializeOwned>(&self, auth: &Auth, url: Url) -> Result<T> {
+        let res = self.send(self.http.get(url).headers(self.headers(auth)?))?;
         let data = success_body(NAME, res, self.max_body_bytes)?;
         serde_json::from_slice(&data).map_err(|e| decode_error(NAME, e).into())
     }
@@ -197,20 +278,37 @@ impl Anthropic {
         Ok(res)
     }
 
-    fn headers(&self, token: &str) -> Result<HeaderMap> {
-        remember_secret(token);
-        let mut key = HeaderValue::from_str(token).map_err(|_| {
+    /// A key goes in `x-api-key`; an OAuth token goes in `Authorization`
+    /// with the OAuth beta header, never in `x-api-key`.
+    fn headers(&self, auth: &Auth) -> Result<HeaderMap> {
+        let (name, value, what) = match auth {
+            Auth::Key(key) => (None, key.clone(), "API key"),
+            Auth::Bearer(token) => (Some(AUTHORIZATION), format!("Bearer {token}"), "sign-in"),
+        };
+        let secret = match auth {
+            Auth::Key(t) | Auth::Bearer(t) => t,
+        };
+        remember_secret(secret);
+        let mut value = HeaderValue::from_str(&value).map_err(|_| {
             ProviderError::new(
                 NAME,
                 0,
                 "invalid_token",
-                format!("{LABEL} API key has characters a header cannot carry"),
+                format!("{LABEL} {what} has characters a header cannot carry"),
                 false,
             )
         })?;
-        key.set_sensitive(true);
+        value.set_sensitive(true);
         let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", key);
+        match name {
+            Some(name) => {
+                headers.insert(name, value);
+                headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA));
+            }
+            None => {
+                headers.insert("x-api-key", value);
+            }
+        }
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -276,6 +374,250 @@ impl Anthropic {
             log(&redact(line));
         }
     }
+
+    /// The sign-in marker, when the owner signed in with Anthropic here.
+    fn marker(&self) -> Result<Option<SignInMarker>> {
+        read_private_json(self.keys.home(), signin::MARKER_FILE)
+    }
+
+    fn remove_marker(&self) -> Result<()> {
+        remove_if_present(&private_provider_path(
+            self.keys.home(),
+            signin::MARKER_FILE,
+        ))
+    }
+
+    fn has_stored_key(&self) -> Result<bool> {
+        Ok(self
+            .keys
+            .read_stored()?
+            .is_some_and(|stored| !stored.api_key.trim().is_empty()))
+    }
+
+    /// `ANTHROPIC_AUTH_TOKEN`, the bearer token the SDKs read too.
+    fn env_bearer(&self) -> String {
+        let token = self.env(AUTH_TOKEN_ENV).trim().to_string();
+        if !token.is_empty() {
+            remember_secret(&token);
+        }
+        token
+    }
+
+    /// The way in, in precedence order: the pasted key, the Anthropic
+    /// sign-in, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`.
+    fn credential(&self) -> Result<Credential> {
+        if self.has_stored_key()? {
+            return Ok(Credential::Key(self.keys.source()?));
+        }
+        if let Some(marker) = self.marker()? {
+            return Ok(Credential::SignIn(marker));
+        }
+        let src = self.keys.source_no_file();
+        if !src.is_empty() {
+            return Ok(Credential::Key(src));
+        }
+        let bearer = self.env_bearer();
+        if !bearer.is_empty() {
+            return Ok(Credential::Bearer(bearer));
+        }
+        Ok(Credential::None)
+    }
+
+    fn profile_args(args: &[&str], profile: &str) -> Vec<String> {
+        let mut out: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        if !profile.trim().is_empty() {
+            out.push("--profile".to_string());
+            out.push(profile.trim().to_string());
+        }
+        out
+    }
+
+    /// A token for the sign-in: the cached one while it is fresh, else a new
+    /// one from `ant auth print-credentials --access-token` (which refreshes
+    /// the profile itself when it must).
+    fn signin_token(
+        &self,
+        cancel: &CancelToken,
+        profile: &str,
+        fresh: bool,
+        timeout: Duration,
+    ) -> Result<String> {
+        cancel.check()?;
+        if !fresh {
+            let inner = self.inner.lock().expect("anthropic provider poisoned");
+            if let Some((token, at)) = &inner.token
+                && at.elapsed() < SIGNIN_TOKEN_TTL
+            {
+                return Ok(token.clone());
+            }
+        }
+        let args = Self::profile_args(&["auth", "print-credentials", "--access-token"], profile);
+        let out = self.cli.run(&args, timeout)?;
+        let token = out
+            .stdout
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or_default()
+            .to_string();
+        if out.code != 0 || token.is_empty() || token.contains(char::is_whitespace) {
+            let why = signin::tail(&out.stderr);
+            return Err(ProviderError::new(
+                NAME,
+                0,
+                "signin_ended",
+                if why.is_empty() {
+                    "the Anthropic sign-in ended; sign in again".to_string()
+                } else {
+                    format!("the Anthropic sign-in ended; sign in again ({why})")
+                },
+                false,
+            )
+            .into());
+        }
+        remember_secret(&token);
+        let mut inner = self.inner.lock().expect("anthropic provider poisoned");
+        inner.token = Some((token.clone(), Instant::now()));
+        Ok(token)
+    }
+
+    fn clear_token(&self) {
+        let mut inner = self.inner.lock().expect("anthropic provider poisoned");
+        inner.token = None;
+    }
+
+    fn signin_refused_recently(&self) -> bool {
+        let inner = self.inner.lock().expect("anthropic provider poisoned");
+        inner
+            .signin_refused_at
+            .is_some_and(|at| at.elapsed() < pulse_provider::apikey::REFUSAL_TTL)
+    }
+
+    fn set_signin_refused(&self, refused: bool) {
+        let mut inner = self.inner.lock().expect("anthropic provider poisoned");
+        inner.signin_refused_at = refused.then(Instant::now);
+    }
+
+    /// Runs `call` with the credential in force. A sign-in whose token is
+    /// refused asks the CLI for a fresh one and tries once more; a sign-in
+    /// the CLI no longer answers for is "not signed in", so runs wait.
+    fn with_credential<T>(
+        &self,
+        cancel: &CancelToken,
+        call: impl Fn(&Auth) -> Result<T>,
+    ) -> Result<T> {
+        match self.credential()? {
+            Credential::None => Err(err_not_logged_in().into()),
+            Credential::Key(src) => {
+                call(&Auth::Key(src.token.clone())).inspect_err(|err| self.note_refusal(&src, err))
+            }
+            Credential::Bearer(token) => call(&Auth::Bearer(token)),
+            Credential::SignIn(marker) => {
+                let token = self.signin_token_or_wait(cancel, &marker.profile, false)?;
+                match call(&Auth::Bearer(token)) {
+                    Err(err) if is_unauthorized(&err) => {
+                        self.clear_token();
+                        let token = self.signin_token_or_wait(cancel, &marker.profile, true)?;
+                        let out = call(&Auth::Bearer(token));
+                        if let Err(err) = &out
+                            && is_unauthorized(err)
+                        {
+                            self.set_signin_refused(true);
+                        }
+                        out
+                    }
+                    other => {
+                        if other.is_ok() {
+                            self.set_signin_refused(false);
+                        }
+                        other
+                    }
+                }
+            }
+        }
+    }
+
+    fn signin_token_or_wait(
+        &self,
+        cancel: &CancelToken,
+        profile: &str,
+        fresh: bool,
+    ) -> Result<String> {
+        self.signin_token(cancel, profile, fresh, TOKEN_TIMEOUT)
+            .map_err(|err| {
+                if err.is::<pulse_provider::CancelledError>() {
+                    return err;
+                }
+                self.note(&format!("anthropic: no sign-in token: {err}"));
+                err.context(err_not_logged_in())
+            })
+    }
+
+    /// The status card of the Anthropic sign-in: cheap while a token is
+    /// cached, else one short question to the CLI.
+    fn signin_status(&self, cancel: &CancelToken, marker: SignInMarker) -> Result<Login> {
+        let mut login = Login {
+            logged_in: true,
+            user: if marker.user.trim().is_empty() {
+                SignInMarker::user_for(&marker.profile)
+            } else {
+                marker.user.trim().to_string()
+            },
+            source: SOURCE_ANTHROPIC_SIGNIN.to_string(),
+            ..Login::default()
+        };
+        if self.signin_refused_recently() {
+            login.logged_in = false;
+            login.detail = SIGNIN_REFUSED.to_string();
+            return Ok(login);
+        }
+        match self.signin_token(cancel, &marker.profile, false, STATUS_TOKEN_TIMEOUT) {
+            Ok(_) => {}
+            Err(err) if err.is::<pulse_provider::CancelledError>() => return Err(err),
+            Err(err) => {
+                login.logged_in = false;
+                login.detail = if signin::is_cli_missing(&err) {
+                    pulse_provider::provider_error(&err)
+                        .map(|e| e.message.clone())
+                        .unwrap_or_else(|| SIGNIN_ENDED.to_string())
+                } else {
+                    SIGNIN_ENDED.to_string()
+                };
+            }
+        }
+        Ok(login)
+    }
+
+    /// Finishes a browser sign-in the CLI completed: a token, a model list
+    /// to prove it works, then the marker in place of any pasted key.
+    fn complete_signin(&self, cancel: &CancelToken, profile: &str) -> Result<Login> {
+        self.clear_token();
+        let token = self.signin_token(cancel, profile, true, TOKEN_TIMEOUT)?;
+        let models = self.fetch_models(cancel, &Auth::Bearer(token))?;
+        let marker = SignInMarker {
+            profile: profile.trim().to_string(),
+            user: SignInMarker::user_for(profile),
+            saved_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        };
+        write_private_json(self.keys.home(), signin::MARKER_FILE, &marker)?;
+        remove_if_present(&self.keys.path())?;
+        self.set_signin_refused(false);
+        self.store_models(&models);
+        Ok(Login {
+            logged_in: true,
+            user: marker.user,
+            source: SOURCE_ANTHROPIC_SIGNIN.to_string(),
+            ..Login::default()
+        })
+    }
+}
+
+fn remove_if_present(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 impl Provider for Anthropic {
@@ -289,16 +631,13 @@ impl Provider for Anthropic {
 
     fn chat(&self, cancel: &CancelToken, req: Request) -> Result<Response> {
         cancel.check()?;
-        let src = self.keys.source()?;
-        if src.is_empty() {
-            return Err(err_not_logged_in().into());
-        }
         let body = serde_json::to_vec(&messages_request(&req))?;
         let log = |line: &str| self.note(line);
-        with_retries(NAME, cancel, &self.backoffs, &log, || {
-            self.chat_once(&src.token, body.clone())
+        self.with_credential(cancel, |auth| {
+            with_retries(NAME, cancel, &self.backoffs, &log, || {
+                self.chat_once(auth, body.clone())
+            })
         })
-        .inspect_err(|err| self.note_refusal(&src, err))
     }
 
     fn models(&self, cancel: &CancelToken) -> Result<Vec<Model>> {
@@ -306,20 +645,36 @@ impl Provider for Anthropic {
         if let Some(models) = self.cached_models() {
             return Ok(models);
         }
-        let src = self.keys.source()?;
-        if src.is_empty() {
-            return Err(err_not_logged_in().into());
-        }
-        let models = self
-            .fetch_models(cancel, &src.token)
-            .inspect_err(|err| self.note_refusal(&src, err))?;
+        let models = self.with_credential(cancel, |auth| self.fetch_models(cancel, auth))?;
         self.store_models(&models);
         Ok(models)
     }
 
     fn status(&self, cancel: &CancelToken) -> Result<Login> {
         cancel.check()?;
+        if self.has_stored_key()? {
+            return self.keys.status();
+        }
+        if let Some(marker) = self.marker()? {
+            return self.signin_status(cancel, marker);
+        }
+        if !self.keys.source_no_file().is_empty() {
+            return self.keys.status();
+        }
+        let bearer = self.env_bearer();
+        if !bearer.is_empty() {
+            return Ok(Login {
+                logged_in: true,
+                user: key_user(&bearer),
+                source: SOURCE_ENVIRONMENT.to_string(),
+                ..Login::default()
+            });
+        }
         self.keys.status()
+    }
+
+    fn as_device_login(&self) -> Option<&dyn DeviceLogin> {
+        Some(self)
     }
 
     fn as_token_login(&self) -> Option<&dyn TokenLogin> {
@@ -335,9 +690,111 @@ impl Provider for Anthropic {
     }
 }
 
+impl DeviceLogin for Anthropic {
+    /// Starts `ant auth login`, which opens the browser on this machine and
+    /// ends by itself once the owner approves. There is no code to type:
+    /// `user_code` is empty and `verification_uri` is the link the CLI
+    /// printed, when it printed one, for a browser that did not open.
+    fn begin_device_login(&self, cancel: &CancelToken) -> Result<DeviceFlow> {
+        cancel.check()?;
+        let profile = self.env(PROFILE_ENV).trim().to_string();
+        let args = Self::profile_args(&["auth", "login"], &profile);
+        let mut child = self.cli.spawn(&args)?;
+        let deadline = Instant::now() + self.url_wait;
+        let url = loop {
+            let found = signin::first_url(&(child.stdout() + "\n" + &child.stderr()));
+            if !found.is_empty() {
+                break found;
+            }
+            if let Some(code) = child.try_wait()? {
+                if code != 0 {
+                    return Err(signin_failed(&child.stderr(), &child.stdout()).into());
+                }
+                break found;
+            }
+            if Instant::now() >= deadline || cancel.check().is_err() {
+                break found;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let device_code = signin::new_device_code();
+        let mut runs = signin::LOGIN_RUNS.lock().unwrap_or_else(|p| p.into_inner());
+        signin::prune_runs(&mut runs);
+        runs.insert(
+            device_code.clone(),
+            signin::LoginRun {
+                child,
+                started: Instant::now(),
+                profile,
+            },
+        );
+        Ok(DeviceFlow {
+            device_code,
+            user_code: String::new(),
+            verification_uri: url,
+            interval: 2,
+            expires_in: signin::LOGIN_TTL.as_secs() as i32,
+        })
+    }
+
+    fn poll_device_login(
+        &self,
+        cancel: &CancelToken,
+        device_code: &str,
+    ) -> Result<(String, Login)> {
+        cancel.check()?;
+        let finished = {
+            let mut runs = signin::LOGIN_RUNS.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(run) = runs.get_mut(device_code) else {
+                // Unknown or already finished: start again.
+                return Ok((DEVICE_EXPIRED.to_string(), Login::default()));
+            };
+            match run.child.try_wait()? {
+                None if run.started.elapsed() > signin::LOGIN_TTL => {
+                    run.child.kill();
+                    runs.remove(device_code);
+                    return Ok((DEVICE_EXPIRED.to_string(), Login::default()));
+                }
+                None => return Ok((DEVICE_PENDING.to_string(), Login::default())),
+                Some(code) => {
+                    let run = runs.remove(device_code).expect("run present");
+                    (code, run)
+                }
+            }
+        };
+        let (code, run) = finished;
+        if code != 0 {
+            return Err(signin_failed(&run.child.stderr(), &run.child.stdout()).into());
+        }
+        let login = self.complete_signin(cancel, &run.profile)?;
+        Ok((DEVICE_COMPLETE.to_string(), login))
+    }
+}
+
+/// The error of an `ant auth login` that ended without signing in.
+fn signin_failed(stderr: &str, stdout: &str) -> ProviderError {
+    let mut why = signin::tail(stderr);
+    if why.is_empty() {
+        why = signin::tail(stdout);
+    }
+    ProviderError::new(
+        NAME,
+        0,
+        "signin_failed",
+        if why.is_empty() {
+            "the Anthropic sign-in did not finish".to_string()
+        } else {
+            format!("the Anthropic sign-in did not finish: {why}")
+        },
+        false,
+    )
+}
+
 impl TokenLogin for Anthropic {
-    /// Validates the pasted key by listing models with it, then stores it.
-    /// A 401/403 is "the key was refused" and nothing is written.
+    /// Validates the pasted key by listing models with it, then stores it
+    /// in place of any Anthropic sign-in. A 401/403 is "the key was
+    /// refused" and nothing is written. A Claude subscription token is
+    /// turned away before any request.
     fn login_with_token(&self, cancel: &CancelToken, token: &str) -> Result<Login> {
         cancel.check()?;
         let token = token.trim();
@@ -345,8 +802,20 @@ impl TokenLogin for Anthropic {
             return Err(self.keys.empty_token_error().into());
         }
         remember_secret(token);
-        let models = self.fetch_models(cancel, token)?;
+        if token.starts_with(SUBSCRIPTION_TOKEN_PREFIX) {
+            return Err(ProviderError::new(
+                NAME,
+                0,
+                "subscription_token",
+                "This is an OAuth token (sk-ant-oat...), like the Claude Pro or Max token claude setup-token prints. Anthropic allows subscription tokens only in Claude's own apps, and pasted OAuth tokens expire. Paste a Console API key (sk-ant-api...) or use Sign in with Anthropic",
+                false,
+            )
+            .into());
+        }
+        let models = self.fetch_models(cancel, &Auth::Key(token.to_string()))?;
         let login = self.keys.save(token, &self.base)?;
+        self.remove_marker()?;
+        self.clear_token();
         // The list just fetched with the key now in use replaces the cache.
         self.store_models(&models);
         Ok(login)
@@ -354,14 +823,31 @@ impl TokenLogin for Anthropic {
 }
 
 impl LoginExporter for Anthropic {
+    /// Hands out the pasted key. An Anthropic sign-in is a profile of the
+    /// CLI on this machine, so it is never handed out.
     fn export_login(&self) -> Result<(String, Login)> {
+        if !self.has_stored_key()? && self.marker()?.is_some() {
+            return Err(ProviderError::new(
+                NAME,
+                0,
+                "signin_stays_here",
+                "An Anthropic sign-in stays on this machine; sign in with Anthropic on the other machine too, or paste an API key here",
+                false,
+            )
+            .into());
+        }
         self.keys.export()
     }
 }
 
 impl Logouter for Anthropic {
+    /// Forgets the pasted key and the sign-in marker. The CLI's own profile
+    /// is left alone: Claude Code and the SDKs share it.
     fn logout(&self) -> Result<()> {
         self.keys.logout()?;
+        self.remove_marker()?;
+        self.clear_token();
+        self.set_signin_refused(false);
         self.clear_models();
         Ok(())
     }
@@ -1942,10 +2428,7 @@ mod tests {
         ));
         let status = p.status(&CancelToken::new()).unwrap();
         assert!(!status.logged_in);
-        assert_eq!(
-            status.detail,
-            "Paste an Anthropic Claude API key in Settings -> Harness or run pulse harness login --provider anthropic --with-token"
-        );
+        assert_eq!(status.detail, SIGN_IN_HINT);
         let err = p
             .as_token_login()
             .unwrap()
@@ -2011,6 +2494,476 @@ mod tests {
         assert!(p.as_token_login().is_some());
         assert!(p.as_login_exporter().is_some());
         assert!(p.as_logouter().is_some());
-        assert!(p.as_device_login().is_none());
+        assert!(p.as_device_login().is_some());
+    }
+
+    // The Anthropic sign-in, driven through a fake `ant`.
+
+    #[derive(Clone, Default)]
+    struct FakeRun {
+        code: i32,
+        stdout: String,
+        stderr: String,
+        /// Polls answered "still running" before the run ends.
+        pending: usize,
+    }
+
+    impl FakeRun {
+        fn ok(stdout: &str) -> Self {
+            Self {
+                stdout: stdout.to_string(),
+                ..Self::default()
+            }
+        }
+
+        fn failed(stderr: &str) -> Self {
+            Self {
+                code: 1,
+                stderr: stderr.to_string(),
+                ..Self::default()
+            }
+        }
+    }
+
+    type Answer = Box<dyn Fn(&[String]) -> Option<FakeRun> + Send + Sync>;
+
+    /// A fake CLI: `answer` gives each run, `None` meaning no `ant` at all.
+    struct FakeCli {
+        calls: Mutex<Vec<Vec<String>>>,
+        answer: Answer,
+    }
+
+    impl FakeCli {
+        fn new(answer: impl Fn(&[String]) -> Option<FakeRun> + Send + Sync + 'static) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                answer: Box::new(answer),
+            })
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|c| c.join(" "))
+                .collect()
+        }
+    }
+
+    struct FakeChild {
+        run: FakeRun,
+        polls: usize,
+        killed: bool,
+    }
+
+    impl CliChild for FakeChild {
+        fn try_wait(&mut self) -> Result<Option<i32>> {
+            if self.killed {
+                return Ok(Some(-1));
+            }
+            if self.polls < self.run.pending {
+                self.polls += 1;
+                return Ok(None);
+            }
+            Ok(Some(self.run.code))
+        }
+        fn stdout(&self) -> String {
+            self.run.stdout.clone()
+        }
+        fn stderr(&self) -> String {
+            self.run.stderr.clone()
+        }
+        fn kill(&mut self) {
+            self.killed = true;
+        }
+    }
+
+    impl AntCli for FakeCli {
+        fn spawn(&self, args: &[String]) -> Result<Box<dyn CliChild>> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            match (self.answer)(args) {
+                None => Err(signin::cli_missing_error().into()),
+                Some(run) => Ok(Box::new(FakeChild {
+                    run,
+                    polls: 0,
+                    killed: false,
+                })),
+            }
+        }
+    }
+
+    const OAUTH_TOKEN: &str = "ant-oauth-access-token-0001";
+
+    /// A CLI that signs in after two polls and hands out [`OAUTH_TOKEN`].
+    fn signing_cli() -> Arc<FakeCli> {
+        FakeCli::new(|args| {
+            match args.get(1).map(String::as_str) {
+            Some("login") => Some(FakeRun {
+                stdout: "Opening https://console.anthropic.com/oauth/authorize?state=x in your browser.\n".to_string(),
+                pending: 2,
+                ..FakeRun::default()
+            }),
+            Some("print-credentials") => Some(FakeRun::ok(&format!("{OAUTH_TOKEN}\n"))),
+            _ => Some(FakeRun::failed("unexpected")),
+        }
+        })
+    }
+
+    fn write_marker(f: &Fixture, profile: &str) {
+        write_private_json(
+            f.home.path(),
+            signin::MARKER_FILE,
+            &SignInMarker {
+                profile: profile.to_string(),
+                user: SignInMarker::user_for(profile),
+                saved_at: "2026-11-06T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    fn marker_path(f: &Fixture) -> PathBuf {
+        private_provider_path(f.home.path(), signin::MARKER_FILE)
+    }
+
+    /// A server that answers models and chat and records every request.
+    fn recording_server() -> (Server, Arc<Mutex<Vec<Seen>>>) {
+        let seen: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let srv = Server::new(move |req| {
+            record.lock().unwrap().push(req.clone());
+            match req.path() {
+                "/v1/models" => models_page(
+                    &[("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5")],
+                    false,
+                ),
+                _ => text_reply("ok", "end_turn"),
+            }
+        });
+        (srv, seen)
+    }
+
+    #[test]
+    fn signin_sends_a_bearer_token_with_the_oauth_beta() {
+        let (srv, seen) = recording_server();
+        let mut f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        let cli = signing_cli();
+        f.provider.cli = cli.clone();
+        write_marker(&f, "work");
+        let p = &f.provider;
+
+        assert_eq!(
+            p.chat(&CancelToken::new(), hello())
+                .unwrap()
+                .message
+                .unwrap()
+                .content,
+            "ok"
+        );
+        assert_eq!(p.models(&CancelToken::new()).unwrap().len(), 1);
+        for req in seen.lock().unwrap().iter() {
+            assert_eq!(
+                req.header("authorization"),
+                Some(format!("Bearer {OAUTH_TOKEN}").as_str())
+            );
+            assert_eq!(req.header("anthropic-beta"), Some(OAUTH_BETA));
+            assert_eq!(req.header("anthropic-version"), Some(API_VERSION));
+            assert_eq!(req.header("x-api-key"), None);
+        }
+        // One token served both requests, from the profile the marker names.
+        assert_eq!(
+            cli.calls(),
+            ["auth print-credentials --access-token --profile work"]
+        );
+        let status = p.status(&CancelToken::new()).unwrap();
+        assert!(status.logged_in);
+        assert_eq!(status.source, SOURCE_ANTHROPIC_SIGNIN);
+        assert_eq!(status.user, "Anthropic Console (profile work)");
+        assert_eq!(cli.calls().len(), 1);
+    }
+
+    #[test]
+    fn credentials_follow_key_file_signin_env_key_env_token() {
+        let (srv, seen) = recording_server();
+        let last = |seen: &Arc<Mutex<Vec<Seen>>>| seen.lock().unwrap().last().cloned().unwrap();
+
+        // ANTHROPIC_AUTH_TOKEN alone is a borrowed bearer token.
+        let env = BTreeMap::from([(
+            AUTH_TOKEN_ENV.to_string(),
+            "env-bearer-token-0001".to_string(),
+        )]);
+        let f = fixture(&srv.url(), env.clone(), BTreeMap::new());
+        f.provider.chat(&CancelToken::new(), hello()).unwrap();
+        let req = last(&seen);
+        assert_eq!(
+            req.header("authorization"),
+            Some("Bearer env-bearer-token-0001")
+        );
+        assert_eq!(req.header("anthropic-beta"), Some(OAUTH_BETA));
+        let status = f.provider.status(&CancelToken::new()).unwrap();
+        assert!(status.logged_in);
+        assert_eq!(status.source, "environment");
+
+        // ANTHROPIC_API_KEY beats it.
+        let mut env = env;
+        env.insert(API_KEY_ENV.to_string(), KEY.to_string());
+        let mut f = fixture(&srv.url(), env, BTreeMap::new());
+        f.provider.cli = signing_cli();
+        f.provider.chat(&CancelToken::new(), hello()).unwrap();
+        let req = last(&seen);
+        assert_eq!(req.header("x-api-key"), Some(KEY));
+        assert_eq!(req.header("authorization"), None);
+
+        // The sign-in beats both environment variables.
+        write_marker(&f, "");
+        f.provider.chat(&CancelToken::new(), hello()).unwrap();
+        let req = last(&seen);
+        assert_eq!(
+            req.header("authorization"),
+            Some(format!("Bearer {OAUTH_TOKEN}").as_str())
+        );
+        assert_eq!(req.header("x-api-key"), None);
+
+        // A pasted key beats everything.
+        let pasted = "sk-ant-api03-pasted-secret-zyxwvutsrq";
+        f.provider.keys.save(pasted, "").unwrap();
+        f.provider.chat(&CancelToken::new(), hello()).unwrap();
+        let req = last(&seen);
+        assert_eq!(req.header("x-api-key"), Some(pasted));
+        assert_eq!(req.header("authorization"), None);
+        assert_eq!(
+            f.provider.status(&CancelToken::new()).unwrap().source,
+            SOURCE_TOKEN_LOGIN
+        );
+    }
+
+    #[test]
+    fn browser_signin_completes_and_replaces_a_pasted_key() {
+        let (srv, seen) = recording_server();
+        let mut f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        let cli = signing_cli();
+        f.provider.cli = cli.clone();
+        f.provider.url_wait = Duration::from_millis(50);
+        let p = &f.provider;
+        p.keys.save(KEY, "").unwrap();
+
+        let dl = p.as_device_login().unwrap();
+        let flow = dl.begin_device_login(&CancelToken::new()).unwrap();
+        assert!(flow.device_code.starts_with("ant-"));
+        assert_eq!(flow.user_code, "");
+        assert_eq!(
+            flow.verification_uri,
+            "https://console.anthropic.com/oauth/authorize?state=x"
+        );
+        assert_eq!(flow.interval, 2);
+        assert_eq!(flow.expires_in, 600);
+
+        let poll = || {
+            dl.poll_device_login(&CancelToken::new(), &flow.device_code)
+                .unwrap()
+        };
+        assert_eq!(poll().0, DEVICE_PENDING);
+        assert_eq!(poll().0, DEVICE_PENDING);
+        let (word, login) = poll();
+        assert_eq!(word, DEVICE_COMPLETE);
+        assert!(login.logged_in);
+        assert_eq!(login.user, "Anthropic Console");
+        assert_eq!(login.source, SOURCE_ANTHROPIC_SIGNIN);
+        // A finished sign-in is forgotten: polling it again starts over.
+        assert_eq!(poll().0, DEVICE_EXPIRED);
+
+        // The marker replaced the pasted key; no token went to disk.
+        assert!(!p.keys.path().exists());
+        let marker = std::fs::read_to_string(marker_path(&f)).unwrap();
+        assert!(marker.contains("Anthropic Console"));
+        assert!(!marker.contains(OAUTH_TOKEN));
+        assert_eq!(
+            cli.calls(),
+            ["auth login", "auth print-credentials --access-token"]
+        );
+        // The models the sign-in was proven with are cached.
+        let before = seen.lock().unwrap().len();
+        assert_eq!(p.models(&CancelToken::new()).unwrap().len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), before);
+        let status = p.status(&CancelToken::new()).unwrap();
+        assert!(status.logged_in);
+        assert_eq!(status.source, SOURCE_ANTHROPIC_SIGNIN);
+
+        // A sign-in is never handed to another machine.
+        let err = p.as_login_exporter().unwrap().export_login().unwrap_err();
+        assert_eq!(provider_error(&err).unwrap().code, "signin_stays_here");
+
+        // Logging out forgets the marker and leaves the CLI's profile alone.
+        p.as_logouter().unwrap().logout().unwrap();
+        assert!(!marker_path(&f).exists());
+        assert!(!cli.calls().iter().any(|c| c.contains("logout")));
+        assert!(!p.status(&CancelToken::new()).unwrap().logged_in);
+        assert!(is_not_logged_in(
+            &p.chat(&CancelToken::new(), hello()).unwrap_err()
+        ));
+
+        // A pasted key replaces a sign-in.
+        write_marker(&f, "");
+        p.as_token_login()
+            .unwrap()
+            .login_with_token(&CancelToken::new(), KEY)
+            .unwrap();
+        assert!(!marker_path(&f).exists());
+        assert_eq!(
+            p.status(&CancelToken::new()).unwrap().source,
+            SOURCE_TOKEN_LOGIN
+        );
+    }
+
+    #[test]
+    fn browser_signin_failures_say_why() {
+        let srv = Server::new(|_| Reply::text(500, "must not be called"));
+        // Turned down at once: the start itself fails with the CLI's words.
+        let mut f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        f.provider.url_wait = Duration::from_millis(50);
+        f.provider.cli = FakeCli::new(|_| Some(FakeRun::failed("error: access_denied by user")));
+        let err = f
+            .provider
+            .begin_device_login(&CancelToken::new())
+            .unwrap_err();
+        let perr = provider_error(&err).unwrap();
+        assert_eq!(perr.code, "signin_failed");
+        assert!(
+            perr.message.contains("access_denied by user"),
+            "{}",
+            perr.message
+        );
+
+        // Turned down later: the poll fails with the CLI's words.
+        f.provider.cli = FakeCli::new(|_| {
+            Some(FakeRun {
+                pending: 6,
+                ..FakeRun::failed("error: the browser window was closed")
+            })
+        });
+        let flow = f.provider.begin_device_login(&CancelToken::new()).unwrap();
+        assert_eq!(flow.verification_uri, "");
+        let err = (0..10)
+            .find_map(|_| {
+                f.provider
+                    .poll_device_login(&CancelToken::new(), &flow.device_code)
+                    .err()
+            })
+            .expect("the poll fails once the run ends");
+        assert!(err.to_string().contains("browser window was closed"));
+        assert!(!marker_path(&f).exists());
+
+        // No `ant` on this machine.
+        f.provider.cli = FakeCli::new(|_| None);
+        let err = f
+            .provider
+            .begin_device_login(&CancelToken::new())
+            .unwrap_err();
+        let perr = provider_error(&err).unwrap();
+        assert_eq!(perr.code, "cli_missing");
+        assert!(perr.message.contains("brew install anthropics/tap/ant"));
+        write_marker(&f, "");
+        let status = f.provider.status(&CancelToken::new()).unwrap();
+        assert!(!status.logged_in);
+        assert!(
+            status.detail.contains("isn't installed"),
+            "{}",
+            status.detail
+        );
+
+        // An unknown device code is an expired one.
+        let (word, _) = f
+            .provider
+            .poll_device_login(&CancelToken::new(), "ant-unknown")
+            .unwrap();
+        assert_eq!(word, DEVICE_EXPIRED);
+    }
+
+    #[test]
+    fn ended_signin_waits_for_a_new_one() {
+        let srv = Server::new(|_| Reply::text(500, "must not be called"));
+        let mut f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        f.provider.cli = FakeCli::new(|_| Some(FakeRun::failed("refresh token expired")));
+        write_marker(&f, "");
+        let err = f.provider.chat(&CancelToken::new(), hello()).unwrap_err();
+        assert!(is_not_logged_in(&err));
+        assert!(is_not_logged_in(
+            &f.provider.models(&CancelToken::new()).unwrap_err()
+        ));
+        let status = f.provider.status(&CancelToken::new()).unwrap();
+        assert!(!status.logged_in);
+        assert_eq!(status.source, SOURCE_ANTHROPIC_SIGNIN);
+        assert_eq!(status.detail, SIGNIN_ENDED);
+    }
+
+    #[test]
+    fn refused_signin_token_is_fetched_again_once() {
+        let srv = Server::new(|req| {
+            if req.header("authorization") == Some("Bearer ant-oauth-token-second") {
+                text_reply("ok", "end_turn")
+            } else {
+                Reply::json(
+                    401,
+                    &json!({"type": "error", "error": {"type": "authentication_error", "message": "expired"}}),
+                )
+            }
+        });
+        let mut f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        let handed = Arc::new(AtomicUsize::new(0));
+        let count = handed.clone();
+        let cli = FakeCli::new(move |_| {
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            Some(FakeRun::ok(if n == 0 {
+                "ant-oauth-token-first"
+            } else {
+                "ant-oauth-token-second"
+            }))
+        });
+        f.provider.cli = cli.clone();
+        write_marker(&f, "");
+        let resp = f.provider.chat(&CancelToken::new(), hello()).unwrap();
+        assert_eq!(resp.message.unwrap().content, "ok");
+        assert_eq!(cli.calls().len(), 2);
+
+        // A token refused even when fresh flips the card to "sign in again".
+        let srv = Server::new(|_| {
+            Reply::json(
+                403,
+                &json!({"type": "error", "error": {"type": "permission_error", "message": "no"}}),
+            )
+        });
+        let mut f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        f.provider.cli = signing_cli();
+        write_marker(&f, "");
+        let err = f.provider.chat(&CancelToken::new(), hello()).unwrap_err();
+        assert_eq!(provider_error(&err).unwrap().code, "unauthorized");
+        let status = f.provider.status(&CancelToken::new()).unwrap();
+        assert!(!status.logged_in);
+        assert_eq!(status.detail, SIGNIN_REFUSED);
+    }
+
+    #[test]
+    fn oauth_token_is_refused_before_any_request() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let srv = Server::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Reply::text(500, "must not be called")
+        });
+        let f = fixture(&srv.url(), BTreeMap::new(), BTreeMap::new());
+        let err = f
+            .provider
+            .login_with_token(
+                &CancelToken::new(),
+                "sk-ant-oat01-subscription-secret-abcdef",
+            )
+            .unwrap_err();
+        let perr = provider_error(&err).unwrap();
+        assert_eq!(perr.code, "subscription_token");
+        assert!(perr.message.contains("Sign in with Anthropic"));
+        assert!(!perr.message.contains("subscription-secret"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!f.provider.keys.path().exists());
     }
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -101,15 +101,49 @@ function RunnerRow({ r, note, busy, onToggle }: { r: RunnerNote; note: RunnersNo
   );
 }
 
+// A page that asks the question in its own "Waiting for you" (the Machines
+// page, with RunnersQuestion) sets this so the cleanup panel below doesn't
+// ask it a second time.
+export const RunnersAskedElsewhere = createContext(false);
+
+// Whether the hub still waits for the owner's answer about the other programs.
+export const runnersAsking = (note: RunnersNote | null | undefined): boolean => !!note && !note.decided && note.runners.some((r) => r.sweeps && !r.managed);
+
+// The question alone, in the owner's colour, for a page's "Waiting for you".
+export function RunnersQuestion({ note, className }: { note: RunnersNote | null | undefined; className?: string }) {
+  const [busy, setBusy] = useState(false);
+  if (!note || !runnersAsking(note)) return null;
+  const unmanaged = note.runners.filter((r) => r.sweeps && !r.managed);
+  const act = (value: string) => {
+    setBusy(true);
+    save(value).finally(() => setBusy(false));
+  };
+  return (
+    <Notice tone="you" className={className}>
+      <p className="font-medium">{"Should PULSE clean up after " + andList(unmanaged.map((r) => r.label)) + " too?"}</p>
+      <p className="mt-1 text-[13px] text-muted-foreground">{"Their old sessions pile up on this machine. Yes removes sessions untouched for " + plural(note.keep_days, "day") + "; a session a running program holds open is always left alone. You can change this per program under Cleanup."}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => act("none")}>
+          Not now
+        </Button>
+        <Button size="sm" disabled={busy} onClick={() => act(sweepable(note).join(","))}>
+          Yes, all of them
+        </Button>
+      </div>
+    </Notice>
+  );
+}
+
 // The other agent programs on this machine (ADR-068 companion to the sweep):
 // PULSE finds what is installed, asks once whether their old sessions should
 // follow the same cleanup, and then the ten-minute sweep looks after them.
 // Nothing renders when no other program is here.
 export function RunnersSection({ note }: { note: RunnersNote | null | undefined }) {
   const [busy, setBusy] = useState(false);
+  const elsewhere = useContext(RunnersAskedElsewhere);
   if (!note || !note.runners.length) return null;
   const unmanaged = note.runners.filter((r) => r.sweeps && !r.managed);
-  const asking = !note.decided && unmanaged.length > 0;
+  const asking = !elsewhere && !note.decided && unmanaged.length > 0;
   const act = (value: string) => {
     setBusy(true);
     save(value).finally(() => setBusy(false));
@@ -139,15 +173,15 @@ export function RunnersSection({ note }: { note: RunnersNote | null | undefined 
         </Link>
       </p>
       {asking ? (
-        <Notice tone="warn" className="mt-3">
+        <Notice tone="you" className="mt-3">
           <p className="font-medium">{"Should PULSE clean up after " + andList(unmanaged.map((r) => r.label)) + " too?"}</p>
           <p className="mt-1 text-[13px] text-muted-foreground">{"Their old sessions pile up like PULSE's did. Saying yes removes sessions untouched for " + plural(note.keep_days, "day") + "; a session a running program holds open is always left alone. You can change this per program at any time."}</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={() => act(sweepable(note).join(","))}>
-              Yes, all of them
-            </Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => act("none")}>
               Not now
+            </Button>
+            <Button size="sm" disabled={busy} onClick={() => act(sweepable(note).join(","))}>
+              Yes, all of them
             </Button>
           </div>
         </Notice>

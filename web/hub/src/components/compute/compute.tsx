@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Mono, ProjectLink, StatusBadge, When } from "@/components/pulse/who";
-import { statusWord } from "@/lib/words";
+import { agentName, statusWord } from "@/lib/words";
 import { writes, type ComputeCaps, type ComputeRequest } from "@/lib/api";
 import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -35,7 +35,7 @@ export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "x
         title={which === "approve" ? "Approve the extra machine?" : "Deny the extra machine?"}
         description={
           <span>
-            {r.requested_by} asks for one <Mono>{r.size}</Mono> machine for {plural(r.hours, "hour")}. {which === "approve" ? "PULSE starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
+            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {which === "approve" ? "PULSE starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
           </span>
         }
         action={which === "approve" ? "Approve" : "Deny"}
@@ -67,15 +67,11 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
   return (
     <ItemCard highlight={pending} ariaLabel={"Request " + r.id + ": " + statusWord(r.status)}>
       <ItemCardHeader right={<When d={r.at} />}>
-        <ItemCardKind icon={ServerIcon} tone={pending ? "you" : LIVE.has(r.status) ? "ok" : "neutral"}>{"Extra machine for " + r.requested_by}</ItemCardKind>
+        <ItemCardKind icon={ServerIcon} tone={pending ? "you" : LIVE.has(r.status) ? "ok" : "neutral"}>{"Extra machine for " + agentName(r.requested_by)}</ItemCardKind>
         <ProjectLink slug={r.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
       <ItemCardTitle>
-        <span title={"Request " + r.id}>
-          {"One "}
-          <Mono>{r.size}</Mono>
-          {" machine for " + plural(r.hours, "hour")}
-        </span>
+        <span title={"Request " + r.id + ", machine type " + r.size}>{"One extra machine for " + plural(r.hours, "hour")}</span>
       </ItemCardTitle>
       {r.reason ? <ItemCardBody clamp={compact ? 3 : 0}>{"\u201c" + r.reason.trim() + "\u201d"}</ItemCardBody> : null}
       {note ? (
@@ -114,11 +110,10 @@ export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
     <li className="flex min-w-0 items-start gap-3 rounded-xl border bg-card px-3 py-2.5 text-sm" aria-label={"Request " + r.id + ": " + statusWord(r.status)}>
       <div className="min-w-0 flex-1" title={r.reason ? "Asked because: " + r.reason.trim() : undefined}>
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-          <span className="font-medium text-foreground">{r.id}</span>
-          <span className="text-[13px] text-muted-foreground">
-            <Mono>{r.size}</Mono>
-            {" for " + plural(r.hours, "hour") + ", asked by " + r.requested_by}
+          <span className="font-medium text-foreground" title={"Request " + r.id + ", machine type " + r.size}>
+            {"Extra machine for " + plural(r.hours, "hour")}
           </span>
+          <span className="text-[13px] text-muted-foreground">{"asked by " + agentName(r.requested_by)}</span>
           <ProjectLink slug={r.project} className="text-[13px] font-normal text-muted-foreground" />
           <span className="ml-auto flex items-center gap-2 text-[13px] text-muted-foreground">
             <StatusBadge status={r.status} />
@@ -190,13 +185,11 @@ export function ComputeInboxCard({ r, caps, here }: { r: ComputeRequest; caps?: 
   return (
     <ItemCard highlight ariaLabel={"Compute request " + r.id + " from " + r.requested_by}>
       <ItemCardHeader right={<When d={r.at} />}>
-        <ItemCardKind icon={ServerIcon} tone="you">{"Extra machine for " + r.requested_by}</ItemCardKind>
+        <ItemCardKind icon={ServerIcon} tone="you">{"Extra machine for " + agentName(r.requested_by)}</ItemCardKind>
         <ProjectLink slug={r.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
       <ItemCardTitle>
-        {"One "}
-        <Mono>{r.size}</Mono>
-        {" machine for " + plural(r.hours, "hour")}
+        <span title={"Machine type " + r.size}>{"One extra machine for " + plural(r.hours, "hour")}</span>
       </ItemCardTitle>
       {r.reason ? <ItemCardBody clamp={3}>{"“" + r.reason.trim() + "”"}</ItemCardBody> : null}
       {caps ? (

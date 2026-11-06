@@ -233,7 +233,7 @@ export function ConnectionsPageClient() {
         <Suggested project={project} kind="skill" />
       </TabsContent>
 
-      <McpServerDialog open={addMcp} onOpenChange={setAddMcp} options={opts} />
+      <McpServerDialog open={addMcp} onOpenChange={setAddMcp} options={opts} onSignIn={setSigningIn} />
       <McpServerDialog open={!!editMcp} onOpenChange={(o) => (o ? null : setEditMcp(null))} options={opts} server={editMcp} />
       <ConnectDialog
         server={connecting}
@@ -295,10 +295,10 @@ function CardHead({ icon: Icon, name, id, status, off }: { icon: React.Component
           <Icon className="size-[18px]" />
         </span>
         <div className="min-w-0">
-          <ItemCardTitle className={cn(off && "text-muted-foreground")}>{name}</ItemCardTitle>
-          <p className="text-xs text-muted-foreground" title={"Id " + id}>
-            {id}
-          </p>
+          {/* The id stays out of sight: it is in the tooltip for the rare time it's needed. */}
+          <ItemCardTitle className={cn(off && "text-muted-foreground")}>
+            <span title={"Id " + id}>{name}</span>
+          </ItemCardTitle>
         </div>
       </div>
       <StatusBadge status={status} className="mt-0.5 shrink-0" />

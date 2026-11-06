@@ -39,7 +39,7 @@ import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/component
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, sentence } from "@/lib/format";
-import { statusWord } from "@/lib/words";
+import { agentName, statusWord } from "@/lib/words";
 import { codeDeliveryKpiState } from "@/lib/code-deliveries";
 import { codeDeliveriesPath, type CodeDeliveriesPayload, isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
@@ -190,7 +190,7 @@ export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecid
               <FailedJobsSection key={"repairs-" + slug} project={slug} />
             </div>
             <aside className="grid min-w-0 content-start gap-4" aria-label={commons ? "About the shared board" : "About this project"}>
-              <RepositoryPanel q={info} commons={commons} />
+              <RepositoryPanel q={info} commons={commons} slug={slug} />
               {commons ? null : <MachinesPanel key={"machines-" + slug} slug={slug} canDecide={canDecide} />}
               <OverviewStats o={o} slug={slug} commons={commons} />
               <AgentsPanel agents={o.agents} />
@@ -262,7 +262,7 @@ function FolderPath({ path }: { path: string }) {
 }
 
 // The repository in words: where it lives, which branch, how votes work.
-function RepositoryPanel({ q, commons }: { q: Loaded<ProjectInfo>; commons: boolean }) {
+function RepositoryPanel({ q, commons, slug }: { q: Loaded<ProjectInfo>; commons: boolean; slug: string }) {
   const i = q.data;
   const bp = i?.board_params;
   const rows: [React.ReactNode, React.ReactNode][] = i
@@ -281,7 +281,20 @@ function RepositoryPanel({ q, commons }: { q: Loaded<ProjectInfo>; commons: bool
               ["Remote", <span key="r" className="anywhere">{i.remote || "None"}</span>],
             ] as [React.ReactNode, React.ReactNode][])),
         ["Board", i.board_present === "1" ? "Set up" : <span key="bd" className="text-warn">Not set up</span>],
-        ...(commons ? [] : ([["Self-improvement", i.evolution_present === "1" ? "Set up" : "Not set up"]] as [React.ReactNode, React.ReactNode][])),
+        ...(commons
+          ? []
+          : ([
+              [
+                "Self-improvement",
+                i.evolution_present === "1" ? (
+                  "Set up"
+                ) : (
+                  <Link key="ev" href={hrefs.project(slug, "evolution")} className="font-medium text-primary underline-offset-2 hover:underline">
+                    Not set up: set it up
+                  </Link>
+                ),
+              ],
+            ] as [React.ReactNode, React.ReactNode][])),
         ["Votes needed", bp ? <span key="q" title="How many agents must vote before a suggestion is decided (quorum)">{plural(bp.quorum ?? 0, "vote") + " per suggestion"}</span> : "…"],
         ["Rule changes", bp ? <span key="a" title="Votes and majority an amendment to the constitution needs">{"Need " + plural(bp.amend_quorum ?? 0, "vote") + (bp.amend_majority ? " and a " + bp.amend_majority + " majority" : "")}</span> : "…"],
         ["Time limits", bp ? <span key="t">{"Suggestions close after " + plural(bp.expiry_days ?? 0, "day") + "; threads go quiet after " + plural(bp.stale_days ?? 0, "day")}</span> : "…"],
@@ -450,7 +463,9 @@ export function ChatTab({ slug, taskId, onPickTask }: { slug: string; taskId: st
         <span className="inline-flex min-w-0 items-center gap-2 text-sm">
           <Avatar seed={lead} size={24} />
           <span className="text-muted-foreground">Talking with</span>
-          <span className="font-medium anywhere">{lead}</span>
+          <span className="font-medium anywhere" title={lead}>
+            {agentName(lead, slug)}
+          </span>
         </span>
         <Select value={taskId || "__all"} onValueChange={(v) => onPickTask(v === "__all" ? null : v)}>
           <SelectTrigger aria-label="What the session is about" className="h-9 w-full sm:w-72">

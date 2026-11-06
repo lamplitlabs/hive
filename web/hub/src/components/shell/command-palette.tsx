@@ -24,6 +24,9 @@ import {
   ListTodoIcon,
   MessagesSquareIcon,
   PlugIcon,
+  PlugZapIcon,
+  CirclePauseIcon,
+  MessageSquarePlusIcon,
   ScrollTextIcon,
   SearchIcon,
   ServerIcon,
@@ -44,6 +47,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { hrefs, PROJECT_TABS, type ProjectCanonicalTab } from "@/lib/nav";
+import { CONNECT_PROVIDER_EVENT } from "@/lib/providers";
 import { useApi } from "@/lib/use-api";
 import { recordKindWord } from "@/lib/words";
 import { cn } from "@/lib/utils";
@@ -283,6 +287,38 @@ export function CommandPaletteHost() {
                   : "Ask about your projects"}
               </span>
               <CommandShortcut className={shortcutStyle}>⌘J</CommandShortcut>
+            </CommandItem>
+          </CommandGroup>
+          <CommandSeparator />
+          <CommandGroup heading="Do" className={groupStyle}>
+            <CommandItem
+              value="new session start an agent chat"
+              keywords={["create", "agent", "work"]}
+              className={itemStyle}
+              onSelect={() => go(hrefs.conversations())}
+            >
+              <MessageSquarePlusIcon aria-hidden="true" className={itemIcon} /> Start a session
+            </CommandItem>
+            <CommandItem
+              value="connect a model provider sign in api key anthropic claude openai gemini copilot ollama models"
+              keywords={["provider", "login", "key", "oauth"]}
+              className={itemStyle}
+              onSelect={() => {
+                if (window.location.pathname.startsWith("/settings")) {
+                  setOpen(false);
+                  window.location.hash = "harness";
+                  window.dispatchEvent(new CustomEvent(CONNECT_PROVIDER_EVENT));
+                } else go("/settings/?connect=1#harness");
+              }}
+            >
+              <PlugZapIcon aria-hidden="true" className={itemIcon} /> Connect a model provider
+            </CommandItem>
+            <CommandItem
+              value="pause all work stop kill switch resume"
+              className={itemStyle}
+              onSelect={() => go(hrefs.settings("stop"))}
+            >
+              <CirclePauseIcon aria-hidden="true" className={itemIcon} /> Pause or resume all work
             </CommandItem>
           </CommandGroup>
           <CommandSeparator />

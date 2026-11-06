@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { BellIcon, ChevronRightIcon, CirclePauseIcon, GaugeIcon, MonitorIcon, PlugIcon, SearchIcon, ServerIcon, SettingsIcon, SlidersHorizontalIcon, SparklesIcon, TerminalIcon, UserRoundIcon } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SectionHeading } from "@/components/pulse/item-card";
@@ -11,7 +12,7 @@ import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
 import { CredentialRow } from "@/components/settings/credential";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { NotificationsCard } from "@/components/settings/notifications";
-import { PauseCard, SettingRow } from "@/components/settings/setting-row";
+import { PauseCard, SettingRow, setShowKeys, useShowKeys } from "@/components/settings/setting-row";
 import type { Runner, Setting, SettingsPayload } from "@/lib/api";
 import { capWarning, runsTodayOf } from "@/lib/cap-warning-state";
 import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
@@ -125,8 +126,8 @@ const GROUPS: Group[] = [
   },
   {
     id: "provider",
-    title: "Model provider",
-    note: "Advanced. Where model calls go for each API-key provider: OpenAI and the other OpenAI-compatible vendors, Anthropic Claude, Google Gemini, and local servers such as Ollama, plus the Microsoft tenant Azure OpenAI signs in to. Only the chosen provider's rows are used. API keys and sign-ins stay on this machine.",
+    title: "Provider addresses",
+    note: "Advanced. The address each model provider's calls go to, for a gateway, a proxy or a server of your own. Connecting a provider under Harness sets the one you use; only the chosen provider's address counts.",
     keys: [
       "provider.openai.base_url",
       "provider.anthropic.base_url",
@@ -151,20 +152,31 @@ const GROUPS: Group[] = [
 ];
 const OTHER: Group = { id: "other", title: "Other", note: "Settings this page doesn't group yet. Each one shows PULSE's own description.", keys: [] };
 
-// The section picker, in page order. Pause and Harness are their own blocks.
+// The section picker, in page order. Settings shows one section at a time
+// (the URL hash names it, so links like /settings/#harness land there); a
+// search shows every section with a match. General holds the brake, You
+// and Notifications, whose own anchors (#stop #owner #notify) open it.
 const NAV: { id: string; title: string; icon: Icon }[] = [
-  { id: "stop", title: "Pause all work", icon: CirclePauseIcon },
-  { id: "owner", title: "You", icon: UserRoundIcon },
-  { id: "notify", title: "Notifications", icon: BellIcon },
+  { id: "general", title: "General", icon: SettingsIcon },
   { id: "harness", title: "Harness", icon: TerminalIcon },
   { id: "runner", title: "Limits", icon: GaugeIcon },
   { id: "compute", title: "Machines", icon: ServerIcon },
   { id: "evolve", title: "Self-improvement", icon: SparklesIcon },
   { id: "daemon", title: "This machine", icon: MonitorIcon },
-  { id: "provider", title: "Model provider", icon: PlugIcon },
+  { id: "provider", title: "Provider addresses", icon: PlugIcon },
   { id: "other", title: "Other", icon: SlidersHorizontalIcon },
 ];
-const ICON: Record<string, Icon> = Object.fromEntries(NAV.map((n) => [n.id, n.icon]));
+const ICON: Record<string, Icon> = { ...Object.fromEntries(NAV.map((n) => [n.id, n.icon])), stop: CirclePauseIcon, owner: UserRoundIcon, notify: BellIcon };
+const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", notify: "general" };
+const pageOf = (id: string) => PAGE_OF[id] ?? id;
+
+// The hash as a tiny store: the section links are plain anchors, so the
+// browser's own hashchange drives which section shows (Back works too).
+function subscribeHash(cb: () => void) {
+  window.addEventListener("hashchange", cb);
+  return () => window.removeEventListener("hashchange", cb);
+}
+const useHash = () => useSyncExternalStore(subscribeHash, () => window.location.hash.slice(1), () => "");
 
 // What the Harness section answers to in the search box besides its own
 // settings (matched like every other row): the card's headings and words.
@@ -339,9 +351,10 @@ function Section({ id, title, note, count, children }: { id: string; title: stri
 }
 
 // The section picker: a sticky list on the left from lg up, a row of chips
-// that sticks under the phone header below that. The section in view is
-// marked (aria-current) in both.
-function SectionNav({ items, active, stopped, onPick }: { items: { id: string; title: string; icon: Icon; hit: boolean; count?: number }[]; active: string; stopped: boolean; onPick: (id: string) => void }) {
+// that sticks under the phone header below that. Each item is a plain
+// anchor to its section's hash; the section in view (or, while searching,
+// the one scrolled to) is marked aria-current in both.
+function SectionNav({ items, active, stopped }: { items: { id: string; title: string; icon: Icon; hit: boolean; count?: number }[]; active: string; stopped: boolean }) {
   const chips = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = chips.current?.querySelector<HTMLElement>('[aria-current="true"]');
@@ -350,7 +363,8 @@ function SectionNav({ items, active, stopped, onPick }: { items: { id: string; t
     const left = el.offsetLeft - box.clientWidth / 2 + el.clientWidth / 2;
     box.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
   }, [active]);
-  const dot = (id: string) => (id === "stop" ? <span className={cn("size-2 shrink-0 rounded-full", stopped ? "bg-bad" : "bg-ok")} aria-hidden /> : null);
+  // The brake's state rides on General: red while all work is paused.
+  const dot = (id: string) => (id === "general" && stopped ? <span className="size-2 shrink-0 rounded-full bg-bad" aria-label="All work is paused" role="img" /> : null);
   return (
     <>
       <nav aria-label="Settings sections" className="sticky top-[calc(3.5rem+1px+env(safe-area-inset-top))] z-30 -mx-4 mb-5 border-b bg-background sm:-mx-6 lg:hidden">
@@ -359,7 +373,6 @@ function SectionNav({ items, active, stopped, onPick }: { items: { id: string; t
             <a
               key={n.id}
               href={"#" + n.id}
-              onClick={() => onPick(n.id)}
               aria-current={active === n.id ? "true" : undefined}
               aria-disabled={!n.hit || undefined}
               className={cn(
@@ -384,7 +397,6 @@ function SectionNav({ items, active, stopped, onPick }: { items: { id: string; t
               <li key={n.id}>
                 <a
                   href={"#" + n.id}
-                  onClick={() => onPick(n.id)}
                   aria-current={on ? "true" : undefined}
                   aria-disabled={!n.hit || undefined}
                   className={cn(
@@ -393,9 +405,9 @@ function SectionNav({ items, active, stopped, onPick }: { items: { id: string; t
                     !n.hit && "pointer-events-none opacity-40",
                   )}
                 >
-                  <Icon className={cn("size-4 shrink-0", on ? "text-primary" : "text-muted-foreground", n.id === "stop" && stopped && "text-bad")} />
+                  <Icon className={cn("size-4 shrink-0", on ? "text-primary" : "text-muted-foreground", n.id === "general" && stopped && "text-bad")} />
                   <span className="min-w-0 flex-1 truncate">{n.title}</span>
-                  {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : n.id === "stop" ? dot(n.id) : null}
+                  {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : dot(n.id)}
                 </a>
               </li>
             );
@@ -416,33 +428,9 @@ export default function SettingsPage() {
   const warnings = useMemo<Warnings>(() => ({ jobs_per_day: (value) => capWarning(value, runsToday) }), [runsToday]);
   const [find, setFind] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [active, setActive] = useState("stop");
-  const jumped = useRef(false);
-  useEffect(() => {
-    // The sections exist only once settings arrive, so the browser's own
-    // #hash jump on load finds nothing; do it once here.
-    if (jumped.current || !q.data) return;
-    jumped.current = true;
-    const id = window.location.hash.slice(1);
-    if (!id) return;
-    const go = () => document.getElementById(id)?.scrollIntoView();
-    go();
-    // The harness card and the push-key row load on their own and grow the
-    // page above later sections; keep the target in place for a few seconds
-    // unless the owner starts scrolling. Deliberately not tied to this
-    // effect's cleanup (the 30s refresh re-runs it); the timer ends it.
-    if (typeof ResizeObserver === "undefined") return;
-    let done = false;
-    const ro = new ResizeObserver(() => !done && go());
-    const quit = () => {
-      done = true;
-      ro.disconnect();
-      for (const ev of ["wheel", "touchstart", "keydown", "mousedown"]) window.removeEventListener(ev, quit);
-    };
-    ro.observe(document.body);
-    for (const ev of ["wheel", "touchstart", "keydown", "mousedown"]) window.addEventListener(ev, quit, { passive: true });
-    window.setTimeout(quit, 4000);
-  }, [q.data]);
+  const [spied, setSpied] = useState("");
+  const showKeys = useShowKeys();
+  const hash = useHash();
   const groups = useMemo(() => {
     const all = q.data ? withExtraDefaults(q.data.settings) : [];
     const used = new Set<string>(all.filter((s) => isHarnessSetting(s.name)).map((s) => s.name));
@@ -491,19 +479,30 @@ export default function SettingsPage() {
   const total = base.reduce((n, x) => n + x.rows.length, 0) + (stop ? 1 : 0) + harnessRows.length;
   const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
   const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0) + harnessHits;
-  const present = new Set<string>(["harness", "notify", ...groups.map((x) => x.g.id), ...(stop ? ["stop"] : [])]);
   const hits: Record<string, number> = { ...Object.fromEntries(shown.map((x) => [x.g.id, x.rows.length])), harness: harnessHits };
+  const generalHit = killShown || notifyShown || !!hits.owner;
+  const present = new Set<string>(["general", "harness", ...groups.map((x) => x.g.id)]);
   const navItems = NAV.filter((n) => present.has(n.id)).map((n) => {
-    const hit = n.id === "stop" ? killShown : n.id === "harness" ? harnessShown : n.id === "notify" ? notifyShown : !!hits[n.id];
-    return { ...n, hit, count: needle && n.id !== "stop" && hit && hits[n.id] ? hits[n.id] : undefined };
+    const hit = !needle || (n.id === "general" ? generalHit : n.id === "harness" ? harnessShown : !!hits[n.id]);
+    const count = needle && hit ? (n.id === "general" ? (killShown ? 1 : 0) + (hits.owner ?? 0) : hits[n.id]) : undefined;
+    return { ...n, hit, count: count || undefined };
   });
-  const order = navItems.filter((n) => n.hit).map((n) => n.id).join(" ");
-  // A search can hide the section last in view; then the first one with hits
-  // is the current one (or none when nothing matches).
-  const current = order.split(" ").includes(active) ? active : order.split(" ")[0] || "";
+  // Without a search one section shows: the hash names it, General by default.
+  const page = present.has(pageOf(hash)) ? pageOf(hash) : "general";
+  const show = (id: string) => !!needle || pageOf(id) === page;
+  // While searching every section with a hit shows, in page order.
+  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
+  const current = needle ? pageOf(spied || order.split(" ")[0] || "") : page;
 
-  // Mark the section in view: the last one whose top has passed the upper
-  // part of the screen (or the last one at the very bottom of the page).
+  // Opening a section starts at its top; an anchor inside General (#notify) scrolls to itself.
+  useEffect(() => {
+    if (needle || !q.data) return;
+    if (PAGE_OF[hash]) document.getElementById(hash)?.scrollIntoView();
+    else window.scrollTo({ top: 0 });
+  }, [hash, needle, q.data]);
+
+  // While searching, mark the section in view: the last one whose top has
+  // passed the upper part of the screen (or the last at the very bottom).
   useEffect(() => {
     if (!order) return;
     const ids = order.split(" ");
@@ -517,12 +516,11 @@ export default function SettingsPage() {
         if (el && el.getBoundingClientRect().top <= line) cur = id;
       }
       if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = ids[ids.length - 1]!;
-      setActive(cur);
+      setSpied(cur);
     };
     const onScroll = () => {
       if (!frame) frame = requestAnimationFrame(measure);
     };
-    frame = requestAnimationFrame(measure);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll);
     return () => {
@@ -554,6 +552,14 @@ export default function SettingsPage() {
       return next;
     });
 
+  const groupSection = ({ g, rows, all }: { g: Group; rows: Setting[]; all: number }) => (
+    <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
+      <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
+        <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} warnings={warnings} />
+      </div>
+    </Section>
+  );
+
   return (
     <>
       {title}
@@ -563,17 +569,20 @@ export default function SettingsPage() {
           <Input
             type="search"
             value={find}
-            onChange={(e) => setFind(e.target.value)}
+            onChange={(e) => {
+              setFind(e.target.value);
+              setSpied("");
+            }}
             onKeyDown={(e) => {
               if (e.key === "Escape") setFind("");
             }}
-            placeholder="Search settings"
-            aria-label="Search settings"
+            placeholder="Search all settings"
+            aria-label="Search all settings"
             aria-describedby="settings-search-hint"
             className="h-11 rounded-xl bg-card pl-11 text-[15px]"
           />
         </div>
-        <p id="settings-search-hint" className="text-[13px] text-muted-foreground" aria-live="polite">
+        <p id="settings-search-hint" className="min-w-0 flex-1 text-[13px] text-muted-foreground" aria-live="polite">
           {needle ? (
             matched || (!harnessShown && !notifyShown) ? (
               <span className="tnum">
@@ -586,58 +595,54 @@ export default function SettingsPage() {
             "Search by name, by what it does, or by its key."
           )}
         </p>
+        <label className="flex shrink-0 items-center gap-2 text-[13px] text-muted-foreground">
+          <Switch checked={showKeys} onCheckedChange={setShowKeys} aria-label="Show setting keys" />
+          Show setting keys
+        </label>
       </div>
 
       <div className="min-w-0 lg:grid lg:grid-cols-[13.5rem_minmax(0,1fr)] lg:gap-10">
-        <SectionNav items={navItems} active={current} stopped={stopped} onPick={setActive} />
+        <SectionNav items={navItems} active={current} stopped={stopped} />
 
         <div className="grid min-w-0 gap-10">
-          {!d.available || (d.available && !d.can_edit) || stopped ? (
+          {!d.available || (d.available && !d.can_edit) || (stopped && page !== "general") ? (
             <div className="grid gap-2 empty:hidden">
               {!d.available ? <Notice tone="warn">Settings aren&apos;t available on this console, so this page is read-only.</Notice> : null}
               {d.available && !d.can_edit ? <Notice tone="info">This console can&apos;t change settings. Open the console on the machine PULSE runs on to change them.</Notice> : null}
-              {stopped ? <Notice tone="bad">All work is paused. Agents won&apos;t start anything new until you resume it under Pause all work.</Notice> : null}
+              {stopped && page !== "general" ? (
+                <Notice tone="bad">
+                  All work is paused. Agents won&apos;t start anything new until you resume it under{" "}
+                  <a href="#stop" className="font-medium underline underline-offset-2">
+                    General
+                  </a>
+                  .
+                </Notice>
+              ) : null}
             </div>
           ) : null}
 
-          {killShown && stop ? (
+          {killShown && stop && show("stop") ? (
             <section id="stop" aria-label="Pause all work" className={ANCHOR}>
               <h2 className="sr-only">Pause all work</h2>
               <PauseCard s={stop} canEdit={d.can_edit} />
             </section>
           ) : null}
 
-          {shown
-            .filter((x) => x.g.id === "owner")
-            .map(({ g, rows, all }) => (
-              <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
-                <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
-                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} warnings={warnings} />
-                </div>
-              </Section>
-            ))}
+          {shown.filter((x) => x.g.id === "owner" && show("owner")).map(groupSection)}
 
-          {notifyShown ? (
+          {notifyShown && show("notify") ? (
             <Section id="notify" title="Notifications" note="Hear about it when something waits for you, or when a task or session finishes. For this browser only.">
               <NotificationsCard />
             </Section>
           ) : null}
 
-          {harnessShown ? (
-            <Section id="harness" title="Harness" note="Sign-in, models and limits for agent runs." count={needle && harnessHits ? harnessHits + " of " + harnessRows.length : undefined}>
+          {harnessShown && show("harness") ? (
+            <Section id="harness" title="Harness" note="The model provider, the models and the limits of each agent run." count={needle && harnessHits ? harnessHits + " of " + harnessRows.length : undefined}>
               <HarnessSettingsCard />
             </Section>
           ) : null}
 
-          {shown
-            .filter((x) => x.g.id !== "owner")
-            .map(({ g, rows, all }) => (
-              <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
-                <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
-                  <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} warnings={warnings} />
-                </div>
-              </Section>
-            ))}
+          {shown.filter((x) => x.g.id !== "owner" && show(x.g.id)).map(groupSection)}
 
           {needle && !matched && !harnessShown && !notifyShown ? (
             <EmptyState

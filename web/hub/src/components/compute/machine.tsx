@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import { AlertTriangleIcon, GitMergeIcon, ServerIcon } from "lucide-react";
-import { Disclosure, EmptyState, Kv, Notice, Panel } from "@/components/pulse/panel";
+import { Button } from "@/components/ui/button";
+import { Disclosure, EmptyState, Kv, Notice, Panel, SkeletonRows } from "@/components/pulse/panel";
 import { When } from "@/components/pulse/who";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, statusTone, type Tone } from "@/lib/format";
@@ -24,7 +25,9 @@ const DOT_WORD: Record<Tone, string> = { ok: "Fine", warn: "Needs a look", bad: 
 // runner's own numbers folded under "Show details". `heading={false}` drops
 // the panel's title row (the page gives the section its own heading);
 // `machines={false}` leaves out the machine list when the page shows it.
-export function MachinePanel({ r, heading = true, machines = true }: { r: Runner | undefined | null; heading?: boolean; machines?: boolean }) {
+// `r` undefined is the runner's state still on its way (rows of skeleton);
+// `error` (or `r` null) is a load that failed.
+export function MachinePanel({ r, heading = true, machines = true, error }: { r: Runner | undefined | null; heading?: boolean; machines?: boolean; error?: string }) {
   const [details, setDetails] = useState(false);
   const now = useNow();
   const settings = (
@@ -37,11 +40,19 @@ export function MachinePanel({ r, heading = true, machines = true }: { r: Runner
       {body}
     </Panel>
   );
-  if (!r) return shell(<EmptyState title="No word from the runner">{"The runner's state didn't load. It shows here once the hub can reach it."}</EmptyState>);
+  if (r === undefined && !error) return shell(<SkeletonRows n={4} />);
+  if (!r) return shell(<EmptyState title="No word from the runner">{"The runner's state didn't load" + (error ? " (" + error + ")" : "") + ". It shows here once the console can reach it."}</EmptyState>);
   if (!r.available)
     return shell(
-      <EmptyState title="The runner hasn't run here yet" hint="pulse daemon">
-        Start the runner on this machine and it will plan work and start agents. From a terminal:
+      <EmptyState
+        title="The runner hasn't started on this machine"
+        action={
+          <Button asChild size="sm">
+            <Link href="/#daemon-controls">Set up the runner</Link>
+          </Button>
+        }
+      >
+        The runner plans work and starts agents. Set it up once to run in the background, and it starts again by itself with the machine.
       </EmptyState>,
     );
   const d = r.daemon;

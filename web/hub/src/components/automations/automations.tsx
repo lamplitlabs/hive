@@ -11,6 +11,7 @@ import {
   FolderGit2Icon,
   HistoryIcon,
   Loader2Icon,
+  MoreHorizontalIcon,
   PauseIcon,
   PencilIcon,
   PlayIcon,
@@ -31,6 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -102,6 +104,9 @@ import {
   slugify,
   sortRows,
   stateWords,
+  plainProblem,
+  localWhen,
+  utcClockLocal,
 } from "@/lib/automations";
 import { num, parseDate, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -314,7 +319,7 @@ function ProjectGroup({
           <ul className="mt-1 list-disc pl-4">
             {listProblems.map((x) => (
               <li key={x} className="anywhere">
-                {x}
+                {plainProblem(x)}
               </li>
             ))}
           </ul>
@@ -328,7 +333,7 @@ function ProjectGroup({
           <ul className="mt-1 list-disc pl-4">
             {otherProblems.map((x) => (
               <li key={x} className="anywhere">
-                {x}
+                {plainProblem(x)}
               </li>
             ))}
           </ul>
@@ -464,7 +469,7 @@ function FileCard({
         <ul className="list-disc pl-4 text-xs text-warn">
           {problems.map((x) => (
             <li key={x} className="anywhere">
-              {x}
+              {plainProblem(x)}
             </li>
           ))}
         </ul>
@@ -504,6 +509,15 @@ function FileCard({
 }
 
 // ----- one schedule -------------------------------------------------------
+
+// The cadence with its time of day in the viewer's own time ("every day at
+// 07:30"); the hub's UTC wording stays in the tooltip.
+function LocalCadence({ s }: { s: AutomationSchedule }) {
+  const cadence = s.every_words || cadenceWords(s.every, s.at_time);
+  const local = s.at_time ? utcClockLocal(s.at_time) : "";
+  const shown = local ? cadence.replace(/at \d{1,2}:\d{2} UTC/, "at " + local) : cadence;
+  return <span title={shown !== cadence ? cadence : undefined}>{shown}</span>;
+}
 
 // The next start: a time still ahead, or "due now" once the daemon is behind it.
 function NextRun({ at }: { at: string }) {
@@ -554,7 +568,7 @@ function ScheduleCard({
                 ? "The file keeps its entry; the daemon honours this until the file says otherwise."
                 : r.schedule?.next_at
                   ? "Next run " +
-                    r.schedule.next_at.replace("T", " ").replace("Z", " UTC") +
+                    localWhen(r.schedule.next_at) +
                     "."
                   : undefined,
         },
@@ -619,9 +633,9 @@ function ScheduleCard({
               {s.title}
             </ItemCardTitle>
             <p className="text-xs text-muted-foreground">
-              {s.every_words || cadenceWords(s.every, s.at_time)}
+              <LocalCadence s={s} />
               {" · " + kind}
-              {s.tier === 0 ? " · tier 0" : ""}
+              {s.tier === 0 ? " · lands on its own" : ""}
             </p>
           </div>
         </div>
@@ -640,7 +654,7 @@ function ScheduleCard({
               }
             >
               <TriangleAlertIcon className="size-3" aria-hidden />
-              script outside .pulse
+              Script needs a move
             </ToneBadge>
           ) : null}
         </div>
@@ -718,87 +732,59 @@ function ScheduleCard({
           </span>
         ) : null}
       </ItemCardMeta>
+      {/* One clear action - Run now - and the rest in a menu, so a page of cards isn't a wall of buttons. */}
       <ItemCardActions>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setHistory(true)}
-          title="Every run, job and change of this automation, newest first"
-        >
-          <HistoryIcon /> History
-        </Button>
         {live ? (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void act("run")}
-              disabled={!!busy}
-              title="Queue one job now, without waiting for the cadence"
-            >
-              {busy === "run" ? (
-                <Loader2Icon className="animate-spin" />
-              ) : (
-                <PlayIcon />
-              )}{" "}
-              Run now
-            </Button>
-            {s.status === "paused" ? (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void act("resume")}
-                disabled={!!busy}
-              >
-                {busy === "resume" ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <PlayIcon />
-                )}{" "}
-                Resume
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void act("pause")}
-                disabled={!!busy}
-              >
-                {busy === "pause" ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <PauseIcon />
-                )}{" "}
-                Pause
-              </Button>
-            )}
-            {!fromFile || fileEntry ? (
-              <Button size="sm" variant="ghost" onClick={edit} disabled={!!busy}>
-                <PencilIcon /> Edit
-              </Button>
-            ) : null}
-            {!fromFile && p.repo ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={move}
-                disabled={!!busy}
-                title="Write it into the project's repository as its own file, so it travels with the code"
-              >
-                <FileCode2Icon /> Into the repository
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-destructive hover:text-destructive"
-              onClick={() => setEnding(true)}
-              disabled={!!busy}
-            >
-              <SquareIcon /> End
-            </Button>
-          </>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void act("run")}
+            disabled={!!busy}
+            title="Queue one job now, without waiting for the cadence"
+          >
+            {busy === "run" ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Run now
+          </Button>
         ) : null}
+        {live && s.status === "paused" ? (
+          <Button size="sm" variant="ghost" onClick={() => void act("resume")} disabled={!!busy}>
+            {busy === "resume" ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Resume
+          </Button>
+        ) : null}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon-sm" variant="ghost" className="ml-auto" aria-label={"More for " + s.title} disabled={!!busy}>
+              {busy && busy !== "run" && busy !== "resume" ? <Loader2Icon className="animate-spin" /> : <MoreHorizontalIcon />}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-60 rounded-xl p-1.5 shadow-pop">
+            <DropdownMenuItem onSelect={() => setHistory(true)}>
+              <HistoryIcon /> History
+            </DropdownMenuItem>
+            {live && s.status !== "paused" ? (
+              <DropdownMenuItem onSelect={() => void act("pause")}>
+                <PauseIcon /> Pause
+              </DropdownMenuItem>
+            ) : null}
+            {live && (!fromFile || fileEntry) ? (
+              <DropdownMenuItem onSelect={edit}>
+                <PencilIcon /> Edit
+              </DropdownMenuItem>
+            ) : null}
+            {live && !fromFile && p.repo ? (
+              <DropdownMenuItem onSelect={move}>
+                <FileCode2Icon /> Move into the repository
+              </DropdownMenuItem>
+            ) : null}
+            {live ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setEnding(true)}>
+                  <SquareIcon /> End it
+                </DropdownMenuItem>
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </ItemCardActions>
       <HistoryDialog
         open={history}
@@ -1268,7 +1254,7 @@ function AutomationForm({
           : "It lives in the store on this machine; " +
             (r.schedule?.next_at
               ? "next run " +
-                r.schedule.next_at.replace("T", " ").replace("Z", " UTC") +
+                localWhen(r.schedule.next_at) +
                 "."
               : "it starts on its cadence.");
       toast.success(
@@ -1418,7 +1404,7 @@ function AutomationForm({
                   set("title", ev.target.value);
                   if (!nameTouched) set("name", slugify(ev.target.value));
                 }}
-                placeholder="Nightly dependency audit"
+                placeholder="e.g. Nightly dependency audit"
                 maxLength={120}
                 autoFocus={mode === "new"}
               />
@@ -1435,7 +1421,7 @@ function AutomationForm({
                   setNameTouched(true);
                   set("name", ev.target.value.toLowerCase());
                 }}
-                placeholder="nightly-audit"
+                placeholder="e.g. nightly-audit"
                 maxLength={64}
                 spellCheck={false}
                 className={cn(
@@ -1500,12 +1486,12 @@ function AutomationForm({
               </p>
             </div>
             <div className="grid content-start gap-1.5">
-              <Label htmlFor="auto-at">Time of day (UTC)</Label>
+              <Label htmlFor="auto-at">Time of day, in UTC</Label>
               <Input
                 id="auto-at"
                 value={e.at}
                 onChange={(ev) => set("at", ev.target.value)}
-                placeholder="02:00"
+                placeholder="e.g. 02:00"
                 maxLength={5}
                 disabled={!daily}
                 className="font-mono text-[13px]"
@@ -1513,7 +1499,9 @@ function AutomationForm({
               />
               <p className="text-xs text-muted-foreground">
                 {daily
-                  ? "Optional. When a cadence of whole days fires."
+                  ? utcClockLocal(e.at)
+                    ? "That's " + utcClockLocal(e.at) + " your time."
+                    : "Optional. When a cadence of whole days fires."
                   : "Only for cadences of whole days."}
               </p>
             </div>
@@ -1722,51 +1710,8 @@ function AutomationForm({
         </div>
 
         <aside className="grid min-w-0 content-start gap-3 md:border-l md:pl-5">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-medium">
-              {where === "store"
-                ? "As a file would say it"
-                : check?.form === "list"
-                  ? "What goes into the list"
-                  : "What goes into the file"}
-            </p>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => void copy()}
-              disabled={!check?.yaml}
-            >
-              <CopyIcon /> Copy
-            </Button>
-          </div>
-          <pre
-            className="max-h-72 min-w-0 max-w-full overflow-auto rounded-xl border bg-muted/40 p-3 font-mono text-[12px] leading-relaxed whitespace-pre"
-            aria-live="polite"
-            aria-label="YAML preview"
-          >
-            {check?.yaml ||
-              "# " +
-                (checking
-                  ? "checking…"
-                  : project
-                    ? "fill in a name and a cadence"
-                    : "pick a project")}
-          </pre>
-          {check?.path ? (
-            <p className="text-xs text-muted-foreground">
-              {check.form === "list" ? (
-                <>
-                  Under <Mono>schedules:</Mono> in <Mono>{check.path}</Mono> on{" "}
-                  {check.branch || "the default branch"}.
-                </>
-              ) : (
-                <>
-                  As <Mono>{check.path}</Mono> on{" "}
-                  {check.branch || "the default branch"}.
-                </>
-              )}
-            </p>
-          ) : null}
+          <p className="text-sm font-medium">Before it&apos;s saved</p>
+          {!check && !checking ? <p className="text-xs text-muted-foreground">{project ? "Fill in a name and how often it runs; PULSE checks it as you type." : "Pick a project first."}</p> : checking && !check ? <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2Icon className="size-3.5 animate-spin" aria-hidden /> Checking…</p> : null}
           {problems.length &&
           (tried ||
             serverProblems ||
@@ -1775,7 +1720,7 @@ function AutomationForm({
               <ul className="list-disc pl-4">
                 {problems.map((x) => (
                   <li key={x} className="anywhere">
-                    {x}
+                    {plainProblem(x)}
                   </li>
                 ))}
               </ul>
@@ -1784,7 +1729,7 @@ function AutomationForm({
             <ul className="list-disc pl-4 text-xs text-muted-foreground">
               {problems.map((x) => (
                 <li key={x} className="anywhere">
-                  {x}
+                  {plainProblem(x)}
                 </li>
               ))}
             </ul>
@@ -1794,6 +1739,30 @@ function AutomationForm({
             </p>
           ) : null}
           {check?.warning ? <Notice tone="info">{check.warning}</Notice> : null}
+          {/* The YAML is what a reviewer reads in the repository; most owners never need it, so it waits behind a fold. */}
+          <Disclosure summary={where === "store" ? "Show it as a PULSE file would" : "Show the PULSE file entry"} contentClassName="grid gap-2">
+            <div className="flex items-center justify-end">
+              <Button size="sm" variant="ghost" onClick={() => void copy()} disabled={!check?.yaml}>
+                <CopyIcon /> Copy
+              </Button>
+            </div>
+            <pre className="max-h-72 min-w-0 max-w-full overflow-auto rounded-xl border bg-muted/40 p-3 font-mono text-[12px] leading-relaxed whitespace-pre" aria-live="polite" aria-label="The PULSE file entry">
+              {check?.yaml || "# " + (checking ? "checking…" : project ? "fill in a name and how often it runs" : "pick a project")}
+            </pre>
+            {check?.path ? (
+              <p className="text-xs text-muted-foreground">
+                {check.form === "list" ? (
+                  <>
+                    Under <Mono>schedules:</Mono> in <Mono>{check.path}</Mono> on {check.branch || "the default branch"}.
+                  </>
+                ) : (
+                  <>
+                    As <Mono>{check.path}</Mono> on {check.branch || "the default branch"}.
+                  </>
+                )}
+              </p>
+            ) : null}
+          </Disclosure>
         </aside>
       </div>
       <DialogFooter className="items-center gap-2 sm:justify-between">

@@ -3,7 +3,8 @@
 import { CircleCheckIcon, CircleDashedIcon, CircleSlashIcon, ClockIcon, CopyIcon, FilePenLineIcon, LightbulbIcon, LoaderIcon, PauseCircleIcon } from "lucide-react";
 import { ItemCard, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
 import { Progress } from "@/components/ui/progress";
-import { PostLink, ProjectLink, StatusBadge, ThreadLink, When } from "@/components/pulse/who";
+import { PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When } from "@/components/pulse/who";
+import { agentName } from "@/lib/words";
 import { cn } from "@/lib/utils";
 import { expiresAt, num, plural, sentence, span } from "@/lib/format";
 import { useNow } from "@/lib/use-api";
@@ -26,8 +27,20 @@ function ordinal(n: number): string {
 
 const whoName = (r: { agent?: string | null; name?: string | null; session?: string | null }) => {
   const n = r.agent || r.name || r.session || "";
-  return n === "human" || n === "owner" ? "you" : n || "an agent";
+  return n === "human" || n === "owner" ? "you" : agentName(n) || "an agent";
 };
+
+// The badge matches the line under it: an "agreed" suggestion whose votes
+// cancel out is tied, not agreed, and one whose voting closed short no
+// longer needs votes.
+function voteBadge(s: Suggestion, quorum: number, now: number): React.ReactNode {
+  if (s.status === "eligible" && !s.job && s.score <= 0) return <ToneBadge tone="neutral">{s.up === s.down ? "Tied" : "Voted down"}</ToneBadge>;
+  if (s.status !== "eligible" && s.status !== "rejected" && !s.job && (quorum - s.voters > 0 || s.status === "needs votes")) {
+    const exp = expiresAt(s);
+    if (exp && exp.getTime() <= now) return <ToneBadge tone="neutral">Voting closed</ToneBadge>;
+  }
+  return <StatusBadge status={s.status} />;
+}
 
 // A planner gate, as a person would explain it. Unknown gates read as written.
 function gateWords(gate: string, score: number): string {
@@ -123,7 +136,7 @@ export function SuggestionCard({ s, quorum, slug, detail }: { s: Suggestion; quo
         <PostLink slug={project} id={s.id} label={sentence(s.summary)} />
       </ItemCardTitle>
       <ItemCardMeta>
-        <StatusBadge status={s.status} />
+        {voteBadge(s, q, now)}
         <ForAgainst up={s.up} down={s.down} />
         <VoteProgress voters={s.voters} quorum={q} title={"Votes needed: " + q + " different agents (quorum)"} />
       </ItemCardMeta>

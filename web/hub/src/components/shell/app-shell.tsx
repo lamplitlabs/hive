@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useState } from "react";
 import {
   BookOpenIcon,
   BrainIcon,
@@ -14,6 +14,7 @@ import {
   MessageSquareIcon,
   MoreHorizontalIcon,
   PanelLeftCloseIcon,
+  PlusIcon,
   PanelLeftOpenIcon,
   PlugIcon,
   ScrollTextIcon,
@@ -47,6 +48,8 @@ import { CommandPalette, CommandPaletteHost } from "./command-palette";
 import { PulseMark } from "./pulse-mark";
 import { ThemeToggle } from "./theme-toggle";
 import { AwakeStatus, AwakeTheme } from "./awake";
+import { SystemStatus, useSystemStatus } from "./system-status";
+import { AddProjectDialog } from "@/components/project/project-dialogs";
 import { useSidebarCollapsed } from "./use-sidebar";
 import { sidebarToggleLabel } from "./sidebar-state";
 import { RailTip } from "./rail-tip";
@@ -60,7 +63,8 @@ type NavItem = {
   match: (p: string) => boolean;
 };
 
-// Two groups: the everyday work, and the machinery behind it. The labels are
+// Two groups: the everyday work, and the machinery behind it; Settings sits
+// at the foot with the status card. The labels are
 // what each page is about, not what the store calls it (Runs is the harness's
 // log, Machines is compute).
 const WORK: NavItem[] = [
@@ -136,14 +140,15 @@ const SYSTEM: NavItem[] = [
     icon: BrainIcon,
     match: (p) => p.startsWith("/memory"),
   },
-  {
-    href: "/settings/",
-    label: "Settings",
-    hint: "How PULSE behaves on this machine",
-    icon: SettingsIcon,
-    match: (p) => p.startsWith("/settings"),
-  },
 ];
+// Settings lives at the foot of the sidebar, beside the status it explains.
+const SETTINGS: NavItem = {
+  href: "/settings/",
+  label: "Settings",
+  hint: "How PULSE behaves on this machine",
+  icon: SettingsIcon,
+  match: (p) => p.startsWith("/settings"),
+};
 
 const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -262,7 +267,7 @@ function NavLink({
 }
 
 // Whether the hub's live event stream is up: a steady teal dot, or amber while it reconnects.
-function LiveStatus() {
+function LiveStatus({ compact }: { compact?: boolean }) {
   const { state } = useEventStream();
   const live = state === "live";
   const label = live
@@ -281,6 +286,7 @@ function LiveStatus() {
           aria-label={label}
           className={cn(
             "inline-flex h-8 items-center gap-2 rounded-lg px-2 text-[13px] text-muted-foreground outline-none collapsed:size-8 collapsed:justify-center collapsed:px-0",
+            compact && "w-8 justify-center px-0",
             focusRing,
           )}
         >
@@ -296,7 +302,7 @@ function LiveStatus() {
                   : "bg-muted-foreground/50",
             )}
           />
-          <span className={railName}>
+          <span className={compact ? "sr-only" : railName}>
             {live
               ? "Live"
               : state === "polling"
@@ -325,11 +331,27 @@ function SidebarProjects() {
   const row =
     "group relative flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none collapsed:justify-center collapsed:px-0";
   const on = "bg-card text-foreground ring-1 ring-border hover:bg-card";
+  const [adding, setAdding] = useState(false);
   return (
     <div>
-      <p className="mb-1 px-2.5 text-xs font-medium text-muted-foreground collapsed:sr-only">
-        Projects
-      </p>
+      <div className="mb-1 flex items-center justify-between pr-1 pl-2.5 collapsed:sr-only">
+        <p className="text-xs font-medium text-muted-foreground">Projects</p>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Add a project"
+              onClick={() => setAdding(true)}
+            >
+              <PlusIcon aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Add a project</TooltipContent>
+        </Tooltip>
+      </div>
+      <AddProjectDialog open={adding} onOpenChange={setAdding} />
       {/* The rail has no room for words: a rule stands in for the heading. */}
       <div
         aria-hidden
@@ -342,7 +364,14 @@ function SidebarProjects() {
       ) : null}
       {data && !projects.length ? (
         <p className="px-2.5 py-1 text-xs leading-relaxed text-muted-foreground collapsed:sr-only">
-          No projects yet. Add one from Home.
+          No projects yet.{" "}
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="font-medium text-primary hover:underline"
+          >
+            Add one
+          </button>
         </p>
       ) : null}
       <ul className="grid gap-0.5">
@@ -424,7 +453,7 @@ function DocumentTitle() {
   const params = useSearchParams();
   const { data } = useApi<Org>("org");
   const slug = pathname.startsWith("/project") ? params.get("slug") || "" : "";
-  const page = [...WORK, ...SYSTEM].find((n) => n.match(pathname));
+  const page = [...WORK, ...SYSTEM, SETTINGS].find((n) => n.match(pathname));
   const name = slug
     ? slug === data?.commons?.slug
       ? "Shared board"
@@ -604,9 +633,39 @@ function MobileHomeTab({ active }: { active: boolean }) {
   );
 }
 
+// The phone's More menu opens with the same two status lines the desktop
+// sidebar keeps at its foot.
+function MobileStatus() {
+  const lines = useSystemStatus();
+  return (
+    <>
+      {lines.map((l) => (
+        <DropdownMenuItem key={l.key} asChild className="min-h-11 gap-3 rounded-lg px-2.5">
+          <Link href={l.href}>
+            <span
+              aria-hidden
+              className={cn(
+                "ml-1 size-2 shrink-0 rounded-full",
+                l.tone === "ok" ? "bg-ok" : l.tone === "bad" ? "bg-bad" : l.tone === "warn" ? "bg-warn" : "bg-muted-foreground/50",
+              )}
+            />
+            <span className="min-w-0">
+              <span className="block font-medium">{l.label}</span>
+              {l.sub ? (
+                <span className="block truncate text-xs text-muted-foreground">{l.sub}</span>
+              ) : null}
+            </span>
+          </Link>
+        </DropdownMenuItem>
+      ))}
+      <DropdownMenuSeparator className="my-1.5" />
+    </>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const activeSystem = SYSTEM.find((n) => n.match(pathname));
+  const activeSystem = [...SYSTEM, SETTINGS].find((n) => n.match(pathname));
   return (
     <div className="flex min-h-dvh min-w-0 flex-1 flex-col pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:pr-0 lg:pl-64 lg:transition-[padding-left] lg:duration-200 lg:ease-out-soft motion-reduce:transition-none collapsed:lg:pl-16">
       <Suspense fallback={null}>
@@ -652,17 +711,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <SidebarToggle />
           </div>
         </div>
-        <div className="grid gap-2 px-3 pb-3 collapsed:px-2">
-          <Suspense
-            fallback={<div className="h-9 rounded-lg border bg-card" />}
-          >
-            <RailTip label="Search" hint="⌘K">
-              <CommandPalette variant="sidebar" />
-            </RailTip>
-          </Suspense>
-          <RailTip label="Ask" hint="⌘J">
-            <AskTrigger variant="sidebar" />
-          </RailTip>
+        {/* Search and Ask share a row: find anything (⌘K), or ask about it (⌘J). */}
+        <div className="flex gap-1.5 px-3 pb-3 collapsed:flex-col collapsed:px-2">
+          <div className="min-w-0 flex-1">
+            <Suspense
+              fallback={<div className="h-9 rounded-lg border bg-card" />}
+            >
+              <RailTip label="Search" hint="⌘K">
+                <CommandPalette variant="sidebar" />
+              </RailTip>
+            </Suspense>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <AskTrigger
+                variant="icon"
+                className="size-9 shrink-0 border border-input bg-card text-muted-foreground hover:text-foreground collapsed:w-full"
+              />
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Ask about your projects <kbd className="ml-1 font-mono text-[10.5px] opacity-70">⌘J</kbd>
+            </TooltipContent>
+          </Tooltip>
         </div>
         <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-3 pt-1 pb-4 collapsed:gap-4 collapsed:px-2">
           <nav aria-label="Your work">
@@ -697,9 +767,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </ul>
           </nav>
         </div>
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2.5 collapsed:flex-col collapsed:items-center collapsed:gap-1 collapsed:px-2">
-          <LiveStatus />
+        {/* The foot: is this machine working and on which models (each line links to its fix), then Settings and the small switches. */}
+        <div className="grid shrink-0 gap-2 border-t px-3 pt-3 pb-2.5 collapsed:px-2">
+          <SystemStatus />
           <div className="flex items-center gap-1 collapsed:flex-col">
+            <div className="min-w-0 flex-1 collapsed:w-full">
+              <NavLink item={SETTINGS} active={SETTINGS.match(pathname)} />
+            </div>
+            <LiveStatus compact />
             <AwakeStatus />
             <ThemeToggle />
           </div>
@@ -755,7 +830,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           paddingRight: "env(safe-area-inset-right)",
         }}
       >
-        <div className="mx-auto grid h-16 max-w-xl grid-cols-5 gap-1 px-2">
+        <div className="mx-auto grid h-16 max-w-xl grid-cols-6 gap-0.5 px-1.5">
           <MobileHomeTab active={pathname === "/"} />
           {WORK.slice(1).map((n) => {
             const active = n.match(pathname);
@@ -820,10 +895,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               collisionPadding={12}
               className="w-72 max-w-[calc(100vw-1.5rem)] rounded-xl p-1.5 shadow-pop"
             >
+              <MobileStatus />
               <DropdownMenuLabel className="px-2.5 py-1.5 text-xs font-medium text-muted-foreground">
                 Behind the scenes
               </DropdownMenuLabel>
-              {SYSTEM.map((n) => {
+              {[...SYSTEM, SETTINGS].map((n) => {
                 const active = n.match(pathname);
                 return (
                   <DropdownMenuItem

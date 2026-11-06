@@ -5,7 +5,7 @@ import { daemonControlState, type DaemonControlState } from "./daemon-control-st
 import { foldSteps, gateStep, type GateStep } from "./evolve";
 import { awaitsDecision } from "@/components/records/decide-record";
 import { draftState, type DraftState } from "@/components/records/draft-panel";
-import { evolveGate, registeredProjects, type Compute, type ComputeRequest, type EvolveGate, type Org, type OwnerQuestion, type ProjectCardData, type ProjectsPayload, type Proposal, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type WorkSuggestion, type WorkSuggestionsPayload } from "@/lib/api";
+import { evolveGate, registeredProjects, type Compute, type ComputeRequest, type EvolveGate, type HarnessStatus, type Org, type OwnerQuestion, type ProjectCardData, type ProjectsPayload, type Proposal, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type WorkSuggestion, type WorkSuggestionsPayload } from "@/lib/api";
 import { andList, plural } from "@/lib/format";
 import { sortOwnerQuestions } from "@/lib/owner-questions";
 import { useApi, type Loaded } from "@/lib/use-api";
@@ -18,7 +18,8 @@ import { useApi, type Loaded } from "@/lib/use-api";
 // addressed to the owner (the loop's stop questions included), a pending
 // compute request, a drafted constitution or evaluators, a suggested work
 // item the agents could not settle, the one gate step a project waits at,
-// and - for the whole machine - a paused or unset daemon.
+// and - for the whole machine - a paused or unset daemon, or a model
+// provider that isn't connected (no agent can run without one).
 
 export interface InboxItems {
   decisions: RecordRow[];
@@ -32,6 +33,9 @@ export interface InboxItems {
   drafts: { slug: string; r: DraftState }[];
   steps: GateStep[];
   machine: boolean;
+  // The model provider in use when it isn't connected (never signed in, or
+  // the sign-in expired); null when it is, or while the hub hasn't said.
+  provider: { name: string; label: string; expired: boolean } | null;
   total: number;
 }
 
@@ -57,9 +61,11 @@ export interface InboxSources {
   runner: Loaded<Runner>;
   service: Loaded<ServicePayload>;
   settings: Loaded<SettingsPayload>;
+  // Optional: the provider's sign-in, for the "Connect a model provider" step.
+  harness?: Loaded<HarnessStatus>;
 }
 
-const sum = (items: Omit<InboxItems, "total">) => items.decisions.length + items.proposals.length + items.questions.length + items.compute.length + items.work.length + items.drafts.length + items.steps.length + (items.machine ? 1 : 0);
+const sum = (items: Omit<InboxItems, "total">) => items.decisions.length + items.proposals.length + items.questions.length + items.compute.length + items.work.length + items.drafts.length + items.steps.length + (items.machine ? 1 : 0) + (items.provider ? 1 : 0);
 
 export function buildInbox(q: InboxSources): Inbox {
   const o = q.org.data;
@@ -83,7 +89,10 @@ export function buildInbox(q: InboxSources): Inbox {
   const steps = foldSteps(ownSteps);
   const daemon = daemonControlState({ runner: q.runner, service: q.service, settings: q.settings });
   const machine = daemon.pause === "on" || !!daemon.setup;
-  const all = { decisions, proposals, questions, agentsDeciding, compute, work, drafts, steps, machine };
+  const hp = q.harness?.data?.provider;
+  const expired = !!hp?.login?.logged_in && !!hp.login.expires_at && new Date(hp.login.expires_at).getTime() < Date.now();
+  const provider = hp && (!hp.login?.logged_in || expired) ? { name: hp.name, label: hp.label, expired } : null;
+  const all = { decisions, proposals, questions, agentsDeciding, compute, work, drafts, steps, machine, provider };
   const decisionsDown = !!q.proposed.error && !q.proposed.data;
   const computeDown = !!q.compute.error && !q.compute.data;
   return {
@@ -106,6 +115,7 @@ export function buildInbox(q: InboxSources): Inbox {
         drafts: drafts.filter((d) => d.slug === slug),
         steps: ownSteps.filter((s) => s.slug === slug),
         machine: false,
+        provider: null,
       };
       return { ...mine, total: sum(mine) };
     },
@@ -121,7 +131,7 @@ export function inboxBreakdown(items: InboxItems, empty = "nothing waits"): stri
     items.compute.length ? plural(items.compute.length, "request") : "",
     items.work.length ? plural(items.work.length, "suggestion") : "",
     items.drafts.length ? plural(items.drafts.length, "draft") : "",
-    items.steps.length + (items.machine ? 1 : 0) ? plural(items.steps.length + (items.machine ? 1 : 0), "step") : "",
+    items.steps.length + (items.machine ? 1 : 0) + (items.provider ? 1 : 0) ? plural(items.steps.length + (items.machine ? 1 : 0) + (items.provider ? 1 : 0), "step") : "",
   ].filter(Boolean);
   return parts.length ? andList(parts) : empty;
 }
@@ -140,7 +150,8 @@ export function useInboxSources(): InboxSources {
   const runner = useApi<Runner>("runner");
   const service = useApi<ServicePayload>("service", { refresh: 60000 });
   const settings = useApi<SettingsPayload>("settings");
-  return useMemo(() => ({ org, proposed, reg, compute, suggested, runner, service, settings }), [org, proposed, reg, compute, suggested, runner, service, settings]);
+  const harness = useApi<HarnessStatus>("harness", { refresh: 60000 });
+  return useMemo(() => ({ org, proposed, reg, compute, suggested, runner, service, settings, harness }), [org, proposed, reg, compute, suggested, runner, service, settings, harness]);
 }
 
 export function useInbox(): Inbox {

@@ -974,7 +974,7 @@ rules change nothing in a job, which asks nobody.
 ## Providers, sign-in and models
 
 ```bash
-pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); --with-token reads a key or token on stdin; --provider <name> picks the provider
+pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); for anthropic, Anthropic's own CLI opens the browser and there is no code; --with-token reads a key or token on stdin; --provider <name> picks the provider
 pulse harness status                    # harness, provider, who is signed in, the models and limits in force
 pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
 pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events (- for stdout, which implies --json), --max-cost 2 --keep-observations 3 override the budgets (--max-steps none lifts the call cap), --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages, again each time it fills back up (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
@@ -1084,9 +1084,10 @@ the run stops with `not_logged_in`. A pasted token shaped like a JWT (for
 instance `az account get-access-token --resource
 https://cognitiveservices.azure.com --query accessToken -o tsv`) goes out as
 a bearer token too, a plain key in the `api-key` header. Only providers whose
-terms allow a third-party device login get one: Anthropic's and OpenAI's
-consumer OAuth, Google's and OpenRouter's browser-callback flows are
-deliberately not wired up, so those stay on API keys.
+terms allow a third-party sign-in get one: Anthropic's consumer (claude.ai)
+OAuth, OpenAI's consumer OAuth, Google's and OpenRouter's browser-callback
+flows are deliberately not wired up, so those stay on API keys - except for
+the Anthropic Console sign-in below, which goes through Anthropic's own CLI.
 
 The OpenAI-compatible vendors all speak the chat completions API with the
 same one bash tool and all live in `pulse-provider-openai`: `openai`
@@ -1125,7 +1126,8 @@ server lists them. Most of these endpoints report no context window, so
 with them context discipline stays at its first level (collapsed, never
 one-liners).
 
-`anthropic` (Anthropic Claude; `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
+`anthropic` (Anthropic Claude; *Sign in with Anthropic*, a pasted Console
+API key, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
 default `https://api.anthropic.com`; crate `pulse-provider-anthropic`) speaks
 the native Messages API: the bash tool goes out as `tool_use` and its output
 comes back as `tool_result`, and `max_tokens` defaults to 8192. `gemini`
@@ -1140,3 +1142,38 @@ million tokens for Claude Sonnet 4.6 and later, Opus 4.6 and later, Haiku
 out), Gemini's `inputTokenLimit` (a million) - so context discipline
 tightens past 80% of it exactly as it does with Copilot, and
 `harness.context_window` overrides the figure when a proxy lists none.
+
+### Signing in with Anthropic
+
+*Sign in with Anthropic* (the Harness card, or `pulse harness login
+--provider anthropic`) is the Anthropic Console's OAuth sign-in, run by
+Anthropic's own CLI, `ant` (`brew install anthropics/tap/ant`, or a release
+from github.com/anthropics/anthropic-cli). PULSE starts `ant auth login`,
+which opens the browser on the machine PULSE runs on and finishes by itself
+once you approve; there is no code to type, and the console notices on its
+own. `ant` keeps the OAuth profile under `~/.config/anthropic`; PULSE keeps
+only a marker, `~/.pulse/private/providers/anthropic-signin.json` (the
+profile - `ANTHROPIC_PROFILE` at sign-in, empty for the active one - and a
+label, never a token). When a run needs a token PULSE asks `ant auth
+print-credentials --access-token`, which refreshes the profile itself, keeps
+the answer in memory for four minutes and sends it as `Authorization: Bearer`
+with `anthropic-beta: oauth-2025-04-20`. A token refused mid-run is fetched
+again once; when `ant` can no longer hand one out, runs wait for a sign-in
+like any provider without a login and the card says "The Anthropic sign-in
+ended. Sign in again." The binary is found through `PULSE_ANT_BIN`, `PATH`,
+`~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, since a daemon
+started by launchd runs with a thin `PATH`.
+
+Usage bills to the Console organisation and workspace you signed in to, like
+an API key from it. The order is: a pasted key, the sign-in,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`; signing in removes a pasted key
+and pasting a key removes the sign-in. *Sign out* forgets the marker and
+leaves `ant`'s profile alone, because Claude Code and the SDKs share it (`ant
+auth logout` ends it everywhere). A sign-in is never exported to another
+machine - sign in there too.
+
+A Claude Pro or Max subscription sign-in is not offered: Anthropic allows
+claude.ai logins only inside its own apps (Claude Code, claude.ai) and does
+not let third-party tools use them. A pasted `sk-ant-oat…` token - what
+`claude setup-token` prints - is turned away before any request with a
+sentence saying so.

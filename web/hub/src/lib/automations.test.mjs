@@ -19,6 +19,7 @@ import {
   slugify,
   sortRows,
   stateWords,
+  plainProblem,
 } from "./automations.ts";
 
 const sched = (over = {}) => ({
@@ -464,12 +465,12 @@ test("keptWords and stateWords speak for the row", () => {
   );
   assert.equal(stateWords(sched()), null);
   assert.deepEqual(stateWords(sched({ kind: "check", state: "green" })), {
-    text: "green",
+    text: "passing",
     tone: "ok",
   });
   assert.deepEqual(
     stateWords(sched({ kind: "check", state: "red", fails: 3 })),
-    { text: "red ×3", tone: "bad" },
+    { text: "failing, 3 times in a row", tone: "bad" },
   );
   assert.deepEqual(stateWords(sched({ kind: "watch", state: "ok" })), {
     text: "quiet",
@@ -488,4 +489,13 @@ test("sortRows puts live rows first, ended last, order kept within", () => {
     sortRows(rows).map((s) => s.id),
     ["c", "d", "b", "a"],
   );
+});
+
+test("plainProblem turns the hub's field words into a sentence", () => {
+  assert.equal(
+    plainProblem("needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)"),
+    "Needs how often it runs (30m, 6h, 1d, 2w, hourly, daily, weekly)",
+  );
+  assert.equal(plainProblem("`script` must sit under .pulse/"), "Script must sit under .pulse/.");
+  assert.equal(plainProblem("needs a `brief` (what each job does) or a `skill` to follow"), "Needs a brief (what each job does) or a skill to follow.");
 });

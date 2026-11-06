@@ -14,8 +14,8 @@ export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
     label: "Task",
     sort: (t) => t.title,
     render: (t) => (
-      <span className="block min-w-0">
-        <span className="block font-medium anywhere">{t.title}</span>
+      <span className="block min-w-40">
+        <span className="block font-medium break-words">{t.title}</span>
         <span className="block text-xs text-muted-foreground">{t.id}</span>
       </span>
     ),
