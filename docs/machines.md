@@ -281,6 +281,34 @@ same registry's backup targets (a folder, Azure Blob Storage, a command) and
 composes `backup.to` from their parts. A new cloud is one new module listed
 in `clouds::clouds()` plus its settings.
 
+The settings each cloud reads when the runner rents a machine (the wizard
+writes them; Settings → Machines shows them; an empty default means "set it
+yourself" unless the row says otherwise). `size` on a request falls back to
+the provider's size setting - `compute.azure.vm_size`,
+`compute.aws.instance_type`, `compute.gcp.machine_type` or
+`compute.multipass.size`.
+
+| Setting | Default | What it is |
+|---|---|---|
+| `compute.azure.subscription` | empty | Azure subscription id or name the runner provisions in (auth is `az login` on this machine) |
+| `compute.azure.resource_group` | empty | resource group that holds the provisioned hands |
+| `compute.azure.location` | empty | Azure region, e.g. `westeurope` |
+| `compute.azure.vm_size` | `Standard_B2ms` | VM size for a provisioned hand |
+| `compute.azure.image` | `Ubuntu2404` | VM image alias or URN |
+| `compute.aws.profile` | empty | AWS CLI profile the runner provisions with; empty means the CLI's default (auth is `aws configure` or `aws sso login` on this machine) |
+| `compute.aws.region` | empty | AWS region the instances are created in, e.g. `eu-west-1` |
+| `compute.aws.instance_type` | `t3.medium` | EC2 instance type for a provisioned hand |
+| `compute.aws.image` | `/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id` | AMI id (`ami-...`) or an SSM public parameter path resolved at launch; the default is Canonical's current Ubuntu 24.04 amd64 image |
+| `compute.aws.subnet` | empty | subnet id the instances join; empty means the default VPC's default subnet in the region |
+| `compute.aws.security_group` | empty | security group id the instances get; empty means a group named `pulse-hands` that allows ssh in, created when missing |
+| `compute.gcp.project` | empty | Google Cloud project the instances are created in; empty means gcloud's current project (auth is `gcloud auth login` on this machine) |
+| `compute.gcp.zone` | empty | Compute Engine zone, e.g. `europe-west4-a` |
+| `compute.gcp.machine_type` | `e2-medium` | machine type for a provisioned hand |
+| `compute.gcp.image` | `ubuntu-2404-lts-amd64` | Ubuntu image family in `ubuntu-os-cloud`, or a full image path `projects/P/global/images/I` |
+| `compute.gcp.network` | empty | VPC network the instances join; empty means `default`. A firewall rule `pulse-hands-ssh` (tcp 22 to the tag `pulse-hands`) is created on it when missing |
+| `compute.multipass.size` | `cpus=2,mem=4G,disk=32G` | size of a local multipass hand as `cpus=N,mem=SIZE,disk=SIZE` |
+| `compute.multipass.image` | `24.04` | multipass image a local hand launches from |
+
 `pulse pair ADMIN@HOST --name NAME --inspect` (also `--dry-run`) still reads
 the machine and prints the apply, undo and commit scripts and the local
 changes without applying any of it. For installed hands it loads or builds
