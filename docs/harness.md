@@ -1068,6 +1068,33 @@ harness models --provider <name>` lists what the endpoint serves. None of
 them reports a cost, so `harness.max_cost` does not apply to them - the step
 and time budgets do.
 
+To point a provider at a proxy, a gateway or a local server, set its key
+(`pulse settings set provider.<name>.base_url <url>`), or leave the setting
+at its default and export the environment variable beside it:
+
+| Setting | Default | Environment variable |
+|---|---|---|
+| `provider.anthropic.base_url` | `https://api.anthropic.com` | `ANTHROPIC_BASE_URL` |
+| `provider.openai.base_url` | `https://api.openai.com/v1` | `OPENAI_BASE_URL` |
+| `provider.gemini.base_url` | `https://generativelanguage.googleapis.com` | `GEMINI_BASE_URL` |
+| `provider.openrouter.base_url` | `https://openrouter.ai/api/v1` | `OPENROUTER_BASE_URL` |
+| `provider.groq.base_url` | `https://api.groq.com/openai/v1` | `GROQ_BASE_URL` |
+| `provider.mistral.base_url` | `https://api.mistral.ai/v1` | `MISTRAL_BASE_URL` |
+| `provider.deepseek.base_url` | `https://api.deepseek.com/v1` | `DEEPSEEK_BASE_URL` |
+| `provider.xai.base_url` | `https://api.x.ai/v1` | `XAI_BASE_URL` |
+| `provider.together.base_url` | `https://api.together.xyz/v1` | `TOGETHER_BASE_URL` |
+| `provider.fireworks.base_url` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_BASE_URL` |
+| `provider.cerebras.base_url` | `https://api.cerebras.ai/v1` | `CEREBRAS_BASE_URL` |
+| `provider.github-models.base_url` | `https://models.github.ai/inference` | `GITHUB_MODELS_BASE_URL` |
+| `provider.ollama.base_url` | `http://127.0.0.1:11434/v1` | `OLLAMA_HOST` or `OLLAMA_BASE_URL` |
+| `provider.lmstudio.base_url` | `http://127.0.0.1:1234/v1` | `LMSTUDIO_BASE_URL` |
+| `provider.vllm.base_url` | `http://127.0.0.1:8000/v1` | `VLLM_BASE_URL` |
+
+The variable is read only while the setting keeps its default; a value set
+in the store wins. `provider.azure-openai.base_url` and
+`provider.custom.base_url` have no default and read `AZURE_OPENAI_ENDPOINT`
+and `PULSE_CUSTOM_BASE_URL` while they are empty - both are described below.
+
 Two of them also sign in with a device code, the way Copilot does, so no key
 has to be minted or pasted: the Harness card shows *Sign in with GitHub* for
 `github-models` (GitHub's device flow with the GitHub CLI's OAuth app; the
