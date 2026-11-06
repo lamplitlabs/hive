@@ -9,7 +9,7 @@ import {
   BookOpenIcon,
   BotIcon,
   BrainIcon,
-  CheckIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
@@ -18,6 +18,7 @@ import {
   ClipboardIcon,
   ClipboardListIcon,
   CopyIcon,
+  CpuIcon,
   DownloadIcon,
   FileCodeIcon,
   FilePenIcon,
@@ -48,6 +49,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProjectAvatar } from "@/components/pulse/avatar";
+import { ConfirmDialog } from "@/components/pulse/confirm";
 import { DataTable, type Column } from "@/components/pulse/data-table";
 import { FilterChip } from "@/components/pulse/filter-chip";
 import { ListRow, ListRows } from "@/components/pulse/list-row";
@@ -64,7 +66,7 @@ import { api, apiHref, enc, errorText, projectLabel, query, writes } from "@/lib
 import { num, parseDate, plural, sentence, span } from "@/lib/format";
 import { agentName, statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
-import { invalidate, useApi, useLiveEvents, useNow } from "@/lib/use-api";
+import { useApi, useLiveEvents, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { apiStatus, badgeStatus, chipActive, elapsedWords, matchesStatus, msText, openByDefault, pairSteps, RUN_GROUPS, runSeconds, statusChips, stepSummary, stepTool, type StepEntry, type StepTool } from "./harness-state";
 
@@ -182,7 +184,9 @@ function modelInfo(model: string, models: HarnessModel[]): { name: string; tip: 
 function jobHref(s: Pick<HarnessSession, "project" | "job_id">): string {
   if (/^TASK-/.test(s.job_id)) return hrefs.task(s.job_id);
   return hrefs.tasks(s.project ? { project: s.project } : {});
-}const REPORT_WORD: Record<string, string> = { SUMMARY: "Summary", FINDING: "Finding", SUGGESTION: "Suggestion", QUESTION: "Question", VOTE: "Vote" };
+}
+
+const REPORT_WORD: Record<string, string> = { SUMMARY: "Summary", FINDING: "Finding", SUGGESTION: "Suggestion", QUESTION: "Question", VOTE: "Vote" };
 
 function ReportLines({ text }: { text: string }) {
   const keys = /^(SUMMARY|FINDING|SUGGESTION|QUESTION|VOTE):/;
@@ -205,7 +209,9 @@ function ReportLines({ text }: { text: string }) {
 export function exitWords(code: number | null): { text: string; bad: boolean } | null {
   if (code === null || code === undefined) return null;
   return code === 0 ? { text: "Succeeded", bad: false } : { text: "Failed (exit code " + code + ")", bad: true };
-}function Observation({ s }: { s: HarnessStep }) {
+}
+
+function Observation({ s }: { s: HarnessStep }) {
   const lines = (s.content || "").split("\n");
   const long = lines.length > 30;
   const [open, setOpen] = useState(lines.length <= 12);
@@ -389,47 +395,55 @@ function transcriptText(d: HarnessSessionResponse): string {
   }
   if (d.session.submission) lines.push("## submission", d.session.submission);
   return lines.join("\n");
-}function CancelRunButton({ session, onDone }: { session: HarnessSession; onDone: () => Promise<void> }) {
+}
+
+// Cancel a run in flight. The shared confirm dialog carries the optimistic
+// toast and shows a failure as what / why / fix; the hub stops the agent
+// after the step it is on, so the button reads "Cancelling…" until then.
+function CancelRunButton({ session, onDone, iconOnly }: { session: HarnessSession; onDone: () => Promise<void>; iconOnly?: boolean }) {
   const [confirm, setConfirm] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   if (session.status !== "running") return null;
   const name = session.job_title || session.job_id;
-  const cancel = () => {
-    setBusy(true);
-    setError("");
-    writes
-      .harnessCancel(session.id)
-      .then(() => {
-        setConfirm(false);
-        invalidate("harness/sessions");
-        return onDone();
-      })
-      .catch((e: unknown) => {
-        const t = errorText(e);
-        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
-      })
-      .finally(() => setBusy(false));
-  };
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1.5">
-      {confirm ? (
-        <>
-          <span className="text-[13px] text-foreground">Stop this run?</span>
-          <Button type="button" size="sm" variant="destructive" onClick={cancel} disabled={busy} aria-label={"Yes, cancel the run: " + name}>
-            <CheckIcon /> Yes, cancel it
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setConfirm(false)} disabled={busy} aria-label={"No, keep running: " + name}>
-            Keep running
-          </Button>
-        </>
-      ) : (
-        <Button type="button" size="sm" variant="outline" className="text-bad hover:text-bad" onClick={() => setConfirm(true)} disabled={busy || !!session.cancel_requested_at} aria-label={"Cancel the run: " + name}>
-          <BanIcon /> {session.cancel_requested_at ? "Cancelling…" : "Cancel run"}
+  const pending = !!session.cancel_requested_at;
+  const label = pending ? "Cancelling…" : "Cancel run";
+  const button = iconOnly ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" size="icon-sm" variant="ghost" className="text-status-failed hover:text-status-failed" onClick={() => setConfirm(true)} disabled={pending} aria-label={label + ": " + name}>
+          <BanIcon />
         </Button>
-      )}
-      {error ? <span className="basis-full text-[13px] text-bad">{error}</span> : null}
-    </span>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  ) : (
+    <Button type="button" size="sm" variant="outline" className="text-status-failed hover:text-status-failed" onClick={() => setConfirm(true)} disabled={pending} aria-label={label + ": " + name}>
+      <BanIcon /> {label}
+    </Button>
+  );
+  return (
+    <>
+      {button}
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={setConfirm}
+        title={"Cancel this run?"}
+        description={
+          <>
+            <span className="block font-medium text-foreground anywhere">{name}</span>
+            <span className="mt-2 block">The agent stops after the step it is on. What it did so far stays in the transcript; the job goes back to the board.</span>
+          </>
+        }
+        action="Cancel the run"
+        destructive
+        dismiss="Keep running"
+        success="Cancel requested. The agent stops after its current step."
+        invalidates="harness/sessions"
+        onConfirm={async () => {
+          await writes.harnessCancel(session.id);
+          await onDone();
+        }}
+      />
+    </>
   );
 }
 
@@ -449,7 +463,9 @@ function dedupeSessions(rows: HarnessSession[]): HarnessSession[] {
     out.push(row);
   }
   return out;
-}function LiveState({ state }: { state: "connecting" | "live" | "polling" }) {
+}
+
+function LiveState({ state }: { state: "connecting" | "live" | "polling" }) {
   const text = state === "live" ? "Live" : state === "polling" ? "Checking every few seconds" : "Connecting";
   return (
     <span aria-live="polite" className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground" title={state === "live" ? "New steps appear as they happen." : state === "polling" ? "The live stream is down; the page checks for new steps every 5 seconds." : undefined}>
@@ -462,24 +478,53 @@ function dedupeSessions(rows: HarnessSession[]): HarnessSession[] {
 
 // The exact-status picker and the agent / machine fields fold under "More
 // filters"; the four chips above carry the everyday choice.
+// Which project's runs: every project, or one, with its avatar.
+function ProjectSelect({ project, projects, onChange }: { project: string; projects: ProjectsPayload | undefined; onChange: (slug: string) => void }) {
+  const list = projects?.projects ?? [];
+  const current = list.find((p) => p.slug === project);
+  return (
+    <Select value={project || "__all"} onValueChange={(v) => onChange(v === "__all" ? "" : v)}>
+      <SelectTrigger size="sm" aria-label="Project" className="h-8 w-auto max-w-56 shrink-0">
+        <SelectValue placeholder="Every project">
+          {project ? (
+            <>
+              <ProjectAvatar slug={project} name={current?.name} size={20} />
+              <span className="truncate">{current ? projectLabel(current) : project}</span>
+            </>
+          ) : (
+            "Every project"
+          )}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__all">Every project</SelectItem>
+        {list.map((p) => (
+          <SelectItem key={p.slug} value={p.slug}>
+            <ProjectAvatar slug={p.slug} name={p.name} size={20} />
+            <span className="truncate">{projectLabel(p)}</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+// The filters that are not chips: the exact harness status (the chips fold
+// several into one), the agent, and the machine the run happened on.
 function MoreFilters({
-  project,
   status,
   agent,
   executor,
   executors,
-  projects,
   onChange,
   onExecutorChange,
   onClear,
   hasFilters,
 }: {
-  project: string;
   status: string;
   agent: string;
   executor: string;
   executors: string[];
-  projects: ProjectsPayload | undefined;
   onChange: (next: { project?: string; status?: string; agent?: string }) => void;
   onExecutorChange: (next: string) => void;
   onClear: () => void;
@@ -492,19 +537,6 @@ function MoreFilters({
   const exact = STATUSES.some((s) => s.value === status) ? status : "all";
   return (
     <div id="runs-more-filters" className="flex flex-wrap items-center gap-2">
-      <Select value={project || "all"} onValueChange={(v) => onChange({ project: v === "all" ? "" : v })}>
-        <SelectTrigger size="sm" className="h-8 w-[calc(50%-0.25rem)] shrink-0 sm:w-40" aria-label="Project">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All projects</SelectItem>
-          {(projects?.projects ?? []).map((p) => (
-            <SelectItem key={p.slug} value={p.slug}>
-              {projectLabel(p)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
       <Select value={exact} onValueChange={(v) => onChange({ status: v === "all" ? "" : v })}>
         <SelectTrigger size="sm" className="h-8 w-[calc(50%-0.25rem)] shrink-0 sm:w-52" aria-label="Exact status">
           <SelectValue />
@@ -571,7 +603,7 @@ function ModelCell({ session, models, className }: { session: Pick<HarnessSessio
   const logo = logoFor(session.provider) ?? logoFor(session.model);
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)} title={model.tip}>
-      {logo ? <BrandLogo id={logo} size={16} color="mono" className="text-muted-foreground" /> : null}
+      {logo ? <BrandLogo id={logo} size={16} color="mono" className="text-muted-foreground" /> : <CpuIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
       <span className="min-w-0 truncate">{model.name}</span>
     </span>
   );
@@ -609,18 +641,19 @@ function LiveRuns({ rows, models, selected, onOpen, onDone }: { rows: HarnessSes
         {rows.map((r) => (
           <ListRow
             key={r.id}
-            lead={<ProjectAvatar slug={r.project || "pulse"} size={20} />}
+            lead={r.agent ? <Avatar seed={r.agent} size={28} /> : <ProjectAvatar slug={r.project || "pulse"} size={20} />}
             title={r.job_title || r.job_id}
             meta={
               <>
                 {r.agent ? <span title={r.agent}>{agentName(r.agent)}</span> : null}
+                {r.project ? <span>{r.project}</span> : null}
                 <ModelCell session={r} models={models} />
                 <span>{plural(r.steps, "step")}</span>
               </>
             }
             status={<StatusBadge status={r.cancel_requested_at ? "cancelling" : "running"} label={r.cancel_requested_at ? "Cancelling" : "Running"} size="sm" />}
             time={<Elapsed startedAt={r.started_at} />}
-            actions={<CancelRunButton session={r} onDone={onDone} />}
+            actions={<CancelRunButton session={r} onDone={onDone} iconOnly />}
             actionsVisible
             selected={selected === r.id}
             onOpen={() => onOpen(r.id)}
@@ -773,6 +806,7 @@ function StepRow({ entry, session }: { entry: StepEntry; session: HarnessSession
             {exit?.bad ? <span className="text-status-failed">{exit.text}</span> : null}
             {took ? <span>{took}</span> : null}
             {s.at ? <StepTime d={s.at} /> : null}
+            <ChevronRightIcon className="size-3.5 shrink-0 transition-transform duration-150 group-open/step:rotate-90 motion-reduce:transition-none" aria-hidden />
           </span>
         </summary>
         <div className="mt-1 mb-3 ml-7 grid min-w-0 gap-2">
@@ -781,6 +815,44 @@ function StepRow({ entry, session }: { entry: StepEntry; session: HarnessSession
         </div>
       </details>
     </li>
+  );
+}
+
+// The run at a glance: four cells - how it ended (or that it is running,
+// with the time so far ticking), how long it took, what it cost, how many
+// tokens it read and wrote.
+function RunSummary({ session: s, state: st, running, now }: { session: HarnessSession; state: ReturnType<typeof runState>; running: boolean; now: number }) {
+  const totalTokens = (s.prompt_tokens || 0) + (s.completion_tokens || 0);
+  const cell = "grid min-w-0 gap-0.5 px-3 py-2.5";
+  const label = "text-xs text-muted-foreground";
+  const value = "tnum min-w-0 truncate text-sm font-medium text-foreground";
+  return (
+    <dl className="grid min-w-0 grid-cols-2 overflow-hidden rounded-lg border bg-card sm:grid-cols-4 [&>div:nth-child(n+2)]:border-l [&>div:nth-child(3)]:max-sm:border-l-0 [&>div:nth-child(n+3)]:max-sm:border-t">
+      <div className={cell}>
+        <dt className={label}>Status</dt>
+        <dd className="min-w-0">
+          <StatusBadge status={badgeStatus(st.raw)} label={st.word} size="sm" />
+        </dd>
+      </div>
+      <div className={cell}>
+        <dt className={label}>{running ? "Running for" : "Duration"}</dt>
+        <dd className={value} title={s.started_at ? "Started " + s.started_at.replace("T", " ").replace("Z", " UTC") : undefined}>
+          {running ? <Elapsed startedAt={s.started_at} /> : s.started_at ? span(runSeconds(s.started_at, s.ended_at || s.updated_at, now)) : "—"}
+        </dd>
+      </div>
+      <div className={cell}>
+        <dt className={label}>Credits</dt>
+        <dd className={value} title="What the model provider charged (provider units). For GitHub Copilot, premium requests.">
+          {s.cost ? num(s.cost) : "—"}
+        </dd>
+      </div>
+      <div className={cell}>
+        <dt className={label}>Tokens</dt>
+        <dd className={value} title={totalTokens ? compact(s.prompt_tokens) + " prompt, " + compact(s.completion_tokens) + " completion, over " + plural(s.calls, "model call") : undefined}>
+          {totalTokens ? compact(totalTokens) : "—"}
+        </dd>
+      </div>
+    </dl>
   );
 }
 
@@ -878,18 +950,15 @@ function RunPanel({ id, models, projects, onClose }: { id: string | null; models
     );
   else {
     const errorTone = st.tone === "bad" ? "bad" : "warn";
-    const totalTokens = s.prompt_tokens + s.completion_tokens;
     body = (
       <div className="grid min-w-0 gap-4" aria-live={running ? "polite" : undefined}>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted-foreground">
-          <StatusBadge status={badgeStatus(st.raw)} label={st.word} />
-          {running ? <Elapsed startedAt={s.started_at} className="text-foreground" /> : s.started_at ? <span title={"Started " + s.started_at.replace("T", " ").replace("Z", " UTC")}>{"Took " + span(runSeconds(s.started_at, s.ended_at || s.updated_at, now))}</span> : null}
-          <span title={plural(s.steps, "step") + ", " + plural(s.calls, "model call")}>{plural(s.steps, "step")}</span>
-          {s.cost ? <span title="What the model provider charged. For GitHub Copilot, premium requests.">{plural(s.cost, "credit")}</span> : null}
-          {totalTokens ? <span title={compact(s.prompt_tokens) + " prompt, " + compact(s.completion_tokens) + " completion"}>{compact(totalTokens) + " tokens"}</span> : null}
-          {remoteExecutor(s.executor) ? <span title="The machine (executor) the run happened on">{"On " + remoteExecutor(s.executor)}</span> : null}
-          {running ? <LiveState state={live.state} /> : null}
-        </div>
+        <RunSummary session={s} state={st} running={running} now={now} />
+        {remoteExecutor(s.executor) || running ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+            {remoteExecutor(s.executor) ? <span title="The machine (executor) the run happened on">{"On " + remoteExecutor(s.executor)}</span> : null}
+            {running ? <LiveState state={live.state} /> : null}
+          </div>
+        ) : null}
         {s.cancel_requested_at && s.status === "running" ? <Notice tone="warn">You asked to cancel this run. The agent stops after the step it is on.</Notice> : null}
         {s.error ? <Notice tone={errorTone}>{s.error}</Notice> : null}
         {running ? (
@@ -1105,21 +1174,15 @@ export function HarnessPageClient() {
   };
   const columns = useMemo(() => runColumns(projects.data, modelRows, now, showProject), [modelRows, now, projects.data, showProject]);
   const exactStatus = status && !RUN_GROUPS.some((g) => g.key === status) ? runWord(status) : "";
+  const moreActive = !!(agent || executor);
   return (
     <>
-      <PageHeader
-        title="Runs"
-        subtitle="Every agent run, step by step"
-        action={
-          <Button asChild variant="outline" size="sm">
-            <Link href={hrefs.settings("harness")} title="Settings, Harness: sign in to the model provider and pick models">
-              <SlidersHorizontalIcon /> Sign-in &amp; models
-            </Link>
-          </Button>
-        }
-      />
+      <PageHeader title="Runs" subtitle="Every agent run, step by step" />
       <div className="mb-5 grid min-w-0 gap-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="Filter runs by how they went">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <ProjectSelect project={project} projects={projects.data} onChange={(slug) => change({ project: slug })} />
+          <span aria-hidden className="mx-0.5 hidden h-4 w-px shrink-0 bg-border sm:inline-block" />
+          <div role="group" aria-label="Filter runs by how they went" className="scroll-strip -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 px-1 py-0.5">
           <FilterChip active={!status} count={machineRows.length} onClick={() => change({ status: "" })}>
             All
           </FilterChip>
@@ -1133,12 +1196,13 @@ export function HarnessPageClient() {
               {exactStatus}
             </FilterChip>
           ) : null}
-          <Button type="button" variant="ghost" size="sm" className="ml-auto" aria-expanded={moreOpen} aria-controls="runs-more-filters" onClick={() => setMoreOpen((v) => !v)}>
-            <SlidersHorizontalIcon /> {moreOpen ? "Fewer filters" : "More filters"}
-            {!moreOpen && (project || agent || executor) ? <span className="ml-1 size-1.5 rounded-full bg-primary" aria-label="Filters set" /> : null}
+          </div>
+          <Button type="button" variant={moreOpen || moreActive ? "secondary" : "ghost"} size="sm" className="shrink-0" aria-expanded={moreOpen} aria-controls="runs-more-filters" onClick={() => setMoreOpen((v) => !v)}>
+            <SlidersHorizontalIcon /> More filters
+            {moreActive ? <span className="tnum inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground/10 px-1.5 text-xs leading-none">{[agent, executor].filter(Boolean).length}</span> : null}
           </Button>
         </div>
-        {moreOpen || project || agent || executor ? <MoreFilters project={project} status={status} agent={agent} executor={executor} executors={executors} projects={projects.data} onChange={change} onExecutorChange={setExecutor} onClear={clear} hasFilters={hasFilters} /> : null}
+        {moreOpen || moreActive ? <MoreFilters status={status} agent={agent} executor={executor} executors={executors} onChange={change} onExecutorChange={setExecutor} onClear={clear} hasFilters={hasFilters} /> : null}
         <Summary counts={counts} />
       </div>
       {sessions.error && !sessions.data ? (
@@ -1190,7 +1254,7 @@ export function HarnessPageClient() {
               initialSort="when"
               initialDir="desc"
               caption="Runs"
-              className="min-w-0"
+              className="min-w-0 [&_td]:py-2 [&_tr]:h-11"
             />
           ) : liveRows.length ? null : (
             <EmptyState title="No finished runs here" icon={<ScrollTextIcon className="size-[18px]" />}>
