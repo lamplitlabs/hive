@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { CheckIcon, CloudIcon, CopyIcon, DatabaseBackupIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { showApiError } from "@/components/pulse/confirm";
@@ -60,7 +61,7 @@ function Choice({ name, options, value, onPick, disabled }: { name: string; opti
             aria-checked={on}
             disabled={disabled}
             onClick={() => onPick(o.id)}
-            className={cn("grid gap-0.5 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60", on ? "border-primary bg-primary/[0.06]" : "hover:bg-muted/40")}
+            className={cn("grid gap-0.5 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60", on ? "border-primary bg-primary/[0.06]" : "hover:bg-muted/40")}
           >
             <span className="flex items-center gap-1.5 font-medium">
               {on ? <CheckIcon className="size-3.5 text-primary" aria-hidden /> : null}
@@ -95,21 +96,26 @@ function Command({ text }: { text: string }) {
     <div className="grid gap-1.5">
       <p className="text-sm font-medium">Sign in on this machine, as the user PULSE runs as</p>
       <div className="flex items-start gap-2 rounded-lg bg-muted/50 p-2.5">
-        <code className="min-w-0 flex-1 font-mono text-[12px] leading-relaxed break-all">{text}</code>
-        <Button
-          type="button"
-          size="icon-xs"
-          variant="ghost"
-          aria-label="Copy the command"
-          onClick={() => {
-            void navigator.clipboard?.writeText(text).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            });
-          }}
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-        </Button>
+        <code className="min-w-0 flex-1 font-mono text-xs leading-relaxed break-all">{text}</code>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={copied ? "Copied" : "Copy the command"}
+              onClick={() => {
+                void navigator.clipboard?.writeText(text).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                });
+              }}
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{copied ? "Copied" : "Copy the command"}</TooltipContent>
+        </Tooltip>
       </div>
       <p className={hint}>The secret is read from where it lives as the command runs; it is never shown here or saved by PULSE.</p>
     </div>
@@ -236,7 +242,7 @@ export function BackupSetup({ canEdit }: { canEdit: boolean }) {
       {signIn ? <p className={hint}>Signs in the way {signIn.label} is set up under Machines: {authMode(signIn, draft.auth[signIn.id] ?? "")?.label.toLowerCase()}.</p> : null}
       {t ? (
         <p className={hint}>
-          Saved as <code className="font-mono text-[12px] text-foreground">{backupTo(p, draft) || "…"}</code>
+          Saved as <code className="font-mono text-xs text-foreground">{backupTo(p, draft) || "…"}</code>
         </p>
       ) : null}
       {canEdit ? (

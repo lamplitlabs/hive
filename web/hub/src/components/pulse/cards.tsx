@@ -45,8 +45,8 @@ export function ProjectCard({ p, spark, gate, forYou: forYouCount }: { p: Projec
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <ProjectAvatar slug={p.slug} />
           <div className="min-w-0 flex-1">
-            <h3 title={label !== p.slug ? label + " (" + p.slug + ")" : p.slug} className="truncate text-[17px] font-semibold leading-tight tracking-tight">{label}</h3>
-            <p className="mt-0.5 truncate text-[13px] text-muted-foreground">{label !== p.slug ? <span className="font-mono text-[12.5px]">{p.slug}</span> : "Software project"}</p>
+            <h3 title={label !== p.slug ? label + " (" + p.slug + ")" : p.slug} className="truncate text-base font-semibold leading-tight tracking-tight">{label}</h3>
+            <p className="mt-0.5 truncate text-[13px] text-muted-foreground">{label !== p.slug ? <span className="font-mono text-[13px]">{p.slug}</span> : "Software project"}</p>
           </div>
         </div>
         <ChevronRightIcon className="mt-2.5 size-4 shrink-0 text-muted-foreground opacity-60 transition-[transform,opacity] group-hover/item:opacity-100 motion-safe:group-hover/item:translate-x-0.5 motion-reduce:transition-none" aria-hidden />

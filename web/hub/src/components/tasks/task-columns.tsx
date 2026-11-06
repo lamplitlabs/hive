@@ -1,47 +1,83 @@
 "use client";
 
-// The tasks table's columns, shared by the Tasks page and a project's Tasks
-// tab; a row opens the task's conversation on the Chat page.
+// The tasks table's columns (spec "Tasks" - List view): Title, Project,
+// Status, Priority, Lead, Steps, Updated. Shared by the Tasks page and a
+// project's Tasks tab; a row opens the task's conversation on the Chat page.
+// Project and Lead hide on a narrow screen.
 
+import { ProjectAvatar } from "@/components/pulse/avatar";
 import { type Column } from "@/components/pulse/data-table";
-import { ProjectLink, StatusBadge, When, Who } from "@/components/pulse/who";
+import { Avatar, StatusBadge, When } from "@/components/pulse/who";
 import { taskProgress, type Task } from "@/lib/api";
-import { priorityWord } from "@/lib/words";
+import { agentName } from "@/lib/words";
+import { PriorityMark, ProgressRing } from "./task-card";
+import { stepsLine } from "./tasks-state";
 
 export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
   {
     key: "title",
-    label: "Task",
+    label: "Title",
     sort: (t) => t.title,
     render: (t) => (
       <span className="block min-w-40">
-        <span className="block font-medium break-words">{t.title}</span>
-        <span className="block text-xs text-muted-foreground">{t.id}</span>
+        <span className="block text-sm font-medium leading-5 break-words">{t.title}</span>
+        <span className="block font-mono text-xs text-muted-foreground">{t.id}</span>
       </span>
     ),
   },
-  ...(showProject ? [{ key: "project", label: "Project", sort: (t: Task) => t.project, render: (t: Task) => <ProjectLink slug={t.project} className="font-normal" /> } as Column<Task>] : []),
-  { key: "status", label: "Status", nowrap: true, sort: (t) => t.status, render: (t) => <StatusBadge status={t.status} /> },
-  { key: "priority", label: "Priority", sort: (t) => t.priority, hide: "sm", render: (t) => <span title={"Priority " + t.priority}>{priorityWord(t.priority)}</span> },
+  ...(showProject
+    ? [
+        {
+          key: "project",
+          label: "Project",
+          hide: "md",
+          nowrap: true,
+          sort: (t: Task) => t.project,
+          render: (t: Task) => (
+            <span className="inline-flex items-center gap-2">
+              <ProjectAvatar slug={t.project} size={20} />
+              <span className="truncate">{t.project}</span>
+            </span>
+          ),
+        } as Column<Task>,
+      ]
+    : []),
+  { key: "status", label: "Status", nowrap: true, sort: (t) => t.status, render: (t) => <StatusBadge status={t.status} size="sm" /> },
+  { key: "priority", label: "Priority", nowrap: true, sort: (t) => t.priority, render: (t) => <PriorityMark p={t.priority} className="text-sm" /> },
   {
-    key: "working",
-    label: "Working on it",
-    hide: "md",
-    render: (t) => {
-      const workers = taskProgress(t).working;
-      if (t.status === "done" || t.status === "cancelled") return <span className="text-muted-foreground">{"\u2014"}</span>;
-      if (workers.length) return <span className="inline-flex flex-wrap items-center gap-1.5">{workers.map((w, i) => <Who key={w.job + i} row={{ agent: w.agent }} compact />)}</span>;
-      return t.lead ? <span className="text-muted-foreground" title={"Lead agent: " + t.lead}>Nobody right now</span> : <span className="text-muted-foreground">No lead agent yet</span>;
-    },
+    key: "lead",
+    label: "Lead",
+    hide: "lg",
+    nowrap: true,
+    sort: (t) => t.lead,
+    render: (t) =>
+      t.lead ? (
+        <span className="inline-flex items-center gap-2" title={t.lead}>
+          <Avatar seed={t.lead} size={20} />
+          <span className="truncate">{agentName(t.lead, t.project)}</span>
+        </span>
+      ) : (
+        <span className="text-muted-foreground">{"\u2014"}</span>
+      ),
   },
   {
-    key: "jobs",
-    label: "Steps done",
-    hide: "lg",
-    sort: (t) => taskProgress(t).total,
+    key: "steps",
+    label: "Steps",
+    nowrap: true,
+    sort: (t) => {
+      const p = taskProgress(t);
+      return p.total ? p.done / p.total : -1;
+    },
     render: (t) => {
       const p = taskProgress(t);
-      return p.total ? <span className="tnum whitespace-nowrap">{p.done + " of " + p.total}{p.failed ? <span className="text-bad">{", " + p.failed + " failed"}</span> : null}</span> : <span className="text-muted-foreground">{t.status === "done" || t.status === "cancelled" ? "\u2014" : "None yet"}</span>;
+      if (!p.total) return <span className="text-muted-foreground">{t.status === "done" || t.status === "cancelled" ? "\u2014" : "None yet"}</span>;
+      return (
+        <span className="inline-flex items-center gap-1.5 tnum" aria-label={p.done + " of " + p.total + " steps done" + (p.failed ? ", " + p.failed + " failed" : "")}>
+          <ProgressRing done={p.done} total={p.total} size={16} />
+          <span>{stepsLine(p.done, p.total).replace(/ steps?$/, "")}</span>
+          {p.failed ? <span className="text-bad">{", " + p.failed + " failed"}</span> : null}
+        </span>
+      );
     },
   },
   { key: "updated", label: "Updated", nowrap: true, sort: (t) => t.updated_at, render: (t) => <When d={t.updated_at} /> },

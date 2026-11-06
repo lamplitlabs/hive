@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeftIcon, CheckIcon, CopyIcon, KeyRoundIcon, Loader2Icon, LockKeyholeIcon, PenLineIcon, ShieldCheckIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -72,7 +73,7 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
             <span>
               <span className="font-medium">{named.item}</span> <span className="text-muted-foreground">in {named.provider}</span>
             </span>
-            {report?.fingerprint ? <span className="font-mono text-[12px] text-muted-foreground anywhere" title="The key's fingerprint">{report.fingerprint}</span> : null}
+            {report?.fingerprint ? <span className="font-mono text-xs text-muted-foreground anywhere" title="The key's fingerprint">{report.fingerprint}</span> : null}
             {pushOff ? <span className="basis-full text-[13px] text-muted-foreground">Push after merging is off, so PULSE doesn&apos;t use this key yet.</span> : null}
           </div>
         ) : (
@@ -189,9 +190,14 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
       <DialogHeader className="border-b px-5 py-4 text-left">
         <div className="flex items-center gap-2">
           {step.kind !== "provider" && step.kind !== "done" ? (
-            <Button size="icon-sm" variant="ghost" onClick={back} aria-label="Back to the providers">
-              <ArrowLeftIcon />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="icon-sm" variant="ghost" onClick={back} aria-label="Back to the providers">
+                  <ArrowLeftIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Back to the providers</TooltipContent>
+            </Tooltip>
           ) : null}
           <DialogTitle className="text-base">{title}</DialogTitle>
         </div>
@@ -208,7 +214,7 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
         {step.kind === "manual" ? (
           <div className="grid gap-1.5">
             <Label htmlFor="cred-ref">Reference</Label>
-            <Input id="cred-ref" value={reference} onChange={(e) => setReference(e.target.value)} placeholder={payload.providers[0]?.example} autoFocus spellCheck={false} className="font-mono text-[12.5px]" />
+            <Input id="cred-ref" value={reference} onChange={(e) => setReference(e.target.value)} placeholder={payload.providers[0]?.example} autoFocus spellCheck={false} className="font-mono text-[13px]" />
             <p className="text-xs text-muted-foreground anywhere">{payload.shapes}</p>
           </div>
         ) : null}
@@ -252,7 +258,7 @@ function ProviderStep({ payload, onPick, onManual }: { payload: CredPayload; onP
             disabled={!p.available}
             onClick={() => onPick(p)}
             className={cn(
-              "flex items-start gap-3 rounded-xl border bg-card px-3.5 py-3 text-left transition-colors",
+              "flex items-start gap-3 rounded-lg border bg-card px-3.5 py-3 text-left transition-colors",
               p.available ? "hover:border-primary/50 hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" : "opacity-60",
             )}
           >
@@ -354,7 +360,7 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
         <div className="grid gap-1.5">
           <Label htmlFor="cred-token">Service-account token</Label>
           <div className="flex gap-2">
-            <Input id="cred-token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} placeholder="ops_…" autoFocus className="font-mono text-[12.5px]" onKeyDown={(e) => e.key === "Enter" && token.trim() && void connect()} />
+            <Input id="cred-token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} placeholder="ops_…" autoFocus className="font-mono text-[13px]" onKeyDown={(e) => e.key === "Enter" && token.trim() && void connect()} />
             <Button size="sm" className="h-9" disabled={busy || !token.trim()} onClick={() => void connect()}>
               {busy ? <Loader2Icon className="animate-spin" /> : <LockKeyholeIcon />} Connect
             </Button>
@@ -441,7 +447,7 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
                             Updated <When d={it.updated_at} />
                           </span>
                         ) : null}
-                        <span className="font-mono text-[12px] anywhere">{it.reference}</span>
+                        <span className="font-mono text-xs anywhere">{it.reference}</span>
                       </span>
                     </span>
                   </button>
@@ -490,7 +496,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
       {provider.fields.map((f) => (
         <div key={f.name} className="grid gap-1.5">
           <Label htmlFor={"cred-" + f.name}>{f.label}</Label>
-          <Input id={"cred-" + f.name} value={values[f.name] ?? ""} onChange={(e) => update(f.name, e.target.value)} placeholder={f.placeholder} spellCheck={false} autoFocus={f === provider.fields[0]} className="font-mono text-[12.5px]" />
+          <Input id={"cred-" + f.name} value={values[f.name] ?? ""} onChange={(e) => update(f.name, e.target.value)} placeholder={f.placeholder} spellCheck={false} autoFocus={f === provider.fields[0]} className="font-mono text-[13px]" />
         </div>
       ))}
       {reference ? (
@@ -499,7 +505,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
         </p>
       ) : null}
       {provider.generate ? (
-        <div className="grid gap-2 rounded-xl border bg-muted/40 px-3.5 py-3">
+        <div className="grid gap-2 rounded-lg border bg-muted/40 px-3.5 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-sm font-medium">No key yet? Let PULSE make one.</span>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void generate(false)}>

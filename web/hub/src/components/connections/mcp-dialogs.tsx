@@ -15,6 +15,7 @@ import { showApiError } from "@/components/pulse/confirm";
 import { copyText } from "@/components/pulse/evolve";
 import { PulseMascot } from "@/components/pulse/mascots";
 import { Disclosure, Notice } from "@/components/pulse/panel";
+import { LogoTile } from "@/components/pulse/logo";
 import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, useWizardLock, type WizardStep } from "@/components/pulse/stepper";
 import { Mono } from "@/components/pulse/who";
 import { api, enc, errorText, writes, type McpAuth, type McpConnectResult, type McpLoginFlow, type McpLoginInput, type McpLoginState, type McpOptions, type McpServer, type McpServersPayload, type McpTransport, type ProjectsPayload, type ToolkitPayload, type ToolSuggestion } from "@/lib/api";
@@ -142,7 +143,7 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
         <legend className="mb-1.5 text-sm font-medium">How PULSE reaches it</legend>
         <div className="grid gap-2 sm:grid-cols-3">
           {options.transports.map((t) => (
-            <label key={t} className={cn("flex cursor-pointer items-start gap-2.5 rounded-xl border bg-card px-3 py-2.5 text-left transition-colors has-[:checked]:border-primary/60 has-[:checked]:bg-primary/5", "hover:bg-muted/50")}>
+            <label key={t} className={cn("flex cursor-pointer items-start gap-2.5 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors has-[:checked]:border-primary/60 has-[:checked]:bg-primary/5", "hover:bg-muted/50")}>
               <input type="radio" name="mcp-transport" value={t} checked={f.transport === t} onChange={() => setTransport(t)} className="mt-1 size-3.5 shrink-0 accent-primary" />
               <span className="min-w-0">
                 <span className="block text-sm font-medium">{TRANSPORT_LABEL[t]}</span>
@@ -252,7 +253,7 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
           <Label htmlFor="mcp-secret">Where the secret is kept</Label>
           <Input id="mcp-secret" value={f.secret_ref} onChange={(e) => set("secret_ref", e.target.value)} placeholder="e.g. op://PULSE/github-mcp/token" spellCheck={false} className="font-mono text-[13px]" />
           <p className="text-xs text-muted-foreground anywhere">
-            Where to find it, never the secret itself: <span className="font-mono text-[12px]">{options.cred_shapes}</span>. {secretHint(f.auth)} The 1Password token saved in{" "}
+            Where to find it, never the secret itself: <span className="font-mono text-xs">{options.cred_shapes}</span>. {secretHint(f.auth)} The 1Password token saved in{" "}
             <Link href={hrefs.settings("runner")} className="underline underline-offset-2">
               Settings
             </Link>{" "}
@@ -493,12 +494,10 @@ function PresetGroup({ title, note, items, choice, onPick, onNext, suggested }: 
                 onPick(key);
                 onNext();
               }}
-              className={cn("grid min-w-0 gap-1 rounded-xl border bg-card p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", on ? "border-primary ring-1 ring-primary" : "hover:border-foreground/25 hover:bg-muted/40")}
+              className={cn("grid min-w-0 gap-1 rounded-lg border bg-card p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", on ? "border-primary ring-1 ring-primary" : "hover:border-foreground/25 hover:bg-muted/40")}
             >
               <span className="flex min-w-0 items-center gap-2">
-                <span aria-hidden className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold" style={{ background: "oklch(0.93 0.05 " + hue(p.name) + ")", color: "oklch(0.38 0.1 " + hue(p.name) + ")" }}>
-                  {p.title.slice(0, 2).toUpperCase()}
-                </span>
+                <LogoTile name={p.name} size={28} title={p.title} />
                 <span className="min-w-0 flex-1 truncate text-sm font-semibold">{p.title}</span>
                 <Badge variant="outline" className="shrink-0">
                   {presetAccess(p)}
@@ -513,11 +512,6 @@ function PresetGroup({ title, note, items, choice, onPick, onNext, suggested }: 
   );
 }
 
-function hue(name: string): number {
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return h;
-}
 
 // The wizard's last step for a tool without OAuth: connect, list what it
 // offers, or say plainly what went wrong.
@@ -563,7 +557,7 @@ function ConnectCheck({ server, onFix }: { server: McpServer; onFix: () => void 
         {state.result.tools.length ? (
           <ul className="grid max-h-64 gap-1.5 overflow-y-auto pr-1">
             {state.result.tools.map((t) => (
-              <li key={t.name} className="rounded-xl border bg-card px-3 py-2">
+              <li key={t.name} className="rounded-lg border bg-card px-3 py-2">
                 <div className="flex items-center gap-2">
                   <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                   <Mono>{t.name}</Mono>
@@ -619,8 +613,8 @@ function EnvEditor({ rows, onChange }: { rows: EnvRow[]; onChange: (rows: EnvRow
         <div className="grid content-start gap-1.5">
           {rows.map((r, i) => (
             <div key={i} className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] items-center gap-1.5">
-              <Input aria-label={"Variable " + (i + 1) + " name"} value={r.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="GITHUB_HOST" spellCheck={false} className="font-mono text-[12.5px]" />
-              <Input aria-label={"Variable " + (i + 1) + " value"} value={r.value} onChange={(e) => update(i, { value: e.target.value })} placeholder="value or op://… reference" spellCheck={false} className="font-mono text-[12.5px]" />
+              <Input aria-label={"Variable " + (i + 1) + " name"} value={r.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="GITHUB_HOST" spellCheck={false} className="font-mono text-xs" />
+              <Input aria-label={"Variable " + (i + 1) + " value"} value={r.value} onChange={(e) => update(i, { value: e.target.value })} placeholder="value or op://… reference" spellCheck={false} className="font-mono text-xs" />
               <Button type="button" size="icon-sm" variant="ghost" onClick={() => onChange(rows.filter((_, j) => j !== i))} aria-label={"Remove variable " + (r.key || i + 1)}>
                 <TrashIcon />
               </Button>
@@ -701,7 +695,7 @@ function ConnectBody({ server, onSignIn }: { server: McpServer; onSignIn?: (s: M
               <p className="text-sm font-medium">{state.result.tools.length === 1 ? "1 tool it offers" : state.result.tools.length + " tools it offers"}</p>
               <ul className="grid max-h-80 gap-1.5 overflow-y-auto pr-1">
                 {state.result.tools.map((t) => (
-                  <li key={t.name} className="rounded-xl border bg-card px-3 py-2">
+                  <li key={t.name} className="rounded-lg border bg-card px-3 py-2">
                     <div className="flex items-center gap-2">
                       <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                       <Mono>{t.name}</Mono>
@@ -986,7 +980,7 @@ function UserCode({ code }: { code: string }) {
       .catch(() => toast.error("Couldn't copy. Select the code and copy it yourself."));
   };
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-3">
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-3">
       <span className="select-all font-mono text-2xl font-semibold tracking-[0.2em] text-foreground" aria-label={"Code " + code.split("").join(" ")}>
         {code}
       </span>
@@ -1074,7 +1068,7 @@ function ClientForm({ login, server, initial, onStart }: { login: McpLoginState;
             <Label htmlFor="mcp-port">Redirect port</Label>
             <Input id="mcp-port" value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" placeholder="e.g. 8976" className="font-mono text-[13px]" aria-invalid={touched && !portOk ? true : undefined} />
             <p className="text-xs leading-relaxed text-muted-foreground anywhere">
-              The app must be registered with the callback <span className="font-mono text-[12px]">{redirect}</span>; a fixed port keeps it the same every time.
+              The app must be registered with the callback <span className="font-mono text-xs">{redirect}</span>; a fixed port keeps it the same every time.
             </p>
             {touched && !portOk ? <p className="text-xs text-bad">A port between 1 and 65535.</p> : null}
           </div>

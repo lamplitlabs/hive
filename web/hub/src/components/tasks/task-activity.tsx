@@ -329,7 +329,7 @@ function Bubble({ who, at, title, note, meta, icon, body, truncated, children }:
             {meta}
             <When d={at} />
           </div>
-          <div className={cn("min-w-0 max-w-full rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground anywhere", human ? "rounded-br-md bg-primary/10 ring-1 ring-primary/15" : note ? "rounded-bl-md border border-dashed bg-muted/30" : "rounded-bl-md border bg-card")}>
+          <div className={cn("min-w-0 max-w-full rounded-xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground anywhere", human ? "rounded-br-md bg-primary/10 ring-1 ring-primary/15" : note ? "rounded-bl-md border border-dashed bg-muted/30" : "rounded-bl-md border bg-card")}>
             {title ? <p className="mb-1 font-medium">{title}</p> : null}
             {body ? <Markdown source={body} className="[&_pre]:whitespace-pre-wrap [&>:last-child]:mb-0" /> : null}
             {truncated ? <p className="mt-1 text-xs text-muted-foreground">Shortened here.</p> : null}
@@ -356,7 +356,7 @@ function RunChapter({ block, expanded, task }: { block: Extract<ActivityBlock, {
   const last = lastAt(items);
   const ended = items.find((i) => i.kind === "run" && i.what === "ended");
   return (
-    <section className="min-w-0 rounded-2xl border bg-card/60" aria-label={run.agent + " on " + run.job_title}>
+    <section className="min-w-0 rounded-lg border bg-card/60" aria-label={run.agent + " on " + run.job_title}>
       <header className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-[13px]">
         <Avatar seed={run.agent} size={24} />
         <div className="min-w-0 flex-1 basis-48">
@@ -448,7 +448,7 @@ function StepLine({ item, inChapter }: { item: ActivityItem; inChapter?: boolean
       return (
         <div className={cn("flex min-w-0 items-end gap-2", inChapter && "pl-0")}>
           {!inChapter ? <Avatar seed={item.who} size={24} className="mb-0.5" /> : null}
-          <div className="min-w-0 max-w-[min(92%,44rem)] rounded-2xl rounded-bl-md border bg-card px-3.5 py-2 text-sm leading-relaxed text-foreground anywhere">
+          <div className="min-w-0 max-w-[min(92%,44rem)] rounded-xl rounded-bl-md border bg-card px-3.5 py-2 text-sm leading-relaxed text-foreground anywhere">
             <Markdown source={item.text || ""} className="[&>:last-child]:mb-0" />
             {item.truncated ? <p className="mt-1 text-xs text-muted-foreground">Shortened here; the full run has all of it.</p> : null}
           </div>

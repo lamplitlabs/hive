@@ -50,7 +50,7 @@ export function StatusBadge({ status, label, size = "md", className, title }: { 
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-md font-medium whitespace-nowrap",
-        size === "sm" ? "h-5 px-1 text-[11px]" : "h-6 px-1.5 text-xs",
+        size === "sm" ? "h-5 px-1 text-xs" : "h-6 px-1.5 text-xs",
         STATUS_CLASS[kind],
         className,
       )}
@@ -65,12 +65,12 @@ export function StatusBadge({ status, label, size = "md", className, title }: { 
 
 // The status icon alone, for a tight spot (a row's right edge). Carries the
 // word as its accessible label so colour is never the only signal.
-export function StatusIcon({ status, className }: { status?: string | null; className?: string }) {
+export function StatusIcon({ status, label, className }: { status?: string | null; label?: string; className?: string }) {
   const raw = (status || "").trim();
   if (!raw) return null;
   const kind = statusKind(raw);
   const Icon = STATUS_ICON[kind];
-  const word = statusWord(raw);
+  const word = label ?? statusWord(raw);
   return (
     <Icon
       className={cn("size-4 shrink-0", STATUS_CLASS[kind].split(" ")[1], kind === "running" && "motion-safe:animate-spin", className)}

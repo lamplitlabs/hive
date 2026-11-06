@@ -242,7 +242,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
                   value={dir}
                   onChange={(e) => setDir(e.target.value)}
                   placeholder="~/private/pulse-tests"
-                  className="min-w-0 flex-1 font-mono text-[12.5px]"
+                  className="min-w-0 flex-1 font-mono text-[13px]"
                   autoFocus
                   spellCheck={false}
                   autoComplete="off"
@@ -293,7 +293,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
               </Notice>
             ) : null}
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-[15px] font-semibold">{heading}</h3>
+              <h3 className="text-base font-semibold">{heading}</h3>
               <span className="text-[13px] text-muted-foreground">{num(count) + " ready" + (pending ? ", " + num(pending) + " to write" : "")}</span>
             </div>
             {slot !== null ? <p className="text-[13px] leading-relaxed text-muted-foreground">PULSE never shows a private test again, so this replaces test {num(slot)} completely: what it asks and how it&apos;s scored.</p> : <p className="text-[13px] leading-relaxed text-muted-foreground">A private test is a request an agent might get, plus a way to score what the agent did.</p>}
@@ -325,7 +325,7 @@ export function HeldoutDialog({ open, onOpenChange, projects }: { open: boolean;
             {own ? (
               <div className="grid gap-1.5">
                 <Label htmlFor="ho-scorer">Scoring script</Label>
-                <Textarea id="ho-scorer" value={scorer} onChange={(e) => setScorer(e.target.value)} rows={7} className="max-h-72 font-mono text-[12px] leading-relaxed" spellCheck={false} onKeyDown={submitKey} />
+                <Textarea id="ho-scorer" value={scorer} onChange={(e) => setScorer(e.target.value)} rows={7} className="max-h-72 font-mono text-xs leading-relaxed" spellCheck={false} onKeyDown={submitKey} />
                 <p className="text-xs text-muted-foreground">It runs read-only in a copy of the project after the agent finishes and prints one number from 0 to 1.</p>
               </div>
             ) : null}

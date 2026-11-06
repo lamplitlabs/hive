@@ -107,7 +107,7 @@ function PickStep({ h, choice, onChoose, onNext }: { h: HarnessStatus; choice: s
                       onNext();
                     }}
                     className={cn(
-                      "group grid min-w-0 gap-1 rounded-xl border bg-card p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "group grid min-w-0 gap-1 rounded-lg border bg-card p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       on ? "border-primary ring-1 ring-primary" : "hover:border-foreground/25 hover:bg-muted/40",
                     )}
                   >
@@ -159,7 +159,7 @@ export function ProviderGlyph({ name, title, className }: { name: string; title:
   return (
     <span
       aria-hidden
-      className={cn("inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[oklch(0.93_0.05_var(--glyph-h))] text-[11px] font-bold tracking-tight text-[oklch(0.38_0.1_var(--glyph-h))] dark:bg-[oklch(0.34_0.06_var(--glyph-h))] dark:text-[oklch(0.88_0.07_var(--glyph-h))]", className)}
+      className={cn("inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[oklch(0.93_0.05_var(--glyph-h))] text-xs font-bold tracking-tight text-[oklch(0.38_0.1_var(--glyph-h))] dark:bg-[oklch(0.34_0.06_var(--glyph-h))] dark:text-[oklch(0.88_0.07_var(--glyph-h))]", className)}
       style={{ "--glyph-h": hash } as React.CSSProperties}
     >
       {initials}
@@ -244,7 +244,7 @@ function BrowserSignIn({ provider, info, onSignedIn, before }: { provider: strin
     );
 
   return (
-    <div className="grid gap-3 rounded-xl border bg-muted/40 p-4" aria-live="polite">
+    <div className="grid gap-3 rounded-lg border bg-muted/40 p-4" aria-live="polite">
       {codeless ? (
         <>
           <p className="text-sm font-medium">Approve PULSE in the browser window that just opened.</p>
@@ -451,7 +451,7 @@ function ConnectStep({ h, provider, address, setAddress, addressError, login, on
       <div className="flex items-start gap-3">
         <ProviderGlyph name={provider} title={info.title} className="size-10 text-sm" />
         <div className="min-w-0">
-          <h3 className="text-[15px] font-semibold">{info.title}</h3>
+          <h3 className="text-base font-semibold">{info.title}</h3>
           {info.blurb ? <p className="text-[13px] leading-relaxed text-muted-foreground">{info.blurb}</p> : null}
         </div>
       </div>
@@ -475,7 +475,7 @@ function ConnectStep({ h, provider, address, setAddress, addressError, login, on
       ) : null}
 
       {connected && !again && !local ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-ok/30 bg-ok/8 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ok/30 bg-ok/8 px-4 py-3">
           <p className="flex min-w-0 items-center gap-2 text-sm">
             <CircleCheckIcon aria-hidden className="size-4 shrink-0 text-ok" />
             <span className="min-w-0 anywhere">
@@ -811,10 +811,10 @@ function ProviderSteps({ h, start, onClose, busyRef }: { h: HarnessStatus; start
           {step === "models" ? <ModelsStep provider={choice} title={info.title} main={main} setMain={setMain} light={light} setLight={setLight} onModels={onModels} /> : null}
           {step === "review" ? (
             <div className="grid gap-4">
-              <dl className="divide-y rounded-xl border bg-card px-4">
+              <dl className="divide-y rounded-lg border bg-card px-4">
                 <ReviewRow label="Provider">
                   <span className="flex items-center gap-2">
-                    <ProviderGlyph name={choice} title={info.title} className="size-6 text-[10px]" />
+                    <ProviderGlyph name={choice} title={info.title} className="size-6 text-xs" />
                     {info.title}
                     {!switching ? <Badge variant="secondary">In use</Badge> : null}
                   </span>
@@ -870,7 +870,7 @@ function ProviderSteps({ h, start, onClose, busyRef }: { h: HarnessStatus; start
 
         <div className="flex items-center justify-between gap-2 border-t bg-muted/30 px-5 py-3">
           {step === "pick" || step === "done" ? (
-            <span className="text-[12.5px] text-muted-foreground">{step === "pick" ? <CloudIcon aria-hidden className="mr-1.5 inline size-3.5 -translate-y-px" /> : null}{step === "pick" ? "Keys and sign-ins stay on this machine." : ""}</span>
+            <span className="text-[13px] text-muted-foreground">{step === "pick" ? <CloudIcon aria-hidden className="mr-1.5 inline size-3.5 -translate-y-px" /> : null}{step === "pick" ? "Keys and sign-ins stay on this machine." : ""}</span>
           ) : (
             <Button variant="ghost" onClick={() => go(step === "connect" ? "pick" : step === "models" ? "connect" : "models")} disabled={saving}>
               <ArrowLeftIcon /> Back

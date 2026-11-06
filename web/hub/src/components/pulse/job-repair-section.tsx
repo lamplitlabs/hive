@@ -20,12 +20,12 @@ export function FailedJobsSection({ project }: { project?: string }) {
     <section id={project ? undefined : "failed-jobs"} aria-label="Jobs that failed" className="scroll-mt-32">
       <Disclosure
         variant="row"
-        className="rounded-2xl border bg-card px-2.5 py-1.5 sm:px-3.5"
+        className="rounded-lg border bg-card px-2.5 py-1.5 sm:px-3.5"
         contentClassName="-mx-2.5 -mb-1.5 mt-1.5 px-0 pb-0 sm:-mx-3.5"
         onToggle={(open) => { if (open) setOpened(true); }}
         summary={
           <span className="grid gap-0.5 py-0.5">
-            <span className="text-[15px] font-semibold leading-snug">Jobs that failed</span>
+            <span className="text-base font-semibold leading-snug">Jobs that failed</span>
             <span className="text-sm font-normal leading-relaxed text-muted-foreground">
               {count !== undefined ? plural(count, "job") + " failed in the past. " : summary.error ? "PULSE couldn't count them right now; open this to see why. " : ""}
               Most need nothing from you. Look here when a task seems stuck.

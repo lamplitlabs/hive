@@ -271,7 +271,7 @@ const HELP: Record<string, string> = {
   "lead.ballot_cap": "The most suggestions one voting run looks at.",
   "plan.operating_layer_per_day": "How many runs per day may improve the way agents work, rather than the product.",
   "board.stale_days": "How long a suggestion about files that no longer exist stays open.",
-  "owner.name": "How PULSE greets you on Home and names you in the sidebar. Leave it empty to be called 'you'.",
+  "owner.name": "Used in the greeting and on your posts. Leave it empty to be called 'you'.",
   "owner.presence": "When you are here, proposals and requests wait for your answer, and PULSE asks before it adds a tool, a skill or a lead. When you are away, each project's lead agent decides routine proposals for you, PULSE adds the tools and skills a project needs on its own and tells you on the board, and no one asks you about lead seats. Money, hard stops and protected decisions still wait.",
   "records.auto_adopt": "Whether drafted records can be accepted while you are away.",
   "compute.provider": "The cloud, or local virtual machines, PULSE uses when an agent needs an extra machine.",

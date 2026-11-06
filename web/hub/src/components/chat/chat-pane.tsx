@@ -139,7 +139,7 @@ function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameA
             <When d={m.at} />
           </div>
         ) : null}
-        <div title={sameAuthor ? fmtDate(m.at) : undefined} className="min-w-0 max-w-full rounded-2xl rounded-tl-md border border-dashed bg-muted/30 px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground anywhere">
+        <div title={sameAuthor ? fmtDate(m.at) : undefined} className="min-w-0 max-w-full rounded-xl rounded-tl-md border border-dashed bg-muted/30 px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground anywhere">
           <Markdown source={m.body} className="[&>:last-child]:mb-0" />
         </div>
         {where || job?.harness_session || evidence ? (
@@ -295,7 +295,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
 
   const leadName = lead || "the lead agent";
   return (
-    <div className={cn("flex min-h-0 flex-col", embedded ? "h-full" : "h-[calc(100vh-14rem)] min-h-[420px] overflow-hidden rounded-2xl border bg-card", className)}>
+    <div className={cn("flex min-h-0 flex-col", embedded ? "h-full" : "h-[calc(100vh-14rem)] min-h-[420px] overflow-hidden rounded-xl border bg-card", className)}>
       {amending ? <AmendTaskDialog key={amending.id} task={amending} open onOpenChange={(o) => (o ? null : setAmending(null))} /> : null}
       <div
         ref={list}
@@ -363,7 +363,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
                           ) : null}
                           <div
                             title={sameAuthor ? fmtDate(m.at) : undefined}
-                            className={cn("min-w-0 max-w-full rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground anywhere", human ? "rounded-br-md bg-primary/10 ring-1 ring-primary/15" : "rounded-bl-md border bg-card")}
+                            className={cn("min-w-0 max-w-full rounded-xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground anywhere", human ? "rounded-br-md bg-primary/10 ring-1 ring-primary/15" : "rounded-bl-md border bg-card")}
                           >
                             <Markdown source={m.body} className="[&>:last-child]:mb-0" />
                           </div>

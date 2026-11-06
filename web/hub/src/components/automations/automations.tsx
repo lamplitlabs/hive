@@ -8,7 +8,6 @@ import {
   CheckIcon,
   CopyIcon,
   FileCode2Icon,
-  FolderGit2Icon,
   HistoryIcon,
   Loader2Icon,
   MoreHorizontalIcon,
@@ -16,9 +15,7 @@ import {
   PencilIcon,
   PlayIcon,
   PlusIcon,
-  ShieldCheckIcon,
   SquareIcon,
-  TimerIcon,
   TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -44,25 +41,20 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import {
-  CardGrid,
-  ItemCard,
-  ItemCardActions,
-  ItemCardBody,
-  ItemCardMeta,
-  ItemCardTitle,
-  SectionHeading,
-} from "@/components/pulse/item-card";
+import { KindTile } from "@/components/pulse/kind-tile";
+import { PageHeader } from "@/components/pulse/page-header";
+import { SectionHeading } from "@/components/pulse/section-heading";
+import { StatusBadge, StatusIcon } from "@/components/pulse/status-badge";
 import {
   Disclosure,
   EmptyState,
   ErrorNotice,
   Notice,
-  PageTitle,
   SkeletonRows,
 } from "@/components/pulse/panel";
-import { Mono, StatusBadge, ToneBadge, When } from "@/components/pulse/who";
+import { Mono, ToneBadge, When } from "@/components/pulse/who";
 import {
   ApiError,
   api,
@@ -102,35 +94,48 @@ import {
   scriptInPulse,
   scriptOutside,
   slugify,
-  sortRows,
   stateWords,
   plainProblem,
   localWhen,
   utcClockLocal,
 } from "@/lib/automations";
-import { num, parseDate, plural } from "@/lib/format";
+import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import {
+  automationKind,
+  fileProblem,
+  lastResults,
+  nextRunWords,
+  problemOf,
+  scheduleWords,
+  sortAutomations,
+  weekStrip,
+  type Problem,
+  type WeekDay,
+} from "./automations-state";
 
-// Automations: the standing jobs of each project - a task, an improvement,
-// a check or a watch that runs on a cadence. The place to keep one is the
-// project's repository, one file per automation under
-// `.pulse/automations/` (older projects also have a `schedules:` list in
-// `.pulse/pulse.yaml`), so it travels with the code and a review sees it;
-// this page writes those files (one commit on the default branch, never a
-// push) through the same checks the daemon applies them with. A schedule
-// can also live in the store alone, the way `pulse schedule add` makes one;
-// the page shows both and can move the second kind into the repository.
+// Automations (spec "Automations"): the standing jobs of each project - a
+// task, an improvement, a check or a watch that runs on a cadence. A week
+// strip at the top shows the next seven days with a dot per scheduled run;
+// below it one card per automation with its kind tile, its schedule in the
+// viewer's own time, the next run and the last five results. Anything held
+// or failing sorts first with its problem in one sentence and a Fix button.
+//
+// The place to keep an automation is the project's repository, one file per
+// automation under `.pulse/automations/`; this page writes those files (one
+// commit on the default branch, never a push) through the same checks the
+// daemon applies them with. A schedule can also live in the store alone, the
+// way `pulse schedule add` makes one. The dialogs and the history panel at
+// the bottom of this file are unchanged by the redesign.
 
 export const refreshAutomations = () =>
   invalidate(
-    (p) =>
-      p === "automations" ||
-      p.startsWith("automations?") ||
-      p === "runner" ||
-      p.startsWith("tasks") ||
-      p.startsWith("events"),
+    (path) =>
+      path.startsWith("automations") ||
+      path === "runner" ||
+      path.startsWith("events"),
   );
 
 const ANY = "__any__";
@@ -161,23 +166,22 @@ export function AutomationsPageClient() {
     router.replace(pathname + query({ project: p || undefined }), {
       scroll: false,
     });
-  const all = q.data?.projects ?? [];
-  const shown = project ? all.filter((p) => p.slug === project) : all;
+  const all = useMemo(() => q.data?.projects ?? [], [q.data]);
+  const shown = useMemo(() => (project ? all.filter((p) => p.slug === project) : all), [all, project]);
+  const schedules = useMemo(() => shown.flatMap((p) => p.schedules), [shown]);
 
   return (
     <div className="min-w-0">
-      <PageTitle
-        icon={CalendarClockIcon}
-        sub="Standing jobs that run on a schedule: a file in the project's .pulse/automations folder, or set by hand here."
-        actions={
+      <PageHeader
+        title="Automations"
+        subtitle="Work that runs on a schedule"
+        action={
           <Button onClick={() => setAdding(project || "")}>
             <PlusIcon /> New automation
           </Button>
         }
-      >
-        Automations
-      </PageTitle>
-      <div className="mb-4 flex min-w-0">
+      />
+      <div className="mb-4 flex min-w-0 flex-wrap items-center justify-between gap-3">
         <Select
           value={project || "all"}
           onValueChange={(v) => go(v === "all" ? "" : v)}
@@ -203,6 +207,8 @@ export function AutomationsPageClient() {
         </Select>
       </div>
 
+      {q.data ? <WeekStrip schedules={schedules} /> : null}
+
       <div className="grid min-w-0 gap-6">
         {q.error && !q.data ? (
           <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
@@ -222,7 +228,7 @@ export function AutomationsPageClient() {
             }
             icon={<CalendarClockIcon className="size-[18px]" />}
             action={
-              <Button size="sm" onClick={() => setAdding(project || "")}>
+              <Button size="sm" variant="outline" onClick={() => setAdding(project || "")}>
                 <PlusIcon /> New automation
               </Button>
             }
@@ -265,11 +271,65 @@ export function AutomationsPageClient() {
   );
 }
 
+// ----- the week strip -----------------------------------------------------
+
+const STRIP_DOTS = 5;
+
+// The next seven days as cells: weekday and day number, today with the teal
+// ring, and one small dot per run due that day (five at most, then "+N").
+// The cell's label names every run, so a reader without the dots has it.
+function WeekStrip({ schedules }: { schedules: AutomationSchedule[] }) {
+  const now = useNow(60000);
+  const days = useMemo(() => weekStrip(schedules, new Date(now)), [schedules, now]);
+  return (
+    <ol className="mb-6 grid grid-cols-7 gap-1.5 sm:gap-2" aria-label="The next seven days">
+      {days.map((d) => (
+        <WeekCell key={d.key} d={d} />
+      ))}
+    </ol>
+  );
+}
+
+function WeekCell({ d }: { d: WeekDay }) {
+  const n = d.runs.length;
+  const label =
+    d.weekday +
+    " " +
+    d.day +
+    (d.today ? ", today" : "") +
+    ": " +
+    (n ? plural(n, "run") + " - " + d.runs.map((r) => r.title + " at " + r.at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })).join(", ") : "nothing scheduled");
+  return (
+    <li
+      className={cn(
+        "surface-raised flex min-w-0 flex-col items-center gap-1.5 rounded-lg border px-1 py-2 text-center",
+        d.today && "ring-2 ring-ring ring-offset-2 ring-offset-background",
+      )}
+      aria-label={label}
+      title={label}
+    >
+      <span className={cn("text-xs leading-4", d.today ? "font-medium text-foreground" : "text-muted-foreground")}>{d.weekday}</span>
+      <span className="tnum text-sm font-semibold leading-5 text-foreground">{d.day}</span>
+      <span className="flex h-2 items-center justify-center gap-1" aria-hidden>
+        {d.runs.slice(0, STRIP_DOTS).map((r, i) => (
+          <i key={r.id + ":" + i} className="block size-1.5 rounded-full bg-primary" />
+        ))}
+        {n > STRIP_DOTS ? <span className="tnum text-xs leading-none text-muted-foreground">+{n - STRIP_DOTS}</span> : null}
+      </span>
+    </li>
+  );
+}
+
 // ----- one project --------------------------------------------------------
 
-// A project's automations, one card each: the live and paused schedules,
-// then the files the daemon holds back (they have no schedule row, so the
-// file is the card), with the ended ones folded away at the end.
+// One card's worth of an automation: a live schedule, or a file of
+// `.pulse/automations/` that no schedule runs from (held or not applied yet).
+type Card =
+  | { key: string; status: string; failing: boolean; kind: "schedule"; s: AutomationSchedule }
+  | { key: string; status: string; failing: boolean; kind: "file"; f: AutomationRepoFile };
+
+// A project's automations, one card each, held and failing ones first and
+// the ended ones folded away at the end.
 function ProjectGroup({
   p,
   single,
@@ -281,27 +341,30 @@ function ProjectGroup({
   onAdd: () => void;
   onEdit: (t: EditTarget) => void;
 }) {
-  const rows = sortRows(p.schedules);
-  const live = rows.filter((s) => s.status !== "ended");
-  const ended = rows.filter((s) => s.status === "ended");
   const [showEnded, setShowEnded] = useState(false);
   const listProblems = p.file?.problems ?? [];
   const otherProblems = daemonProblems(p);
-  const files = p.automations?.files ?? [];
   const dir = p.automations?.dir ?? ".pulse/automations";
-  // Files without a live schedule: held (the daemon refused them) or not
-  // applied yet. Each gets a card of its own; a file a schedule runs from is
-  // the schedule's card, which names the file.
-  const loose = files.filter((f) => fileState(p, f).row === null);
+  const cards = useMemo(() => {
+    const out: Card[] = p.schedules.map((s) => ({ key: s.id, status: s.status, failing: !!problemOf(s), kind: "schedule", s }));
+    // Files without a live schedule: held (the daemon refused them) or not
+    // applied yet. A file a schedule runs from is the schedule's card.
+    for (const f of p.automations?.files ?? []) {
+      const st = fileState(p, f);
+      if (st.row === null) out.push({ key: "file:" + f.path, status: st.state, failing: st.state === "held", kind: "file", f });
+    }
+    return sortAutomations(out);
+  }, [p]);
+  const live = cards.filter((c) => c.status !== "ended");
+  const ended = cards.filter((c) => c.status === "ended");
   return (
     <section className="grid min-w-0 gap-3" aria-label={p.name || p.slug}>
       <SectionHeading
         as={single ? "h2" : "h3"}
         count={live.length}
-        icon={FolderGit2Icon}
         note={<FileLine p={p} />}
         action={
-          <Button size="sm" variant="outline" onClick={onAdd}>
+          <Button size="sm" variant="ghost" onClick={onAdd}>
             <PlusIcon /> Add
           </Button>
         }
@@ -339,7 +402,7 @@ function ProjectGroup({
           </ul>
         </Notice>
       ) : null}
-      {live.length === 0 && loose.length === 0 ? (
+      {live.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {p.repo
             ? "Nothing live. Add one and it goes into " +
@@ -350,13 +413,14 @@ function ProjectGroup({
             : "Nothing live, and no checkout on this machine to keep a file in."}
         </p>
       ) : (
-        <CardGrid cols={2}>
-          {live.map((s) => (
-            <ScheduleCard key={s.id} p={p} s={s} onEdit={onEdit} />
-          ))}
-          {loose.map((f) => (
-            <FileCard key={f.path} p={p} f={f} onEdit={onEdit} />
-          ))}
+        <CardGrid>
+          {live.map((c) =>
+            c.kind === "schedule" ? (
+              <ScheduleCard key={c.key} p={p} s={c.s} onEdit={onEdit} />
+            ) : (
+              <FileCard key={c.key} p={p} f={c.f} onEdit={onEdit} />
+            ),
+          )}
         </CardGrid>
       )}
       {ended.length ? (
@@ -366,15 +430,21 @@ function ProjectGroup({
           onToggle={setShowEnded}
           contentClassName="grid gap-3"
         >
-          <CardGrid cols={2}>
-            {ended.map((s) => (
-              <ScheduleCard key={s.id} p={p} s={s} onEdit={onEdit} />
-            ))}
+          <CardGrid>
+            {ended.map((c) =>
+              c.kind === "schedule" ? (
+                <ScheduleCard key={c.key} p={p} s={c.s} onEdit={onEdit} />
+              ) : null,
+            )}
           </CardGrid>
         </Disclosure>
       ) : null}
     </section>
   );
+}
+
+function CardGrid({ children }: { children: React.ReactNode }) {
+  return <div className="grid min-w-0 gap-3 md:grid-cols-2">{children}</div>;
 }
 
 // Where the project keeps its automations, in a line: the folder (how many
@@ -423,9 +493,100 @@ function FileLine({ p }: { p: AutomationProject }) {
   );
 }
 
+// ----- the card ----------------------------------------------------------
+
+// The frame every automation card shares: the kind tile, the title and the
+// schedule, a status on the right, then the body and one row of actions.
+function AutomationCard({
+  kind,
+  title,
+  schedule,
+  status,
+  problem,
+  children,
+  actions,
+  ariaLabel,
+}: {
+  kind: AutomationSchedule["kind"];
+  title: string;
+  schedule: string;
+  status?: React.ReactNode;
+  problem?: Problem | null;
+  children?: React.ReactNode;
+  actions: React.ReactNode;
+  ariaLabel: string;
+}) {
+  return (
+    <article
+      className={cn(
+        "surface-raised relative flex min-w-0 flex-col gap-3 rounded-lg border p-4 text-left",
+        problem?.tone === "failed" && "border-[color-mix(in_oklch,var(--color-status-failed)_40%,var(--border))]",
+      )}
+      aria-label={ariaLabel}
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        <KindTile kind={automationKind({ kind })} size={28} title={KIND_WORDS[kind]?.label ?? kind} className="mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <h3 className="min-w-0 truncate text-sm font-semibold leading-5 text-foreground" title={title}>
+            {title}
+          </h3>
+          <p className="min-w-0 truncate text-[13px] leading-5 text-muted-foreground">{schedule || "\u2014"}</p>
+        </div>
+        {status ? <div className="flex shrink-0 items-center gap-1.5">{status}</div> : null}
+      </div>
+      {problem ? (
+        <p className="flex min-w-0 items-start gap-2 text-[13px] leading-5 text-foreground">
+          <StatusBadge status={problem.tone} size="sm" className="mt-px" />
+          <span className="min-w-0 anywhere">{problem.text}</span>
+        </p>
+      ) : null}
+      {children}
+      <div
+        className="mt-auto flex min-w-0 flex-wrap items-center gap-2 pt-1"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+        }}
+      >
+        {actions}
+      </div>
+    </article>
+  );
+}
+
+// The last five results as small icons, oldest on the left. From the
+// automation's history when it has loaded; until then (or when the history
+// is empty) the one result the list payload carries for a check or a watch.
+function LastResults({ s }: { s: AutomationSchedule }) {
+  const q = useApi<AutomationHistory>(automationHistoryPath(s.id, { limit: 12 }), { refresh: 60000 });
+  const entries = q.data?.entries;
+  const r = useMemo(() => lastResults(entries, s), [entries, s]);
+  if (!r.results.length) {
+    return <span className="text-[13px] text-muted-foreground">{q.data || q.error ? "No results yet" : "\u2026"}</span>;
+  }
+  const label = r.from === "schedule" || r.results.length === 1 ? "Last result" : "Last " + r.results.length + " results";
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground" aria-label={label}>
+      <span className="inline-flex items-center gap-1">
+        {r.results.map((x, i) => (
+          <Tooltip key={x.at + ":" + i}>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <StatusIcon status={x.status} className="size-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{x.detail + ", " + localWhen(x.at)}</TooltipContent>
+          </Tooltip>
+        ))}
+      </span>
+      <span className="truncate">{label.toLowerCase()}</span>
+    </span>
+  );
+}
+
 // A file of `.pulse/automations/` that no schedule runs from: the daemon
 // holds it (something is wrong) or has not applied it yet. Its problems
-// show here, and the form opens on it.
+// show here, and Fix opens the form on it.
 function FileCard({
   p,
   f,
@@ -436,97 +597,67 @@ function FileCard({
   onEdit: (t: EditTarget) => void;
 }) {
   const st = fileState(p, f);
-  const problems = fileProblems(p, f);
+  const problems = fileProblems(p, f).map(plainProblem);
   const e = f.entry;
-  const kind = e ? (KIND_WORDS[e.kind || "task"]?.label ?? e.kind) : "";
+  const held = st.state === "held";
+  const edit = e
+    ? () =>
+        onEdit({
+          project: p,
+          entry: entryFromFile(e),
+          mode: "repo",
+          replace: f.name,
+          schedule: null,
+          title: e.title || f.name,
+        })
+    : null;
   return (
-    <ItemCard ariaLabel={e?.title || f.name}>
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <span
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"
-            aria-hidden
-          >
-            <FileCode2Icon className="size-[18px]" />
+    <AutomationCard
+      kind={e?.kind || "task"}
+      title={e?.title || f.name}
+      schedule={e ? scheduleWords({ every_minutes: everyMinutes(e.every) ?? 0, at_time: e.at }) || cadenceWords(e.every, e.at) : "Unreadable"}
+      status={<StatusBadge status={held ? "warning" : "pending"} label={held ? "Held" : "Not applied yet"} size="sm" title={"The daemon's view of " + f.path} />}
+      problem={held ? fileProblem(problems, !!e) : null}
+      ariaLabel={e?.title || f.name}
+      actions={
+        <>
+          {edit ? (
+            <Button size="sm" variant={held ? "default" : "outline"} onClick={edit} title={"Edit " + f.path}>
+              {held ? <WrenchIcon /> : <PencilIcon />} {held ? "Fix" : "Edit"}
+            </Button>
+          ) : null}
+          <span className="ml-auto inline-flex min-w-0 items-center gap-1 text-[13px] text-muted-foreground" title={f.path}>
+            <FileCode2Icon className="size-3.5" aria-hidden />
+            <span className="truncate">{f.path}</span>
           </span>
-          <div className="min-w-0">
-            <ItemCardTitle>{e?.title || f.name}</ItemCardTitle>
-            <p className="text-xs text-muted-foreground">
-              {e ? cadenceWords(e.every, e.at) + " · " + kind : "unreadable"}
-            </p>
-          </div>
-        </div>
-        <ToneBadge
-          tone={st.state === "held" ? "bad" : "neutral"}
-          dot
-          className="mt-0.5 shrink-0"
-          title={"The daemon's view of " + f.path}
-        >
-          {st.words}
-        </ToneBadge>
-      </div>
-      {problems.length ? (
-        <ul className="list-disc pl-4 text-xs text-warn">
-          {problems.map((x) => (
+        </>
+      }
+    >
+      {problems.length > 1 ? (
+        <ul className="list-disc pl-4 text-[13px] text-muted-foreground">
+          {problems.slice(1).map((x) => (
             <li key={x} className="anywhere">
-              {plainProblem(x)}
+              {x}
             </li>
           ))}
         </ul>
       ) : null}
-      <ItemCardMeta>
-        <span className="inline-flex items-center gap-1" title={f.path}>
-          <FileCode2Icon className="size-3.5" aria-hidden />
-          in {f.path}
-        </span>
-        {st.state === "pending" ? (
-          <span>the daemon applies it on its next pass</span>
-        ) : null}
-      </ItemCardMeta>
-      {e ? (
-        <ItemCardActions>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() =>
-              onEdit({
-                project: p,
-                entry: entryFromFile(e),
-                mode: "repo",
-                replace: f.name,
-                schedule: null,
-                title: e.title || f.name,
-              })
-            }
-            title={"Edit " + f.path}
-          >
-            <PencilIcon /> Edit
-          </Button>
-        </ItemCardActions>
-      ) : null}
-    </ItemCard>
+      {st.state === "pending" ? <p className="text-[13px] text-muted-foreground">The daemon applies it on its next pass.</p> : null}
+    </AutomationCard>
   );
 }
 
 // ----- one schedule -------------------------------------------------------
 
-// The cadence with its time of day in the viewer's own time ("every day at
-// 07:30"); the hub's UTC wording stays in the tooltip.
-function LocalCadence({ s }: { s: AutomationSchedule }) {
-  const cadence = s.every_words || cadenceWords(s.every, s.at_time);
-  const local = s.at_time ? utcClockLocal(s.at_time) : "";
-  const shown = local ? cadence.replace(/at \d{1,2}:\d{2} UTC/, "at " + local) : cadence;
-  return <span title={shown !== cadence ? cadence : undefined}>{shown}</span>;
-}
-
-// The next start: a time still ahead, or "due now" once the daemon is behind it.
-function NextRun({ at }: { at: string }) {
+// The next start: "in 3 h", or "due now" once the daemon is behind it.
+function NextRun({ s }: { s: AutomationSchedule }) {
   const now = useNow();
-  const t = parseDate(at);
-  if (t && t.getTime() <= now) return <span title={at}>due now</span>;
+  const words = nextRunWords(s, now);
+  if (!words) return null;
   return (
-    <span>
-      next <When d={at} />
+    <span className="inline-flex items-center gap-1 whitespace-nowrap" title={localWhen(s.next_at, new Date(now))}>
+      <CalendarClockIcon className="size-3.5" aria-hidden />
+      {words === "due now" ? "Due now" : "Next " + words}
     </span>
   );
 }
@@ -544,12 +675,11 @@ function ScheduleCard({
   const [ending, setEnding] = useState(false);
   const [history, setHistory] = useState(false);
   const live = s.status !== "ended";
-  const script = isScriptKind(s.kind);
   const outside = scriptOutside(s);
   const fromFile = !!s.origin_path;
   const fileEntry = fromFile ? fileEntryOf(p, s) : null;
+  const problem = live ? problemOf(s) : null;
   const state = stateWords(s);
-  const kind = KIND_WORDS[s.kind]?.label ?? s.kind;
   const act = async (action: "pause" | "resume" | "run") => {
     setBusy(action);
     try {
@@ -565,12 +695,8 @@ function ScheduleCard({
             action === "run"
               ? "The job shows under Tasks in a moment."
               : fromFile
-                ? "The file keeps its entry; the daemon honours this until the file says otherwise."
-                : r.schedule?.next_at
-                  ? "Next run " +
-                    localWhen(r.schedule.next_at) +
-                    "."
-                  : undefined,
+                ? "The file keeps its entry; the daemon honours the pause until you resume."
+                : r.warning || undefined,
         },
       );
       refreshAutomations();
@@ -580,212 +706,142 @@ function ScheduleCard({
       setBusy(null);
     }
   };
-  const edit = () => {
-    if (fromFile && fileEntry)
-      onEdit({
-        project: p,
-        entry: fileEntry,
-        mode: "repo",
-        replace: s.origin_name,
-        schedule: s,
-        title: s.title,
-      });
-    else
-      onEdit({
-        project: p,
-        entry: entryFromSchedule(s),
-        mode: "store",
-        schedule: s,
-        title: s.title,
-      });
-  };
+  const edit = () =>
+    onEdit({
+      project: p,
+      entry: fileEntry ?? entryFromSchedule(s),
+      mode: fromFile ? "repo" : "store",
+      replace: fromFile ? s.origin_name : s.id,
+      schedule: s,
+      title: s.title,
+    });
   const move = () =>
     onEdit({
       project: p,
       entry: entryFromSchedule(s),
       mode: "move",
+      replace: s.id,
       schedule: s,
       title: s.title,
     });
+  // The one visible action: Fix when something is wrong (resume a paused
+  // one, else open the entry to edit it), Run now otherwise; the rest sits
+  // in the menu.
+  const canEdit = live && (!fromFile || !!fileEntry);
+  const fix = s.status === "paused" ? () => void act("resume") : canEdit ? edit : () => setHistory(true);
+  const stateTip = state ? (s.kind === "check" ? "The check is " : "The watch is ") + state.text + "." : undefined;
   return (
-    <ItemCard className={cn(!live && "opacity-70")} ariaLabel={s.title}>
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <span
-            className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-lg",
-              live
-                ? "bg-primary/10 text-primary"
-                : "bg-muted text-muted-foreground",
-            )}
-            aria-hidden
-          >
-            {script ? (
-              <ShieldCheckIcon className="size-[18px]" />
-            ) : s.kind === "improve" || s.kind === "clean" ? (
-              <WrenchIcon className="size-[18px]" />
-            ) : (
-              <TimerIcon className="size-[18px]" />
-            )}
-          </span>
-          <div className="min-w-0">
-            <ItemCardTitle className={cn(!live && "text-muted-foreground")}>
-              {s.title}
-            </ItemCardTitle>
-            <p className="text-xs text-muted-foreground">
-              <LocalCadence s={s} />
-              {" · " + kind}
-              {s.tier === 0 ? " · lands on its own" : ""}
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          <StatusBadge status={s.status} className="mt-0.5" />
-          {state ? <ToneBadge tone={state.tone}>{state.text}</ToneBadge> : null}
-          {outside ? (
-            <ToneBadge
-              tone="warn"
-              title={
-                "Its script " +
-                s.script +
-                " sits outside .pulse/. It keeps running from there; the place for it is " +
-                (s.script_home || scriptHome(s.origin_name || s.id)) +
-                "."
-              }
-            >
-              <TriangleAlertIcon className="size-3" aria-hidden />
-              Script needs a move
-            </ToneBadge>
-          ) : null}
-        </div>
-      </div>
-      <ItemCardBody clamp={2} className="text-muted-foreground">
-        {script ? (
+    <>
+      <AutomationCard
+        kind={s.kind}
+        title={s.title}
+        schedule={scheduleWords(s) || s.every_words || cadenceWords(s.every, s.at_time)}
+        status={
           <>
-            Runs <Mono>{s.script}</Mono>
-            {s.job_kind && s.job_kind !== "task"
-              ? "; a " +
-                (s.kind === "check" ? "red run" : "firing") +
-                " queues an " +
-                s.job_kind +
-                " job."
-              : "."}
             {outside ? (
-              <>
-                {" Move the script to "}
-                <Mono>{s.script_home || scriptHome(s.origin_name || s.id)}</Mono>
-                {" so everything PULSE adds to the repository stays under .pulse/."}
-              </>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex" role="img" aria-label="Script needs a move">
+                    <TriangleAlertIcon className="size-4 text-status-warning" strokeWidth={1.75} aria-hidden />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {"Its script " + s.script + " sits outside .pulse/. The place for it is " + (s.script_home || scriptHome(s.origin_name || s.id)) + "."}
+                </TooltipContent>
+              </Tooltip>
             ) : null}
+            <StatusBadge status={s.status} size="sm" title={stateTip} />
           </>
-        ) : s.skill ? (
+        }
+        problem={problem}
+        ariaLabel={s.title}
+        actions={
           <>
-            Follows the skill <Mono>{s.skill}</Mono>
-            {s.brief ? ": " + s.brief : "."}
-          </>
-        ) : (
-          s.brief || "No brief."
-        )}
-      </ItemCardBody>
-      <ItemCardMeta>
-        <span
-          className="inline-flex items-center gap-1"
-          title={
-            fromFile
-              ? "Kept by the file; edit here or in the repository"
-              : "Lives in the store on this machine"
-          }
-        >
-          {fromFile ? (
-            <FileCode2Icon className="size-3.5" aria-hidden />
-          ) : (
-            <PencilIcon className="size-3.5" aria-hidden />
-          )}
-          {keptWords(s)}
-          {fromFile && s.origin_name && !inFolder(s.origin_path) ? (
-            <Mono className="text-[11px]">#{s.origin_name}</Mono>
-          ) : null}
-        </span>
-        {live && s.status === "active" && s.next_at ? (
-          <NextRun at={s.next_at} />
-        ) : null}
-        {s.status === "paused" && s.note ? (
-          <span className="anywhere">paused: {s.note}</span>
-        ) : null}
-        {s.status === "ended" && s.note ? (
-          <span className="anywhere">ended: {s.note}</span>
-        ) : null}
-        <span className="tnum">
-          {s.runs
-            ? plural(s.runs, "run") +
-              (s.max_runs ? " of " + num(s.max_runs) : "")
-            : "not run yet"}
-        </span>
-        {s.last_at ? (
-          <span>
-            last <When d={s.last_at} />
-          </span>
-        ) : null}
-        {s.agent ? (
-          <span>
-            as <Mono className="text-[11px]">{s.agent}</Mono>
-          </span>
-        ) : null}
-      </ItemCardMeta>
-      {/* One clear action - Run now - and the rest in a menu, so a page of cards isn't a wall of buttons. */}
-      <ItemCardActions>
-        {live ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void act("run")}
-            disabled={!!busy}
-            title="Queue one job now, without waiting for the cadence"
-          >
-            {busy === "run" ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Run now
-          </Button>
-        ) : null}
-        {live && s.status === "paused" ? (
-          <Button size="sm" variant="ghost" onClick={() => void act("resume")} disabled={!!busy}>
-            {busy === "resume" ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Resume
-          </Button>
-        ) : null}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button size="icon-sm" variant="ghost" className="ml-auto" aria-label={"More for " + s.title} disabled={!!busy}>
-              {busy && busy !== "run" && busy !== "resume" ? <Loader2Icon className="animate-spin" /> : <MoreHorizontalIcon />}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-60 rounded-xl p-1.5 shadow-pop">
-            <DropdownMenuItem onSelect={() => setHistory(true)}>
-              <HistoryIcon /> History
-            </DropdownMenuItem>
-            {live && s.status !== "paused" ? (
-              <DropdownMenuItem onSelect={() => void act("pause")}>
-                <PauseIcon /> Pause
-              </DropdownMenuItem>
+            {live && problem ? (
+              <Button size="sm" onClick={fix} disabled={!!busy} title={s.status === "paused" ? "Turn it back on" : "Open it to put it right"}>
+                {busy === "resume" ? <Loader2Icon className="animate-spin" /> : <WrenchIcon />} {s.status === "paused" ? "Resume" : "Fix"}
+              </Button>
+            ) : live && s.status === "paused" ? (
+              <Button size="sm" variant="outline" onClick={() => void act("resume")} disabled={!!busy} title="Turn it back on">
+                {busy === "resume" ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Resume
+              </Button>
+            ) : live ? (
+              <Button size="sm" variant="outline" onClick={() => void act("run")} disabled={!!busy} title="Queue one job now, without waiting for the cadence">
+                {busy === "run" ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Run now
+              </Button>
             ) : null}
-            {live && (!fromFile || fileEntry) ? (
-              <DropdownMenuItem onSelect={edit}>
-                <PencilIcon /> Edit
-              </DropdownMenuItem>
-            ) : null}
-            {live && !fromFile && p.repo ? (
-              <DropdownMenuItem onSelect={move}>
-                <FileCode2Icon /> Move into the repository
-              </DropdownMenuItem>
-            ) : null}
-            {live ? (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onSelect={() => setEnding(true)}>
-                  <SquareIcon /> End it
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="icon-sm" variant="ghost" className="ml-auto" aria-label={"More for " + s.title} disabled={!!busy}>
+                      {busy && busy !== "run" && busy !== "resume" ? <Loader2Icon className="animate-spin" /> : <MoreHorizontalIcon />}
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>More</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuItem onSelect={() => setHistory(true)} aria-label={"History of " + s.title}>
+                  <HistoryIcon /> History
                 </DropdownMenuItem>
-              </>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </ItemCardActions>
+                {live && (problem || s.status === "paused") ? (
+                  <DropdownMenuItem onSelect={() => void act("run")} aria-label={"Run " + s.title + " now"}>
+                    <PlayIcon /> Run now
+                  </DropdownMenuItem>
+                ) : null}
+                {live && s.status !== "paused" ? (
+                  <DropdownMenuItem onSelect={() => void act("pause")} aria-label={"Pause " + s.title}>
+                    <PauseIcon /> Pause
+                  </DropdownMenuItem>
+                ) : null}
+                {canEdit ? (
+                  <DropdownMenuItem onSelect={edit} aria-label={"Edit " + s.title}>
+                    <PencilIcon /> Edit
+                  </DropdownMenuItem>
+                ) : null}
+                {live && !fromFile && p.repo ? (
+                  <DropdownMenuItem onSelect={move} aria-label={"Move " + s.title + " into the repository"}>
+                    <FileCode2Icon /> Move into the repository
+                  </DropdownMenuItem>
+                ) : null}
+                {live ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem variant="destructive" onSelect={() => setEnding(true)} aria-label={"End " + s.title}>
+                      <SquareIcon /> End it
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] leading-5 text-muted-foreground">
+          {live && s.status === "active" ? <NextRun s={s} /> : null}
+          <LastResults s={s} />
+          <span
+            className="inline-flex min-w-0 items-center gap-1"
+            title={fromFile ? "Kept by the file; edit here or in the repository" : "Lives in the store on this machine"}
+          >
+            {fromFile ? <FileCode2Icon className="size-3.5 shrink-0" aria-hidden /> : <PencilIcon className="size-3.5 shrink-0" aria-hidden />}
+            <span className="truncate">{keptWords(s)}</span>
+          </span>
+          {s.status === "paused" && s.note ? <span className="anywhere">paused: {s.note}</span> : null}
+          {s.status === "ended" && s.note ? <span className="anywhere">ended: {s.note}</span> : null}
+          {s.max_runs ? (
+            <span className="tnum">
+              {num(s.runs)} of {num(s.max_runs)} runs
+            </span>
+          ) : null}
+          {s.agent ? (
+            <span>
+              as <Mono className="text-xs">{s.agent}</Mono>
+            </span>
+          ) : null}
+        </div>
+      </AutomationCard>
       <HistoryDialog
         open={history}
         onOpenChange={setHistory}
@@ -799,13 +855,13 @@ function ScheduleCard({
           fromFile && fileEntry
             ? (inFolder(s.origin_path)
                 ? "Its file " + s.origin_path + " is removed"
-                : "Its entry is removed from " + s.origin_path) +
-              " on " +
+                : "Its entry in " + s.origin_path + " is removed") +
+              " in a commit on " +
               (p.repo?.branch ?? "the default branch") +
-              " in one commit (nothing is pushed), and the schedule ends. Jobs it already started finish."
-            : "The schedule ends and runs no more. Jobs it already started finish."
+              " and the schedule stops. You can add it back any time."
+            : "The schedule stops and stays in the list as ended, with a note. Nothing that it queued is touched."
         }
-        action="End"
+        action="End it"
         destructive
         words={{
           label: "Why (optional)",
@@ -821,7 +877,7 @@ function ScheduleCard({
           path.startsWith("events")
         }
       />
-    </ItemCard>
+    </>
   );
 }
 
@@ -897,13 +953,13 @@ function HistoryPanel({ s }: { s: AutomationSchedule }) {
           {state ? <ToneBadge tone={state.tone}>{state.text}</ToneBadge> : null}
         </DialogTitle>
         <DialogDescription className="anywhere">
-          <Mono className="text-[11px]">{row.id}</Mono>{" "}
+          <Mono className="text-xs">{row.id}</Mono>{" "}
           {row.every_words || cadenceWords(row.every, row.at_time)}
           {" · " + (KIND_WORDS[row.kind]?.label ?? row.kind)}
           {script ? (
             <>
               {" · runs "}
-              <Mono className="text-[11px]">{row.script}</Mono>
+              <Mono className="text-xs">{row.script}</Mono>
             </>
           ) : null}
           {" · " + keptWords(row)}
@@ -937,7 +993,7 @@ function HistoryPanel({ s }: { s: AutomationSchedule }) {
                   </>
                 ) : null}
               </p>
-              <pre className="max-h-48 overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap anywhere">
+              <pre className="max-h-48 overflow-auto rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap anywhere">
                 {q.data.last_output}
               </pre>
             </section>
@@ -992,14 +1048,14 @@ function HistoryPanel({ s }: { s: AutomationSchedule }) {
                       className="hover:underline"
                       title={j.title}
                     >
-                      <Mono className="text-[11px]">{j.id}</Mono>
+                      <Mono className="text-xs">{j.id}</Mono>
                     </Link>
                     <StatusBadge status={j.status} />
                     <span className="min-w-0 flex-1 truncate text-muted-foreground">
                       {j.title}
                     </span>
                     {j.agent ? (
-                      <Mono className="text-[11px]">{j.agent}</Mono>
+                      <Mono className="text-xs">{j.agent}</Mono>
                     ) : null}
                     {j.finished_at || j.created_at ? (
                       <When d={j.finished_at || j.created_at} className="text-xs text-muted-foreground" />
@@ -1054,12 +1110,12 @@ function HistoryLine({
         {e.job && (e.what === "fired" || e.what === "skipped" || e.what === "ran") ? (
           <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
             <Link href={hrefs.task(e.job)} className="hover:underline">
-              <Mono className="text-[11px]">{e.job}</Mono>
+              <Mono className="text-xs">{e.job}</Mono>
             </Link>
             {e.job_status ? <StatusBadge status={e.job_status} /> : null}
             {e.job_agent ? (
               <span>
-                by <Mono className="text-[11px]">{e.job_agent}</Mono>
+                by <Mono className="text-xs">{e.job_agent}</Mono>
               </span>
             ) : null}
             {e.job_finished_at ? (
@@ -1530,10 +1586,10 @@ function AutomationForm({
                 </p>
                 {keptScript && !scriptInPulse(keptScript) ? (
                   <p className="text-xs text-warn">
-                    It runs <Mono className="text-[11px]">{keptScript}</Mono>{" "}
+                    It runs <Mono className="text-xs">{keptScript}</Mono>{" "}
                     from outside .pulse/ today; that keeps working. To move it,
                     commit the script at{" "}
-                    <Mono className="text-[11px]">{scriptHome(clean.name)}</Mono>{" "}
+                    <Mono className="text-xs">{scriptHome(clean.name)}</Mono>{" "}
                     first, then name that path here.
                   </p>
                 ) : null}
@@ -1746,7 +1802,7 @@ function AutomationForm({
                 <CopyIcon /> Copy
               </Button>
             </div>
-            <pre className="max-h-72 min-w-0 max-w-full overflow-auto rounded-xl border bg-muted/40 p-3 font-mono text-[12px] leading-relaxed whitespace-pre" aria-live="polite" aria-label="The PULSE file entry">
+            <pre className="max-h-72 min-w-0 max-w-full overflow-auto rounded-xl border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre" aria-live="polite" aria-label="The PULSE file entry">
               {check?.yaml || "# " + (checking ? "checking…" : project ? "fill in a name and how often it runs" : "pick a project")}
             </pre>
             {check?.path ? (

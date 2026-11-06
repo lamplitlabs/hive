@@ -104,7 +104,7 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
         <DialogTitle>{t.title}</DialogTitle>
         <DialogDescription asChild>
           <div className="grid gap-0.5">
-            <span className="text-[15px] font-medium text-foreground anywhere">{sentence(record.title)}</span>
+            <span className="text-base font-medium text-foreground anywhere">{sentence(record.title)}</span>
             <span className="text-[13px]" title={"Record " + record.id}>
               {(record.project ? "In " + record.project + ", " : "") + record.id}
             </span>

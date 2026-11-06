@@ -55,8 +55,13 @@ test("project tab links resolve old ids to human tabs", () => {
     tab: "board",
     sub: "suggestions",
   });
-  assert.deepEqual(resolveProjectTab("env"), { tab: "history", sub: "env" });
+  assert.deepEqual(resolveProjectTab("env"), { tab: "team", sub: "env" });
+  assert.deepEqual(resolveProjectTab("team"), { tab: "team" });
   assert.deepEqual(resolveProjectTab("history"), { tab: "history" });
+  assert.deepEqual(resolveProjectTab("timeline"), { tab: "history", sub: "timeline" });
+  assert.deepEqual(resolveProjectTab("notices"), { tab: "board", sub: "notices" });
+  assert.equal(hrefs.project("demo-app", "team"), "/project/?slug=demo-app&tab=team");
+  assert.equal(hrefs.project("demo-app", "env"), "/project/?slug=demo-app&tab=team&sub=env");
   assert.equal(
     hrefs.project("demo-app", "tasks"),
     "/project/?slug=demo-app&tab=work",

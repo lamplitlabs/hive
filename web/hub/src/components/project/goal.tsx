@@ -69,7 +69,7 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
           {q.error ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : null}
           {goal ? (
             <>
-              <p className="max-w-3xl whitespace-pre-wrap text-[15px] leading-relaxed anywhere">{goal.text}</p>
+              <p className="max-w-3xl whitespace-pre-wrap text-sm leading-relaxed anywhere">{goal.text}</p>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
                 {goal.source === "generated" ? (
                   <span>PULSE wrote this from the project because you haven&apos;t set a goal. Edit it to point the agents at the outcome you want.</span>
@@ -107,7 +107,8 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
   );
 }
 
-function GoalEditor({ slug, goal, onClose }: { slug: string; goal: ProjectGoal; onClose: () => void }) {
+// The goal's editor dialog; the Overview's Goal panel opens it too.
+export function GoalEditor({ slug, goal, onClose }: { slug: string; goal: ProjectGoal; onClose: () => void }) {
   const id = useId();
   const [text, setText] = useState(goal.text);
   const [busy, setBusy] = useState(false);

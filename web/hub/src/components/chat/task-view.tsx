@@ -282,7 +282,7 @@ function TaskBody({
       <BackButton onBack={onBack} />
       <header
         className={cn(
-          "enter grid min-w-0 gap-2 rounded-2xl border bg-card px-4 py-3 shadow-card transition-colors",
+          "enter grid min-w-0 gap-2 rounded-xl border bg-card px-4 py-3 shadow-card transition-colors",
           review && "surface-you",
           working && "border-primary/40",
         )}
@@ -297,7 +297,7 @@ function TaskBody({
           <div className="grid min-w-[14rem] flex-1 gap-0.5">
             {closed ? (
               <span
-                className="truncate text-[17px] font-semibold tracking-tight text-foreground"
+                className="truncate text-base font-semibold tracking-tight text-foreground"
                 title={t.title}
               >
                 {t.title}
@@ -310,7 +310,7 @@ function TaskBody({
                 title="Edit the task"
               >
                 <span
-                  className="truncate text-[17px] font-semibold tracking-tight text-foreground"
+                  className="truncate text-base font-semibold tracking-tight text-foreground"
                   title={t.title}
                 >
                   {t.title}
@@ -375,7 +375,7 @@ function TaskBody({
               ) : null}
               <span aria-hidden>·</span>
               <span
-                className="font-mono text-[11px]"
+                className="font-mono text-xs"
                 title={t.job_id ? "Planning job " + t.job_id : undefined}
               >
                 {t.id}
@@ -441,7 +441,7 @@ function TaskBody({
         </Notice>
       ) : null}
 
-      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1">
+      <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-card lg:flex-1">
         <TaskActivityPane
           task={t}
           chat={{
@@ -670,7 +670,7 @@ function TaskComposer({
     >
       <div
         className={cn(
-          "grid min-w-0 gap-2 rounded-2xl border bg-card p-2 shadow-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25",
+          "grid min-w-0 gap-2 rounded-xl border bg-card p-2 shadow-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25",
           closed && "opacity-70",
         )}
       >
@@ -697,7 +697,7 @@ function TaskComposer({
           }
           disabled={closed}
           rows={1}
-          className="min-h-10 max-h-48 resize-none border-0 bg-transparent px-2.5 py-2 text-[15px] shadow-none focus-visible:ring-0 dark:bg-transparent"
+          className="min-h-10 max-h-48 resize-none border-0 bg-transparent px-2.5 py-2 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
           aria-label={"Message " + leadName + " about " + t.id}
         />
         <div className="flex min-w-0 items-center gap-1.5">
@@ -724,7 +724,7 @@ function TaskComposer({
           </Button>
         </div>
       </div>
-      <p className="px-2 text-[11px] text-muted-foreground">
+      <p className="px-2 text-xs text-muted-foreground">
         {closed
           ? "A finished task takes no more messages."
           : "Enter sends, Shift+Enter for a new line. Press the microphone to dictate. Your message is about this task; the lead agent reads it on its next turn."}
@@ -763,7 +763,7 @@ function StepsPanel({
       />
       {progress.total ? <TaskProgressBar t={t} className="px-1" /> : null}
       {idle ? (
-        <p className="px-1 text-[12px] leading-relaxed text-muted-foreground">
+        <p className="px-1 text-xs leading-relaxed text-muted-foreground">
           {idle}
         </p>
       ) : null}
@@ -785,7 +785,7 @@ function BriefPanel({
   return (
     <>
       <section className="grid min-w-0 gap-1.5" aria-label="What you asked">
-        <h3 className="flex items-center gap-1.5 px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+        <h3 className="flex items-center gap-1.5 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
           What you asked
           <span className="tnum font-normal">
             {d.revisions.length > 1 ? "v" + t.current_rev : null}
@@ -806,7 +806,7 @@ function BriefPanel({
       </section>
 
       <section className="grid min-w-0 gap-1.5" aria-label="Details">
-        <h3 className="px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+        <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
           Details
         </h3>
         <Kv
@@ -866,7 +866,7 @@ function History({
   const by = (a: string) => (a === "human" || a === "owner" ? "you" : a);
   return (
     <section className="grid min-w-0 gap-1.5" aria-label="History">
-      <h3 className="px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+      <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
         History
       </h3>
       <ol
@@ -949,7 +949,7 @@ function StepList({
   const now = useNow(15000);
   return (
     <section className="grid min-w-0 gap-1.5" aria-label="Steps">
-      <h3 className="flex items-center gap-1.5 px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+      <h3 className="flex items-center gap-1.5 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
         <ListChecksIcon className="size-3" aria-hidden />
         Steps
         {jobs.length ? (
@@ -1060,7 +1060,7 @@ function StepList({
           })}
         </ul>
       ) : (
-        <p className="px-1 text-[12px] leading-relaxed text-muted-foreground">
+        <p className="px-1 text-xs leading-relaxed text-muted-foreground">
           {t.status === "cancelled"
             ? "Cancelled before the lead agent split it into steps."
             : closed

@@ -18,13 +18,16 @@ import {
   ArrowLeftIcon,
   ChevronDownIcon,
   DownloadIcon,
+  FileCodeIcon,
   FileDiffIcon,
   FileIcon,
+  FileJsonIcon,
   FileTextIcon,
   GitBranchIcon,
   ImageIcon,
   RefreshCwIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Markdown } from "@/components/pulse/markdown";
@@ -45,6 +48,10 @@ import { num, plural } from "@/lib/format";
 import { revealIn } from "@/lib/scroll";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import {
+  fileIcon as fileIconName,
+  type FileIconName,
+} from "@/components/chat/session-state";
 
 // ----- files ----------------------------------------------------------------
 
@@ -94,13 +101,18 @@ export function bytesWord(n: number): string {
   return (n / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-export function fileIcon(name: string) {
-  const kind = fileKind(name);
-  return kind === "image"
-    ? ImageIcon
-    : kind === "markdown" || kind === "text"
-      ? FileTextIcon
-      : FileIcon;
+// The file-type icon by extension: code, JSON, text, image, or a plain
+// file. The decision itself is the pure fileIcon in session-state.ts.
+const FILE_ICON: Record<FileIconName, LucideIcon> = {
+  FileCode: FileCodeIcon,
+  FileJson: FileJsonIcon,
+  FileText: FileTextIcon,
+  Image: ImageIcon,
+  File: FileIcon,
+};
+
+export function fileIcon(name: string): LucideIcon {
+  return FILE_ICON[fileIconName(name)];
 }
 
 export function FileKindIcon({
@@ -110,11 +122,18 @@ export function FileKindIcon({
   name: string;
   className?: string;
 }) {
-  const kind = fileKind(name);
-  if (kind === "image") return <ImageIcon className={className} aria-hidden />;
-  if (kind === "markdown" || kind === "text")
-    return <FileTextIcon className={className} aria-hidden />;
-  return <FileIcon className={className} aria-hidden />;
+  switch (fileIconName(name)) {
+    case "FileCode":
+      return <FileCodeIcon className={className} aria-hidden />;
+    case "FileJson":
+      return <FileJsonIcon className={className} aria-hidden />;
+    case "FileText":
+      return <FileTextIcon className={className} aria-hidden />;
+    case "Image":
+      return <ImageIcon className={className} aria-hidden />;
+    default:
+      return <FileIcon className={className} aria-hidden />;
+  }
 }
 
 // What the main area shows instead of the transcript: one file of the diff
@@ -202,7 +221,7 @@ function StatusLetter({
   return (
     <span
       className={cn(
-        "grid size-4 shrink-0 place-items-center rounded text-[10px] leading-none font-bold",
+        "grid size-4 shrink-0 place-items-center rounded text-xs leading-none font-bold",
         st.cls,
         className,
       )}
@@ -226,12 +245,16 @@ function Counts({
   return (
     <span
       className={cn(
-        "flex shrink-0 items-center gap-1.5 text-[11px] tnum",
+        "flex shrink-0 items-center gap-1.5 text-xs tnum",
         className,
       )}
     >
-      {f.added ? <span className="text-ok">+{num(f.added)}</span> : null}
-      {f.removed ? <span className="text-bad">−{num(f.removed)}</span> : null}
+      {f.added ? (
+        <span className="text-status-done">+{num(f.added)}</span>
+      ) : null}
+      {f.removed ? (
+        <span className="text-status-failed">−{num(f.removed)}</span>
+      ) : null}
     </span>
   );
 }
@@ -247,7 +270,7 @@ function UncommittedDivider({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-2 text-[11px] font-medium text-you-ink",
+        "flex items-center gap-2 text-xs font-medium text-you-ink",
         className,
       )}
       role="separator"
@@ -326,10 +349,14 @@ export function ChangeList({
                 type="button"
                 onClick={() => onView({ kind: "changes", file: i })}
                 aria-current={selected === i ? "true" : undefined}
-                className="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12.5px] transition-colors hover:bg-muted/60 aria-[current=true]:bg-primary/10 aria-[current=true]:hover:bg-primary/15"
+                className="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] transition-colors hover:bg-muted/60 aria-[current=true]:bg-primary/10 aria-[current=true]:hover:bg-primary/15"
                 title={fileTitle(f) + " - open the diff"}
               >
                 <StatusLetter status={f.status} />
+                <FileKindIcon
+                  name={name}
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
                 <span className="min-w-0 flex-1 truncate font-mono">
                   <span className="text-foreground">{name}</span>
                   {dir ? (
@@ -362,7 +389,7 @@ export function ChangesViewer({
   const { totals, loading, refresh } = diff;
   return (
     <div
-      className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1"
+      className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-card lg:flex-1"
       aria-label="Changes"
     >
       <ViewerBar
@@ -374,7 +401,7 @@ export function ChangesViewer({
           aria-hidden
         />
         <code
-          className="min-w-0 truncate rounded bg-muted px-1 py-px font-mono text-[11px] text-foreground"
+          className="min-w-0 truncate rounded bg-muted px-1 py-px font-mono text-xs text-foreground"
           title={changes.branch}
         >
           {changes.branch}
@@ -559,7 +586,7 @@ export function DiffTable({ f }: { f: DiffFile }) {
   return (
     <div className="scroll-thin overflow-x-auto">
       <table
-        className="w-full border-collapse font-mono text-[12px] leading-[1.6]"
+        className="w-full border-collapse font-mono text-xs leading-[1.6]"
         style={{ tabSize: 4 }}
       >
         <tbody>
@@ -578,7 +605,7 @@ function DiffRow({ l }: { l: NumberedLine }) {
       <tr className={LINE_BG.hunk}>
         <td
           colSpan={4}
-          className="px-3 py-0.5 text-[11px] whitespace-pre text-primary/80 select-none"
+          className="px-3 py-0.5 text-xs whitespace-pre text-primary/80 select-none"
         >
           {l.body}
         </td>
@@ -654,7 +681,7 @@ export function ArtifactList({
               type="button"
               onClick={() => onView({ kind: "artifact", name: a.name })}
               aria-current={current ? "true" : undefined}
-              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12.5px] transition-colors hover:bg-muted/60 aria-[current=true]:bg-primary/10 aria-[current=true]:hover:bg-primary/15"
+              className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[13px] transition-colors hover:bg-muted/60 aria-[current=true]:bg-primary/10 aria-[current=true]:hover:bg-primary/15"
               title={a.name + " - open it"}
             >
               <FileKindIcon
@@ -664,7 +691,7 @@ export function ArtifactList({
               <span className="min-w-0 truncate font-medium text-foreground">
                 {a.name}
               </span>
-              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground tnum">
+              <span className="ml-auto shrink-0 text-xs text-muted-foreground tnum">
                 {bytesWord(a.size)}
               </span>
             </button>
@@ -699,7 +726,7 @@ export function ArtifactViewer({
   const href = artifactHref(sourceOf(id, source), artifact.name);
   return (
     <div
-      className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1"
+      className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-card lg:flex-1"
       aria-label="Artifact"
     >
       <ViewerBar
@@ -814,7 +841,7 @@ export function ArtifactBody({
         <Markdown source={text} />
       </article>
     ) : (
-      <pre className="pop min-w-0 rounded-xl border bg-card px-4 py-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">
+      <pre className="pop min-w-0 rounded-xl border bg-card px-4 py-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">
         {text}
       </pre>
     );

@@ -4,14 +4,17 @@ import Link from "next/link";
 import { useState } from "react";
 import { ArrowRightIcon, CheckIcon, ServerIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { Mono, ProjectLink, StatusBadge, When } from "@/components/pulse/who";
+import { ListRow } from "@/components/pulse/list-row";
+import { StatusBadge } from "@/components/pulse/status-badge";
+import { Avatar, Mono, ProjectLink, When } from "@/components/pulse/who";
 import { agentName, statusWord } from "@/lib/words";
 import { writes, type ComputeCaps, type ComputeRequest } from "@/lib/api";
 import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
+import { meterPercent, requestReason, requestTitle } from "./compute-state";
+import { Meter } from "./meter";
 
 const CHANGES = (p: string) => p.startsWith("compute") || p.startsWith("executors") || p.startsWith("events") || p.startsWith("runner");
 
@@ -100,6 +103,26 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
   );
 }
 
+// A request waiting on you as one compact row (spec "Machines"): the
+// asking agent's face, "Extra machine for 8 h · demo-lib", the reason in
+// one muted line, Deny / Approve at the right (ComputeDecide confirms each).
+export function ComputeRequestListRow({ r }: { r: ComputeRequest }) {
+  const reason = requestReason(r.reason);
+  return (
+    <ListRow
+      lead={<Avatar seed={r.requested_by} size={28} />}
+      title={<span title={"Request " + r.id + " from " + agentName(r.requested_by) + ", machine type " + r.size}>{requestTitle(r)}</span>}
+      meta={<When d={r.at} />}
+      // The status slot, not `actions`: Deny / Approve must be in sight, not only on hover.
+      status={<ComputeDecide r={r} size="xs" />}
+      className="min-h-14 py-2"
+      ariaLabel={"Request " + r.id + " from " + agentName(r.requested_by)}
+    >
+      {reason ? <span title={r.reason.trim()}>{agentName(r.requested_by) + ": " + reason}</span> : agentName(r.requested_by) + " gave no reason"}
+    </ListRow>
+  );
+}
+
 // One settled request as a single line: what, when, and - for a failure - why.
 // Past requests pile up (every failed automatic request is one), so they are
 // rows, not cards.
@@ -107,7 +130,7 @@ export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
   const note = (r.note ?? "").trim();
   const failed = r.status === "failed";
   return (
-    <li className="flex min-w-0 items-start gap-3 rounded-xl border bg-card px-3 py-2.5 text-sm" aria-label={"Request " + r.id + ": " + statusWord(r.status)}>
+    <li className="flex min-w-0 items-start gap-3 rounded-lg border bg-card px-3 py-2.5 text-sm" aria-label={"Request " + r.id + ": " + statusWord(r.status)}>
       <div className="min-w-0 flex-1" title={r.reason ? "Asked because: " + r.reason.trim() : undefined}>
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
           <span className="font-medium text-foreground" title={"Request " + r.id + ", machine type " + r.size}>
@@ -133,47 +156,26 @@ export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
 const PROVIDER: Record<string, string> = { azure: "Microsoft Azure", aws: "Amazon Web Services", gcp: "Google Cloud", google: "Google Cloud", hetzner: "Hetzner Cloud", digitalocean: "DigitalOcean", ssh: "Your own machines over SSH" };
 export const providerWord = (p?: string | null) => (p ? (PROVIDER[p.toLowerCase()] ?? p.charAt(0).toUpperCase() + p.slice(1)) : "");
 
-// The limits every request must fit, in words, with the two that fill up
-// shown as meters. They are changed in Settings, linked at the end.
+// The limits every request must fit (spec "Machines" - Limits): one card
+// with two meters, machines in use and hours today, and the budget line.
+// They are changed in Settings, linked at the end.
 export function CapsPanel({ caps }: { caps: ComputeCaps }) {
   const auto = caps.auto_approve === true || caps.auto_approve === 1;
-  const pct = (value: number, max: number) => (max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0);
   const full = caps.max_hours_per_day > 0 && caps.hours_today >= caps.max_hours_per_day;
   return (
-    <div className="grid gap-4">
-      <dl className="grid gap-x-8 gap-y-4 text-sm sm:grid-cols-2">
-        <CapMeter label="Extra machines" text={num(caps.vms_now) + " of " + num(caps.max_vms) + " in use"} percent={pct(caps.vms_now, caps.max_vms)} />
-        <CapMeter label="Hours used today" text={num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + (full ? ", none left today" : "")} percent={pct(caps.hours_today, caps.max_hours_per_day)} />
-        <CapFact label="Budget" value={num(caps.budget_credits) + " credits"} />
-        <CapFact label="Cloud provider" value={providerWord(caps.provider) || "None set up yet"} title={caps.provider || undefined} />
-        <CapFact className="sm:col-span-2" label="Auto-approve" value={auto ? "On: requests within the limits start by themselves" : "Off: every request waits for you"} />
-      </dl>
-      <p className="text-[13px] text-muted-foreground">
-        <Link className="font-medium text-foreground underline underline-offset-2" href={hrefs.settings("compute")}>
-          Change these in Settings
+    <div className="grid gap-4 rounded-lg border bg-card p-4">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Meter label="Machines in use" pct={meterPercent(caps.vms_now, caps.max_vms)} text={num(caps.vms_now) + " of " + num(caps.max_vms)} title="Extra machines running now, of the most allowed at once" />
+        <Meter label="Hours today" pct={meterPercent(caps.hours_today, caps.max_hours_per_day)} text={num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + (full ? " · none left" : "")} title="Machine hours used today, of the most allowed per day" />
+      </div>
+      <p className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
+        <span className="text-foreground">{"Budget " + num(caps.budget_credits) + " credits"}</span>
+        <span title={caps.provider || undefined}>{providerWord(caps.provider) || "No cloud provider yet"}</span>
+        <span>{auto ? "Auto-approve on" : "Every request waits for you"}</span>
+        <Link className="ml-auto font-medium text-link underline-offset-2 hover:underline" href={hrefs.settings("compute")}>
+          Change in Settings
         </Link>
       </p>
-    </div>
-  );
-}
-
-function CapFact({ label, value, title, className }: { label: string; value: string; title?: string; className?: string }) {
-  return (
-    <div className={className}>
-      <dt className="text-[13px] text-muted-foreground">{label}</dt>
-      <dd className="m-0 mt-0.5 font-medium text-foreground anywhere" title={title}>{value}</dd>
-    </div>
-  );
-}
-
-function CapMeter({ label, text, percent }: { label: string; text: string; percent: number }) {
-  return (
-    <div>
-      <dt className="text-[13px] text-muted-foreground">{label}</dt>
-      <dd className="m-0 mt-0.5 grid gap-2">
-        <span className="font-medium text-foreground">{text}</span>
-        <Progress value={percent} aria-label={label} />
-      </dd>
     </div>
   );
 }

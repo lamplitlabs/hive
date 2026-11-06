@@ -59,8 +59,8 @@ function nameFromAddress(address: string): string {
   return NAME.test(n) && n !== "local" && n !== "x" ? n : "";
 }
 
-const hint = "text-[12.5px] leading-relaxed text-muted-foreground anywhere";
-const bad = "text-[12.5px] leading-relaxed text-bad anywhere";
+const hint = "text-xs leading-relaxed text-muted-foreground anywhere";
+const bad = "text-xs leading-relaxed text-bad anywhere";
 
 export function AddMachineButton({ caps, className, size = "sm", variant = "outline" }: { caps?: ComputeCaps; className?: string; size?: "sm" | "default"; variant?: "outline" | "default" }) {
   const [open, setOpen] = useState(false);
@@ -552,7 +552,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                     className={cn("grid gap-0.5 rounded-xl border bg-card px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", size === w.id && !exact.trim() ? "border-primary ring-1 ring-primary" : "hover:bg-muted/40")}
                   >
                     <span className="text-sm font-semibold">{w.title}</span>
-                    <span className="text-[12px] leading-snug text-muted-foreground">{w.note}</span>
+                    <span className="text-xs leading-snug text-muted-foreground">{w.note}</span>
                   </button>
                 ))}
               </div>
@@ -694,7 +694,7 @@ function MachineCheck({ pairing, started, error, busy, disabled, onCheck }: { pa
             </Notice>
           )}
           <Disclosure summary={"The report (" + pairing.lines.length + " lines)"} open={!pairing.ok || undefined}>
-            <pre className="max-h-56 overflow-auto rounded-lg bg-card p-2.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words">{pairing.lines.join("\n")}</pre>
+            <pre className="max-h-56 overflow-auto rounded-lg bg-card p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">{pairing.lines.join("\n")}</pre>
           </Disclosure>
         </>
       ) : null}
@@ -754,7 +754,7 @@ function DoneView({ done, running, name, onFix }: { done: { kind: "pair" } | { k
       )}
       {running?.lines.length ? (
         <Disclosure summary={"The report (" + running.lines.length + " lines)"} open={status !== "ok" || undefined}>
-          <pre className="max-h-64 overflow-auto rounded-lg bg-muted/50 p-2.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words">{running.lines.join("\n")}</pre>
+          <pre className="max-h-64 overflow-auto rounded-lg bg-muted/50 p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">{running.lines.join("\n")}</pre>
         </Disclosure>
       ) : null}
     </div>
@@ -765,7 +765,7 @@ function Result({ tone, title, children }: { tone: "ok" | "bad"; title: string; 
   return (
     <div className="grid justify-items-center gap-3 py-4 text-center">
       <span className={cn("inline-flex size-12 items-center justify-center rounded-full", tone === "ok" ? "bg-ok/12 text-ok" : "bg-bad/10 text-bad")}>{tone === "ok" ? <CheckCircle2Icon aria-hidden className="size-7" /> : <CircleAlertIcon aria-hidden className="size-7" />}</span>
-      <p className="text-lg font-semibold">{title}</p>
+      <p className="text-xl font-semibold">{title}</p>
       <p className="max-w-md text-sm leading-relaxed text-muted-foreground anywhere">{children}</p>
     </div>
   );
@@ -818,11 +818,11 @@ export function PairingRow({ p }: { p: Pairing }) {
             )}
           </p>
           {!running && p.lines.length > 1 ? (
-            <button type="button" className="mt-1 text-[12.5px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={() => setOpenReport((o) => !o)} aria-expanded={openReport}>
+            <button type="button" className="mt-1 text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={() => setOpenReport((o) => !o)} aria-expanded={openReport}>
               {openReport ? "Hide the report" : "Show the report (" + p.lines.length + " lines)"}
             </button>
           ) : null}
-          {openReport && !running ? <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-muted/50 p-2.5 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-foreground/90">{p.lines.join("\n")}</pre> : null}
+          {openReport && !running ? <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-muted/50 p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-foreground/90">{p.lines.join("\n")}</pre> : null}
         </div>
         {!running ? (
           <Button type="button" variant="ghost" size="sm" className="-my-1 -mr-1 h-7 shrink-0 px-2 text-[13px]" disabled={busy} onClick={() => void dismiss()}>

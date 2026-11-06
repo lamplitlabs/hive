@@ -2,33 +2,36 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, ArrowRightIcon, BellIcon, BotIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, RadioIcon, SearchIcon, SettingsIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart } from "@/components/pulse/charts";
-import { FeedList, ProposalCard, QuestionCard, WorkingNow, workingRows, workingSummary } from "@/components/pulse/cards";
+import { FeedList, ProposalCard, QuestionCard, workingRows, workingSummary } from "@/components/pulse/cards";
 import { AmendmentCard, SuggestionCard } from "@/components/board/vote-cards";
 import { HygienePanel } from "@/components/pulse/hygiene";
+import { Clamp } from "@/components/pulse/clamp";
 import { DataTable } from "@/components/pulse/data-table";
+import { DecideButtons } from "@/components/pulse/decide-buttons";
 import { DocRev, GateCard, SelfImprovementPanel } from "@/components/pulse/evolve";
 import { useInbox } from "@/components/pulse/inbox";
+import { KindTile } from "@/components/pulse/kind-tile";
+import { ListRow, ListRows } from "@/components/pulse/list-row";
 import { ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
 import { LiveFeed } from "@/components/pulse/live-feed";
-import { FailedJobsSection } from "@/components/pulse/job-repair-section";
 import { Markdown } from "@/components/pulse/markdown";
-import { ProjectGoalPanel } from "@/components/project/goal";
+import { GOAL_ANCHOR, GoalEditor } from "@/components/project/goal";
 import { LeadsPanel } from "@/components/project/leads";
 import { MachinesPanel } from "@/components/project/machines";
+import { healthLines, topThreads } from "@/components/project/project-state";
 import { ToolkitPanel } from "@/components/project/toolkit";
 import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
 import { Avatar, Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
-import { THREAD_COLUMNS, ThreadCards, ThreadParticipants, ThreadSignals, threadTitle } from "@/components/board/sheets";
+import { ThreadCards, ThreadParticipants, threadTitle } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
@@ -37,11 +40,12 @@ import { SuggestedWorkPanel, WorkSuggestionCard } from "@/components/tasks/sugge
 import { TASK_COLUMNS } from "@/components/tasks/task-columns";
 import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
+import { askTitle, decisionLabels, isOpenQuestion } from "@/lib/owner-questions";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, sentence } from "@/lib/format";
-import { agentName, statusWord } from "@/lib/words";
+import { agentName, statusWord, threadName } from "@/lib/words";
 import { codeDeliveryKpiState } from "@/lib/code-deliveries";
-import { codeDeliveriesPath, type CodeDeliveriesPayload, isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectInfo, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { codeDeliveriesPath, type CodeDeliveriesPayload, isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectGoalPayload, type ProjectInfo, type ProjectNeeds, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
@@ -105,98 +109,45 @@ const NONE: never[] = [];
 
 // ----- overview -----------------------------------------------------------
 
-// A project's home: what waits for you first, then the goal and the work in
-// motion; the repository, the agents and the activity sit in a side column.
-// Cleanup and the full event log live under History.
+// A project's home in five panels (spec "Project"): what needs you, who is
+// working, the open threads, the goal and the project's health. Everything
+// else moved: leads and the toolkit to Team & tools, posts to History,
+// failed jobs to Runs behind one link.
 export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecide?: boolean }) {
   const ov = useApi<Overview>(projectPath(slug, "overview"));
-  const info = useApi<ProjectInfo>(projectPath(slug, "project"), { refresh: 60000 });
   const tasks = useApi<TasksPayload>("tasks?project=" + encodeURIComponent(slug));
-  const tl = useApi<Timeline>(projectPath(slug, "timeline"), { refresh: 60000 });
-  const compute = useApi<Compute>("compute");
   const inbox = useInbox();
-  const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
   const commons = slug === "commons";
   return (
     <Wait q={ov} rows={8}>
       {(o) => {
         const open = (tasks.data?.tasks ?? []).filter(isActiveTask);
-        const mine = inbox.forProject(slug);
-        // The first asks, in the inbox's order; the For you tab holds them all.
-        const asks = [
-          ...mine.decisions.map((r) => <ProposedRecordCard key={"d" + r.id} r={r} onOpen={setOpenRecord} />),
-          ...mine.proposals.map((p) => <ProposalCard key={"p" + p.id} r={p} slug={slug} canDecide={canDecide} />),
-          ...mine.questions.map((x) => <QuestionCard key={"q" + x.id} q={x} slug={slug} canDecide={canDecide} />),
-          ...mine.compute.map((cr) => <ComputeInboxCard key={"c" + cr.id} r={cr} caps={compute.data?.caps} />),
-          ...mine.work.map((s) => <WorkSuggestionCard key={"w" + s.id} s={s} slug={slug} />),
-          ...mine.drafts.map(({ r }) => <DraftCard key={"r" + r.id} slug={slug} r={r} />),
-          ...mine.steps.map((st) => <GateCard key={"s" + st.kind} step={st} />),
-        ];
-        const working = workingRows(o.active_claims, open, slug);
         return (
-          <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="grid min-w-0 content-start gap-8">
-              {!o.board_present ? (
-                <Notice tone="warn">
-                  This project has no board yet, so agents can&apos;t post or pick up work here. Re-add the project from Home, or run <Mono>pulse init</Mono> in its folder.
-                </Notice>
-              ) : null}
-              {asks.length ? (
-                <section aria-label="For you">
-                  <SectionHeading
-                    count={mine.total}
-                    note="These wait for your answer. Nothing here moves until you decide."
-                    action={
-                      asks.length > 2 ? (
-                        <Button asChild size="sm" variant="outline">
-                          <Link href={hrefs.project(slug, "for-you")}>
-                            See all {num(mine.total)} <ArrowRightIcon />
-                          </Link>
-                        </Button>
-                      ) : undefined
-                    }
-                  >
-                    For you
-                  </SectionHeading>
-                  {mine.agentsDeciding > 0 ? (
-                    <p className="-mt-2 mb-3 text-xs text-muted-foreground">
-                      and {mine.agentsDeciding} more the agents are deciding (the lead while you are away, or a setting answers them).
-                    </p>
-                  ) : null}
-                  <div className="grid gap-3">{asks.slice(0, 2)}</div>
-                </section>
-              ) : null}
-              {commons ? null : <ProjectGoalPanel key={"goal-" + slug} slug={slug} />}
-              <Panel title="Working now" icon={RadioIcon} actions={working.length ? <span>{workingSummary(working, o.active_claims.length)}</span> : undefined}>
-                {working.length ? (
-                  <WorkingNow claims={o.active_claims} slug={slug} tasks={open} />
-                ) : (
-                  <p className="text-sm leading-relaxed text-muted-foreground">Nobody is working on {commons ? "the shared board" : slug} right now. When an agent starts a job or picks up a thread, it shows up here.</p>
-                )}
+          <div className="grid gap-6 lg:grid-cols-12">
+            <div className="grid min-w-0 content-start gap-8 lg:col-span-8">
+              <NeedsYou slug={slug} mine={inbox.forProject(slug)} canDecide={canDecide} />
+              <section aria-label="Working now" className="min-w-0">
+                <SectionHeading icon={RadioIcon} count={o.claims_active || undefined} note={workingSummary(workingRows(o.active_claims, open, slug), o.claims_active)} as="h2">
+                  Working now
+                </SectionHeading>
+                <WorkingRowsList claims={o.active_claims} slug={slug} tasks={open} />
                 {o.stale_claims.length ? <StaleClaims claims={o.stale_claims} slug={slug} /> : null}
-              </Panel>
-              {commons ? null : <LeadsPanel key={"leads-" + slug} slug={slug} canDecide={canDecide} />}
-              {commons ? null : <ToolkitPanel key={"toolkit-" + slug} slug={slug} canDecide={canDecide} />}
-              <Panel title="Open threads" icon={MessagesSquareIcon} actions={o.open_threads.length ? <SeeAll href={hrefs.project(slug, "board", { sub: "threads" })}>{"See all " + num(o.threads_open)}</SeeAll> : undefined} dense>
+              </section>
+              <section aria-label="Open threads" className="min-w-0">
+                <SectionHeading icon={MessagesSquareIcon} count={o.threads_open || undefined} action={<SeeAll href={hrefs.project(slug, "board")}>Open the board</SeeAll>} as="h2">
+                  Open threads
+                </SectionHeading>
                 {o.open_threads.length ? (
-                  <OpenThreads rows={o.open_threads} slug={slug} limit={5} />
+                  <ThreadRows rows={topThreads(o.open_threads, 5)} slug={slug} />
                 ) : (
-                  <p className="px-4 py-4 text-sm leading-relaxed text-muted-foreground sm:px-5">No open threads. A thread starts when an agent picks up work, asks another agent something or makes a suggestion.</p>
+                  <p className="rounded-lg border border-dashed px-4 py-3 text-sm leading-relaxed text-muted-foreground">No thread is open. Agents open one when they pick up work or ask each other something.</p>
                 )}
-              </Panel>
-              <Panel title="Recent posts" icon={MessageSquareIcon} actions={o.recent_posts.length ? <SeeAll href={hrefs.project(slug, "history", { sub: "timeline" })} /> : undefined}>
-                <FeedList rows={o.recent_posts} slug={slug} limit={8} />
-              </Panel>
-              <FailedJobsSection key={"repairs-" + slug} project={slug} />
+              </section>
             </div>
-            <aside className="grid min-w-0 content-start gap-4" aria-label={commons ? "About the shared board" : "About this project"}>
-              <RepositoryPanel q={info} commons={commons} slug={slug} />
-              {commons ? null : <MachinesPanel key={"machines-" + slug} slug={slug} canDecide={canDecide} />}
-              <OverviewStats o={o} slug={slug} commons={commons} />
-              <AgentsPanel agents={o.agents} />
-              {tl.data ? <ActivityChart tl={tl.data} bys={["total"]} height={140} title="Posts per day" /> : null}
+            <aside className="grid min-w-0 content-start gap-8 lg:col-span-4" aria-label="About this project">
+              {commons ? null : <GoalPanel slug={slug} />}
+              <HealthPanel slug={slug} commons={commons} />
             </aside>
-            <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
           </div>
         );
       }}
@@ -204,31 +155,219 @@ export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecid
   );
 }
 
-// The side column's numbers, each only when it is not zero: a big 0 says
-// nothing the owner needs.
-function OverviewStats({ o, slug, commons }: { o: Overview; slug: string; commons: boolean }) {
-  // The same request the Code delivered tile makes (it shares the cache), read here only to know whether there is anything to show.
-  const cd = useApi<CodeDeliveriesPayload>(commons ? null : codeDeliveriesPath({ project: slug, limit: 100 }), { refresh: 30000 });
-  const votes = o.suggestions_needing_votes + o.amendments_open;
-  const code = commons ? null : codeDeliveryKpiState(cd.data, cd.loading, cd.error).n;
-  const showCode = !commons && code !== 0;
-  if (!votes && !showCode) return null;
+// The top three things that wait for the owner here, as rows the owner can
+// act on in place; the For you tab holds them all. Every kind the inbox
+// knows gets a row; the ones with a yes/no get their buttons.
+function NeedsYou({ slug, mine, canDecide, limit = 3, heading = true }: { slug: string; mine: ReturnType<ReturnType<typeof useInbox>["forProject"]>; canDecide: boolean; limit?: number; heading?: boolean }) {
+  const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
+  const rows = inboxRows(slug, mine, canDecide, setOpenRecord);
+  const shown = limit ? rows.slice(0, limit) : rows;
+  const more = rows.length - shown.length;
+  const nodes = shown.map((r) => <div key={r.key}>{r.node}</div>);
   return (
-    <KpiGrid className={cn("mb-0", votes && showCode ? "md:grid-cols-2" : "grid-cols-1 md:grid-cols-1")}>
-      {votes ? <Kpi icon={VoteIcon} n={votes} label="Open votes" sub={voteLine(o)} href={hrefs.project(slug, "board", { sub: o.amendments_open && !o.suggestions_needing_votes ? "amendments" : "suggestions" })} /> : null}
-      {showCode ? <CodeDeliveredKpi project={slug} /> : null}
-    </KpiGrid>
+    <section aria-label="Needs you" className="min-w-0">
+      {heading ? (
+        <SectionHeading icon={ScaleIcon} count={mine.total || undefined} action={more > 0 || rows.length > 0 ? <SeeAll href={hrefs.project(slug, "for-you")}>{more > 0 ? "See all " + num(rows.length) : "See all"}</SeeAll> : undefined} note={mine.agentsDeciding ? plural(mine.agentsDeciding, "question") + " the agents answered themselves" : undefined} as="h2">
+          Needs you
+        </SectionHeading>
+      ) : null}
+      {shown.length ? (
+        <ListRows ariaLabel="Needs you">{nodes}</ListRows>
+      ) : (
+        <p className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+          <CheckCircle2Icon className="size-4 shrink-0 text-status-done" aria-hidden /> Nothing waits for you here. Agents post a question or a proposal when they need your word.
+        </p>
+      )}
+      <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
+    </section>
   );
 }
 
-function voteLine(o: Overview): string {
-  return [o.suggestions_needing_votes ? plural(o.suggestions_needing_votes, "suggestion") : "", o.amendments_open ? plural(o.amendments_open, "rule change") : ""].filter(Boolean).join(", ");
+// Each inbox item as a ListRow: a kind tile, the one-line ask, who asked
+// and when, and the action that settles it. With `expand`, a row opens its
+// full card underneath (the For you tab) instead of leaving the page.
+type InboxRow = { key: string; node: React.ReactNode };
+type Expand = { expanded: string | null; onExpand: (key: string | null) => void };
+
+function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbox>["forProject"]>, "total" | "agentsDeciding" | "machine" | "provider">, canDecide: boolean, openRecord: (r: RecordRow) => void, expand?: Expand): InboxRow[] {
+  const rows: InboxRow[] = [];
+  const opener = (key: string, href: string) => (expand ? { onOpen: () => expand.onExpand(expand.expanded === key ? null : key), selected: expand.expanded === key } : { href });
+  for (const r of mine.decisions) {
+    const key = "d" + r.id;
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="record" waiting title="Record to adopt" />}
+          title={r.title}
+          meta={<span>{kindLabel(r.kind) + " " + r.id}</span>}
+          status={<StatusBadge status={r.status} size="sm" />}
+          time={r.date ? <When d={r.date} /> : undefined}
+          onOpen={() => openRecord(r)}
+          ariaLabel={"Record proposed: " + r.title}
+        >
+          {"Proposed as " + r.id + ". Open it to adopt or send it back."}
+        </ListRow>
+      ),
+    });
+  }
+  for (const p of mine.proposals) {
+    const key = "p" + p.id;
+    const who = p.agent || p.name || p.session || "an agent";
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="proposal" waiting title="Proposal" />}
+          title={p.summary}
+          meta={<span>{"from " + agentName(who)}</span>}
+          time={<When d={p.date} />}
+          actions={canDecide && p.can_decide !== false ? <DecideButtons id={p.id} summary={p.summary} canDecide={canDecide} size="xs" /> : undefined}
+          {...opener(key, hrefs.post(p.slug || slug, p.id))}
+          ariaLabel={"Proposal: " + p.summary}
+        >
+          {firstLine(p.proposal_text) || "Open it to read the whole proposal."}
+        </ListRow>
+      ),
+    });
+  }
+  for (const q of mine.questions) {
+    const key = "q" + q.id;
+    const stop = q.stop === true;
+    const who = q.agent || q.name || q.session || "an agent";
+    const openQ = !stop && isOpenQuestion(q.summary, q.body);
+    const labels = decisionLabels(q.body, stop ? { yes: "Yes, carry on", no: "No, keep it paused" } : { yes: "Yes", no: "No" });
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="question" waiting title={stop ? "Self-improvement paused" : "Question for you"} />}
+          title={q.summary}
+          meta={<span>{askTitle(q.kind, agentName(who))}</span>}
+          status={stop ? <StatusBadge status="paused" label="Paused" size="sm" /> : q.stale ? <StatusBadge status="stale" label="Older thread" size="sm" /> : undefined}
+          time={<When d={q.date} />}
+          actions={canDecide && !openQ ? <DecideButtons id={q.id} summary={q.summary} stop={stop} canDecide={canDecide} size="xs" yesLabel={labels.yes} noLabel={labels.no} /> : undefined}
+          {...(openQ && !expand ? { href: hrefs.project(q.slug || slug, "for-you") } : opener(key, hrefs.post(q.slug || slug, q.id)))}
+          ariaLabel={(stop ? "Self-improvement paused: " : "Question for you: ") + q.summary}
+        >
+          {openQ && !expand ? "Needs an answer in words: open For you." : firstLine(q.body) || "Open it to read the whole question."}
+        </ListRow>
+      ),
+    });
+  }
+  for (const cr of mine.compute) {
+    const key = "c" + cr.id;
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="machine" waiting title="Machine request" />}
+          title={"A machine for " + (cr.hours === 1 ? "1 hour" : cr.hours + " hours") + (cr.size ? " (" + cr.size + ")" : "")}
+          meta={<span>{"asked by " + agentName(cr.requested_by)}</span>}
+          status={<StatusBadge status={cr.status} size="sm" />}
+          {...opener(key, hrefs.compute())}
+          ariaLabel={"Machine request: " + cr.reason}
+        >
+          {cr.reason}
+        </ListRow>
+      ),
+    });
+  }
+  for (const w of mine.work) {
+    const key = "w" + w.id;
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="work" waiting title="Suggested work" />}
+          title={w.title}
+          meta={<span>{"suggested by " + (w.suggested_by === "human" ? "you" : agentName(w.suggested_by))}</span>}
+          status={<StatusBadge status={w.status} size="sm" />}
+          {...opener(key, hrefs.tasks({ project: slug }))}
+          ariaLabel={"Suggested work: " + w.title}
+        >
+          {w.verdict || "Your call: make it a task or let it go."}
+        </ListRow>
+      ),
+    });
+  }
+  for (const d of mine.drafts) {
+    const key = "r" + d.r.id;
+    const what = d.r.id.toLowerCase().includes("evaluator") ? "scoring rules" : "constitution";
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="rule" waiting title="Draft to review" />}
+          title={"A new " + what + " to review"}
+          meta={<span>{d.r.id}</span>}
+          {...opener(key, hrefs.project(slug, "evolution"))}
+          ariaLabel={"Draft to review: " + d.r.id}
+        >
+          An agent drafted the project&apos;s own text; adopt it or keep the template.
+        </ListRow>
+      ),
+    });
+  }
+  for (const st of mine.steps) {
+    const key = "s" + st.kind + st.slug;
+    rows.push({
+      key,
+      node: (
+        <ListRow
+          lead={<KindTile kind="plan" waiting title="Setup step" />}
+          title={st.title}
+          meta={<span>{st.label}</span>}
+          {...opener(key, hrefs.project(slug, "evolution"))}
+          ariaLabel={"Setup step: " + st.title}
+        >
+          {st.body}
+        </ListRow>
+      ),
+    });
+  }
+  return rows;
 }
 
-// Things an agent picked up and then went quiet on: worth a look, folded.
+const firstLine = (t: string | undefined | null): string => sentence((t || "").trim().split(/\r?\n/).find((l) => l.trim()) || "");
+
+// Who is working here, one row per agent: a face, the task or the claim,
+// a running badge and how long.
+function WorkingRowsList({ claims, slug, tasks }: { claims: Overview["active_claims"]; slug: string; tasks: Task[] }) {
+  const rows = workingRows(claims, tasks, slug);
+  if (!rows.length) return <p className="rounded-lg border border-dashed px-4 py-3 text-sm leading-relaxed text-muted-foreground">Nobody is working right now. When an agent starts a job or picks up a thread, it shows up here.</p>;
+  return (
+    <ListRows ariaLabel="Working now">
+      {rows.map((r) => {
+        const s = r.slug || slug;
+        const c = r.claims[0];
+        const what = r.task ? r.task.t.title : c ? sentence(c.summary) : "working";
+        const since = r.task ? r.task.w.since : c?.expires;
+        const extra = r.task ? r.claims.length : Math.max(0, r.claims.length - 1);
+        return (
+          <ListRow
+            key={r.key}
+            lead={<Avatar seed={r.agent} size={28} />}
+            title={what}
+            meta={extra ? <span className="tnum">{"+" + plural(extra, "more thing")}</span> : undefined}
+            status={<StatusBadge status="running" label="Working" size="sm" />}
+            time={since ? <When d={since} /> : undefined}
+            href={r.task ? hrefs.task(r.task.t.id) : c ? hrefs.post(s, c.id) : undefined}
+            ariaLabel={agentName(r.agent) + " is working on " + what}
+          >
+            {agentName(r.agent) + (r.task ? " on task " + r.task.t.id : c ? " on " + threadName(c.thread_key) : "")}
+          </ListRow>
+        );
+      })}
+    </ListRows>
+  );
+}
+
+// Claims that outlived their agent: a quiet fold under "Working now" so the
+// owner can tell "busy" from "stuck". Each names its thread.
 function StaleClaims({ claims, slug }: { claims: Overview["stale_claims"]; slug: string }) {
   return (
-    <Disclosure className="mt-4 border-t pt-3 text-sm" summary={(claims.length === 1 ? "1 thing was" : plural(claims.length, "thing") + " were") + " picked up and then went quiet"}>
+    <Disclosure className="mt-3 text-sm" summary={(claims.length === 1 ? "1 thing was" : plural(claims.length, "thing") + " were") + " picked up and then went quiet"}>
       <ul className="grid gap-2">
         {claims.map((c) => (
           <li key={c.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
@@ -245,153 +384,120 @@ function StaleClaims({ claims, slug }: { claims: Overview["stale_claims"]; slug:
   );
 }
 
-// A folder path that wraps only after a slash, never inside a name
-// ("/home/owner/src/" then "demo-app"), with the whole path in the tooltip.
-function FolderPath({ path }: { path: string }) {
-  const parts = path.split("/");
+// The goal in one paragraph (folded to two lines) and the Edit button; the
+// full panel with its review lives behind "Edit".
+function GoalPanel({ slug }: { slug: string }) {
+  const q = useApi<ProjectGoalPayload>(projectPath(slug, "goal"), { refresh: 60000 });
+  const [editing, setEditing] = useState(false);
+  const goal = q.data?.goal;
+  const canEdit = q.data?.can_edit === true;
   return (
-    <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[12.5px] text-foreground/85" title={path}>
-      {parts.map((p, i) => (
-        <span key={i}>
-          <span className="whitespace-nowrap">{p + (i < parts.length - 1 ? "/" : "")}</span>
-          {i < parts.length - 1 ? <wbr /> : null}
-        </span>
-      ))}
-    </span>
+    <section aria-label="Project goal" className="min-w-0" id={GOAL_ANCHOR}>
+      <SectionHeading
+        icon={TargetIcon}
+        note={goal ? (goal.source === "owner" ? "Set by you" : "Written by PULSE") : undefined}
+        action={
+          goal && canEdit ? (
+            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
+              <PencilIcon /> Edit
+            </Button>
+          ) : undefined
+        }
+        as="h2"
+      >
+        Goal
+      </SectionHeading>
+      <div className="rounded-lg border bg-card p-4">
+        {q.error && !q.data ? (
+          <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
+        ) : goal ? (
+          <Clamp lines={2} className="[&>p]:text-sm [&>p]:text-foreground">{goal.text}</Clamp>
+        ) : (
+          <SkeletonRows n={2} />
+        )}
+      </div>
+      {editing && goal && canEdit ? <GoalEditor slug={slug} goal={goal} onClose={() => setEditing(false)} /> : null}
+    </section>
   );
 }
 
-// The repository in words: where it lives, which branch, how votes work.
-function RepositoryPanel({ q, commons, slug }: { q: Loaded<ProjectInfo>; commons: boolean; slug: string }) {
-  const i = q.data;
-  const bp = i?.board_params;
-  const rows: [React.ReactNode, React.ReactNode][] = i
-    ? [
-        ...(commons
-          ? []
-          : ([
-              ["Folder", <FolderPath key="p" path={i.repo} />],
-              [
-                "Branch",
-                <span key="b" title={i.head ? "At commit " + i.head : undefined}>
-                  {i.branch || "—"}
-                  {i.dirty === "1" ? <span className="text-warn">, with uncommitted changes</span> : null}
-                </span>,
-              ],
-              ["Remote", <span key="r" className="anywhere">{i.remote || "None"}</span>],
-            ] as [React.ReactNode, React.ReactNode][])),
-        ["Board", i.board_present === "1" ? "Set up" : <span key="bd" className="text-warn">Not set up</span>],
-        ...(commons
-          ? []
-          : ([
-              [
-                "Self-improvement",
-                i.evolution_present === "1" ? (
-                  "Set up"
-                ) : (
-                  <Link key="ev" href={hrefs.project(slug, "evolution")} className="font-medium text-primary underline-offset-2 hover:underline">
-                    Not set up: set it up
-                  </Link>
-                ),
-              ],
-            ] as [React.ReactNode, React.ReactNode][])),
-        ["Votes needed", bp ? <span key="q" title="How many agents must vote before a suggestion is decided (quorum)">{plural(bp.quorum ?? 0, "vote") + " per suggestion"}</span> : "…"],
-        ["Rule changes", bp ? <span key="a" title="Votes and majority an amendment to the constitution needs">{"Need " + plural(bp.amend_quorum ?? 0, "vote") + (bp.amend_majority ? " and a " + bp.amend_majority + " majority" : "")}</span> : "…"],
-        ["Time limits", bp ? <span key="t">{"Suggestions close after " + plural(bp.expiry_days ?? 0, "day") + "; threads go quiet after " + plural(bp.stale_days ?? 0, "day")}</span> : "…"],
-        ["Last checked", <When key="s" d={i.built_at} />],
-      ]
-    : [];
+// Three lines: the repository and what landed last, the machines that run
+// the project, and the code delivered in the window.
+function HealthPanel({ slug, commons }: { slug: string; commons: boolean }) {
+  const info = useApi<ProjectInfo>(commons ? null : projectPath(slug, "project"), { refresh: 60000 });
+  const needs = useApi<ProjectNeeds>(commons ? null : "projects/" + encodeURIComponent(slug) + "/needs", { refresh: 60000 });
+  const cd = useApi<CodeDeliveriesPayload>(commons ? null : codeDeliveriesPath({ project: slug, limit: 100 }), { refresh: 60000 });
+  if (commons) return null;
+  const kpi = codeDeliveryKpiState(cd.data, cd.loading, cd.error);
+  const last = cd.data?.deliveries?.[0]?.at ?? null;
+  const fits = needs.data ? needs.data.machines.filter((m) => m.fits && m.status === "active").length : null;
+  const lines = healthLines({ branch: info.data?.branch, lastLanded: last ? rel(last) : null, machines: fits, needsWords: !!needs.data?.needs, delivered: kpi.n });
   return (
-    <Panel title={commons ? "About the shared board" : "Repository"} icon={FolderGit2Icon}>
-      {q.error && !i ? <ErrorNotice error={q.error} onRetry={() => void q.reload()} /> : i ? <Kv rows={rows} className="grid-cols-[minmax(6.5rem,auto)_1fr] gap-y-2" /> : <SkeletonRows n={4} />}
-      {i?.last_error ? (
-        <Notice tone="bad" className="mt-3 text-[13px]">
-          {"The last check failed: " + i.last_error}
-        </Notice>
-      ) : null}
-    </Panel>
+    <section aria-label="Health" className="min-w-0">
+      <SectionHeading icon={ActivityIcon} as="h2">
+        Health
+      </SectionHeading>
+      <ul className="grid gap-0 rounded-lg border bg-card">
+        <HealthLine icon={FolderGit2Icon} href={hrefs.codeDeliveries({ project: slug })} title={info.data?.head ? "At commit " + info.data.head.slice(0, 8) : undefined}>
+          {info.data || info.error ? lines.repository : "Repository: checking"}
+        </HealthLine>
+        <HealthLine icon={ServerIcon} href={hrefs.compute()}>
+          {lines.machines}
+        </HealthLine>
+        <HealthLine icon={FileDiffIcon} href={hrefs.codeDeliveries({ project: slug })} title={kpi.sub}>
+          {lines.delivered}
+        </HealthLine>
+      </ul>
+      <p className="mt-2 text-[13px] text-muted-foreground">
+        <Link href={hrefs.harness({ project: slug, status: "failed" })} className="font-medium text-link underline-offset-2 hover:underline">
+          Jobs that failed
+        </Link>
+        {" "}are on the Runs page.
+      </p>
+    </section>
   );
 }
 
-// Who posts on this board: full names that wrap rather than clip, their
-// post count and when they were last here.
-function AgentsPanel({ agents }: { agents: Overview["agents"] }) {
-  const [all, setAll] = useState(false);
-  const LIMIT = 8;
-  // One row per name: an agent that ran under several runners or models posts as several identities.
-  const list = useMemo(() => {
-    const by = new Map<string, { name: string; posts: number; last: string; meta: Set<string> }>();
-    for (const a of agents) {
-      const name = a.agent || a.name || a.session || "An agent";
-      const r = by.get(name) ?? { name, posts: 0, last: "", meta: new Set<string>() };
-      r.posts += a.posts || 0;
-      if ((a.last || "") > r.last) r.last = a.last || "";
-      const m = [a.runner, a.model].filter(Boolean).join(", ");
-      if (m) r.meta.add(m);
-      by.set(name, r);
-    }
-    return [...by.values()].sort((a, b) => (a.last < b.last ? 1 : a.last > b.last ? -1 : 0));
-  }, [agents]);
-  const shown = all ? list : list.slice(0, LIMIT);
+function HealthLine({ icon: Icon, href, title, children }: { icon: typeof ActivityIcon; href: string; title?: string; children: React.ReactNode }) {
   return (
-    <Panel title="Who posts here" icon={BotIcon} actions={list.length ? <span className="tnum">{num(list.length)}</span> : undefined}>
-      {list.length ? (
-        <>
-          <ul className="grid gap-3">
-            {shown.map((a) => {
-              const human = a.name === "human" || a.name === "owner";
-              const meta = [...a.meta].join("; ");
-              return (
-                <li key={a.name} className="flex min-w-0 items-start gap-2.5" title={meta ? a.name + " (" + meta + ")" : a.name}>
-                  <Avatar seed={a.name} size={28} human={human} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium leading-snug anywhere">{human ? "You" : a.name}</div>
-                    <div className="text-[13px] leading-snug text-muted-foreground">
-                      {plural(a.posts, "post")}
-                      {a.last ? ", last " + rel(a.last) : ""}
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          {list.length > LIMIT ? (
-            <button type="button" aria-expanded={all} className="mt-3 text-[13px] font-medium text-primary underline-offset-2 hover:underline" onClick={() => setAll((v) => !v)}>
-              {all ? "Show fewer" : "Show all " + plural(list.length, "agent")}
-            </button>
-          ) : null}
-        </>
-      ) : (
-        <p className="text-sm leading-relaxed text-muted-foreground">No agent has posted here yet. They appear once they start working on this board.</p>
-      )}
-    </Panel>
+    <li className="border-b last:border-b-0">
+      <Link href={href} title={title} className="flex min-h-11 items-center gap-3 px-4 py-2 text-sm text-foreground transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none">
+        <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{children}</span>
+        <ArrowRightIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      </Link>
+    </li>
   );
 }
 
-// The overview's digest of open threads: one row each, newest first, the
-// whole row a link into the thread. Cards live on the Board tab.
-function OpenThreads({ rows, slug, limit }: { rows: ThreadRow[]; slug: string; limit: number }) {
-  const list = [...rows].sort(byNewest((t) => t.last)).slice(0, limit);
+// Open threads as rows: the status icon, the title, the area chip, the
+// participants, the post count and the last activity; the row opens the thread.
+export function ThreadRows({ rows, slug, onOpen, activeKey }: { rows: ThreadRow[]; slug: string; onOpen?: (key: string) => void; activeKey?: string | null }) {
   return (
-    <ul className="divide-y divide-border/70">
-      {list.map((t) => (
-        <li key={t.key}>
-          <Link href={hrefs.thread(slug, t.key)} title={"Thread " + t.key} className="block px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none sm:px-5">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <StatusBadge status={t.status} />
-              <span className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground anywhere">{threadTitle(t)}</span>
-              <When d={t.last} className="text-xs text-muted-foreground" />
-            </div>
-            {t.summary ? <p className="mt-1 line-clamp-1 text-[13px] text-muted-foreground anywhere">{sentence(t.summary)}</p> : null}
-            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted-foreground">
+    <ListRows ariaLabel="Threads">
+      {rows.map((t) => (
+        <ListRow
+          key={t.key}
+          lead={<KindTile kind="session" title="Thread" />}
+          title={threadTitle(t)}
+          meta={
+            <>
+              <span className="rounded-md bg-muted px-1.5 py-px font-mono text-xs">{t.area}</span>
               <ThreadParticipants t={t} />
               <span className="tnum">{plural(t.posts, "post")}</span>
-              <ThreadSignals t={t} />
-            </div>
-          </Link>
-        </li>
+            </>
+          }
+          status={<StatusBadge status={t.status} size="sm" />}
+          time={<When d={t.last} />}
+          href={onOpen ? undefined : hrefs.thread(slug, t.key)}
+          onOpen={onOpen ? () => onOpen(t.key) : undefined}
+          selected={activeKey === t.key}
+          ariaLabel={"Thread " + threadTitle(t)}
+        >
+          {t.summary ? sentence(t.summary) : t.last_by ? "Last by " + agentName(t.last_by) : null}
+        </ListRow>
       ))}
-    </ul>
+    </ListRows>
   );
 }
 
@@ -437,7 +543,7 @@ export function TasksTab({ slug, onOpen, activeId }: { slug: string; onOpen: (id
             );
           if (view === "table")
             return rows.length ? (
-              <div className="overflow-x-auto rounded-2xl border bg-card">
+              <div className="overflow-x-auto rounded-lg border bg-card">
                 <DataTable columns={TASK_COLUMNS(false)} rows={rows} rowKey={(t) => t.id} onRow={(t) => onOpen(t.id)} initialSort="updated" />
               </div>
             ) : (
@@ -493,12 +599,15 @@ export function ChatTab({ slug, taskId, onPickTask }: { slug: string; taskId: st
 
 // ----- threads --------------------------------------------------------------
 
+// The board: every thread of this project as a list (the status icon, the
+// title, the area, who talks in it, how many posts, the last activity) with
+// the cards one toggle away. The choice is remembered per screen.
 export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: (key: string) => void; activeKey?: string | null }) {
   const q = useApi<ThreadRow[]>(projectPath(slug, "threads"));
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState("open");
   const [area, setArea] = useState("all");
   const [text, setText] = useState("");
-  const [view, setView] = useViewMode("project-threads");
+  const [view, setView] = useViewMode("project-board", "table");
   const all = q.data ?? NONE;
   const areas = useMemo(() => Array.from(new Set(all.map((t) => t.area))).sort(), [all]);
   const rows = useMemo(() => {
@@ -506,9 +615,9 @@ export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: 
     return all.filter((x) => (status === "all" || x.status === status) && (area === "all" || x.area === area) && (!t || x.key.toLowerCase().includes(t) || x.summary.toLowerCase().includes(t))).sort(byNewest((x) => x.last));
   }, [all, status, area, text]);
   const chips = [
-    { id: "all", label: "All", n: all.length },
     { id: "open", label: "Open", n: all.filter((x) => x.status === "open").length },
     { id: "closed", label: "Closed", n: all.filter((x) => x.status === "closed").length },
+    { id: "all", label: "All", n: all.length },
   ];
   return (
     <div>
@@ -532,21 +641,23 @@ export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: 
         <Search label="Search threads" value={text} onChange={setText} className="w-full sm:w-56" />
         <span className="ml-auto flex items-center gap-2">
           {text.trim() ? <Count>{plural(rows.length, "thread")}</Count> : null}
-          <ViewToggle value={view} onChange={setView} />
+          <Tabs value={view === "cards" ? "cards" : "list"} onValueChange={(v) => setView(v === "cards" ? "cards" : "table")}>
+            <TabsList variant="segmented" aria-label="Show threads as">
+              <TabsTrigger value="list" aria-label="Show as a list">
+                <ListIcon /> List
+              </TabsTrigger>
+              <TabsTrigger value="cards" aria-label="Show as cards">
+                <LayoutGridIcon /> Cards
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
         </span>
       </Toolbar>
       <Wait q={q} rows={8}>
         {() => {
           const empty = all.length ? "No thread matches. Try another word, status or area." : "No threads yet. A thread starts when an agent picks up work, asks another agent something or makes a suggestion.";
-          if (view === "table")
-            return rows.length ? (
-              <div className="overflow-x-auto rounded-2xl border bg-card">
-                <DataTable columns={THREAD_COLUMNS(slug)} rows={rows} rowKey={(t) => t.key} onRow={(t) => onOpen(t.key)} initialSort="last" />
-              </div>
-            ) : (
-              <EmptyState>{empty}</EmptyState>
-            );
-          return <ThreadCards rows={rows} slug={slug} onOpen={onOpen} activeKey={activeKey} empty={empty} />;
+          if (view === "cards") return <ThreadCards rows={rows} slug={slug} onOpen={onOpen} activeKey={activeKey} empty={empty} />;
+          return rows.length ? <ThreadRows rows={rows} slug={slug} onOpen={onOpen} activeKey={activeKey} /> : <EmptyState>{empty}</EmptyState>;
         }}
       </Wait>
     </div>
@@ -559,7 +670,12 @@ export function ThreadsTab({ slug, onOpen, activeKey }: { slug: string; onOpen: 
 // decisions, proposals, questions, compute requests, drafts and the gate
 // step - each with its yes or no on it. "All" adds the proposals already
 // decided, for the record.
-export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boolean }) {
+// For you: everything that waits for the owner on this project as rows
+// (the same row style Home uses), each with its action in place; a row
+// opens to the full card underneath for the asks that need more than a yes
+// or no (an answer in words, a machine's caps, a draft to read). Decided
+// proposals stay one toggle away.
+export function ForYouTab({ slug, canDecide }: { slug: string; canDecide: boolean }) {
   const q = useApi<Proposal[]>(projectPath(slug, "proposals"));
   // Questions addressed to the owner and the evolution loop's stop questions wait for a yes or no like a proposal does; an older hub has no such route.
   const qs = useApi<OwnerQuestion[]>(projectPath(slug, "questions"), { refresh: 60000 });
@@ -567,6 +683,7 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
   const inbox = useInbox();
   const [show, setShow] = useState<"awaiting" | "all">("awaiting");
   const [openRecord, setOpenRecord] = useState<RecordRow | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   return (
     <Wait q={q}>
       {(all) => {
@@ -579,52 +696,69 @@ export function ProposalsTab({ slug, canDecide }: { slug: string; canDecide: boo
         const awaiting = all.filter((p) => p.status === "awaiting");
         const decided = all.filter((p) => p.status !== "awaiting");
         const waiting = mine.decisions.length + awaiting.length + questions.length + mine.compute.length + mine.work.length + mine.drafts.length + mine.steps.length;
-        const rows = show === "awaiting" ? awaiting : all;
+        const items = { ...mine, proposals: awaiting, questions };
+        const rows = inboxRows(slug, items, canDecide, setOpenRecord, { expanded, onExpand: setExpanded });
+        const cards: Record<string, React.ReactNode> = {};
+        for (const r of mine.decisions) cards["d" + r.id] = <ProposedRecordCard r={r} onOpen={setOpenRecord} />;
+        for (const p of awaiting) cards["p" + p.id] = <ProposalCard r={p} slug={slug} canDecide={canDecide} />;
+        for (const x of questions) cards["q" + x.id] = <QuestionCard q={x} slug={slug} canDecide={canDecide} />;
+        for (const cr of mine.compute) cards["c" + cr.id] = <ComputeInboxCard r={cr} caps={compute.data?.caps} />;
+        for (const w of mine.work) cards["w" + w.id] = <WorkSuggestionCard s={w} slug={slug} />;
+        for (const { r } of mine.drafts) cards["r" + r.id] = <DraftCard slug={slug} r={r} />;
+        for (const st of mine.steps) cards["s" + st.kind + st.slug] = <GateCard step={st} />;
         return (
-          <div>
-            <Toolbar className="mb-4">
-              <Segments
-                label="Show"
-                value={show}
-                onChange={(v) => setShow(v === "all" ? "all" : "awaiting")}
-                options={[
-                  { id: "awaiting", label: "Waiting for you", n: waiting, you: true },
-                  { id: "all", label: "All, with answered ones", n: waiting + decided.length },
-                ]}
-              />
-              {agentsDecided.length > 0 ? <span className="text-[13px] text-muted-foreground">{agentsDecided.length} more the agents are deciding.</span> : null}
-              {!canDecide ? <span className="text-[13px] text-muted-foreground">To answer, open PULSE on the machine that runs it.</span> : null}
-            </Toolbar>
-            {show === "all" && agentsDecided.length > 0 ? <AgentsDecidedAudit questions={agentsDecided} slug={slug} /> : null}
-            {waiting || rows.length ? (
-              <CardGrid cols={2}>
-                {mine.decisions.map((r) => (
-                  <ProposedRecordCard key={r.id} r={r} onOpen={setOpenRecord} />
-                ))}
-                {rows.map((p) => (
-                  <ProposalCard key={p.id} r={p} slug={slug} canDecide={canDecide} />
-                ))}
-                {questions.map((x) => (
-                  <QuestionCard key={x.id} q={x} slug={slug} canDecide={canDecide} />
-                ))}
-                {mine.compute.map((cr) => (
-                  <ComputeInboxCard key={cr.id} r={cr} caps={compute.data?.caps} />
-                ))}
-                {mine.work.map((s) => (
-                  <WorkSuggestionCard key={s.id} s={s} slug={slug} />
-                ))}
-                {mine.drafts.map(({ r }) => (
-                  <DraftCard key={r.id} slug={slug} r={r} />
-                ))}
-                {mine.steps.map((st) => (
-                  <GateCard key={st.kind} step={st} />
-                ))}
-              </CardGrid>
-            ) : (
-              <EmptyState icon={<CheckCircle2Icon className="size-[18px]" />} title={show === "awaiting" ? "Nothing waits for you" : "No proposals yet"}>
-                {show === "awaiting" ? "You're all caught up on " + slug + ". When an agent needs your yes or no, its card shows up here." : "No agent has asked for a decision on this board yet. When one does, its card shows up here."}
-              </EmptyState>
-            )}
+          <div className="grid gap-6">
+            <section aria-label="Waiting for you" className="min-w-0">
+              <SectionHeading icon={ScaleIcon} count={waiting || undefined} note={!canDecide ? "To answer, open PULSE on the machine that runs it." : agentsDecided.length ? plural(agentsDecided.length, "question") + " the agents are deciding themselves." : undefined} as="h2">
+                Waiting for you
+              </SectionHeading>
+              {waiting ? (
+                <ListRows ariaLabel="Waiting for you">
+                  {rows.map((row) => (
+                    <div key={row.key}>
+                      {row.node}
+                      {expanded === row.key && cards[row.key] ? (
+                        <div className="bg-muted/20 px-3 py-3 sm:pl-14" data-row-details>
+                          {cards[row.key]}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </ListRows>
+              ) : (
+                <EmptyState icon={<CheckCircle2Icon className="size-[18px]" />} title="Nothing waits for you">
+                  {"You're all caught up on " + slug + ". When an agent needs your yes or no, it shows up here."}
+                </EmptyState>
+              )}
+            </section>
+            {decided.length || agentsDecided.length ? (
+              <section aria-label="Answered" className="min-w-0">
+                <SectionHeading
+                  icon={CheckCircle2Icon}
+                  count={decided.length + agentsDecided.length}
+                  action={
+                    <Button size="sm" variant="ghost" onClick={() => setShow(show === "all" ? "awaiting" : "all")} aria-expanded={show === "all"}>
+                      {show === "all" ? "Hide" : "Show"}
+                    </Button>
+                  }
+                  as="h2"
+                >
+                  Answered
+                </SectionHeading>
+                {show === "all" ? (
+                  <div className="grid gap-4">
+                    {agentsDecided.length ? <AgentsDecidedAudit questions={agentsDecided} slug={slug} /> : null}
+                    {decided.length ? (
+                      <CardGrid cols={2}>
+                        {decided.map((p) => (
+                          <ProposalCard key={p.id} r={p} slug={slug} canDecide={canDecide} />
+                        ))}
+                      </CardGrid>
+                    ) : null}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <RecordSheet id={openRecord?.id ?? null} project={openRecord?.project} onClose={() => setOpenRecord(null)} />
           </div>
         );
@@ -885,7 +1019,7 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
                     )}
                   </Panel>
                 </div>
-                <Disclosure variant="row" summary="Limits and older history" className="rounded-2xl border bg-card px-3 py-1.5 text-sm sm:px-4" contentClassName="pb-3">
+                <Disclosure variant="row" summary="Limits and older history" className="rounded-lg border bg-card px-3 py-1.5 text-sm sm:px-4" contentClassName="pb-3">
                   <Kv
                     rows={[
                       ["Allowed drop in score", loop.tolerance || "—"],
@@ -913,23 +1047,37 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
 
 // ----- timeline -------------------------------------------------------------
 
+// Everything that happened on the project, newest first.
 export function TimelineTab({ slug }: { slug: string }) {
+  return <LiveFeed project={slug} limit={60} height={640} title="Everything that happened" />;
+}
+
+// The posting activity that used to crowd the Overview: the board's latest
+// posts and the posts-per-day chart, each under its own heading.
+export function HistoryActivity({ slug }: { slug: string }) {
   const tl = useApi<Timeline>(projectPath(slug, "timeline"), { refresh: 60000 });
   // There is no per-project activity route; the overview's recent posts are
   // the board's latest and refresh with it.
   const ov = useApi<Overview>(projectPath(slug, "overview"), { refresh: 30000 });
   return (
-    <div className="grid gap-4">
-      {tl.error && !tl.data ? <ErrorNotice error={tl.error} onRetry={() => void tl.reload()} /> : tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={220} title="Posts per day" /> : <SkeletonRows n={4} />}
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Panel title="Board posts" icon={MessageSquareIcon}>
+    <>
+      <section aria-label="Recent posts" className="min-w-0">
+        <SectionHeading icon={MessageSquareIcon} count={ov.data?.recent_posts.length || undefined} action={<SeeAll href={hrefs.project(slug, "board")}>Open the board</SeeAll>} as="h2">
+          Recent posts
+        </SectionHeading>
+        <div className="rounded-lg border bg-card">
           <Wait q={ov} rows={8}>
-            {(o) => <FeedList rows={o.recent_posts} slug={slug} limit={60} />}
+            {(o) => <FeedList rows={o.recent_posts} slug={slug} limit={30} />}
           </Wait>
-        </Panel>
-        <LiveFeed project={slug} limit={60} height={640} title="Everything that happened" />
-      </div>
-    </div>
+        </div>
+      </section>
+      <section aria-label="Posts per day" className="min-w-0">
+        <SectionHeading icon={BarChart3Icon} as="h2">
+          Posts per day
+        </SectionHeading>
+        {tl.error && !tl.data ? <ErrorNotice error={tl.error} onRetry={() => void tl.reload()} /> : tl.data ? <ActivityChart tl={tl.data} bys={["total", "kind"]} height={220} title="Posts per day" /> : <SkeletonRows n={4} />}
+      </section>
+    </>
   );
 }
 
@@ -984,6 +1132,24 @@ export function CleanupTab({ slug }: { slug: string }) {
     <div className="grid gap-4">
       <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">PULSE tidies up after agents on its own: old branches, finished worktrees and threads that went quiet. This is what it found and did.</p>
       <HygienePanel project={slug} limit={30} />
+    </div>
+  );
+}
+
+// ----- team & tools -----------------------------------------------------------
+
+// Team & tools: the lead agents who run this project (one card each, robot
+// face and all), the toolkit they work with, and the machines that fit; the
+// "env" segment keeps the setup notes, the constitution and the records.
+export function TeamTab({ slug, sub, canDecide = true }: { slug: string; sub: "team" | "env"; canDecide?: boolean }) {
+  if (sub === "env") return <EnvTab slug={slug} />;
+  // Each panel carries its own title, count and action (Seat a lead, Change);
+  // a heading above each would say the name twice.
+  return (
+    <div className="grid gap-6">
+      <LeadsPanel slug={slug} canDecide={canDecide} />
+      <ToolkitPanel slug={slug} canDecide={canDecide} />
+      <MachinesPanel slug={slug} canDecide={canDecide} />
     </div>
   );
 }
@@ -1083,7 +1249,7 @@ function ProjectRecords({ slug, q }: { slug: string; q: Loaded<RecordsPayload> }
             );
           if (view === "table")
             return (
-              <div className="overflow-x-auto rounded-2xl border bg-card">
+              <div className="overflow-x-auto rounded-lg border bg-card">
                 <DataTable columns={RECORD_COLUMNS(false)} rows={rows} rowKey={(r) => r.id} onRow={(r) => setOpen(r.id)} initialSort="updated" caption={"Records of " + slug} />
               </div>
             );

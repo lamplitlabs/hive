@@ -44,7 +44,7 @@ export function ItemCard({ children, href, onOpen, active, highlight, className,
   // `highlight` marks a card that waits for the owner: a marigold rule down
   // its left edge (the one warm colour means "you").
   const cls = cn(
-    "group/item surface-raised relative flex min-w-0 flex-col gap-2.5 overflow-hidden rounded-2xl border p-4 text-left sm:p-5",
+    "group/item surface-raised relative flex min-w-0 flex-col gap-2.5 overflow-hidden rounded-lg border p-4 text-left sm:p-5",
     (href || onOpen) && "lift cursor-pointer motion-reduce:transition-none",
     href && !onOpen && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
     onOpen && "has-[[data-open]:focus-visible]:ring-2 has-[[data-open]:focus-visible]:ring-ring",
