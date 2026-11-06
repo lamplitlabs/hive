@@ -92,7 +92,7 @@ export function CopyButton({ text, label = "Copy", size = "sm", variant = "defau
 export function CommandBox({ command, copy, className }: { command: string; copy?: boolean; className?: string }) {
   return (
     <div className={cn("flex items-start gap-2 rounded-lg border bg-muted/60 p-2.5 pl-3", className)}>
-      <code className="min-w-0 flex-1 self-center whitespace-pre-wrap font-mono text-[12.5px] leading-5 text-foreground anywhere">{command}</code>
+      <code className="min-w-0 flex-1 self-center whitespace-pre-wrap font-mono text-[13px] leading-5 text-foreground anywhere">{command}</code>
       {copy ? <CopyButton text={command} size="xs" variant="outline" className="shrink-0" /> : null}
     </div>
   );
@@ -681,14 +681,14 @@ export function FixtureList({ fixtures, className }: { fixtures: EvolveFixture[]
   return (
     <section className={className} aria-label="Test cases">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h3 className="text-[15px] font-semibold">Test cases</h3>
+        <h3 className="text-base font-semibold">Test cases</h3>
         {fixtures.length ? <span className="text-[13px] text-muted-foreground">{enabled === fixtures.length ? plural(fixtures.length, "test case") + ", all on" : num(enabled) + " of " + plural(fixtures.length, "test case") + " on"}</span> : null}
       </div>
       {fixtures.length ? (
         <ul className="grid gap-1.5">
           {fixtures.map((f) => (
             <li key={f.kind + "/" + f.name} title={f.kind === "public" ? "Agents may see it; it counts in the score" : undefined} className={cn("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-card px-3 py-2 text-[13px]", !f.enabled && "opacity-60")}>
-              <span className="min-w-0 font-mono text-[12.5px] font-medium anywhere">{f.name}</span>
+              <span className="min-w-0 font-mono text-[13px] font-medium anywhere">{f.name}</span>
               {f.starter ? <ToneBadge tone="info" title="Part of the starter set added when the project was set up">Starter</ToneBadge> : null}
               {f.kind !== "public" ? (
                 <ToneBadge tone="neutral" title={f.kind === "signal" ? "A hint agents read; it does not count in the score" : f.kind}>

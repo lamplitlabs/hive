@@ -92,7 +92,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 placeholder="/Users/you/src/my-app"
-                className="min-w-0 flex-1 font-mono text-[12.5px]"
+                className="min-w-0 flex-1 font-mono text-[13px]"
                 autoFocus
                 spellCheck={false}
                 onKeyDown={(e) => {
@@ -124,7 +124,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="ap-verify">Test command <span className="font-normal text-muted-foreground">(optional)</span></Label>
-              <Input id="ap-verify" value={verify} onChange={(e) => setVerify(e.target.value)} placeholder="go test ./... or npm test" className="font-mono text-[12.5px]" spellCheck={false} />
+              <Input id="ap-verify" value={verify} onChange={(e) => setVerify(e.target.value)} placeholder="go test ./... or npm test" className="font-mono text-[13px]" spellCheck={false} />
               <p className="text-[13px] text-muted-foreground">Checks an agent&apos;s work before it is merged.</p>
             </div>
           </div>
@@ -499,7 +499,7 @@ function MoveBody({ slug, name, path, present, busy, setBusy, onOpenChange, onMo
               setOtherRemote(null);
             }}
             placeholder={present ? path : "/Users/you/src/" + slug}
-            className="min-w-0 flex-1 font-mono text-[12.5px]"
+            className="min-w-0 flex-1 font-mono text-[13px]"
             autoFocus
             spellCheck={false}
             disabled={busy}
@@ -651,7 +651,7 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
               <ul className="grid gap-1">
                 {preview.yours.map((cmd, i) => (
                   <li key={i}>
-                    <code className="block rounded-md bg-muted px-2 py-1 font-mono text-[12.5px] anywhere">{cmd}</code>
+                    <code className="block rounded-md bg-muted px-2 py-1 font-mono text-[13px] anywhere">{cmd}</code>
                   </li>
                 ))}
               </ul>

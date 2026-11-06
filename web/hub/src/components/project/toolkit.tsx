@@ -2,28 +2,28 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { BookOpenIcon, CheckIcon, ExternalLinkIcon, KeyRoundIcon, Loader2Icon, PenLineIcon, PlugZapIcon, PlusIcon, XIcon } from "lucide-react";
+import { BookOpenIcon, ExternalLinkIcon, KeyRoundIcon, Loader2Icon, PenLineIcon, PlugZapIcon, PlusIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { showApiError } from "@/components/pulse/confirm";
+import { ListRow, ListRows } from "@/components/pulse/list-row";
+import { LogoTile } from "@/components/pulse/logo";
 import { Disclosure, Panel } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import { McpServerDialog, refreshMcp } from "@/components/connections/mcp-dialogs";
 import { SkillDialog, refreshSkills } from "@/components/connections/skill-dialogs";
-import { RoleMascot } from "@/components/project/lead-mascots";
 import { writes, type McpAuth, type McpOptions, type McpTransport, type SkillSuggestion, type ToolSuggestion, type ToolkitPayload } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { DEFAULT_OPTIONS, TRANSPORT_SHORT, type McpForm, type SkillForm } from "@/lib/mcp";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
-import { cn } from "@/lib/utils";
 
 // The toolkit: what a project's checkout asks for and does not have yet - a
 // tool connection (an MCP server) for a service its manifests name, a skill
 // drafted from its shape (how to set it up, check its UI, ship a release).
-// One illustrated card each; a click picks, the footer says what it is and
-// why, and one more click adds it the way `pulse mcp add` or `pulse skill
-// add` would. A tool that needs a secret opens the form instead, filled in,
+// One row each with the service's mark; a click picks, the detail under the
+// list says what it is and why, and one more click adds it the way `pulse
+// mcp add` or `pulse skill add` would. A tool that needs a secret opens the form instead, filled in,
 // so the owner adds the secret reference. The daemon asks about the same
 // things on the board, one at a time; a yes there adds it too.
 
@@ -48,7 +48,7 @@ export function ToolkitPanel({ slug, canDecide = true }: { slug: string; canDeci
           <p className="text-sm leading-relaxed text-muted-foreground">
             {slug} has the tools and skills its shape asks for. PULSE reads the checkout again as it changes - a new dependency, a compose file, a UI - and suggests what fits here and on the board.
           </p>
-          <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
             Everything connected is on the{" "}
             <Link href={hrefs.connections({ project: slug })} className="underline decoration-foreground/25 underline-offset-4 hover:decoration-foreground/60">
               Connections
@@ -59,10 +59,10 @@ export function ToolkitPanel({ slug, canDecide = true }: { slug: string; canDeci
       ) : (
         <div className="grid gap-3">
           <p className="text-sm leading-relaxed text-muted-foreground">
-            From what {slug} shows - its manifests, files and remote - PULSE suggests {count === 1 ? "one thing" : num(count) + " things"} agents could use. Pick a card to read why.
+            From what {slug} shows - its manifests, files and remote - PULSE suggests {count === 1 ? "one thing" : num(count) + " things"} agents could use. Pick a row to read why.
           </p>
           <ToolkitGallery project={slug} tools={tools} skills={skills} canDecide={canDecide} />
-          <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
             From a shell: <Mono>{"pulse toolkit --project " + slug}</Mono> shows the same, <Mono>{"pulse toolkit add tool|skill NAME --project " + slug}</Mono> adds one. The daemon asks about these on the board too, one at a time; a yes there adds it, a declined thread rests for a month.
           </p>
         </div>
@@ -75,9 +75,9 @@ function num(n: number): string {
   return ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][n] ?? String(n);
 }
 
-// The cards and the footer for one project's suggestions. `only` narrows
+// The rows and the detail for one project's suggestions. `only` narrows
 // to one kind (the Connections page shows tools under Tools, skills under
-// Skills); without it both kinds share the grid, tools first.
+// Skills); without it both kinds share the list, tools first.
 export function ToolkitGallery({ project, tools, skills, canDecide, only, onAdded }: { project: string; tools: ToolSuggestion[]; skills: SkillSuggestion[]; canDecide: boolean; only?: "tool" | "skill"; onAdded?: () => void }) {
   const options = useApi<McpOptions>("mcp/options", { refresh: false });
   const [pick, setPick] = useState("");
@@ -117,11 +117,11 @@ export function ToolkitGallery({ project, tools, skills, canDecide, only, onAdde
   if (!picks.length) return null;
   return (
     <div className="grid gap-3" role="group" aria-label="Suggested tools and skills">
-      <ul className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
-        {picks.map((p, i) => (
-          <PickCard key={keyOf(p)} index={i} pick={p} picked={pick === keyOf(p)} onPick={() => choose(keyOf(p))} />
+      <ListRows ariaLabel="Suggested tools and skills">
+        {picks.map((p) => (
+          <PickRow key={keyOf(p)} pick={p} picked={pick === keyOf(p)} onPick={() => choose(keyOf(p))} />
         ))}
-      </ul>
+      </ListRows>
       {chosen ? (
         <PickDetail
           key={keyOf(chosen)}
@@ -190,44 +190,31 @@ function skillForm(k: SkillSuggestion): Partial<SkillForm> {
   return { name: k.name, project: k.project, description: k.description, body: k.body };
 }
 
-// A steady hue per name, so the plugs in a row are not all the same colour.
-function hueOf(name: string): string {
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return "oklch(0.78 0.12 " + h + ")";
-}
-
-function PickCard({ index, pick: p, picked, onPick }: { index: number; pick: ToolkitPick; picked: boolean; onPick: () => void }) {
+// One suggestion as a row: the service's mark (or its initials, or the book
+// for a skill), its name, what it would take, and a key when a secret is yours
+// to add. The picked row stays marked while its detail is open below.
+function PickRow({ pick: p, picked, onPick }: { pick: ToolkitPick; picked: boolean; onPick: () => void }) {
   const tool = p.kind === "tool" ? p.tool : null;
   const title = tool ? tool.title : p.kind === "skill" ? p.skill.name : "";
-  const sub = tool ? (tool.auth === "oauth" ? "signs in once" : needsSecret(tool) ? "needs a secret" : TRANSPORT_SHORT[tool.transport as McpTransport] ?? tool.transport) : "a drafted skill";
+  const sub = tool ? (tool.auth === "oauth" ? "signs in once" : needsSecret(tool) ? "needs a secret" : (TRANSPORT_SHORT[tool.transport as McpTransport] ?? tool.transport)) : "a drafted skill";
+  const about = tool ? tool.about : p.kind === "skill" ? p.skill.description : "";
   return (
-    <li className="min-w-0 animate-in fade-in-0 slide-in-from-bottom-2 fill-mode-both duration-300" style={{ animationDelay: Math.min(index, 14) * 45 + "ms" }}>
-      <button
-        type="button"
-        onClick={onPick}
-        aria-pressed={picked}
-        data-picked={picked}
-        className={cn(
-          "mascot-card lift relative flex h-full w-full flex-col items-center gap-1.5 rounded-2xl border bg-card px-2 pt-4 pb-3 text-center outline-none transition-[transform,border-color,box-shadow] duration-300 ease-[var(--ease-out-soft)] focus-visible:ring-2 focus-visible:ring-ring/60",
-          picked ? "-translate-y-0.5 border-primary shadow-md ring-2 ring-primary/25" : "hover:-translate-y-0.5",
-        )}
-        style={{ "--mascot-delay": (index % 5) * 0.9 + "s" } as React.CSSProperties}
-      >
-        {picked ? (
-          <span className="absolute top-2 right-2 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground animate-in zoom-in-50 duration-200" aria-hidden>
-            <CheckIcon className="size-3" />
-          </span>
-        ) : tool && needsSecret(tool) ? (
-          <span className="absolute top-2 right-2 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground" title="Needs a secret you hold" aria-label="Needs a secret">
-            <KeyRoundIcon className="size-3" />
-          </span>
-        ) : null}
-        <RoleMascot role={p.kind} size={64} mood={picked ? "picked" : "idle"} title={title} color={tool ? hueOf(tool.name) : undefined} />
-        <span className="mt-0.5 text-[13px] leading-tight font-medium text-foreground">{title}</span>
-        <span className="text-[11.5px] text-muted-foreground">{sub}</span>
-      </button>
-    </li>
+    <ListRow
+      lead={<LogoTile name={tool ? tool.name : null} fallback={tool ? undefined : <BookOpenIcon className="size-4" />} title={title} />}
+      title={title}
+      meta={
+        <>
+          <span>{sub}</span>
+          {tool && tool.scope === "shared" ? <span>every project</span> : null}
+        </>
+      }
+      status={tool && needsSecret(tool) ? <ToneBadge tone="warn"><KeyRoundIcon className="size-3" /> secret</ToneBadge> : <ToneBadge tone="info">{tool ? "tool" : "skill"}</ToneBadge>}
+      onOpen={onPick}
+      selected={picked}
+      ariaLabel={(tool ? "Suggested tool: " : "Suggested skill: ") + title}
+    >
+      {about}
+    </ListRow>
   );
 }
 
@@ -237,7 +224,7 @@ function PickDetail({ project, pick: p, busy, canDecide, onAdd, onForm, onClose 
     const secret = needsSecret(t);
     const reach = t.transport === "stdio" ? [t.command, ...t.args].join(" ") : t.url;
     return (
-      <div className="grid gap-3 rounded-xl border bg-card px-4 py-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+      <div className="grid gap-3 rounded-lg border bg-card p-4 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -251,7 +238,7 @@ function PickDetail({ project, pick: p, busy, canDecide, onAdd, onForm, onClose 
             <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
               <span className="text-you-ink">Why here:</span> {t.why}
             </p>
-            <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted-foreground">
+            <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
               {TRANSPORT_SHORT[t.transport as McpTransport] ?? t.transport}
               {": "}
               <Mono>{reach}</Mono>
@@ -282,7 +269,7 @@ function PickDetail({ project, pick: p, busy, canDecide, onAdd, onForm, onClose 
           </Button>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <p className="min-w-0 text-[12.5px] leading-relaxed text-muted-foreground">
+          <p className="min-w-0 text-[13px] leading-relaxed text-muted-foreground">
             From a shell: <Mono>{t.add}</Mono>
             {t.after ? " - then " + t.after + "." : ""}
           </p>
@@ -303,7 +290,7 @@ function PickDetail({ project, pick: p, busy, canDecide, onAdd, onForm, onClose 
   }
   const k = p.skill;
   return (
-    <div className="grid gap-3 rounded-xl border bg-card px-4 py-3 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
+    <div className="grid gap-3 rounded-lg border bg-card p-4 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -323,10 +310,10 @@ function PickDetail({ project, pick: p, busy, canDecide, onAdd, onForm, onClose 
         </Button>
       </div>
       <Disclosure summary="Read the draft" contentClassName="min-w-0">
-        <pre className="max-h-72 overflow-auto rounded-lg border bg-muted/40 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-foreground/85">{k.body}</pre>
+        <pre className="max-h-72 overflow-auto rounded-lg border bg-muted/40 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground/85">{k.body}</pre>
       </Disclosure>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <p className="min-w-0 text-[12.5px] leading-relaxed text-muted-foreground">
+        <p className="min-w-0 text-[13px] leading-relaxed text-muted-foreground">
           Drafted from what {project} shows; agents read it before work it covers. From a shell: <Mono>{k.add}</Mono>
         </p>
         {canDecide ? (

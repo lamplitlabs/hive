@@ -46,7 +46,7 @@ export function DataTable<T>({ columns, rows, rowKey, onRow, dense, caption, ini
   };
 
   return (
-    <div className={cn("surface-raised relative w-full overflow-hidden rounded-2xl border", className)}>
+    <div className={cn("surface-raised relative w-full overflow-hidden rounded-lg border", className)}>
       <Table className={cn(dense ? "text-[13px]" : "text-sm")}>
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <TableHeader>

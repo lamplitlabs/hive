@@ -45,7 +45,7 @@ export function Stepper({ steps, current, reach, done, onGo }: { steps: WizardSt
               <span
                 aria-hidden
                 className={cn(
-                  "inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tnum",
+                  "inline-flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-semibold tnum",
                   past ? "bg-primary text-primary-foreground" : here ? "bg-primary/12 text-primary ring-1 ring-primary/40" : "bg-muted text-muted-foreground",
                 )}
               >
@@ -108,7 +108,7 @@ export function WizardFooter({ left, right, why }: { left?: React.ReactNode; rig
     <div className="flex items-center justify-between gap-2 border-t bg-muted/30 px-5 py-3">
       <div className="min-w-0">{left}</div>
       <div className="flex min-w-0 items-center gap-3">
-        {why ? <span className="hidden text-right text-[12.5px] leading-snug text-muted-foreground sm:block">{why}</span> : null}
+        {why ? <span className="hidden text-right text-[13px] leading-snug text-muted-foreground sm:block">{why}</span> : null}
         {right}
       </div>
     </div>

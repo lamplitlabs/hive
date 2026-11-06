@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2Icon, PlusIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, Loader2Icon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -9,14 +9,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ProjectAvatar } from "@/components/pulse/avatar";
 import { showApiError } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
+import { useWizardLock, WizardBody, WizardDialog, WizardFooter, WizardHeader, type WizardStep } from "@/components/pulse/stepper";
+import { Avatar } from "@/components/pulse/who";
 import { PRIORITIES } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { writes, type Task } from "@/lib/api";
+import { projectLabel, writes, type Task } from "@/lib/api";
 import { invalidate, useApi } from "@/lib/use-api";
 import type { Org } from "@/lib/api";
+import { agentName, priorityWord } from "@/lib/words";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { reviewLine } from "./tasks-state";
 
 // "As an owner I would like to use the web UI and give a task." One dialog:
 // project, what to do (the title), the details (a Markdown brief) and how
@@ -43,21 +48,56 @@ export function NewTaskButton({ project, onCreated, size = "sm", variant = "defa
   );
 }
 
+// The New task wizard (spec "Tasks"): two steps on the shared Stepper.
+// Step 1 "What": the title and the details. Step 2 "Where and how": the
+// project, how urgent it is and who leads it, ending in one review line
+// ("A high-priority task for demo-app, led by Pip") and Create. Opening it
+// from elsewhere: <NewTaskDialog open onOpenChange project? /> or the Tasks
+// page at /tasks/?new=1. The write and its validation are unchanged.
+const NEW_TASK_STEPS: WizardStep[] = [
+  { id: "what", label: "What" },
+  { id: "where", label: "Where and how" },
+];
+type NewTaskStep = "what" | "where";
+
 export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; project?: string; onCreated?: (t: Task) => void }) {
-  const { data: org } = useApi<Org>(open ? "org" : null, { refresh: false });
+  const saving = useWizardLock();
+  return (
+    <WizardDialog open={open} onOpenChange={(o) => (o || !saving.current) && onOpenChange(o)} className="sm:max-w-xl">
+      <NewTaskWizard project={project} onOpenChange={onOpenChange} onCreated={onCreated} savingRef={saving} />
+    </WizardDialog>
+  );
+}
+
+// The wizard body lives only while the dialog is open, so each opening
+// starts from a clean form.
+function NewTaskWizard({ project, onOpenChange, onCreated, savingRef }: { project?: string; onOpenChange: (o: boolean) => void; onCreated?: (t: Task) => void; savingRef: React.RefObject<boolean> }) {
+  const { data: org } = useApi<Org>("org", { refresh: false });
+  const [step, setStep] = useState<NewTaskStep>("what");
+  const [reach, setReach] = useState(0);
   const [slug, setSlug] = useState(project ?? "");
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
   const [priority, setPriority] = useState("10");
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState(false);
   const projects = (org?.projects ?? []).filter((p) => p.present);
   const lead = (chosen: string) => (chosen ? "the " + chosen + " lead agent" : "the lead agent");
   const chosen = slug || project || "";
-  const valid = chosen && title.trim().length >= 3 && brief.trim().length >= 1;
+  const chosenProject = projects.find((p) => p.slug === chosen);
+  // The lead is the project's own: "<slug>-lead" once it sits; its name as
+  // the hub says it ("Project lead" of this project).
+  const leadId = chosen ? chosen + "-lead" : "";
+  const leadName = leadId ? agentName(leadId, chosen) : "";
+  const whatDone = title.trim().length >= 3 && brief.trim().length >= 1;
+  const valid = chosen && whatDone;
+  const go = (s: NewTaskStep) => {
+    setStep(s);
+    setReach((r) => Math.max(r, NEW_TASK_STEPS.findIndex((x) => x.id === s)));
+  };
 
   const submit = async () => {
     setBusy(true);
+    savingRef.current = true;
     const id = toast.loading("Giving the task…");
     try {
       const r = await writes.newTask({ project: chosen, title: title.trim(), brief: brief.trim(), priority: Number(priority) });
@@ -66,28 +106,45 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
       onOpenChange(false);
       setTitle("");
       setBrief("");
-      setConfirm(false);
       onCreated?.(r.task);
     } catch (e) {
       toast.dismiss(id);
       showApiError(e, "The task wasn't given");
     } finally {
       setBusy(false);
+      savingRef.current = false;
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Give the agents a task</DialogTitle>
-          <DialogDescription>Say what you want done. The project&apos;s lead agent turns it into steps, hands them to agents and reports back in the task&apos;s chat.</DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4">
-          <div className="grid gap-1.5">
+    <>
+      <WizardHeader
+        steps={NEW_TASK_STEPS}
+        current={step}
+        reach={reach}
+        onGo={(id) => go(id as NewTaskStep)}
+        title="New task"
+        description={step === "what" ? "Say what you want done. The project's lead agent turns it into steps and reports back in the task's session." : "Where it belongs and how soon it should run."}
+      />
+      <WizardBody>
+        {step === "what" ? (
+          <div className="grid gap-4">
+            <div className="grid gap-1.5">
+              <Label htmlFor="nt-title">What should the agents do?</Label>
+              <Input id="nt-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="For example: Fix the flaky checkout test" maxLength={200} autoFocus />
+              <p className="text-xs text-muted-foreground">One short line. It becomes the task&apos;s name.</p>
+            </div>
+            <BriefField id="nt-brief" value={brief} onChange={setBrief} placeholder={"What you want and why.\n\nHow you'll know it's done:\n- the check that proves it\n\nLeave alone:\n- files or behaviour that must not change"} />
+          </div>
+        ) : (
+          <div className="grid gap-5">
+            <div className="grid gap-1.5">
               <Label htmlFor="nt-project">Project</Label>
               {project ? (
-                <Input id="nt-project" value={project} readOnly />
+                <div id="nt-project" className="flex h-9 items-center gap-2 rounded-lg border bg-muted/40 px-3 text-sm" aria-readonly>
+                  <ProjectAvatar slug={project} size={20} name={chosenProject?.name} />
+                  <span className="truncate">{chosenProject ? projectLabel(chosenProject) : project}</span>
+                </div>
               ) : (
                 <Select value={slug} onValueChange={setSlug}>
                   <SelectTrigger id="nt-project" className="w-full">
@@ -96,39 +153,69 @@ export function NewTaskDialog({ open, onOpenChange, project, onCreated }: { open
                   <SelectContent>
                     {projects.map((p) => (
                       <SelectItem key={p.slug} value={p.slug}>
-                        {p.slug}
+                        <ProjectAvatar slug={p.slug} name={p.name} size={20} />
+                        <span className="truncate">{projectLabel(p)}</span>
+                        {p.name && p.name !== p.slug ? <span className="truncate text-xs text-muted-foreground">{p.slug}</span> : null}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               )}
+            </div>
+            <UrgencyField value={priority} onChange={setPriority} />
+            <div className="grid gap-1.5">
+              <span className="text-sm font-medium">Lead</span>
+              <div className="flex min-h-9 items-center gap-2 rounded-lg border bg-muted/40 px-3 py-1.5 text-sm">
+                {leadId ? (
+                  <>
+                    <Avatar seed={leadId} size={20} />
+                    <span className="min-w-0 truncate">{leadName}</span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{leadId}</span>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">Pick a project; its lead agent takes the task.</span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">Each project has one lead agent. It splits the task into steps, hands them out and reports back in the task&apos;s session.</p>
+            </div>
+            <p className="rounded-lg border bg-card px-3 py-2.5 text-sm leading-relaxed text-foreground anywhere" aria-live="polite" data-testid="nt-review">
+              {reviewLine({ priorityWord: priorityWord(Number(priority)), project: chosen ? (chosenProject ? projectLabel(chosenProject) : chosen) : "", lead: leadName || undefined })}
+              {title.trim() ? <span className="text-muted-foreground">{" \u201c" + title.trim() + "\u201d"}</span> : null}
+            </p>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="nt-title">What should the agents do?</Label>
-            <Input id="nt-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="For example: Fix the flaky checkout test" maxLength={200} autoFocus />
-            <p className="text-xs text-muted-foreground">One short line. It becomes the task&apos;s name.</p>
-          </div>
-          <BriefField id="nt-brief" value={brief} onChange={setBrief} placeholder={"What you want and why.\n\nHow you'll know it's done:\n- the check that proves it\n\nLeave alone:\n- files or behaviour that must not change"} />
-          <UrgencyField value={priority} onChange={setPriority} />
-        </div>
-        <DialogFooter className="items-center gap-2">
-          {confirm ? <span className="mr-auto text-[13px] leading-relaxed text-foreground anywhere">{"Give \u201c" + (title.trim() || "this task") + "\u201d to " + lead(chosen) + "?"}</span> : null}
-          <Button variant="ghost" onClick={() => (confirm ? setConfirm(false) : onOpenChange(false))} disabled={busy}>
-            {confirm ? "Back" : "Cancel"}
-          </Button>
-          {confirm ? (
+        )}
+      </WizardBody>
+      {step === "what" ? (
+        <WizardFooter
+          left={
+            <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
+              Cancel
+            </Button>
+          }
+          why={whatDone ? undefined : "Say what to do (3 letters or more) and add the details."}
+          right={
+            <Button onClick={() => go("where")} disabled={!whatDone}>
+              Next <ArrowRightIcon data-icon="inline-end" />
+            </Button>
+          }
+        />
+      ) : (
+        <WizardFooter
+          left={
+            <Button variant="ghost" onClick={() => go("what")} disabled={busy}>
+              <ArrowLeftIcon data-icon="inline-start" /> Back
+            </Button>
+          }
+          why={valid ? undefined : "Pick a project."}
+          right={
             <Button onClick={() => void submit()} disabled={busy || !valid}>
               {busy ? <Loader2Icon className="animate-spin" /> : null}
-              Yes, give it
+              Create
             </Button>
-          ) : (
-            <Button onClick={() => setConfirm(true)} disabled={!valid} title={valid ? undefined : "Pick a project, say what to do (3 letters or more) and add the details."}>
-              Give the task
-            </Button>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          }
+        />
+      )}
+    </>
   );
 }
 

@@ -105,7 +105,7 @@ export function MachinesPanel({ slug, canDecide = true }: { slug: string; canDec
             <p className="text-[13px] text-muted-foreground">No machine is paired yet. This machine appears here once the runner starts on it.</p>
           )}
           <Disclosure summary="Prefer the terminal?">
-            <p className="text-[12.5px] leading-relaxed text-muted-foreground anywhere">
+            <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">
               From a shell: <Mono>{"pulse init " + slug + " --needs " + (words.length ? words.join(",") : "macos,xcode")}</Mono>, or <Mono>needs:</Mono> in the repository&apos;s <Mono>.pulse/pulse.yaml</Mono>.
             </p>
           </Disclosure>
@@ -191,10 +191,10 @@ function NeedsBody({ slug, current, busy, setBusy, onOpenChange }: { slug: strin
       </div>
       {suggestions.length ? (
         <div className="grid gap-1.5">
-          <span className="text-[12.5px] text-muted-foreground">Words the paired machines offer</span>
+          <span className="text-[13px] text-muted-foreground">Words the paired machines offer</span>
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Suggested words">
             {suggestions.map((w) => (
-              <button key={w} type="button" disabled={busy} onClick={() => toggle(w)} className="rounded-full border border-border bg-background px-2.5 py-0.5 font-mono text-[12.5px] text-foreground hover:bg-muted disabled:opacity-50">
+              <button key={w} type="button" disabled={busy} onClick={() => toggle(w)} className="rounded-full border border-border bg-background px-2.5 py-0.5 font-mono text-[13px] text-foreground hover:bg-muted disabled:opacity-50">
                 {w}
               </button>
             ))}

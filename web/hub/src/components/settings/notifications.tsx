@@ -55,7 +55,7 @@ export function NotificationsCard() {
   const on = notifyOn(prefs);
   const status = notifyStatus({ app, supported, permission, on });
   return (
-    <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
+    <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
       <div className="divide-y">
         {ROWS.map((r) => {
           const checked = prefs[r.key];
@@ -63,7 +63,7 @@ export function NotificationsCard() {
           return (
             <div key={r.key} className="grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-x-8">
               <div className="flex min-w-0 flex-col gap-1">
-                <span className="text-[15px] font-medium leading-snug text-foreground anywhere">{r.title}</span>
+                <span className="text-sm font-medium leading-snug text-foreground anywhere">{r.title}</span>
                 <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">{r.help}</p>
               </div>
               <div className="flex min-h-9 items-center gap-2.5 md:justify-end">

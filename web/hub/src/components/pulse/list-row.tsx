@@ -33,6 +33,7 @@ export function ListRow({
   children,
   ariaLabel,
   glow,
+  actionsVisible,
 }: {
   lead?: React.ReactNode;
   title: React.ReactNode;
@@ -48,10 +49,12 @@ export function ListRow({
   ariaLabel?: string;
   // A row that just arrived or changed glows for 1.5 s (row-glow in globals.css).
   glow?: boolean;
+  // Actions that must stay in sight (a decision's Accept / Decline) instead of showing on hover.
+  actionsVisible?: boolean;
 }) {
   const interactive = Boolean(href || onOpen);
   const cls = cn(
-    "group/row relative flex min-h-(--row-h) min-w-0 items-center gap-3 px-3 py-1.5 text-left outline-none transition-colors duration-120 ease-out-soft motion-reduce:transition-none",
+    "group/row relative flex min-h-(--row-h) min-w-0 items-center gap-3 px-3 py-1.5 text-left outline-none transition-colors duration-120 ease-out-soft motion-reduce:transition-none max-sm:flex-wrap",
     interactive && "cursor-pointer hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
     selected && "bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-link before:content-['']",
     glow && "row-glow",
@@ -76,7 +79,7 @@ export function ListRow({
       ) : null}
       {actions ? (
         <span
-          className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity duration-120 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 motion-reduce:transition-none"
+          className={cn("flex shrink-0 items-center gap-1 transition-opacity duration-120 motion-reduce:transition-none max-sm:basis-full max-sm:justify-end", actionsVisible ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100")}
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             if (opensRow(e.key)) e.stopPropagation();

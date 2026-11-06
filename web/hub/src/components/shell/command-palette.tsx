@@ -16,6 +16,7 @@ import {
   BotMessageSquareIcon,
   BrainIcon,
   CalendarClockIcon,
+  ChartLineIcon,
   CornerDownLeftIcon,
   FolderIcon,
   HistoryIcon,
@@ -32,6 +33,7 @@ import {
   ServerIcon,
   SettingsIcon,
   SparklesIcon,
+  UsersIcon,
   VoteIcon,
 } from "lucide-react";
 import { openAsk } from "@/components/ask/ask-panel";
@@ -59,13 +61,14 @@ const groupStyle =
 const itemStyle = "min-h-10 gap-3 rounded-lg px-2.5 py-2";
 const shortcutStyle = "max-w-24 shrink-0 truncate tracking-normal sm:max-w-36";
 const keyStyle =
-  "inline-flex h-5 min-w-5 items-center justify-center rounded border border-border/70 bg-background px-1 font-mono text-[10px]";
+  "inline-flex h-5 min-w-5 items-center justify-center rounded border border-border/70 bg-background px-1 font-mono text-xs";
 const projectTabIcon: Record<ProjectCanonicalTab, typeof HomeIcon> = {
   overview: HomeIcon,
   "for-you": InboxIcon,
   work: ListTodoIcon,
   board: MessagesSquareIcon,
   evolution: SparklesIcon,
+  team: UsersIcon,
   history: HistoryIcon,
 };
 const projectTabs = PROJECT_TABS as {
@@ -73,14 +76,15 @@ const projectTabs = PROJECT_TABS as {
   label: string;
 }[];
 
-// One palette per page. The host (mounted once by the shell) owns the dialog
-// and the ⌘K / Ctrl-K shortcut; any number of triggers - the sidebar's search
-// field, the phone header's magnifier - open it. Two hosts would each toggle
-// on the same key press and close one another.
+// One palette per page. The host (mounted once by the shell) owns the dialog;
+// any number of triggers - the sidebar's search row, the phone header's
+// magnifier - open it. The ⌘K / Ctrl-K shortcut lives in the shell's
+// useGlobalShortcuts, which calls togglePalette(), so one key press reaches
+// one listener.
 const listeners = new Set<() => void>();
 let isOpen = false;
 let opener: HTMLElement | null = null;
-function setPaletteOpen(open: boolean, from?: HTMLElement | null) {
+export function setPaletteOpen(open: boolean, from?: HTMLElement | null) {
   if (open && !isOpen)
     opener =
       from ??
@@ -96,6 +100,9 @@ function subscribe(cb: () => void) {
   return () => {
     listeners.delete(cb);
   };
+}
+export function togglePalette() {
+  setPaletteOpen(!isOpen);
 }
 const usePaletteOpen = () =>
   useSyncExternalStore(
@@ -142,7 +149,7 @@ export function CommandPalette({
           <span className="collapsed:sr-only">Search</span>
           <kbd
             aria-hidden="true"
-            className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground collapsed:hidden"
+            className="pointer-events-none ml-auto inline-flex shrink-0 items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground collapsed:hidden"
           >
             ⌘K
           </kbd>
@@ -179,22 +186,6 @@ export function CommandPaletteHost() {
     error: tasksError,
     loading: tasksLoading,
   } = useApi<TasksPayload>(open ? "tasks" : null, { refresh: false });
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (
-        !e.isComposing &&
-        !e.repeat &&
-        (e.metaKey || e.ctrlKey) &&
-        e.key.toLowerCase() === "k"
-      ) {
-        e.preventDefault();
-        setPaletteOpen(!isOpen);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   // On close, back to whatever opened it, or to the trigger that is on screen.
   const wasOpen = useRef(false);
@@ -243,7 +234,7 @@ export function CommandPaletteHost() {
         title="Search"
         description="Find a project, task, record or page, or ask a question. Use the arrow keys to choose and Enter to open."
         showCloseButton
-        className="rounded-2xl! shadow-pop sm:max-w-2xl [&_[data-slot=command-input-wrapper]]:pr-14"
+        className="rounded-xl! shadow-pop sm:max-w-2xl [&_[data-slot=command-input-wrapper]]:pr-14"
       >
         <CommandInput
           aria-label="Search projects, tasks, records and pages"
@@ -331,6 +322,13 @@ export function CommandPaletteHost() {
               <HomeIcon aria-hidden="true" className={itemIcon} /> Home
             </CommandItem>
             <CommandItem
+              value="page for you inbox waiting decisions questions"
+              className={itemStyle}
+              onSelect={() => go(hrefs.forYou())}
+            >
+              <InboxIcon aria-hidden="true" className={itemIcon} /> For you
+            </CommandItem>
+            <CommandItem
               value="page tasks all projects"
               className={itemStyle}
               onSelect={() => go(hrefs.tasks())}
@@ -389,6 +387,13 @@ export function CommandPaletteHost() {
               onSelect={() => go(hrefs.memory())}
             >
               <BrainIcon aria-hidden="true" className={itemIcon} /> Memory
+            </CommandItem>
+            <CommandItem
+              value="page insights metrics over time kpis charts"
+              className={itemStyle}
+              onSelect={() => go(hrefs.insights())}
+            >
+              <ChartLineIcon aria-hidden="true" className={itemIcon} /> Insights
             </CommandItem>
             <CommandItem
               value="page settings"
@@ -525,7 +530,7 @@ export function CommandPaletteHost() {
             Loading projects, tasks and records…
           </p>
         ) : null}
-        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/50 px-4 py-3 text-[11px] text-muted-foreground">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/50 px-4 py-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5">
             <kbd aria-label="Arrow keys" className={keyStyle}>
               <ArrowUpIcon aria-hidden="true" className="size-3" />

@@ -1,0 +1,86 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { SettingsIcon } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { OwnerAvatar } from "@/components/pulse/avatar";
+import { showApiError } from "@/components/pulse/confirm";
+import { writes, type Org } from "@/lib/api";
+import { hrefs } from "@/lib/nav";
+import { invalidate, useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
+import { RailTip } from "./rail-tip";
+import { AwakeStatus } from "./awake";
+import { ThemeToggle } from "./theme-toggle";
+import { SETTINGS_ITEM } from "./nav-items";
+
+// The foot of the sidebar (spec "App shell" - Owner row): your avatar and
+// name, a Here / Away switch (owner.presence - it replaces Home's away
+// banner), then Settings and the theme. On the rail the pieces stack.
+
+const PRESENCE_PATHS = ["org", "settings", "events", "inbox"];
+const invalidatePresence = () => invalidate((p) => PRESENCE_PATHS.some((path) => p === path || p.startsWith(path + "?") || p.startsWith(path + "/")));
+
+export function PresenceSwitch({ className, size = "sm" }: { className?: string; size?: "sm" | "default" }) {
+  const { data: org } = useApi<Org>("org");
+  const [busy, setBusy] = useState(false);
+  const here = org?.owner_presence !== "away";
+  const canEdit = org?.can_decide !== false;
+  const set = async (present: boolean) => {
+    setBusy(true);
+    const id = toast.loading(present ? "Marking you as here…" : "Marking you as away…");
+    try {
+      await writes.setSetting("owner.presence", present ? "present" : "away");
+      toast.success(present ? "Welcome back. Proposals and requests wait for your answer again." : "You're away. Each project's lead answers routine proposals for you; hard stops still wait.", { id });
+      invalidatePresence();
+    } catch (e) {
+      toast.dismiss(id);
+      showApiError(e, "PULSE couldn't change your presence. Try again, or change it in Settings.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <label className={cn("inline-flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground", className)}>
+          <span className={cn("tnum", here ? "text-foreground" : "text-warn")}>{here ? "Here" : "Away"}</span>
+          <Switch size={size} checked={here} disabled={busy || !org || !canEdit} onCheckedChange={(v) => void set(v)} aria-label={here ? "You are here. Switch off to mark yourself away." : "You are away. Switch on to mark yourself here."} />
+        </label>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-64">
+        {here ? "Here: proposals, questions and requests wait for your answer." : "Away: each project's lead agent answers routine proposals for you and says so on the board. Hard stops, money and the choices only you can make still wait."}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function OwnerRow({ active }: { active: boolean }) {
+  const { data: org } = useApi<Org>("org");
+  const name = (org?.owner_name || "").trim() || "You";
+  return (
+    <div className="flex items-center gap-2 px-1 collapsed:flex-col collapsed:gap-1 collapsed:px-0">
+      <RailTip label={name} hint="Your name and presence; change them in Settings">
+        <Link href={hrefs.settings("owner")} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-[13px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:flex-none collapsed:px-0" aria-label={"Owner: " + name}>
+          <OwnerAvatar name={name} size={24} />
+          <span className="min-w-0 truncate collapsed:sr-only">{name}</span>
+        </Link>
+      </RailTip>
+      <PresenceSwitch className="collapsed:hidden" />
+      <RailTip label={SETTINGS_ITEM.label} hint={SETTINGS_ITEM.hint}>
+        <Button asChild variant="ghost" size="icon-sm" className={cn("text-muted-foreground hover:text-foreground", active && "bg-accent text-link")}>
+          <Link href={SETTINGS_ITEM.href} aria-label="Settings" aria-current={active ? "page" : undefined}>
+            <SettingsIcon aria-hidden className="size-[18px]" strokeWidth={1.75} />
+          </Link>
+        </Button>
+      </RailTip>
+      {/* The keep-awake cup: only while the setting is on (steaming while held). */}
+      <AwakeStatus />
+      <ThemeToggle />
+    </div>
+  );
+}

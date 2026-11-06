@@ -2,17 +2,22 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ListTodoIcon, SearchIcon } from "lucide-react";
+import { ColumnsIcon, ListIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ProjectAvatar } from "@/components/pulse/avatar";
 import { DataTable } from "@/components/pulse/data-table";
-import { Count, EmptyState, ErrorNotice, PageTitle, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
-import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
-import { TaskCards } from "@/components/tasks/task-card";
-import { NewTaskButton } from "@/components/tasks/task-dialogs";
+import { PageHeader } from "@/components/pulse/page-header";
+import { EmptyState, ErrorNotice, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
+import { SectionHeading } from "@/components/pulse/section-heading";
+import { useViewMode } from "@/components/pulse/view-toggle";
+import { TaskCard } from "@/components/tasks/task-card";
+import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS } from "@/components/tasks/task-columns";
-import { registeredProjects, taskProgress, TASK_STATUSES, type Org, type Task, type TasksPayload } from "@/lib/api";
+import { COLUMN_LABEL, groupByColumn, matchesStatus, TASK_COLUMNS_ORDER, wantsNewTask, type TaskColumn } from "@/components/tasks/tasks-state";
+import { projectLabel, registeredProjects, taskProgress, TASK_STATUSES, type Org, type Task, type TasksPayload } from "@/lib/api";
 import { andList, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { statusWord } from "@/lib/words";
@@ -29,10 +34,10 @@ export default function TasksPage() {
 
 const isActive = (t: Task) => t.status !== "done" && t.status !== "cancelled";
 
-// "active" (shown as "Open", the word the summary line and the project
-// Work tab use) is the default and means no `status` param, so links from the
-// palette and other pages (hrefs.tasks) keep working unchanged. What waits
-// for the owner ("review", read "Asked you") comes right after it.
+// The status filter keeps today's `status` search param (hrefs.tasks), so
+// links from the palette and other pages work unchanged: no param means
+// "active" (anything not closed); a status name; or "all". The board shows
+// every column whatever the filter; the list narrows to it.
 const STATUS_FILTERS: [string, string][] = [
   ["active", "Open"],
   ["review", statusWord("review")],
@@ -40,24 +45,14 @@ const STATUS_FILTERS: [string, string][] = [
   ["all", "All"],
 ];
 
-// The status filter as a segmented control with the count in each trigger.
-// A status with no task in it stays out of the way unless it is the one
-// selected; Open and All are always there.
-function StatusFilter({ value, count, onChange }: { value: string; count: (s: string) => number; onChange: (s: string) => void }) {
-  return (
-    <Tabs value={value} onValueChange={onChange} className="min-w-0 max-w-full">
-      <div className="scroll-strip min-w-0 max-w-full">
-        <TabsList aria-label="Status">
-          {STATUS_FILTERS.filter(([v]) => v === "active" || v === "all" || v === value || count(v) > 0).map(([v, label]) => (
-            <TabsTrigger key={v} value={v} className="flex-none px-2.5">
-              {label}
-              <span className={cn("tnum min-w-4 rounded-full px-1.5 text-xs font-normal leading-5", v === "review" && count(v) ? "bg-you-soft text-you-ink" : "bg-background/70 text-muted-foreground")}>{count(v)}</span>
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </div>
-    </Tabs>
-  );
+type View = "board" | "list";
+
+// Board or List, remembered per browser under the shared view-mode key
+// ("cards" is the board, "table" the list); the board is the default.
+function useView(): [View, (v: View) => void] {
+  const [mode, setMode] = useViewMode("tasks", "cards");
+  const set = useCallback((v: View) => setMode(v === "list" ? "table" : "cards"), [setMode]);
+  return [mode === "table" ? "list" : "board", set];
 }
 
 // One sentence on the list in view: how many are open and what needs you.
@@ -69,6 +64,27 @@ function summary(scope: Task[]): string {
   const working = active.filter((t) => taskProgress(t).working.length > 0).length;
   const bits = [review ? (review === 1 ? "1 waits for your decision" : review + " wait for your decision") : "", working ? (working === 1 ? "agents are working on 1 right now" : "agents are working on " + working + " right now") : ""].filter(Boolean);
   return plural(active.length, "open task") + (bits.length ? ": " + andList(bits) + "." : ".");
+}
+
+// A board column: its heading with the count, then the cards. "Asked you"
+// cards carry their marigold edge; the column itself stays quiet.
+function BoardColumn({ column, tasks, showProject, onOpen }: { column: TaskColumn; tasks: Task[]; showProject: boolean; onOpen: (t: Task) => void }) {
+  return (
+    <section aria-labelledby={"col-" + column} className="flex min-w-0 flex-col gap-3">
+      <SectionHeading as="h2" id={"col-" + column} count={tasks.length} className="mb-0">
+        {COLUMN_LABEL[column]}
+      </SectionHeading>
+      {tasks.length ? (
+        <div className="grid min-w-0 gap-3">
+          {tasks.map((t) => (
+            <TaskCard key={t.id} t={t} showProject={showProject} onOpen={onOpen} compact={column === "done"} />
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-lg border border-dashed px-3 py-4 text-center text-[13px] text-muted-foreground">{column === "review" ? "Nothing waits for you." : "Nothing here."}</p>
+      )}
+    </section>
+  );
 }
 
 function TasksScreen() {
@@ -85,7 +101,7 @@ function TasksScreen() {
     if (stale) router.replace(hrefs.task(stale));
   }, [stale, router]);
   const [text, setText] = useState("");
-  const [view, setView] = useViewMode("tasks");
+  const [view, setView] = useView();
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
       const q = new URLSearchParams(sp.toString());
@@ -98,94 +114,145 @@ function TasksScreen() {
     },
     [sp, router, pathname],
   );
+  // /tasks/?new=1 opens the New task dialog on load (other pages link here
+  // for it); closing it drops the param so a reload does not reopen it.
+  const [creating, setCreating] = useState(false);
+  const newParam = sp.get("new");
+  // The dismissal holds until the URL has dropped the param (derived state,
+  // reset during render), so a later ?new=1 on this same page opens it again.
+  const [dismissedNew, setDismissedNew] = useState(false);
+  if (dismissedNew && !wantsNewTask(newParam)) setDismissedNew(false);
+  const wantsNew = wantsNewTask(newParam) && !dismissedNew;
+  const onCreatingChange = (o: boolean) => {
+    setCreating(o);
+    if (!o && wantsNew) {
+      setDismissedNew(true);
+      setParams({ new: null });
+    }
+  };
   const q = useApi<TasksPayload>("tasks", { refresh: 10000 });
   const org = useApi<Org>("org", { refresh: 60000 });
-  const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => p.slug) : Array.from(new Set((q.data?.tasks ?? []).map((t) => t.project)))), [org.data, q.data]);
+  const projects = useMemo(() => (org.data ? registeredProjects(org.data).map((p) => ({ slug: p.slug, name: p.name })) : Array.from(new Set((q.data?.tasks ?? []).map((t) => t.project))).map((slug) => ({ slug, name: "" }))), [org.data, q.data]);
   const all = useMemo(() => q.data?.tasks ?? [], [q.data]);
   // Counts in the filter and the summary follow the project filter, so they
   // describe the list the owner is looking at rather than the whole org.
   const scope = useMemo(() => (project ? all.filter((x) => x.project === project) : all), [all, project]);
-  const rows = useMemo(() => {
+  const searched = useMemo(() => {
     const t = text.trim().toLowerCase();
-    return scope.filter((x) => (status === "all" ? true : status === "active" ? isActive(x) : x.status === status) && (!t || x.title.toLowerCase().includes(t) || x.id.toLowerCase().includes(t) || (x.brief || "").toLowerCase().includes(t)));
-  }, [scope, status, text]);
+    return scope.filter((x) => !t || x.title.toLowerCase().includes(t) || x.id.toLowerCase().includes(t) || (x.brief || "").toLowerCase().includes(t));
+  }, [scope, text]);
+  const rows = useMemo(() => searched.filter((x) => matchesStatus(x, status)), [searched, status]);
+  // The board: "active" (the default) shows the four columns with every
+  // open task and the recent Done ones; a narrower status shows the same
+  // columns with only what matches, so the filter still means something.
+  const board = useMemo(() => groupByColumn(status === "active" ? searched.filter((x) => isActive(x) || x.status === "done").slice() : rows), [searched, rows, status]);
   const by = (s: string) => (s === "all" ? scope.length : s === "active" ? scope.filter(isActive).length : scope.filter((x) => x.status === s).length);
-  const filtered = !!text.trim() || status !== "active";
+  const filtered = status !== "active" || Boolean(text.trim());
   const empty = all.length ? (
-    text.trim() ? (
-      <>No task matches &ldquo;{text.trim()}&rdquo;. Try fewer words, or look in All.</>
+    filtered ? (
+      <>No task matches. Clear the search or pick another status.</>
     ) : (
-      <>No task here with this filter. Pick another status, or All, to see the rest.</>
+      <>Every task you gave is done or cancelled. Give the agents a new one.</>
     )
   ) : (
-    <>Nothing yet. Give the agents a task: pick the project and say what you want done. The project&apos;s lead agent splits it into steps and reports back in its chat.</>
+    <>Nothing yet. Give the agents a task: pick the project and say what you want done. The project&apos;s lead agent splits it into steps and reports back in its session.</>
   );
   const emptyTitle = all.length ? (filtered ? "No task matches" : "No open task") : "No tasks yet";
-  const emptyAction = all.length && filtered ? undefined : <NewTaskButton project={project || undefined} onCreated={(t) => openTask(t.id)} />;
-  const line = q.data ? summary(scope) : "";
+  const emptyAction =
+    all.length && filtered ? undefined : (
+      <Button size="sm" onClick={() => setCreating(true)}>
+        <PlusIcon /> New task
+      </Button>
+    );
+  const line = q.data ? summary(scope) : "The work you gave your agents";
+  const projectName = project ? projects.find((p) => p.slug === project) : undefined;
   return (
     <>
-      <PageTitle
-        icon={ListTodoIcon}
-        sub="The work you gave your agents. Each task's lead agent splits it into steps and reports back in its chat."
-        actions={<NewTaskButton size="default" project={project || undefined} onCreated={(t) => openTask(t.id)} />}
-        bar={
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <Select value={project || "__all"} onValueChange={(v) => setParams({ project: v === "__all" ? null : v })}>
-              <SelectTrigger aria-label="Project" className="w-full sm:w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all">All projects</SelectItem>
-                {projects.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {p}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <StatusFilter value={status} count={by} onChange={(v) => setParams({ status: v === "active" ? null : v })} />
-            <span className="flex min-w-0 flex-1 basis-56 items-center gap-2">
-              <span className="relative min-w-0 flex-1 lg:max-w-64">
-                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-                <Input type="search" aria-label="Search tasks" placeholder="Search tasks" value={text} onChange={(e) => setText(e.target.value)} className="pl-8" />
-              </span>
-              {/* How many match, once a search or a status other than Open narrows the list. */}
-              {q.data && filtered ? (
-                <span className="ml-auto flex shrink-0" aria-live="polite">
-                  <Count>{plural(rows.length, "task")}</Count>
-                </span>
-              ) : null}
-              <ViewToggle value={view} onChange={setView} className={cn("shrink-0", !(q.data && filtered) && "ml-auto")} />
-            </span>
-          </div>
+      <PageHeader
+        title="Tasks"
+        subtitle={line}
+        action={
+          <Button onClick={() => setCreating(true)}>
+            <PlusIcon /> New task
+          </Button>
         }
-      >
-        Tasks
-      </PageTitle>
-      {line ? (
-        <p className="-mt-1 mb-4 max-w-3xl text-sm leading-relaxed text-muted-foreground" aria-live="polite">
-          {line}
-        </p>
-      ) : null}
+      />
+      <NewTaskDialog open={creating || wantsNew} onOpenChange={onCreatingChange} project={project || undefined} onCreated={(t) => openTask(t.id)} />
+      <div className="mb-5 flex min-w-0 flex-wrap items-center gap-2">
+        <Tabs value={view} onValueChange={(v) => setView(v as View)} className="shrink-0">
+          <TabsList variant="segmented" aria-label="View">
+            <TabsTrigger value="board">
+              <ColumnsIcon data-icon="inline-start" aria-hidden /> Board
+            </TabsTrigger>
+            <TabsTrigger value="list">
+              <ListIcon data-icon="inline-start" aria-hidden /> List
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Select value={project || "__all"} onValueChange={(v) => setParams({ project: v === "__all" ? null : v })}>
+          <SelectTrigger aria-label="Project" className="w-auto max-w-56">
+            <SelectValue placeholder="Every project">
+              {project ? (
+                <>
+                  <ProjectAvatar slug={project} name={projectName?.name} size={20} />
+                  <span className="truncate">{projectName ? projectLabel(projectName) : project}</span>
+                </>
+              ) : (
+                "Every project"
+              )}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all">Every project</SelectItem>
+            {projects.map((p) => (
+              <SelectItem key={p.slug} value={p.slug}>
+                <ProjectAvatar slug={p.slug} name={p.name} size={20} />
+                <span className="truncate">{projectLabel(p)}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={status} onValueChange={(v) => setParams({ status: v === "active" ? null : v })}>
+          <SelectTrigger aria-label="Status" className="w-auto">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {STATUS_FILTERS.filter(([s]) => s === "active" || s === "all" || s === status || by(s) > 0).map(([s, word]) => (
+              <SelectItem key={s} value={s}>
+                <span>{word}</span>
+                {q.data ? <span className="tnum text-xs text-muted-foreground">{by(s)}</span> : null}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="relative min-w-0 flex-1 basis-56 sm:max-w-xs">
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input type="search" aria-label="Search tasks" placeholder="Search tasks" value={text} onChange={(e) => setText(e.target.value)} className="pl-8" />
+        </span>
+        {q.data && filtered ? (
+          <span className="ml-auto shrink-0 text-[13px] text-muted-foreground tnum" aria-live="polite">
+            {plural(rows.length, "task")}
+          </span>
+        ) : null}
+      </div>
       {q.error && !q.data ? (
         <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
           {"The task list didn't load (" + q.error + "). Check that PULSE is running, then try again."}
         </ErrorNotice>
       ) : !q.data ? (
         <SkeletonRows n={8} />
-      ) : view === "table" ? (
-        rows.length ? (
-          <div className="overflow-hidden rounded-2xl border bg-card">
-            <DataTable columns={TASK_COLUMNS(true)} rows={rows} rowKey={(t) => t.id} onRow={(t) => openTask(t.id)} initialSort="updated" caption="Tasks" />
-          </div>
-        ) : (
-          <EmptyState title={emptyTitle} action={emptyAction}>
-            {empty}
-          </EmptyState>
-        )
+      ) : !rows.length && !(view === "board" && status === "active" && searched.length) ? (
+        <EmptyState title={emptyTitle} action={emptyAction}>
+          {empty}
+        </EmptyState>
+      ) : view === "list" ? (
+        <DataTable columns={TASK_COLUMNS(!project)} rows={rows} rowKey={(t) => t.id} onRow={(t) => openTask(t.id)} initialSort="updated" caption="Tasks" className={cn("rounded-lg", "[&_td]:py-2 [&_tr]:h-11")} />
       ) : (
-        <TaskCards tasks={rows} showProject onOpen={(t) => openTask(t.id)} cols={3} empty={empty} emptyTitle={emptyTitle} emptyAction={emptyAction} />
+        <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" aria-label="Task board">
+          {TASK_COLUMNS_ORDER.map((c) => (
+            <BoardColumn key={c} column={c} tasks={board[c]} showProject={!project} onOpen={(t) => openTask(t.id)} />
+          ))}
+        </div>
       )}
     </>
   );

@@ -20,7 +20,7 @@ import {
   FileDiffIcon,
   FileTextIcon,
   FolderGitIcon,
-  GitBranchIcon,
+  GitCompareIcon,
   GlobeIcon,
   ImagesIcon,
   LinkIcon,
@@ -29,6 +29,7 @@ import {
   LoaderCircleIcon,
   Maximize2Icon,
   Minimize2Icon,
+  PanelRightIcon,
   PaperclipIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -38,6 +39,11 @@ import {
   XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -224,9 +230,9 @@ const KIND_ICON: Record<CanvasKind, typeof TerminalIcon> = {
   terminal: TerminalIcon,
   file: FileTextIcon,
   page: GlobeIcon,
-  browser: AppWindowIcon,
+  browser: GlobeIcon,
   plan: ListChecksIcon,
-  changes: GitBranchIcon,
+  changes: GitCompareIcon,
   diff: FileDiffIcon,
   artifacts: PaperclipIcon,
   artifact: PaperclipIcon,
@@ -310,11 +316,11 @@ export function Canvas({
 
   return (
     <section
-      className="enter flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:h-full"
+      className="enter flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-card lg:h-full"
       style={{ animationDelay: "60ms" }}
       aria-label={label}
     >
-      <div className="flex min-w-0 items-center gap-1 border-b bg-muted/30 px-1.5 py-1">
+      <div className="flex min-w-0 items-center gap-1 border-b px-1.5">
         <div
           ref={strip}
           className="scroll-strip flex min-w-0 flex-1 items-center gap-0.5"
@@ -325,6 +331,9 @@ export function Canvas({
             const Icon = KIND_ICON[t.kind];
             const on = t.id === ctl.active;
             const iconOnly = compact && !on;
+            // The count beside a one-of-a-kind tab: changed files, artifacts,
+            // sub-sessions, steps - the same numbers the "+" menu shows.
+            const n = t.key ? undefined : counts[t.kind];
             return (
               <div
                 key={t.id}
@@ -332,31 +341,37 @@ export function Canvas({
                 aria-selected={on}
                 data-active={on}
                 className={cn(
-                  "group/tab flex h-7 max-w-[12rem] shrink-0 items-center rounded-md text-xs transition-colors",
+                  "group/tab relative flex h-9 max-w-[12rem] shrink-0 items-center text-[13px] transition-colors",
+                  "after:absolute after:inset-x-1 after:bottom-0 after:h-0.5 after:rounded-full after:bg-transparent",
                   iconOnly ? "px-0.5" : "pl-2",
                   on
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                    ? "font-medium text-foreground after:bg-link"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 <button
                   type="button"
                   onClick={() => ctl.select(t.id)}
                   className={cn(
-                    "flex min-w-0 items-center gap-1.5 py-1",
+                    "flex min-w-0 items-center gap-1.5 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md",
                     iconOnly && "px-1.5",
                   )}
                   title={t.key || t.label}
                   aria-label={iconOnly ? t.label : undefined}
                 >
                   {t.kind === "file" ? (
-                    <FileKindIcon name={t.key} className="size-3.5 shrink-0" />
+                    <FileKindIcon name={t.key} className="size-4 shrink-0" />
                   ) : (
-                    <Icon className="size-3.5 shrink-0" aria-hidden />
+                    <Icon className="size-4 shrink-0" aria-hidden />
                   )}
                   {iconOnly ? null : (
                     <span className="min-w-0 truncate">{t.label}</span>
                   )}
+                  {!iconOnly && n ? (
+                    <span className="tnum inline-flex h-5 shrink-0 items-center rounded-md bg-muted px-1.5 text-xs font-medium text-muted-foreground">
+                      {num(n)}
+                    </span>
+                  ) : null}
                   {t.kind === "terminal" && running ? (
                     <span
                       className="live-dot size-1.5 shrink-0 rounded-full bg-primary"
@@ -377,7 +392,7 @@ export function Canvas({
                     aria-label={"Close " + t.label}
                     title="Close"
                   >
-                    <XIcon className="size-3" />
+                    <XIcon className="size-3.5" />
                   </button>
                 )}
               </div>
@@ -392,25 +407,29 @@ export function Canvas({
           local={local}
           counts={counts}
         />
-        <Button
-          type="button"
-          size="icon-xs"
-          variant="ghost"
-          className="hidden shrink-0 lg:inline-flex"
-          onClick={() => ctl.setWide(!ctl.wide)}
-          aria-label={
-            ctl.wide ? "Make the canvas narrower" : "Make the canvas wider"
-          }
-          title={ctl.wide ? "Narrower" : "Wider"}
-        >
-          {ctl.wide ? <Minimize2Icon /> : <Maximize2Icon />}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="hidden shrink-0 lg:inline-flex"
+              onClick={() => ctl.setWide(!ctl.wide)}
+              aria-label={
+                ctl.wide ? "Make the canvas narrower" : "Make the canvas wider"
+              }
+            >
+              {ctl.wide ? <Minimize2Icon /> : <Maximize2Icon />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{ctl.wide ? "Narrower" : "Wider"}</TooltipContent>
+        </Tooltip>
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" role="tabpanel">
         {!active ? (
           <Pane>
             <EmptyState
-              icon={<PlusIcon className="size-[18px]" />}
+              icon={<PanelRightIcon className="size-[18px]" />}
               hint="Files the agent edits, its terminal and the pages it reads open here by themselves."
             >
               Nothing open. Use + to open the terminal, a file, the plan or the
@@ -526,7 +545,7 @@ function OpenMenu({
       <DropdownMenuTrigger asChild>
         <Button
           type="button"
-          size="icon-xs"
+          size="icon-sm"
           variant="ghost"
           className="shrink-0"
           aria-label="Open something on the canvas"
@@ -536,7 +555,7 @@ function OpenMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60">
-        <DropdownMenuLabel className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+        <DropdownMenuLabel className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
           Open
         </DropdownMenuLabel>
         {menu.map((kind) => {
@@ -582,7 +601,7 @@ function OpenMenu({
             >
               <Icon /> {KIND_LABEL[kind]}
               {kind === "browser" && local[0] ? (
-                <span className="ml-auto min-w-0 max-w-28 truncate font-mono text-[11px] text-muted-foreground">
+                <span className="ml-auto min-w-0 max-w-28 truncate font-mono text-xs text-muted-foreground">
                   {makeTab("browser", local[0]).label}
                 </span>
               ) : n ? (
@@ -676,7 +695,7 @@ function Terminal({ entries }: { entries: TerminalEntry[] }) {
         const el = e.currentTarget;
         setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
       }}
-      className="scroll-thin max-h-[60dvh] min-h-0 min-w-0 flex-1 overflow-auto bg-zinc-950 px-3 py-2.5 font-mono text-[12px] leading-[1.55] text-zinc-200 lg:max-h-none dark:bg-zinc-950"
+      className="scroll-thin max-h-[60dvh] min-h-0 min-w-0 flex-1 overflow-auto bg-zinc-950 px-3 py-2.5 font-mono text-xs leading-[1.55] text-zinc-200 lg:max-h-none dark:bg-zinc-950"
       aria-label="Terminal"
       aria-live="polite"
     >
@@ -709,7 +728,7 @@ function Terminal({ entries }: { entries: TerminalEntry[] }) {
                 {e.output}
               </pre>
             ) : null}
-            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
+            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-zinc-500">
               {e.running ? (
                 <span className="inline-flex items-center gap-1 text-primary">
                   <LoaderCircleIcon className="size-3 animate-spin" /> running
@@ -901,7 +920,7 @@ function FileTab({
         ) : (
           <>
             <table
-              className="w-full border-collapse font-mono text-[12px] leading-[1.6]"
+              className="w-full border-collapse font-mono text-xs leading-[1.6]"
               style={{ tabSize: 4 }}
             >
               <tbody>
@@ -962,13 +981,13 @@ function EditBlocks({
 }) {
   return (
     <div className="grid gap-2" aria-label="What the agent changed">
-      <p className="text-[12px] font-medium text-muted-foreground">
+      <p className="text-xs font-medium text-muted-foreground">
         {plural(blocks.length, "edit")} the agent made here
       </p>
       {blocks.map((b, i) => (
         <div
           key={b.n + ":" + i}
-          className="overflow-hidden rounded-lg border font-mono text-[12px] leading-[1.55]"
+          className="overflow-hidden rounded-lg border font-mono text-xs leading-[1.55]"
         >
           {b.search ? (
             <pre className="bg-bad/[0.07] px-3 py-1.5 whitespace-pre-wrap text-foreground/80 anywhere">
@@ -1024,7 +1043,7 @@ function PageTab({ steps, page }: { steps: HarnessStep[]; page: string }) {
       </div>
       <div className="scroll-thin max-h-[60dvh] min-h-0 min-w-0 flex-1 overflow-auto bg-background/50 lg:max-h-none">
         {r?.text ? (
-          <pre className="px-4 py-3 text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">
+          <pre className="px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">
             {r.text}
           </pre>
         ) : (
@@ -1058,7 +1077,7 @@ export function PlanList({
         !compact && "border-primary/25 bg-primary/[0.04]",
       )}
     >
-      <p className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
+      <p className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <ListChecksIcon
           className="size-3.5 shrink-0 text-primary"
           aria-hidden
@@ -1110,7 +1129,7 @@ function PlanTab({ steps }: { steps: HarnessStep[] }) {
       {plan ? (
         <>
           <PlanList step={plan} />
-          <p className="px-1 text-[11px] text-muted-foreground">
+          <p className="px-1 text-xs text-muted-foreground">
             Updated <When d={plan.at} />
           </p>
         </>
@@ -1246,7 +1265,7 @@ function EvidenceTab({ jobId, job }: { jobId: string; job?: TaskJob }) {
     >
       <div className="scroll-thin max-h-[30dvh] shrink-0 overflow-y-auto border-b px-1.5 py-1.5 lg:max-h-[14rem]">
         <p
-          className="flex items-center gap-1.5 px-1.5 pb-1 text-[11px] text-muted-foreground"
+          className="flex items-center gap-1.5 px-1.5 pb-1 text-xs text-muted-foreground"
           title={"Job " + jobId}
         >
           <ImagesIcon className="size-3" aria-hidden />
@@ -1303,7 +1322,7 @@ function Links({ texts }: { texts: string[] }) {
                 href={l.url}
                 target="_blank"
                 rel="noreferrer noopener"
-                className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-[12.5px] text-foreground transition-colors hover:bg-muted/60"
+                className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-[13px] text-foreground transition-colors hover:bg-muted/60"
                 title={l.url}
               >
                 <LinkIcon

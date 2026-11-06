@@ -12,13 +12,16 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArchiveIcon,
   ArrowUpIcon,
+  BotIcon,
   BrainIcon,
+  BugIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -28,9 +31,12 @@ import {
   CircleStopIcon,
   CornerDownRightIcon,
   CpuIcon,
+  FilePenIcon,
+  FileTextIcon,
   FolderGitIcon,
   GitBranchIcon,
   GitPullRequestIcon,
+  GlobeIcon,
   InfoIcon,
   ListChecksIcon,
   ListEndIcon,
@@ -43,13 +49,17 @@ import {
   PencilIcon,
   RefreshCwIcon,
   RotateCcwIcon,
+  SearchIcon,
   ShieldCheckIcon,
   ShieldQuestionIcon,
   SparklesIcon,
   SquareDashedMousePointerIcon,
+  TerminalIcon,
   UsersIcon,
+  WrenchIcon,
   XIcon,
   ZapIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -96,7 +106,18 @@ import {
   SkeletonRows,
 } from "@/components/pulse/panel";
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/pulse/avatar";
+import { BrandLogo } from "@/components/pulse/logo";
+import { SectionHeading } from "@/components/pulse/section-heading";
+import { StatusIcon } from "@/components/pulse/status-badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { logoFor } from "@/lib/logos";
 import { BackButton, Pane, Split } from "@/components/chat/split";
+import { CommandPalette } from "@/components/shell/command-palette";
 import { MicButton, useDictation } from "@/components/chat/mic";
 import { TaskView } from "@/components/chat/task-view";
 import {
@@ -106,6 +127,18 @@ import {
   lockdownHint,
   lockdownOf,
 } from "@/components/chat/lockdown-state";
+import {
+  SESSION_STATE_WORD,
+  dismissTip,
+  groupToolCalls,
+  sessionState,
+  tipDismissed,
+  toolDuration,
+  toolGroupLabel,
+  toolIcon,
+  type SessionState,
+  type ToolIconName,
+} from "@/components/chat/session-state";
 import {
   QUEUE_LABEL,
   QUEUE_TITLE,
@@ -271,6 +304,117 @@ const GROUP_TITLES: Record<ListGroup, string> = {
   archived: "Archived",
 };
 
+// The state a list row leads with (spec "Sessions"): the spinner while it
+// works, a marigold dot when it asks you, a tick when it is done, and the
+// quiet speech bubble otherwise. The word rides in the icon's label.
+function SessionStateIcon({
+  state,
+  className,
+}: {
+  state: SessionState;
+  className?: string;
+}) {
+  if (state === "open")
+    return (
+      <MessageSquareIcon
+        className={cn("size-4 shrink-0 text-muted-foreground", className)}
+        strokeWidth={1.75}
+        role="img"
+        aria-label={SESSION_STATE_WORD.open}
+      >
+        <title>{SESSION_STATE_WORD.open}</title>
+      </MessageSquareIcon>
+    );
+  return (
+    <StatusIcon
+      status={
+        state === "working" ? "running" : state === "asks" ? "waiting" : "done"
+      }
+      className={className}
+    />
+  );
+}
+
+// A task's state in the list's vocabulary: its mood tone says whose turn.
+function taskState(t: ChatTask): SessionState {
+  const m = taskMood(t);
+  if (m.tone === "wait") return "asks";
+  if (taskFinished(t)) return "done";
+  if (m.tone === "run" || t.sessions.some((s) => s.status === "running"))
+    return "working";
+  return "open";
+}
+
+// One row of the list: 44 px (36 compact), the state icon, the project's
+// avatar, the title on one line and the age at the right; a teal bar marks
+// the open one. Tasks and conversations share it.
+function SessionRow({
+  state,
+  project,
+  title,
+  age,
+  active,
+  marks,
+  onOpen,
+  titleAttr,
+  framed,
+  sealed,
+}: {
+  state: SessionState;
+  project: string;
+  title: string;
+  age: string;
+  active: boolean;
+  marks?: ReactNode;
+  onOpen: () => void;
+  titleAttr?: string;
+  framed?: boolean;
+  sealed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-current={active ? "page" : undefined}
+      title={titleAttr}
+      className={cn(
+        "relative flex min-h-(--row-h) w-full min-w-0 items-center gap-2.5 px-3 py-1.5 text-left transition-colors duration-120 ease-out-soft motion-reduce:transition-none",
+        active
+          ? "bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-link before:content-['']"
+          : framed
+            ? "bg-accent/50 hover:bg-muted/60"
+            : "hover:bg-muted/60",
+        sealed && "lockdown-surface",
+      )}
+      data-lockdown={sealed || undefined}
+    >
+      <SessionStateIcon state={state} />
+      {project ? (
+        <ProjectAvatar slug={project} name={project} size={20} />
+      ) : (
+        <span
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded-[5px] border border-dashed border-border text-muted-foreground"
+          role="img"
+          aria-label="No project yet"
+          title="No project yet"
+        >
+          <SparklesIcon className="size-3" aria-hidden />
+        </span>
+      )}
+      <span
+        className="min-w-0 flex-1 truncate text-sm font-medium leading-5 text-foreground"
+        title={title}
+      >
+        {title}
+      </span>
+      {marks}
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+        {age}
+      </span>
+    </button>
+  );
+}
+
 const LET_AGENT_DECIDE = "__decide__";
 
 // The way out of a session whose memory holds something the provider
@@ -384,7 +528,7 @@ function Activity({
           return (
             <div
               key={b.step.n}
-              className="min-w-0 text-[15px] leading-relaxed text-foreground"
+              className="min-w-0 max-w-[72ch] text-sm leading-relaxed text-foreground"
             >
               <Markdown
                 source={b.step.content}
@@ -447,7 +591,9 @@ function NoteFold({ items }: { items: ActionItem[] }) {
 }
 
 // A run of tool calls, newest rows always in view: a long run folds its
-// earlier rows under one line rather than filling the screen.
+// earlier rows under one line rather than filling the screen. Inside, two
+// or more plain tool calls in a row fold under one "N tool calls · Xs"
+// row (groupToolCalls); the run's tail stays open while it is running.
 function ActionRun({
   items,
   running,
@@ -457,22 +603,43 @@ function ActionRun({
 }) {
   const rows = (list: ActionItem[], tailRunning: boolean) => {
     const groups = groupNotes(list);
+    const row = (g: (typeof groups)[number], i: number) =>
+      Array.isArray(g) ? (
+        <NoteFold key={"notes" + g[0].step.n} items={g} />
+      ) : (
+        <ActionRow
+          key={g.step.n + ":" + (g.step.depth ?? 0)}
+          item={g}
+          running={
+            tailRunning &&
+            i === groups.length - 1 &&
+            ACTION_KINDS.has(g.step.kind) &&
+            !g.result
+          }
+        />
+      );
+    // Each entry carries its group and index; a note fold is never a tool
+    // call (its first step is a note), so it always stands alone.
+    const folded = groupToolCalls(
+      groups.map((g, i) => {
+        const one = Array.isArray(g) ? g[0] : g;
+        return { g, i, step: one.step, result: one.result, thought: one.thought };
+      }),
+    );
     return (
       <ol className="grid min-w-0" role="list">
-        {groups.map((g, i) =>
-          Array.isArray(g) ? (
-            <NoteFold key={"notes" + g[0].step.n} items={g} />
+        {folded.map((f) =>
+          f.kind === "one" ? (
+            row(f.item.g, f.item.i)
           ) : (
-            <ActionRow
-              key={g.step.n + ":" + (g.step.depth ?? 0)}
-              item={g}
-              running={
-                tailRunning &&
-                i === groups.length - 1 &&
-                ACTION_KINDS.has(g.step.kind) &&
-                !g.result
-              }
-            />
+            <ToolCallGroup
+              key={"calls" + f.items[0].step.n}
+              n={f.items.length}
+              ms={f.ms}
+              open={tailRunning && f.items[f.items.length - 1].i === groups.length - 1}
+            >
+              {f.items.map((e) => row(e.g, e.i))}
+            </ToolCallGroup>
           ),
         )}
       </ol>
@@ -483,9 +650,9 @@ function ActionRun({
   return (
     <div className="grid min-w-0">
       <details className="group/more min-w-0">
-        <summary className="flex w-fit cursor-pointer list-none items-center gap-2.5 rounded-md px-1.5 py-1 text-[13px] leading-snug text-muted-foreground select-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <summary className="flex w-fit min-h-8 cursor-pointer list-none items-center gap-2.5 rounded-md px-1.5 text-[13px] leading-snug text-muted-foreground select-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <ChevronRightIcon
-            className="size-3.5 shrink-0 transition-transform duration-150 group-open/more:rotate-90 motion-reduce:transition-none"
+            className="size-4 shrink-0 transition-transform duration-150 group-open/more:rotate-90 motion-reduce:transition-none"
             aria-hidden
           />
           {plural(earlier.length, "earlier step")} - {countWords(earlier)}
@@ -497,12 +664,57 @@ function ActionRun({
   );
 }
 
+// "3 tool calls · 4.2s": consecutive tool calls under one 32 px row that
+// unfolds to the list. Open while the run is live so the newest call shows.
+function ToolCallGroup({
+  n,
+  ms,
+  open: open0,
+  children,
+}: {
+  n: number;
+  ms: number;
+  open: boolean;
+  children: ReactNode;
+}) {
+  const [open] = useState(open0);
+  return (
+    <li className="min-w-0">
+      <details className="group/calls min-w-0" open={open || undefined}>
+        <summary className="flex min-h-8 min-w-0 cursor-pointer list-none items-center gap-2.5 rounded-md px-1.5 text-[13px] leading-snug text-muted-foreground select-none hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <WrenchIcon className="size-4 shrink-0" aria-hidden />
+          <span className="min-w-0 truncate tnum">{toolGroupLabel(n, ms)}</span>
+          <ChevronRightIcon
+            className="ml-auto size-4 shrink-0 transition-transform duration-150 group-open/calls:rotate-90 motion-reduce:transition-none"
+            aria-hidden
+          />
+        </summary>
+        <ol className="grid min-w-0 border-l border-border/70 pl-1.5" role="list">
+          {children}
+        </ol>
+      </details>
+    </li>
+  );
+}
+
 const OUTPUT_LINES = 60;
 
-// One line of the transcript, the way the Copilot app lists a tool call:
-// the kind's icon, what the agent did in plain words, the exact request
-// dimmed after it - and nothing else unless it failed or is still running.
-// A click folds the request and its output open underneath.
+// The lucide icon behind a tool call row's icon name (session-state.ts
+// decides the name; a step's kind maps straight onto a tool).
+const TOOL_ICON: Record<ToolIconName, LucideIcon> = {
+  Terminal: TerminalIcon,
+  FilePen: FilePenIcon,
+  FileText: FileTextIcon,
+  Globe: GlobeIcon,
+  Search: SearchIcon,
+  Bot: BotIcon,
+  Wrench: WrenchIcon,
+};
+
+// One line of the transcript, the way the Copilot app lists a tool call: a
+// 32 px row with the tool's icon, what the agent did in plain words, the
+// exact request in mono after it, how long it took at the right and a
+// chevron. A click (or Enter) folds the request and its output open.
 function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
   const { step: s, result } = item;
   const depth = Math.min(s.depth ?? 0, 3);
@@ -510,11 +722,11 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
   if (item.thought) {
     return (
       <li
-        className="flex min-w-0 items-center gap-2.5 px-1.5 py-1 text-[13px] leading-snug text-muted-foreground"
+        className="flex min-h-8 min-w-0 items-center gap-2.5 px-1.5 text-[13px] leading-snug text-muted-foreground"
         style={indent}
       >
         <CircleDashedIcon
-          className="size-3.5 shrink-0 text-muted-foreground/70"
+          className="size-4 shrink-0 text-muted-foreground/70"
           aria-hidden
         />
         <span>Thought for {brief(item.thought)}</span>
@@ -523,19 +735,24 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
   }
   const quiet = !ACTION_KINDS.has(s.kind);
   const Icon =
-    s.kind === "exit" ? CircleCheckIcon : (STEP_ICON[s.kind] ?? InfoIcon);
+    s.kind === "exit"
+      ? CircleCheckIcon
+      : quiet
+        ? (STEP_ICON[s.kind] ?? InfoIcon)
+        : TOOL_ICON[toolIcon(s.kind)];
   const { words, detail } = actionWords(s);
   const exit = result ? exitWords(result.exit_code) : null;
   const outLines = result?.content ? result.content.split("\n") : [];
   const bad = !!exit?.bad || s.kind === "error";
+  const took = quiet ? "" : toolDuration(result?.duration_ms || s.duration_ms);
   const foldable = !quiet || (s.content || "").trim().length > words.length;
   const head = (
     <>
       <Icon
         className={cn(
-          "size-3.5 shrink-0",
+          "size-4 shrink-0",
           bad
-            ? "text-bad"
+            ? "text-status-failed"
             : quiet
               ? "text-muted-foreground/70"
               : "text-muted-foreground",
@@ -553,31 +770,41 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
       </span>
       {detail ? (
         <span
-          className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground/60"
+          className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground/70"
           title={detail}
         >
           {detail}
         </span>
       ) : null}
       {running ? (
-        <LoaderCircleIcon
-          className="ml-auto size-3 shrink-0 animate-spin text-primary"
-          aria-label="running"
-        />
+        <StatusIcon status="running" className="ml-auto size-3.5" />
       ) : bad ? (
         <span
-          className="ml-auto shrink-0 text-[11px] text-bad"
+          className="ml-auto flex shrink-0 items-center gap-1 text-xs text-status-failed"
           title={result ? exitWords(result.exit_code)?.text : undefined}
         >
-          Failed
+          <CircleAlertIcon className="size-3.5" aria-hidden /> Failed
         </span>
+      ) : took ? (
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground tnum">
+          {took}
+        </span>
+      ) : null}
+      {foldable ? (
+        <ChevronRightIcon
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-open/row:rotate-90 motion-reduce:transition-none",
+            !running && !bad && !took && "ml-auto",
+          )}
+          aria-hidden
+        />
       ) : null}
     </>
   );
   if (!foldable) {
     return (
       <li
-        className="flex min-w-0 items-center gap-2.5 px-1.5 py-1 text-[13px] leading-snug"
+        className="flex min-h-8 min-w-0 items-center gap-2.5 px-1.5 text-[13px] leading-snug"
         style={indent}
       >
         {head}
@@ -587,17 +814,17 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
   return (
     <li className="min-w-0" style={indent}>
       <details className="group/row min-w-0">
-        <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2.5 rounded-md px-1.5 py-1 text-[13px] leading-snug select-none hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <summary className="flex min-h-8 min-w-0 cursor-pointer list-none items-center gap-2.5 rounded-md px-1.5 text-[13px] leading-snug select-none hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           {head}
         </summary>
         <div className="mt-1 mb-2 ml-6 grid min-w-0 gap-1.5">
           {s.kind === "command" ? (
-            <pre className="min-w-0 rounded-lg bg-zinc-950 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-zinc-100 anywhere dark:bg-black">
+            <pre className="min-w-0 rounded-lg bg-zinc-950 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-zinc-100 anywhere dark:bg-black">
               <span className="text-emerald-300 select-none">$ </span>
               {s.command}
             </pre>
           ) : (s.content || s.command) && !quiet ? (
-            <pre className="min-w-0 rounded-lg border bg-muted/30 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">
+            <pre className="min-w-0 rounded-lg border bg-muted/30 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">
               {s.content || s.command}
             </pre>
           ) : quiet ? (
@@ -606,7 +833,7 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
             </p>
           ) : null}
           {result ? (
-            <pre className="max-h-72 min-w-0 overflow-auto rounded-lg border bg-background/60 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-foreground/80 anywhere">
+            <pre className="max-h-72 min-w-0 overflow-auto rounded-lg border bg-background/60 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground/80 anywhere">
               {outLines.length
                 ? outLines.slice(0, OUTPUT_LINES).join("\n")
                 : "(no output)"}
@@ -618,7 +845,7 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
             </pre>
           ) : null}
           {result && (exit || result.duration_ms >= 1000) ? (
-            <p className="text-[11px] text-muted-foreground tnum">
+            <p className="text-xs text-muted-foreground tnum">
               {[
                 exit?.text,
                 result.duration_ms >= 1000
@@ -671,6 +898,23 @@ function modelWords(m: HarnessModel): string {
   return bits.join(" · ");
 }
 
+// The provider's mark before a model name: its brand logo when lib/logos
+// knows the vendor, a plain chip icon when it does not.
+function ModelLogo({
+  vendor,
+  className,
+}: {
+  vendor: string | null | undefined;
+  className?: string;
+}) {
+  const id = logoFor(vendor);
+  return id ? (
+    <BrandLogo id={id} size={16} className={className} />
+  ) : (
+    <CpuIcon className={cn("size-4", className)} aria-hidden />
+  );
+}
+
 function ModelPicker({
   value,
   onChange,
@@ -689,9 +933,8 @@ function ModelPicker({
   const rows = agentModels(models);
   const known = !value || rows.some((m) => m.id === value);
   const def = rows.find((m) => m.default);
-  const current = value
-    ? rows.find((m) => m.id === value)?.name || value
-    : "Provider default";
+  const picked = value ? rows.find((m) => m.id === value) : def;
+  const current = value ? picked?.name || value : "Provider default";
   return (
     <Select
       value={value || PROVIDER_DEFAULT}
@@ -700,20 +943,13 @@ function ModelPicker({
     >
       <SelectTrigger
         size={compact ? "sm" : "default"}
-        className={cn(
-          compact
-            ? "h-7 min-w-0 max-w-56 gap-1 rounded-full border-border/70 bg-background/60 px-2.5 text-xs"
-            : "w-60",
-        )}
+        className={cn(compact ? "min-w-0 max-w-56 gap-1 px-2.5" : "w-60")}
         aria-label={label}
         title={label}
       >
-        <CpuIcon
-          className={cn(
-            "shrink-0 text-primary",
-            compact ? "size-3" : "size-3.5",
-          )}
-          aria-hidden
+        <ModelLogo
+          vendor={picked?.vendor}
+          className="shrink-0 text-muted-foreground"
         />
         {/* The trigger shows the name alone; the items below carry a second line. */}
         <SelectValue placeholder="Model" className="min-w-0 flex-1">
@@ -730,7 +966,7 @@ function ModelPicker({
             <span>
               Provider default{def ? " · " + (def.name || def.id) : ""}
             </span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               Whatever the sign-in picks; changes with it.
             </span>
           </span>
@@ -738,25 +974,31 @@ function ModelPicker({
         {!known ? <SelectItem value={value}>{value}</SelectItem> : null}
         {rows.map((m) => (
           <SelectItem key={m.id} value={m.id}>
-            <span className="grid">
-              <span className="flex items-center gap-1.5">
-                {m.name || m.id}
-                {m.default ? (
-                  <span className="rounded-full bg-primary/10 px-1.5 text-[10px] font-medium text-primary">
-                    default
-                  </span>
-                ) : null}
-                {m.premium ? (
-                  <span className="rounded-full bg-you-soft px-1.5 text-[10px] font-medium text-you-ink">
-                    {m.premium === 1 ? "premium" : m.premium + "× premium"}
+            <span className="flex min-w-0 items-start gap-2">
+              <ModelLogo
+                vendor={m.vendor}
+                className="mt-0.5 text-muted-foreground"
+              />
+              <span className="grid min-w-0">
+                <span className="flex items-center gap-1.5">
+                  {m.name || m.id}
+                  {m.default ? (
+                    <span className="rounded-full bg-primary/10 px-1.5 text-xs font-medium text-primary">
+                      default
+                    </span>
+                  ) : null}
+                  {m.premium ? (
+                    <span className="rounded-full bg-you-soft px-1.5 text-xs font-medium text-you-ink">
+                      {m.premium === 1 ? "premium" : m.premium + "× premium"}
+                    </span>
+                  ) : null}
+                </span>
+                {!compact ? (
+                  <span className="text-xs text-muted-foreground">
+                    {modelWords(m)}
                   </span>
                 ) : null}
               </span>
-              {!compact ? (
-                <span className="text-[11px] text-muted-foreground">
-                  {modelWords(m)}
-                </span>
-              ) : null}
             </span>
           </SelectItem>
         ))}
@@ -822,21 +1064,11 @@ function EffortPicker({
     >
       <SelectTrigger
         size={compact ? "sm" : "default"}
-        className={cn(
-          compact
-            ? "h-7 min-w-0 max-w-44 gap-1 rounded-full border-border/70 bg-background/60 px-2.5 text-xs"
-            : "w-52",
-        )}
+        className={cn(compact ? "min-w-0 max-w-44 gap-1 px-2.5" : "w-52")}
         aria-label={label}
         title={label}
       >
-        <BrainIcon
-          className={cn(
-            "shrink-0 text-primary",
-            compact ? "size-3" : "size-3.5",
-          )}
-          aria-hidden
-        />
+        <BrainIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <SelectValue placeholder="Effort" className="min-w-0 flex-1">
           <span className="truncate">{current}</span>
         </SelectValue>
@@ -849,7 +1081,7 @@ function EffortPicker({
         <SelectItem value={SETTING_EFFORT}>
           <span className="grid">
             <span>Settings effort</span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               The reasoning effort from Settings; changes with it.
             </span>
           </span>
@@ -859,7 +1091,7 @@ function EffortPicker({
             <span className="grid">
               <span>{e.name}</span>
               {!compact ? (
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {e.words}
                 </span>
               ) : null}
@@ -1247,20 +1479,28 @@ function ConversationList({
   })).filter((x) => x.entries.length);
   const composing = !current && !currentTask;
   return (
-    <div className="grid min-w-0 gap-2">
-      <Button
-        type="button"
-        variant={composing ? "secondary" : "default"}
-        className="w-full justify-start gap-2"
-        onClick={onNew}
-        aria-current={composing ? "page" : undefined}
-      >
-        <MessageSquarePlusIcon className="size-4" />
-        New session
-      </Button>
-      <h2 className="px-1 pt-1 text-[13px] font-semibold tracking-wide text-muted-foreground uppercase">
-        Conversations
-      </h2>
+    <div className="grid min-w-0 gap-3">
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant={composing ? "secondary" : "default"}
+          className="min-w-0 flex-1 justify-start gap-2"
+          onClick={onNew}
+          aria-current={composing ? "page" : undefined}
+        >
+          <MessageSquarePlusIcon className="size-4" />
+          New session
+        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <CommandPalette
+              variant="icon"
+              className="size-9 shrink-0 rounded-md border bg-card"
+            />
+          </TooltipTrigger>
+          <TooltipContent>Find a session (⌘K)</TooltipContent>
+        </Tooltip>
+      </div>
       {loading ? (
         <SkeletonRows n={4} />
       ) : entries.length === 0 ? (
@@ -1281,22 +1521,30 @@ function ConversationList({
               className="grid min-w-0 gap-1.5"
               aria-label={GROUP_TITLES[g]}
             >
-              <h3 className="flex items-center gap-1.5 px-1 pt-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+              <SectionHeading
+                as="h3"
+                count={all.length}
+                className="mb-0 px-1 [&_h3]:text-sm"
+                action={
+                  foldable ? (
+                    <button
+                      type="button"
+                      className="text-xs text-link underline-offset-4 hover:underline"
+                      aria-expanded={!folded}
+                      onClick={() => setShowFinished((v) => !v)}
+                    >
+                      {folded ? "Show" : "Hide"}
+                    </button>
+                  ) : undefined
+                }
+              >
                 {GROUP_TITLES[g]}
-                <span className="tnum font-normal">{all.length}</span>
-                {foldable ? (
-                  <button
-                    type="button"
-                    className="ml-auto font-normal normal-case tracking-normal text-xs underline-offset-4 hover:text-foreground hover:underline"
-                    aria-expanded={!folded}
-                    onClick={() => setShowFinished((v) => !v)}
-                  >
-                    {folded ? "Show" : "Hide"}
-                  </button>
-                ) : null}
-              </h3>
+              </SectionHeading>
               {shown.length ? (
-                <ul className="grid min-w-0 gap-1.5" role="list">
+                <ul
+                  className="grid min-w-0 divide-y divide-border overflow-hidden rounded-lg border bg-card"
+                  role="list"
+                >
                   {shown.map((e, i) =>
                     e.kind === "task" ? (
                       <TaskItem
@@ -1432,64 +1680,33 @@ function TaskItem({
   const steps = t.sessions;
   const showSteps =
     steps.length > 0 && (!taskFinished(t) || unfolded || active);
-  const live = steps.some((s) => s.status === "running");
   return (
     <li
       className="enter min-w-0"
       style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}
     >
-      <div
-        className={cn(
-          "grid min-w-0 gap-0 overflow-hidden rounded-xl border bg-card transition-colors",
-          active ? "border-primary/50 shadow-card" : "",
-          m.tone === "wait" && !active && "border-warn/50",
-        )}
-      >
-        <button
-          type="button"
-          onClick={() => onOpen(t.id)}
-          aria-current={active ? "page" : undefined}
-          className={cn(
-            "lift grid w-full min-w-0 gap-1 px-3 py-2.5 text-left transition-colors",
-            active ? "bg-primary/[0.06]" : "hover:bg-muted/40",
-          )}
-          title={
-            t.lead
+      <div className="grid min-w-0 gap-0">
+        <SessionRow
+          state={taskState(t)}
+          project={t.project}
+          title={t.title || t.id}
+          age={relShort(t.last_at || t.created_at, now)}
+          active={active}
+          onOpen={() => onOpen(t.id)}
+          titleAttr={
+            (t.lead
               ? `With ${t.lead}, the lead agent of ${t.project}`
-              : `A task for the ${t.project} team`
+              : `A task for the ${t.project} team`) +
+            " · " +
+            m.word
           }
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <span
-              className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)}
-              data-live={live}
-              aria-hidden
-            />
-            <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
-              {t.title || t.id}
-            </span>
+          marks={
             <UsersIcon
               className="size-3.5 shrink-0 text-muted-foreground"
               aria-label="with the project's team"
             />
-            {m.tone === "wait" ? (
-              <ShieldQuestionIcon
-                className="size-3.5 shrink-0 text-warn attn rounded-full"
-                aria-label="waiting for you"
-              />
-            ) : null}
-          </span>
-          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-            <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>
-              {m.word}
-            </span>
-            <span aria-hidden>·</span>
-            <span className="truncate">{t.project}</span>
-            <span className="ml-auto shrink-0 tnum">
-              {relShort(t.last_at || t.created_at, now)}
-            </span>
-          </span>
-        </button>
+          }
+        />
         {showSteps ? (
           <ul
             className="grid min-w-0 gap-px border-t bg-muted/20 py-1"
@@ -1587,72 +1804,40 @@ function ConversationItem({
   onOpen: (id: string) => void;
 }) {
   const m = moodOf(c);
-  const live = (c.live?.status || c.status) === "running";
   const sealed = lockdownOf(c, c.live);
   const childActive = subs.some((k) => k.id === current);
-  const framed = active || childActive;
   return (
     <li
       className="enter min-w-0"
       style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}
     >
-      <div
-        className={cn(
-          "grid min-w-0 gap-0 overflow-hidden rounded-xl border bg-card transition-colors",
-          framed ? "border-primary/50 shadow-card" : "",
-          m.tone === "wait" && !framed && "border-warn/50",
-          sealed && "lockdown-surface",
-          sealed && framed && "border-lock",
-        )}
-        data-lockdown={sealed || undefined}
-      >
-        <button
-          type="button"
-          onClick={() => onOpen(c.id)}
-          aria-current={active ? "page" : undefined}
-          className={cn(
-            "lift grid w-full min-w-0 gap-1 px-3 py-2.5 text-left transition-colors",
-            active ? "bg-primary/[0.06]" : "hover:bg-muted/40",
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <span
-              className={cn("live-dot size-2 shrink-0 rounded-full", m.dot)}
-              data-live={live}
-              aria-hidden
-            />
-            <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-foreground">
-              {c.title || "Untitled"}
-            </span>
-            {sealed ? (
+      <div className="grid min-w-0 gap-0">
+        <SessionRow
+          state={sessionState(c)}
+          project={c.project}
+          title={c.title || "Untitled"}
+          age={relShort(c.last_at || c.created_at, now)}
+          active={active}
+          framed={childActive}
+          sealed={sealed}
+          onOpen={() => onOpen(c.id)}
+          titleAttr={
+            m.word +
+            " · " +
+            (c.status === "closed" && c.note
+              ? c.note
+              : c.project || "no project yet")
+          }
+          marks={
+            sealed ? (
               <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
                 <LockIcon className="size-3" aria-hidden />
                 <span className="sr-only">{LOCKDOWN_BADGE}</span>
                 <span aria-hidden>Lockdown</span>
               </span>
-            ) : null}
-            {m.tone === "wait" ? (
-              <ShieldQuestionIcon
-                className="size-3.5 shrink-0 text-warn attn rounded-full"
-                aria-label="waiting for you"
-              />
-            ) : null}
-          </span>
-          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-            <span className={cn("shrink-0 font-medium", TONE_TEXT[m.tone])}>
-              {m.word}
-            </span>
-            <span aria-hidden>·</span>
-            <span className="truncate">
-              {c.status === "closed" && c.note
-                ? c.note
-                : c.project || "no project yet"}
-            </span>
-            <span className="ml-auto shrink-0 tnum">
-              {relShort(c.last_at || c.created_at, now)}
-            </span>
-          </span>
-        </button>
+            ) : undefined
+          }
+        />
         {subs.length ? (
           <ul
             className="grid min-w-0 gap-px border-t bg-muted/20 py-1"
@@ -1669,22 +1854,19 @@ function ConversationItem({
                     onClick={() => onOpen(k.id)}
                     aria-current={kActive ? "page" : undefined}
                     className={cn(
-                      "flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50",
-                      kActive && "bg-primary/[0.08]",
+                      "relative flex min-h-8 w-full min-w-0 items-center gap-2 px-3 py-1 text-left text-xs transition-colors hover:bg-muted/50",
+                      kActive &&
+                        "bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-link before:content-['']",
                     )}
-                    title={`${k.title || k.id}: open the sub-session`}
+                    title={`${k.title || k.id}: open the sub-session · ${km.word}`}
                   >
                     <span
                       className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl"
                       aria-hidden
                     />
-                    <span
-                      className={cn(
-                        "live-dot size-1.5 shrink-0 rounded-full",
-                        km.dot,
-                      )}
-                      data-live={(k.live?.status || k.status) === "running"}
-                      aria-hidden
+                    <SessionStateIcon
+                      state={sessionState(k)}
+                      className="size-3.5"
                     />
                     <span className="min-w-0 flex-1 truncate text-foreground">
                       {k.title || "Untitled"}
@@ -1695,18 +1877,7 @@ function ConversationItem({
                         aria-label={LOCKDOWN_BADGE}
                       />
                     ) : null}
-                    {km.tone === "wait" ? (
-                      <ShieldQuestionIcon
-                        className="size-3.5 shrink-0 text-warn attn rounded-full"
-                        aria-label="waiting for you"
-                      />
-                    ) : null}
-                    <span
-                      className={cn("shrink-0 font-medium", TONE_TEXT[km.tone])}
-                    >
-                      {km.word}
-                    </span>
-                    <span className="shrink-0 tnum text-muted-foreground">
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
                       {relShort(k.last_at || k.created_at, now)}
                     </span>
                   </button>
@@ -1723,12 +1894,101 @@ function ConversationItem({
 
 // ----- new conversation -----------------------------------------------------
 
-const STARTERS = [
-  "Look through the open tasks and pick the most useful one to do next.",
-  "Read the latest failing check and fix it.",
-  "Write a short guide for a new contributor and put it in docs/.",
-  "Review what landed this week and tell me what looks risky.",
+const STARTERS: { icon: LucideIcon; text: string }[] = [
+  {
+    icon: SearchIcon,
+    text: "Look through the open tasks and pick the most useful one to do next.",
+  },
+  { icon: BugIcon, text: "Read the latest failing check and fix it." },
+  {
+    icon: FileTextIcon,
+    text: "Write a short guide for a new contributor and put it in docs/.",
+  },
+  {
+    icon: SparklesIcon,
+    text: "Review what landed this week and tell me what looks risky.",
+  },
 ];
+
+// The one-time explainer under the composer: three short points in one
+// muted card, gone for good once dismissed (session-state.ts keeps the flag).
+const NEW_SESSION_TIP: { icon: LucideIcon; title: string; body: string }[] = [
+  {
+    icon: GitBranchIcon,
+    title: "Its own branch",
+    body: "Each session works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like.",
+  },
+  {
+    icon: ShieldCheckIcon,
+    title: "Asks when it must",
+    body: "Questions and risky commands pause the agent until you answer here. Answer from your phone, too.",
+  },
+  {
+    icon: ListChecksIcon,
+    title: "Hands work on in view",
+    body: "Big work fans out: the agent starts sub-sessions, or the project's team takes it as steps. Each shows under its session in the list, open to watch or steer.",
+  },
+];
+
+// The dismissal is read as an external store: the static export renders
+// it hidden (no window), the browser shows it until dismissTip ran here
+// or in another tab (the storage event).
+const tipListeners = new Set<() => void>();
+function subscribeTip(cb: () => void) {
+  tipListeners.add(cb);
+  window.addEventListener("storage", cb);
+  return () => {
+    tipListeners.delete(cb);
+    window.removeEventListener("storage", cb);
+  };
+}
+function dismissTipHere() {
+  dismissTip();
+  for (const cb of tipListeners) cb();
+}
+
+function NewSessionTip() {
+  const dismissed = useSyncExternalStore(
+    subscribeTip,
+    () => tipDismissed(),
+    () => true,
+  );
+  if (dismissed) return null;
+  return (
+    <aside
+      className="enter relative grid gap-3 rounded-lg border bg-muted/50 px-4 py-3 pr-12 sm:grid-cols-3"
+      aria-label="How sessions work"
+      data-testid="new-session-tip"
+    >
+      {NEW_SESSION_TIP.map((f) => (
+        <div key={f.title} className="grid gap-1">
+          <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <f.icon className="size-4 text-muted-foreground" aria-hidden />{" "}
+            {f.title}
+          </span>
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
+            {f.body}
+          </p>
+        </div>
+      ))}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="absolute top-2 right-2 text-muted-foreground"
+            aria-label="Dismiss tip"
+            onClick={dismissTipHere}
+          >
+            <XIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Dismiss tip</TooltipContent>
+      </Tooltip>
+    </aside>
+  );
+}
 
 // Who takes the request: one agent in a conversation here, or the project's
 // team - a task the lead agent plans and splits into steps, each a
@@ -1820,11 +2080,7 @@ function NewConversation({
 
   return (
     <div className="enter grid min-w-0 gap-4">
-      <section className="relative overflow-hidden rounded-2xl border bg-card p-5 shadow-card sm:p-6">
-        <div
-          className="pointer-events-none absolute -top-10 -right-10 size-48 rounded-full bg-primary/10 blur-3xl"
-          aria-hidden
-        />
+      <section className="relative overflow-hidden rounded-xl border bg-card p-5 shadow-card sm:p-6">
         <div className="flex min-w-0 flex-col gap-5 sm:flex-row sm:items-start">
           <PulseMascot
             mood={busy ? "busy" : text.trim() ? "curious" : "happy"}
@@ -1832,7 +2088,8 @@ function NewConversation({
             className="float shrink-0 self-center sm:self-start"
             title="Pip is ready"
           />
-          <div className="grid min-w-0 flex-1 gap-4">
+          {/* grid-cols-1 (minmax(0,1fr)): an auto track would grow to the widest starter chip and push the card past a phone's edge. */}
+          <div className="grid min-w-0 flex-1 grid-cols-1 gap-4">
             <div className="grid gap-1">
               <h2 className="text-xl font-semibold tracking-tight text-foreground">
                 What should the agent do?
@@ -1856,115 +2113,100 @@ function NewConversation({
                 }
               }}
               placeholder="For example: add a dark mode toggle to the settings page and make sure the tests still pass."
-              className="min-h-28 text-[15px]"
+              className="min-h-28 text-sm"
               autoFocus
               aria-label="What should the agent do"
             />
             <div className="flex flex-wrap items-center gap-1.5">
               <MicButton disabled={busy} onText={insertSpokenText} />
               {STARTERS.map((s) => (
-                <button
-                  key={s}
+                <Button
+                  key={s.text}
                   type="button"
-                  onClick={() => setText(s)}
-                  className="rounded-full border bg-muted/40 px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/[0.06] hover:text-foreground"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setText(s.text)}
+                  className="max-w-full justify-start font-normal text-muted-foreground hover:text-foreground"
                 >
-                  {s}
-                </button>
+                  <s.icon aria-hidden />
+                  <span className="truncate">{s.text}</span>
+                </Button>
               ))}
             </div>
-            <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-              <fieldset className="grid gap-1 text-xs font-medium text-muted-foreground">
-                <legend className="mb-1">Who does it</legend>
-                <div
-                  className="flex rounded-lg border bg-muted/40 p-0.5"
-                  role="radiogroup"
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={who} onValueChange={(v) => setWho(v as Who)}>
+                <SelectTrigger
+                  className="w-auto min-w-40"
                   aria-label="Who does it"
+                  data-testid="new-who"
                 >
-                  {(
-                    [
-                      {
-                        v: "agent",
-                        label: "One agent",
-                        icon: MessageSquareIcon,
-                      },
-                      {
-                        v: "team",
-                        label: "The project's team",
-                        icon: UsersIcon,
-                      },
-                    ] as { v: Who; label: string; icon: typeof UsersIcon }[]
-                  ).map((o) => (
-                    <button
-                      key={o.v}
-                      type="button"
-                      role="radio"
-                      aria-checked={who === o.v}
-                      onClick={() => setWho(o.v)}
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
-                        who === o.v
-                          ? "bg-card text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      <o.icon className="size-3.5" aria-hidden /> {o.label}
-                    </button>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="agent">
+                    <Avatar seed="agent" size={16} /> One agent
+                  </SelectItem>
+                  <SelectItem value="team">
+                    <UsersIcon
+                      className="size-4 text-muted-foreground"
+                      aria-hidden
+                    />{" "}
+                    The project&apos;s team
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={project} onValueChange={setProject}>
+                <SelectTrigger
+                  className={cn(
+                    "w-auto min-w-44 max-w-64",
+                    needsProject && "border-warn/60",
+                  )}
+                  aria-label="Project"
+                  aria-invalid={needsProject || undefined}
+                >
+                  <SelectValue placeholder="Pick a project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {team ? null : (
+                    <SelectItem value={LET_AGENT_DECIDE}>
+                      <SparklesIcon className="size-4 text-primary" aria-hidden />{" "}
+                      Let the agent decide
+                    </SelectItem>
+                  )}
+                  {list.map((p) => (
+                    <SelectItem key={p.slug} value={p.slug}>
+                      <ProjectAvatar slug={p.slug} name={p.name} size={20} />{" "}
+                      <span className="truncate">{projectLabel(p)}</span>
+                    </SelectItem>
                   ))}
-                </div>
-              </fieldset>
-              <label className="grid gap-1 text-xs font-medium text-muted-foreground">
-                Project
-                <Select value={project} onValueChange={setProject}>
-                  <SelectTrigger
-                    className={cn("w-56", needsProject && "border-warn/60")}
-                    aria-label="Project"
-                    aria-invalid={needsProject || undefined}
-                  >
-                    <SelectValue placeholder="Pick a project" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {team ? null : (
-                      <SelectItem value={LET_AGENT_DECIDE}>
-                        <span className="flex items-center gap-1.5">
-                          <SparklesIcon className="size-3.5 text-primary" /> Let
-                          the agent decide
-                        </span>
-                      </SelectItem>
-                    )}
-                    {list.map((p) => (
-                      <SelectItem key={p.slug} value={p.slug}>
-                        {projectLabel(p)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              {team ? (
-                <p className="max-w-xs self-center text-xs leading-relaxed text-muted-foreground">
-                  {needsProject
-                    ? "Pick the project: its lead agent plans the steps and hands each to an agent."
-                    : "The project's lead agent plans the steps and hands each to an agent; they show under it in the list. The team uses the project's own settings."}
-                </p>
-              ) : (
+                </SelectContent>
+              </Select>
+              {team ? null : (
                 <>
-                  <label className="grid gap-1 text-xs font-medium text-muted-foreground">
-                    Model
-                    <ModelPicker
-                      value={model}
-                      onChange={setModel}
-                      models={models.data?.models ?? []}
-                      label="Model for this session"
-                    />
-                  </label>
-                  <label className="grid gap-1 text-xs font-medium text-muted-foreground">
-                    Effort
-                    <EffortPicker
-                      value={reasoning}
-                      onChange={setReasoning}
-                      label="Reasoning effort for this session"
-                    />
-                  </label>
+                  <ModelPicker
+                    value={model}
+                    onChange={setModel}
+                    models={models.data?.models ?? []}
+                    label="Model for this session"
+                  />
+                  <EffortPicker
+                    value={reasoning}
+                    onChange={setReasoning}
+                    label="Reasoning effort for this session"
+                  />
+                </>
+              )}
+            </div>
+            {team ? (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {needsProject
+                  ? "Pick the project: its lead agent plans the steps and hands each to an agent."
+                  : "The project's lead agent plans the steps and hands each to an agent; they show under it in the list. The team uses the project's own settings."}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+              {team ? null : (
+                <>
                   <label className="flex items-center gap-2 text-sm text-foreground">
                     <Switch
                       checked={auto}
@@ -2028,7 +2270,7 @@ function NewConversation({
                   <ArrowUpIcon />
                 )}{" "}
                 Start
-                <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-[10px] opacity-80 sm:inline">
+                <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-xs opacity-80 sm:inline">
                   ⌘↵
                 </kbd>
               </Button>
@@ -2036,38 +2278,7 @@ function NewConversation({
           </div>
         </div>
       </section>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {[
-          {
-            icon: GitBranchIcon,
-            title: "Its own branch",
-            body: "Each session works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like.",
-          },
-          {
-            icon: ShieldCheckIcon,
-            title: "Asks when it must",
-            body: "Questions and risky commands pause the agent until you answer here. Answer from your phone, too.",
-          },
-          {
-            icon: ListChecksIcon,
-            title: "Hands work on in view",
-            body: "Big work fans out: the agent starts sub-sessions, or the project's team takes it as steps. Each shows under its session in the list, open to watch or steer.",
-          },
-        ].map((f, i) => (
-          <div
-            key={f.title}
-            className="enter grid gap-1.5 rounded-xl border bg-card/60 px-4 py-3"
-            style={{ animationDelay: 80 + i * 60 + "ms" }}
-          >
-            <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
-              <f.icon className="size-4 text-primary" /> {f.title}
-            </span>
-            <p className="text-[13px] leading-relaxed text-muted-foreground">
-              {f.body}
-            </p>
-          </div>
-        ))}
-      </div>
+      <NewSessionTip />
     </div>
   );
 }
@@ -2582,7 +2793,7 @@ function ConversationBody({
       <BackButton onBack={onBack} />
       <header
         className={cn(
-          "enter grid min-w-0 gap-2 rounded-2xl border bg-card px-4 py-3 shadow-card transition-colors",
+          "enter grid min-w-0 gap-2 rounded-lg border bg-card px-4 py-3 shadow-card transition-colors",
           mood.tone === "wait" && "surface-you",
           running && "border-primary/40",
           sealed && "lockdown-surface lockdown-scan",
@@ -2642,7 +2853,7 @@ function ConversationBody({
                 title="Rename"
               >
                 <span
-                  className="truncate text-[17px] font-semibold tracking-tight text-foreground"
+                  className="truncate text-base font-semibold tracking-tight text-foreground"
                   title={c.title}
                 >
                   {c.title || "Untitled"}
@@ -2683,7 +2894,7 @@ function ConversationBody({
                 <span className="inline-flex min-w-0 items-center gap-1">
                   <ProjectLink slug={c.project} />{" "}
                   {c.branch ? (
-                    <code className="truncate rounded bg-muted px-1 py-px font-mono text-[11px]">
+                    <code className="truncate rounded bg-muted px-1 py-px font-mono text-xs">
                       {c.branch}
                     </code>
                   ) : null}
@@ -2828,7 +3039,7 @@ function ConversationBody({
 
       <div
         className={cn(
-          "relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border bg-card shadow-card lg:flex-1",
+          "relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-card lg:flex-1",
           sealed && "border-lock",
         )}
       >
@@ -3061,12 +3272,12 @@ function SentRow({ s, id }: { s: SentMessage; id: string }) {
         s.steered ? "Steered, reaching the agent" : "Sent, awaiting the agent"
       }
     >
-      <div className="grid min-w-0 max-w-[85%] gap-2 rounded-2xl rounded-br-md bg-muted px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+      <div className="grid min-w-0 max-w-[72ch] gap-2 rounded-lg bg-muted px-4 py-3 text-sm leading-relaxed text-foreground">
         <div className="whitespace-pre-wrap anywhere">{said.text}</div>
         <PickChips picks={said.picks} />
         <AttachmentChips id={id} list={s.attachments} onUser={false} />
       </div>
-      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-1 text-xs text-muted-foreground">
         {s.steered ? (
           <ZapIcon className="size-3 text-primary" aria-hidden />
         ) : null}
@@ -3124,7 +3335,7 @@ function MessageRow({
 }) {
   const role = m.role;
   const when = (
-    <span className="text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover/msg:opacity-100 motion-reduce:transition-none">
+    <span className="text-xs text-muted-foreground opacity-0 transition-opacity group-hover/msg:opacity-100 motion-reduce:transition-none">
       <When d={m.at} />
     </span>
   );
@@ -3140,7 +3351,7 @@ function MessageRow({
       <li className="enter group/msg grid min-w-0 justify-items-end gap-1">
         <div
           className={cn(
-            "grid min-w-0 max-w-[85%] gap-2 rounded-2xl rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed",
+            "grid min-w-0 max-w-[72ch] gap-2 rounded-lg px-4 py-3 text-sm leading-relaxed",
             role === "answer"
               ? "border border-primary/30 bg-primary/[0.06] text-foreground"
               : "bg-muted text-foreground",
@@ -3158,7 +3369,7 @@ function MessageRow({
           <AttachmentChips id={d.conversation.id} list={files} onUser={false} />
         </div>
         {when}
-        <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <p className="flex items-center gap-1 text-xs text-muted-foreground">
           {steered ? (
             <ZapIcon className="size-3 text-primary" aria-hidden />
           ) : null}
@@ -3171,7 +3382,7 @@ function MessageRow({
     return (
       <li className="enter group/msg grid min-w-0 gap-3">
         <TurnSteps m={m} d={d} loadSession={loadSession} />
-        <div className="min-w-0 text-[15px] leading-relaxed">
+        <div className="min-w-0 max-w-[72ch] text-sm leading-relaxed">
           <Markdown
             source={m.content}
             className="[&_pre]:whitespace-pre-wrap"
@@ -3188,7 +3399,7 @@ function MessageRow({
     return (
       <li className="enter grid min-w-0 gap-3">
         <TurnSteps m={m} d={d} loadSession={loadSession} />
-        <div className="surface-you max-w-[85%] rounded-2xl rounded-tl-md border px-4 py-2.5 text-[15px] leading-relaxed">
+        <div className="surface-you max-w-[72ch] rounded-lg border px-4 py-3 text-sm leading-relaxed">
           <span className="mr-1 text-xs font-semibold text-you-ink">
             Asked you:
           </span>
@@ -3220,7 +3431,7 @@ function MessageRow({
                 : "Allowed"
               : "Denied"}
           </span>{" "}
-          <code className="rounded bg-muted px-1 font-mono text-[11px]">
+          <code className="rounded bg-muted px-1 font-mono text-xs">
             {String(m.extra?.tool ?? "")}
           </code>{" "}
           {m.content}
@@ -3241,7 +3452,7 @@ function MessageRow({
     return (
       <li className="enter group/msg grid min-w-0 gap-3">
         <TurnSteps m={m} d={d} loadSession={loadSession} />
-        <div className="grid min-w-0 max-w-[85%] gap-1 rounded-2xl rounded-tl-md border border-border/70 bg-muted/40 px-4 py-2.5 text-[15px] leading-relaxed">
+        <div className="grid min-w-0 max-w-[72ch] gap-1 rounded-lg border border-border/70 bg-muted/40 px-4 py-3 text-sm leading-relaxed">
           <Link
             href={hrefs.conversations(report.child)}
             className="inline-flex min-w-0 items-center gap-1 text-xs font-semibold text-primary underline-offset-4 hover:underline"
@@ -3270,7 +3481,7 @@ function MessageRow({
   if (from) {
     return (
       <li className="enter group/msg grid min-w-0 justify-items-end gap-1">
-        <div className="grid min-w-0 max-w-[85%] gap-1 rounded-2xl rounded-br-md border border-border/70 bg-muted/60 px-4 py-2.5 text-[15px] leading-relaxed text-foreground">
+        <div className="grid min-w-0 max-w-[72ch] gap-1 rounded-lg border border-border/70 bg-muted/60 px-4 py-3 text-sm leading-relaxed text-foreground">
           <Link
             href={hrefs.conversations(from)}
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
@@ -3423,7 +3634,7 @@ function LiveTurn({ d, waiting }: { d: Loaded; waiting: boolean }) {
     <div className="enter mx-auto mt-6 grid w-full max-w-3xl min-w-0 gap-3">
       {steps.length ? <Activity steps={steps} live={!waiting} /> : null}
       {stream.trim() ? (
-        <div className="min-w-0 text-[15px] leading-relaxed">
+        <div className="min-w-0 max-w-[72ch] text-sm leading-relaxed">
           <Markdown source={stream} className="[&_pre]:whitespace-pre-wrap" />
           {waiting ? null : (
             <span
@@ -3516,13 +3727,13 @@ function PendingCard({
     return (
       <div className="mx-auto mt-4 w-full max-w-3xl min-w-0">
         <div
-          className="pop surface-you grid min-w-0 gap-3 rounded-2xl border-2 px-4 py-3 shadow-card"
+          className="pop surface-you grid min-w-0 gap-3 rounded-lg border-2 px-4 py-3 shadow-card"
           role="group"
           aria-label="The agent asked a question"
         >
           <div className="flex items-start gap-2">
             <ShieldQuestionIcon className="mt-0.5 size-4 shrink-0 text-you-ink" />
-            <p className="min-w-0 text-[15px] leading-relaxed font-medium whitespace-pre-wrap text-foreground anywhere">
+            <p className="min-w-0 text-sm leading-relaxed font-medium whitespace-pre-wrap text-foreground anywhere">
               {pending.question}
             </p>
           </div>
@@ -3591,14 +3802,14 @@ function PendingCard({
   return (
     <div className="mx-auto mt-4 w-full max-w-3xl min-w-0">
       <div
-        className="pop surface-you grid min-w-0 gap-3 rounded-2xl border-2 px-4 py-3 shadow-card"
+        className="pop surface-you grid min-w-0 gap-3 rounded-lg border-2 px-4 py-3 shadow-card"
         role="group"
         aria-label="The agent needs an approval"
       >
         <div className="flex items-start gap-2">
           <ShieldCheckIcon className="mt-0.5 size-4 shrink-0 text-you-ink" />
           <div className="grid min-w-0 gap-1">
-            <p className="text-[15px] leading-relaxed font-medium text-foreground">
+            <p className="text-sm leading-relaxed font-medium text-foreground">
               May it run{" "}
               <code className="rounded bg-muted px-1 font-mono text-[13px]">
                 {pending.tool}
@@ -3616,7 +3827,7 @@ function PendingCard({
           </div>
         </div>
         {pending.detail ? (
-          <pre className="max-h-56 min-w-0 overflow-auto rounded-xl bg-zinc-950 px-3 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-zinc-100 anywhere dark:bg-black">
+          <pre className="max-h-56 min-w-0 overflow-auto rounded-xl bg-zinc-950 px-3 py-2.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap text-zinc-100 anywhere dark:bg-black">
             {pending.detail}
           </pre>
         ) : null}
@@ -3837,7 +4048,7 @@ function Composer({
     >
       <div
         className={cn(
-          "grid min-w-0 gap-2 rounded-2xl border bg-card p-2 shadow-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25",
+          "grid min-w-0 gap-2 rounded-lg border bg-card p-2 shadow-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25",
           over && "border-primary ring-3 ring-primary/25",
           sealed &&
             "border-lock focus-within:border-lock focus-within:ring-lock/20",
@@ -3952,7 +4163,7 @@ function Composer({
           }
           disabled={disabled}
           rows={1}
-          className="min-h-10 max-h-48 resize-none border-0 bg-transparent px-2.5 py-2 text-[15px] shadow-none focus-visible:ring-0 dark:bg-transparent"
+          className="min-h-9 max-h-48 resize-none border-0 bg-transparent px-2.5 py-2 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
           aria-label="Message"
         />
         <div className="flex min-w-0 items-center gap-1.5">
@@ -3968,59 +4179,73 @@ function Composer({
               e.target.value = "";
             }}
           />
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            onClick={() => fileInput.current?.click()}
-            disabled={disabled || !!busy}
-            aria-label="Attach files"
-            title="Attach files (up to 8 MB each). You can also drop or paste them."
-            className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-          >
-            <PaperclipIcon />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={() => fileInput.current?.click()}
+                disabled={disabled || !!busy}
+                aria-label="Attach files"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                <PaperclipIcon />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Attach files (up to 8 MB each). You can also drop or paste them.
+            </TooltipContent>
+          </Tooltip>
           <MicButton disabled={disabled || !!busy} onText={insertSpokenText} />
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
             {tools}
           </div>
           {running ? (
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              onClick={() => void send("queue")}
-              disabled={!canSend}
-              aria-label={QUEUE_LABEL}
-              title={QUEUE_TITLE}
-              className="shrink-0 rounded-xl"
-            >
-              {sending === "queue" ? (
-                <LoaderCircleIcon className="animate-spin" />
-              ) : (
-                <ListEndIcon />
-              )}
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={() => void send("queue")}
+                  disabled={!canSend}
+                  aria-label={QUEUE_LABEL}
+                  className="shrink-0"
+                >
+                  {sending === "queue" ? (
+                    <LoaderCircleIcon className="animate-spin" />
+                  ) : (
+                    <ListEndIcon />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{QUEUE_TITLE}</TooltipContent>
+            </Tooltip>
           ) : null}
-          <Button
-            type="submit"
-            size="icon"
-            disabled={!canSend}
-            aria-label={running ? STEER_LABEL : SEND_LABEL}
-            title={running ? STEER_TITLE : SEND_TITLE}
-            className="shrink-0 rounded-xl"
-          >
-            {sending && sending !== "queue" ? (
-              <LoaderCircleIcon className="animate-spin" />
-            ) : running ? (
-              <ZapIcon />
-            ) : (
-              <ArrowUpIcon />
-            )}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="submit"
+                size="icon"
+                disabled={!canSend}
+                aria-label={running ? STEER_LABEL : SEND_LABEL}
+                className="shrink-0"
+              >
+                {sending && sending !== "queue" ? (
+                  <LoaderCircleIcon className="animate-spin" />
+                ) : running ? (
+                  <ZapIcon />
+                ) : (
+                  <ArrowUpIcon />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{running ? STEER_TITLE : SEND_TITLE}</TooltipContent>
+          </Tooltip>
         </div>
       </div>
-      <p className="flex min-w-0 flex-wrap items-center gap-x-2 px-2 text-[11px] text-muted-foreground">
+      <p className="flex min-w-0 flex-wrap items-center gap-x-2 px-2 text-xs text-muted-foreground">
         {uploading ? (
           <span className="text-primary">
             Uploading {busy.slice("upload ".length) || "…"}
@@ -4108,7 +4333,7 @@ function SubConversations({
 
   return (
     <section className="grid min-w-0 gap-1.5" aria-label="Sub-sessions">
-      <h3 className="flex items-center gap-1.5 px-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+      <h3 className="flex items-center gap-1.5 px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
         <CornerDownRightIcon className="size-3" aria-hidden />
         Sub-sessions
         {kids.length ? (
@@ -4164,7 +4389,7 @@ function SubConversations({
           })}
         </ul>
       ) : !open && c.status !== "closed" ? (
-        <p className="px-1 text-[12px] leading-relaxed text-muted-foreground">
+        <p className="px-1 text-xs leading-relaxed text-muted-foreground">
           None yet. The agent starts one for a part of the work it wants watched
           on its own page; you can start one here too. Its replies come back
           into this session.
@@ -4290,7 +4515,7 @@ function ChangesPanel({
     <>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-muted-foreground">
         <code
-          className="min-w-0 truncate rounded bg-muted px-1 py-px font-mono text-[11px] text-foreground"
+          className="min-w-0 truncate rounded bg-muted px-1 py-px font-mono text-xs text-foreground"
           title={ch.branch}
         >
           {ch.branch}
@@ -4385,7 +4610,7 @@ function ArtifactsPanel({
       <button
         type="button"
         onClick={() => void pull()}
-        className="flex items-center gap-1 justify-self-start px-1 text-[11px] text-muted-foreground underline-offset-4 hover:underline"
+        className="flex items-center gap-1 justify-self-start px-1 text-xs text-muted-foreground underline-offset-4 hover:underline"
       >
         <RefreshCwIcon className="size-3" /> Refresh
       </button>

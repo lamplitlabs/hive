@@ -239,14 +239,14 @@ export function BrowserTab({
       </form>
       {picking && helper !== "yes" ? (
         <div className="border-b px-3 py-2">
-          <Notice tone="info" className="py-2 text-[12.5px]">
+          <Notice tone="info" className="py-2 text-[13px]">
             <span className="grid min-w-0 gap-1.5">
               <span>
                 This page has no PULSE pick helper yet, so the hub cannot see
                 what you point at. Add one line to the app&apos;s development
                 pages:
               </span>
-              <code className="block min-w-0 rounded-md bg-muted/60 px-2 py-1 font-mono text-[11.5px] anywhere">
+              <code className="block min-w-0 rounded-md bg-muted/60 px-2 py-1 font-mono text-xs anywhere">
                 {snippet}
               </code>
               <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -318,7 +318,7 @@ export function BrowserTab({
               </button>
             </li>
           ))}
-          <li className="text-[11px] text-muted-foreground">
+          <li className="text-xs text-muted-foreground">
             In your next message.
           </li>
         </ul>

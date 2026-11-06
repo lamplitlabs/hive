@@ -1,25 +1,48 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { BellIcon, ChevronRightIcon, CirclePauseIcon, GaugeIcon, MonitorIcon, PlugIcon, SearchIcon, ServerIcon, SettingsIcon, SlidersHorizontalIcon, SparklesIcon, TerminalIcon, UserRoundIcon } from "lucide-react";
+import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SectionHeading } from "@/components/pulse/item-card";
-import { EmptyState, ErrorNotice, Notice, PageTitle, SkeletonPage } from "@/components/pulse/panel";
+import { PageHeader } from "@/components/pulse/page-header";
+import { EmptyState, ErrorNotice, Notice, SkeletonPage } from "@/components/pulse/panel";
+import { AppearanceSection } from "@/components/settings/appearance-section";
 import { RunningStrip } from "@/components/settings/running";
 import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
 import { CredentialRow } from "@/components/settings/credential";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { NotificationsCard } from "@/components/settings/notifications";
 import { PauseCard, SettingRow, setShowKeys, useShowKeys } from "@/components/settings/setting-row";
+import { groupIcon, type GroupIcon } from "@/components/settings/settings-state";
 import type { Runner, Setting, SettingsPayload } from "@/lib/api";
 import { capWarning, runsTodayOf } from "@/lib/cap-warning-state";
 import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-type Icon = React.ComponentType<{ className?: string }>;
+type Icon = React.ComponentType<{ className?: string; strokeWidth?: number; "aria-hidden"?: boolean }>;
+
+// The lucide component behind each heading icon name settings-state picks
+// (groupIcon), so the heading of every group and nav item is one lookup.
+const ICONS: Record<GroupIcon, Icon> = {
+  Settings2: Settings2Icon,
+  UserRound: UserRoundIcon,
+  Palette: PaletteIcon,
+  Cpu: CpuIcon,
+  Play: PlayIcon,
+  Bell: BellIcon,
+  KeyRound: KeyRoundIcon,
+  Cloud: CloudIcon,
+  ShieldAlert: ShieldAlertIcon,
+  Gauge: GaugeIcon,
+  Server: ServerIcon,
+  Sparkles: SparklesIcon,
+  Plug: PlugIcon,
+  SlidersHorizontal: SlidersHorizontalIcon,
+};
+const iconOf = (id: string): Icon => ICONS[groupIcon(id)];
 
 interface Cluster {
   title: string;
@@ -84,7 +107,7 @@ const GROUPS: Group[] = [
     id: "owner",
     title: "You",
     note: "Tell PULSE whether you're around to answer.",
-    keys: ["owner.presence", "records.auto_adopt"],
+    keys: ["owner.name", "owner.presence", "records.auto_adopt"],
     match: (n) => n.startsWith("owner.") || n.startsWith("records."),
   },
   {
@@ -154,20 +177,21 @@ const OTHER: Group = { id: "other", title: "Other", note: "Settings this page do
 
 // The section picker, in page order. Settings shows one section at a time
 // (the URL hash names it, so links like /settings/#harness land there); a
-// search shows every section with a match. General holds the brake, You
-// and Notifications, whose own anchors (#stop #owner #notify) open it.
+// search shows every section with a match. General holds the brake, You,
+// Appearance and Notifications, whose own anchors (#stop #owner
+// #appearance #notify) open it. Icons come from groupIcon (settings-state).
 const NAV: { id: string; title: string; icon: Icon }[] = [
-  { id: "general", title: "General", icon: SettingsIcon },
-  { id: "harness", title: "Harness", icon: TerminalIcon },
-  { id: "runner", title: "Limits", icon: GaugeIcon },
-  { id: "compute", title: "Machines", icon: ServerIcon },
-  { id: "evolve", title: "Self-improvement", icon: SparklesIcon },
-  { id: "daemon", title: "This machine", icon: MonitorIcon },
-  { id: "provider", title: "Provider addresses", icon: PlugIcon },
-  { id: "other", title: "Other", icon: SlidersHorizontalIcon },
+  { id: "general", title: "General", icon: iconOf("general") },
+  { id: "appearance", title: "Appearance", icon: iconOf("appearance") },
+  { id: "harness", title: "Harness", icon: iconOf("harness") },
+  { id: "runner", title: "Limits", icon: iconOf("runner") },
+  { id: "compute", title: "Machines", icon: iconOf("compute") },
+  { id: "evolve", title: "Self-improvement", icon: iconOf("evolve") },
+  { id: "daemon", title: "This machine", icon: iconOf("daemon") },
+  { id: "provider", title: "Provider addresses", icon: iconOf("provider") },
+  { id: "other", title: "Other", icon: iconOf("other") },
 ];
-const ICON: Record<string, Icon> = { ...Object.fromEntries(NAV.map((n) => [n.id, n.icon])), stop: CirclePauseIcon, owner: UserRoundIcon, notify: BellIcon };
-const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", notify: "general" };
+const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", appearance: "general", notify: "general" };
 const pageOf = (id: string) => PAGE_OF[id] ?? id;
 
 // The hash as a tiny store: the section links are plain anchors, so the
@@ -183,6 +207,8 @@ const useHash = () => useSyncExternalStore(subscribeHash, () => window.location.
 // The same for the Notifications card, which keeps its choices in this
 // browser rather than in PULSE's settings.
 const NOTIFY_WORDS = "notifications notify notification alerts alert sound chime bell desktop browser mac question waits for you finished done reply";
+// Appearance is browser-only (no setting rows), so a search reaches it by its words.
+const APPEARANCE_WORDS = "appearance theme dark light system mode density compact comfortable font geist readable atkinson text size larger default look colours colors";
 
 const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in github microsoft entra tenant device code copilot token api key openai anthropic claude gemini google azure openrouter groq mistral deepseek xai grok together fireworks cerebras ollama lmstudio vllm model models model provider limits per run run mode and transcript size built-in native copilot cli credits cost system prompt preview context window 1m million tokens reasoning effort thinking";
 
@@ -342,7 +368,7 @@ function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle, 
 function Section({ id, title, note, count, children }: { id: string; title: string; note?: React.ReactNode; count?: string; children: React.ReactNode }) {
   return (
     <section id={id} aria-label={title} className={ANCHOR}>
-      <SectionHeading icon={ICON[id]} note={note} count={count}>
+      <SectionHeading icon={iconOf(id)} note={note} count={count}>
         {title}
       </SectionHeading>
       {children}
@@ -368,23 +394,21 @@ function SectionNav({ items, active, stopped }: { items: { id: string; title: st
   return (
     <>
       <nav aria-label="Settings sections" className="sticky top-[calc(3.5rem+1px+env(safe-area-inset-top))] z-30 -mx-4 mb-5 border-b bg-background sm:-mx-6 lg:hidden">
-        <div ref={chips} className="scroll-strip flex gap-1.5 px-4 py-2.5 sm:px-6">
+        <div ref={chips} className="scroll-strip flex gap-1 px-4 py-2 sm:px-6">
           {items.map((n) => (
-            <a
+            <Button
               key={n.id}
-              href={"#" + n.id}
-              aria-current={active === n.id ? "true" : undefined}
-              aria-disabled={!n.hit || undefined}
-              className={cn(
-                "inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                active === n.id ? "border-foreground/20 bg-card font-medium text-foreground shadow-[0_1px_2px_oklch(0.26_0.04_262/.06)]" : "border-transparent text-muted-foreground hover:text-foreground",
-                !n.hit && "pointer-events-none opacity-40",
-              )}
+              asChild
+              variant="ghost"
+              size="sm"
+              className={cn("shrink-0 whitespace-nowrap", active === n.id ? "bg-muted font-medium text-link hover:text-link" : "text-muted-foreground", !n.hit && "pointer-events-none opacity-40")}
             >
-              {dot(n.id)}
-              {n.title}
-              {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : null}
-            </a>
+              <a href={"#" + n.id} aria-current={active === n.id ? "true" : undefined} aria-disabled={!n.hit || undefined}>
+                {dot(n.id)}
+                {n.title}
+                {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : null}
+              </a>
+            </Button>
           ))}
         </div>
       </nav>
@@ -400,12 +424,12 @@ function SectionNav({ items, active, stopped }: { items: { id: string; title: st
                   aria-current={on ? "true" : undefined}
                   aria-disabled={!n.hit || undefined}
                   className={cn(
-                    "flex min-w-0 items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    on ? "bg-card font-medium text-foreground ring-1 ring-border" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    "flex min-w-0 items-center gap-2.5 rounded-md border-l-2 py-2 pl-3 pr-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    on ? "border-link bg-muted/60 font-medium text-link" : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                     !n.hit && "pointer-events-none opacity-40",
                   )}
                 >
-                  <Icon className={cn("size-4 shrink-0", on ? "text-primary" : "text-muted-foreground", n.id === "general" && stopped && "text-bad")} />
+                  <Icon aria-hidden className={cn("size-4 shrink-0", on ? "text-link" : "text-muted-foreground", n.id === "general" && stopped && "text-bad")} />
                   <span className="min-w-0 flex-1 truncate">{n.title}</span>
                   {n.count !== undefined ? <span className="tnum text-xs text-muted-foreground">{n.count}</span> : dot(n.id)}
                 </a>
@@ -473,6 +497,7 @@ export default function SettingsPage() {
   const harnessHits = harnessRows.filter(match).length;
   const harnessShown = !needle || harnessHits > 0 || HARNESS_WORDS.includes(needle);
   const notifyShown = !needle || NOTIFY_WORDS.includes(needle);
+  const appearanceShown = !needle || APPEARANCE_WORDS.includes(needle);
   // The kill switch has its own card at the top, so it leaves the Limits section.
   const killShown = !!stop && (match(stop) || "pause stop kill switch emergency brake resume".includes(needle));
   const base = groups.map(({ g, rows }) => ({ g, rows: rows.filter((s) => (!stop || s.name !== "stop") && awake(s)) }));
@@ -480,10 +505,10 @@ export default function SettingsPage() {
   const shown = base.map(({ g, rows }) => ({ g, all: rows.length, rows: rows.filter(match) })).filter((x) => x.rows.length);
   const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0) + harnessHits;
   const hits: Record<string, number> = { ...Object.fromEntries(shown.map((x) => [x.g.id, x.rows.length])), harness: harnessHits };
-  const generalHit = killShown || notifyShown || !!hits.owner;
-  const present = new Set<string>(["general", "harness", ...groups.map((x) => x.g.id)]);
+  const generalHit = killShown || notifyShown || appearanceShown || !!hits.owner;
+  const present = new Set<string>(["general", "appearance", "harness", ...groups.map((x) => x.g.id)]);
   const navItems = NAV.filter((n) => present.has(n.id)).map((n) => {
-    const hit = !needle || (n.id === "general" ? generalHit : n.id === "harness" ? harnessShown : !!hits[n.id]);
+    const hit = !needle || (n.id === "general" ? generalHit : n.id === "appearance" ? appearanceShown : n.id === "harness" ? harnessShown : !!hits[n.id]);
     const count = needle && hit ? (n.id === "general" ? (killShown ? 1 : 0) + (hits.owner ?? 0) : hits[n.id]) : undefined;
     return { ...n, hit, count: count || undefined };
   });
@@ -491,8 +516,11 @@ export default function SettingsPage() {
   const page = present.has(pageOf(hash)) ? pageOf(hash) : "general";
   const show = (id: string) => !!needle || pageOf(id) === page;
   // While searching every section with a hit shows, in page order.
-  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
-  const current = needle ? pageOf(spied || order.split(" ")[0] || "") : page;
+  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
+  // Appearance lives on the General page (#appearance scrolls to its card) but
+  // has its own nav item, so the marker names it rather than General.
+  const navOf = (id: string) => (id === "appearance" ? id : pageOf(id));
+  const current = needle ? navOf(spied || order.split(" ")[0] || "") : present.has(pageOf(hash)) ? navOf(hash) : "general";
 
   // Opening a section starts at its top; an anchor inside General (#notify) scrolls to itself.
   useEffect(() => {
@@ -530,11 +558,7 @@ export default function SettingsPage() {
     };
   }, [order]);
 
-  const title = (
-    <PageTitle icon={SettingsIcon} sub="How PULSE behaves on this machine. Limits and rules ask you to confirm before they change; model choices save as soon as you pick them.">
-      Settings
-    </PageTitle>
-  );
+  const title = <PageHeader title="Settings" subtitle="How PULSE runs" />;
   if (q.error && !d)
     return (
       <>
@@ -554,7 +578,7 @@ export default function SettingsPage() {
 
   const groupSection = ({ g, rows, all }: { g: Group; rows: Setting[]; all: number }) => (
     <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
-      <div className="min-w-0 overflow-hidden rounded-2xl border bg-card">
+      <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
         <GroupRows g={g} rows={rows} canEdit={d.can_edit} provider={provider} searching={!!needle} expanded={expanded.has(g.id)} onToggle={() => toggle(g.id)} warnings={warnings} />
       </div>
     </Section>
@@ -565,7 +589,7 @@ export default function SettingsPage() {
       {title}
       <div className="mb-6 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
         <div className="relative w-full max-w-xl">
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-3.5 size-[18px] -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
           <Input
             type="search"
             value={find}
@@ -579,17 +603,17 @@ export default function SettingsPage() {
             placeholder="Search all settings"
             aria-label="Search all settings"
             aria-describedby="settings-search-hint"
-            className="h-11 rounded-xl bg-card pl-11 text-[15px]"
+            className="h-9 rounded-md bg-card pl-9 text-sm"
           />
         </div>
         <p id="settings-search-hint" className="min-w-0 flex-1 text-[13px] text-muted-foreground" aria-live="polite">
           {needle ? (
-            matched || (!harnessShown && !notifyShown) ? (
+            matched || (!harnessShown && !notifyShown && !appearanceShown) ? (
               <span className="tnum">
                 {matched} of {total} settings match
               </span>
             ) : (
-              "No single setting matches, but the " + [notifyShown ? "Notifications" : "", harnessShown ? "Harness" : ""].filter(Boolean).join(" and ") + (notifyShown && harnessShown ? " sections do." : " section does.")
+              ((names) => "No single setting matches, but the " + names.join(" and ") + (names.length > 1 ? " sections do." : " section does."))([appearanceShown ? "Appearance" : "", notifyShown ? "Notifications" : "", harnessShown ? "Harness" : ""].filter(Boolean))
             )
           ) : (
             "Search by name, by what it does, or by its key."
@@ -630,6 +654,12 @@ export default function SettingsPage() {
 
           {shown.filter((x) => x.g.id === "owner" && show("owner")).map(groupSection)}
 
+          {appearanceShown && show("appearance") ? (
+            <section id="appearance" aria-label="Appearance" className={ANCHOR}>
+              <AppearanceSection icon={iconOf("appearance")} />
+            </section>
+          ) : null}
+
           {notifyShown && show("notify") ? (
             <Section id="notify" title="Notifications" note="Hear about it when something waits for you, or when a task or session finishes. For this browser only.">
               <NotificationsCard />
@@ -644,7 +674,7 @@ export default function SettingsPage() {
 
           {shown.filter((x) => x.g.id !== "owner" && show(x.g.id)).map(groupSection)}
 
-          {needle && !matched && !harnessShown && !notifyShown ? (
+          {needle && !matched && !harnessShown && !notifyShown && !appearanceShown ? (
             <EmptyState
               icon={<SearchIcon className="size-[18px]" />}
               title={<>No setting matches &ldquo;{find.trim()}&rdquo;</>}

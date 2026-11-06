@@ -27,6 +27,11 @@ import {
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -332,34 +337,38 @@ export function MicButton({
           : MicIcon;
   return (
     <>
-      <Button
-        type="button"
-        size="icon-sm"
-        variant={state === "recording" ? "destructive" : "ghost"}
-        onClick={() => void press()}
-        disabled={disabled || state === "transcribing"}
-        aria-label={
-          state === "recording"
-            ? "Stop recording and transcribe"
-            : state === "fetching"
-              ? "Speech model setup in progress"
-              : "Dictate"
-        }
-        aria-pressed={state === "recording"}
-        title={micTitle(state, st)}
-        className={cn(
-          "shrink-0 rounded-full text-muted-foreground hover:text-foreground",
-          state === "recording" && "text-destructive-foreground hover:text-destructive-foreground",
-          className,
-        )}
-      >
-        <Icon
-          className={cn(
-            (state === "transcribing" || state === "fetching") && "animate-spin",
-            state === "recording" && "fill-current",
-          )}
-        />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon"
+            variant={state === "recording" ? "destructive" : "ghost"}
+            onClick={() => void press()}
+            disabled={disabled || state === "transcribing"}
+            aria-label={
+              state === "recording"
+                ? "Stop recording and transcribe"
+                : state === "fetching"
+                  ? "Speech model setup in progress"
+                  : "Dictate"
+            }
+            aria-pressed={state === "recording"}
+            className={cn(
+              "shrink-0 text-muted-foreground hover:text-foreground",
+              state === "recording" && "text-destructive-foreground hover:text-destructive-foreground",
+              className,
+            )}
+          >
+            <Icon
+              className={cn(
+                (state === "transcribing" || state === "fetching") && "animate-spin",
+                state === "recording" && "fill-current",
+              )}
+            />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{micTitle(state, st)}</TooltipContent>
+      </Tooltip>
       {state === "recording" ? (
         <span
           className="flex items-center gap-1.5 text-xs text-destructive tnum"

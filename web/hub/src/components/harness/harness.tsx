@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ActivityIcon,
-  ArrowLeftIcon,
   BanIcon,
   BookOpenIcon,
   BotIcon,
@@ -23,16 +22,19 @@ import {
   FileCodeIcon,
   FilePenIcon,
   FilePlusIcon,
+  FileTextIcon,
   FilesIcon,
   GitForkIcon,
   GlobeIcon,
   InfoIcon,
   ListChecksIcon,
   LoaderCircleIcon,
+  MessageSquareIcon,
   PlayIcon,
   PlugIcon,
   ScrollTextIcon,
   SearchIcon,
+  SlidersHorizontalIcon,
   TelescopeIcon,
   TerminalIcon,
   TimerOffIcon,
@@ -45,21 +47,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ProjectAvatar } from "@/components/pulse/avatar";
+import { DataTable, type Column } from "@/components/pulse/data-table";
+import { FilterChip } from "@/components/pulse/filter-chip";
+import { ListRow, ListRows } from "@/components/pulse/list-row";
+import { BrandLogo, logoFor } from "@/components/pulse/logo";
 import { Markdown } from "@/components/pulse/markdown";
-import { Disclosure, EmptyState, ErrorNotice, Kv, Notice, PageTitle, SkeletonRows } from "@/components/pulse/panel";
-import { ProjectLink, When } from "@/components/pulse/who";
+import { PageHeader } from "@/components/pulse/page-header";
+import { Disclosure, EmptyState, ErrorNotice, Kv, Notice, SkeletonRows } from "@/components/pulse/panel";
+import { SectionHeading } from "@/components/pulse/section-heading";
+import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
+import { StatusBadge, StatusIcon } from "@/components/pulse/status-badge";
+import { Avatar, When } from "@/components/pulse/who";
 import type { HarnessModel, HarnessModelsResponse, HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
-import { api, apiHref, enc, errorText, query, writes } from "@/lib/api";
+import { api, apiHref, enc, errorText, projectLabel, query, writes } from "@/lib/api";
 import { num, parseDate, plural, sentence, span } from "@/lib/format";
 import { agentName, statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi, useLiveEvents, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { apiStatus, badgeStatus, chipActive, elapsedWords, matchesStatus, msText, openByDefault, pairSteps, RUN_GROUPS, runSeconds, statusChips, stepSummary, stepTool, type StepEntry, type StepTool } from "./harness-state";
 
-// Runs: every agent run as the harness saw it. The list on the left says
-// what each run was asked and how it ended; the transcript on the right
-// (sticky on desktop, in place of the list on a phone) reads the run step
-// by step - what the model said, the commands it ran, what came back.
+// Runs: every agent run as the harness saw it. The table says what each
+// run was asked and how it ended; a run in flight sits above it as a live
+// row with a ticking clock. Picking a run opens the transcript in the side
+// panel (a bottom sheet on a phone): the steps as folding rows, what the
+// model said, the commands it ran, what came back, and how it ended.
 
 // Run states statusWord does not know yet (see the report's requests).
 const RUN_WORD: Partial<Record<HarnessSessionStatus, string>> = { format_error: "Kept answering in the wrong format", not_logged_in: "Not signed in" };
@@ -74,21 +87,6 @@ function compact(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "m";
   if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "k";
   return num(n);
-}
-
-function seconds(start?: string, end?: string, now = Date.now()): number {
-  const s = parseDate(start)?.getTime();
-  if (!s) return 0;
-  const e = parseDate(end)?.getTime() || now;
-  return Math.max(1, (e - s) / 1000);
-}
-
-// How long a run took, or has been going. A run PULSE lost has no end; it
-// ends where it was last heard from.
-function runTime(s: HarnessSession, now: number): string {
-  if (!s.started_at) return "";
-  if (s.status === "running") return "Running for " + span(seconds(s.started_at, "", now));
-  return "Took " + span(seconds(s.started_at, s.ended_at || s.updated_at, now));
 }
 
 function exitKey(session: Pick<HarnessSession, "status" | "exit_status">): string {
@@ -123,16 +121,6 @@ function runState(session: Pick<HarnessSession, "status" | "exit_status" | "canc
     default:
       return { word, tone: "neutral", Icon: InfoIcon, raw: key };
   }
-}
-
-function RunStatus({ session, className }: { session: Pick<HarnessSession, "status" | "exit_status" | "cancel_requested_at">; className?: string }) {
-  const st = runState(session);
-  return (
-    <span className={cn("inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground", className)} title={st.word.toLowerCase() !== st.raw.replace(/_/g, " ") ? st.raw : undefined}>
-      <st.Icon className={cn("size-4 shrink-0", RUN_ICON_TONE[st.tone], st.spin && "motion-safe:animate-spin")} aria-hidden />
-      <span className="min-w-0 anywhere">{st.word}</span>
-    </span>
-  );
 }
 
 // The sentence the last step of a transcript ends on.
@@ -194,152 +182,7 @@ function modelInfo(model: string, models: HarnessModel[]): { name: string; tip: 
 function jobHref(s: Pick<HarnessSession, "project" | "job_id">): string {
   if (/^TASK-/.test(s.job_id)) return hrefs.task(s.job_id);
   return hrefs.tasks(s.project ? { project: s.project } : {});
-}
-
-// ----- filters ---------------------------------------------------------------
-
-function Filters({
-  project,
-  status,
-  agent,
-  executor,
-  executors,
-  projects,
-  onChange,
-  onExecutorChange,
-  onClear,
-}: {
-  project: string;
-  status: string;
-  agent: string;
-  executor: string;
-  executors: string[];
-  projects: ProjectsPayload | undefined;
-  onChange: (next: { project: string; status: string; agent: string }) => void;
-  onExecutorChange: (next: string) => void;
-  onClear: () => void;
-}) {
-  const [agentState, setAgentState] = useState({ value: agent, draft: agent });
-  const agentDraft = agentState.value === agent ? agentState.draft : agent;
-  const setAgentDraft = (draft: string) => setAgentState({ value: agent, draft });
-  const commitAgent = () => onChange({ project, status, agent: agentDraft.trim() });
-  const hasFilters = !!(project || status || agent || executor);
-  return (
-    <div className="grid min-w-0 grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
-      <Select value={project || "all"} onValueChange={(v) => onChange({ project: v === "all" ? "" : v, status, agent })}>
-        <SelectTrigger className="w-full sm:w-44" aria-label="Project">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All projects</SelectItem>
-          {(projects?.projects ?? []).map((p) => (
-            <SelectItem key={p.slug} value={p.slug}>
-              {p.slug}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Select value={status || "all"} onValueChange={(v) => onChange({ project, status: v === "all" ? "" : v, agent })}>
-        <SelectTrigger className="w-full sm:w-52" aria-label="Status">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {STATUSES.map((s) => (
-            <SelectItem key={s.value} value={s.value}>
-              {s.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <div className="relative col-span-2 w-full sm:w-48">
-        <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-        <Input
-          id="harness-agent"
-          aria-label="Agent"
-          value={agentDraft}
-          placeholder="Search by agent"
-          onChange={(e) => setAgentDraft(e.target.value)}
-          onBlur={commitAgent}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commitAgent();
-            if (e.key === "Escape") setAgentDraft(agent);
-          }}
-          className="pl-8"
-        />
-      </div>
-      {executors.length ? (
-        <Select value={executor || "all"} onValueChange={(v) => onExecutorChange(v === "all" ? "" : v)}>
-          <SelectTrigger className="w-full sm:w-44" aria-label="Machine" title="The machine (executor) the run happened on">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All machines</SelectItem>
-            {executors.map((e) => (
-              <SelectItem key={e} value={e}>
-                {machineWord(e)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : null}
-      {hasFilters ? (
-        <Button type="button" variant="ghost" size="sm" onClick={onClear}>
-          <XIcon /> Clear filters
-        </Button>
-      ) : null}
-    </div>
-  );
-}
-
-// ----- the list --------------------------------------------------------------
-
-function RunRow({ r, selected, onSelect, models }: { r: HarnessSession; selected: boolean; onSelect: (id: string) => void; models: HarnessModel[] }) {
-  const model = modelInfo(r.model, models);
-  const remote = remoteExecutor(r.executor);
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={() => onSelect(r.id)}
-        aria-current={selected ? "true" : undefined}
-        title={"Run " + r.id + ", job " + r.job_id}
-        className={cn(
-          "flex w-full min-w-0 flex-col gap-1 px-4 py-3.5 text-left transition-colors hover:bg-muted/50 focus-visible:relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset motion-reduce:transition-none sm:px-5",
-          selected && "bg-primary/[0.07] shadow-[inset_3px_0_0_var(--primary)] hover:bg-primary/[0.09]",
-        )}
-      >
-        <span className="flex min-w-0 items-center justify-between gap-3 text-[13px] leading-relaxed">
-          <RunStatus session={r} />
-          <When d={r.started_at} className="shrink-0 text-muted-foreground" />
-        </span>
-        <span className="min-w-0 text-[15px] font-semibold leading-snug text-foreground anywhere">{r.job_title || r.job_id}</span>
-        <span className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-0.5 text-[13px] leading-relaxed text-muted-foreground">
-          {r.project ? <span>{r.project}</span> : null}
-          {r.agent ? <span title={r.agent}>{agentName(r.agent)}</span> : null}
-          <span title={model.tip}>{model.name}</span>
-          <span title={plural(r.steps, "step") + ", " + plural(r.calls, "model call")}>{plural(r.steps, "step")}</span>
-          {remote ? <span title="The machine (executor) the run happened on">{"On " + remote}</span> : null}
-        </span>
-      </button>
-    </li>
-  );
-}
-
-function RunList({ rows, selected, onSelect, models }: { rows: HarnessSession[]; selected: string; onSelect: (id: string) => void; models: HarnessModel[] }) {
-  // Most recently active first, as the old table opened.
-  const sorted = useMemo(() => [...rows].sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0)), [rows]);
-  return (
-    <ul aria-label="Runs" className="divide-y divide-border/70">
-      {sorted.map((r) => (
-        <RunRow key={r.id} r={r} selected={r.id === selected} onSelect={onSelect} models={models} />
-      ))}
-    </ul>
-  );
-}
-
-// ----- the transcript --------------------------------------------------------
-
-const REPORT_WORD: Record<string, string> = { SUMMARY: "Summary", FINDING: "Finding", SUGGESTION: "Suggestion", QUESTION: "Question", VOTE: "Vote" };
+}const REPORT_WORD: Record<string, string> = { SUMMARY: "Summary", FINDING: "Finding", SUGGESTION: "Suggestion", QUESTION: "Question", VOTE: "Vote" };
 
 function ReportLines({ text }: { text: string }) {
   const keys = /^(SUMMARY|FINDING|SUGGESTION|QUESTION|VOTE):/;
@@ -362,9 +205,7 @@ function ReportLines({ text }: { text: string }) {
 export function exitWords(code: number | null): { text: string; bad: boolean } | null {
   if (code === null || code === undefined) return null;
   return code === 0 ? { text: "Succeeded", bad: false } : { text: "Failed (exit code " + code + ")", bad: true };
-}
-
-function Observation({ s }: { s: HarnessStep }) {
+}function Observation({ s }: { s: HarnessStep }) {
   const lines = (s.content || "").split("\n");
   const long = lines.length > 30;
   const [open, setOpen] = useState(lines.length <= 12);
@@ -376,7 +217,7 @@ function Observation({ s }: { s: HarnessStep }) {
       variant="row"
       open={open}
       onToggle={setOpen}
-      className="rounded-xl border bg-muted/30 px-2"
+      className="rounded-lg border bg-muted/30 px-2"
       contentClassName="-mx-2 mt-0 px-0 pb-0"
       summary={
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] font-normal text-muted-foreground" title={s.command || undefined}>
@@ -475,9 +316,7 @@ function StepIcon({ s, session }: { s: HarnessStep; session: HarnessSession }) {
   if (s.kind === "exit") return s.content === "submitted" ? <CircleCheckIcon className="size-3.5 text-ok" /> : <CircleAlertIcon className="size-3.5 text-warn" />;
   const Icon = STEP_ICON[s.kind] ?? InfoIcon;
   return <Icon className="size-3.5" />;
-}
-
-// A plan step holds the checklist the agent keeps: "plan: 1/3 done" then
+}// A plan step holds the checklist the agent keeps: "plan: 1/3 done" then
 // one "- [ ]", "- [~]" or "- [x]" line per item. It reads as a list.
 export function planItems(content: string): { text: string; status: "todo" | "doing" | "done" }[] {
   const items: { text: string; status: "todo" | "doing" | "done" }[] = [];
@@ -494,7 +333,7 @@ function PlanCard({ s }: { s: HarnessStep }) {
   const head = (s.content || "").split("\n")[0] || "";
   if (!items.length) return <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>;
   return (
-    <div className="grid min-w-0 gap-1.5 rounded-xl border bg-muted/30 px-4 py-3">
+    <div className="grid min-w-0 gap-1.5 rounded-lg border bg-muted/30 px-4 py-3">
       <p className="text-[13px] font-medium text-muted-foreground">{head}</p>
       <ul className="grid gap-1 text-sm leading-relaxed">
         {items.map((it, i) => (
@@ -519,60 +358,6 @@ function StepTime({ d }: { d: string }) {
   );
 }
 
-export function StepItem({ s, session, last }: { s: HarnessStep; session: HarnessSession; last: boolean }) {
-  const tokens = (s.prompt_tokens || 0) + (s.completion_tokens || 0);
-  // A helper's steps (depth 1) sit one indent in under the subagent step.
-  const depth = Math.min(s.depth ?? 0, 3);
-  const tip = ["Step " + s.n, depth ? "helper, depth " + depth : "", s.model ? "model " + s.model : "", tokens ? compact(tokens) + " tokens" : ""].filter(Boolean).join(", ");
-  // An observation reads as the second half of the command above it.
-  const quiet = s.kind === "observation";
-  return (
-    <li className={cn("relative min-w-0 pl-9", !last && "pb-5")} style={depth ? { marginLeft: depth * 28 } : undefined} data-depth={depth || undefined}>
-      {!last ? <span className="absolute top-7 bottom-0 left-[13px] w-px bg-border" aria-hidden /> : null}
-      <span className={cn("absolute top-0 left-0 flex size-7 items-center justify-center rounded-full", STEP_DOT[s.kind] ?? STEP_DOT.note)} aria-hidden>
-        <StepIcon s={s} session={session} />
-      </span>
-      <div className={cn("flex min-h-7 min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[13px] leading-relaxed", quiet && "sr-only")}>
-        <span className="min-w-0 font-medium text-foreground anywhere">{s.kind === "exit" && depth ? "How the helper ended" : s.kind === "command" && s.title?.trim() ? s.title.trim() : (STEP_LABEL[s.kind] ?? "Step " + s.n)}</span>
-        <span className="text-muted-foreground" title={tip}>
-          {s.at ? <StepTime d={s.at} /> : "Step " + s.n}
-        </span>
-      </div>
-      <div className={cn("min-w-0", !quiet && "mt-1")}>
-        {s.kind === "assistant" ? (
-          <div className="min-w-0 text-[15px] leading-relaxed">
-            <Markdown source={s.content} className="[&_pre]:whitespace-pre-wrap" />
-          </div>
-        ) : s.kind === "command" ? (
-          <pre className="min-w-0 rounded-xl bg-zinc-950 px-3 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-zinc-100 anywhere dark:bg-black">
-            <span className="text-emerald-300 select-none">$ </span>
-            {s.command}
-          </pre>
-        ) : TOOL_STEP_KINDS.includes(s.kind) ? (
-          <pre className="min-w-0 rounded-xl border bg-muted/30 px-3 py-2.5 font-mono text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">{s.content || s.command}</pre>
-        ) : s.kind === "plan" ? (
-          <PlanCard s={s} />
-        ) : s.kind === "subagent" ? (
-          <div className="grid min-w-0 gap-1 rounded-xl border border-primary/30 bg-primary/[0.05] px-4 py-3">
-            <p className="text-[13px] font-medium text-muted-foreground">{s.command || "subagent"}</p>
-            <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>
-          </div>
-        ) : s.kind === "observation" ? (
-          <Observation s={s} />
-        ) : s.kind === "note" ? (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground anywhere">{sentence(s.content)}</p>
-        ) : s.kind === "error" ? (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>
-        ) : depth ? (
-          <p className="text-sm leading-relaxed text-muted-foreground">{s.content === "submitted" ? "The helper reported back." : "The helper stopped: " + (s.content || "unknown") + "."}</p>
-        ) : (
-          <EndCard s={s} session={session} />
-        )}
-      </div>
-    </li>
-  );
-}
-
 const END_TONE: Record<RunTone, string> = {
   run: "border-primary/30 bg-primary/[0.05]",
   ok: "border-ok/35 bg-ok/[0.06]",
@@ -584,8 +369,8 @@ const END_TONE: Record<RunTone, string> = {
 function EndCard({ s, session }: { s: HarnessStep; session: HarnessSession }) {
   const st = runState(session);
   return (
-    <div className={cn("grid min-w-0 gap-2.5 rounded-xl border px-4 py-3", END_TONE[st.tone])}>
-      <p className="text-[15px] font-semibold leading-snug text-foreground" title={s.content || session.exit_status || undefined}>
+    <div className={cn("grid min-w-0 gap-2.5 rounded-lg border px-4 py-3", END_TONE[st.tone])}>
+      <p className="text-sm font-semibold leading-snug text-foreground" title={s.content || session.exit_status || undefined}>
         {endSentence(session, s.content || session.exit_status)}
       </p>
       {session.status === "submitted" && session.submission ? <ReportLines text={session.submission} /> : null}
@@ -604,9 +389,7 @@ function transcriptText(d: HarnessSessionResponse): string {
   }
   if (d.session.submission) lines.push("## submission", d.session.submission);
   return lines.join("\n");
-}
-
-function CancelRunButton({ session, onDone }: { session: HarnessSession; onDone: () => Promise<void> }) {
+}function CancelRunButton({ session, onDone }: { session: HarnessSession; onDone: () => Promise<void> }) {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -666,9 +449,7 @@ function dedupeSessions(rows: HarnessSession[]): HarnessSession[] {
     out.push(row);
   }
   return out;
-}
-
-function LiveState({ state }: { state: "connecting" | "live" | "polling" }) {
+}function LiveState({ state }: { state: "connecting" | "live" | "polling" }) {
   const text = state === "live" ? "Live" : state === "polling" ? "Checking every few seconds" : "Connecting";
   return (
     <span aria-live="polite" className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground" title={state === "live" ? "New steps appear as they happen." : state === "polling" ? "The live stream is down; the page checks for new steps every 5 seconds." : undefined}>
@@ -677,27 +458,350 @@ function LiveState({ state }: { state: "connecting" | "live" | "polling" }) {
     </span>
   );
 }
+// ----- filters ---------------------------------------------------------------
 
-function Transcript({ id, models, onBack }: { id: string; models: HarnessModel[]; onBack: () => void }) {
+// The exact-status picker and the agent / machine fields fold under "More
+// filters"; the four chips above carry the everyday choice.
+function MoreFilters({
+  project,
+  status,
+  agent,
+  executor,
+  executors,
+  projects,
+  onChange,
+  onExecutorChange,
+  onClear,
+  hasFilters,
+}: {
+  project: string;
+  status: string;
+  agent: string;
+  executor: string;
+  executors: string[];
+  projects: ProjectsPayload | undefined;
+  onChange: (next: { project?: string; status?: string; agent?: string }) => void;
+  onExecutorChange: (next: string) => void;
+  onClear: () => void;
+  hasFilters: boolean;
+}) {
+  const [agentState, setAgentState] = useState({ value: agent, draft: agent });
+  const agentDraft = agentState.value === agent ? agentState.draft : agent;
+  const setAgentDraft = (draft: string) => setAgentState({ value: agent, draft });
+  const commitAgent = () => onChange({ agent: agentDraft.trim() });
+  const exact = STATUSES.some((s) => s.value === status) ? status : "all";
+  return (
+    <div id="runs-more-filters" className="flex flex-wrap items-center gap-2">
+      <Select value={project || "all"} onValueChange={(v) => onChange({ project: v === "all" ? "" : v })}>
+        <SelectTrigger size="sm" className="h-8 w-[calc(50%-0.25rem)] shrink-0 sm:w-40" aria-label="Project">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All projects</SelectItem>
+          {(projects?.projects ?? []).map((p) => (
+            <SelectItem key={p.slug} value={p.slug}>
+              {projectLabel(p)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={exact} onValueChange={(v) => onChange({ status: v === "all" ? "" : v })}>
+        <SelectTrigger size="sm" className="h-8 w-[calc(50%-0.25rem)] shrink-0 sm:w-52" aria-label="Exact status">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {STATUSES.map((s) => (
+            <SelectItem key={s.value} value={s.value}>
+              {s.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Input
+        value={agentDraft}
+        onChange={(e) => setAgentDraft(e.target.value)}
+        onBlur={commitAgent}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commitAgent();
+        }}
+        placeholder="Agent"
+        aria-label="Agent"
+        className="h-8 w-[calc(50%-0.25rem)] shrink-0 sm:w-40"
+      />
+      {executors.length > 1 || executor ? (
+        <Select value={executor || "all"} onValueChange={(v) => onExecutorChange(v === "all" ? "" : v)}>
+          <SelectTrigger size="sm" className="h-8 w-[calc(50%-0.25rem)] shrink-0 sm:w-44" aria-label="Machine">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All machines</SelectItem>
+            {executors.map((e) => (
+              <SelectItem key={e} value={e}>
+                {machineWord(e)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : null}
+      {hasFilters ? (
+        <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+          <XIcon /> Clear filters
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+// ----- the list --------------------------------------------------------------
+
+// A run's time so far, ticking once a second; its own component so only
+// the clock re-renders.
+function Elapsed({ startedAt, className }: { startedAt: string; className?: string }) {
+  const now = useNow(1000);
+  return (
+    <span className={cn("tnum whitespace-nowrap", className)} title={startedAt ? "Started " + startedAt.replace("T", " ").replace("Z", " UTC") : undefined}>
+      {elapsedWords(startedAt, now)}
+    </span>
+  );
+}
+
+// The model with its provider's mark: one colour, 16 px, the display name beside it.
+function ModelCell({ session, models, className }: { session: Pick<HarnessSession, "provider" | "model">; models: HarnessModel[]; className?: string }) {
+  const model = modelInfo(session.model, models);
+  const logo = logoFor(session.provider) ?? logoFor(session.model);
+  return (
+    <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)} title={model.tip}>
+      {logo ? <BrandLogo id={logo} size={16} color="mono" className="text-muted-foreground" /> : null}
+      <span className="min-w-0 truncate">{model.name}</span>
+    </span>
+  );
+}
+
+function ProjectCell({ slug, projects, className }: { slug: string; projects: ProjectsPayload | undefined; className?: string }) {
+  if (!slug) return <span className="text-muted-foreground">—</span>;
+  const p = (projects?.projects ?? []).find((x) => x.slug === slug);
+  return (
+    <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)}>
+      <ProjectAvatar slug={slug} name={p?.name} size={20} />
+      <span className="min-w-0 truncate">{p ? projectLabel(p) : slug}</span>
+    </span>
+  );
+}
+
+function AgentCell({ agent, className }: { agent: string; className?: string }) {
+  if (!agent) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)} title={agent}>
+      <Avatar seed={agent} size={20} />
+      <span className="min-w-0 truncate">{agentName(agent)}</span>
+    </span>
+  );
+}
+
+// Runs in flight, above the table: the status, the clock, and a way to stop them.
+function LiveRuns({ rows, models, selected, onOpen, onDone }: { rows: HarnessSession[]; models: HarnessModel[]; selected: string | null; onOpen: (id: string) => void; onDone: () => Promise<void> }) {
+  return (
+    <section aria-labelledby="runs-live" className="mb-5">
+      <SectionHeading id="runs-live" icon={ActivityIcon} count={rows.length}>
+        Running now
+      </SectionHeading>
+      <ListRows ariaLabel="Runs in flight">
+        {rows.map((r) => (
+          <ListRow
+            key={r.id}
+            lead={<ProjectAvatar slug={r.project || "pulse"} size={20} />}
+            title={r.job_title || r.job_id}
+            meta={
+              <>
+                {r.agent ? <span title={r.agent}>{agentName(r.agent)}</span> : null}
+                <ModelCell session={r} models={models} />
+                <span>{plural(r.steps, "step")}</span>
+              </>
+            }
+            status={<StatusBadge status={r.cancel_requested_at ? "cancelling" : "running"} label={r.cancel_requested_at ? "Cancelling" : "Running"} size="sm" />}
+            time={<Elapsed startedAt={r.started_at} />}
+            actions={<CancelRunButton session={r} onDone={onDone} />}
+            actionsVisible
+            selected={selected === r.id}
+            onOpen={() => onOpen(r.id)}
+          />
+        ))}
+      </ListRows>
+    </section>
+  );
+}
+
+function runColumns(projects: ProjectsPayload | undefined, models: HarnessModel[], now: number, showProject: boolean): Column<HarnessSession>[] {
+  const cols: Column<HarnessSession>[] = [
+    {
+      key: "status",
+      label: <span className="sr-only">Status</span>,
+      nowrap: true,
+      className: "w-8 pr-0",
+      sort: (r) => runState(r).word,
+      render: (r) => {
+        const st = runState(r);
+        return <StatusIcon status={badgeStatus(st.raw)} label={st.word} />;
+      },
+    },
+    {
+      key: "title",
+      label: "Run",
+      sort: (r) => (r.job_title || r.job_id).toLowerCase(),
+      render: (r) => (
+        <span className="grid min-w-0 gap-0.5">
+          <span className="min-w-0 truncate font-medium text-foreground" title={r.job_title || r.job_id}>
+            {r.job_title || r.job_id}
+          </span>
+          <span className="flex min-w-0 items-center gap-x-2 truncate text-xs text-muted-foreground md:hidden">
+            {r.project ? <span>{r.project}</span> : null}
+            {r.agent ? <span>{agentName(r.agent)}</span> : null}
+            <span>{runState(r).word}</span>
+          </span>
+        </span>
+      ),
+    },
+  ];
+  if (showProject) cols.push({ key: "project", label: "Project", hide: "md", nowrap: true, sort: (r) => r.project, render: (r) => <ProjectCell slug={r.project} projects={projects} className="max-w-40" /> });
+  cols.push(
+    { key: "agent", label: "Agent", hide: "lg", nowrap: true, sort: (r) => r.agent, render: (r) => <AgentCell agent={r.agent} className="max-w-36" /> },
+    { key: "model", label: "Model", hide: "lg", nowrap: true, sort: (r) => r.model, render: (r) => <ModelCell session={r} models={models} className="max-w-44" /> },
+    { key: "steps", label: "Steps", hide: "xl", align: "right", nowrap: true, sort: (r) => r.steps, render: (r) => <span title={plural(r.steps, "step") + ", " + plural(r.calls, "model call")}>{num(r.steps)}</span> },
+    { key: "duration", label: "Took", hide: "md", align: "right", nowrap: true, sort: (r) => runSeconds(r.started_at, r.ended_at || r.updated_at, now), render: (r) => (r.started_at ? span(runSeconds(r.started_at, r.ended_at || r.updated_at, now)) : "—") },
+    { key: "cost", label: "Credits", hide: "xl", align: "right", nowrap: true, sort: (r) => r.cost, render: (r) => (r.cost ? <span title="What the model provider charged. For GitHub Copilot, premium requests.">{num(r.cost)}</span> : <span className="text-muted-foreground">—</span>) },
+    { key: "when", label: "When", align: "right", nowrap: true, sort: (r) => r.started_at, render: (r) => <When d={r.started_at} className="text-muted-foreground" /> },
+  );
+  return cols;
+}
+
+// ----- the transcript --------------------------------------------------------
+
+const TOOL_ICON: Record<StepTool, typeof InfoIcon> = {
+  shell: TerminalIcon,
+  edit: FilePenIcon,
+  read: FileTextIcon,
+  web: GlobeIcon,
+  search: SearchIcon,
+  model: MessageSquareIcon,
+};
+
+// The icon a step's row carries: the tool family first (a terminal for
+// shell work, a pen for edits...), else the step kind's own icon.
+function ToolIcon({ s, session, className }: { s: HarnessStep; session: HarnessSession; className?: string }) {
+  const tool = stepTool(s.kind);
+  if (!tool || s.kind === "exit") return <StepIcon s={s} session={session} />;
+  const Icon = TOOL_ICON[tool];
+  return <Icon className={cn("size-3.5", className)} />;
+}
+
+// The nearest ancestor that scrolls: the panel's body on desktop, the
+// sheet's on a phone.
+function scrollBoxOf(el: HTMLElement | null): HTMLElement | null {
+  let cur = el?.parentElement ?? null;
+  while (cur) {
+    const o = getComputedStyle(cur).overflowY;
+    if ((o === "auto" || o === "scroll") && cur.scrollHeight > cur.clientHeight) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+// What a step's body shows once unfolded: the model's words as markdown,
+// a command as it was typed, a tool's request in mono, the plan as a
+// checklist, a note or an error as text.
+function StepBody({ s, session }: { s: HarnessStep; session: HarnessSession }) {
+  const depth = Math.min(s.depth ?? 0, 3);
+  if (s.kind === "assistant")
+    return (
+      <div className="min-w-0 text-sm leading-relaxed">
+        <Markdown source={s.content} className="[&_pre]:whitespace-pre-wrap" />
+      </div>
+    );
+  if (s.kind === "command")
+    return (
+      <pre className="min-w-0 rounded-lg bg-zinc-950 px-3 py-2.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap text-zinc-100 anywhere dark:bg-black">
+        <span className="text-emerald-300 select-none">$ </span>
+        {s.command}
+      </pre>
+    );
+  if (TOOL_STEP_KINDS.includes(s.kind)) return <pre className="min-w-0 rounded-lg border bg-muted/30 px-3 py-2.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap text-foreground/90 anywhere">{s.content || s.command}</pre>;
+  if (s.kind === "plan") return <PlanCard s={s} />;
+  if (s.kind === "subagent")
+    return (
+      <div className="grid min-w-0 gap-1 rounded-lg border border-primary/30 bg-primary/[0.05] px-4 py-3">
+        <p className="text-[13px] font-medium text-muted-foreground">{s.command || "subagent"}</p>
+        <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>
+      </div>
+    );
+  if (s.kind === "observation") return <Observation s={s} />;
+  if (s.kind === "note") return <p className="text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground anywhere">{sentence(s.content)}</p>;
+  if (s.kind === "error") return <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground anywhere">{s.content}</p>;
+  if (depth) return <p className="text-sm leading-relaxed text-muted-foreground">{s.content === "submitted" ? "The helper reported back." : "The helper stopped: " + (s.content || "unknown") + "."}</p>;
+  return <EndCard s={s} session={session} />;
+}
+
+// One step as a 32 px folding row: the tool's icon, what it did (the
+// command in mono), how long it took and when; unfolded, the request and
+// the output that came back.
+function StepRow({ entry, session }: { entry: StepEntry; session: HarnessSession }) {
+  const s = entry.step;
+  const depth = Math.min(s.depth ?? 0, 3);
+  const tokens = (s.prompt_tokens || 0) + (s.completion_tokens || 0);
+  const tip = ["Step " + s.n, depth ? "helper, depth " + depth : "", s.model ? "model " + s.model : "", tokens ? compact(tokens) + " tokens" : ""].filter(Boolean).join(", ");
+  const mono = s.kind === "command" || TOOL_STEP_KINDS.includes(s.kind);
+  const label = s.kind === "exit" && depth ? "How the helper ended" : s.kind === "command" && s.title?.trim() ? s.title.trim() : (STEP_LABEL[s.kind] ?? "Step " + s.n);
+  const summary = stepSummary(s);
+  const took = msText(s.duration_ms || entry.output?.duration_ms || 0);
+  const exit = entry.output ? exitWords(entry.output.exit_code) : null;
+  return (
+    <li className="min-w-0" style={depth ? { marginLeft: depth * 20 } : undefined} data-depth={depth || undefined}>
+      <details className="group/step min-w-0" open={openByDefault(s) || undefined}>
+        <summary
+          className="flex h-8 min-w-0 cursor-pointer list-none items-center gap-2 rounded-md px-1.5 text-[13px] select-none hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"
+          title={tip}
+        >
+          <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-md", STEP_DOT[s.kind] ?? STEP_DOT.note)} aria-hidden>
+            <ToolIcon s={s} session={session} />
+          </span>
+          <span className="flex min-w-0 flex-1 items-baseline gap-2">
+            <span className="shrink-0 font-medium text-foreground">{label}</span>
+            {summary && !(s.kind === "command" && !s.title?.trim() && summary === label) ? (
+              <span className={cn("min-w-0 truncate text-muted-foreground", mono && "font-mono text-[13px] text-foreground/80")}>{summary}</span>
+            ) : null}
+          </span>
+          <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground tabular-nums">
+            {exit?.bad ? <span className="text-status-failed">{exit.text}</span> : null}
+            {took ? <span>{took}</span> : null}
+            {s.at ? <StepTime d={s.at} /> : null}
+          </span>
+        </summary>
+        <div className="mt-1 mb-3 ml-7 grid min-w-0 gap-2">
+          <StepBody s={s} session={session} />
+          {entry.output ? <Observation s={entry.output} /> : null}
+        </div>
+      </details>
+    </li>
+  );
+}
+
+function RunPanel({ id, models, projects, onClose }: { id: string | null; models: HarnessModel[]; projects: ProjectsPayload | undefined; onClose: () => void }) {
   const live = useLiveEvents();
   const q = useApi<HarnessSessionResponse>(id ? "harness/sessions/" + enc(id) : null, { refresh: live.state === "polling" ? 5000 : 30000 });
   const [extra, setExtra] = useState<{ id: string; steps: HarnessStep[] }>({ id: "", steps: [] });
   const [followState, setFollowState] = useState({ id, follow: true, atBottom: true });
-  const [scrolledState, setScrolledState] = useState({ id, away: false });
-  const scrolledAway = scrolledState.id === id && scrolledState.away;
   const lastEvent = useRef({ id, eventId: 0 });
-  const scroll = useRef<HTMLDivElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
   const follow = followState.id === id ? followState.follow : true;
   const atBottom = followState.id === id ? followState.atBottom : true;
   const d = useMemo(() => {
-    if (!q.data) return undefined;
+    if (!q.data || !id) return undefined;
     return { ...q.data, steps: mergeSteps(q.data.steps, extra.id === id ? extra.steps : []) };
   }, [extra, id, q.data]);
   const running = d?.session.status === "running";
   const now = useNow();
 
   useEffect(() => {
+    if (!id) return;
     const timer = setTimeout(() => {
       setExtra((cur) => {
         if (cur.id !== id) return { id, steps: [] };
@@ -711,22 +815,23 @@ function Transcript({ id, models, onBack }: { id: string; models: HarnessModel[]
     return () => clearTimeout(timer);
   }, [id, q.data?.steps, q.updatedAt]);
 
+  // Follow new steps while the run is going: the panel's body scrolls to
+  // its end, never the page behind it.
   useEffect(() => {
     if (!(follow && atBottom && running)) return;
-    // On desktop the transcript scrolls inside its own card: follow there and
-    // leave the page where it is. On a phone the page itself is the scroller.
-    const el = scroll.current;
-    if (el && el.scrollHeight > el.clientHeight + 1 && getComputedStyle(el).overflowY !== "visible") el.scrollTop = el.scrollHeight;
-    else bottom.current?.scrollIntoView({ block: "end" });
+    const box = scrollBoxOf(bottom.current);
+    if (box) box.scrollTop = box.scrollHeight;
   }, [d?.steps.length, follow, atBottom, running]);
 
-  const onScroll = () => {
-    const el = scroll.current;
-    if (!el) return;
-    setFollowState((cur) => ({ id, follow: cur.id === id ? cur.follow : true, atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 96 }));
-    const away = el.scrollTop > 24;
-    setScrolledState((cur) => (cur.id === id && cur.away === away ? cur : { id, away }));
-  };
+  // Reading back up pauses following until the owner returns to the end.
+  useEffect(() => {
+    if (!d) return;
+    const box = scrollBoxOf(bottom.current);
+    if (!box) return;
+    const onScroll = () => setFollowState((cur) => ({ id, follow: cur.id === id ? cur.follow : true, atBottom: box.scrollHeight - box.scrollTop - box.clientHeight < 96 }));
+    box.addEventListener("scroll", onScroll, { passive: true });
+    return () => box.removeEventListener("scroll", onScroll);
+  }, [d, id]);
 
   useEffect(() => {
     if (!id || !d) return;
@@ -747,112 +852,80 @@ function Transcript({ id, models, onBack }: { id: string; models: HarnessModel[]
       });
   }, [d, id, live.events, q]);
 
-  const back = (
-    <Button type="button" variant="ghost" size="sm" className="-ml-2 justify-self-start lg:hidden" onClick={onBack}>
-      <ArrowLeftIcon /> All runs
-    </Button>
-  );
-  if (q.error && !d)
-    return (
-      <div>
-        {back}
-        <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
-          {"This run's transcript didn't load (" + q.error + ")."}
-        </ErrorNotice>
-      </div>
+  const s = d?.session;
+  const st = s ? runState(s) : null;
+  const trajectoryHref = s?.trajectory ? apiHref("harness/sessions/" + enc(s.id) + "/trajectory") : "";
+  const entries = useMemo(() => (d ? pairSteps(d.steps) : []), [d]);
+  // The run's own ending reads as the final result under the steps.
+  const endIndex = entries.findIndex((e) => e.step.kind === "exit" && !(e.step.depth ?? 0));
+  const timeline = endIndex >= 0 ? entries.filter((_, i) => i !== endIndex) : entries;
+  const ending = endIndex >= 0 ? entries[endIndex].step : null;
+  const project = s?.project ? (projects?.projects ?? []).find((p) => p.slug === s.project) : undefined;
+
+  let body: React.ReactNode;
+  if (!id) body = null;
+  else if (q.error && !d)
+    body = (
+      <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
+        {"This run's transcript didn't load (" + q.error + ")."}
+      </ErrorNotice>
     );
-  if (!d)
-    return (
-      <div className="rounded-2xl border bg-card p-5" aria-busy="true">
-        {back}
+  else if (!d || !s || !st)
+    body = (
+      <div aria-busy="true">
         <SkeletonRows n={5} />
       </div>
     );
-  const s = d.session;
-  const totalTokens = s.prompt_tokens + s.completion_tokens;
-  const trajectoryHref = s.trajectory ? apiHref("harness/sessions/" + enc(s.id) + "/trajectory") : "";
-  const model = modelInfo(s.model, models);
-  const remote = remoteExecutor(s.executor);
-  const errorTone = runState(s).tone === "bad" ? "bad" : "warn";
-  return (
-    <section aria-label={"Transcript: " + (s.job_title || s.job_id)} className="flex min-w-0 flex-col rounded-2xl border bg-card lg:max-h-[calc(100dvh-3rem)]">
-      <header className="grid min-w-0 gap-3 border-b border-border/70 px-4 pt-4 pb-4 sm:px-5" aria-live={running ? "polite" : undefined}>
-        {back}
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[13px]">
-          <RunStatus session={s} />
-          {running ? <LiveState state={live.state} /> : <When d={s.started_at} className="text-muted-foreground" />}
-        </div>
-        <h2 className="min-w-0 text-lg font-semibold leading-snug tracking-tight anywhere">
-          <Link href={jobHref(s)} className="underline-offset-2 hover:underline" title={"Open the job " + s.job_id}>
-            {s.job_title || s.job_id}
-          </Link>
-        </h2>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-[13px] leading-relaxed text-muted-foreground">
-          {s.project ? <ProjectLink slug={s.project} className="font-normal text-muted-foreground" /> : null}
-          {s.agent ? <span>{s.agent}</span> : null}
-          <span title={model.tip}>{model.name}</span>
-          {remote ? <span title="The machine (executor) the run happened on">{"On " + remote}</span> : null}
+  else {
+    const errorTone = st.tone === "bad" ? "bad" : "warn";
+    const totalTokens = s.prompt_tokens + s.completion_tokens;
+    body = (
+      <div className="grid min-w-0 gap-4" aria-live={running ? "polite" : undefined}>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-muted-foreground">
+          <StatusBadge status={badgeStatus(st.raw)} label={st.word} />
+          {running ? <Elapsed startedAt={s.started_at} className="text-foreground" /> : s.started_at ? <span title={"Started " + s.started_at.replace("T", " ").replace("Z", " UTC")}>{"Took " + span(runSeconds(s.started_at, s.ended_at || s.updated_at, now))}</span> : null}
           <span title={plural(s.steps, "step") + ", " + plural(s.calls, "model call")}>{plural(s.steps, "step")}</span>
-          {s.started_at ? <span title={s.started_at ? "Started " + s.started_at.replace("T", " ").replace("Z", " UTC") : undefined}>{runTime(s, now)}</span> : null}
-          {totalTokens ? <span title={compact(s.prompt_tokens) + " read, " + compact(s.completion_tokens) + " written"}>{compact(totalTokens) + " tokens"}</span> : null}
-          {s.cost ? <span title="What the model provider charged. For GitHub Copilot, premium requests.">{plural(s.cost, "model credit")}</span> : null}
+          {s.cost ? <span title="What the model provider charged. For GitHub Copilot, premium requests.">{plural(s.cost, "credit")}</span> : null}
+          {totalTokens ? <span title={compact(s.prompt_tokens) + " prompt, " + compact(s.completion_tokens) + " completion"}>{compact(totalTokens) + " tokens"}</span> : null}
+          {remoteExecutor(s.executor) ? <span title="The machine (executor) the run happened on">{"On " + remoteExecutor(s.executor)}</span> : null}
+          {running ? <LiveState state={live.state} /> : null}
         </div>
         {s.cancel_requested_at && s.status === "running" ? <Notice tone="warn">You asked to cancel this run. The agent stops after the step it is on.</Notice> : null}
         {s.error ? <Notice tone={errorTone}>{s.error}</Notice> : null}
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {running ? (
-            <Button size="sm" variant={follow ? "secondary" : "outline"} aria-pressed={follow} onClick={() => setFollowState((cur) => ({ id, follow: cur.id === id ? !cur.follow : false, atBottom: cur.id === id ? cur.atBottom : true }))} title="Keep the newest step in view">
+        {running ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Button size="sm" variant={follow ? "secondary" : "outline"} aria-pressed={follow} onClick={() => setFollowState((cur) => ({ id, follow: cur.id === id ? !cur.follow : false, atBottom: cur.id === id ? cur.atBottom : true }))} title="Keep the newest step in view as it arrives">
               <PlayIcon /> {follow ? "Following new steps" : "Follow new steps"}
             </Button>
-          ) : null}
-          <CancelRunButton session={s} onDone={q.reload} />
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() =>
-              navigator.clipboard
-                .writeText(transcriptText(d))
-                .then(() => toast.success("Transcript copied."))
-                .catch(() => toast.error("Could not copy the transcript."))
-            }
-          >
-            <CopyIcon /> Copy as text
-          </Button>
-          {trajectoryHref ? (
-            <Button size="sm" variant="ghost" asChild>
-              <a href={trajectoryHref} download title="Download the full record of the run (trajectory) as a file">
-                <DownloadIcon /> Download
-              </a>
-            </Button>
-          ) : null}
-        </div>
-      </header>
-      <div ref={scroll} onScroll={onScroll} className="min-h-0 min-w-0 flex-1 px-4 py-5 sm:px-5 lg:overflow-y-auto">
-        {scrolledAway ? (
-          // Only on desktop, where the transcript scrolls inside its card: a
-          // hairline edge says the steps go on above, with a way back up.
-          <div className="sticky -top-5 z-10 -mx-4 h-0 sm:-mx-5">
-            <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/70 bg-card px-4 py-2 text-[13px] text-muted-foreground sm:px-5">
-              <span>Earlier steps are above.</span>
-              <button type="button" className="rounded-md font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => scroll.current?.scrollTo({ top: 0 })}>
-                Go to the first step
-              </button>
-            </div>
+            <CancelRunButton session={s} onDone={q.reload} />
           </div>
         ) : null}
-        {d.steps.length ? (
-          <ol aria-label="Steps" className="min-w-0">
-            {d.steps.map((step, i) => (
-              <StepItem key={step.n} s={step} session={s} last={i === d.steps.length - 1} />
-            ))}
-          </ol>
-        ) : (
-          <p className="text-sm text-muted-foreground">{running ? "The agent is getting started. Its first step shows up here." : "This run has no recorded steps."}</p>
-        )}
-        <Disclosure summary="Technical details" className="mt-6">
-          <div className="rounded-xl border bg-muted/30 px-3 py-3">
+        <section aria-labelledby="run-steps" className="min-w-0">
+          <SectionHeading id="run-steps" as="h3" count={timeline.length} className="mb-1">
+            Steps
+          </SectionHeading>
+          {timeline.length ? (
+            <ol aria-label="Steps" className="min-w-0 -mx-1.5">
+              {timeline.map((e) => (
+                <StepRow key={e.step.n} entry={e} session={s} />
+              ))}
+            </ol>
+          ) : (
+            <p className="text-sm text-muted-foreground">{running ? "The agent is getting started. Its first step shows up here." : "This run has no recorded steps."}</p>
+          )}
+        </section>
+        {ending ? (
+          <section aria-labelledby="run-result" className="min-w-0">
+            <SectionHeading id="run-result" as="h3" className="mb-1">
+              Result
+            </SectionHeading>
+            <EndCard s={ending} session={s} />
+          </section>
+        ) : null}
+        <Disclosure summary="Technical details">
+          <div className="rounded-lg border bg-muted/30 px-3 py-3">
             <Kv
-              className="text-[13px] [&_dd]:font-mono [&_dd]:text-[12.5px]"
+              className="text-[13px] [&_dd]:font-mono [&_dd]:text-xs"
               rows={[
                 ["Run", s.id],
                 ["Job", s.job_id],
@@ -864,9 +937,14 @@ function Transcript({ id, models, onBack }: { id: string; models: HarnessModel[]
                   <span key="t" className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
                     <span className="anywhere">{s.trajectory || "not recorded"}</span>
                     {s.trajectory ? (
-                      <Button size="icon-xs" variant="ghost" aria-label="Copy trajectory path" onClick={() => navigator.clipboard.writeText(s.trajectory).then(() => toast.success("Path copied."))}>
-                        <ClipboardIcon />
-                      </Button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button size="icon-xs" variant="ghost" aria-label="Copy the record file path" onClick={() => navigator.clipboard.writeText(s.trajectory).then(() => toast.success("Path copied."))}>
+                            <ClipboardIcon />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Copy the path</TooltipContent>
+                      </Tooltip>
                     ) : null}
                   </span>,
                 ],
@@ -877,19 +955,82 @@ function Transcript({ id, models, onBack }: { id: string; models: HarnessModel[]
         </Disclosure>
         <div ref={bottom} />
       </div>
-    </section>
+    );
+  }
+
+  return (
+    <SidePanel
+      open={!!id}
+      onClose={onClose}
+      width="run"
+      title={
+        s ? (
+          <Link href={jobHref(s)} className="underline-offset-2 hover:underline" title={"Open the job " + s.job_id}>
+            {s.job_title || s.job_id}
+          </Link>
+        ) : (
+          "Run"
+        )
+      }
+      subtitle={
+        s
+          ? [project ? projectLabel(project) : s.project, s.agent ? agentName(s.agent) : "", modelInfo(s.model, models).name, s.started_at ? "started " + (parseDate(s.started_at)?.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) ?? s.started_at) : ""].filter(Boolean).join(" · ")
+          : id
+            ? "Run " + id
+            : undefined
+      }
+      lead={s ? <ProjectAvatar slug={s.project || "pulse"} name={project?.name} size={20} /> : undefined}
+      actions={
+        d ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label="Copy the transcript as text"
+                  onClick={() =>
+                    navigator.clipboard
+                      .writeText(transcriptText(d))
+                      .then(() => toast.success("Transcript copied."))
+                      .catch(() => toast.error("Could not copy the transcript."))
+                  }
+                >
+                  <CopyIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Copy as text</TooltipContent>
+            </Tooltip>
+            {trajectoryHref ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button size="icon-sm" variant="ghost" asChild>
+                    <a href={trajectoryHref} download aria-label="Download the full record of the run">
+                      <DownloadIcon />
+                    </a>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Download the record (trajectory)</TooltipContent>
+              </Tooltip>
+            ) : null}
+          </>
+        ) : null
+      }
+    >
+      {body}
+    </SidePanel>
   );
 }
 
 // ----- the page --------------------------------------------------------------
 
+// Today in one line under the chips: what ran, what finished, what it cost.
 function Summary({ counts }: { counts: HarnessSessionsResponse["counts"] | undefined }) {
   if (!counts) return null;
-  const running = counts.running ? num(counts.running) + " running." : "Nothing running right now.";
   const today = counts.today ? plural(counts.today, "run") + " today: " + num(counts.submitted_today) + " finished, " + num(counts.failed_today) + " stopped early." : "No runs today yet.";
   return (
-    <p className="mb-5 max-w-3xl text-[15px] leading-relaxed text-foreground">
-      {running} {today}{" "}
+    <p className="text-[13px] text-muted-foreground">
+      {today}{" "}
       {counts.cost_today ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -911,15 +1052,19 @@ export function HarnessPageClient() {
   const project = sp.get("project") || "";
   const status = sp.get("status") || "";
   const agent = sp.get("agent") || "";
-  const selected = sp.get("id") || "";
+  const [selected, setSelected] = useOpenItem("id");
   const limit = 50;
   const [executor, setExecutor] = useState("");
+  const [moreOpen, setMoreOpen] = useState(false);
   const [olderState, setOlderState] = useState<{ key: string; pages: HarnessSessionsResponse[]; loading: boolean; error: string }>({ key: "", pages: [], loading: false, error: "" });
-  const filterKey = [project, status, agent].join("\n");
+  // The chips fold several statuses into one; the API filters on one exact
+  // status, so a many-status chip asks for everything and the page sifts.
+  const wanted = apiStatus(status);
+  const filterKey = [project, wanted, agent].join("\n");
   const older = useMemo(() => (olderState.key === filterKey ? olderState.pages : []), [filterKey, olderState.key, olderState.pages]);
   const olderLoading = olderState.key === filterKey && olderState.loading;
   const olderError = olderState.key === filterKey ? olderState.error : "";
-  const path = "harness/sessions" + query({ project, status, agent, limit });
+  const path = "harness/sessions" + query({ project, status: wanted, agent, limit });
   const sessions = useApi<HarnessSessionsResponse>(path, { refresh: 5000 });
   const models = useApi<HarnessModelsResponse>("harness/models", { refresh: 60000 });
   const projects = useApi<ProjectsPayload>("projects", { refresh: 60000 });
@@ -932,52 +1077,70 @@ export function HarnessPageClient() {
   const lastRunEventAt = parseDate(lastRunEvent)?.getTime() ?? 0;
   const liveNow = live.state === "live" && lastRunEventAt > 0 && now - lastRunEventAt < 2 * 60_000;
   const executors = useMemo(() => Array.from(new Set(loadedRows.map((r) => executorName(r.executor)).filter(Boolean))).sort(), [loadedRows]);
-  const rows = useMemo(() => (executor ? loadedRows.filter((r) => executorName(r.executor) === executor) : loadedRows), [executor, loadedRows]);
-  const choose = useCallback(
-    (id: string) => {
-      updateSearch(pathname, router, { project, status, agent, id });
-      // On a phone the transcript takes the list's place: start reading it from its top.
-      if (id && typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) window.scrollTo({ top: 0 });
-    },
-    [pathname, router, project, status, agent],
-  );
-  const selectedKnown = selected && rows.some((r) => r.id === selected);
-  const showTranscript = !!selected && (selectedKnown || !rows.length);
+  const machineRows = useMemo(() => (executor ? loadedRows.filter((r) => executorName(r.executor) === executor) : loadedRows), [executor, loadedRows]);
+  const chips = useMemo(() => statusChips(machineRows), [machineRows]);
+  const rows = useMemo(() => machineRows.filter((r) => matchesStatus(r.status, status)), [machineRows, status]);
+  const liveRows = useMemo(() => (status && !matchesStatus("running", status) ? [] : rows.filter((r) => r.status === "running")), [rows, status]);
+  const tableRows = useMemo(() => rows.filter((r) => r.status !== "running"), [rows]);
+  const change = useCallback((next: { project?: string; status?: string; agent?: string }) => updateSearch(pathname, router, { project, status, agent, id: selected || "", ...next }), [agent, pathname, project, router, selected, status]);
   const lastPage = loadedPages[loadedPages.length - 1];
   const canLoadMore = !!lastPage?.next_before;
-  const modelRows = models.data?.models ?? [];
+  const modelRows = useMemo(() => models.data?.models ?? [], [models.data]);
   const hasFilters = !!(project || status || agent || executor);
+  const showProject = !project;
   const clear = () => {
     setExecutor("");
-    updateSearch(pathname, router, { id: selected });
+    updateSearch(pathname, router, { id: selected || "" });
   };
   const loadOlder = () => {
     const before = lastPage?.next_before;
     if (!before || olderLoading) return;
     setOlderState((cur) => ({ key: filterKey, pages: cur.key === filterKey ? cur.pages : [], loading: true, error: "" }));
-    api<HarnessSessionsResponse>("harness/sessions" + query({ project, status, agent, limit, before }))
+    api<HarnessSessionsResponse>("harness/sessions" + query({ project, status: wanted, agent, limit, before }))
       .then((page) => setOlderState((cur) => ({ key: filterKey, pages: [...(cur.key === filterKey ? cur.pages : []), page], loading: false, error: "" })))
       .catch((e: unknown) => {
         const t = errorText(e);
         setOlderState((cur) => ({ key: filterKey, pages: cur.key === filterKey ? cur.pages : [], loading: false, error: [t.error, t.why, t.fix].filter(Boolean).join(" ") }));
       });
   };
+  const columns = useMemo(() => runColumns(projects.data, modelRows, now, showProject), [modelRows, now, projects.data, showProject]);
+  const exactStatus = status && !RUN_GROUPS.some((g) => g.key === status) ? runWord(status) : "";
   return (
     <>
-      <PageTitle
-        icon={ScrollTextIcon}
-        sub="Every agent run, step by step: what it was asked, what it did and how it ended."
-        actions={
-          <Button asChild variant="outline">
+      <PageHeader
+        title="Runs"
+        subtitle="Every agent run, step by step"
+        action={
+          <Button asChild variant="outline" size="sm">
             <Link href={hrefs.settings("harness")} title="Settings, Harness: sign in to the model provider and pick models">
-              Sign-in &amp; models
+              <SlidersHorizontalIcon /> Sign-in &amp; models
             </Link>
           </Button>
         }
-        bar={<Filters project={project} status={status} agent={agent} executor={executor} executors={executors} projects={projects.data} onChange={(next) => updateSearch(pathname, router, { ...next, id: selected })} onExecutorChange={setExecutor} onClear={clear} />}
-      >
-        Runs
-      </PageTitle>
+      />
+      <div className="mb-5 grid min-w-0 gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2" role="group" aria-label="Filter runs by how they went">
+          <FilterChip active={!status} count={machineRows.length} onClick={() => change({ status: "" })}>
+            All
+          </FilterChip>
+          {chips.map((c) => (
+            <FilterChip key={c.key} active={chipActive(status, c.key)} count={c.count} onClick={() => change({ status: chipActive(status, c.key) ? "" : c.key })}>
+              {c.label}
+            </FilterChip>
+          ))}
+          {exactStatus ? (
+            <FilterChip active count={rows.length} onClick={() => change({ status: "" })} className="max-w-full">
+              {exactStatus}
+            </FilterChip>
+          ) : null}
+          <Button type="button" variant="ghost" size="sm" className="ml-auto" aria-expanded={moreOpen} aria-controls="runs-more-filters" onClick={() => setMoreOpen((v) => !v)}>
+            <SlidersHorizontalIcon /> {moreOpen ? "Fewer filters" : "More filters"}
+            {!moreOpen && (project || agent || executor) ? <span className="ml-1 size-1.5 rounded-full bg-primary" aria-label="Filters set" /> : null}
+          </Button>
+        </div>
+        {moreOpen || project || agent || executor ? <MoreFilters project={project} status={status} agent={agent} executor={executor} executors={executors} projects={projects.data} onChange={change} onExecutorChange={setExecutor} onClear={clear} hasFilters={hasFilters} /> : null}
+        <Summary counts={counts} />
+      </div>
       {sessions.error && !sessions.data ? (
         <ErrorNotice error={sessions.error} onRetry={() => void sessions.reload()}>
           {"The list of runs didn't load (" + sessions.error + "). Check that PULSE is running, then try again."}
@@ -985,7 +1148,7 @@ export function HarnessPageClient() {
       ) : null}
       {!sessions.data ? (
         sessions.error ? null : (
-          <SkeletonRows n={5} className="[&>*]:h-16 [&>*]:rounded-xl" />
+          <SkeletonRows n={6} className="[&>*]:h-11 [&>*]:rounded-md" />
         )
       ) : rows.length === 0 ? (
         hasFilters ? (
@@ -1015,41 +1178,44 @@ export function HarnessPageClient() {
         )
       ) : (
         <>
-          <Summary counts={counts} />
-          <div className="grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,45fr)_minmax(0,55fr)]">
-            <div className={cn("min-w-0", showTranscript && "hidden lg:block")}>
-              <div className="overflow-hidden rounded-2xl border bg-card">
-                <RunList rows={rows} selected={selected} onSelect={choose} models={modelRows} />
-              </div>
-              <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-2 px-1 text-[13px] text-muted-foreground">
-                <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span>{rows.length === loadedRows.length ? "Showing " + plural(rows.length, "run") : "Showing " + num(rows.length) + " of " + plural(loadedRows.length, "loaded run")}</span>
-                  {liveNow ? (
-                    <span className="inline-flex items-center gap-1.5" title="A run changed in the last two minutes. The list keeps itself up to date.">
-                      <span className="size-2 rounded-full bg-ok" aria-hidden /> Live
-                    </span>
-                  ) : null}
+          {liveRows.length ? <LiveRuns rows={liveRows} models={modelRows} selected={selected} onOpen={setSelected} onDone={sessions.reload} /> : null}
+          {tableRows.length ? (
+            <DataTable
+              columns={columns}
+              rows={tableRows}
+              rowKey={(r) => r.id}
+              onRow={(r) => setSelected(r.id)}
+              rowAriaSelected={(r) => r.id === selected}
+              rowClassName={(r) => (r.id === selected ? "bg-accent/60" : undefined)}
+              initialSort="when"
+              initialDir="desc"
+              caption="Runs"
+              className="min-w-0"
+            />
+          ) : liveRows.length ? null : (
+            <EmptyState title="No finished runs here" icon={<ScrollTextIcon className="size-[18px]" />}>
+              The runs in flight sit above; finished ones land here.
+            </EmptyState>
+          )}
+          <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-2 px-1 text-[13px] text-muted-foreground">
+            <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span>{rows.length === loadedRows.length ? "Showing " + plural(rows.length, "run") : "Showing " + num(rows.length) + " of " + plural(loadedRows.length, "loaded run")}</span>
+              {liveNow ? (
+                <span className="inline-flex items-center gap-1.5" title="A run changed in the last two minutes. The list keeps itself up to date.">
+                  <span className="size-2 rounded-full bg-status-done" aria-hidden /> Live
                 </span>
-                {olderError ? <span className="text-bad">{olderError}</span> : null}
-                {canLoadMore ? (
-                  <Button type="button" size="sm" variant="outline" onClick={loadOlder} disabled={olderLoading}>
-                    {olderLoading ? "Loading…" : "Load older runs"}
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-            <div className={cn("min-w-0 lg:sticky lg:top-6", !showTranscript && "hidden lg:block")}>
-              {showTranscript ? (
-                <Transcript id={selected} models={modelRows} onBack={() => choose("")} />
-              ) : (
-                <EmptyState icon={<ScrollTextIcon className="size-[18px]" />} className="py-14">
-                  Pick a run to read what the agent did, step by step.
-                </EmptyState>
-              )}
-            </div>
+              ) : null}
+            </span>
+            {olderError ? <span className="text-status-failed">{olderError}</span> : null}
+            {canLoadMore ? (
+              <Button type="button" size="sm" variant="outline" onClick={loadOlder} disabled={olderLoading}>
+                {olderLoading ? "Loading…" : "Load older runs"}
+              </Button>
+            ) : null}
           </div>
         </>
       )}
+      <RunPanel id={selected} models={modelRows} projects={projects.data} onClose={() => setSelected(null)} />
     </>
   );
 }

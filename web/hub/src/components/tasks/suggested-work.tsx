@@ -10,8 +10,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading, excerpt } from "@/components/pulse/item-card";
+import { KindTile } from "@/components/pulse/kind-tile";
+import { ListRow, ListRows } from "@/components/pulse/list-row";
 import { Disclosure } from "@/components/pulse/panel";
 import { Markdown } from "@/components/pulse/markdown";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProjectLink, StatusBadge, When } from "@/components/pulse/who";
 import { agentName, priorityWord, statusWord } from "@/lib/words";
 import { plural } from "@/lib/format";
@@ -57,63 +60,73 @@ export function SuggestedWorkPanel({ slug, onOpenTask, className }: { slug: stri
         Suggested next
       </SectionHeading>
       {open.length ? (
-        <ul className="divide-y divide-border/70 rounded-2xl border bg-card px-4 sm:px-5">
+        <ListRows ariaLabel="Suggested work">
           {open.map((s) => (
             <SuggestionRow key={s.id} s={s} onOpenTask={onOpenTask} />
           ))}
-        </ul>
+        </ListRows>
       ) : (
-        <p className="rounded-2xl border border-dashed px-4 py-3 text-sm leading-relaxed text-muted-foreground">
+        <p className="rounded-lg border border-dashed px-4 py-3 text-sm leading-relaxed text-muted-foreground">
           Nothing is waiting. Agents add suggestions as they work; press <b>Suggest work</b> to add one of your own, and another agent weighs it.
         </p>
       )}
       {closed.length ? (
         <Disclosure summary={decided ? "Hide the decided ones" : "Show " + plural(closed.length, "decided suggestion")} open={decided} onToggle={setDecided} className="mt-2">
-          <ul className="divide-y divide-border/70 rounded-2xl border bg-card px-4 sm:px-5">
+          <ListRows ariaLabel="Decided suggestions">
             {closed
               .slice()
               .sort(byUrgency)
               .map((s) => (
                 <SuggestionRow key={s.id} s={s} onOpenTask={onOpenTask} />
               ))}
-          </ul>
+          </ListRows>
         </Disclosure>
       ) : null}
     </section>
   );
 }
 
-// One suggestion as a row: state, title, who and when, the why a click away,
-// the verdict once there is one, and the owner's moves.
+// One suggestion as a row (spec "Components" - List row): the work tile
+// (marigold when it waits for you), the title, who suggested it and when,
+// its state and the owner's moves. The row opens to show the why and the
+// verdict underneath.
 function SuggestionRow({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: string) => void }) {
   const open = isOpenWorkSuggestion(s);
   const yours = s.status === "owner";
+  const [more, setMore] = useState(false);
+  const hasMore = Boolean(s.brief.trim()) || s.status !== "suggested";
+  const meta = [
+    s.priority >= 30 ? priorityWord(s.priority) : "",
+    s.status === "reviewing" && s.job_agent ? "reviewed by " + agentName(s.job_agent) : "",
+    s.status === "suggested" && s.reviews > 0 ? plural(s.reviews, "review") + " without a verdict" : "",
+  ].filter(Boolean);
   return (
-    <li className={cn("grid gap-1.5 py-3", yours && "-mx-4 px-4 sm:-mx-5 sm:px-5 bg-you-soft/40")}>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-        <StatusBadge status={s.status} />
-        {/* On a phone the title takes the whole line and the buttons wrap under it, so it never breaks a word per line. */}
-        <h4 className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground anywhere max-sm:basis-full" title={s.id}>
-          {s.title}
-        </h4>
-        {open ? <RowActions s={s} onOpenTask={onOpenTask} /> : null}
-      </div>
-      <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">
-        {"Suggested by " + who(s.suggested_by) + " "}
-        <When d={s.created_at} />
-        {s.priority >= 30 ? " · " + priorityWord(s.priority).toLowerCase() : ""}
-        {s.status === "reviewing" ? <> · being reviewed{s.job_agent ? " by " + agentName(s.job_agent) : ""}</> : null}
-        {s.status === "suggested" && s.reviews > 0 ? " · " + plural(s.reviews, "review") + " ended without a verdict" : ""}
-      </p>
-      {s.brief.trim() ? (
-        <Disclosure summary="Why">
-          <div className="rounded-lg border bg-background/60 px-3 py-2 text-sm">
-            <Markdown source={s.brief} />
-          </div>
-        </Disclosure>
+    <>
+      <ListRow
+        lead={<KindTile kind="work" waiting={yours} title={yours ? "Suggested work, waiting for you" : "Suggested work"} />}
+        title={s.title}
+        meta={meta.length ? meta.map((m, i) => <span key={i}>{m}</span>) : undefined}
+        status={<StatusBadge status={s.status} size="sm" />}
+        time={<When d={s.created_at} />}
+        actions={open ? <RowActions s={s} onOpenTask={onOpenTask} /> : undefined}
+        onOpen={hasMore ? () => setMore((m) => !m) : undefined}
+        ariaLabel={"Suggested work: " + s.title + (hasMore ? (more ? ". Hide the details" : ". Show the details") : "")}
+        className={cn(yours && "bg-you-soft/40", more && "bg-muted/40")}
+      >
+        {"Suggested by " + who(s.suggested_by)}
+        {s.status === "owner" ? <span className="text-foreground">{" \u00b7 " + (s.reviewer ? Who(s.reviewer) + " handed it to you" : "your call")}</span> : null}
+      </ListRow>
+      {more ? (
+        <div className="grid gap-2 bg-muted/20 px-3 py-3 pl-13 text-sm" data-row-details>
+          {s.brief.trim() ? (
+            <div className="rounded-lg border bg-card px-3 py-2 text-sm">
+              <Markdown source={s.brief} />
+            </div>
+          ) : null}
+          <VerdictLine s={s} onOpenTask={onOpenTask} />
+        </div>
       ) : null}
-      <VerdictLine s={s} onOpenTask={onOpenTask} />
-    </li>
+    </>
   );
 }
 
@@ -145,8 +158,9 @@ function VerdictLine({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: s
   return null;
 }
 
-// Accept and Decline on the row for the ones that wait for you; for the
-// rest they sit behind the menu, with Withdraw on your own suggestions.
+// Accept and Decline on the row for the ones that wait for you (two
+// visible buttons at most); for the rest they sit behind the menu, with
+// Withdraw on your own suggestions.
 function RowActions({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: string) => void }) {
   const [accept, setAccept] = useState(false);
   const [decline, setDecline] = useState(false);
@@ -165,11 +179,16 @@ function RowActions({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: st
         </>
       ) : null}
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="icon-xs" variant="ghost" aria-label={"More actions for " + s.title}>
-            <MoreHorizontalIcon />
-          </Button>
-        </DropdownMenuTrigger>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon-xs" variant="ghost" aria-label={"More actions for " + s.title}>
+                <MoreHorizontalIcon />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>More actions</TooltipContent>
+        </Tooltip>
         <DropdownMenuContent align="end" className="w-56">
           {!yours ? (
             <>
@@ -200,20 +219,19 @@ function RowActions({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: st
 }
 
 // The For-you card: a suggestion the agents could not settle. Accept makes
-// it a task; Decline closes it with your reason.
+// it a task; Decline closes it with your reason. Two buttons, nothing more.
 export function WorkSuggestionCard({ s, slug, onOpenTask }: { s: WorkSuggestion; slug?: string; onOpenTask?: (id: string) => void }) {
   const [accept, setAccept] = useState(false);
   const [decline, setDecline] = useState(false);
   const why = excerpt(s.brief, 260);
   return (
-    <ItemCard highlight ariaLabel={"Suggested work for you: " + s.title}>
+    <ItemCard highlight ariaLabel={"Suggested work for you: " + s.title} className="gap-2.5 rounded-lg p-4 sm:p-4">
       <ItemCardHeader right={<When d={s.reviewed_at || s.updated_at} />}>
-        <ItemCardKind icon={LightbulbIcon} tone="you">
-          Suggested work
-        </ItemCardKind>
+        <KindTile kind="work" size={20} waiting title="Suggested work, waiting for you" />
+        <ItemCardKind tone="you">Suggested work</ItemCardKind>
         {!slug || s.project !== slug ? <ProjectLink slug={s.project} className="font-normal text-muted-foreground" /> : null}
       </ItemCardHeader>
-      <ItemCardTitle>{s.title}</ItemCardTitle>
+      <ItemCardTitle className="text-sm font-medium leading-5">{s.title}</ItemCardTitle>
       <ItemCardBody clamp={0}>
         {why ? <p className="line-clamp-3">{why}</p> : null}
         <p className={cn("text-foreground", why && "mt-1.5")}>

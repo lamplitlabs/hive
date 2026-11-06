@@ -15,12 +15,10 @@ export type By = "total" | "kind" | "project";
 // Series colours in a fixed order (globals.css, validated for colour-blind
 // separation); an entity keeps its slot, nothing past eight is generated.
 const COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)", "var(--series-5)", "var(--series-6)", "var(--series-7)", "var(--series-8)"];
-const segmented = "h-8! p-0.5";
-const segment = "h-7 px-2.5 text-xs";
 const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.5rem 0.75rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
 const BY_LABEL: Record<By, string> = { total: "Total", kind: "By type", project: "By project" };
 const RANGE_LABEL: Record<Range, string> = { "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
-const axisTick = { fill: "var(--muted-foreground)", fontSize: 11 };
+const axisTick = { fill: "var(--muted-foreground)", fontSize: 12 };
 
 const KIND_WORD: Record<string, string> = Object.fromEntries(KINDS.map((k) => [k, postKindWord(k)]));
 
@@ -77,9 +75,9 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
           <span className="mr-1 text-[13px]">{num(total) + (total === 1 ? " post" : " posts") + " in " + RANGE_LABEL[range]}</span>
           {bys.length > 1 ? (
             <Tabs value={by} onValueChange={(v) => setBy(v as By)}>
-              <TabsList className={segmented} aria-label="Group activity by">
+              <TabsList variant="segmented" className="h-8!" aria-label="Group activity by">
                 {bys.map((b) => (
-                  <TabsTrigger key={b} value={b} className={segment}>
+                  <TabsTrigger key={b} value={b} className="h-7 px-2.5 text-xs">
                     {BY_LABEL[b]}
                   </TabsTrigger>
                 ))}
@@ -87,9 +85,9 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
             </Tabs>
           ) : null}
           <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
-            <TabsList className={segmented} aria-label="Activity time range">
+            <TabsList variant="segmented" className="h-8!" aria-label="Activity time range">
               {(["24h", "7d", "30d"] as Range[]).map((r) => (
-                <TabsTrigger key={r} value={r} className={segment} aria-label={"Last " + RANGE_LABEL[r]}>
+                <TabsTrigger key={r} value={r} className="h-7 px-2.5 text-xs" aria-label={"Last " + RANGE_LABEL[r]}>
                   {r === "24h" ? "Day" : r === "7d" ? "Week" : "Month"}
                 </TabsTrigger>
               ))}
@@ -165,7 +163,7 @@ export function StackedBar({ parts }: { parts: { label: string; n: number; color
           <div key={p.label} style={{ width: (100 * p.n) / total + "%", background: p.color }} title={p.label + " " + num(p.n)} />
         ))}
       </div>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[12px]">
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
         {parts.map((p) => (
           <span key={p.label} className="inline-flex items-center gap-1.5">
             <span className="size-2 rounded-full" style={{ background: p.color }} />

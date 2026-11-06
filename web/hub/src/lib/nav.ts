@@ -3,7 +3,13 @@
 // index.html per route.
 
 export type ProjectCanonicalTab =
-  "overview" | "for-you" | "work" | "board" | "evolution" | "history";
+  | "overview"
+  | "for-you"
+  | "work"
+  | "board"
+  | "evolution"
+  | "team"
+  | "history";
 export type ProjectLegacyTab =
   | "tasks"
   | "chat"
@@ -23,6 +29,7 @@ export const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: "work", label: "Work" },
   { id: "board", label: "Board" },
   { id: "evolution", label: "Self-improvement" },
+  { id: "team", label: "Team & tools" },
   { id: "history", label: "History" },
 ];
 
@@ -47,12 +54,14 @@ export function resolveProjectTab(raw: string | null): ProjectTabResolution {
       return { tab: "for-you" };
     case "timeline":
       return { tab: "history", sub: "timeline" };
+    // The build-and-run notes and records sit with the leads and the toolkit now.
     case "env":
-      return { tab: "history", sub: "env" };
+      return { tab: "team", sub: "env" };
     case "for-you":
     case "work":
     case "board":
     case "evolution":
+    case "team":
     case "history":
     case "overview":
       return { tab: raw };
@@ -73,6 +82,11 @@ function qs(
 
 export const hrefs = {
   home: () => "/",
+  // Everything that waits on the owner, across projects; `project` narrows to one.
+  forYou: (f: { project?: string } = {}) => "/for-you/" + qs({ project: f.project }),
+  // The over-time metrics that used to sit at the foot of Home.
+  insights: (f: { project?: string; range?: string } = {}) =>
+    "/insights/" + qs({ project: f.project, range: f.range }),
   project: (
     slug: string,
     tab?: ProjectTab | string,

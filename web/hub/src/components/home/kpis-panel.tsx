@@ -15,10 +15,8 @@ import { useApi } from "@/lib/use-api";
 
 type Lens = "work" | "spend" | "autonomy";
 const LENS_LABEL: Record<Lens, string> = { work: "Work", spend: "Spend", autonomy: "Autonomy" };
-const segmented = "h-8! p-0.5";
-const segment = "h-7 px-2.5 text-xs";
 const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.5rem 0.75rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
-const axisTick = { fill: "var(--muted-foreground)", fontSize: 11 };
+const axisTick = { fill: "var(--muted-foreground)", fontSize: 12 };
 const STORAGE = "pulse.home.kpis.range";
 const CHART_STORAGE = "pulse.home.kpis.chart";
 
@@ -86,8 +84,11 @@ function cellSub(f: KpiFigure, range: KpiRange, perDay: boolean): string {
 // spend and the autonomy. The range is remembered, and
 // so is whether the chart is open: by default the numbers alone show and
 // the chart unfolds on request, so Home stays a briefing, not a dashboard.
-export function KpisPanel({ project, height = 200 }: { project?: string | null; height?: number }) {
-  const [range, setRangeState] = useState<KpiRange>(initialRange);
+// `range` controlled from outside (the Insights page's own range tabs) hides
+// the panel's range tabs and skips the remembered one.
+export function KpisPanel({ project, height = 200, range: forced }: { project?: string | null; height?: number; range?: KpiRange }) {
+  const [ownRange, setRangeState] = useState<KpiRange>(initialRange);
+  const range = forced ?? ownRange;
   const [lens, setLens] = useState<Lens>("work");
   const [chart, setChartState] = useState<boolean>(initialChart);
   const setChart = (open: boolean) => {
@@ -116,24 +117,26 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
       {p ? <span className="mr-1 text-[13px]">{kpiSummaryLine(p, range)}</span> : null}
       {chart ? (
         <Tabs value={lens} onValueChange={(v) => setLens(v as Lens)}>
-          <TabsList className={segmented} aria-label="Chart what">
+          <TabsList variant="segmented" className="h-8!" aria-label="Chart what">
             {(["work", "spend", "autonomy"] as Lens[]).map((l) => (
-              <TabsTrigger key={l} value={l} className={segment}>
+              <TabsTrigger key={l} value={l} className="h-7 px-2.5 text-xs">
                 {LENS_LABEL[l]}
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
       ) : null}
-      <Tabs value={range} onValueChange={(v) => setRange(v as KpiRange)}>
-        <TabsList className={segmented} aria-label="Over time range">
-          {KPI_RANGES.map((r) => (
-            <TabsTrigger key={r} value={r} className={segment} aria-label={"Last " + KPI_RANGE_LABEL[r]}>
-              {r}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+      {forced ? null : (
+        <Tabs value={range} onValueChange={(v) => setRange(v as KpiRange)}>
+          <TabsList variant="segmented" className="h-8!" aria-label="Over time range">
+            {KPI_RANGES.map((r) => (
+              <TabsTrigger key={r} value={r} className="h-7 px-2.5 text-xs" aria-label={"Last " + KPI_RANGE_LABEL[r]}>
+                {r}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      )}
     </div>
   );
 
@@ -168,7 +171,7 @@ export function KpisPanel({ project, height = 200 }: { project?: string | null; 
       </KpiGrid>
       <section aria-labelledby="pulse-home-kpis-alone" className="mt-4 min-w-0">
         <div className="mb-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <h3 id="pulse-home-kpis-alone" className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">On its own</h3>
+          <h3 id="pulse-home-kpis-alone" className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">On its own</h3>
           <p className="min-w-0 text-xs text-muted-foreground anywhere">{kpiAutonomyLine(p, range)}</p>
         </div>
         <KpiGrid className="mb-0 rounded-xl">
