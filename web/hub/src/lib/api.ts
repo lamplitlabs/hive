@@ -630,6 +630,10 @@ export interface Org {
   registry: string;
   can_decide: boolean;
   owner_presence?: "present" | "away";
+  /** The owner's display name (setting owner.name); "" when unset. */
+  owner_name?: string;
+  /** This machine's host name without a trailing .local; "" when unknown. */
+  host?: string;
   commons_dir: string;
   projects: ProjectCardData[];
   commons: ProjectCardData | null;

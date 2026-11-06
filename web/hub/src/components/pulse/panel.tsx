@@ -10,33 +10,27 @@ import { cn } from "@/lib/utils";
 import { num } from "@/lib/format";
 import type { Tone } from "@/lib/format";
 import { PulseMascot } from "./mascots";
+import { PageHeader } from "./page-header";
 
 // The top of every page: what it is (the title), what it is for (`sub`, one
-// sentence), and the action it exists for on the right. `bar` holds the
-// page's tabs or filters, right under the title. Nothing sticks or glows -
-// the page scrolls as one piece. `icon` is the same glyph as the page's
-// place in the navigation, so the eye connects the two.
-export function PageTitle({ children, sub, crumb, actions, bar, className, icon: Icon, badge }: { children: React.ReactNode; sub?: React.ReactNode; crumb?: React.ReactNode; actions?: React.ReactNode; bar?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }>; badge?: React.ReactNode }) {
+// line), and the one action it exists for on the right. `bar` holds the
+// page's tabs or filters, right under the title. `icon` is the same glyph
+// as the page's place in the navigation. Older signature kept; it renders
+// through PageHeader (page-header.tsx), the redesign's page header.
+export function PageTitle({ children, sub, crumb, actions, bar, className, icon: Icon, badge }: { children: React.ReactNode; sub?: React.ReactNode; crumb?: React.ReactNode; actions?: React.ReactNode; bar?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string; strokeWidth?: number }>; badge?: React.ReactNode }) {
   return (
-    <header className={cn("mb-6 min-w-0 pt-6 sm:pt-8", className)}>
-      {crumb ? <div className="mb-2 min-w-0 text-sm text-muted-foreground anywhere">{crumb}</div> : null}
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3">
-        <div className="min-w-0 max-w-full flex-1 basis-72">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-            {Icon ? (
-              <span className="pop hidden size-9 shrink-0 items-center justify-center rounded-xl bg-card text-primary ring-1 ring-border transition-transform duration-200 ease-out-soft hover:-rotate-6 hover:scale-105 motion-reduce:transition-none sm:flex" aria-hidden>
-                <Icon className="size-[18px]" />
-              </span>
-            ) : null}
-            <h1 className="enter min-w-0 text-[26px] font-semibold leading-tight tracking-[-0.015em] anywhere sm:text-[30px]" title={typeof children === "string" ? children : undefined}>{children}</h1>
-            {badge ? <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">{badge}</div> : null}
-          </div>
-          {sub ? <div className="mt-2 min-w-0 max-w-3xl text-[15px] leading-relaxed text-muted-foreground anywhere">{sub}</div> : null}
-        </div>
-        {actions ? <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:pt-1">{actions}</div> : null}
-      </div>
-      {bar ? <FadingStrip className="mt-5 min-w-0 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{bar}</FadingStrip> : null}
-    </header>
+    <>
+      {crumb ? <div className="mt-5 -mb-3 min-w-0 text-sm text-muted-foreground anywhere sm:mt-6 sm:-mb-4">{crumb}</div> : null}
+      <PageHeader
+        title={children}
+        subtitle={sub}
+        action={actions}
+        tabs={bar ? <FadingStrip className="min-w-0 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{bar}</FadingStrip> : undefined}
+        badge={badge}
+        lead={Icon ? <Icon className="size-5" strokeWidth={1.75} /> : undefined}
+        className={className}
+      />
+    </>
   );
 }
 
@@ -99,23 +93,62 @@ export function Panel({ title, actions, children, className, contentClassName, d
   );
 }
 
-// An empty list is an invitation: say what will show up here and how to
-// make it happen, with the button for it when there is one. Pip stands in
-// it, curious, unless the caller brings its own icon.
-export function EmptyState({ children, hint, icon, className, title, action }: { children: React.ReactNode; hint?: string; icon?: React.ReactNode; className?: string; title?: React.ReactNode; action?: React.ReactNode }) {
+// An empty list is an invitation (spec "Components" - Empty state): a small
+// illustration, a one-line title, one primary action and an optional second.
+// Pip stands in it, curious, unless the caller brings its own `icon`
+// (a Lucide glyph or any node). `children` is the one sentence under the
+// title; `hint` is a command to copy.
+export function EmptyState({ children, hint, icon, className, title, action, secondary, compact }: { children?: React.ReactNode; hint?: string; icon?: React.ReactNode; className?: string; title?: React.ReactNode; action?: React.ReactNode; secondary?: React.ReactNode; compact?: boolean }) {
   return (
-    <div className={cn("flex min-w-0 flex-col items-center gap-2 rounded-2xl border border-dashed border-[color-mix(in_oklch,var(--foreground)_16%,var(--border))] bg-card/60 px-5 py-8 text-center", className)}>
+    <div className={cn("flex min-w-0 flex-col items-center gap-1.5 rounded-lg border border-dashed border-[color-mix(in_oklch,var(--foreground)_16%,var(--border))] bg-card/60 px-5 text-center", compact ? "py-5" : "py-8", className)}>
       {icon ? (
-        <span className="mb-1 flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground" aria-hidden>
+        <span className="mb-1.5 flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground [&>svg]:size-5" aria-hidden>
           {icon}
         </span>
       ) : (
-        <PulseMascot mood="curious" size={60} decorative className="float mb-1" />
+        <PulseMascot mood="curious" size={compact ? 40 : 56} decorative className="float mb-1" />
       )}
-      {title ? <div className="text-[15px] font-semibold text-foreground anywhere">{title}</div> : null}
-      <div className="max-w-md text-sm leading-relaxed text-muted-foreground anywhere">{children}</div>
-      {hint ? <code className="mt-1 max-w-full rounded-md bg-muted px-2 py-1 font-mono text-[12.5px] text-foreground anywhere">{hint}</code> : null}
-      {action ? <div className="mt-2 flex flex-wrap items-center justify-center gap-2">{action}</div> : null}
+      {title ? <div className="max-w-md truncate text-base font-semibold leading-6 text-foreground" title={typeof title === "string" ? title : undefined}>{title}</div> : null}
+      {children ? <div className="max-w-md text-sm leading-5 text-muted-foreground anywhere">{children}</div> : null}
+      {hint ? <code className="mt-1 max-w-full rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground anywhere">{hint}</code> : null}
+      {action || secondary ? (
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          {action}
+          {secondary}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Something failed to load or to run (spec "Components" - Error): an inline
+// card saying what failed, why in one line, a Retry button, and the
+// technical detail folded away. `title` is the what ("The tasks didn't
+// load"), `why` the one-line reason, `detail` the raw error.
+export function ErrorCard({ title, why, onRetry, detail, className, retryLabel = "Retry" }: { title: React.ReactNode; why?: React.ReactNode; onRetry?: () => void; detail?: React.ReactNode; className?: string; retryLabel?: string }) {
+  return (
+    <div role="alert" className={cn("flex min-w-0 flex-col gap-2 rounded-lg border border-status-failed/30 bg-status-failed-soft px-4 py-3 text-sm", className)}>
+      <div className="flex min-w-0 items-start gap-2.5">
+        <OctagonAlertIcon className="mt-0.5 size-4 shrink-0 text-status-failed" strokeWidth={1.75} aria-hidden />
+        <div className="min-w-0 flex-1">
+          <div className="font-medium leading-5 text-foreground anywhere">{title}</div>
+          {why ? <div className="mt-0.5 truncate text-sm leading-5 text-muted-foreground" title={typeof why === "string" ? why : undefined}>{why}</div> : null}
+        </div>
+        {onRetry ? (
+          <Button size="sm" variant="outline" className="shrink-0" onClick={onRetry}>
+            <RefreshCwIcon /> {retryLabel}
+          </Button>
+        ) : null}
+      </div>
+      {detail ? (
+        <details className="group/detail min-w-0 pl-[26px]">
+          <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+            <ChevronRightIcon className="mr-1 inline size-3 transition-transform group-open/detail:rotate-90" aria-hidden />
+            Technical detail
+          </summary>
+          <pre className="mt-1.5 max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs leading-5 text-foreground whitespace-pre-wrap anywhere">{detail}</pre>
+        </details>
+      ) : null}
     </div>
   );
 }

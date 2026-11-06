@@ -77,7 +77,7 @@ function DialogContent({
           }}
           className={cn(
             panelFrame,
-            "scroll-thin grid gap-4 overflow-y-auto rounded-2xl p-5",
+            "scroll-thin grid gap-4 overflow-y-auto rounded-xl p-4",
             placement === "panel" &&
               cn(panelTop, "inset-x-2 max-h-[calc(100dvh-3.5rem-1px-1rem)] sm:inset-x-auto sm:right-3 sm:w-full sm:max-w-md lg:max-h-[calc(100dvh-1.5rem)]"),
             placement === "float" &&
@@ -129,7 +129,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-5 -mb-5 flex flex-col-reverse gap-2 rounded-b-2xl border-t bg-muted/50 px-5 py-4 sm:flex-row sm:justify-end",
+        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 px-4 py-3 sm:flex-row sm:justify-end",
         className
       )}
       {...props}

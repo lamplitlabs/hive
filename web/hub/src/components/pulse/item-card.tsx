@@ -174,23 +174,9 @@ export function Fact({ n, label, tone, className }: { n: React.ReactNode; label:
   );
 }
 
-// Section heading for a card group: title, count, a one-line explanation
-// (`note`) under it, and an optional action on the right.
-export function SectionHeading({ children, count, action, note, className, icon: Icon, as: Heading = "h2" }: { children: React.ReactNode; count?: number | string; action?: React.ReactNode; note?: React.ReactNode; className?: string; icon?: React.ComponentType<{ className?: string }>; as?: "h2" | "h3" }) {
-  return (
-    <div className={cn("mb-3 flex min-w-0 flex-wrap items-end justify-between gap-x-4 gap-y-2", className)}>
-      <div className="min-w-0">
-        <Heading className="flex min-w-0 items-center gap-2 text-lg font-semibold leading-snug tracking-tight anywhere">
-          {Icon ? <Icon className="size-[18px] shrink-0 text-muted-foreground" aria-hidden /> : null}
-          {children}
-          {count !== undefined && count !== "" ? <span className="tnum rounded-full bg-card px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-border">{count}</span> : null}
-        </Heading>
-        {note ? <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground anywhere">{note}</p> : null}
-      </div>
-      {action ? <div className="min-w-0 max-w-full text-[13px] leading-relaxed text-muted-foreground anywhere">{action}</div> : null}
-    </div>
-  );
-}
+// Section heading for a card group: lives in section-heading.tsx now;
+// re-exported so existing imports keep working.
+export { SectionHeading } from "./section-heading";
 
 // Strip Markdown down to a one-paragraph excerpt for a card body.
 export function excerpt(md: string, max = 220): string {

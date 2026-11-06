@@ -839,7 +839,7 @@ impl Handler {
             .sum();
         let ballot_proposals: i64 = ballot.iter().map(|r| num(r, "proposals")).sum();
         object(
-            "generated_at registry can_decide commons_dir projects commons stamp notices totals active_claims proposals questions owner_presence",
+            "generated_at registry can_decide commons_dir projects commons stamp notices totals active_claims proposals questions owner_presence owner_name host",
             vec![
                 json!(store_now(self)),
                 json!(
@@ -902,9 +902,30 @@ impl Handler {
                         .map(|s| s.setting("owner.presence", pulse_store::OWNER_PRESENT))
                         .unwrap_or_else(|| pulse_store::OWNER_PRESENT.to_string())
                 ),
+                json!(
+                    self.store
+                        .as_ref()
+                        .map(|s| s.setting("owner.name", ""))
+                        .unwrap_or_default()
+                ),
+                json!(host_name()),
             ],
         )
     }
+}
+
+/// This machine's name as the console shows it in the sidebar header: what
+/// `gethostname` says with a trailing `.local` (mDNS on a Mac) dropped,
+/// `""` when the system cannot say.
+pub(crate) fn host_name() -> String {
+    nix::unistd::gethostname()
+        .map(|h| trim_host_name(&h.to_string_lossy()))
+        .unwrap_or_default()
+}
+
+fn trim_host_name(raw: &str) -> String {
+    let raw = raw.trim();
+    raw.strip_suffix(".local").unwrap_or(raw).to_string()
 }
 
 pub(crate) fn base_for(slug: &str) -> String {
@@ -1248,6 +1269,29 @@ mod tests {
         let tl = timeline(&missing, "2026-01-01T03:00:00Z".into());
         assert_eq!(tl["total"], 2);
         assert_eq!(timeline(&posts, "2026-01-01T03:00:00Z".into())["total"], 3);
+    }
+
+    #[test]
+    fn org_names_the_owner_and_the_host() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let h = http::handler(&s);
+        let org = h.org(json!([]));
+        assert!(org["host"].is_string(), "host: {:?}", org.get("host"));
+        assert!(
+            !org["host"].as_str().unwrap().ends_with(".local"),
+            "host keeps its mDNS suffix: {:?}",
+            org["host"]
+        );
+        assert_eq!(org["owner_name"], "");
+        s.set_setting("human:dashboard", "owner.name", " Manish ")
+            .unwrap();
+        let org = h.org(json!([]));
+        assert_eq!(org["owner_name"], "Manish");
+        assert_eq!(org["owner_presence"], pulse_store::OWNER_PRESENT);
+        assert_eq!(trim_host_name("Manishs-Mac.local"), "Manishs-Mac");
+        assert_eq!(trim_host_name(" box.example.net\n"), "box.example.net");
+        assert_eq!(trim_host_name(""), "");
     }
 
     fn lifecycle_repo() -> String {

@@ -1,6 +1,8 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
+// A text field: 36px tall, the card radius (10px), one hairline that turns
+// teal with a soft teal ring when focused.
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   return (
     <input

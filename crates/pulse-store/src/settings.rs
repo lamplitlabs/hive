@@ -343,7 +343,9 @@ pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|
 pub const OWNER_PRESENT: &str = "present";
 pub const OWNER_AWAY: &str = "away";
 pub static OWNER_SETTINGS: LazyLock<BTreeMap<String, String>> =
-    LazyLock::new(|| map! {"owner.presence"=>"present",});
+    LazyLock::new(|| map! {"owner.name"=>"","owner.presence"=>"present",});
+/// The most characters `owner.name` keeps: a display name, not a biography.
+pub const OWNER_NAME_MAX: usize = 64;
 pub const OWNER_PATHS: &[&str] = &[
     "docs/evolution/constitution.md",
     "docs/evolution/evaluators.md",
@@ -356,6 +358,7 @@ pub const OWNER_PATHS: &[&str] = &[
 ];
 pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
+        "owner.name"=>("text",None,[],None,"what the console calls you: the greeting on Home and the owner row of the sidebar use it; one line of at most 64 characters, trimmed; empty means the console says you"),
         "owner.presence"=>("choice",None,["present","away"],None,"present: proposals, compute requests and owner questions wait for you, and pulse asks before it adds a tool, a skill or a lead seat; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours, pulse adds the toolkit a project's shape asks for on its own (a drafted skill, a tool that needs no secret) and says so on the board, and lead seats are not asked about (the hub's Leads gallery shows them) - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you"),
     }
 });
@@ -678,6 +681,18 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
                 region.to_ascii_uppercase()
             )
         });
+    }
+    if name == "owner.name" {
+        // One line, single-spaced, at most OWNER_NAME_MAX characters; empty
+        // is the default and means the console says "you".
+        let name_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if name_text.chars().count() > OWNER_NAME_MAX {
+            return Err(input_err(format!(
+                "owner.name is a display name of at most {OWNER_NAME_MAX} characters, not {}",
+                py_repr(&name_text)
+            )));
+        }
+        return Ok(name_text);
     }
     if name == "capacity" {
         let lower = text.to_ascii_lowercase();
@@ -1868,10 +1883,50 @@ mod go_settings_tests {
             validate_setting("owner.mood", "away")
                 .unwrap_err()
                 .to_string()
-                .contains("Owner settings: owner.presence")
+                .contains("Owner settings: owner.name, owner.presence")
         );
         let names = extra_setting_names();
         assert_eq!(names[names.len() - 1], "owner.presence");
+        assert_eq!(names[names.len() - 2], "owner.name");
+    }
+
+    #[test]
+    fn owner_name_setting() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-09-08T10:00:00Z");
+        assert_eq!(s.setting("owner.name", ""), "");
+        assert_eq!(OWNER_RULES["owner.name"].kind, "text");
+        assert_eq!(
+            validate_setting("owner.name", "  Manish ").unwrap(),
+            "Manish"
+        );
+        assert_eq!(
+            validate_setting("owner.name", " Manish \t  Kumar\n").unwrap(),
+            "Manish Kumar"
+        );
+        assert_eq!(validate_setting("owner.name", "   ").unwrap(), "");
+        assert_eq!(validate_setting("owner.name", "Zoë").unwrap(), "Zoë");
+        let longest = "a".repeat(OWNER_NAME_MAX);
+        assert_eq!(validate_setting("owner.name", &longest).unwrap(), longest);
+        let err = validate_setting("owner.name", &"a".repeat(OWNER_NAME_MAX + 1))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("owner.name is a display name of at most 64 characters"),
+            "{err}"
+        );
+        s.set_setting("human:dashboard", "owner.name", " Manish ")
+            .unwrap();
+        assert_eq!(s.setting("owner.name", ""), "Manish");
+        s.set_setting("human", "owner.name", "").unwrap();
+        assert_eq!(s.setting("owner.name", ""), "");
+        assert!(
+            validate_setting("owner.mood", "x")
+                .unwrap_err()
+                .to_string()
+                .contains("Owner settings: owner.name, owner.presence")
+        );
     }
 
     #[test]

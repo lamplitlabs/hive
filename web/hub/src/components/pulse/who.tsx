@@ -5,8 +5,8 @@ import { BotIcon, CheckIcon, ShieldAlertIcon, ThumbsDownIcon, ThumbsUpIcon, User
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { fmtDate, KIND_TONE, rel, statusTone, type Tone } from "@/lib/format";
-import { postKindWord, statusWord, threadName } from "@/lib/words";
+import { fmtDate, KIND_TONE, rel, type Tone } from "@/lib/format";
+import { postKindWord, threadName } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
 import type { Who as WhoRow } from "@/lib/api";
@@ -32,17 +32,9 @@ export function ToneBadge({ tone = "neutral", children, className, dot, title }:
   );
 }
 
-// A state in plain words ("in_progress" reads "In progress"); the raw state stays in the tooltip.
-export function StatusBadge({ status, className }: { status?: string | null; className?: string }) {
-  const s = (status || "").trim();
-  if (!s) return null;
-  const word = statusWord(s);
-  return (
-    <ToneBadge tone={statusTone(s)} dot className={className} title={word.toLowerCase() !== s.replace(/_/g, " ").toLowerCase() ? s : undefined}>
-      {word}
-    </ToneBadge>
-  );
-}
+// A state in plain words ("in_progress" reads "In progress") with its icon;
+// the raw state stays in the tooltip. Lives in status-badge.tsx now.
+export { StatusBadge } from "./status-badge";
 
 export function KindBadge({ kind }: { kind?: string | null }) {
   const k = kind || "post";

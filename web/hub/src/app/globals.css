@@ -22,16 +22,22 @@
   4. Details on demand. Counts and machine internals fold away.
   5. One question per card, with its answer buttons right under it.
 
-  Palette: paper (cool mint-grey), ink (the logo's navy), teal (agents and
-  primary actions, the mint end of the brand gradient), marigold (you),
-  plus semantic ok / warn / bad / info / accent-2 (self-improvement, the
-  violet end of the gradient). Every colour is oklch so light and dark stay
-  perceptually matched.
+  Palette (console redesign, Nov 2026): a neutral near-white canvas and
+  dark ink text. Ink (the logo's navy) is the primary button; teal is for
+  links, the focus ring, the active nav item, selection and the first chart
+  series; marigold (--you) marks what waits for the owner. Each kind of
+  object has one tint (--kind-*) and each status one tint (--status-*),
+  always with an icon and a word, never colour alone. Every colour is oklch
+  so light and dark stay perceptually matched; every tint's text keeps
+  >= 4.5:1 on its own 10% wash.
 
-  Type: Atkinson Hyperlegible Next (UI and headings) and Atkinson
-  Hyperlegible Mono (commands, paths, ids) - the Braille Institute's faces
-  built so I/l/1 and O/0 never blur, which a console full of identifiers
-  needs. Both are vendored in public/fonts (OFL) so the export needs no
+  Type: Geist Sans (UI) and Geist Mono (commands, paths, ids), vendored in
+  public/fonts (OFL-geist.txt). Atkinson Hyperlegible Next / Mono stay as
+  the "Readable font" option: <html data-font="readable"> swaps the stacks
+  (--font-ui / --font-code). <html data-text="larger"> lifts the body from
+  14px to 16px; <html data-density="compact"> shrinks list rows (--row-h)
+  from 44px to 36px. appearance-state.ts sets the three attributes before
+  paint. Atkinson is vendored in public/fonts (OFL) so the export needs no
   network at build or run time.
 
   Utilities kept for the components that use them (now flat): tnum,
@@ -40,6 +46,20 @@
   ring-soft. New: surface-you, text-you, bg-you, border-you, pulse-draw.
 */
 
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/geist-sans-variable.woff2") format("woff2-variations"), url("/fonts/geist-sans-variable.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/geist-mono-variable.woff2") format("woff2-variations"), url("/fonts/geist-mono-variable.woff2") format("woff2");
+}
 @font-face {
   font-family: "Atkinson Hyperlegible Next";
   font-style: normal;
@@ -76,9 +96,42 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "Atkinson Hyperlegible Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* The stacks live on :root as --font-ui / --font-code so html[data-font="readable"] can swap them under the inlined utilities. */
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
   --font-heading: var(--font-sans);
+  --color-link: var(--link);
+  --color-teal: var(--teal);
+  --color-kind-teal: var(--kind-teal);
+  --color-kind-teal-soft: var(--kind-teal-soft);
+  --color-kind-blue: var(--kind-blue);
+  --color-kind-blue-soft: var(--kind-blue-soft);
+  --color-kind-marigold: var(--kind-marigold);
+  --color-kind-marigold-soft: var(--kind-marigold-soft);
+  --color-kind-violet: var(--kind-violet);
+  --color-kind-violet-soft: var(--kind-violet-soft);
+  --color-kind-slate: var(--kind-slate);
+  --color-kind-slate-soft: var(--kind-slate-soft);
+  --color-kind-green: var(--kind-green);
+  --color-kind-green-soft: var(--kind-green-soft);
+  --color-kind-pink: var(--kind-pink);
+  --color-kind-pink-soft: var(--kind-pink-soft);
+  --color-kind-grey: var(--kind-grey);
+  --color-kind-grey-soft: var(--kind-grey-soft);
+  --color-status-done: var(--status-done);
+  --color-status-done-soft: var(--status-done-soft);
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-soft: var(--status-warning-soft);
+  --color-status-failed: var(--status-failed);
+  --color-status-failed-soft: var(--status-failed-soft);
+  --color-status-info: var(--status-info);
+  --color-status-info-soft: var(--status-info-soft);
+  --color-status-neutral: var(--status-neutral);
+  --color-status-neutral-soft: var(--status-neutral-soft);
+  --color-status-running: var(--status-running);
+  --color-status-running-soft: var(--status-running-soft);
+  --color-status-waits: var(--status-waits);
+  --color-status-waits-soft: var(--status-waits-soft);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
@@ -117,53 +170,72 @@
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
+  --color-primary-strong: var(--primary-strong);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  /* Radius follows hierarchy: chips are pills, controls 8px, inner items 10px, cards 14px, page panels 18px. */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.625rem;
-  --radius-xl: 0.75rem;
-  --radius-2xl: 0.875rem;
-  --radius-3xl: 1.125rem;
-  --radius-4xl: 1.5rem;
+  /* Three radii: 6px controls and chips (rounded-md), 10px cards and inputs
+     (rounded-lg), 14px dialogs and side panels (rounded-xl). The larger
+     legacy steps collapse onto the panel radius. */
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-panel: 14px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 14px;
+  --radius-3xl: 14px;
+  --radius-4xl: 14px;
+  /* Three shadows: none in the page (shadow-card), a small raise on hover (shadow-raise), a large one for what floats (shadow-pop). */
   --shadow-card: var(--sh-card);
+  --shadow-raise: var(--sh-raise);
   --shadow-pop: var(--sh-pop);
   --shadow-glow: var(--sh-glow);
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :root {
+  /* type: Geist by default; html[data-font="readable"] swaps in Atkinson Hyperlegible */
+  --font-ui: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-code: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* heights: list rows (44px, 36px compact), controls (36px), small controls (32px) */
+  --row-h: 44px;
+  --control-h: 36px;
+  --control-sm-h: 32px;
+
   /* brand (the logo mark only) */
   --brand-mint: oklch(0.87 0.15 170);
   --brand-sky: oklch(0.75 0.14 225);
   --brand-violet: oklch(0.65 0.18 285);
   --gradient-brand: linear-gradient(135deg, var(--brand-mint) 0%, var(--brand-sky) 52%, var(--brand-violet) 100%);
 
-  /* paper, ink and lines */
-  --paper: oklch(0.975 0.006 175);
+  /* paper, ink and lines: a neutral near-white canvas, a one-step-darker sidebar, white cards */
+  --paper: oklch(0.985 0.002 255);
   --background: var(--paper);
   --foreground: oklch(0.26 0.04 262);
   --card: oklch(1 0 0);
   --card-foreground: var(--foreground);
   --popover: oklch(1 0 0);
   --popover-foreground: var(--foreground);
-  --muted: oklch(0.955 0.006 200);
-  --muted-foreground: oklch(0.48 0.025 255);
-  --secondary: oklch(0.95 0.008 200);
+  --muted: oklch(0.96 0.004 255);
+  --muted-foreground: oklch(0.48 0.02 255);
+  --secondary: oklch(0.955 0.004 255);
   --secondary-foreground: oklch(0.3 0.035 262);
-  --accent: oklch(0.955 0.018 180);
+  --accent: oklch(0.95 0.012 190);
   --accent-foreground: oklch(0.3 0.04 230);
-  --border: oklch(0.91 0.008 210);
-  --input: oklch(0.85 0.012 215);
+  --border: oklch(0.92 0.004 255);
+  --input: oklch(0.87 0.006 255);
 
-  /* teal: agents and the primary action */
-  --primary: oklch(0.52 0.095 186);
-  --primary-strong: oklch(0.45 0.09 190);
-  --primary-foreground: oklch(0.99 0 0);
-  --ring: oklch(0.55 0.1 186);
+  /* ink: the primary button */
+  --primary: oklch(0.26 0.04 262);
+  --primary-strong: oklch(0.2 0.035 262);
+  --primary-foreground: oklch(1 0 0);
+  /* teal: links, the focus ring, the active nav item, selection, the first chart series */
+  --teal: oklch(0.52 0.095 186);
+  --link: var(--teal);
+  --ring: var(--teal);
 
   /* marigold: what waits for you */
   --you: oklch(0.8 0.145 78);
@@ -179,7 +251,41 @@
   --info: oklch(0.5 0.12 242);
   --accent-2: oklch(0.54 0.16 292);
   --destructive: var(--bad);
-  --chart-1: oklch(0.55 0.1 186);
+
+  /* kind tints: one per kind of object (the 28px kind tile), text on its own 10% wash >= 4.5:1 */
+  --kind-teal: var(--teal);
+  --kind-blue: oklch(0.5 0.12 242);
+  --kind-marigold: oklch(0.48 0.1 78);
+  --kind-violet: oklch(0.54 0.16 292);
+  --kind-slate: oklch(0.48 0.03 255);
+  --kind-green: oklch(0.5 0.12 155);
+  --kind-pink: oklch(0.55 0.16 350);
+  --kind-grey: oklch(0.5 0.01 255);
+  --kind-teal-soft: color-mix(in oklch, var(--kind-teal) 10%, transparent);
+  --kind-blue-soft: color-mix(in oklch, var(--kind-blue) 10%, transparent);
+  --kind-marigold-soft: color-mix(in oklch, var(--kind-marigold) 10%, transparent);
+  --kind-violet-soft: color-mix(in oklch, var(--kind-violet) 10%, transparent);
+  --kind-slate-soft: color-mix(in oklch, var(--kind-slate) 10%, transparent);
+  --kind-green-soft: color-mix(in oklch, var(--kind-green) 10%, transparent);
+  --kind-pink-soft: color-mix(in oklch, var(--kind-pink) 10%, transparent);
+  --kind-grey-soft: color-mix(in oklch, var(--kind-grey) 10%, transparent);
+
+  /* status tints: always an icon and a word beside the colour */
+  --status-done: var(--ok);
+  --status-warning: var(--warn);
+  --status-failed: var(--bad);
+  --status-info: var(--info);
+  --status-neutral: var(--kind-grey);
+  --status-running: var(--teal);
+  --status-waits: var(--you-ink);
+  --status-done-soft: color-mix(in oklch, var(--status-done) 10%, transparent);
+  --status-warning-soft: color-mix(in oklch, var(--status-warning) 10%, transparent);
+  --status-failed-soft: color-mix(in oklch, var(--status-failed) 10%, transparent);
+  --status-info-soft: color-mix(in oklch, var(--status-info) 10%, transparent);
+  --status-neutral-soft: color-mix(in oklch, var(--status-neutral) 10%, transparent);
+  --status-running-soft: color-mix(in oklch, var(--status-running) 10%, transparent);
+  --status-waits-soft: var(--you-soft);
+  --chart-1: var(--teal);
   --chart-2: oklch(0.6 0.13 155);
   --chart-3: oklch(0.72 0.14 75);
   --chart-4: oklch(0.58 0.12 242);
@@ -194,18 +300,19 @@
   --series-6: #008300;
   --series-7: #4a3aa7;
   --series-8: #e34948;
-  --chart-grid: oklch(0.93 0.006 210);
+  --chart-grid: oklch(0.93 0.004 255);
 
-  --sidebar: oklch(0.985 0.004 175);
+  /* the sidebar: one step darker than the page, a 1px right border */
+  --sidebar: oklch(0.97 0.004 255);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: var(--accent);
-  --sidebar-accent-foreground: var(--accent-foreground);
-  --sidebar-border: var(--border);
+  --sidebar-accent: oklch(0.935 0.006 255);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: oklch(0.905 0.004 255);
   --sidebar-ring: var(--ring);
 
-  --radius: 0.625rem;
+  --radius: var(--radius-card);
 
   /* kept for older components: all solid now */
   --glass-surface: var(--card);
@@ -214,49 +321,61 @@
   --raised-border: var(--border);
   --raised-highlight: transparent;
 
-  /* shadows: barely there on cards, real only on things that float */
-  --sh-card: 0 1px 2px oklch(0.26 0.04 262 / 0.04);
+  /* shadows: none at rest, a small raise on hover, a real one only on things that float */
+  --sh-card: none;
+  --sh-raise: 0 1px 2px oklch(0.26 0.04 262 / 0.06), 0 4px 12px -6px oklch(0.26 0.04 262 / 0.14);
   --sh-raised: var(--sh-card);
-  --sh-raised-hover: 0 1px 2px oklch(0.26 0.04 262 / 0.05), 0 6px 16px -10px oklch(0.26 0.04 262 / 0.18);
+  --sh-raised-hover: var(--sh-raise);
   --sh-pop: 0 16px 40px -16px oklch(0.26 0.04 262 / 0.28), 0 2px 8px -2px oklch(0.26 0.04 262 / 0.1);
-  --sh-glow: 0 0 0 3px color-mix(in oklch, var(--primary) 16%, transparent);
+  --sh-glow: 0 0 0 3px color-mix(in oklch, var(--ring) 16%, transparent);
 }
 
 .dark {
-  /* the logo's navy, lifted so cards read as layers */
-  --paper: oklch(0.175 0.024 256);
+  /* a neutral near-black canvas (the same cool hue as the light paper), cards one
+     step lighter, the sidebar one step darker; lines are solid greys, not alpha */
+  --paper: oklch(0.17 0.01 255);
   --background: var(--paper);
   --foreground: oklch(0.94 0.008 240);
-  --card: oklch(0.21 0.027 256);
+  --card: oklch(0.205 0.01 255);
   --card-foreground: var(--foreground);
-  --popover: oklch(0.235 0.03 256);
+  --popover: oklch(0.205 0.01 255);
   --popover-foreground: var(--foreground);
-  --muted: oklch(0.25 0.024 256);
-  --muted-foreground: oklch(0.73 0.02 245);
-  --secondary: oklch(0.26 0.025 256);
+  --muted: oklch(0.24 0.01 255);
+  --muted-foreground: oklch(0.74 0.015 255);
+  --secondary: oklch(0.25 0.01 255);
   --secondary-foreground: var(--foreground);
-  --accent: oklch(0.27 0.035 205);
+  --accent: oklch(0.26 0.01 255);
   --accent-foreground: var(--foreground);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 15%);
+  --border: oklch(0.28 0.01 255);
+  --input: oklch(0.34 0.01 255);
 
-  --primary: oklch(0.77 0.105 182);
-  --primary-strong: oklch(0.7 0.1 184);
-  --primary-foreground: oklch(0.2 0.035 230);
-  --ring: oklch(0.72 0.1 182);
+  /* ink inverts: a near-white primary button with dark text */
+  --primary: oklch(0.9 0.01 255);
+  --primary-strong: oklch(0.82 0.01 255);
+  --primary-foreground: oklch(0.2 0.02 262);
+  /* teal lifts for dark; --link and --ring follow it from :root */
+  --teal: oklch(0.76 0.1 182);
 
   --you: oklch(0.83 0.13 82);
   --you-ink: oklch(0.85 0.12 82);
   --you-soft: oklch(0.83 0.13 82 / 0.1);
   --awake: oklch(0.8 0.12 70);
 
+  /* semantic tones and kind tints: each >= 4.5:1 on its own 10% wash over the canvas */
   --ok: oklch(0.76 0.13 155);
   --warn: oklch(0.78 0.14 48);
-  --bad: oklch(0.71 0.16 25);
-  --info: oklch(0.75 0.1 242);
-  --accent-2: oklch(0.75 0.12 292);
+  --bad: oklch(0.76 0.15 25);
+  --info: oklch(0.78 0.1 242);
+  --accent-2: oklch(0.78 0.12 292);
   --destructive: var(--bad);
-  --chart-1: oklch(0.75 0.1 182);
+  --kind-blue: oklch(0.78 0.1 242);
+  --kind-marigold: oklch(0.83 0.12 82);
+  --kind-violet: oklch(0.78 0.12 292);
+  --kind-slate: oklch(0.76 0.03 255);
+  --kind-green: oklch(0.76 0.13 155);
+  --kind-pink: oklch(0.78 0.13 350);
+  --kind-grey: oklch(0.78 0.01 255);
+  --chart-1: var(--teal);
   --chart-2: oklch(0.74 0.13 155);
   --chart-3: oklch(0.8 0.13 78);
   --chart-4: oklch(0.73 0.1 242);
@@ -269,26 +388,42 @@
   --series-6: #008300;
   --series-7: #9085e9;
   --series-8: #e66767;
-  --chart-grid: oklch(1 0 0 / 7%);
+  --chart-grid: oklch(0.26 0.01 255);
 
-  --sidebar: oklch(0.19 0.026 256);
+  --sidebar: oklch(0.15 0.01 255);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: var(--accent);
+  --sidebar-accent: oklch(0.21 0.01 255);
   --sidebar-accent-foreground: var(--foreground);
-  --sidebar-border: var(--border);
+  --sidebar-border: oklch(0.24 0.01 255);
   --sidebar-ring: var(--ring);
 
   --glass-surface: var(--card);
   --raised-surface: var(--card);
   --raised-border: var(--border);
 
-  --sh-card: 0 1px 2px oklch(0 0 0 / 0.25);
+  --sh-card: none;
+  --sh-raise: 0 1px 2px oklch(0 0 0 / 0.35), 0 4px 12px -6px oklch(0 0 0 / 0.55);
   --sh-raised: var(--sh-card);
-  --sh-raised-hover: 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 20px -12px oklch(0 0 0 / 0.6);
+  --sh-raised-hover: var(--sh-raise);
   --sh-pop: 0 18px 44px -14px oklch(0 0 0 / 0.65), 0 2px 8px -2px oklch(0 0 0 / 0.4);
-  --sh-glow: 0 0 0 3px color-mix(in oklch, var(--primary) 22%, transparent);
+  --sh-glow: 0 0 0 3px color-mix(in oklch, var(--ring) 22%, transparent);
+}
+
+/* Appearance (Settings > Appearance; shell/appearance-state.ts sets the
+   attributes on <html> before paint from localStorage):
+   data-font="readable" swaps Geist for Atkinson Hyperlegible, data-text="larger"
+   lifts the body text from 14px to 16px, data-density="compact" shrinks list
+   rows and controls. Defaults carry no attribute. */
+html[data-font="readable"] {
+  --font-ui: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-code: "Atkinson Hyperlegible Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+html[data-density="compact"] {
+  --row-h: 36px;
+  --control-h: 36px;
+  --control-sm-h: 32px;
 }
 
 /* Keep-awake (daemon.keep_awake): the palette stays as it is. While the
@@ -348,8 +483,20 @@ html[data-awake="holding"] body::before {
   }
   body {
     @apply bg-background text-foreground;
+    font-size: 14px;
     min-height: 100dvh;
     isolation: isolate;
+  }
+  html[data-text="larger"] body {
+    font-size: 16px;
+  }
+  /* Lucide icons draw a touch lighter than their 2px default. */
+  svg.lucide {
+    stroke-width: 1.75;
+  }
+  /* An inline link: teal, the only place teal is text. */
+  .link {
+    color: var(--link);
   }
   h1,
   h2,
@@ -373,7 +520,7 @@ html[data-awake="holding"] body::before {
     border-radius: 4px;
   }
   ::selection {
-    background: color-mix(in oklch, var(--primary) 22%, transparent);
+    background: color-mix(in oklch, var(--teal) 25%, transparent);
   }
   /* Thin, unobtrusive scrollbars inside panels and lists; the page keeps the platform's. */
   .scroll-thin {
@@ -401,6 +548,12 @@ html[data-awake="holding"] body::before {
 /* The brand gradient, for the logo mark only. */
 @utility bg-brand {
   background-image: var(--gradient-brand);
+}
+/* The 2px brand stripe beside the wordmark and at the head of a page. */
+@utility brand-bar {
+  width: 2px;
+  border-radius: 1px;
+  background: var(--gradient-brand);
 }
 /* Once gradient text; now the plain primary ink - gradients do not read. */
 @utility text-brand {
@@ -850,6 +1003,16 @@ html[data-awake="holding"] body::before {
 .typing-dot {
   opacity: 0.6;
 }
+/* A row that just arrived or changed: a teal wash that fades over 1.5s
+   (.row-glow, re-applied by the list when the item updates). */
+@keyframes row-glow {
+  from {
+    background-color: color-mix(in oklch, var(--teal) 12%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
 .mascot .mascot-beat,
 .mascot .pip-drop,
 .mascot .pip-zz,
@@ -936,6 +1099,9 @@ html[data-awake="holding"] body::before {
   }
   .pop {
     animation: pop-in 0.35s var(--ease-out-soft) both;
+  }
+  .row-glow {
+    animation: row-glow 1.5s ease-out both;
   }
   .float {
     animation: float-y 3.4s ease-in-out infinite;
@@ -1285,7 +1451,7 @@ html[data-awake="holding"] body::before {
   @apply my-1;
 }
 .prose-pulse a {
-  @apply text-primary underline underline-offset-2 hover:text-foreground;
+  @apply text-link underline underline-offset-2 hover:text-foreground;
 }
 .prose-pulse code {
   @apply rounded-md bg-muted px-1 py-0.5 font-mono text-[13px];
