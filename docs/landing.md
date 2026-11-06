@@ -436,8 +436,9 @@ local landing, verify command and all, until you give its default branch one
 
 Settings: `review.merge`, `review.max_files` and `review.max_lines` are new
 (review.md has them). `landing.parallel` is gone with the per-project landing
-workers. `landing.batch` is still read, but only by the local landing a
-project without an upstream keeps. `landing.push` is kept so an older store's
+workers. `landing.batch` is removed too: the local landing of a project
+without an upstream verifies and lands one branch at a time, and a stored
+value is ignored. `landing.push` is kept so an older store's
 value still parses, but no code reads it: the daemon pushes branches and
 never the default branch, and the merge is the forge's. `landing.auto_stash`
 keeps its meaning for the fast-forward of a dirty checkout
@@ -465,8 +466,10 @@ settings read right:
 - **Batch landing** (`landing.batch`). Two or more waiting branches were
   merged into one chain and verified once, because one verify took 1,210 s on
   average on the brain and the branches queued behind each other. A pull
-  request per branch has no shared verify to save; the setting still steers
-  the local landing of a project without an upstream.
+  request per branch has no shared verify to save, and the local landing of a
+  project without an upstream has too few branches to need one: the setting
+  and the chain code are removed, and a stored value is ignored. Older stores
+  still hold `land.batch` events as history.
 - **The landing lock and parallel landings** (`landing.parallel`). One lock
   per project (`.git/pulse-land.lock`) kept landings serial; a lock left by a
   daemon killed mid-landing froze the project's queue until it expired, 30
