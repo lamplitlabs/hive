@@ -1435,6 +1435,18 @@
       "value": "3"
     },
     {
+      "choices": null,
+      "default": "",
+      "description": "what the console calls you: the greeting on Home and the owner row of the sidebar use it; one line of at most 64 characters, trimmed; empty means the console says you",
+      "kind": "text",
+      "min": null,
+      "name": "owner.name",
+      "secret": false,
+      "updated_at": "2026-09-01T11:20:00Z",
+      "updated_by": "human",
+      "value": "Manish"
+    },
+    {
       "choices": [
         "present",
         "away"

@@ -91,6 +91,8 @@
     "votes_open": 6
   },
   "owner_presence": "away",
+  "owner_name": "Manish",
+  "host": "Manish's Mac",
   "projects": [
     {
       "active_claims": [],
