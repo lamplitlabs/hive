@@ -115,6 +115,18 @@ gets its own event. On 2026-11-03 the owner's TASK-055 waited from 04:40 to
 window, and only the daemon's deduped idle log said so
 (crates/pulse-runner/src/owner_wait.rs).
 
+The slot count and the memory floor in those holds are not settings any more.
+`daemon.max_jobs` (local runs at once) and `daemon.min_free_mem_mb` (the
+memory under which nothing new starts), like `workers`,
+`parallel_per_project` and `daemon.max_load`, are automatic now: each machine
+works out its slots from its cores and memory (`capacity.rs`), the memory
+floor is the internal 1024 MB (`MIN_FREE_MEM_MB` in `daemon_load.rs`), a
+stored value is swept at startup with a `setting.retired` event, and `pulse
+settings set daemon.max_jobs 2` is refused with `daemon.max_jobs is automatic
+now`. Set `capacity` to cap this machine (0 keeps it idle), pass `pulse daemon
+--max-jobs N` for one daemon, or `pulse stop` to pause; see "The load
+governor" in [landing.md](landing.md).
+
 ## Services and self-update
 
 `pulse service install` writes two units: `pulse.daemon` (the fleet) and
@@ -248,6 +260,12 @@ later on the cached half, while a one-crate rebuild takes four minutes here,
 three of them the final link of `pulse`, which prints nothing: a build that
 still prints is still compiling. The smoke tests (`version`, `help`) answer
 within a second and keep the ten-minute bound on their length.
+A failed build or smoke test leaves the running binary untouched, posts a
+finding (`pulse <stage> of <rev> failed; the running binary is untouched`)
+and waits `daemon.self_update_retry_minutes` (default 60, at least 1) before
+the daemon builds again; the console's settings list it under **Updates**, and
+the hub's running report carries the same wait as `retry_minutes`
+(crates/pulse-runner/src/selfupdate.rs, crates/pulse-hub/src/running.rs).
 The install keeps a copy of the running binary as `pulse.prev` and puts the
 new file in its place; the running one is never renamed. macOS names a
 process by the current path of the file it runs from, so a daemon renamed to
