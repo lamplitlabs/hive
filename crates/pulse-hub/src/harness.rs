@@ -36,6 +36,11 @@ impl Handler {
                     self.addition_harness_models(w, r);
                 }
             }
+            [_, sub, name] if sub == "providers" => {
+                if crate::addition_method(w, r, vec!["GET".to_string()]) {
+                    self.addition_harness_provider(w, r, name.clone());
+                }
+            }
             [_, sub] if sub == "prompt" => {
                 if crate::addition_method(w, r, vec!["GET".to_string()]) {
                     self.addition_harness_prompt(w, r);
@@ -215,13 +220,11 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(out.into_iter().collect()));
     }
 
-    pub(crate) fn addition_harness_models(&self, w: &mut ResponseWriter, _r: &Request) {
-        let p = match self.harness_provider(String::new()) {
-            Ok(p) => p,
-            Err(err) => {
-                crate::addition_failure(w, err);
-                return;
-            }
+    /// `GET /harness/models[?provider=NAME]`: the models of the named
+    /// provider, else of the active one.
+    pub(crate) fn addition_harness_models(&self, w: &mut ResponseWriter, r: &Request) {
+        let Some(p) = self.harness_provider_named(w, r.query("provider")) else {
+            return;
         };
         let cancel = pulse_provider::CancelToken::new().with_timeout(Duration::from_secs(15));
         match p.models(&cancel) {
@@ -235,8 +238,8 @@ impl Handler {
                 w,
                 503,
                 "not signed in".to_string(),
-                "The GitHub Copilot login is missing on this machine.".to_string(),
-                "Sign in with GitHub.".to_string(),
+                format!("The {} sign-in is missing on this machine.", p.label()),
+                format!("Sign in to {} in Settings -> Harness.", p.label()),
             ),
             Err(err) => crate::write_error(
                 w,
@@ -256,18 +259,8 @@ impl Handler {
         let _guard = crate::ADDITION_WRITES
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let provider = payload
-            .get("provider")
-            .map(str_value)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let p = match self.harness_provider(provider) {
-            Ok(p) => p,
-            Err(err) => {
-                crate::addition_failure(w, err);
-                return;
-            }
+        let Some(p) = self.harness_provider_named(w, payload_provider(&payload)) else {
+            return;
         };
         let Some(loginer) = p.as_device_login() else {
             crate::write_error(
@@ -316,12 +309,8 @@ impl Handler {
         let _guard = crate::ADDITION_WRITES
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let p = match self.harness_provider(String::new()) {
-            Ok(p) => p,
-            Err(err) => {
-                crate::addition_failure(w, err);
-                return;
-            }
+        let Some(p) = self.harness_provider_named(w, payload_provider(&payload)) else {
+            return;
         };
         let Some(loginer) = p.as_device_login() else {
             crate::write_error(
@@ -358,7 +347,7 @@ impl Handler {
                 502,
                 "provider failed".into(),
                 self.redacted_provider_error(err.to_string(), vec![]),
-                "Retry the poll.".into(),
+                "Start the sign-in again, or sign in another way.".into(),
             ),
         }
     }
@@ -380,19 +369,15 @@ impl Handler {
                 400,
                 "missing token".into(),
                 "Token login needs a non-empty token string.".into(),
-                "Paste a GitHub token.".into(),
+                "Paste the API key or token.".into(),
             );
             return;
         }
         let _guard = crate::ADDITION_WRITES
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let p = match self.harness_provider(String::new()) {
-            Ok(p) => p,
-            Err(err) => {
-                crate::addition_failure(w, err);
-                return;
-            }
+        let Some(p) = self.harness_provider_named(w, payload_provider(&payload)) else {
+            return;
         };
         let Some(loginer) = p.as_token_login() else {
             crate::write_error(
@@ -423,18 +408,15 @@ impl Handler {
     }
 
     pub(crate) fn addition_harness_logout(&self, w: &mut ResponseWriter, r: &Request) {
-        if !crate::read_payload(w, r).1 {
+        let (payload, ok) = crate::read_payload(w, r);
+        if !ok {
             return;
         }
         let _guard = crate::ADDITION_WRITES
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let p = match self.harness_provider(String::new()) {
-            Ok(p) => p,
-            Err(err) => {
-                crate::addition_failure(w, err);
-                return;
-            }
+        let Some(p) = self.harness_provider_named(w, payload_provider(&payload)) else {
+            return;
         };
         let Some(logouter) = p.as_logouter() else {
             crate::write_error(
@@ -858,6 +840,72 @@ impl Handler {
         (abs.display().to_string(), true)
     }
 
+    /// `GET /harness/providers/{name}`: one provider's sign-in ways and its
+    /// login on this machine, active or not, so the console can connect a
+    /// provider before switching to it.
+    pub(crate) fn addition_harness_provider(
+        &self,
+        w: &mut ResponseWriter,
+        r: &Request,
+        name: String,
+    ) {
+        let name = name.trim().to_string();
+        if !pulse_provider::names().contains(&name) {
+            crate::write_error(
+                w,
+                404,
+                "unknown provider".into(),
+                format!("No model provider is called {name:?}."),
+                format!("Use one of: {}.", pulse_provider::names().join(", ")),
+            );
+            return;
+        }
+        let p = match self.harness_provider(name) {
+            Ok(p) => p,
+            Err(err) => {
+                crate::addition_failure(w, err);
+                return;
+            }
+        };
+        let login = self.harness_provider_status(&r.ctx, p.clone(), Duration::from_secs(5));
+        crate::write_json(
+            w,
+            200,
+            Value::Object(
+                self.harness_provider_summary(p, login)
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+    }
+
+    /// The provider a call names (`provider` in its payload or query), else
+    /// the active one. An unknown name answers 400 and gives `None`.
+    fn harness_provider_named(
+        &self,
+        w: &mut ResponseWriter,
+        name: String,
+    ) -> Option<Arc<dyn pulse_provider::Provider>> {
+        let name = name.trim().to_string();
+        if !name.is_empty() && !pulse_provider::names().contains(&name) {
+            crate::write_error(
+                w,
+                400,
+                "unknown provider".into(),
+                format!("No model provider is called {name:?}."),
+                format!("Use one of: {}.", pulse_provider::names().join(", ")),
+            );
+            return None;
+        }
+        match self.harness_provider(name) {
+            Ok(p) => Some(p),
+            Err(err) => {
+                crate::addition_failure(w, err);
+                None
+            }
+        }
+    }
+
     pub(crate) fn harness_provider(
         &self,
         name: String,
@@ -1219,6 +1267,16 @@ fn maps_value(rows: Vec<JsonMap>) -> Value {
     )
 }
 
+/// The `provider` a sign-in payload names; empty means the active one.
+fn payload_provider(payload: &JsonMap) -> String {
+    payload
+        .get("provider")
+        .map(str_value)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
 fn str_value(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -1575,7 +1633,7 @@ mod tests {
             assert_eq!(row["device_login"], true, "{name}");
             assert_eq!(row["token_login"], true, "{name}");
         }
-        for name in ["anthropic", "gemini", "ollama"] {
+        for name in ["gemini", "ollama"] {
             let row = providers
                 .iter()
                 .find(|row| row["name"] == name)
@@ -1583,6 +1641,13 @@ mod tests {
             assert_eq!(row["device_login"], false, "{name}");
             assert_eq!(row["token_login"], true, "{name}");
         }
+        // Anthropic signs in through its own CLI in the browser, or takes a key.
+        let row = providers
+            .iter()
+            .find(|row| row["name"] == "anthropic")
+            .expect("anthropic provider missing");
+        assert_eq!(row["device_login"], true);
+        assert_eq!(row["token_login"], true);
     }
 
     #[test]
@@ -1676,6 +1741,82 @@ mod tests {
         );
         assert_eq!(status, 200, "{raw}");
         assert_eq!(result["ok"], true);
+    }
+
+    #[test]
+    fn addition_harness_sign_in_calls_act_on_the_named_provider() {
+        let _serial = crate::test_helpers::serial();
+        pulse_provider_openai::register();
+        let s = harness_store();
+        // The active provider has no device code and no key: every call
+        // below would fail if it went to the active provider.
+        s.set_setting("human", "provider", "openai").unwrap();
+        let call = |method: &str, path: &str, body: &str| {
+            crate::test_helpers_http::request(
+                crate::test_helpers_http::handler(&s),
+                method,
+                path,
+                body,
+                &[],
+            )
+        };
+        let (status, result, raw) = call("GET", "/api/v1/harness/providers/hubfake", "");
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(result["name"], "hubfake");
+        assert_eq!(result["label"], "Hub Fake");
+        assert_eq!(result["device_login"], true);
+        assert_eq!(result["token_login"], true);
+        assert_eq!(result["login"]["logged_in"], true);
+        assert_eq!(result["login"]["user"], "octocat");
+        let (status, result, raw) = call("GET", "/api/v1/harness/providers/nope", "");
+        assert_eq!(status, 404, "{raw}");
+        assert_eq!(result["error"], "unknown provider");
+        let (status, _, raw) = call("POST", "/api/v1/harness/providers/hubfake", "{}");
+        assert_eq!(status, 405, "{raw}");
+
+        let (status, result, raw) = call("GET", "/api/v1/harness/models?provider=hubfake", "");
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(result["models"][0]["id"], "hub-worker");
+        let (status, result, raw) = call("GET", "/api/v1/harness/models?provider=nope", "");
+        assert_eq!(status, 400, "{raw}");
+        assert_eq!(result["error"], "unknown provider");
+
+        let (status, result, raw) =
+            call("POST", "/api/v1/harness/login", r#"{"provider":"hubfake"}"#);
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(result["device_code"], "device-1");
+        let (status, result, raw) = call(
+            "POST",
+            "/api/v1/harness/login/poll",
+            r#"{"provider":"hubfake","device_code":"device-1"}"#,
+        );
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(result["status"], "complete");
+        assert_eq!(result["login"]["user"], "octocat");
+        let (status, result, raw) = call(
+            "POST",
+            "/api/v1/harness/login/poll",
+            r#"{"provider":"nope","device_code":"device-1"}"#,
+        );
+        assert_eq!(status, 400, "{raw}");
+        assert_eq!(result["error"], "unknown provider");
+        let (status, result, raw) = call(
+            "POST",
+            "/api/v1/harness/login/token",
+            r#"{"provider":"hubfake","token":"good-token"}"#,
+        );
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(result["login"]["user"], "token-user");
+        let (status, result, raw) = call(
+            "POST",
+            "/api/v1/harness/logout",
+            r#"{"provider":"hubfake"}"#,
+        );
+        assert_eq!(status, 200, "{raw}");
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["login"]["user"], "octocat");
+        // None of it switched the active provider.
+        assert_eq!(s.setting("provider", ""), "openai");
     }
 
     #[test]

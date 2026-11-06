@@ -1308,12 +1308,29 @@ fn device_login_flow(c: &mut Context, p: &dyn Provider, cancel: &CancelToken) ->
         .into());
     };
     let flow = dl.begin_device_login(cancel)?;
-    writeln!(
-        c.err,
-        "Open {} and enter the code {}",
-        flow.verification_uri,
-        c.style().bold(&flow.user_code)
-    )?;
+    if flow.user_code.is_empty() {
+        // A browser sign-in (Anthropic's CLI) has no code to type: it opens
+        // the browser on this machine and finishes by itself.
+        writeln!(
+            c.err,
+            "A browser window opened on this machine to sign in to {}. Approve the sign-in there.",
+            p.label()
+        )?;
+        if !flow.verification_uri.is_empty() {
+            writeln!(
+                c.err,
+                "If no browser opened, go to {}",
+                flow.verification_uri
+            )?;
+        }
+    } else {
+        writeln!(
+            c.err,
+            "Open {} and enter the code {}",
+            flow.verification_uri,
+            c.style().bold(&flow.user_code)
+        )?;
+    }
     let mut interval = if flow.interval <= 0 { 5 } else { flow.interval };
     let deadline = Instant::now() + Duration::from_secs(flow.expires_in.max(0) as u64);
     loop {

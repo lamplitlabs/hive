@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { CirclePauseIcon, EraserIcon, EyeOffIcon, PlayIcon, RotateCcwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,7 +78,48 @@ export function RowMeta({ s, className }: { s: Setting; className?: string }) {
 }
 
 // The raw key, labelled so it never reads as part of the sentence before it.
+// The raw keys are for people who also use the terminal: hidden unless the
+// viewer turns on "Show setting keys" at the top of Settings. A per-browser
+// choice (localStorage), read through a tiny store so every row follows the
+// switch at once; the search still finds a row by its key either way.
+const KEYS_PREF = "pulse.settings.show-keys";
+const keyListeners = new Set<() => void>();
+
+function readShowKeys(): boolean {
+  try {
+    return window.localStorage.getItem(KEYS_PREF) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setShowKeys(on: boolean) {
+  try {
+    if (on) window.localStorage.setItem(KEYS_PREF, "1");
+    else window.localStorage.removeItem(KEYS_PREF);
+  } catch {
+    // Private windows may refuse storage; the switch still works until reload.
+  }
+  memoKeys = on;
+  for (const f of keyListeners) f();
+}
+
+let memoKeys: boolean | null = null;
+
+export function useShowKeys(): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      keyListeners.add(cb);
+      return () => keyListeners.delete(cb);
+    },
+    () => (memoKeys ??= readShowKeys()),
+    () => false,
+  );
+}
+
 export function SettingKey({ name, className }: { name: string; className?: string }) {
+  const show = useShowKeys();
+  if (!show) return null;
   return (
     <span className={cn("min-w-0 text-xs text-muted-foreground anywhere", className)} title={PULSE_SETTING}>
       Key: <code className="font-mono text-[12px] text-muted-foreground/90">{name}</code>

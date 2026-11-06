@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowRightIcon, ChevronDownIcon, CircleCheckIcon, CirclePowerIcon, ServerIcon } from "lucide-react";
+import { ArrowRightIcon, ChevronDownIcon, CircleCheckIcon, CirclePowerIcon, PlugZapIcon, ServerIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { ActivityChart, lastDays } from "@/components/pulse/charts";
@@ -31,6 +31,7 @@ import { RecentTasks } from "@/components/home/recent-tasks";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { WorkSuggestionCard } from "@/components/tasks/suggested-work";
 import { hrefs } from "@/lib/nav";
+import { providerInfo } from "@/lib/providers";
 import { num, plural } from "@/lib/format";
 import { registeredProjects, type Compute, type Org, type RecordRow, type Runner, type RunningPayload, type ServicePayload, type SettingsPayload, type TasksPayload, type Timeline } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
@@ -102,7 +103,7 @@ export default function HubPage() {
 
   const o = org.data;
   const commons = o.commons;
-  const { decisions: adrs, proposals: awaiting, questions, agentsDeciding, compute: pendingCompute, work: suggestedWork, drafts, steps, machine: machineStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
+  const { decisions: adrs, proposals: awaiting, questions, agentsDeciding, compute: pendingCompute, work: suggestedWork, drafts, steps, machine: machineStep, provider: providerStep, total: inbox, daemon, checking, down, downWhy, gateOf } = forYou;
   // The inbox shows its first few cards and unfolds on request: Home says
   // what waits, the cards past the fold are one click away.
   const INBOX_SHOWN = 4;
@@ -130,6 +131,21 @@ export default function HubPage() {
   // Every card that waits for the owner, in the order they should be read:
   // decisions first, then proposals and questions, then the machine's own.
   const inboxCards: ReactNode[] = [
+    // No model, no agents: connecting one comes before every decision.
+    ...(providerStep
+      ? [
+          <ItemCard key="provider" href={"/settings/?connect=" + encodeURIComponent(providerStep.name) + "#harness"} highlight ariaLabel="Connect a model provider">
+            <ItemCardHeader>
+              <ItemCardKind icon={PlugZapIcon} tone="you">Models</ItemCardKind>
+            </ItemCardHeader>
+            <ItemCardTitle chevron>{providerStep.expired ? "Sign in to " + providerInfo(providerStep.name, providerStep.label).title + " again" : "Connect a model provider"}</ItemCardTitle>
+            <ItemCardBody>{providerStep.expired ? "The sign-in expired, so agents can't call their models. It takes a minute; nothing else changes." : "Agents need a model to work with. Sign in with an account you already have, paste an API key, or use models running on this computer."}</ItemCardBody>
+            <ItemCardMeta>
+              <span className="inline-flex items-center gap-1 font-medium text-primary">{providerStep.expired ? "Sign in again" : "Connect a provider"} <ArrowRightIcon className="size-3.5" aria-hidden /></span>
+            </ItemCardMeta>
+          </ItemCard>,
+        ]
+      : []),
     ...adrs.map((rec) => <ProposedRecordCard key={rec.project + "/" + rec.id} r={rec} onOpen={setOpenRecord} />),
     ...awaiting.map((p) => <ProposalCard key={p.id} r={p} slug={p.slug || o.totals.brain} canDecide={o.can_decide} />),
     ...questions.map((q) => <QuestionCard key={(q.slug || "") + "/" + q.id} q={q} slug={q.slug || o.totals.brain} canDecide={o.can_decide} />),
@@ -315,7 +331,7 @@ export default function HubPage() {
             <FailedJobsSection />
 
             <div className="grid min-w-0 gap-4 xl:grid-cols-2">
-              <MachinePanel r={r} />
+              <MachinePanel r={r} error={runner.error && !r ? runner.error : undefined} />
               <LiveFeed limit={40} height={320} />
             </div>
 

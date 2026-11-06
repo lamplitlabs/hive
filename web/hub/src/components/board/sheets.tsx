@@ -80,16 +80,17 @@ export const THREAD_COLUMNS = (slug: string): Column<ThreadRow>[] => [
   {
     key: "thread",
     label: "Thread",
+    className: "min-w-40 break-words",
     sort: (t) => t.key,
     render: (t) => (
-      <Link href={hrefs.thread(slug, t.key)} title={"Thread " + t.key} className="font-medium underline-offset-2 hover:underline anywhere">
+      <Link href={hrefs.thread(slug, t.key)} title={"Thread " + t.key} className="font-medium underline-offset-2 hover:underline">
         {threadTitle(t)}
       </Link>
     ),
   },
   { key: "status", label: "Status", sort: (t) => t.status + (t.resolution || ""), render: (t) => <ThreadState t={t} /> },
   { key: "participants", label: "Who's in it", hide: "md", render: (t) => <span className="text-[13px] text-muted-foreground anywhere">{nameList(t.participants)}</span> },
-  { key: "posts", label: "Posts", align: "right", sort: (t) => t.posts, render: (t) => num(t.posts) },
+  { key: "posts", label: "Posts", align: "right", hide: "sm", sort: (t) => t.posts, render: (t) => num(t.posts) },
   {
     key: "last",
     label: "Last post",

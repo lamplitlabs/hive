@@ -5,15 +5,16 @@ import { CheckCircle2Icon, ServerIcon } from "lucide-react";
 import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { ExecutorRow, MachinePanel } from "@/components/compute/machine";
 import { HygienePanel } from "@/components/pulse/hygiene";
+import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/pulse/runners";
 import { useState } from "react";
 import { CapsPanel, ComputeInboxCard, ComputeRequestCard, ComputeRequestRow } from "@/components/compute/compute";
 import { Button } from "@/components/ui/button";
 import { CardGrid, SectionHeading } from "@/components/pulse/item-card";
-import { EmptyState, ErrorNotice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
+import { Disclosure, EmptyState, ErrorNotice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
 import { RemoveMenuButton } from "@/components/project/project-dialogs";
 import { hrefs } from "@/lib/nav";
 import { plural } from "@/lib/format";
-import type { Compute, ComputeRequest, Executor, Runner } from "@/lib/api";
+import type { Compute, ComputeRequest, Executor, Hygiene, Runner } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 const SUB = "Where your agents run. Agents can ask for an extra machine for a few hours; nothing starts until you approve it.";
@@ -30,6 +31,8 @@ const quietLink = "text-[13px] font-medium text-muted-foreground underline-offse
 export default function ComputePage() {
   const q = useApi<Compute>("compute", { refresh: 10000 });
   const runner = useApi<Runner>("runner");
+  // The cleanup panel's own answer (same path, same cache), for its question about the other agent programs.
+  const hygiene = useApi<Hygiene>("hygiene?limit=30", { refresh: 60000 });
   const [allPast, setAllPast] = useState(false);
   if (q.error && !q.data)
     return (
@@ -43,6 +46,8 @@ export default function ComputePage() {
   if (!q.data) return <SkeletonPage rows={3} />;
   const c = q.data;
   const pending = c.requests.filter((r) => r.status === "pending").sort(newestFirst);
+  const runnersNote = hygiene.data?.runners;
+  const asking = runnersAsking(runnersNote);
   // Approved requests that are starting or running are live and use hours, so
   // they get their own group; "Past requests" keeps the settled ones.
   const live = c.requests.filter((r) => LIVE.has(r.status)).sort(newestFirst);
@@ -60,22 +65,23 @@ export default function ComputePage() {
   const machinesNote = executors.length ? plural(active, "machine") + " taking work right now." : "Every machine your agents can use.";
   return (
     <>
-      <PageTitle icon={ServerIcon} sub={SUB}>
+      <PageTitle icon={ServerIcon} sub={SUB} actions={<AddMachineButton caps={c.caps} size="default" variant="default" />}>
         Machines
       </PageTitle>
 
       <div className="grid min-w-0 gap-10 [&>*]:min-w-0">
         <section aria-label="Waiting for you">
-          <SectionHeading count={pending.length || undefined} note={pending.length ? "An agent asked for an extra machine. It starts only if you approve." : undefined}>
+          <SectionHeading count={pending.length + (asking ? 1 : 0) || undefined} note={pending.length ? "An agent asked for an extra machine. It starts only if you approve." : undefined}>
             Waiting for you
           </SectionHeading>
+          {asking ? <RunnersQuestion note={runnersNote} className={pending.length ? "mb-3 max-w-3xl" : "max-w-3xl"} /> : null}
           {pending.length ? (
             <CardGrid cols={2} className={pending.length === 1 ? "max-w-3xl" : undefined}>
               {pending.map((r) => (
                 <ComputeInboxCard key={r.id} r={r} caps={c.caps} here />
               ))}
             </CardGrid>
-          ) : (
+          ) : asking ? null : (
             <p className="flex items-center gap-2.5 rounded-2xl border bg-card px-4 py-3.5 text-sm text-muted-foreground">
               <CheckCircle2Icon className="size-4 shrink-0 text-ok" aria-hidden />
               <span className="min-w-0 anywhere">Nothing to decide. When an agent asks for an extra machine, it shows up here.</span>
@@ -106,7 +112,7 @@ export default function ComputePage() {
 
           <div className="grid min-w-0 gap-10 lg:gap-6">
             <section aria-label="All machines" className="min-w-0">
-              <SectionHeading count={executors.length || undefined} note={machinesNote} action={<AddMachineButton caps={c.caps} />}>
+              <SectionHeading count={executors.length || undefined} note={machinesNote}>
                 All machines
               </SectionHeading>
               {executors.length || pairings.length ? (
@@ -120,7 +126,7 @@ export default function ComputePage() {
                   ))}
                 </ul>
               ) : (
-                <EmptyState>No machine is set up yet. Add one above - PULSE sets it up over ssh - or approve an agent&apos;s request; it starts taking work after its first check passes.</EmptyState>
+                <EmptyState action={<AddMachineButton caps={c.caps} />}>No other machine yet. Add one and PULSE sets it up over ssh, or approve an agent&apos;s request. It starts taking work after its first check passes.</EmptyState>
               )}
             </section>
 
@@ -155,9 +161,14 @@ export default function ComputePage() {
           )}
         </section>
 
-        <section aria-label="Cleanup">
-          <SectionHeading note="Agents clean up after themselves; the runner cleans up what's left every 10 minutes.">Cleanup</SectionHeading>
-          <HygienePanel heading={false} />
+        {/* Housekeeping, folded: agents clean up after themselves and the runner sweeps every 10 minutes, so it rarely needs a look. */}
+        <section aria-label="Cleanup" className="border-t pt-4">
+          <Disclosure variant="row" summary={<span className="text-[15px] font-semibold">Cleanup</span>} hint="Runs every 10 minutes" contentClassName="mt-3">
+            <p className="mb-3 text-sm text-muted-foreground">Agents clean up after themselves; the runner cleans up what&apos;s left every 10 minutes.</p>
+            <RunnersAskedElsewhere.Provider value={true}>
+              <HygienePanel heading={false} />
+            </RunnersAskedElsewhere.Provider>
+          </Disclosure>
         </section>
       </div>
     </>

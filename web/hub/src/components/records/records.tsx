@@ -130,21 +130,22 @@ function Tags({ tags }: { tags?: string[] }) {
 
 // `showTier` = false drops the "Change" column (a shelf of memory or guides has no size of change).
 export const RECORD_COLUMNS = (showProject: boolean, showTier = true): Column<RecordRow>[] => [
-  { key: "title", label: "Title", sort: (r) => r.title, render: (r) => <Link href={hrefs.record(r.id, r.project)} className="font-medium anywhere hover:underline">{sentence(r.title)}</Link> },
-  { key: "kind", label: "Kind", nowrap: true, sort: (r) => r.kind, render: (r) => <RecordKindBadge kind={r.kind} className="font-normal" /> },
+  // The title keeps whole words and a readable width; on a phone the kind, project and date make room for it.
+  { key: "title", label: "Title", className: "min-w-44 break-words", sort: (r) => r.title, render: (r) => <Link href={hrefs.record(r.id, r.project)} title={r.id} className="font-medium hover:underline">{sentence(r.title)}</Link> },
+  { key: "kind", label: "Kind", nowrap: true, hide: "sm", sort: (r) => r.kind, render: (r) => <RecordKindBadge kind={r.kind} className="font-normal" /> },
   { key: "status", label: "Status", nowrap: true, sort: (r) => r.status, render: (r) => <StatusBadge status={r.status} /> },
-  ...(showProject ? ([{ key: "project", label: "Project", sort: (r) => r.project, render: (r) => <ProjectLink slug={r.project} className="font-normal" /> }] as Column<RecordRow>[]) : []),
+  ...(showProject ? ([{ key: "project", label: "Project", hide: "sm", sort: (r) => r.project, render: (r) => <ProjectLink slug={r.project} className="font-normal" /> }] as Column<RecordRow>[]) : []),
   ...(showTier ? ([{ key: "tier", label: "Change", hide: "md", sort: (r) => (tierOf(r) ? (r.tier ?? -1) : -1), render: (r) => <span className="text-[13px] text-muted-foreground"><Tier r={r} /></span> }] as Column<RecordRow>[]) : []),
   { key: "areas", label: "About", hide: "lg", render: (r) => <span className="text-[13px] text-muted-foreground">{(r.areas || []).join(", ")}</span> },
   { key: "delivery", label: "Delivery", hide: "lg", sort: (r) => r.delivered || r.delivery || "", render: (r) => <span className="text-[13px] text-muted-foreground"><Delivery r={r} /></span> },
   { key: "rev", label: "Revision", nowrap: true, hide: "lg", sort: (r) => r.current_rev, render: (r) => <span className="tnum text-[13px] text-muted-foreground">{r.current_rev}</span> },
-  { key: "updated", label: "Updated", nowrap: true, sort: (r) => r.updated_at || r.date, render: (r) => <When d={r.updated_at || r.date} className="text-muted-foreground" /> },
+  { key: "updated", label: "Updated", nowrap: true, hide: "sm", sort: (r) => r.updated_at || r.date, render: (r) => <When d={r.updated_at || r.date} className="text-muted-foreground" /> },
   { key: "id", label: "Id", nowrap: true, hide: "md", sort: (r) => r.kind + (r.number ?? 0).toString().padStart(5, "0") + r.slug, render: (r) => <span className="text-xs text-muted-foreground">{r.id}</span> },
 ];
 
 // One record as a library card: its title first, then what it is (kind and
 // status), whose it is and when it changed. The small facts (area, tier,
-// delivery) follow; the id sits small at the end for whoever needs it.
+// delivery) follow; the id stays in the tooltip of the date for whoever needs it.
 // A decision that waits for the owner carries the marigold rule.
 export function RecordCard({ r, showProject, onOpen, active }: { r: RecordRow; showProject?: boolean; onOpen?: (r: RecordRow) => void; active?: boolean }) {
   const open = onOpen ? () => onOpen(r) : undefined;
@@ -169,11 +170,8 @@ export function RecordCard({ r, showProject, onOpen, active }: { r: RecordRow; s
           <Tags tags={r.tags} />
         </ItemCardMeta>
       ) : null}
-      <div className="mt-auto flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-[13px] text-muted-foreground">
+      <div className="mt-auto flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-1 text-[13px] text-muted-foreground" title={"Record " + r.id + (r.current_rev > 1 ? ", revision " + r.current_rev : "")}>
         <Updated d={r.updated_at || r.date} />
-        <span className="text-xs text-muted-foreground anywhere" title={"Record " + r.id + (r.current_rev > 1 ? ", revision " + r.current_rev : "")}>
-          {r.id}
-        </span>
       </div>
     </ItemCard>
   );

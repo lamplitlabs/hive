@@ -1538,6 +1538,11 @@ export interface HarnessProviderInfo {
   login?: HarnessLogin;
 }
 
+// GET harness/providers/<name>: one provider's sign-in, whether or not it
+// is the one in use. GET harness/models?provider=<name> lists its models.
+export const harnessProviderPath = (name: string) => "harness/providers/" + encodeURIComponent(name);
+export const harnessModelsPath = (name?: string) => "harness/models" + (name ? "?provider=" + encodeURIComponent(name) : "");
+
 export interface HarnessStatus {
   provider: HarnessProviderInfo;
   providers: HarnessProviderInfo[];
@@ -3694,13 +3699,18 @@ export const writes = {
   // carry on under the new console either way.
   restartNow: (now?: boolean) =>
     post<RestartNowResult>("running/restart", now ? { now: true } : {}),
-  harnessLogin: () => post<HarnessDeviceFlow>("harness/login", {}),
-  harnessLoginPoll: (device_code: string) =>
-    post<HarnessPollResponse>("harness/login/poll", { device_code }),
-  harnessLoginToken: (token: string) =>
-    post<{ login: HarnessLogin }>("harness/login/token", { token }),
-  harnessLogout: () =>
-    post<{ ok: boolean; login: HarnessLogin }>("harness/logout", {}),
+  // Sign-in for a provider: the one in use unless `provider` names another,
+  // so the Connect a provider wizard can sign in before it switches. A
+  // device flow with an empty `user_code` is a browser sign-in on the
+  // machine PULSE runs on (Anthropic's CLI): nothing to type, just approve.
+  harnessLogin: (provider?: string) =>
+    post<HarnessDeviceFlow>("harness/login", provider ? { provider } : {}),
+  harnessLoginPoll: (device_code: string, provider?: string) =>
+    post<HarnessPollResponse>("harness/login/poll", provider ? { device_code, provider } : { device_code }),
+  harnessLoginToken: (token: string, provider?: string) =>
+    post<{ login: HarnessLogin }>("harness/login/token", provider ? { token, provider } : { token }),
+  harnessLogout: (provider?: string) =>
+    post<{ ok: boolean; login: HarnessLogin }>("harness/logout", provider ? { provider } : {}),
   // The speech model's setup: starts the download (202 with the status the
   // console then polls on GET voice), or stops the one running.
   voiceSetup: (model?: string) =>

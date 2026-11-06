@@ -7,7 +7,7 @@ import { FolderInputIcon, MoreHorizontalIcon, PencilLineIcon, Trash2Icon } from 
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { PageTitle, EmptyState, SkeletonPage } from "@/components/pulse/panel";
+import { PageTitle, EmptyState, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
 import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { Mono, When } from "@/components/pulse/who";
 import { CommonsLine, ProjectCard, workingRows } from "@/components/pulse/cards";
@@ -119,7 +119,7 @@ function ProjectScreen() {
           Projects
         </PageTitle>
         {!org.data && org.loading ? (
-          <SkeletonPage rows={2} />
+          <SkeletonRows n={4} className="[&>*]:h-24 [&>*]:rounded-2xl" />
         ) : (
           <div className="grid gap-10">
             {projects.length ? (
@@ -171,6 +171,28 @@ function ProjectScreen() {
       : goalText || (card?.path ? "Software project at " + card.path : card?.name && card.name !== card.slug ? card.name : "A software project PULSE works on.");
   const counts: Partial<Record<ProjectCanonicalTab, number>> = card ? { "for-you": forYou, work: openTasks, board: card.threads_open } : {};
   const removed = () => setParams({ slug: null, tab: null, sub: null, thread: null, post: null, task: null });
+
+  // A slug PULSE doesn't know (an old link, a typo, a removed project): say
+  // so and offer the way back, instead of six tabs that each fail to load.
+  if (!card && !isCommons && org.data) {
+    const gone = (reg.data?.projects ?? []).some((p) => p.slug === slug);
+    return (
+      <>
+        <PageTitle icon={FolderOpenIcon}>Project not found</PageTitle>
+        <EmptyState
+          icon={<FolderOpenIcon className="size-[18px]" />}
+          title={<>There&apos;s no project called &ldquo;{slug}&rdquo;</>}
+          action={
+            <Button asChild size="sm">
+              <Link href="/project/">See all projects</Link>
+            </Button>
+          }
+        >
+          {gone ? "It was removed. You can bring it back from the list of removed projects." : "The link may be old, or the project was removed or renamed. The list of projects has every one PULSE works on."}
+        </EmptyState>
+      </>
+    );
+  }
 
   return (
     <Tabs value={tab} onValueChange={(v) => setParams({ tab: v === "overview" ? null : v, sub: null, thread: null, post: null })} className="gap-0">

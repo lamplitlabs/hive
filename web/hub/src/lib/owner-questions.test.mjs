@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { askTitle, decisionLabels, sortOwnerQuestions } from "./owner-questions.ts";
+import { askTitle, decisionLabels, isOpenQuestion, sortOwnerQuestions } from "./owner-questions.ts";
 
 test("stop questions lead, stale threads trail, newest first within a group", () => {
   const rows = [
@@ -38,4 +38,14 @@ test("the card names a post by its kind", () => {
   assert.equal(askTitle("finding", "daemon"), "Your call, from daemon");
   assert.equal(askTitle("handoff", "alpha"), "Handed to you by alpha");
   assert.equal(askTitle("suggestion", "alpha"), "Proposed to you by alpha");
+});
+
+test("a which/what/how question is answered in words, a should-we question with yes or no", () => {
+  assert.equal(isOpenQuestion("Which payment sandbox should the checkout fixtures hit?", "Two exist in the vault."), true);
+  assert.equal(isOpenQuestion("  what should the retry limit be", ""), true);
+  assert.equal(isOpenQuestion("Should we upgrade next to 17?", ""), false);
+  assert.equal(isOpenQuestion("May it carry on?", undefined), false);
+  // A post that names its own buttons keeps them, whatever it asks.
+  assert.equal(isOpenQuestion("Which way: upgrade now?", "Yes: Upgrade it\nNo: Leave it to me"), false);
+  assert.equal(isOpenQuestion("Whichever works", ""), false);
 });

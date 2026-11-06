@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import { Disclosure, EmptyState, ErrorNotice, Notice, PageTitle, Panel, SkeletonPage } from "@/components/pulse/panel";
+import { Disclosure, EmptyState, ErrorNotice, Notice, PageTitle, Panel, SkeletonRows } from "@/components/pulse/panel";
 import { Mono, ProjectLink, When } from "@/components/pulse/who";
 import { query, writes, type MemoryEntry, type MemoryFile, type MemoryPayload } from "@/lib/api";
 import { plural, sizeText } from "@/lib/format";
@@ -36,6 +36,25 @@ function updateSearch(pathname: string, router: ReturnType<typeof useRouter>, ne
   router.replace(pathname + query(clean), { scroll: false });
 }
 
+// An entry's `code` spans as code, the rest as plain text: agents write
+// memory in Markdown, and raw backticks read as noise.
+function InlineText({ text }: { text: string }) {
+  const parts = text.split(/(`[^`\n]+`)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.length > 2 && p.startsWith("`") && p.endsWith("`") ? (
+          <code key={i} className="rounded bg-muted px-1 py-px font-mono text-[12.5px]">
+            {p.slice(1, -1)}
+          </code>
+        ) : (
+          p.replace(/\*\*([^*]+)\*\*/g, "$1")
+        ),
+      )}
+    </>
+  );
+}
+
 // One remembered fact: its day on the left, the text, and a quiet Forget
 // that asks first (the file is shared with every run on the project).
 function Entry({ file, entry }: { file: MemoryFile; entry: MemoryEntry }) {
@@ -46,7 +65,9 @@ function Entry({ file, entry }: { file: MemoryFile; entry: MemoryEntry }) {
       <span className="tnum mt-0.5 w-24 shrink-0 text-[12px] leading-5 text-muted-foreground" title={entry.day ? "Remembered on " + entry.day : "Written by hand, no date"}>
         {day || "—"}
       </span>
-      <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-foreground anywhere">{entry.text}</p>
+      <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-foreground anywhere">
+        <InlineText text={entry.text} />
+      </p>
       <Button type="button" size="icon-sm" variant="ghost" className="-my-1 shrink-0 text-muted-foreground opacity-70 hover:text-bad group-hover/entry:opacity-100 focus-visible:opacity-100" aria-label="Forget this memory" title="Forget this memory" onClick={() => setConfirm(true)}>
         <Trash2Icon className="size-4" aria-hidden />
       </Button>
@@ -65,7 +86,9 @@ function Entry({ file, entry }: { file: MemoryFile; entry: MemoryEntry }) {
         invalidates={(p) => p === "memory" || p.startsWith("memory?") || p.startsWith("events")}
         onConfirm={() => writes.forgetMemory({ key: file.key, scope: file.scope, text: entry.line })}
       >
-        <blockquote className="rounded-xl border bg-muted/40 px-4 py-3 text-sm leading-relaxed text-foreground anywhere">{entry.text}</blockquote>
+        <blockquote className="rounded-xl border bg-muted/40 px-4 py-3 text-sm leading-relaxed text-foreground anywhere">
+          <InlineText text={entry.text} />
+        </blockquote>
       </ConfirmDialog>
     </li>
   );
@@ -89,12 +112,8 @@ function FileCard({ file, search, newestFirst, open, onToggle }: { file: MemoryF
       }
       actions={
         file.exists ? (
-          <span className="inline-flex flex-wrap items-center gap-x-2">
-            <span>
-              Changed <When d={file.updated_at} />
-            </span>
-            <span aria-hidden>·</span>
-            <span>{sizeText(file.size)}</span>
+          <span title={sizeText(file.size)}>
+            Changed <When d={file.updated_at} />
           </span>
         ) : (
           <span>No file yet</span>
@@ -268,7 +287,7 @@ export function MemoryPageClient() {
       ) : null}
       {!q.data ? (
         q.error ? null : (
-          <SkeletonPage rows={3} />
+          <SkeletonRows n={5} className="[&>*]:h-16 [&>*]:rounded-xl" />
         )
       ) : (
         <div className="grid min-w-0 gap-5">

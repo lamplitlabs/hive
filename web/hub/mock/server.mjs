@@ -731,8 +731,62 @@ function send(res, code, body, headers = {}) {
 const fail = (res, code, error, why, fix) =>
   send(res, code, { error, why, fix });
 
-function harnessLoggedIn() {
-  return state.harness?.provider?.login?.logged_in === true;
+function harnessLoggedIn(name = state.harness?.provider?.name) {
+  return providerLogin(name).logged_in === true;
+}
+
+// Every provider the real registry has, with the sign-in flags it reports.
+// Anthropic's sign-in runs Anthropic's CLI on the hub's machine: a device
+// flow with no code to type.
+const MOCK_PROVIDERS = [
+  ["copilot", "GitHub Copilot", true],
+  ["openai", "OpenAI-compatible", false],
+  ["anthropic", "Anthropic Claude", true],
+  ["gemini", "Google Gemini", false],
+  ["azure-openai", "Azure OpenAI", true],
+  ["openrouter", "OpenRouter", false],
+  ["groq", "Groq", false],
+  ["mistral", "Mistral", false],
+  ["deepseek", "DeepSeek", false],
+  ["xai", "xAI Grok", false],
+  ["together", "Together AI", false],
+  ["fireworks", "Fireworks AI", false],
+  ["cerebras", "Cerebras", false],
+  ["github-models", "GitHub Models", true],
+  ["ollama", "Ollama (local)", false],
+  ["lmstudio", "LM Studio (local)", false],
+  ["vllm", "vLLM (local)", false],
+  ["custom", "Custom (OpenAI-compatible)", false],
+].map(([name, label, device_login]) => ({ name, label, device_login, token_login: true }));
+const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio", "vllm"]);
+const LOGGED_OUT = { logged_in: false, user: "", source: "", plan: "", expires_at: "", detail: "" };
+
+// Each provider's models in the mock: Anthropic and OpenAI get their own
+// lists, a local server a couple of open models, the rest the fixture.
+function mockModels(name) {
+  const m = (id, name, extra = {}) => ({ id, name, vendor: "", chat: true, tool_calls: true, premium: 1, preview: false, context_window: 200000, max_output: 64000, default: false, ...extra });
+  if (name === "anthropic")
+    return [
+      m("claude-opus-5-5", "Claude Opus 5.5", { context_window: 1000000, max_output: 128000 }),
+      m("claude-sonnet-5-5", "Claude Sonnet 5.5", { context_window: 1000000, max_output: 128000, default: true }),
+      m("claude-haiku-4-5", "Claude Haiku 4.5"),
+      m("claude-fable-5-1", "Claude Fable 5.1", { context_window: 1000000, max_output: 128000 }),
+    ];
+  if (name === "openai") return [m("gpt-5.5", "GPT-5.5", { default: true }), m("gpt-5.5-mini", "GPT-5.5 mini"), m("o5", "o5")];
+  if (name === "gemini") return [m("gemini-3-pro", "Gemini 3 Pro", { default: true, context_window: 1000000 }), m("gemini-3-flash", "Gemini 3 Flash", { context_window: 1000000 })];
+  if (LOCAL_PROVIDERS.has(name)) return [m("qwen3-coder:30b", "qwen3-coder:30b", { default: true, context_window: 262144 }), m("llama4:16x17b", "llama4:16x17b")];
+  return state.harnessModels.models;
+}
+
+function providerLogin(name) {
+  if (!state.providerLogins) state.providerLogins = { copilot: state.harness?.provider?.login ?? LOGGED_OUT };
+  if (LOCAL_PROVIDERS.has(name)) return { logged_in: true, user: "127.0.0.1", source: "no key", plan: "", expires_at: "", detail: "" };
+  return state.providerLogins[name] ?? { ...LOGGED_OUT, detail: "Not signed in to " + (MOCK_PROVIDERS.find((p) => p.name === name)?.label ?? name) + "." };
+}
+
+function providerSummary(name) {
+  const p = MOCK_PROVIDERS.find((x) => x.name === name);
+  return p ? { ...p, login: providerLogin(name) } : null;
 }
 
 function syncHarnessSetting(name, value) {
@@ -743,7 +797,12 @@ function syncHarnessSetting(name, value) {
     hs.updated_by = "owner";
   }
   if (!state.harness) return;
-  if (name === "provider") state.harness.provider.name = value;
+  if (name === "provider") {
+    const p = MOCK_PROVIDERS.find((x) => x.name === value);
+    if (p) state.harness.provider = providerSummary(value);
+  }
+  if (name === "measure_model") state.harness.models.measure = value;
+  if (name === "ask.model") state.harness.models.ask = value;
   if (name === "worker_model") state.harness.models.worker = value;
   if (name === "light_model") state.harness.models.light = value;
   if (name === "harness.max_steps")
@@ -764,8 +823,10 @@ function syncHarnessSetting(name, value) {
   }
 }
 
-function setHarnessLogin(login) {
-  state.harness.provider.login = login;
+function setHarnessLogin(login, name = state.harness.provider.name) {
+  providerLogin(name);
+  state.providerLogins[name] = login;
+  if (name === state.harness.provider.name) state.harness.provider.login = login;
 }
 
 async function readBody(req) {
@@ -2045,12 +2106,18 @@ async function handle(req, res) {
     }
     // native harness auth
     if (segs[0] === "harness" && segs[1] === "login" && segs.length === 2) {
-      const device_code = "mock-device-" + state.seq;
+      const name = String(body.provider || state.harness.provider.name);
+      const p = MOCK_PROVIDERS.find((x) => x.name === name);
+      if (!p?.device_login)
+        return fail(res, 400, "device login is not supported", "This provider does not implement device login.", "Choose a provider that supports device login.");
+      const device_code = "mock-device-" + ++state.seq;
       state.harnessPolls[device_code] = 0;
+      if (name === "anthropic")
+        return send(res, 200, { device_code, user_code: "", verification_uri: "https://console.anthropic.com/oauth/authorize?client=ant-cli", interval: 1, expires_in: 600 });
       return send(res, 200, {
         device_code,
         user_code: "ABCD-1234",
-        verification_uri: "https://github.com/login/device",
+        verification_uri: name === "azure-openai" ? "https://microsoft.com/devicelogin" : "https://github.com/login/device",
         interval: 1,
         expires_in: 900,
       });
@@ -2064,41 +2131,35 @@ async function handle(req, res) {
         return send(res, 200, { status: "slow_down" });
       if (state.harnessPolls[code] < 3)
         return send(res, 200, { status: "pending" });
-      const login = {
-        logged_in: true,
-        user: "octocat",
-        source: "device login",
-        plan: "individual",
-        expires_at: "2026-09-11T12:00:00Z",
-        detail: "",
-      };
-      setHarnessLogin(login);
-      emit("owner", "harness.login", "copilot", { user: login.user });
+      const name = String(body.provider || state.harness.provider.name);
+      const login =
+        name === "anthropic"
+          ? { logged_in: true, user: "Anthropic Console", source: "anthropic sign-in", plan: "", expires_at: "", detail: "" }
+          : name === "azure-openai"
+            ? { logged_in: true, user: "owner@contoso.com", source: "device login", plan: "", expires_at: "2027-01-11T12:00:00Z", detail: "" }
+            : { logged_in: true, user: "octocat", source: "device login", plan: name === "copilot" ? "individual" : "", expires_at: "2027-09-11T12:00:00Z", detail: "" };
+      setHarnessLogin(login, name);
+      emit("owner", "harness.login", name, { user: login.user });
       return send(res, 200, { status: "complete", login });
     }
     if (segs[0] === "harness" && segs[1] === "login" && segs[2] === "token") {
       const token = String(body.token || "");
-      if (!/^gh[opsuhr]_/.test(token))
-        return fail(
-          res,
-          400,
-          "invalid token",
-          "the mock accepts GitHub-shaped tokens only",
-          "paste a token beginning with gho_ or ghp_",
-        );
+      const name = String(body.provider || state.harness.provider.name);
+      const github = name === "copilot" || name === "github-models";
+      if (name === "anthropic" && token.startsWith("sk-ant-oat"))
+        return fail(res, 400, "token login failed", "That is a Claude Pro or Max subscription token, which Anthropic allows only inside its own apps.", "Paste a Console API key (sk-ant-api…) or use Sign in with Anthropic.");
+      if (github ? !/^(gh[opsuhr]_|github_pat_)/.test(token) : token.length < 12 || /^bad/.test(token))
+        return fail(res, 400, "token login failed", "The provider refused the key (401).", github ? "Paste a token beginning with gho_ or ghp_." : "Paste a valid key.");
       const login = {
         logged_in: true,
-        user: "octocat",
-        source: "token",
-        plan: "individual",
+        user: github ? "octocat" : "…" + token.slice(-4),
+        source: "token login",
+        plan: name === "copilot" ? "individual" : "",
         expires_at: "",
         detail: "",
       };
-      setHarnessLogin(login);
-      emit("owner", "harness.login", "copilot", {
-        user: login.user,
-        source: "token",
-      });
+      setHarnessLogin(login, name);
+      emit("owner", "harness.login", name, { user: login.user, source: "token" });
       return send(res, 200, { login });
     }
     if (segs[0] === "harness" && segs[1] === "logout") {
@@ -2110,8 +2171,9 @@ async function handle(req, res) {
         expires_at: "",
         detail: "",
       };
-      setHarnessLogin(login);
-      emit("owner", "harness.logout", "copilot", {});
+      const name = String(body.provider || state.harness.provider.name);
+      setHarnessLogin(login, name);
+      emit("owner", "harness.logout", name, {});
       return send(res, 200, { ok: true, login });
     }
     if (
@@ -3762,7 +3824,14 @@ async function handle(req, res) {
         0,
       ),
     };
+    state.harness.providers = MOCK_PROVIDERS;
+    state.harness.provider = providerSummary(state.harness.provider.name) ?? state.harness.provider;
     return send(res, 200, state.harness);
+  }
+  if (segs[0] === "harness" && segs[1] === "providers" && segs.length === 3) {
+    const row = providerSummary(segs[2]);
+    if (!row) return fail(res, 404, "unknown provider", "No provider is called " + segs[2] + ".", "Pick one from GET harness: providers.");
+    return send(res, 200, row);
   }
   if (segs[0] === "harness" && segs[1] === "prompt") {
     const setting = state.settings.settings.find(
@@ -3777,15 +3846,11 @@ async function handle(req, res) {
     });
   }
   if (segs[0] === "harness" && segs[1] === "models") {
-    if (!harnessLoggedIn())
-      return fail(
-        res,
-        503,
-        "not signed in",
-        "GitHub Copilot models are available after the provider login succeeds.",
-        "Sign in with GitHub.",
-      );
-    return send(res, 200, { ...state.harnessModels, fetched_at: now() });
+    const name = q.get("provider") || state.harness.provider.name;
+    const label = MOCK_PROVIDERS.find((x) => x.name === name)?.label ?? name;
+    if (!harnessLoggedIn(name))
+      return fail(res, 503, "not signed in", "The " + label + " login is missing on this machine.", "Sign in to " + label + ".");
+    return send(res, 200, { models: mockModels(name), fetched_at: now() });
   }
   if (segs[0] === "harness" && segs[1] === "sessions" && segs.length === 2) {
     const p = q.get("project");

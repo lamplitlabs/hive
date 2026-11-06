@@ -351,7 +351,7 @@ export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
       kind: "records",
       label: one ? "add " + (one === "constitution" ? "a constitution" : "scoring rules") : GATE_LABEL.records,
       title: one ? "Add " + (one === "constitution" ? "a constitution" : "scoring rules") + " for " + slug : "Add the self-improvement rules for " + slug,
-      body: "Self-improvement follows two short records: a constitution (what agents may change) and scoring rules (how a change is judged). This project has " + (one ? "no " + RECORD_WORD[one].toLowerCase() : "neither") + " yet. Run the command once to start from the template, then make the text yours under the project's Self-improvement tab.",
+      body: "Self-improvement follows two short records: a constitution (what agents may change) and scoring rules (how a change is judged). This project has " + (one ? "no " + RECORD_WORD[one].toLowerCase() : "neither") + " yet. Copy the command and run it once in a terminal on this machine: it starts from the template, and you can make the text your own afterwards.",
       command,
       ...(alt ? { alt } : {}),
     };

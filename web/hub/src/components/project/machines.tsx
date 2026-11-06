@@ -9,13 +9,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { showApiError } from "@/components/pulse/confirm";
-import { Panel } from "@/components/pulse/panel";
+import { Disclosure, Panel } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import { writes, type ProjectNeeds, type ProjectNeedsMachine } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { statusWord } from "@/lib/words";
 
 // Where a project's jobs run. A project says what kind of machine its work
 // needs in a few words - macos and xcode for an iOS app, linux and gpu for a
@@ -95,17 +96,19 @@ export function MachinesPanel({ slug, canDecide = true }: { slug: string; canDec
                 <li key={m.name} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-relaxed">
                   {m.fits ? <CheckIcon className="size-3.5 shrink-0 text-ok" aria-label="fits" /> : <XIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="does not fit" />}
                   <span className={cn("font-medium", !m.fits && "text-muted-foreground")}>{m.name}</span>
-                  {m.status !== "active" ? <ToneBadge tone="neutral">{m.status}</ToneBadge> : null}
+                  {m.status !== "active" ? <ToneBadge tone="neutral">{statusWord(m.status)}</ToneBadge> : null}
                   <span className="min-w-0 text-muted-foreground anywhere">{m.missing.length ? "lacks " + m.missing.join(", ") : offersOf(m) ? "offers " + offersOf(m) : "offers nothing named"}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="text-[13px] text-muted-foreground">No machine is paired yet. The hub&apos;s own machine appears here once the daemon runs.</p>
+            <p className="text-[13px] text-muted-foreground">No machine is paired yet. This machine appears here once the runner starts on it.</p>
           )}
-          <p className="text-[12.5px] leading-relaxed text-muted-foreground anywhere">
-            From a shell: <Mono>{"pulse init " + slug + " --needs " + (words.length ? words.join(",") : "macos,xcode")}</Mono>, or <Mono>needs:</Mono> in the repository&apos;s <Mono>.pulse/pulse.yaml</Mono>.
-          </p>
+          <Disclosure summary="Prefer the terminal?">
+            <p className="text-[12.5px] leading-relaxed text-muted-foreground anywhere">
+              From a shell: <Mono>{"pulse init " + slug + " --needs " + (words.length ? words.join(",") : "macos,xcode")}</Mono>, or <Mono>needs:</Mono> in the repository&apos;s <Mono>.pulse/pulse.yaml</Mono>.
+            </p>
+          </Disclosure>
         </div>
       )}
       {d ? <NeedsDialog open={editing} onOpenChange={setEditing} slug={slug} current={d} /> : null}

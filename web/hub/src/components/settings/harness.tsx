@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowRightIcon, CheckIcon, ClipboardIcon, ExternalLinkIcon, LogOutIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
+import { ArrowRightIcon, CheckIcon, LogOutIcon, RefreshCwIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,12 +11,14 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Disclosure, ErrorNotice, Kv, Notice } from "@/components/pulse/panel";
+import { Disclosure, ErrorNotice, Notice } from "@/components/pulse/panel";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import { EMPTY_CHOICE, SettingKey } from "@/components/settings/setting-row";
-import { errorText, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessProviderInfo, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
+import { connectedWords, ProviderGlyph, ProviderWizard } from "@/components/settings/provider-wizard";
+import { errorText, writes, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessProviderInfo, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
+import { CONNECT_PROVIDER_EVENT, providerInfo } from "@/lib/providers";
 import { settingHelp, settingLabel } from "@/lib/setting-labels";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -72,28 +74,12 @@ function saveSetting(name: string, value: string) {
   });
 }
 
-function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      onClick={() =>
-        navigator.clipboard
-          .writeText(text)
-          .then(() => toast.success("Copied."))
-          .catch(() => toast.error("Couldn't copy. Select the text and copy it yourself."))
-      }
-    >
-      <ClipboardIcon /> {label}
-    </Button>
-  );
-}
-
 function sourceText(source: string): { label: string; borrowed: boolean } {
   const s = source.trim().toLowerCase();
   if (s === "device login") return { label: "Signed in here", borrowed: false };
-  if (s === "token login") return { label: "With a pasted token", borrowed: false };
+  if (s === "token login" || s === "token") return { label: "With a pasted key", borrowed: false };
+  if (s === "anthropic sign-in") return { label: "Signed in through the Anthropic CLI", borrowed: false };
+  if (s === "no key") return { label: "No key needed", borrowed: false };
   if (s === "environment") return { label: "Borrowed from this machine's environment", borrowed: true };
   if (s === "editor login") return { label: "Borrowed from your editor", borrowed: true };
   return { label: source || "Unknown", borrowed: false };
@@ -139,215 +125,6 @@ export function plainLogin(text: string, signedIn: boolean): string {
     .trim();
   say = say.charAt(0).toUpperCase() + say.slice(1);
   return /[.!?]$/.test(say) ? say : say + ".";
-}
-
-function LoginHealth({ login, runner, expired }: { login?: HarnessLogin; runner?: Runner; expired: boolean }) {
-  const source = sourceText(login?.source || "");
-  const fresh = !!login?.logged_in && !expired;
-  const hold = runner?.hold ? <Notice tone="warn">{plainLogin(runner.hold, fresh)}</Notice> : null;
-  if (!login?.logged_in) {
-    return (
-      <div className="grid gap-2">
-        <Notice tone="warn">{login?.detail ? plainLogin(login.detail, false) : "Not signed in. Agents can't run until you sign in."}</Notice>
-        {hold}
-      </div>
-    );
-  }
-  const rows: [React.ReactNode, React.ReactNode][] = [["How", source.label]];
-  if (login.plan) rows.push(["Plan", login.plan.charAt(0).toUpperCase() + login.plan.slice(1)]);
-  if (login.expires_at && !expired)
-    rows.push([
-      "Expires",
-      <span key="exp" title={fmtDate(login.expires_at)}>
-        {rel(login.expires_at)}
-      </span>,
-    ]);
-  return (
-    <div className="grid gap-3">
-      <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-        <span className={cn("size-2 shrink-0 rounded-full", expired ? "bg-warn" : "bg-ok")} aria-hidden />
-        {expired ? (
-          <span>
-            Your sign-in as <b className="font-semibold">{login.user}</b> expired{" "}
-            <span title={fmtDate(login.expires_at)}>{rel(login.expires_at)}</span>. Sign in again so agents can run.
-          </span>
-        ) : (
-          <span>
-            Signed in as <b className="font-semibold">{login.user}</b>
-          </span>
-        )}
-      </p>
-      <Kv rows={rows} className="rounded-xl bg-muted/50 px-4 py-3" />
-      {source.borrowed ? <p className="text-[13px] text-muted-foreground">A borrowed sign-in isn&apos;t shared with your other machines.</p> : null}
-      {login.detail ? <Notice>{plainLogin(login.detail, fresh)}</Notice> : null}
-      {hold}
-    </div>
-  );
-}
-
-function DeviceLogin({ onDone, idp, label }: { onDone: () => void; idp: string; label?: string }) {
-  const button = label || "Sign in with " + idp;
-  const [flow, setFlow] = useState<HarnessDeviceFlow | null>(null);
-  const [status, setStatus] = useState<"idle" | "starting" | "pending" | "expired" | "denied">("idle");
-  const [pollDelay, setPollDelay] = useState(5);
-  const [polls, setPolls] = useState(0);
-  const [error, setError] = useState("");
-  const [startedAt, setStartedAt] = useState(0);
-  const now = useNow(1000);
-  const remaining = flow ? Math.max(0, Math.ceil((startedAt + flow.expires_in * 1000 - now) / 1000)) : 0;
-
-  const start = () => {
-    setStatus("starting");
-    setError("");
-    writes
-      .harnessLogin()
-      .then((r) => {
-        setFlow(r);
-        setStartedAt(Date.now());
-        setPollDelay(Math.max(1, r.interval || 5));
-        setPolls(0);
-        setStatus("pending");
-      })
-      .catch((e: unknown) => {
-        const t = errorText(e);
-        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
-        setStatus("idle");
-      });
-  };
-
-  useEffect(() => {
-    if (!flow || status !== "pending") return;
-    const id = setTimeout(() => {
-      writes
-        .harnessLoginPoll(flow.device_code)
-        .then((r) => {
-          setPolls((n) => n + 1);
-          if (r.status === "slow_down") setPollDelay((n) => n + 5);
-          if (r.status === "expired") setStatus("expired");
-          if (r.status === "denied") setStatus("denied");
-          if (r.status === "complete" && r.login) {
-            toast.success("Signed in as " + r.login.user + ".");
-            invalidate("harness");
-            invalidate("harness/models");
-            setFlow(null);
-            setStatus("idle");
-            onDone();
-          }
-        })
-        .catch((e: unknown) => {
-          const t = errorText(e);
-          setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
-          setStatus("idle");
-        });
-    }, pollDelay * 1000);
-    return () => clearTimeout(id);
-  }, [flow, status, pollDelay, polls, onDone]);
-
-  if (!flow) {
-    return (
-      <div className="grid gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" onClick={start} disabled={status === "starting"}>
-            {status === "starting" ? <RefreshCwIcon className="animate-spin" /> : null} {button}
-          </Button>
-          <span className="text-[13px] text-muted-foreground">You&apos;ll get a short code to enter on {idp}.</span>
-        </div>
-        {error ? <p className="text-[13px] text-bad anywhere">{error}</p> : null}
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid gap-3 rounded-xl border bg-muted/40 p-4">
-      <ol className="grid gap-1 text-sm text-muted-foreground">
-        <li>1. Open {idp} and enter this code.</li>
-        <li>2. Approve the sign-in. This page notices by itself.</li>
-      </ol>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="font-mono text-2xl font-semibold tracking-[0.12em] text-foreground" aria-label={"Code " + flow.user_code.split("").join(" ")}>
-          {flow.user_code}
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <CopyButton text={flow.user_code} label="Copy code" />
-          <Button asChild size="sm">
-            <a href={flow.verification_uri} target="_blank" rel="noreferrer">
-              Open {idp} <ExternalLinkIcon />
-            </a>
-          </Button>
-        </div>
-      </div>
-      <p className="text-[13px] text-muted-foreground" aria-live="polite">
-        {status === "pending" ? "Waiting for " + idp + ". " : status === "expired" ? "The code expired. Try again for a new one. " : "The sign-in was turned down on " + idp + ". "}
-        {remaining > 0 && status === "pending" ? "The code works for " + num(remaining) + " more seconds." : ""}
-      </p>
-      {status === "expired" || status === "denied" ? (
-        <div className="flex gap-2">
-          <Button size="sm" onClick={start}>
-            Try again
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setFlow(null)}>
-            Cancel
-          </Button>
-        </div>
-      ) : (
-        <Button size="sm" variant="ghost" className="w-fit" onClick={() => setFlow(null)}>
-          Cancel
-        </Button>
-      )}
-    </div>
-  );
-}
-
-function TokenLogin({ onDone, words, only }: { onDone: () => void; words: SignInWords; only: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [token, setToken] = useState("");
-  const [error, setError] = useState("");
-  const submit = () => {
-    setError("");
-    const id = toast.loading("Signing in…");
-    writes
-      .harnessLoginToken(token)
-      .then((r) => {
-        toast.success("Signed in as " + r.login.user + ".", { id });
-        setToken("");
-        setOpen(false);
-        invalidate("harness");
-        invalidate("harness/models");
-        onDone();
-      })
-      .catch((e: unknown) => {
-        toast.dismiss(id);
-        const t = errorText(e);
-        setError([t.error, t.why, t.fix].filter(Boolean).join(" "));
-      });
-  };
-  const form = (
-    <div className="flex flex-wrap items-end gap-2">
-      <div className="grid min-w-52 gap-1.5">
-        <Label htmlFor="harness-token">{words.tokenLabel}</Label>
-        <Input id="harness-token" type="password" value={token} onChange={(e) => setToken(e.target.value)} onKeyDown={(e) => e.key === "Enter" && token.trim() && submit()} placeholder={words.placeholder} />
-      </div>
-      <Button type="button" onClick={submit} disabled={!token.trim()}>
-        Sign in
-      </Button>
-      {error ? <p className="basis-full text-[13px] text-bad anywhere">{error}</p> : null}
-    </div>
-  );
-  // A provider without a device code signs in with its key alone, so the
-  // form stands open instead of folding behind "instead".
-  if (only) {
-    return (
-      <div className="grid gap-2">
-        <p className="text-[13px] text-muted-foreground">Paste the {words.tokenLabel === "API key" ? "API key" : "token"} from your {words.idp} account. It stays on this machine.</p>
-        {form}
-      </div>
-    );
-  }
-  return (
-    <Disclosure summary={words.tokenSummary} open={open} onToggle={setOpen}>
-      {form}
-    </Disclosure>
-  );
 }
 
 function ModelSelect({ name, label, note, current, models, disabled }: { name: "worker_model" | "light_model" | "measure_model" | "ask.model"; label: string; note: string; current: string; models: HarnessModel[]; disabled?: boolean }) {
@@ -665,13 +442,144 @@ function RowSummary({ title, note, badge }: { title: string; note: string; badge
   );
 }
 
+// The provider in use, how it is signed in, and the one way to change
+// either: the Connect a provider wizard. `?connect=1` on the Settings URL
+// opens it (the sidebar's "Connect a model" and Home link there), and
+// `?connect=<name>` opens it at that provider's Connect step.
+function ProviderBlock({ h, runner, expired, commands, onReload }: { h: HarnessStatus; runner?: Runner; expired: boolean; commands: string[]; onReload: () => void }) {
+  const [wizard, setWizard] = useState<{ open: boolean; start?: string }>({ open: false });
+  useEffect(() => {
+    const ask = new URLSearchParams(window.location.search).get("connect");
+    if (!ask) return;
+    const id = window.setTimeout(() => {
+      // Opened once; a reload shouldn't open it again.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("connect");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+      setWizard({ open: true, start: ask === "1" || ask === "true" ? undefined : ask });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, []);
+  useEffect(() => {
+    const open = () => setWizard({ open: true });
+    window.addEventListener(CONNECT_PROVIDER_EVENT, open);
+    return () => window.removeEventListener(CONNECT_PROVIDER_EVENT, open);
+  }, []);
+  const p = h.provider;
+  const info = providerInfo(p.name, p.label);
+  const login = p.login;
+  const signedIn = !!login?.logged_in && !expired;
+  const [leaving, setLeaving] = useState(false);
+  const signOut = () => {
+    setLeaving(true);
+    writes
+      .harnessLogout()
+      .then((r) => {
+        toast.success(r.login.logged_in ? "Still connected: " + plainLogin(r.login.detail || "a key from the environment is still in use", true) : "Signed out of " + info.title + ".");
+        invalidate("harness");
+        invalidate("harness/models");
+        onReload();
+      })
+      .catch((e: unknown) => {
+        const t = errorText(e);
+        toast.error(t.error, { description: [t.why, t.fix].filter(Boolean).join(" ") });
+      })
+      .finally(() => setLeaving(false));
+  };
+  return (
+    <Block title="Model provider" note="Where agents get their models. Keys and sign-ins stay on this machine.">
+      <div className={cn("grid gap-4 rounded-xl border p-4", signedIn ? "bg-card" : "border-warn/40 bg-warn/5")}>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3">
+          <ProviderGlyph name={p.name} title={info.title} className="size-10 text-sm" />
+          <div className="min-w-0 flex-1 basis-56">
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-[15px] font-semibold">{info.title}</span>
+              <ToneBadge tone={signedIn ? "ok" : "warn"} dot>
+                {signedIn ? "Connected" : expired ? "Sign-in expired" : "Not connected"}
+              </ToneBadge>
+            </p>
+            <p className="mt-0.5 text-[13px] text-muted-foreground anywhere">
+              {signedIn && login?.user?.startsWith("…") ? (
+                <>
+                  {connectedWords(login)}
+                  {login.expires_at ? <span title={fmtDate(login.expires_at)}>, renews {rel(login.expires_at)}</span> : null}.
+                </>
+              ) : signedIn ? (
+                <>
+                  {login?.user ? (
+                    <>
+                      As <b className="font-semibold text-foreground">{login.user}</b>,{" "}
+                    </>
+                  ) : null}
+                  {((l) => l.charAt(0).toLowerCase() + l.slice(1))(sourceText(login?.source || "").label)}
+                  {login?.plan ? ", " + login.plan + " plan" : ""}
+                  {login?.expires_at ? (
+                    <span title={fmtDate(login.expires_at)}>, renews {rel(login.expires_at)}</span>
+                  ) : null}
+                  .
+                </>
+              ) : expired ? (
+                <>
+                  The sign-in{login?.user ? <> as <b className="font-semibold text-foreground">{login.user}</b></> : null} expired{login?.expires_at ? <span title={fmtDate(login.expires_at)}> {rel(login.expires_at)}</span> : null}. Agents wait until you sign in again.
+                </>
+              ) : (
+                "Agents can't run until it's connected."
+              )}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {signedIn ? (
+              <>
+                <Button size="sm" variant="outline" onClick={() => setWizard({ open: true })}>
+                  Change provider
+                </Button>
+                {h.provider.token_login || h.provider.device_login ? (
+                  <Button size="sm" variant="ghost" onClick={signOut} disabled={leaving}>
+                    <LogOutIcon /> Sign out
+                  </Button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Button size="sm" onClick={() => setWizard({ open: true, start: p.name })}>
+                  {expired ? "Sign in again" : "Connect " + info.title}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setWizard({ open: true })}>
+                  Choose another provider
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+        {!signedIn && login?.detail ? <p className="text-[13px] text-muted-foreground anywhere">{plainLogin(login.detail, false)}</p> : null}
+        {sourceText(login?.source || "").borrowed && signedIn ? <p className="text-[13px] text-muted-foreground">A borrowed sign-in isn&apos;t shared with your other machines.</p> : null}
+      </div>
+      {/* While signed out the card already says agents wait; the runner's hold adds news only once the sign-in is back. */}
+      {runner?.hold && signedIn ? <Notice tone="info">{plainLogin(runner.hold, signedIn)}</Notice> : null}
+      {commands.length ? (
+        <Disclosure summary="Prefer the terminal?">
+          <p className="text-[13px] text-muted-foreground anywhere">
+            Sign in from a terminal on this machine:{" "}
+            {commands.map((c, i) => (
+              <span key={c}>
+                {i ? " or " : null}
+                <Mono>{c}</Mono>
+              </span>
+            ))}
+          </p>
+        </Disclosure>
+      ) : null}
+      <ProviderWizard open={wizard.open} start={wizard.start} h={h} onOpenChange={(open) => setWizard((w) => ({ ...w, open }))} />
+    </Block>
+  );
+}
+
 export function HarnessSettingsCard({ className }: { className?: string }) {
   const h = useApi<HarnessStatus>("harness", { refresh: 15000 });
   const runner = useApi<Runner>("runner", { refresh: 15000 });
   const models = useApi<HarnessModelsResponse>("harness/models", { refresh: 60000 });
   const d = h.data;
   const rows = d?.settings;
-  const provider = setting(rows, "provider");
   const budgets = ["harness.max_steps", "harness.task_max_steps", "minutes_per_job", "harness.max_cost"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const limits = ["harness.step_timeout", "harness.output_limit", "harness.keep_observations", "harness.context_window", "harness.compact_at", "harness.trim_keep_recent", "harness.trim_over"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
   const toggles = ["harness.instructions", "harness.mcp_tools", "harness.skills", "harness.hooks", "harness.subagents", "harness.memory", "harness.tasks", "harness.teach"].map((k) => setting(rows, k)).filter((s): s is Setting => !!s);
@@ -712,73 +620,12 @@ export function HarnessSettingsCard({ className }: { className?: string }) {
       {!d && !h.error ? <p className="px-4 py-5 text-sm text-muted-foreground sm:px-5">Loading sign-in and models…</p> : null}
       {d ? (
         <>
-          <Block
-            title="Sign-in"
-            note="Agents call the model provider with this sign-in. It stays on this machine."
-            right={
-              signedIn ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    writes.harnessLogout().then((r) => {
-                      toast.success(r.login.logged_in ? "Still signed in." : "Signed out.");
-                      invalidate("harness");
-                      invalidate("harness/models");
-                    })
-                  }
-                >
-                  <LogOutIcon /> Sign out
-                </Button>
-              ) : null
-            }
-          >
-            <div className="grid gap-1.5">
-              <Label id="harness-provider-label">Model provider</Label>
-              {provider ? (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                  <Select value={provider.value || d.provider.name} onValueChange={(v) => saveChoice("provider", v)}>
-                    <SelectTrigger className="w-64 max-w-full" aria-labelledby="harness-provider-label">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {d.providers.map((p) => (
-                        <SelectItem key={p.name} value={p.name}>
-                          {p.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <KeyName name="provider" />
-                </div>
-              ) : (
-                <span className="text-sm">{d.provider.label}</span>
-              )}
-            </div>
-            <LoginHealth login={login} runner={runner.data} expired={expired} />
-            {!signedIn || expired ? (
-              <div className="grid gap-3">
-                {d.provider.device_login ? <DeviceLogin onDone={() => void h.reload()} idp={words.idp} label={expired ? "Sign in again" : undefined} /> : null}
-                {d.provider.token_login ? <TokenLogin onDone={() => void h.reload()} words={words} only={!d.provider.device_login} /> : null}
-              </div>
-            ) : null}
-            {commands.length ? (
-              <Disclosure summary="Prefer the terminal?">
-                <p className="text-[13px] text-muted-foreground anywhere">
-                  Sign in from a terminal on this machine:{" "}
-                  {commands.map((c, i) => (
-                    <span key={c}>
-                      {i ? " or " : null}
-                      <Mono>{c}</Mono>
-                    </span>
-                  ))}
-                </p>
-              </Disclosure>
-            ) : null}
-          </Block>
+          <ProviderBlock h={d} runner={runner.data} expired={expired} commands={commands} onReload={() => void h.reload()} />
 
           <Block title="Models" note="Which models agents use. A change saves as soon as you pick it.">
-            {modelError ? (
+            {modelError && (!signedIn || expired) ? (
+              <p className="text-[13px] text-muted-foreground">Connect {providerInfo(d.provider.name, d.provider.label).title} above to pick from its model list. Until then you can type a model id.</p>
+            ) : modelError ? (
               <Notice tone={modelError.includes("not signed in") ? "warn" : "bad"}>
                 <span className="grid gap-1">
                   <span>The model list didn&apos;t load: {modelError}</span>

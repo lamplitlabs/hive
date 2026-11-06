@@ -13,7 +13,7 @@ import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, 
 import { Disclosure } from "@/components/pulse/panel";
 import { Markdown } from "@/components/pulse/markdown";
 import { ProjectLink, StatusBadge, When } from "@/components/pulse/who";
-import { priorityWord, statusWord } from "@/lib/words";
+import { agentName, priorityWord, statusWord } from "@/lib/words";
 import { plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { isOpenWorkSuggestion, writes, type Task, type WorkSuggestion, type WorkSuggestionsPayload } from "@/lib/api";
@@ -26,8 +26,12 @@ import { BriefField, UrgencyField } from "./task-dialogs";
 // decide waits for you. The Work tab shows them above the tasks; the ones
 // waiting for you also sit on For you.
 
-const who = (name: string) => (name === "human" ? "you" : name);
-const Who = (name: string) => (name === "human" ? "You" : name);
+const who = (name: string) => (name === "human" ? "you" : agentName(name));
+// At the start of a sentence: "Quartz handed it to you".
+const Who = (name: string) => {
+  const n = name === "human" ? "You" : agentName(name);
+  return n.charAt(0).toUpperCase() + n.slice(1);
+};
 const refresh = (p: string) => p.startsWith("tasks") || p.startsWith("events");
 // Those waiting for you first, then the newest.
 const byUrgency = (a: WorkSuggestion, b: WorkSuggestion) => (a.status === "owner" ? 0 : 1) - (b.status === "owner" ? 0 : 1) || (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0);
@@ -88,15 +92,17 @@ function SuggestionRow({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id:
     <li className={cn("grid gap-1.5 py-3", yours && "-mx-4 px-4 sm:-mx-5 sm:px-5 bg-you-soft/40")}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge status={s.status} />
-        <h4 className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground anywhere">{s.title}</h4>
+        {/* On a phone the title takes the whole line and the buttons wrap under it, so it never breaks a word per line. */}
+        <h4 className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground anywhere max-sm:basis-full" title={s.id}>
+          {s.title}
+        </h4>
         {open ? <RowActions s={s} onOpenTask={onOpenTask} /> : null}
       </div>
       <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">
-        <span className="font-mono text-xs">{s.id}</span>
-        {" · suggested by " + who(s.suggested_by) + " "}
+        {"Suggested by " + who(s.suggested_by) + " "}
         <When d={s.created_at} />
         {s.priority >= 30 ? " · " + priorityWord(s.priority).toLowerCase() : ""}
-        {s.status === "reviewing" ? <> · being reviewed{s.job_agent ? " by " + s.job_agent : ""}</> : null}
+        {s.status === "reviewing" ? <> · being reviewed{s.job_agent ? " by " + agentName(s.job_agent) : ""}</> : null}
         {s.status === "suggested" && s.reviews > 0 ? " · " + plural(s.reviews, "review") + " ended without a verdict" : ""}
       </p>
       {s.brief.trim() ? (
@@ -118,11 +124,11 @@ function VerdictLine({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: s
         <span>{"Accepted by " + who(s.reviewer) + (s.verdict ? ": " + s.verdict : ".")}</span>
         {s.task_id ? (
           onOpenTask ? (
-            <button type="button" className="inline-flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline" onClick={() => onOpenTask(s.task_id)}>
-              Now {s.task_id} <ArrowRightIcon className="size-3.5" aria-hidden />
+            <button type="button" className="inline-flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline" onClick={() => onOpenTask(s.task_id)} title={s.task_id}>
+              Open the task <ArrowRightIcon className="size-3.5" aria-hidden />
             </button>
           ) : (
-            <span className="font-mono text-xs">{s.task_id}</span>
+            <span>It&apos;s a task now.</span>
           )
         ) : null}
       </p>
@@ -150,11 +156,11 @@ function RowActions({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: st
     <span className="flex shrink-0 items-center gap-1.5">
       {yours ? (
         <>
-          <Button size="xs" onClick={() => setAccept(true)}>
-            <CheckIcon /> Accept
-          </Button>
           <Button size="xs" variant="outline" onClick={() => setDecline(true)}>
             <XIcon /> Decline
+          </Button>
+          <Button size="xs" onClick={() => setAccept(true)}>
+            <CheckIcon /> Accept
           </Button>
         </>
       ) : null}
@@ -167,11 +173,11 @@ function RowActions({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id: st
         <DropdownMenuContent align="end" className="w-56">
           {!yours ? (
             <>
-              <DropdownMenuItem onSelect={() => setAccept(true)}>
-                <CheckIcon /> Accept it now
-              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setDecline(true)}>
                 <XIcon /> Decline it
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setAccept(true)}>
+                <CheckIcon /> Accept it now
               </DropdownMenuItem>
             </>
           ) : null}
@@ -216,15 +222,15 @@ export function WorkSuggestionCard({ s, slug, onOpenTask }: { s: WorkSuggestion;
         </p>
       </ItemCardBody>
       <ItemCardMeta>
-        <span>{"Suggested by " + who(s.suggested_by) + " as " + s.id}</span>
+        <span title={s.id}>{"Suggested by " + who(s.suggested_by)}</span>
         {s.priority >= 30 ? <span>{priorityWord(s.priority)}</span> : null}
       </ItemCardMeta>
-      <ItemCardActions>
-        <Button size="sm" onClick={() => setAccept(true)}>
-          <CheckIcon /> Accept, make it a task
-        </Button>
+      <ItemCardActions className="sm:justify-end">
         <Button size="sm" variant="outline" onClick={() => setDecline(true)}>
           <XIcon /> Decline
+        </Button>
+        <Button size="sm" onClick={() => setAccept(true)}>
+          <CheckIcon /> Accept, make it a task
         </Button>
       </ItemCardActions>
       <AcceptSuggestionDialog s={s} open={accept} onOpenChange={setAccept} onAccepted={(t) => onOpenTask?.(t.id)} />

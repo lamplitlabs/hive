@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangleIcon, CheckCircle2Icon, ChevronRightIcon, InfoIcon, OctagonAlertIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,8 +35,43 @@ export function PageTitle({ children, sub, crumb, actions, bar, className, icon:
         </div>
         {actions ? <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:pt-1">{actions}</div> : null}
       </div>
-      {bar ? <div className="mt-5 min-w-0 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{bar}</div> : null}
+      {bar ? <FadingStrip className="mt-5 min-w-0 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{bar}</FadingStrip> : null}
     </header>
+  );
+}
+
+// A row that scrolls sideways without a scrollbar (tabs and filters on a
+// phone) fades at the edge that has more to show, so a cut-off "Self-impr…"
+// reads as "there is more" rather than as the end of the row. No fade when
+// everything fits.
+export function FadingStrip({ children, className }: { children: React.ReactNode; className?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      const left = el.scrollLeft > 2;
+      const right = max - el.scrollLeft > 2;
+      setEdges((e) => (e.left === left && e.right === right ? e : { left, right }));
+    };
+    const frame = requestAnimationFrame(measure);
+    el.addEventListener("scroll", measure, { passive: true });
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    if (el.firstElementChild) ro?.observe(el.firstElementChild);
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", measure);
+      ro?.disconnect();
+    };
+  }, []);
+  const mask = edges.left && edges.right ? "linear-gradient(to right, transparent, #000 2rem, #000 calc(100% - 2rem), transparent)" : edges.left ? "linear-gradient(to right, transparent, #000 2rem)" : edges.right ? "linear-gradient(to right, #000 calc(100% - 2rem), transparent)" : undefined;
+  return (
+    <div ref={ref} className={className} style={mask ? { maskImage: mask, WebkitMaskImage: mask } : undefined}>
+      {children}
+    </div>
   );
 }
 
