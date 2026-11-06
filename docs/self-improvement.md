@@ -435,7 +435,8 @@ fast-forwards each local default branch from its upstream
 There is no verify command in the pass and no landing lock for a project
 with an upstream: the per-project landing workers (`landing.parallel`) are
 gone with the verifies they were made to get through, and the batch landing
-(`landing.batch`) runs only for a project without one. Experiments stay on a
+(`landing.batch`) is removed; a project without one lands its branches one
+at a time. Experiments stay on a
 second thread, the experiment lane, which measures one experiment at a time;
 a ninety-minute measurement therefore holds no delivery. The lane obeys the
 load governor: while the machine is saturated (the `machine saturated` hold
@@ -643,7 +644,7 @@ record, read with `pulse record show WF-evolve`.
 | `landing.base_red_retry_minutes` | `10` minutes | How long a project's held work waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
 | `landing.setup_repair` | `on` | `on`: a project setup that fails on its own default branch - twice the same way in a worker clone, or at a local landing - queues one repair job (source `setup:SLUG`, at most three a day per project) that runs without that setup and fixes the recipe, the lockfile or the tree; `off` only marks the machine unfit, as before. |
 | `landing.auto_stash` | `on` | A dirty checkout on the default branch is stashed around the daemon's fast-forward from the upstream (and around a local landing); `off` leaves it alone and records `land.sync-skipped` at most once an hour ([Delivery](landing.md#the-local-default-branch-follows-the-upstream)). |
-| `landing.push`, `landing.verify_memo`, `landing.verify_memo_hours`, `landing.batch`, `landing` | as before | Settings of the local landing, kept so an older store's values still parse: `landing.push` is read by nothing (the daemon pushes branches and never the default branch); the verify memo and `landing.batch` steer only the local landing a project without an upstream keeps, and `pulse land --branch B --local`; `landing` (`agents`/`human`, ADR-024) still gates the local landing and the experiment lane; for pull requests `review.merge` is the switch. `landing.parallel` is removed. |
+| `landing.push`, `landing.verify_memo`, `landing.verify_memo_hours`, `landing` | as before | Settings of the local landing, kept so an older store's values still parse: `landing.push` is read by nothing (the daemon pushes branches and never the default branch); the verify memo steers only the local landing a project without an upstream keeps, and `pulse land --branch B --local`; `landing` (`agents`/`human`, ADR-024) still gates the local landing and the experiment lane; for pull requests `review.merge` is the switch. `landing.parallel` and `landing.batch` are removed. |
 | `pipeline.watch` | `fix` | What the daemon does with the GitHub Actions runs a push of its own set off ([Pipelines](landing.md#pipelines-what-a-push-set-running-on-github)): `fix` tells you on the project's `runner/pipeline` thread and queues one fix job for a red pipeline; `watch` tells you only; `off` reads nothing. |
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `pulse executor label`. |
