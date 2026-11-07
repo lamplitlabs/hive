@@ -3207,7 +3207,7 @@ impl Manager {
         if !committed.trim().is_empty() {
             out.push_str(&committed);
         }
-        let working = git(&row.cwd, &["diff", "HEAD"]);
+        let working = uncommitted_diff(&row.cwd);
         if !working.trim().is_empty() {
             if !out.is_empty() {
                 out.push_str("\n\n");
@@ -3744,6 +3744,16 @@ fn git(cwd: &str, args: &[&str]) -> String {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default()
+}
+
+/// The worktree's changes against HEAD, as a patch. The hub asks for this the
+/// moment a turn leaves a file dirty, which is when the agent is about to
+/// `git add` / `git commit`. Porcelain `git diff HEAD` refreshes a
+/// stat-stale index under index.lock even with `GIT_OPTIONAL_LOCKS=0`;
+/// the plumbing `diff-index` never writes the index. `-M` keeps the renames
+/// porcelain shows by default.
+fn uncommitted_diff(cwd: &str) -> String {
+    git(cwd, &["diff-index", "-p", "-M", "HEAD", "--"])
 }
 
 fn git_ok(cwd: &Path, args: &[&str]) -> Result<String> {
@@ -5096,6 +5106,45 @@ mod tests {
         assert!(
             std::fs::read(&index).unwrap() == before,
             "reading the changes rewrote the index"
+        );
+    }
+
+    #[test]
+    fn reading_the_uncommitted_diff_never_rewrites_the_worktree_index() {
+        // The hub fetches the diff as soon as a turn leaves a file dirty,
+        // while the agent goes on to `git add` / `git commit`. Porcelain
+        // `git diff HEAD` refreshes a stat-stale index under index.lock even
+        // with GIT_OPTIONAL_LOCKS=0, so the agent's commit could hit the lock.
+        let _env = pulse_testutil::env_lock();
+        let _git = PlainGit::set();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let dir = project_repo(home.path(), &s, "demo");
+        std::fs::write(dir.join("notes.md"), "one\n").unwrap();
+        std::fs::write(dir.join("old.md"), "kept as it was\n").unwrap();
+        git_in(&dir, &["add", "notes.md", "old.md"]);
+        git_in(&dir, &["commit", "-q", "-m", "notes"]);
+        std::fs::write(dir.join("notes.md"), "one\ntwo\n").unwrap();
+        git_in(&dir, &["mv", "old.md", "new.md"]);
+        // An unchanged file whose mtime no longer matches the index: what a
+        // checkout, a build or an editor leaves behind.
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("README.md"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .unwrap();
+        let index = dir.join(".git").join("index");
+        let before = std::fs::read(&index).unwrap();
+        let diff = uncommitted_diff(&dir.display().to_string());
+        assert!(diff.contains("+two"), "{diff}");
+        assert!(
+            diff.contains("rename from old.md") && diff.contains("rename to new.md"),
+            "{diff}"
+        );
+        assert!(
+            std::fs::read(&index).unwrap() == before,
+            "reading the diff rewrote the index"
         );
     }
 
