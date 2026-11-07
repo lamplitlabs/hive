@@ -293,8 +293,7 @@ pub(crate) fn retarget_pull_request(
 
 /// The fields `pr list` and `pr view` are asked for: the state and head of
 /// each pull request, and what stands between an open one and its merge.
-const PR_FIELDS: &str =
-    "number,state,mergedAt,url,headRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup";
+pub(crate) const PR_FIELDS: &str = "number,state,mergedAt,url,headRefName,headRefOid,isDraft,mergeable,mergeStateStatus,statusCheckRollup";
 
 /// What the forge says of one pull request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -316,6 +315,11 @@ pub(crate) struct PrState {
     /// The names of the checks on the head that failed, were cancelled,
     /// timed out or want action, from `statusCheckRollup`.
     pub(crate) failing_checks: Vec<String>,
+    /// The names of the checks on the head still queued or running, from
+    /// `statusCheckRollup`.
+    pub(crate) pending_checks: Vec<String>,
+    /// A draft pull request (`isDraft`): the forge refuses to merge it.
+    pub(crate) is_draft: bool,
 }
 
 impl PrState {
@@ -325,7 +329,10 @@ impl PrState {
     }
 }
 
-fn pr_state(v: &serde_json::Value) -> PrState {
+/// A `PrState` from the JSON `gh pr list`/`gh pr view --json PR_FIELDS`
+/// answers for one pull request; a field the answer lacks (an older gh, a
+/// fake) reads as empty.
+pub(crate) fn pr_state(v: &serde_json::Value) -> PrState {
     let field = |k: &str| {
         v.get(k)
             .and_then(|x| x.as_str())
@@ -342,6 +349,26 @@ fn pr_state(v: &serde_json::Value) -> PrState {
         mergeable: field("mergeable"),
         merge_state: field("mergeStateStatus"),
         failing_checks: failing_checks(v.get("statusCheckRollup")),
+        pending_checks: pending_checks(v.get("statusCheckRollup")),
+        is_draft: v.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false),
+    }
+}
+
+fn rollup_text(e: &serde_json::Value, k: &str) -> String {
+    e.get(k)
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A rollup entry's name: a check run's `name`, a commit status's
+/// `context`.
+fn rollup_name(e: &serde_json::Value) -> String {
+    let name = rollup_text(e, "name");
+    if name.is_empty() {
+        rollup_text(e, "context")
+    } else {
+        name
     }
 }
 
@@ -352,27 +379,33 @@ fn failing_checks(rollup: Option<&serde_json::Value>) -> Vec<String> {
     let Some(list) = rollup.and_then(|r| r.as_array()) else {
         return Vec::new();
     };
-    let text = |e: &serde_json::Value, k: &str| {
-        e.get(k)
-            .and_then(|x| x.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
     list.iter()
         .filter(|e| {
             matches!(
-                text(e, "conclusion").as_str(),
+                rollup_text(e, "conclusion").as_str(),
                 "FAILURE" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
-            ) || matches!(text(e, "state").as_str(), "ERROR" | "FAILURE")
+            ) || matches!(rollup_text(e, "state").as_str(), "ERROR" | "FAILURE")
         })
-        .map(|e| {
-            let name = text(e, "name");
-            if name.is_empty() {
-                text(e, "context")
-            } else {
-                name
-            }
+        .map(rollup_name)
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// The checks of a `statusCheckRollup` not finished yet: a check run whose
+/// `status` is not `COMPLETED` (queued, in progress, waiting, requested,
+/// pending), or a commit status whose `state` is `PENDING` or `EXPECTED`.
+fn pending_checks(rollup: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(list) = rollup.and_then(|r| r.as_array()) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|e| {
+            let status = rollup_text(e, "status");
+            let state = rollup_text(e, "state");
+            (!status.is_empty() && status != "COMPLETED")
+                || matches!(state.as_str(), "PENDING" | "EXPECTED")
         })
+        .map(rollup_name)
         .filter(|n| !n.is_empty())
         .collect()
 }
@@ -587,6 +620,8 @@ exit 1
         assert_eq!(st.head_sha, "abc");
         assert!(st.conflicting());
         assert_eq!(st.failing_checks, ["build", "late", "ci/legacy"]);
+        assert_eq!(st.pending_checks, ["slow"]);
+        assert!(!st.is_draft);
 
         let st = pr_state(&serde_json::json!({
             "number": 8, "state": "OPEN", "mergedAt": null, "url": "u", "headRefName": "h"
@@ -594,11 +629,17 @@ exit 1
         assert_eq!(st.head_sha, "");
         assert!(!st.conflicting());
         assert!(st.failing_checks.is_empty());
+        assert!(st.pending_checks.is_empty());
         let st = pr_state(&serde_json::json!({
             "number": 9, "state": "OPEN", "headRefOid": "def", "mergeable": "MERGEABLE",
-            "mergeStateStatus": "BLOCKED", "statusCheckRollup": []
+            "mergeStateStatus": "BLOCKED", "isDraft": true, "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "build", "status": "QUEUED", "conclusion": null},
+                {"__typename": "StatusContext", "context": "ci/wait", "state": "PENDING"}
+            ]
         }));
         assert!(!st.conflicting(), "blocked on review is not a conflict");
         assert!(st.failing_checks.is_empty());
+        assert_eq!(st.pending_checks, ["build", "ci/wait"]);
+        assert!(st.is_draft);
     }
 }

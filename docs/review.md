@@ -73,11 +73,21 @@ Where no reason holds, the verdict is one of three:
 
 - **Merge** - `pulse review merge <n>`: the diff does what the title says,
   the check passes on the branch, the change is safe and in scope. The
-  command merges on the forge (`gh pr merge --merge --delete-branch`, as the
-  `gh` account that works for this repository) and records `review.merged`
-  with `by: <the agent>` and the job; the delivery pass sees the merge on its
-  next poll, records `land.merged`, closes the task and fast-forwards the
-  local default branch.
+  command reads the pull request on GitHub first (`gh pr view`) and refuses
+  to merge - without a verdict, so the job ends with the reason - a head
+  that moved since the review was queued (*the pull request moved since it
+  was reviewed: reviewed X, now Y; it is reviewed again*), a draft, a
+  failing check (*has failing checks*) or one still running (*has checks
+  pending*), and a merge GitHub would block (`mergeStateStatus` `DIRTY`,
+  `BLOCKED` or `BEHIND`, named). A pull request with no check reported at
+  all merges; when the checkout has workflows under `.github/workflows`
+  and `pipeline.watch` is on, `review.merged` says so (`no_checks`). The
+  same gate stands in front of the hub's Merge button. Then it merges on
+  the forge (`gh pr merge --merge --delete-branch`, as the `gh` account
+  that works for this repository) and records `review.merged` with
+  `by: <the agent>`, the job, `head_sha` and `checks`; the delivery pass
+  sees the merge on its next poll, records `land.merged`, closes the task
+  and fast-forwards the local default branch.
 - **Changes** - `pulse review changes <n> --note "…"`: the change is right
   but not ready - a failing test, a missing case, a convention broken. The
   note goes on the pull request as a review that requests changes (as a
@@ -155,7 +165,7 @@ number (`7` or `#7`); `--json` gives the same as data.
 | `pulse review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: PULSE task T` (or job, experiment, proposed; `not a PULSE pull request` for one PULSE did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `pulse review diff <n>` | the diff against the base, from the forge |
 | `pulse review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
-| `pulse review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge |
+| `pulse review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge |
 | `pulse review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
 | `pulse review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
@@ -207,7 +217,12 @@ link to the pull request and a **Merge** button. The button asks once
 records `review.ask {action: merge}`; the hub merges nothing itself. The
 next maintenance pass merges the pull request as the owner, whatever the
 rule says, and records `review.merged` with `by: owner`; the line reads
-*Merging PR #n…* until then and *Merged* after the delivery poll. The same
+*Merging PR #n…* until then and *Merged* after the delivery poll. The
+forge's own gate is not bypassed: a failing or still running check, a
+draft, a merge GitHub blocks or a head that moved since the hub showed it
+is refused (the daemon log says *could not be merged for the owner:
+<reason>*), and the ask stands - each pass tries again until the pull
+request is ready or settled on GitHub. The same
 hand-over is a question on the project's board, marked for you, on the
 `review` thread - *Merge pull request #n: <title>?* with the reasons, the
 review and the ways to merge it - and a message on the task's conversation
@@ -291,7 +306,7 @@ lists them at `GET /api/v1/events?project=X&action=review.*`.
 | Event | When | Detail |
 | --- | --- | --- |
 | `review.queued` | a review job is queued for a pull request | `project`, `number`, `url`, `job`, `kind` (`task`, `job`, `experiment`, `proposed`), `reasons`, `sha` (the head reviewed), `task` for a task's |
-| `review.merged` | the pull request was merged by `pulse review merge` or for a Merge you pressed | `project`, `number`, `url`, `by` (the reviewing agent, or `owner`), `job` when a job ran the command |
+| `review.merged` | the pull request was merged by `pulse review merge` or for a Merge you pressed | `project`, `number`, `url`, `by` (the reviewing agent, or `owner`), `job` when a job ran the command, `head_sha` (the head merged), `checks` (how many reported), `no_checks` with a `note` when none did although the project has workflows |
 | `review.changes` | the reviewer asked for changes | `project`, `number`, `url`, `note`, `follow_up` (the job queued) |
 | `review.owner` | the pull request was handed to you | `project`, `number`, `url`, `reasons`, `note` |
 | `review.failed` | a review job ended without a verdict, or a `gh` call of a verdict failed | `project`, `number`, `url`, `error`, `job` when it was the job's ending |

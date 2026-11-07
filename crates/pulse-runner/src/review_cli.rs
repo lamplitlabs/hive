@@ -473,14 +473,15 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     } else {
         actor.clone()
     };
-    let url = review::merge(s, &project, number, &by, &actor, &now).map_err(|e| {
-        pulse_cli::errorf(
-            1,
-            &format!("Merge of #{number} failed"),
-            &e,
-            "the failure is recorded (review.failed); the owner can merge on GitHub",
-        )
-    })?;
+    let url =
+        review::merge_viewed(s, &project, number, Some(&view), &by, &actor, &now).map_err(|e| {
+            pulse_cli::errorf(
+                1,
+                &format!("Merge of #{number} failed"),
+                &e,
+                "the failure is recorded (review.failed); the owner can merge on GitHub",
+            )
+        })?;
     writeln!(
         c.out,
         "Merged #{number}{} as {by}",

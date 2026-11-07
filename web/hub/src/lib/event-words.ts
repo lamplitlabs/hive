@@ -75,7 +75,7 @@ export const VERB: Record<string, string> = {
   "land.pr-conflict": "found a pull request conflicts with main and cannot merge",
   "land.pr-held": "held back a pull request until the work changes",
   "land.pr-refreshed": "brought a pull request up to date with main",
-  "land.pr-unstacked": "moved a pull request onto main after the one it built on was closed",
+  "land.pr-rebuilt": "rebuilt a pull request without the commits of the one it built on, which was closed",
   "land.rebase": "asked a worker to redo finished work that no longer fits on main",
   "land.merged": "saw a pull request merged",
   "land.missing": "found a finished job's branch missing, so it never arrived",

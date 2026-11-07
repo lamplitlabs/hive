@@ -26,10 +26,14 @@
 //! (`base`, `stack_on` in its `land.pr`), so two open pull requests never
 //! hold changes to the same lines that only meet at merge time. The stack
 //! is plain git branches and explicit bases, nothing of the forge's: when
-//! the pull request below merges or closes, the one above is moved onto
-//! its base (`retarget_stacked`), and the reviewer takes the stack bottom
-//! up (`review.rs`). A conversation's pull request (`pulse/chat-<id>`)
-//! stays out of the stack: the hub keeps its branch checked out.
+//! the pull request below merges, the one above is moved onto its base
+//! (`retarget_stacked`); when it is closed unmerged, the one above is
+//! rebuilt on that base from its own commits alone, the rejected ones
+//! dropped, and then moved (`rebuild_stacked`, `land.pr-rebuilt`; a
+//! rebuild that conflicts holds the pull request where it is,
+//! `land.pr-held`). The reviewer takes the stack bottom up (`review.rs`).
+//! A conversation's pull request (`pulse/chat-<id>`) stays out of the
+//! stack: the hub keeps its branch checked out.
 //!
 //! The same pass reads the state of every open pull request in one `gh pr
 //! list` per repository. Merged: `land.merged`, the delivered jobs lose
@@ -2591,15 +2595,22 @@ fn note_conversation_closed(
     Some(format!("conversation {id} told"))
 }
 
-/// Moves the pull requests stacked on a settled one onto its base: each
-/// open pull request whose `base` is the settled head is retargeted on the
-/// forge (`gh pr edit --base`) and gets a fresh `land.pr` with the new base
-/// (`retargeted_from` names the old one), so delivery and the reviewer see
-/// where it stands. The forge may move them itself when it deletes a merged
-/// branch; PULSE does not count on it. One retargeted because the pull
-/// request below was closed unmerged carries that one's commits now, which
-/// its task is told once (`land.pr-unstacked` for the other kinds). A
-/// failure of the forge leaves no event, so the next pass tries again.
+/// Moves the pull requests stacked on a settled one onto its base. Merged:
+/// each open pull request whose `base` is the settled head is retargeted
+/// on the forge (`gh pr edit --base`) and gets a fresh `land.pr` with the
+/// new base (`retargeted_from` names the old one), so delivery and the
+/// reviewer see where it stands; the forge may move them itself when it
+/// deletes a merged branch, PULSE does not count on it. Closed unmerged:
+/// the pull requests above hold the closed one's commits in their history,
+/// and retargeting them would carry the rejected work into the base
+/// through the next merge, so each is rebuilt instead
+/// ([`rebuild_stacked`]): its own commits on the new base, the closed
+/// one's dropped, force-pushed to the same branch, then retargeted
+/// (`land.pr-rebuilt`); a pull request stacked on a rebuilt one is rebuilt
+/// the same way, so the whole stack above loses the commits. One the
+/// rebuild cannot do cleanly stays where it is, held with the conflict
+/// named (`land.pr-held`), and its origin is told. A failure of the forge
+/// leaves no event, so the next pass tries again.
 fn retarget_stacked(
     s: &pulse_store::Store,
     project: &Row,
@@ -2639,6 +2650,28 @@ fn retarget_stacked(
             (up.remote_branch.clone(), 0)
         }
     };
+    if closed {
+        let closed_sha = listed
+            .get(&settled_number)
+            .map(|st| st.head_sha.clone())
+            .filter(|sha| !sha.is_empty())
+            .unwrap_or_else(|| field_of(settled, "to"));
+        return rebuild_stacked(
+            s,
+            project,
+            up,
+            &open,
+            listed,
+            Dropped {
+                number: settled_number,
+                head: head.clone(),
+                sha: closed_sha,
+            },
+            &base,
+            stack_on,
+            now,
+        );
+    }
     let mut lines = Vec::new();
     for pr in above {
         let n = number_of(pr);
@@ -2663,29 +2696,371 @@ fn retarget_stacked(
         d["opened"] = json!(false);
         d["retargeted_from"] = json!(head);
         event(s, now, "land.pr", &slug, d);
-        let mut line = format!("{kind} pr {slug}: #{n} retargeted from {head} to {base}");
-        if closed {
-            let note = format!(
-                "Pull request #{n} was stacked on #{settled_number}, which was closed unmerged; #{n} now carries #{settled_number}'s commits as well as its own. Rebuild it without them, or merge it as it is."
-            );
-            let task = field_of(pr, "task");
-            if task.is_empty() {
-                event(
-                    s,
-                    now,
-                    "land.pr-unstacked",
-                    &slug,
-                    json!({"project": slug, "kind": kind, "number": n, "url": field_of(pr, "url"),
-                        "head": field_of(pr, "head"), "base": base, "closed": settled_number, "note": note}),
-                );
-            } else {
-                let _ = pulse_tasks::send_message(s, &slug, &task, ACTOR, &note);
-            }
-            line.push_str(&format!("; it carries #{settled_number}'s commits"));
-        }
-        lines.push(line);
+        lines.push(format!(
+            "{kind} pr {slug}: #{n} retargeted from {head} to {base}"
+        ));
     }
     lines
+}
+
+/// The pull request closed unmerged whose commits the stack above must
+/// lose: its number, head branch and head sha as the forge last had it.
+struct Dropped {
+    number: i64,
+    head: String,
+    sha: String,
+}
+
+/// What stands below the pull requests being rebuilt: the head branch they
+/// have as their base now (`below`), the branch their own commits go onto
+/// and its sha on the upstream, the pull request that branch is the head
+/// of (0 for the default branch), and the sha they were built on that is
+/// to go - the closed head, or the old tip of a pull request rebuilt just
+/// before.
+struct Onto {
+    below: String,
+    branch: String,
+    sha: String,
+    stack_on: i64,
+    old_below: String,
+}
+
+/// Rebuilds every open pull request stacked on `dropped` without its
+/// commits, bottom up and then up the stack: the ones whose base is the
+/// closed head go onto `base` (the closed pull request's own base) and are
+/// retargeted there; the ones stacked on a rebuilt pull request keep their
+/// base and are rebuilt on its new tip. Each rebuilt one gets
+/// `land.pr-rebuilt` and a fresh `land.pr`, and its origin is told once; a
+/// conflict holds it where it is (`land.pr-held`) and tells the origin what
+/// to do by hand. The pull requests above a held one are left alone: they
+/// still stand on a head that holds the rejected commits, which the hold
+/// note says.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_stacked(
+    s: &pulse_store::Store,
+    project: &Row,
+    up: &Upstream,
+    open: &[Value],
+    listed: &BTreeMap<i64, crate::landing_pr::PrState>,
+    dropped: Dropped,
+    base: &str,
+    stack_on: i64,
+    now: &str,
+) -> Vec<String> {
+    let slug = project.str("slug");
+    let root = project.str("path");
+    let mut lines = Vec::new();
+    let base_sha = match fetch_head(s, &root, up, base) {
+        Ok(sha) if !sha.is_empty() => sha,
+        Ok(_) => {
+            lines.push(format!(
+                "{slug}: the stack on #{} is not rebuilt: {base} is gone from {}",
+                dropped.number,
+                up.name()
+            ));
+            return lines;
+        }
+        Err(e) => {
+            lines.push(format!(
+                "{slug}: the stack on #{} is not rebuilt: {e}",
+                dropped.number
+            ));
+            return lines;
+        }
+    };
+    // The closed head stays on the forge; fetched, so the checkout knows
+    // the commits it is to drop even when nothing here ever had them.
+    let _ = fetch_head(s, &root, up, &dropped.head);
+    let dropped_count = crate::util::git_timeout(
+        &root,
+        Duration::from_secs(30),
+        &["rev-list", "--count", &dropped.sha, &format!("^{base_sha}")],
+    )
+    .stdout
+    .trim()
+    .parse::<i64>()
+    .unwrap_or(0);
+    let mut work = vec![Onto {
+        below: dropped.head.clone(),
+        branch: base.to_string(),
+        sha: base_sha,
+        stack_on,
+        old_below: dropped.sha.clone(),
+    }];
+    // The head branches rebuilt on so far, so a stack that loops through
+    // bad data cannot run forever.
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(onto) = work.pop() {
+        let below = onto.below.clone();
+        if !seen.insert(below.clone()) {
+            continue;
+        }
+        let above: Vec<&Value> = open
+            .iter()
+            .filter(|pr| {
+                number_of(pr) != dropped.number
+                    && field(pr, "base") == below
+                    && listed
+                        .get(&number_of(pr))
+                        .is_none_or(|st| st.state == "OPEN")
+            })
+            .collect();
+        for pr in above {
+            let n = number_of(pr);
+            let kind = kind_of(pr);
+            let head = field_of(pr, "head");
+            let url = field_of(pr, "url");
+            let retarget = below != onto.branch;
+            match rebuild_branch(s, &root, up, &head, &onto) {
+                Ok(built) => {
+                    let retargeted = if retarget {
+                        crate::landing_pr::retarget_pull_request(&root, &up.repo, n, &onto.branch)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(e) = retargeted {
+                        lines.push(format!(
+                            "{kind} pr {slug}: #{n} rebuilt on {} without #{}'s commits but not retargeted from {below} to {}: {e}",
+                            onto.branch, dropped.number, onto.branch
+                        ));
+                    }
+                    let mut d = pr.clone();
+                    d["base"] = json!(onto.branch);
+                    if onto.stack_on != 0 {
+                        d["stack_on"] = json!(onto.stack_on);
+                    } else if let Some(o) = d.as_object_mut() {
+                        o.remove("stack_on");
+                    }
+                    d["from"] = json!(onto.sha);
+                    d["to"] = json!(built.tip);
+                    d["commits"] = json!(built.own);
+                    d["opened"] = json!(false);
+                    d["rebuilt"] = json!(true);
+                    if retarget {
+                        d["retargeted_from"] = json!(below);
+                    }
+                    event(s, now, "land.pr", &slug, d);
+                    event(
+                        s,
+                        now,
+                        "land.pr-rebuilt",
+                        &slug,
+                        json!({"project": slug, "kind": kind, "number": n, "url": url, "head": head,
+                            "old_base": below, "base": onto.branch, "from": built.was, "to": built.tip,
+                            "commits": built.own,
+                            "dropped": {"number": dropped.number, "commits": dropped_count}}),
+                    );
+                    let told = tell_origin(
+                        s,
+                        pr,
+                        now,
+                        &format!(
+                            "Pull request #{n} ({url}) was stacked on #{}, which was closed without merging. \
+                             {head} was rebuilt on {} from its own {} commit{} without #{}'s {dropped_count}, and the pull request targets {} now; its head is {}. \
+                             The project's check runs on it again, and the reviewer reads it again.",
+                            dropped.number,
+                            onto.branch,
+                            built.own,
+                            if built.own == 1 { "" } else { "s" },
+                            dropped.number,
+                            onto.branch,
+                            crate::recipe::short(&built.tip, 12)
+                        ),
+                    );
+                    lines.push(format!(
+                        "{kind} pr {slug}: #{n} rebuilt on {} without #{}'s commits ({} of its own, {dropped_count} dropped), head now {}{told}",
+                        onto.branch,
+                        dropped.number,
+                        built.own,
+                        crate::recipe::short(&built.tip, 12)
+                    ));
+                    // The ones stacked on this one are rebuilt on its new
+                    // tip, dropping its old history the same way.
+                    work.push(Onto {
+                        below: head.clone(),
+                        branch: head.clone(),
+                        sha: built.tip,
+                        stack_on: n,
+                        old_below: built.was,
+                    });
+                }
+                Err(Rebuild::Conflict { was, files }) => {
+                    let list = files.join(", ");
+                    let mut d = json!({"kind": kind, "number": n, "url": url, "head": head,
+                        "head_sha": was, "base": onto.branch, "closed": dropped.number, "files": files,
+                        "work": format!("{head} {} rebuild", crate::recipe::short(&was, 12))});
+                    for key in ["task", "job", "experiment", "conversation"] {
+                        let v = field_of(pr, key);
+                        if !v.is_empty() {
+                            d[key] = json!(v);
+                        }
+                    }
+                    let note = format!(
+                        "#{n} was stacked on #{}, which was closed unmerged; rebuilding {head} on {} without #{}'s commits conflicts in {list}",
+                        dropped.number, onto.branch, dropped.number
+                    );
+                    hold(s, now, &slug, d, &note);
+                    let told = tell_origin(
+                        s,
+                        pr,
+                        now,
+                        &format!(
+                            "Pull request #{n} ({url}) was stacked on #{}, which was closed without merging, so #{n} carries #{}'s rejected commits. \
+                             Rebuilding {head} on {} without them conflicts in {list}, so the pull request was left as it is and still targets {below}. \
+                             Start a branch from {}, bring over only #{n}'s own commits (`git cherry-pick` of what {} has beyond {}), resolve the conflicts keeping the intent of both sides, run the project's check, force-push it to {head} and retarget the pull request to {}; the pull request follows the branch.",
+                            dropped.number,
+                            dropped.number,
+                            onto.branch,
+                            onto.branch,
+                            crate::recipe::short(&was, 12),
+                            crate::recipe::short(&onto.old_below, 12),
+                            onto.branch
+                        ),
+                    );
+                    lines.push(format!(
+                        "{kind} pr {slug}: #{n} not rebuilt on {} without #{}'s commits: conflicts in {list}; held{told}",
+                        onto.branch, dropped.number
+                    ));
+                }
+                Err(Rebuild::Other(e)) => lines.push(format!(
+                    "{kind} pr {slug}: #{n} not rebuilt on {} without #{}'s commits: {e}",
+                    onto.branch, dropped.number
+                )),
+            }
+        }
+    }
+    lines
+}
+
+/// A branch rebuilt without the commits below it.
+struct Rebuilt {
+    /// The head as the upstream had it before.
+    was: String,
+    /// The new tip, pushed.
+    tip: String,
+    /// Its own commits on the new base.
+    own: i64,
+}
+
+enum Rebuild {
+    /// The commits do not go onto the new base cleanly; nothing moved.
+    Conflict {
+        was: String,
+        files: Vec<String>,
+    },
+    Other(String),
+}
+
+impl From<String> for Rebuild {
+    fn from(e: String) -> Self {
+        Rebuild::Other(e)
+    }
+}
+
+/// Rebuilds `head` on `onto`: the branch as the upstream has it, fetched,
+/// its commits past where it forked from `onto.old_below` rebased onto
+/// `onto.sha` in a scratch worktree of the checkout (`git rebase --onto`:
+/// the merge commits that took the stack in go, and so does a patch the
+/// base has already), the upstream's branch pushed there leasing on the
+/// head fetched, and the local branch moved to the result; the worktree
+/// goes whatever happens.
+fn rebuild_branch(
+    s: &pulse_store::Store,
+    root: &str,
+    up: &Upstream,
+    head: &str,
+    onto: &Onto,
+) -> Result<Rebuilt, Rebuild> {
+    let was = fetch_head(s, root, up, head)?;
+    if was.is_empty() {
+        return Err(format!("{head} is gone from {}", up.name()).into());
+    }
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(120), args);
+    // Where the branch left what is below it: its commits past that point
+    // are its own. The branch may stand on an older tip of the one below
+    // than the forge last had, so the fork point is the cut, not that tip.
+    let cut = git(&["merge-base", &onto.old_below, &was])
+        .stdout
+        .trim()
+        .to_string();
+    if cut.is_empty() {
+        return Err(format!(
+            "{head} at {} shares no history with {} to drop it",
+            crate::recipe::short(&was, 12),
+            crate::recipe::short(&onto.old_below, 12)
+        )
+        .into());
+    }
+    let git_dir = git(&["rev-parse", "--absolute-git-dir"])
+        .stdout
+        .trim()
+        .to_string();
+    if git_dir.is_empty() {
+        return Err(format!("{root} is not a git checkout").into());
+    }
+    let wt_path = format!("{git_dir}/pulse-stack/{}", head.replace('/', "_"));
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    let _ = std::fs::remove_dir_all(&wt_path);
+    let add = git(&["worktree", "add", "--detach", &wt_path, &was]);
+    if !add.ok() {
+        return Err(format!(
+            "worktree add failed: {}",
+            crate::run::squeeze(&add.stderr, 200)
+        )
+        .into());
+    }
+    let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
+    let r = in_wt(&[
+        "-c",
+        "user.name=PULSE",
+        "-c",
+        "user.email=pulse@localhost",
+        "rebase",
+        "--onto",
+        &onto.sha,
+        &cut,
+    ]);
+    let result = if r.ok() {
+        let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
+        let own = in_wt(&["rev-list", "--count", &format!("{}..{tip}", onto.sha)])
+            .stdout
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(0);
+        if tip.is_empty() {
+            Err(Rebuild::Other(format!(
+                "{head} has no tip after the rebuild"
+            )))
+        } else {
+            Ok((tip, own))
+        }
+    } else {
+        let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        let _ = in_wt(&["rebase", "--abort"]);
+        Err(if unmerged.is_empty() {
+            Rebuild::Other(format!(
+                "rebase of {head} onto {} failed: {}",
+                onto.branch,
+                crate::run::squeeze(&format!("{} {}", r.stdout, r.stderr), 200)
+            ))
+        } else {
+            Rebuild::Conflict {
+                was: was.clone(),
+                files: unmerged,
+            }
+        })
+    };
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    let (tip, own) = result?;
+    push_rev(s, root, up, &tip, head, Some(&was))?;
+    let _ = git(&["update-ref", &format!("refs/heads/{head}"), &tip]);
+    Ok(Rebuilt { was, tip, own })
 }
 
 /// The jobs a pull request delivered: the `jobs` list of its `land.pr`,
@@ -4586,13 +4961,19 @@ mod tests {
     }
 
     #[test]
-    fn a_task_stacked_on_a_pull_request_closed_unmerged_is_told_once() {
+    fn a_task_stacked_on_a_pull_request_closed_unmerged_is_rebuilt_without_its_commits_and_told_once()
+     {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let gh = fake_gh();
         let s = new_store();
         let (proj, repo, bare) = push_fixture(&s);
-        let (first, second, _) = stacked_task(&s, &proj, &repo, &bare, &gh);
+        gh.track_remote(&bare);
+        let (first, second, first_head) = stacked_task(&s, &proj, &repo, &bare, &gh);
+        let first_branch = task_branch(&first);
+        let second_branch = task_branch(&second);
+        let main = bare_ref(&bare, "refs/heads/main");
+        let own = ref_of(&repo, "refs/heads/pulse/worker/c");
         let told = |task: &str| {
             count(
                 &s,
@@ -4601,6 +4982,8 @@ mod tests {
             )
         };
 
+        // The bottom is closed unmerged: #8 is rebuilt on main from its own
+        // commit alone, pushed, retargeted, and the task is told once.
         gh.set_state(7, "CLOSED");
         let lines = tend_proj(&s, &proj, TEST_NOW);
         assert!(
@@ -4609,42 +4992,215 @@ mod tests {
                 .any(|l| l.contains("#7 closed unmerged; task back in progress")),
             "{lines:?}"
         );
+        let tip = bare_ref(&bare, &format!("refs/heads/{second_branch}"));
+        let dropped = run(
+            &repo,
+            &[
+                "git",
+                "rev-list",
+                "--count",
+                &format!("{main}..{first_head}"),
+            ],
+        )
+        .trim()
+        .to_string();
         assert!(
             lines.iter().any(|l| l
                 == &format!(
-                    "task pr proj: #8 retargeted from {} to main; it carries #7's commits",
-                    task_branch(&first)
+                    "task pr proj: #8 rebuilt on main without #7's commits (1 of its own, {dropped} dropped), head now {}; task {second} told",
+                    crate::recipe::short(&tip, 12)
                 )),
             "{lines:?}"
         );
         assert_eq!(gh.base_of(8), "main");
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "rev-list", "--count", &format!("{main}..{tip}")]
+            )
+            .trim(),
+            "1",
+            "only its own commit on main"
+        );
+        assert!(
+            !crate::util::git_timeout(
+                &repo,
+                Duration::from_secs(10),
+                &["merge-base", "--is-ancestor", &first_head, &tip],
+            )
+            .ok(),
+            "#7's commits are gone"
+        );
+        assert_eq!(
+            run(&repo, &["git", "show", "-s", "--format=%s", &tip]).trim(),
+            run(&repo, &["git", "show", "-s", "--format=%s", &own]).trim(),
+            "the own commit, replayed"
+        );
+        assert_eq!(
+            ref_of(&repo, &format!("refs/heads/{second_branch}")),
+            tip,
+            "the local branch follows"
+        );
         let pr = last_detail(&s, "land.pr");
         assert_eq!(pr["number"], 8);
         assert_eq!(pr["base"], "main");
+        assert_eq!(pr["from"], main);
+        assert_eq!(pr["to"], tip);
+        assert_eq!(pr["commits"], 1);
+        assert_eq!(pr["rebuilt"], true);
+        assert_eq!(pr["retargeted_from"], first_branch);
         assert!(pr.get("stack_on").is_none(), "{pr}");
+        let re = last_detail(&s, "land.pr-rebuilt");
+        assert_eq!(re["kind"], "task");
+        assert_eq!(re["number"], 8);
+        assert_eq!(re["old_base"], first_branch);
+        assert_eq!(re["base"], "main");
+        assert_eq!(re["to"], tip);
+        assert_eq!(re["dropped"]["number"], 7);
+        assert_eq!(re["dropped"]["commits"].to_string(), dropped);
+        assert_eq!(events(&s, "land.pr-rebuilt"), 1);
+        assert_eq!(events(&s, "land.pr-held"), 0);
         assert_eq!(told(&second), 1);
         assert_eq!(told(&first), 0);
-        assert_eq!(
-            events(&s, "land.pr-unstacked"),
-            0,
-            "a task is told, not an event"
+        assert!(
+            crate::util::git_timeout(&repo, Duration::from_secs(10), &["worktree", "list"])
+                .stdout
+                .lines()
+                .count()
+                == 1,
+            "the scratch worktree is gone"
         );
 
+        // The next pass has nothing to do: the rebuilt tip is what the
+        // pull request has.
         let lines = tend_proj(&s, &proj, TEST_NOW);
         assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(told(&second), 1);
+        assert_eq!(events(&s, "land.pr-rebuilt"), 1);
     }
 
     #[test]
-    fn a_job_pull_request_takes_in_the_stack_top_and_is_unstacked_when_it_closes() {
+    fn a_pull_request_whose_rebuild_conflicts_is_held_where_it_is_and_its_task_told() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let gh = fake_gh();
         let s = new_store();
         let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        // #7 changes `shared`; #8 changes the same lines on top of it, so
+        // #8's own commit does not apply without #7's.
+        let first = task_with_branches(&s, &proj, &repo, "Add the thing", &["pulse/worker/a"]);
+        commit_on(&repo, "pulse/worker/a", "shared");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{first}: #7 opened https"))),
+            "{lines:?}"
+        );
+        let first_branch = task_branch(&first);
+        let first_head = bare_ref(&bare, &format!("refs/heads/{first_branch}"));
+        let second =
+            task_with_branches(&s, &proj, &repo, "Add the other thing", &["pulse/worker/c"]);
+        // The own commit of #8 rewrites `shared` as #7 left it: without
+        // #7 the file is not there to change.
+        run(&repo, &["git", "checkout", "-q", "pulse/worker/c"]);
+        run(
+            &repo,
+            &[
+                "git",
+                "merge",
+                "-q",
+                "--no-edit",
+                "-m",
+                "take #7",
+                &first_head,
+            ],
+        );
+        std::fs::write(format!("{repo}/shared"), "theirs, then mine\n").unwrap();
+        run(&repo, &["git", "add", "shared"]);
+        run(&repo, &["git", "commit", "-q", "-m", "c over a"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{second}: #8 opened on #7 https"))),
+            "{lines:?}"
+        );
+        assert_eq!(gh.base_of(8), first_branch);
+        let second_branch = task_branch(&second);
+        let before = bare_ref(&bare, &format!("refs/heads/{second_branch}"));
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l
+                == &format!(
+                    "task pr proj: #8 not rebuilt on main without #7's commits: conflicts in shared; held; task {second} told"
+                )),
+            "{lines:?}"
+        );
+        // Nothing moved: the pull request still targets #7's branch and its
+        // head is what it was, on the forge and locally.
+        assert_eq!(gh.base_of(8), first_branch);
+        assert_eq!(
+            bare_ref(&bare, &format!("refs/heads/{second_branch}")),
+            before
+        );
+        assert_eq!(
+            ref_of(&repo, &format!("refs/heads/{second_branch}")),
+            before
+        );
+        assert_eq!(events(&s, "land.pr-rebuilt"), 0);
+        assert_eq!(events(&s, "land.pr-held"), 1);
+        let held = last_detail(&s, "land.pr-held");
+        assert_eq!(held["number"], 8);
+        assert_eq!(held["task"], second);
+        assert_eq!(held["closed"], 7);
+        assert_eq!(held["base"], "main");
+        assert_eq!(held["files"], json!(["shared"]));
+        assert!(
+            held["note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("#8 was stacked on #7, which was closed unmerged; rebuilding"),
+            "{held}"
+        );
+        let told = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM messages WHERE task_id = ? AND body LIKE '%conflicts in shared%'",
+            &[&second],
+        );
+        assert_eq!(told, 1);
+        assert!(
+            crate::util::git_timeout(&repo, Duration::from_secs(10), &["worktree", "list"])
+                .stdout
+                .lines()
+                .count()
+                == 1,
+            "the scratch worktree is gone"
+        );
+
+        // The next pass leaves it be: no second hold, no second message.
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-held"), 1);
+    }
+
+    #[test]
+    fn a_job_pull_request_takes_in_the_stack_top_and_is_rebuilt_without_it_when_it_closes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
         let first = task_with_two_branches(&s, &proj, &repo);
         tend_proj(&s, &proj, TEST_NOW);
         let first_head = bare_ref(&bare, &format!("refs/heads/{}", task_branch(&first)));
+        let main = bare_ref(&bare, "refs/heads/main");
         let job = push_branch(&s, &proj, &repo, "pulse/sec/x");
         let id = job.str("id");
         exec1(
@@ -4689,33 +5245,61 @@ mod tests {
         );
         assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
 
-        // The bottom is closed unmerged: #8 moves onto main carrying #7's
-        // commits, which `land.pr-unstacked` says, once.
+        // The bottom is closed unmerged: #8 is rebuilt on main without
+        // #7's commits (the merge that took them in goes too), which
+        // `land.pr-rebuilt` says, once.
         gh.set_state(7, "CLOSED");
         let lines = tend_proj(&s, &proj, TEST_NOW);
+        let rebuilt = bare_ref(&bare, "refs/heads/pulse/sec/x");
+        let dropped = run(
+            &repo,
+            &[
+                "git",
+                "rev-list",
+                "--count",
+                &format!("{main}..{first_head}"),
+            ],
+        )
+        .trim()
+        .to_string();
         assert!(
             lines.iter().any(|l| l
                 == &format!(
-                    "job pr proj: #8 retargeted from {} to main; it carries #7's commits",
-                    task_branch(&first)
+                    "job pr proj: #8 rebuilt on main without #7's commits (1 of its own, {dropped} dropped), head now {}",
+                    crate::recipe::short(&rebuilt, 12)
                 )),
             "{lines:?}"
         );
         assert_eq!(gh.base_of(8), "main");
-        let un = last_detail(&s, "land.pr-unstacked");
-        assert_eq!(un["number"], 8);
-        assert_eq!(un["closed"], 7);
-        assert_eq!(un["base"], "main");
-        assert!(
-            un["note"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("#8 was stacked on #7, which was closed unmerged"),
-            "{un}"
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "rev-list", "--count", &format!("{main}..{rebuilt}")]
+            )
+            .trim(),
+            "1"
         );
-        assert_eq!(last_detail(&s, "land.pr")["base"], "main");
+        assert_eq!(ref_of(&repo, "refs/heads/pulse/sec/x"), rebuilt);
+        let re = last_detail(&s, "land.pr-rebuilt");
+        assert_eq!(re["kind"], "job");
+        assert_eq!(re["number"], 8);
+        assert_eq!(re["head"], "pulse/sec/x");
+        assert_eq!(re["old_base"], task_branch(&first));
+        assert_eq!(re["base"], "main");
+        assert_eq!(re["from"], pushed);
+        assert_eq!(re["to"], rebuilt);
+        assert_eq!(re["commits"], 1);
+        assert_eq!(re["dropped"]["number"], 7);
+        assert_eq!(re["dropped"]["commits"].to_string(), dropped);
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["number"], 8);
+        assert_eq!(pr["base"], "main");
+        assert_eq!(pr["to"], rebuilt);
+        assert_eq!(pr["from"], main);
+        assert!(pr.get("stack_on").is_none(), "{pr}");
         assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
-        assert_eq!(events(&s, "land.pr-unstacked"), 1);
+        assert_eq!(events(&s, "land.pr-rebuilt"), 1);
+        assert_eq!(events(&s, "land.pr-unstacked"), 0);
     }
 
     #[test]
