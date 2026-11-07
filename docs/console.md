@@ -591,6 +591,17 @@ history on that refusal and sends the request again, saying so in a note.
 leaves its branch and folder where they are; `pulse remove project <slug>
 --forget` drops its rows with the project's.
 
+When the hub restarts (a new build, the service), a turn it stopped on the
+way down carries on by itself once it is back (*PULSE is back after the
+update and carries this turn on by itself*), and so do the messages that
+were still on their way to the agent then - the owner's next words, a
+parent's steering of its sub-session: each is kept with what the agent would
+have read, and passed on after the carried-on turn (*... then passes on the
+message that waited for it*). A turn cut by a crash rather than a clean stop,
+or a waiting message PULSE cannot pass on as it was (one with pictures), is
+left for you: the page says to send it again. A session that is stopped and
+waits on you this way reads **Stopped by a restart**.
+
 Everything is yours to script: `pulse session list [--all]`, `pulse session show
 <id>` and `pulse session wake [--id <id>] <message>` (`pulse chat` is the same command) print or do what the page shows, and `/api/v1/chat` (`GET` for the
 list - `conversations`, and `tasks` with each task's thread summed up and one

@@ -183,6 +183,11 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   hub's wake loop ends the session there - after a turn in flight, never
   through it - and writes the text into the transcript; a hub that was down
   picks the event up from its cursor when it starts ([Sessions](console.md#sessions)).
+  A session with a sub-session still at work - working, waiting for you, or
+  stopped by a restart - stays open instead, with a note naming each one
+  (*PULSE kept this session open: ... is not done*): the sub-session's report
+  comes back to it, its agent's join may add commits to the branch, which go
+  out as a new pull request, and its agent or you finish it.
 - **Closed without merging** - `land.pr-closed`. The branches are cleared
   too; a task goes back to *in progress* with a message in its conversation
   that says the pull request was closed and that its lead reads why on the

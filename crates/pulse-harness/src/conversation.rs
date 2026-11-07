@@ -87,6 +87,98 @@ const STOPPED_TO_RESTART_LINE: &str = "PULSE stopped this turn to restart. What 
 /// on by itself ([`Manager::carry_on_restarted`]).
 pub const CARRIED_ON_LINE: &str =
     "PULSE is back after the update and carries this turn on by itself.";
+/// The note where the hub carries a stopped turn on, and passes on the
+/// messages that were still on their way to the agent when it stopped.
+fn carried_on_line(waiting: usize) -> String {
+    match waiting {
+        0 => CARRIED_ON_LINE.to_string(),
+        1 => "PULSE is back after the update and carries this turn on by itself, then passes on the message that waited for it.".to_string(),
+        n => format!("PULSE is back after the update and carries this turn on by itself, then passes on the {n} messages that waited for it."),
+    }
+}
+
+/// The note on a conversation PULSE would have finished (`why`) but keeps
+/// open for its sub-sessions still at work.
+fn kept_open_line(why: &str, at_work: &[(Row, &str)]) -> String {
+    let why = why
+        .trim()
+        .trim_end_matches('.')
+        .trim_end_matches("; this session is finished")
+        .trim();
+    let names = at_work
+        .iter()
+        .map(|(k, word)| {
+            let title = if k.title.trim().is_empty() {
+                k.id.as_str()
+            } else {
+                k.title.trim()
+            };
+            format!("\u{201c}{title}\u{201d} ({word})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (whose, reports) = if at_work.len() == 1 {
+        ("its sub-session", "Its report comes")
+    } else {
+        ("its sub-sessions", "Their reports come")
+    };
+    format!(
+        "PULSE kept this session open: {why}, but {whose} {names} {} not done. {reports} back here; the session finishes when its agent or you finish it.",
+        if at_work.len() == 1 { "is" } else { "are" }
+    )
+}
+
+/// Whether a transcript ends where the last hub stopped the turn to
+/// restart, and the messages that waited behind it: Some(empty) when it
+/// ends on [`STOPPED_TO_RESTART_LINE`]; Some(the messages, oldest first)
+/// when what follows the stop is only the messages that were on their way
+/// to the agent, each recorded with what the agent would have read
+/// ([`Runtime::write_unsent`]); None otherwise - the turn went on, or a
+/// waiting message cannot be passed on as it was (it had images, or it was
+/// recorded before PULSE kept the text), and the turn is the owner's.
+fn stopped_to_restart(messages: &[pulse_store::ConversationMessage]) -> Option<Vec<Queued>> {
+    let at = messages
+        .iter()
+        .rposition(|m| m.role == "note" && m.content == STOPPED_TO_RESTART_LINE)?;
+    let rest = &messages[at + 1..];
+    let unsent = |m: &pulse_store::ConversationMessage| {
+        m.role == "note" && m.extra.get("unsent").and_then(Value::as_bool) == Some(true)
+    };
+    if let Some(last) = rest.last()
+        && !unsent(last)
+    {
+        return None;
+    }
+    let mut waiting = Vec::new();
+    for m in rest {
+        if !unsent(m) {
+            // A waiting message's own row (the owner's words, a note from
+            // the parent) sits before its note; nothing the agent said may.
+            if !matches!(m.role.as_str(), "user" | "note") {
+                return None;
+            }
+            continue;
+        }
+        if m.extra.get("restart").and_then(Value::as_bool) != Some(true)
+            || m.extra.get("images").and_then(Value::as_u64).unwrap_or(0) > 0
+        {
+            return None;
+        }
+        let text = m.extra.get("text").and_then(Value::as_str)?;
+        waiting.push(Queued {
+            text: text.to_string(),
+            images: Vec::new(),
+            row: None,
+            report: m
+                .extra
+                .get("report")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    Some(waiting)
+}
+
 /// What the agent is told to pick the stopped turn back up; the restart
 /// hint ([`restart_hint`]) with the steps it had taken comes first.
 const CARRY_ON_PROMPT: &str = "PULSE is back after its update. Carry on with the turn it stopped: finish what the owner last asked for, picking up from the steps listed above without redoing what is already there. If all of it was already done, say so in a line.";
@@ -1965,7 +2057,15 @@ impl Runtime {
                     .chat_add_message(&self.id, message.role(), shown, extra);
             }
             let extra = if why == Unsent::Shutdown {
-                json!({"restart": true, "unsent": true})
+                // What the agent would have read, so the next hub passes it
+                // on as it carries the stopped turn on (carry_on_restarted).
+                json!({
+                    "restart": true,
+                    "unsent": true,
+                    "text": message.text,
+                    "report": message.report,
+                    "images": message.images.len(),
+                })
             } else {
                 json!({"unsent": true})
             };
@@ -2970,7 +3070,12 @@ impl Manager {
     /// [`FINISH_ACTION`]). Unlike the owner's close, a turn in flight runs
     /// to its end and nothing queued is dropped: the conversation stands
     /// closed after it, and a message the owner sends reopens it as ever.
-    /// A conversation already closed is left as it is (false); an archived
+    /// A conversation with a sub-session still at work (working, asking
+    /// the owner, or stopped by a restart nothing carried on) stays open
+    /// instead, with a note that says why: the sub-session's report comes
+    /// back to its agent, whose join may add to the branch the merged pull
+    /// request left, and its agent or the owner finishes it. A conversation
+    /// already closed, or kept open, is left as it is (false); an archived
     /// one is an error.
     pub fn finish_from(&self, id: &str, why: &str) -> Result<bool> {
         let why = one_line(why);
@@ -2982,6 +3087,21 @@ impl Manager {
             bail!("conversation {id} is archived");
         }
         if row.status == "closed" {
+            return Ok(false);
+        }
+        let at_work = self.children_at_work(id);
+        if !at_work.is_empty() {
+            let line = kept_open_line(&why, &at_work);
+            let said = self
+                .store
+                .chat_messages(id, 0)
+                .unwrap_or_default()
+                .iter()
+                .any(|m| m.role == "note" && m.content == line);
+            if !said {
+                self.store
+                    .chat_add_message(id, "note", &line, &json!({"kept_open": true}))?;
+            }
             return Ok(false);
         }
         let record_now = match self.running(id) {
@@ -2996,6 +3116,30 @@ impl Manager {
             self.deliver_report(&row, REPORT_FINISHED, &f.report());
         }
         Ok(true)
+    }
+
+    /// The sub-conversations of `id` still at their work, each with a word
+    /// for where it is: running or waiting (live or as its row says), or
+    /// stopped by a restart that nothing carried on.
+    fn children_at_work(&self, id: &str) -> Vec<(Row, &'static str)> {
+        let Ok(children) = self.store.chat_children(id, false) else {
+            return Vec::new();
+        };
+        children
+            .into_iter()
+            .filter(|k| k.id != id)
+            .filter_map(|k| {
+                let live = self.running(&k.id).map(|rt| rt.live().status);
+                let status = live.unwrap_or_else(|| k.status.clone());
+                let word = match status.as_str() {
+                    "running" => "still working",
+                    "waiting" => "waiting for your answer",
+                    "idle" if k.note == RESTART_NOTE => "stopped by a restart",
+                    _ => return None,
+                };
+                Some((k, word))
+            })
+            .collect()
     }
 
     /// Starts the conversation's session over from its saved transcript,
@@ -3339,13 +3483,17 @@ impl Manager {
     }
 
     /// Conversations whose turn the last hub stopped to restart (the
-    /// transcript ends on [`STOPPED_TO_RESTART_LINE`]) carry on by
+    /// transcript ends on [`STOPPED_TO_RESTART_LINE`], or on the messages
+    /// that were still on their way to the agent then) carry on by
     /// themselves: a note says the hub is back and the agent is told to
     /// pick the turn back up, with the restart hint naming the steps it
-    /// had taken. A turn cut without a clean stop (a crash, a kill:
-    /// [`CUT_RUNNING_LINE`]) or one that waited for the owner is left for
-    /// the owner, so a turn that brings the hub down cannot loop. Returns
-    /// the ids carried on.
+    /// had taken, and then reads the messages that waited, as they were
+    /// (a parent's steering of its sub-session among them). A turn cut
+    /// without a clean stop (a crash, a kill: [`CUT_RUNNING_LINE`]), one
+    /// that waited for the owner, or one whose waiting message PULSE cannot
+    /// pass on as it was ([`stopped_to_restart`]) is left for the owner, so
+    /// a turn that brings the hub down cannot loop. Returns the ids carried
+    /// on.
     pub fn carry_on_restarted(&self) -> Vec<String> {
         let Ok(rows) = self.store.chat_list(false, i64::MAX) else {
             return Vec::new();
@@ -3356,20 +3504,22 @@ impl Manager {
                 continue;
             }
             let messages = self.store.chat_messages(&row.id, 0).unwrap_or_default();
-            let stopped = messages
-                .last()
-                .is_some_and(|m| m.role == "note" && m.content == STOPPED_TO_RESTART_LINE);
-            if !stopped {
+            let Some(waiting) = stopped_to_restart(&messages) else {
                 continue;
-            }
+            };
+            let line = carried_on_line(waiting.len());
             if self
                 .store
-                .chat_add_message(&row.id, "note", CARRIED_ON_LINE, &Value::Null)
+                .chat_add_message(&row.id, "note", &line, &Value::Null)
                 .is_err()
             {
                 continue;
             }
-            self.runtime(&row).enqueue(CARRY_ON_PROMPT.to_string());
+            let rt = self.runtime(&row);
+            rt.enqueue(CARRY_ON_PROMPT.to_string());
+            for message in waiting {
+                rt.enqueue(message);
+            }
             carried.push(row.id);
         }
         carried
@@ -5937,6 +6087,15 @@ mod tests {
         assert_eq!(last.role, "note");
         assert_eq!(last.content, UNSENT_LINE);
         assert_eq!(last.extra["unsent"], true);
+        // What the agent would have read, for the next hub to pass on.
+        assert!(
+            last.extra["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("one more thing")),
+            "{last:?}"
+        );
+        assert_eq!(last.extra["report"], false);
+        assert_eq!(last.extra["images"], 0);
         assert!(late.started.lock().unwrap().is_none(), "no session started");
         // Nothing is left for the next hub to recover.
         let next = Manager::new(&home.path().display().to_string(), s.clone());
@@ -6738,6 +6897,172 @@ mod tests {
         m.archive(&id).expect("archive");
         assert!(m.finish_from(&id, "late").is_err(), "archived");
         thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_session_with_a_sub_session_at_work_stays_open_when_its_pull_request_merges() {
+        let _env = pulse_testutil::env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let m = Manager::new(&home.path().display().to_string(), s.clone());
+        for (id, title, parent) in [
+            ("chat-p", "Land the fixes", ""),
+            ("chat-a", "RSI A", "chat-p"),
+            ("chat-b", "RSI B", "chat-p"),
+        ] {
+            s.chat_create(&Row {
+                id: id.into(),
+                title: title.into(),
+                status: "idle".into(),
+                parent: parent.into(),
+                ..Row::default()
+            })
+            .unwrap();
+        }
+        s.chat_set_status("chat-a", "closed", "done").unwrap();
+        s.chat_set_status("chat-b", "idle", RESTART_NOTE).unwrap();
+        let why = "pull request #9 (https://x/9) merged into main; this session is finished";
+        // RSI B was stopped by a restart: the parent stays open and says why, once.
+        assert!(!m.finish_from("chat-p", why).unwrap());
+        assert_eq!(s.chat_get("chat-p").unwrap().unwrap().status, "idle");
+        let last = s.chat_messages("chat-p", 0).unwrap().pop().unwrap();
+        assert_eq!(
+            last.content,
+            "PULSE kept this session open: pull request #9 (https://x/9) merged into main, but its sub-session \u{201c}RSI B\u{201d} (stopped by a restart) is not done. Its report comes back here; the session finishes when its agent or you finish it."
+        );
+        assert_eq!(last.extra["kept_open"], true);
+        let before = s.chat_messages("chat-p", 0).unwrap().len();
+        assert!(!m.finish_from("chat-p", why).unwrap());
+        assert_eq!(
+            s.chat_messages("chat-p", 0).unwrap().len(),
+            before,
+            "said once"
+        );
+        // Two at work read as two.
+        s.chat_set_status("chat-a", "running", "").unwrap();
+        assert!(!m.finish_from("chat-p", "pull request #10 merged").unwrap());
+        let last = s.chat_messages("chat-p", 0).unwrap().pop().unwrap();
+        assert!(
+            last.content.contains("its sub-sessions \u{201c}RSI A\u{201d} (still working), \u{201c}RSI B\u{201d} (stopped by a restart) are not done. Their reports come back here"),
+            "{}",
+            last.content
+        );
+        // Once its sub-sessions are done, the merge finishes it.
+        s.chat_set_status("chat-a", "closed", "done").unwrap();
+        s.chat_set_status("chat-b", "closed", "done").unwrap();
+        assert!(m.finish_from("chat-p", why).unwrap());
+        assert_eq!(s.chat_get("chat-p").unwrap().unwrap().status, "closed");
+    }
+
+    #[test]
+    fn a_turn_stopped_to_restart_carries_on_with_the_messages_that_waited() {
+        let msg =
+            |n: i64, role: &str, content: &str, extra: Value| pulse_store::ConversationMessage {
+                conversation_id: "c".into(),
+                n,
+                at: String::new(),
+                role: role.into(),
+                content: content.into(),
+                extra,
+            };
+        let stop = msg(1, "note", STOPPED_TO_RESTART_LINE, json!({}));
+        assert_eq!(
+            stopped_to_restart(std::slice::from_ref(&stop)).map(|w| w.len()),
+            Some(0)
+        );
+        // The parent's steering that waited: passed on as the agent would have read it.
+        let row = msg(2, "note", "continue", json!({"from": "chat-p"}));
+        let unsent = msg(
+            3,
+            "note",
+            UNSENT_LINE,
+            json!({"restart": true, "unsent": true, "report": true, "images": 0,
+                   "text": "Message from the session that started you (chat-p):\ncontinue"}),
+        );
+        let waiting = stopped_to_restart(&[stop.clone(), row.clone(), unsent.clone()]).unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert!(waiting[0].text.ends_with("(chat-p):\ncontinue"));
+        assert!(waiting[0].report && waiting[0].row.is_none() && waiting[0].images.is_empty());
+        // Recorded before PULSE kept the text, or with pictures: the owner's to send again.
+        let old = msg(
+            3,
+            "note",
+            UNSENT_LINE,
+            json!({"restart": true, "unsent": true}),
+        );
+        assert!(stopped_to_restart(&[stop.clone(), row.clone(), old]).is_none());
+        let pictures = msg(
+            3,
+            "note",
+            UNSENT_LINE,
+            json!({"restart": true, "unsent": true, "text": "see", "images": 2}),
+        );
+        assert!(stopped_to_restart(&[stop.clone(), row.clone(), pictures]).is_none());
+        // The owner stopped it, the agent spoke since, or nothing stopped it: the owner's.
+        let by_owner = msg(3, "note", UNSENT_STOPPED_LINE, json!({"unsent": true}));
+        assert!(stopped_to_restart(&[stop.clone(), row.clone(), by_owner]).is_none());
+        let reply = msg(4, "assistant", "done", json!({}));
+        assert!(stopped_to_restart(&[stop.clone(), reply]).is_none());
+        assert!(stopped_to_restart(&[row, unsent]).is_none());
+        assert_eq!(carried_on_line(0), CARRIED_ON_LINE);
+        assert!(carried_on_line(1).ends_with("then passes on the message that waited for it."));
+        assert!(carried_on_line(2).contains("the 2 messages that waited"));
+    }
+
+    #[test]
+    fn the_next_hub_passes_on_the_message_a_restart_left_waiting() {
+        let _env = pulse_testutil::env_lock();
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"content": "Carried on."}]),
+        );
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "start", "owner").expect("create");
+        wait_idle(&m, &row.id);
+        // The last hub stopped the turn with the owner's next message still queued.
+        s.chat_add_message(&row.id, "note", STOPPED_TO_RESTART_LINE, &json!({}))
+            .unwrap();
+        s.chat_add_message(&row.id, "user", "and the docs", &json!({}))
+            .unwrap();
+        s.chat_add_message(
+            &row.id,
+            "note",
+            UNSENT_LINE,
+            &json!({"restart": true, "unsent": true, "text": "and the docs", "report": false, "images": 0}),
+        )
+        .unwrap();
+        s.chat_set_status(&row.id, "idle", RESTART_NOTE).unwrap();
+        let before = s.chat_messages(&row.id, 0).unwrap().len();
+
+        let next = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        assert_eq!(next.carry_on_restarted(), [row.id.as_str()]);
+        assert!(next.carry_on_restarted().is_empty(), "carried on once");
+        for _ in 0..400 {
+            let n = s.chat_messages(&row.id, 0).unwrap().len();
+            if n >= before + 3 && s.chat_get(&row.id).unwrap().unwrap().status == "idle" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let tail: Vec<(String, String)> = transcript(&s, &row.id)[before..].to_vec();
+        // The fake script starts over in the next hub's session: the
+        // carried-on turn reads "First.", the passed-on message the next.
+        assert_eq!(
+            tail,
+            [
+                ("note".to_string(), carried_on_line(1)),
+                ("assistant".to_string(), "First.".to_string()),
+                ("assistant".to_string(), "Carried on.".to_string()),
+            ],
+            "the stopped turn, then the message that waited; no second copy of it"
+        );
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
 
