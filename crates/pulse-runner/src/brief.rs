@@ -2010,11 +2010,21 @@ mod tests {
             artifacts_dir: "/h/work/jobs/job-mcp/artifacts".into(),
             ..Default::default()
         });
-        assert!(warned.contains("still lands, and its landing says it has none"), "{warned}");
-        assert!(!warned.contains("the landing waits for the owner"), "{warned}");
+        assert!(
+            warned.contains("still lands, and its landing says it has none"),
+            "{warned}"
+        );
+        assert!(
+            !warned.contains("the landing waits for the owner"),
+            "{warned}"
+        );
         // Off, for this project alone: the screenshot rule of before.
-        s.set_setting("human", &pulse_store::ui_report_setting(&project.str("slug")), "off")
-            .unwrap();
+        s.set_setting(
+            "human",
+            &pulse_store::ui_report_setting(&project.str("slug")),
+            "off",
+        )
+        .unwrap();
         let off = must_write_brief(BriefOpts {
             job: brief_job(),
             project: project.clone(),
