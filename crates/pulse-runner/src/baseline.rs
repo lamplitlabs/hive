@@ -11,6 +11,23 @@ pub(crate) const BASELINE_TITLE: &str = "Record baseline";
 pub(crate) const BASELINE_PRIORITY: i32 = 20;
 pub(crate) const BASELINE_THREAD: &str = "baseline";
 
+/// How many fixture runs one baseline measurement makes: a metric fixture
+/// runs once, a judge-scored one (a request fixture or a held-out one)
+/// `pulse_evolve::JUDGE_RUNS` times.
+pub(crate) fn fixture_runs(s: &pulse_store::Store, slug: String) -> i32 {
+    let judge_runs = i32::try_from(pulse_evolve::JUDGE_RUNS).unwrap_or(1);
+    let Ok(conn) = s.conn() else { return 0 };
+    let row = crate::util::must_one(
+        &conn,
+        "SELECT COALESCE(SUM(CASE WHEN COALESCE(metric, 0) != 0 THEN 1 ELSE 0 END), 0) AS metric,
+                COALESCE(SUM(CASE WHEN COALESCE(metric, 0) = 0 THEN 1 ELSE 0 END), 0) AS judge
+           FROM evolution_fixtures WHERE project = ? AND enabled = 1",
+        &[&slug],
+    );
+    let heldout = i32::try_from(pulse_evolve::heldout_count(s).count).unwrap_or(0);
+    row.int("metric") + (row.int("judge") + heldout) * judge_runs
+}
+
 pub(crate) fn baseline_source(slug: String) -> String {
     format!("baseline:{slug}")
 }
@@ -114,8 +131,8 @@ pub(crate) fn default_branch(project: crate::util::Row) -> String {
 
 pub(crate) fn baseline_budget(s: &pulse_store::Store, slug: String) -> std::time::Duration {
     let minutes = crate::util::setting_int(s, "minutes_per_job").max(1);
-    let fixtures = enabled_fixtures(s, slug) + pulse_evolve::heldout_count(s).count as i32;
-    let mut budget = Duration::from_secs(((fixtures * minutes + 5).max(1) as u64) * 60);
+    let runs = fixture_runs(s, slug);
+    let mut budget = Duration::from_secs(((runs * minutes + 5).max(1) as u64) * 60);
     let rb = crate::daemon::run_budget(s);
     if budget < rb {
         budget = rb;
@@ -782,12 +799,26 @@ mod tests {
         let _env = pulse_testutil::env_lock();
         let s = new_store();
         new_repo(&s);
-        set_setting(&s, "minutes_per_job", "10");
-        // Six starters at ten minutes plus slack is more than the worker budget, less than the experiment cap.
+        set_setting(&s, "minutes_per_job", "3");
+        // Six judge-scored starters run three times each at three minutes plus slack is more than the
+        // worker budget, less than the experiment cap.
+        assert_eq!(super::fixture_runs(&s, "proj".into()), 18);
         let got = super::baseline_budget(&s, "proj".into());
-        if got.as_secs() / 60 != 65 {
+        if got.as_secs() / 60 != 59 {
             panic!("baseline budget: {got:?}");
         }
+        // A metric fixture runs once.
+        exec1(
+            &s,
+            "UPDATE evolution_fixtures SET metric = 1 WHERE project = 'proj' AND id = (SELECT MIN(id) FROM evolution_fixtures WHERE project = 'proj')",
+            &[],
+        );
+        assert_eq!(super::fixture_runs(&s, "proj".into()), 16);
+        exec1(
+            &s,
+            "UPDATE evolution_fixtures SET metric = 0 WHERE project = 'proj'",
+            &[],
+        );
         let mut job = crate::util::Row::new();
         job.insert("kind", serde_json::json!("baseline"));
         job.insert("project", serde_json::json!("proj"));

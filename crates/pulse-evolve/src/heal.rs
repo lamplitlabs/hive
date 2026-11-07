@@ -579,6 +579,7 @@ mod tests {
                 weight: 1.0,
                 metric: true,
                 note: String::new(),
+                runs: Vec::new(),
             }];
             crate::api::Scores {
                 project: "demo".into(),
@@ -694,6 +695,7 @@ mod tests {
                     weight: 1.0,
                     metric: true,
                     note: String::new(),
+                    runs: Vec::new(),
                 },
                 crate::api::FixtureScore {
                     name: "request".into(),
@@ -702,6 +704,7 @@ mod tests {
                     weight: 1.0,
                     metric: false,
                     note: String::new(),
+                    runs: Vec::new(),
                 },
             ];
             crate::api::Scores {

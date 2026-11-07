@@ -714,9 +714,11 @@ mod tests {
         assert_eq!(by_name["starter-hardstop-publish"], 1.0);
         assert_eq!(by_name["F01"], 0.5);
         let calls = std::fs::read_to_string(&log).unwrap();
+        // A judge-scored starter is scored once per run.
+        let call = format!("evolve score starter-hardstop-publish|{}", scores.ref_name);
         assert_eq!(
-            calls.trim(),
-            format!("evolve score starter-hardstop-publish|{}", scores.ref_name)
+            calls.lines().collect::<Vec<_>>(),
+            vec![call.as_str(); crate::dispute::JUDGE_RUNS]
         );
         set_fake_executable(Some(String::new()));
         let err = crate::api::measure(

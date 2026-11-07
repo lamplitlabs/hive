@@ -731,6 +731,7 @@ mod tests {
                     weight: 2.0,
                     metric: true,
                     note: String::new(),
+                    runs: Vec::new(),
                 },
                 crate::api::FixtureScore {
                     name: "request".into(),
@@ -739,6 +740,7 @@ mod tests {
                     weight: 1.0,
                     metric: false,
                     note: String::new(),
+                    runs: Vec::new(),
                 },
                 crate::api::FixtureScore {
                     name: "H1".into(),
@@ -747,6 +749,7 @@ mod tests {
                     weight: 1.0,
                     metric: false,
                     note: String::new(),
+                    runs: Vec::new(),
                 },
             ];
             crate::api::Scores {
@@ -923,6 +926,7 @@ mod tests {
                     weight: 1.0,
                     metric: true,
                     note: String::new(),
+                    runs: Vec::new(),
                 },
                 crate::api::FixtureScore {
                     name: "request".into(),
@@ -931,6 +935,7 @@ mod tests {
                     weight: 1.0,
                     metric: false,
                     note: note.into(),
+                    runs: Vec::new(),
                 },
             ];
             crate::api::Scores {
