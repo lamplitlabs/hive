@@ -110,3 +110,78 @@ test("durations read in words", () => {
   assert.equal(durationWords(90 * 60 * 1000), "1 hour 30 minutes");
   assert.equal(durationWords(2 * 3600 * 1000), "2 hours");
 });
+
+// The self-improvement loop, schedule, lead and suggested-work events
+// (pulse-evolve archive.rs, feedback.rs, fixtures.rs, derive.rs, starter.rs,
+// heal.rs, fleet.rs; pulse-records seed.rs; pulse-tasks schedules.rs,
+// leads.rs, tasks.rs, suggestions.rs; pulse-runner lead.rs, recover.rs).
+const LOOP = [
+  "evolution.archived",
+  "evolution.feedback",
+  "evolution.fixture.added",
+  "evolution.fixture.derived",
+  "evolution.fixture.derive_failed",
+  "evolution.fixture.enabled",
+  "evolution.fixture.rearmed",
+  "evolution.fixture.retired",
+  "evolution.fixture.seeded",
+  "evolution.fixture.seed_failed",
+  "evolution.flat.resumed",
+  "evolution.flat.self_reviewed",
+  "evolution.healed",
+  "evolution.records.seeded",
+  "evolution.records.seed_failed",
+  "evolution.fleet.prepared",
+  "evolution.fleet.cleaned",
+  "schedule.added",
+  "schedule.updated",
+  "schedule.ended",
+  "schedule.fired",
+  "schedule.ran",
+  "schedule.run",
+  "schedule.red",
+  "lead.run",
+  "lead.seated",
+  "task.followup",
+  "task.lead",
+  "task.nudged",
+  "suggestion.new",
+  "suggestion.review",
+  "suggestion.reviewing",
+  "suggestion.unreviewed",
+  "suggestion.withdrawn",
+];
+
+test("every loop, schedule, lead and suggestion event has a plain-words sentence", () => {
+  for (const action of LOOP) {
+    assert.ok(VERB[action], action + " has a VERB entry");
+    for (const detail of [null, {}, { project: "demo-app", state: "red", status: "accepted", outcome: "improved", enabled: true }]) {
+      const said = eventVerb({ action, subject: "demo-app", detail });
+      assert.ok(said.length > 0, action + " says something");
+      assert.notEqual(said, raw(action), action + " is not its raw words");
+      assert.doesNotMatch(said, /\b(fixture|evolution|evolve|archive|seed|derive|rearm|flat|lease|tier|executor|daemon|pr)\b/i, action + " uses no jargon: " + said);
+    }
+  }
+});
+
+test("loop events read their outcome", () => {
+  assert.equal(eventVerb({ action: "evolution.fixture.added", subject: "x", detail: {} }), "added a measurement to the improvement loop");
+  assert.equal(
+    eventVerb({ action: "evolution.archived", subject: "a", detail: { outcome: "discarded" } }),
+    "discarded an improvement experiment that made things worse",
+  );
+  assert.equal(eventVerb({ action: "evolution.archived", subject: "a", detail: { outcome: "new" } }), VERB["evolution.archived"]);
+  assert.equal(eventVerb({ action: "evolution.fixture.enabled", subject: "x", detail: { enabled: false } }), "switched off a measurement of the improvement loop");
+  assert.equal(eventVerb({ action: "evolution.fixture.enabled", subject: "x", detail: { enabled: true } }), "switched on a measurement of the improvement loop");
+});
+
+test("schedule and suggestion events say how they went", () => {
+  assert.equal(eventVerb({ action: "schedule.ran", subject: "S", detail: { state: "red" } }), "ran a scheduled check, which failed");
+  assert.equal(eventVerb({ action: "schedule.ran", subject: "S", detail: { state: "ok" } }), "ran a scheduled check, which passed");
+  assert.equal(eventVerb({ action: "schedule.ran", subject: "S", detail: {} }), "ran a scheduled check");
+  assert.equal(eventVerb({ action: "schedule.red", subject: "S", detail: { kind: "watch" } }), "saw a watched script stop working");
+  assert.equal(eventVerb({ action: "schedule.red", subject: "S", detail: { kind: "check" } }), "saw a scheduled check start failing");
+  assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: { status: "declined" } }), "declined a suggested task");
+  assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: { status: "owner" } }), "asked you to decide on a suggested task");
+  assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: {} }), "reviewed a suggested task");
+});
