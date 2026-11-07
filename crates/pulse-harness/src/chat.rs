@@ -1610,11 +1610,18 @@ fn transcript_markdown(msgs: &[Message], session_id: &str, model: &str) -> Strin
 }
 
 /// `/diff`: the working tree's changes against the index and HEAD.
+///
+/// Read-only: a background shell or the agent may be committing in the same
+/// worktree, so nothing here may take `index.lock`. `git status` honours
+/// GIT_OPTIONAL_LOCKS=0, but porcelain `git diff` refreshes a stat-stale
+/// index under the lock even then; plumbing `diff-index`/`diff-files` gives
+/// the same stat (renames included) and never writes the index.
 fn git_changes(cwd: &str) -> String {
     let run = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(Stdio::null())
             .output()
             .ok()
@@ -1628,7 +1635,8 @@ fn git_changes(cwd: &str) -> String {
         return "the working tree is clean".to_string();
     }
     let mut out = status;
-    let stat = run(&["diff", "--stat", "HEAD"]).or_else(|| run(&["diff", "--stat"]));
+    let stat = run(&["diff-index", "--stat", "-M", "HEAD", "--"])
+        .or_else(|| run(&["diff-files", "--stat", "-M"]));
     if let Some(stat) = stat
         && !stat.is_empty()
     {
@@ -3251,6 +3259,44 @@ esac
             "git {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    #[test]
+    fn slash_diff_never_rewrites_the_worktree_index() {
+        let dir = tmp();
+        let cwd = dir.path().to_str().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        for (name, body) in [("a.txt", "one\n"), ("old.txt", "kept\n"), ("README", "r\n")] {
+            std::fs::write(dir.path().join(name), body).unwrap();
+        }
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-q", "-m", "one"]);
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+        git(dir.path(), &["mv", "old.txt", "new.txt"]);
+        // An unchanged file whose mtime no longer matches the index: what a
+        // checkout, a build or an editor leaves behind.
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path().join("README"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .unwrap();
+        let index = dir.path().join(".git").join("index");
+        let before = std::fs::read(&index).unwrap();
+        let out = git_changes(cwd);
+        assert!(out.contains(" M a.txt"), "{out}");
+        assert!(out.contains("old.txt => new.txt"), "{out}");
+        assert!(
+            out.contains("a.txt") && out.contains("1 insertion(+)"),
+            "{out}"
+        );
+        assert!(!out.contains("README"), "{out}");
+        assert!(
+            std::fs::read(&index).unwrap() == before,
+            "/diff rewrote the index"
+        );
+        let plain = tmp();
+        assert!(git_changes(plain.path().to_str().unwrap()).contains("is not a git repository"));
     }
 
     #[test]
