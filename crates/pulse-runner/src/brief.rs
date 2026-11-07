@@ -1276,7 +1276,29 @@ pub(crate) fn card_body(text: String) -> (String, String, bool) {
             break;
         }
     }
-    (lines.join("\n"), summary, true)
+    (lines.join("\n"), clip_summary(&summary), true)
+}
+
+/// `text` cut to the board's summary limit (`pulse_board::MAX_SUMMARY_CHARS`)
+/// at a word boundary with `...` behind it; a short text comes back as it
+/// is. The full text stays in the card body, so nothing is lost: a card
+/// whose first line ran long used to fail the post outright.
+pub(crate) fn clip_summary(text: &str) -> String {
+    let limit = pulse_board::MAX_SUMMARY_CHARS;
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let room = limit - 3;
+    let head: String = text.chars().take(room).collect();
+    let cut = match head.rfind(char::is_whitespace) {
+        // Keep at least half the room so one giant word does not empty it.
+        Some(i) if head[..i].chars().count() >= room / 2 => &head[..i],
+        _ => head.as_str(),
+    };
+    format!(
+        "{}...",
+        cut.trim_end_matches(|c: char| c.is_whitespace() || c == ',' || c == ';')
+    )
 }
 
 /// The class a card segment names on its own ("product", "Operating-layer.")
@@ -1554,6 +1576,54 @@ mod tests {
         assert!(ok);
         assert_eq!(summary, "Shorten the intro");
         assert!(body.contains("\nFile: README.md\n"));
+    }
+
+    #[test]
+    fn card_body_clips_a_long_first_line_to_the_board_summary_limit() {
+        let _serial = crate::test_helpers::serial();
+        let limit = pulse_board::MAX_SUMMARY_CHARS;
+        // A 600-character first line: the board refuses anything past 240,
+        // and such a card used to fail its post with "summary is 600 chars".
+        let words: Vec<String> = (0..100).map(|i| format!("word{i:02}")).collect();
+        let first = words.join(" ");
+        assert_eq!(first.chars().count(), 100 * 6 + 99);
+        let (body, summary, ok) =
+            card_body(format!("{first}; File: README.md; Variable: intro length"));
+        assert!(ok);
+        assert!(
+            summary.chars().count() <= limit,
+            "{} chars: {summary}",
+            summary.chars().count()
+        );
+        assert!(summary.ends_with("..."), "{summary}");
+        assert!(
+            !summary
+                .trim_end_matches("...")
+                .ends_with(char::is_whitespace)
+                && first.starts_with(summary.trim_end_matches("...")),
+            "clipped at a word boundary: {summary}"
+        );
+        assert!(
+            body.starts_with(&first) && body.contains("\nFile: README.md\n"),
+            "the body keeps the full first line: {body}"
+        );
+        // The fallback summaries (Hypothesis, Variable) are clipped too.
+        let (_, summary, ok) =
+            card_body(format!("File: README.md; Variable: x; Hypothesis: {first}"));
+        assert!(ok && summary.chars().count() <= limit && summary.ends_with("..."));
+        // A short summary is untouched; one at the limit is not clipped.
+        assert_eq!(clip_summary("Shorten the intro"), "Shorten the intro");
+        let exact = "x".repeat(limit);
+        assert_eq!(clip_summary(&exact), exact);
+        // One giant word is cut mid-word rather than emptied.
+        let giant = "y".repeat(limit + 10);
+        let clipped = clip_summary(&giant);
+        assert_eq!(clipped.chars().count(), limit);
+        assert!(clipped.ends_with("..."));
+        // Multi-byte text counts characters, not bytes.
+        let wide = "é ".repeat(limit);
+        let clipped = clip_summary(&wide);
+        assert!(clipped.chars().count() <= limit && clipped.ends_with("..."));
     }
 
     #[test]

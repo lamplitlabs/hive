@@ -802,7 +802,7 @@ pub(crate) fn run_in(
     name: String,
     args: &[String],
 ) -> (String, Option<anyhow::Error>) {
-    let mut cmd = Command::new(&name);
+    let mut cmd = Command::new(pulse_cli::procs::resolve_program(&name, &[]));
     cmd.args(args)
         .current_dir(dir)
         .envs(
@@ -820,7 +820,6 @@ pub(crate) fn run_in(
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::daemon_load::low_priority(&mut cmd);
     let base = std::path::Path::new(&name)
         .file_name()
         .and_then(|s| s.to_str())
@@ -830,6 +829,7 @@ pub(crate) fn run_in(
         Ok(child) => child,
         Err(err) => return (String::new(), Some(err.into())),
     };
+    crate::daemon_load::low_priority(&child);
     let started = Instant::now();
     let stdout = Drained::read(child.stdout.take());
     let stderr = Drained::read(child.stderr.take());

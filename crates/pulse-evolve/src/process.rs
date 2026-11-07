@@ -392,7 +392,9 @@ pub(crate) fn run_process_to(
     if argv.is_empty() {
         return Err(anyhow!("empty command"));
     }
-    let mut cmd = Command::new(&argv[0]);
+    // Resolved against the child's PATH here so the spawn stays a
+    // posix_spawn (pulse_cli::procs::resolve_program says why).
+    let mut cmd = Command::new(pulse_cli::procs::resolve_program(&argv[0], env));
     cmd.args(&argv[1..]);
     if !cwd.is_empty() {
         cmd.current_dir(cwd);
@@ -404,8 +406,9 @@ pub(crate) fn run_process_to(
         }
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let cleanup = contain_process(&mut cmd);
+    contain_process(&mut cmd);
     let mut child = cmd.spawn()?;
+    lower_priority(&child);
     let out_rx = drain(child.stdout.take());
     let err_rx = drain(child.stderr.take());
     let done = cancel.done();
@@ -413,7 +416,6 @@ pub(crate) fn run_process_to(
         if let Some(err) = cancel.err() {
             kill_group(&mut child);
             let _ = child.kill();
-            cleanup();
             let _ = child.wait();
             return Err(err.into());
         }
@@ -428,7 +430,6 @@ pub(crate) fn run_process_to(
     // started with `&`) would hold the pipes open and keep the measurement
     // from ending; it goes with the group.
     kill_group(&mut child);
-    cleanup();
     stdout.write_all(&out_rx.recv_timeout(OUTPUT_DRAIN).unwrap_or_default())?;
     stderr.write_all(&err_rx.recv_timeout(OUTPUT_DRAIN).unwrap_or_default())?;
     if status.success() {
@@ -506,25 +507,33 @@ pub(crate) fn git_raw(
     }
     Ok(String::from_utf8_lossy(&out.buf).to_string())
 }
+/// The measured command leads its own process group, so the whole tree it
+/// starts ends with it (`kill_group`). Set as a spawn attribute, never a
+/// `pre_exec` hook: a hook turns the spawn into a fork of the whole daemon.
 #[cfg(unix)]
-pub(crate) fn contain_process(cmd: &mut std::process::Command) -> Box<dyn FnOnce()> {
+pub(crate) fn contain_process(cmd: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     cmd.process_group(0);
-    // SAFETY: the hook makes one setpriority system call and allocates
-    // nothing. A refusal (the parent already runs at a higher nice) leaves
-    // the child at the parent's priority, which is the point.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setpriority(libc::PRIO_PROCESS, 0, MEASUREMENT_NICE);
-            Ok(())
-        });
-    }
-    Box::new(|| {})
 }
 #[cfg(not(unix))]
-pub(crate) fn contain_process(cmd: &mut std::process::Command) -> Box<dyn FnOnce()> {
-    Box::new(|| {})
+pub(crate) fn contain_process(_cmd: &mut std::process::Command) {}
+
+/// Puts the just-spawned measurement at [`MEASUREMENT_NICE`] from the
+/// parent. A refusal (the parent already runs at a higher nice, or the
+/// child is gone) leaves it at the parent's priority, which is the point.
+#[cfg(unix)]
+fn lower_priority(child: &std::process::Child) {
+    // SAFETY: one setpriority system call on the child's own process id.
+    unsafe {
+        libc::setpriority(
+            libc::PRIO_PROCESS,
+            child.id() as libc::id_t,
+            MEASUREMENT_NICE,
+        );
+    }
 }
+#[cfg(not(unix))]
+fn lower_priority(_child: &std::process::Child) {}
 #[cfg(unix)]
 pub(crate) fn multiple_links(metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;

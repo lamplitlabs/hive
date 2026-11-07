@@ -181,7 +181,7 @@ pub(crate) fn git_timeout_env(
     args: &[&str],
 ) -> GitResult {
     let full = git_argv(repo, args);
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(pulse_gitenv::git_program());
     cmd.args(&full);
     // Strip the hook-exported variables that redirect this command at the
     // repository of a concurrent pulse job's pre-commit hook (GIT_DIR,

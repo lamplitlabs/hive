@@ -59,10 +59,15 @@ pub struct HitRate {
     pub tried: i64,
     #[serde(rename = "kept")]
     pub kept: i64,
-    /// Kept rows whose delta reached the tolerance; the rest of `kept` are
-    /// ties.
+    /// Rows whose delta reached the tolerance (or whose card check rose): the
+    /// only ones that land.
     #[serde(rename = "improved", default)]
     pub improved: i64,
+    /// Ties within the tolerance: not landed since ties stopped landing, but
+    /// no regression either (rows archived as kept before that count here
+    /// too).
+    #[serde(rename = "neutral", default)]
+    pub neutral: i64,
     #[serde(rename = "rate")]
     pub rate: Option<f64>,
 }
@@ -270,6 +275,12 @@ pub struct LoopStatus {
     pub kept: i64,
     #[serde(rename = "improved", default)]
     pub improved: i64,
+    /// Ties within the tolerance ([`crate::archive::ArchiveOutcome::Neutral`]):
+    /// archived with `kept = 0` since ties stopped landing, so they are among
+    /// `discarded` (the rows whose branch did not land) but were no
+    /// regression.
+    #[serde(rename = "neutral", default)]
+    pub neutral: i64,
     #[serde(rename = "discarded")]
     pub discarded: i64,
     #[serde(rename = "voted")]
@@ -593,7 +604,9 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
             ..Default::default()
         };
         let voted = r.get::<_, i64>(4)? != 0;
-        let improved = row.outcome() == crate::archive::ArchiveOutcome::Improved;
+        let outcome = row.outcome();
+        let improved = outcome == crate::archive::ArchiveOutcome::Improved;
+        let neutral = outcome == crate::archive::ArchiveOutcome::Neutral;
         if row.kept {
             status.kept += 1;
         } else {
@@ -601,6 +614,9 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
         }
         if improved {
             status.improved += 1;
+        }
+        if neutral {
+            status.neutral += 1;
         }
         let rate = if voted {
             &mut status.voted
@@ -613,6 +629,9 @@ pub(crate) fn loop_status(s: &pulse_store::Store, project: &str) -> Result<LoopS
         }
         if improved {
             rate.improved += 1;
+        }
+        if neutral {
+            rate.neutral += 1;
         }
     }
     for r in [&mut status.voted, &mut status.signal] {
@@ -702,7 +721,7 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
             r.tried,
             100.0 * rate,
             r.improved,
-            r.kept - r.improved
+            r.neutral
         ),
         None => "0 tried; hit rate unavailable".to_string(),
     };
@@ -740,10 +759,12 @@ pub(crate) fn status_rows(s: &LoopStatus) -> Vec<Vec<String>> {
         vec![
             "Improved / neutral / discarded".into(),
             format!(
-                "{} / {} / {}; only an improvement is a win, a neutral tie landed on the project's own check",
+                "{} / {} / {}; only an improvement is a win and lands, a neutral tie is not landed (nothing was shown to move) and is no regression",
                 s.improved,
-                s.kept - s.improved,
-                s.discarded
+                s.neutral,
+                // The rows that regressed: every archived row is one of the
+                // three outcomes, and `kept + discarded` is all of them.
+                (s.kept + s.discarded - s.improved - s.neutral).max(0)
             ),
         ],
         vec!["Voted suggestions".into(), hit(&s.voted)],
@@ -1177,8 +1198,12 @@ mod tests {
         crate::api::archive_row(&s, row.clone()).unwrap();
         row.suggestion_post.clear();
         row.kept = false;
+        row.variant = Some(Scores {
+            total: 0.1,
+            ..Default::default()
+        });
         crate::api::archive_row(&s, row.clone()).unwrap();
-        row.kept = true;
+        // A tie: archived unkept since ties stopped landing.
         row.variant = row.baseline.clone();
         crate::api::archive_row(&s, row).unwrap();
         let st = status(&s, "demo").unwrap();
@@ -1187,14 +1212,20 @@ mod tests {
                 st.voted.tried,
                 st.voted.kept,
                 st.voted.improved,
+                st.voted.neutral,
                 st.signal.tried,
                 st.signal.kept,
-                st.signal.improved
+                st.signal.improved,
+                st.signal.neutral
             ),
-            (1, 1, 1, 2, 1, 0),
-            "a kept tie counts as kept, never as improved"
+            (1, 1, 1, 0, 2, 0, 0, 1),
+            "a tie counts as neutral, never as improved or kept"
         );
-        assert_eq!((st.kept, st.improved, st.discarded), (2, 1, 1));
+        assert_eq!(
+            (st.kept, st.improved, st.neutral, st.discarded),
+            (1, 1, 1, 2),
+            "the tie is among the rows that did not land"
+        );
         let text = status_rows(&st)
             .into_iter()
             .map(|row| row.join(": "))
@@ -1202,9 +1233,11 @@ mod tests {
             .join("\n");
         assert!(
             text.contains("1/1 kept (100.0%): 1 improved, 0 neutral")
-                && text.contains("1/2 kept (50.0%): 0 improved, 1 neutral")
+                && text.contains("0/2 kept (0.0%): 0 improved, 1 neutral")
                 && text.contains("Improved / neutral / discarded")
-                && text.contains("1 / 1 / 1; only an improvement is a win"),
+                && text.contains(
+                    "1 / 1 / 1; only an improvement is a win and lands, a neutral tie is not landed"
+                ),
             "{text}"
         );
     }

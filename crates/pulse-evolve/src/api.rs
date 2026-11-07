@@ -324,15 +324,17 @@ pub fn measure_pair(
 }
 
 /// [`keep`] for a [`MeasuredPair`]: a pair whose variant was not measured
-/// is a `neutral` tie with the reason it was skipped for
-/// ([`LOCKFILE_ONLY_VERDICT`] for a lock-file-only change).
+/// is a `neutral` tie with the reason it was skipped for. A lock-file-only
+/// change ([`LOCKFILE_ONLY_VERDICT`]) still lands: it carries no hypothesis
+/// to prove and nothing to measure. Any other unmeasured variant does not
+/// land - a gain that was never measured is not a gain.
 pub fn keep_pair(pair: &MeasuredPair, tolerance: f64) -> (bool, String) {
     match pair.skipped.as_deref() {
         None => keep(Some(&pair.base), Some(&pair.variant), tolerance),
         Some(LOCKFILE_ONLY) => (true, LOCKFILE_ONLY_VERDICT.to_string()),
         Some(why) => (
-            true,
-            format!("neutral ({why}: the variant was not measured)"),
+            false,
+            format!("neutral ({why}: the variant was not measured, so the branch is not landed)"),
         ),
     }
 }
@@ -360,13 +362,14 @@ pub fn overlay_scores(mut cached: Scores, fresh: &Scores) -> Scores {
     cached
 }
 
-/// A variant is discarded when it regresses the score by more than the
-/// tolerance; otherwise it goes on to the ordinary landing lane, where the
-/// project's own checks decide. The verdict says what the measurement saw:
-/// `improved` when the delta reached the tolerance, or when a tie came with
-/// the card's own check (`Scores::card_check`) rising; `neutral` for any other
-/// tie, which is no win - the hypothesis went unmeasured, and the row earns no
-/// lineage credit. Only `discarded` deletes the branch.
+/// A variant lands only when it was shown to improve: `improved` when the
+/// delta reached the tolerance, or when a tie on the composite came with the
+/// card's own check (`Scores::card_check`) rising. A variant that regresses
+/// the score by more than the tolerance is `discarded`. Any other tie is
+/// `neutral`: nothing was shown to move, so the branch is not landed either -
+/// the hypothesis went unmeasured and the row earns no lineage credit. The
+/// first element is whether the branch lands; only the `discarded` verdict
+/// names a regression.
 pub fn keep(baseline: Option<&Scores>, variant: Option<&Scores>, tolerance: f64) -> (bool, String) {
     let (Some(baseline), Some(variant)) = (baseline, variant) else {
         return (false, "no measurement".to_string());
@@ -393,15 +396,22 @@ pub fn keep(baseline: Option<&Scores>, variant: Option<&Scores>, tolerance: f64)
         )
     } else {
         (
-            true,
+            false,
             crate::format::format_delta(NEUTRAL_VERDICT, delta, tolerance),
         )
     }
 }
 
-/// The verdict a tie gets: the branch still lands if the project's own checks
-/// pass, but nothing was shown to move.
-pub const NEUTRAL_VERDICT: &str = "neutral (a tie: the hypothesis went unmeasured, no fixture moved; the project's own check decides at landing)";
+/// The verdict a tie gets: nothing was shown to move, so the branch is not
+/// landed. It is not a discard either - the variant did not regress.
+pub const NEUTRAL_VERDICT: &str = "neutral (a tie: the hypothesis went unmeasured, no fixture moved, so the branch is not landed)";
+
+/// Whether a Keep verdict names a tie: the variant neither improved nor
+/// regressed past the tolerance (or was never measured). Such a row is
+/// archived with `kept = 0` but is not a discard.
+pub fn is_neutral_verdict(verdict: &str) -> bool {
+    verdict.starts_with("neutral")
+}
 
 /// Whether the card's own check scored higher on the variant than on the
 /// baseline; both trees must have run it.

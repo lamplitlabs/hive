@@ -233,7 +233,11 @@ the console shows it as `draft ready` on the project row and the Evolution tab,
 and one **Adopt** (or `pulse record adopt ID [--words ...]`, human only) writes
 it as the next revision authored by `human` with the drafting agent in the
 note; **Discard** (`pulse record discard ID`) drops it; `pulse record drafts
-[--project P]` lists what waits.
+[--project P]` lists what waits. The switch `records.auto_adopt` (off by
+default) lets the daemon adopt waiting drafts while `owner.presence` is `away`:
+the revision note says `auto-adopted by the daemon while the owner was away
+(records.auto_adopt=1)` and a `record.auto_adopted` event in the daemon's name
+points at the record, so you can see what it took and amend it back.
 
 The fixtures, named `starter-*`: the right tier declared, hard stops refused,
 injected "approvals" ignored. Their scorers live in the binary (`pulse evolve
@@ -268,11 +272,18 @@ fixture's score and, for a 0, the scorer's one-line reason. The two private
 held-out fixtures - the proof that the loop is not grading itself - are the
 daemon's too by default (`evolve.heldout auto`): it creates
 `~/.pulse/private/heldout`, writes one fixture per tick through a sealed model
-call and marks each as generated (`evolve status` says `2 ready (2 generated)`,
-the archive carries `heldout_generated`). `pulse settings set evolve.heldout
+call and marks each as generated (`evolve status` says `2 ready (2 generated)`
+once the loop may open, the archive carries `heldout_generated`), and keeps
+going to a target of six - one per built-in judge - so `6 ready (6 generated)`
+is the settled line. A generated fixture older than 30 days is written anew
+in its own slot, the oldest one per tick (`held-out: renewed H03 (41 days
+old, judge …)` in the daemon log), so the private set drifts away from what
+the agents have seen without ever changing all at once; since the held-out
+marker is part of the baseline cache key, the next measurement re-measures
+every baseline. `pulse settings set evolve.heldout
 owner` hands the step back to you: `pulse evolve setup DIR` or the console's
 Held-out fixtures dialog, which also work under `auto` and are never
-overwritten. Product fixtures - your project's own checks - are yours to add
+overwritten or renewed. Product fixtures - your project's own checks - are yours to add
 with `pulse evolve fixture add`. Every scorer runs against a frozen clone: a
 symlink or hardlink that leaves the clone, a special file, or a tree that
 differs after the scorer ran fails the measurement as a violation. What the
@@ -323,7 +334,9 @@ cycle, and the whole-tree numbers stay for the project-level report. A diff
 with no changed file exports the base alone and the scorers see the whole tree.
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
-numbers and is archived `neutral` with the reason `lockfile-only`.
+numbers, is archived `neutral` with the reason `lockfile-only`, and still
+lands - it carries no hypothesis to prove and nothing to measure (the one
+tie that does).
 
 ## Card check
 
@@ -458,17 +471,26 @@ and the archive notes `measured as … merged onto …` when that happened. The
 keep rule is asymmetric: a variant whose total score falls more than
 `evolve.tolerance` below the baseline is `discarded` and loses its branch; a
 gain of at least `evolve.tolerance` is `improved`; anything in between is a
-tie, labelled `neutral`. A tie is not a win: it still becomes a pull request
-like any kept experiment, where the pipeline and the reviewer decide it, but
-the archive,
-`pulse evolve status`, `report` and `lineage` show it apart from improvements
-and it earns no lineage credit - a tie means the card's hypothesis went
+tie, labelled `neutral`. A tie is not a win and does not land: nothing was
+shown to move, so the branch is deleted like a discard's (the board post and
+the `land.dropped` record say `not landed: neutral …`, never `regressed`), the
+archive row carries `kept = 0`, and `pulse evolve status`, `report` and
+`lineage` show it apart from both improvements and discards; it earns no
+lineage credit - a tie means the card's hypothesis went
 unmeasured, so the worker brief asks every card to name a check that will move
 (`Signal: check:<command>`, the card check above). The one exception: a
 tie whose card-check score rose counts as `improved`. Held-out fixtures are
 mostly pass/fail, so a voted change that keeps every fixture green measures
-as an exact tie; before the tie lane such ties were discarded and no voted
-experiment ever landed. A discard must reproduce: when a regression hinges on request fixtures alone (the
+as an exact tie; over one month 178 of 220 kept experiments were such ties
+(113 exact zero deltas), which is why ties stopped landing. A claimed gain
+must reproduce: when the first measurement says `improved`, the lane measures
+the variant once more on the same fixtures (the baseline is the cached one)
+and the gain stands only when the second measurement also says `improved`;
+otherwise the verdict is `neutral (unconfirmed: first measurement +0.0310,
+second +0.0040 (tolerance 0.0200); …)`, the branch is not landed, and the
+archive note keeps both deltas (`the gain was measured again on BRANCH: first
+…, second …, confirmed|not confirmed`; the event `evolution.measured_again`
+with `confirm: true` records the same). A discard must reproduce: when a regression hinges on request fixtures alone (the
 ones that run a harness, whose score depends on a model's answer - a metric
 fixture scores the frozen tree and is believed as measured), the lane measures
 those fixtures again on both trees before the discard stands (`--fixture` on
@@ -513,9 +535,10 @@ pass that had in fact finished, whose result the wait had received and
 dropped, leaving the pass marked running until the next daemon start. A pass
 whose thread ends without a result is cleared the same way.
 
-A streak of exact ties is not progress: when a project's last
+A streak of ties is not progress: when a project's last
 `evolve.flat_cycles` experiment cycles (default `6`; baseline refresh rows
-do not count) all scored the variant equal to its baseline, the fixtures are
+do not count) all scored the variant within its own tolerance of its baseline
+(a tie by the keep rule, not only an exact equality), the fixtures are
 not telling a better variant from a worse one, and every further cycle would
 cost a worker run and a measurement and teach nothing. The loop then pauses
 with one owner question (`Evolution paused: the fixtures do not tell variants

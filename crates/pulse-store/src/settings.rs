@@ -86,7 +86,7 @@ pub static SETTING_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
         "worker_model"=>("text",None,[],None,"the model of the runs that change code - task, improve and experiment jobs - of the loop's measurements while measure_model is empty, and of every other run while light_model is empty; empty means the runner's default"),
         "stop"=>("switch",None,["0","1"],None,"the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)"),
         "landing"=>("choice",None,["agents","human"],None,"agents: verified branches merge into the default branch by themselves; human: they wait for you (ADR-024)"),
-        "records.auto_adopt"=>("switch",None,["0","1"],None,"1: when the owner is away the daemon adopts waiting record drafts on its own; 0: drafts wait for the owner (ADR-046)"),
+        "records.auto_adopt"=>("switch",None,["0","1"],None,"1: while the owner is away the daemon adopts waiting constitution and evaluator drafts in its own name - the revision note and a record.auto_adopted event name the daemon and this setting, and the owner can revoke it with pulse record amend; 0 (default): drafts wait for the owner (ADR-046)"),
     }
 });
 
@@ -225,7 +225,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     rules! {
         "evolve.loop"=>("switch",None,["0","1"],None,"1: pulse evolve cycle may run experiments; 0: the loop is off (STOP is the stop setting)"),
         "evolve.limits"=>("text",None,[],None,"none, or a budget such as cycles=20,hours=48 after which the loop stops by itself"),
-        "evolve.tolerance"=>("decimal",None,[],Some(1.0),"how far a variant's score may fall below the baseline before it is discarded, a share between 0 and 1 such as 0.02; a gain of at least this much is improved, anything in between is a neutral tie that still goes to landing (the project's own check decides) but is no win and earns no credit"),
+        "evolve.tolerance"=>("decimal",None,[],Some(1.0),"how far a variant's score may fall below the baseline before it is discarded, a share between 0 and 1 such as 0.02; a gain of at least this much is improved, anything in between is a neutral tie that is not landed (unless the card's own check rose), is no win and earns no credit"),
         "evolve.heldout_dir"=>("identifier",None,[],None,"owner-private directory outside every repository holding held-out fixtures; never quoted to agents"),
         "evolve.heldout"=>("choice",None,["auto","owner"],None,"auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)"),
         "evolve.draft_hours"=>("count",Some(0),[],None,"hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button"),

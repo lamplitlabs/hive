@@ -8,6 +8,14 @@ pub(crate) const RESEARCH_SOURCE_PREFIX: &str = "research:";
 /// shape of two research runs in three.
 pub(crate) const SHALLOW_RESEARCH_STEPS: i64 = 5;
 
+/// How many of a project's newest finished research runs the back-off looks
+/// at when it counts the runs in a row that left no suggestion card.
+pub(crate) const EMPTY_RESEARCH_WINDOW: i32 = 6;
+
+/// The most the research cadence stretches after runs that found nothing:
+/// one empty run doubles it, two quadruple it, three or more hold it here.
+pub(crate) const MAX_RESEARCH_BACKOFF: i32 = 8;
+
 pub(crate) static RESEARCH_FOCUSES: &[ResearchFocus] = &[
     ResearchFocus {
         name: "product",
@@ -284,15 +292,39 @@ pub(crate) fn research_due(
     // followed ten minutes later by another of the same.
     let shallow = fleet_idle && last_research_shallow(s, &slug);
     let idle = fleet_idle && !shallow;
-    let suffix = if idle {
-        " (fleet idle)"
-    } else if shallow {
-        " (fleet idle, last run shallow)"
+    // Runs that found nothing stretch the plain cadence: after k empty runs
+    // in a row the next research waits 2^k times as long (at most
+    // MAX_RESEARCH_BACKOFF) under a daily cap shrunk the same way, so a
+    // project with nothing to find is looked at less and less often until a
+    // run leaves a card. The idle shortcut is its own rule and is left alone.
+    let empty = if idle {
+        0
     } else {
-        ""
+        empty_research_streak(s, &slug)
+    };
+    let backoff = research_backoff(empty);
+    let mut why = Vec::new();
+    if idle {
+        why.push("fleet idle".to_string());
+    } else if shallow {
+        why.push("fleet idle, last run shallow".to_string());
+    }
+    if backoff > 1 {
+        why.push(match (shallow, empty) {
+            (true, 1) => format!("cadence x{backoff}"),
+            (false, 1) => format!("last run empty, cadence x{backoff}"),
+            _ => format!("{empty} empty runs in a row, cadence x{backoff}"),
+        });
+    }
+    let suffix = if why.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", why.join(", "))
     };
     if idle {
         minutes = (minutes / factor).max(10);
+    } else {
+        minutes *= backoff;
     }
     // A blocked job is one the runner stopped retrying, not work in progress.
     // While the fleet is idle, research runs beside in-flight work as long as
@@ -337,6 +369,8 @@ pub(crate) fn research_due(
     }
     if idle {
         per_day *= factor;
+    } else {
+        per_day = (per_day / backoff).max(1);
     }
     let day = format!("{}%", &now[..10]);
     let today = must_one(&conn, "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind = 'reflect' AND source LIKE ? AND created_at LIKE ?", &[&slug, &format!("{prefix}%"), &day]).int("n");
@@ -459,8 +493,29 @@ fn finished_research_runs(s: &pulse_store::Store, slug: &str, limit: i32) -> Vec
     )
 }
 
+/// A finished research run that left no suggestion card.
+fn empty_run(r: &Row) -> bool {
+    r.int("carded") == 0
+}
+
 fn shallow_run(r: &Row) -> bool {
-    r.int("steps") < SHALLOW_RESEARCH_STEPS as i32 && r.int("carded") == 0
+    r.int("steps") < SHALLOW_RESEARCH_STEPS as i32 && empty_run(r)
+}
+
+/// How many of the project's newest finished research runs in a row left no
+/// suggestion card, looking back at most `EMPTY_RESEARCH_WINDOW` runs. A run
+/// that posted a card ends the streak.
+pub(crate) fn empty_research_streak(s: &pulse_store::Store, slug: &str) -> i32 {
+    finished_research_runs(s, slug, EMPTY_RESEARCH_WINDOW)
+        .iter()
+        .take_while(|r| empty_run(r))
+        .count() as i32
+}
+
+/// The cadence multiplier after `empty` research runs in a row found
+/// nothing: 1, 2, 4, then `MAX_RESEARCH_BACKOFF` from the third on.
+pub(crate) fn research_backoff(empty: i32) -> i32 {
+    (1_i32 << empty.clamp(0, 30)).min(MAX_RESEARCH_BACKOFF)
 }
 
 /// Scan the project's last 20 finished research runs and report how many
@@ -891,10 +946,12 @@ mod tests {
         assert!(last_research_shallow(&s, "proj"));
         assert!(fleet_idle(&s));
         // Idle, the fleet would research again after 20 minutes; the shallow
-        // run makes it wait the plain hour.
+        // run makes it wait the plain hour, and as a run that left no card it
+        // doubles that hour.
         let (_, reason, ok) = research_due(&s, "proj".into(), TEST_NOW.into());
         assert!(
-            !ok && reason == "last research 25m ago, next after 60m (fleet idle, last run shallow)",
+            !ok && reason
+                == "last research 25m ago, next after 120m (fleet idle, last run shallow, cadence x2)",
             "{ok} {reason:?}"
         );
         let line = crate::idle::research_idle_part(&s, "proj".into(), TEST_NOW.into());
@@ -922,6 +979,147 @@ mod tests {
         let (_, reason, ok) = research_due(&s, "proj".into(), TEST_NOW.into());
         assert!(ok && reason.is_empty(), "{ok} {reason:?}");
         assert!(!last_research_shallow(&s, "other"));
+    }
+
+    /// A finished research run for `proj` with `steps` harness steps that
+    /// finished at `at`; `carded` posts a suggestion card from it.
+    fn research_run(s: &pulse_store::Store, id: &str, at: &str, steps: i64, carded: bool) {
+        let job_id = format!("job-{id}");
+        let run_id = format!("run-{id}");
+        s.conn()
+            .expect("conn")
+            .execute(
+                "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, finished_at) VALUES (?, 'proj', 'reflect', 1, 'research', '', ?, 0, 'done', ?, 'daemon', ?)",
+                rusqlite::params![job_id, format!("{RESEARCH_SOURCE_PREFIX}proj:product"), at, at],
+            )
+            .expect("insert job");
+        s.begin_harness_session(pulse_store::HarnessSession {
+            id: run_id.clone(),
+            run_id: run_id.clone(),
+            job_id,
+            project: "proj".into(),
+            started_at: at.to_string(),
+            ..Default::default()
+        })
+        .expect("begin session");
+        for n in 0..steps {
+            s.append_harness_step(pulse_store::HarnessStep {
+                session_id: run_id.clone(),
+                n,
+                at: at.to_string(),
+                kind: "command".into(),
+                command: "ls".into(),
+                ..Default::default()
+            })
+            .expect("append step");
+        }
+        s.finish_harness_session(&run_id, "done", "ok", "", "", 0.0, "")
+            .expect("finish session");
+        if carded {
+            crate::board::create_post(
+                s,
+                at.to_string(),
+                crate::board::PostOpts {
+                    kind: "suggestion".into(),
+                    project: "proj".into(),
+                    area: "evolution".into(),
+                    thread: format!("card-{id}"),
+                    agent: crate::board::actor_agent(s, "alice".into()),
+                    session: run_id,
+                    summary: format!("card from {id}"),
+                    ..Default::default()
+                },
+            )
+            .expect("card");
+        }
+    }
+
+    #[test]
+    fn research_backoff_doubles_per_empty_run_up_to_eight() {
+        assert_eq!(
+            [0, 1, 2, 3, 4, 9, 40].map(research_backoff),
+            [1, 2, 4, 8, 8, 8, 8]
+        );
+        assert_eq!(research_backoff(-1), 1);
+    }
+
+    #[test]
+    fn empty_runs_in_a_row_stretch_the_cadence_until_a_run_leaves_a_card() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "alice");
+        // idle_factor 1 keeps the fleet on the plain cadence whatever its load.
+        for (k, v) in [("lead.research_minutes", "60"), ("lead.idle_factor", "1")] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let due = |s: &pulse_store::Store| research_due(s, "proj".into(), TEST_NOW.into()).1;
+        // A deep run that left a card: no streak, the plain hour.
+        research_run(&s, "a", &plus_minutes(TEST_NOW, -50.0), 6, true);
+        assert_eq!(empty_research_streak(&s, "proj"), 0);
+        assert_eq!(due(&s), "last research 50m ago, next after 60m");
+        // One deep run with nothing to show doubles it ...
+        research_run(&s, "b", &plus_minutes(TEST_NOW, -40.0), 6, false);
+        assert_eq!(empty_research_streak(&s, "proj"), 1);
+        assert_eq!(
+            due(&s),
+            "last research 40m ago, next after 120m (last run empty, cadence x2)"
+        );
+        // ... two quadruple it ...
+        research_run(&s, "c", &plus_minutes(TEST_NOW, -30.0), 6, false);
+        assert_eq!(empty_research_streak(&s, "proj"), 2);
+        assert_eq!(
+            due(&s),
+            "last research 30m ago, next after 240m (2 empty runs in a row, cadence x4)"
+        );
+        // ... three reach the cap, where more of them stay.
+        research_run(&s, "d", &plus_minutes(TEST_NOW, -20.0), 6, false);
+        research_run(&s, "e", &plus_minutes(TEST_NOW, -15.0), 2, false);
+        assert_eq!(empty_research_streak(&s, "proj"), 4);
+        assert_eq!(
+            due(&s),
+            "last research 15m ago, next after 480m (4 empty runs in a row, cadence x8)"
+        );
+        let line = crate::idle::research_idle_part(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            line.starts_with("research: last research 15m ago, next after 480m (4 empty runs in a row, cadence x8)"),
+            "{line}"
+        );
+        // A run that leaves a card ends the streak: the plain hour again.
+        research_run(&s, "f", &plus_minutes(TEST_NOW, -5.0), 6, true);
+        assert_eq!(empty_research_streak(&s, "proj"), 0);
+        assert_eq!(due(&s), "last research 5m ago, next after 60m");
+        assert_eq!(empty_research_streak(&s, "other"), 0);
+    }
+
+    #[test]
+    fn empty_runs_in_a_row_shrink_the_daily_cap() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "alice");
+        for (k, v) in [
+            ("lead.research_minutes", "60"),
+            ("lead.idle_factor", "1"),
+            ("lead.research_per_day", "4"),
+        ] {
+            s.set_setting(pulse_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        // Two research runs today, both empty, after one yesterday that
+        // left a card: the cadence is x4 (240m; the last run is 300m back,
+        // so it has passed) and the day's four become one, already spent.
+        research_run(&s, "a", &plus_minutes(TEST_NOW, -700.0), 6, true);
+        research_run(&s, "b", &plus_minutes(TEST_NOW, -500.0), 6, false);
+        research_run(&s, "c", &plus_minutes(TEST_NOW, -300.0), 6, false);
+        let (_, reason, ok) = research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(
+            !ok && reason == "2 of 1 research jobs today (2 empty runs in a row, cadence x4)",
+            "{ok} {reason:?}"
+        );
+        // With the streak gone the cap is the setting's four again.
+        research_run(&s, "d", &plus_minutes(TEST_NOW, -70.0), 6, true);
+        let (_, reason, ok) = research_due(&s, "proj".into(), TEST_NOW.into());
+        assert!(ok && reason.is_empty(), "{ok} {reason:?}");
     }
 
     #[test]

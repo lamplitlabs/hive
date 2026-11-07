@@ -80,17 +80,58 @@ impl ProcInfo {
 /// Makes `cmd` start as the leader of a new process group, so the whole tree
 /// it spawns (including `cmd &`, `nohup` children and servers) can be
 /// signalled with one `killpg`. Stdio handling is untouched.
+///
+/// Set as a spawn attribute, not a `pre_exec` hook: a hook makes std fork
+/// this process and exec in the copy instead of posix_spawn - a page-table
+/// copy of a hub holding gigabytes per shell command, every other thread
+/// blocked on the allocator's fork lock meanwhile, and on macOS a
+/// "MallocStackLogging: can't turn off malloc stack logging" line on the
+/// child's stderr per spawn once the system has loaded the stack logger into
+/// the process (which it does to a big long-lived one). See also
+/// [`resolve_program`] for the other way a spawn ends up forking.
 pub fn own_process_group(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: setpgid is async-signal-safe; nothing else runs between fork and exec.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+    cmd.process_group(0);
+}
+
+/// `program` as `Command::new` should get it: a name without a path
+/// separator becomes the first executable of that name on PATH - the
+/// child's PATH when `env` (`KEY=VALUE` lines) has one, else this process's -
+/// and anything with a separator comes back as it is. std resolves a bare
+/// name itself, but when the child's environment differs from the parent's
+/// (`env_clear`, a PATH of its own) it has to do so after a fork rather than
+/// a posix_spawn, with the cost [`own_process_group`] describes. A name no
+/// PATH entry has comes back unchanged, so the spawn fails with the same
+/// "not found" error it always did.
+pub fn resolve_program(program: &str, env: &[String]) -> PathBuf {
+    let bare = PathBuf::from(program);
+    if program.is_empty() || program.contains(std::path::MAIN_SEPARATOR) || program.contains('/') {
+        return bare;
     }
+    let child_path = env
+        .iter()
+        .find_map(|kv| kv.strip_prefix("PATH=").map(std::ffi::OsString::from));
+    let Some(path) = child_path.or_else(|| std::env::var_os("PATH")) else {
+        return bare;
+    };
+    std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable_file(candidate))
+        .unwrap_or(bare)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// True while any process (zombies included) is left in the group.
@@ -580,6 +621,55 @@ mod tests {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             std::thread::sleep(POLL);
         }
+    }
+
+    #[test]
+    fn own_process_group_makes_the_child_a_group_leader() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "ps -o pgid= -p $$"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        own_process_group(&mut cmd);
+        let child = cmd.spawn().unwrap();
+        let pid = child.id();
+        let out = child.wait_with_output().unwrap();
+        let pgid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        assert_eq!(pgid, pid, "the child leads its own group");
+    }
+
+    #[test]
+    fn resolve_program_follows_the_child_path_and_keeps_paths_as_they_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let tool = bin.join("pulse-test-tool");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let child_env = vec![format!("PATH={}", bin.display()), "HOME=/nowhere".into()];
+        assert_eq!(resolve_program("pulse-test-tool", &child_env), tool);
+        assert_eq!(
+            resolve_program("pulse-test-tool", &[]),
+            PathBuf::from("pulse-test-tool"),
+            "not on this process's PATH: the bare name, so the spawn's error names it"
+        );
+        assert_eq!(
+            resolve_program("pulse-missing-tool", &child_env),
+            PathBuf::from("pulse-missing-tool")
+        );
+        let explicit = tool.display().to_string();
+        assert_eq!(resolve_program(&explicit, &child_env), tool);
+        assert_eq!(
+            resolve_program("./relative/tool", &child_env),
+            PathBuf::from("./relative/tool")
+        );
+        assert_eq!(resolve_program("", &child_env), PathBuf::from(""));
+        let sh = resolve_program("sh", &["PATH=/usr/bin:/bin".into()]);
+        assert!(sh.is_absolute() && sh.ends_with("sh"), "{sh:?}");
     }
 
     #[test]

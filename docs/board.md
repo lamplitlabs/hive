@@ -502,7 +502,8 @@ queues Tier 0/1 worker jobs, posts findings and suggestions, and tells the
 owner in the project's chat what it did; it never decides for an absent
 owner. Like every job it counts against `jobs_per_day`. The `rsi` sitting
 carries one step that binds: when the project's archive shows fewer than
-20% improved-or-kept over its last 20 cycles, the sitting must add one
+20% improved over its last 20 cycles (a tie counts as nothing, however it was
+archived), the sitting must add one
 metric fixture that reads the project's own check output (`pulse evolve
 fixture add … --metric`), check that it scores HEAD (`pulse evolve measure
 --ref HEAD`) and commit it before it may end with `SUMMARY: nothing to do`;
