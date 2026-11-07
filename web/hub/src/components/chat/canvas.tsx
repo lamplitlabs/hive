@@ -244,6 +244,18 @@ const KIND_ICON: Record<CanvasKind, typeof TerminalIcon> = {
   evidence: ImagesIcon,
 };
 
+// Brings the canvas into view: beside the transcript on a wide screen it is
+// already there; on a phone it sits below, so a link that opens a tab on it
+// (the report) scrolls down to it.
+export function revealCanvas() {
+  if (typeof window === "undefined") return;
+  window.requestAnimationFrame(() =>
+    document
+      .querySelector("[data-canvas]")
+      ?.scrollIntoView({ behavior: "smooth", block: "nearest" }),
+  );
+}
+
 export function Canvas({
   ctl,
   label,
@@ -319,6 +331,7 @@ export function Canvas({
       className="enter flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-card lg:h-full"
       style={{ animationDelay: "60ms" }}
       aria-label={label}
+      data-canvas
     >
       <div className="flex min-w-0 items-center gap-1 border-b px-1.5">
         <div

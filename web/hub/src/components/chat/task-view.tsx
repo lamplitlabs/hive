@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Canvas, useCanvas } from "@/components/chat/canvas";
+import { Canvas, revealCanvas, useCanvas } from "@/components/chat/canvas";
 import { useSeen } from "@/components/chat/chat-pane";
 import { JobEvidence } from "@/components/chat/job-evidence";
 import {
@@ -455,7 +455,7 @@ function TaskBody({
         <Notice tone="info">
           {t.status === "done"
             ? "This task is done" +
-              (reportTab ? "; its report is open beside the session" : "") +
+              (reportTab ? ", and PULSE wrote its report" : "") +
               ". The session stays here to read; give a new task to carry on."
             : "This task was cancelled. The session stays here to read; give a new task to carry on."}
           {reportTab && reportStep ? (
@@ -463,7 +463,10 @@ function TaskBody({
               <button
                 type="button"
                 className="font-medium text-link underline-offset-2 hover:underline"
-                onClick={() => ctl.openTab(reportTab)}
+                onClick={() => {
+                  ctl.openTab(reportTab);
+                  revealCanvas();
+                }}
                 data-report-link
               >
                 {REPORT_WORD}

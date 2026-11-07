@@ -77,6 +77,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Canvas,
   PlanList,
+  revealCanvas,
   useCanvas,
   type CanvasControl,
 } from "@/components/chat/canvas";
@@ -3112,7 +3113,10 @@ function ConversationBody({
               <button
                 type="button"
                 className="font-medium text-link underline-offset-2 hover:underline"
-                onClick={() => ctl.open("artifact", REPORT_PAGE)}
+                onClick={() => {
+                  ctl.open("artifact", REPORT_PAGE);
+                  revealCanvas();
+                }}
                 data-report-link
               >
                 {REPORT_WORD}
