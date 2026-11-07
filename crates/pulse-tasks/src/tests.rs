@@ -3629,6 +3629,13 @@ fn activity_tells_the_task_story_in_order() {
          ('RUN-2', 'JOB-work', 'cinder', 'demo', '2026-09-06T21:12:00Z', '', 'running', NULL, '', '', 0, 'real', 'local')",
         [],
     ).unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE runs SET prompt_tokens = 40000, completion_tokens = 1200, cost = 0.12 WHERE id = 'RUN-1'",
+            [],
+        )
+        .unwrap();
     s.begin_harness_session(pulse_store::HarnessSession {
         id: "HS-1".into(),
         run_id: "RUN-1".into(),
@@ -3826,6 +3833,25 @@ fn activity_tells_the_task_story_in_order() {
         ("RUN-1", "Do the work", "HS-1")
     );
     assert_eq!((r1.calls, r1.commands, r1.edits, r1.steps), (2, 1, 1, 13));
+    // What the run cost, as the runner recorded it when the run ended.
+    assert_eq!(
+        (r1.prompt_tokens, r1.completion_tokens, r1.cost),
+        (40_000, 1_200, 0.12)
+    );
+    assert_eq!(
+        (a.runs[1].prompt_tokens, a.runs[1].cost),
+        (0, 0.0),
+        "a live run has recorded no cost"
+    );
+    let wire = serde_json::to_value(r1).unwrap();
+    assert_eq!(wire["prompt_tokens"], 40_000);
+    assert!(
+        serde_json::to_value(&a.runs[1])
+            .unwrap()
+            .get("cost")
+            .is_none(),
+        "a zero cost is left off the wire"
+    );
     assert_eq!(
         (
             a.runs[1].id.as_str(),

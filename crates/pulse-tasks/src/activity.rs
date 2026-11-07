@@ -78,6 +78,18 @@ pub struct ActivityRun {
     pub commands: i64,
     pub edits: i64,
     pub steps: i64,
+    /// What the run cost as the runner recorded it when the run ended
+    /// (runs.prompt_tokens, completion_tokens, cost); zero while it runs.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub prompt_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub completion_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub cost: f64,
+}
+
+fn is_zero_f64(n: &f64) -> bool {
+    *n == 0.0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -372,6 +384,9 @@ struct RunRow {
     summary: String,
     branch: String,
     commits: i64,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    cost: f64,
 }
 
 /// Every line of the task's story, oldest first, cut to the newest `limit`
@@ -475,8 +490,8 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
         });
         let run_rows = {
             let mut stmt = conn.prepare(
-                "SELECT id, job_id, agent, executor, status, exit_code, started_at, finished_at, summary, branch, commits \
-                 FROM runs WHERE job_id = ? ORDER BY started_at, id",
+                "SELECT id, job_id, agent, executor, status, exit_code, started_at, finished_at, summary, branch, commits, \
+                 prompt_tokens, completion_tokens, cost FROM runs WHERE job_id = ? ORDER BY started_at, id",
             )?;
             stmt.query_map([&id], |r| {
                 Ok(RunRow {
@@ -491,6 +506,9 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
                     summary: r.get(8)?,
                     branch: r.get(9)?,
                     commits: r.get(10)?,
+                    prompt_tokens: r.get(11)?,
+                    completion_tokens: r.get(12)?,
+                    cost: r.get(13)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
@@ -545,6 +563,9 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
                 started_at: row.started_at,
                 finished_at: row.finished_at,
                 summary: clip(row.summary.trim(), TEXT_CAP).0,
+                prompt_tokens: row.prompt_tokens,
+                completion_tokens: row.completion_tokens,
+                cost: row.cost,
                 ..ActivityRun::default()
             });
         }

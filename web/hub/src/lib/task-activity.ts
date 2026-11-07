@@ -78,8 +78,27 @@ export function workedFor(run: Pick<ActivityRun, "started_at" | "finished_at">, 
   return unit(Math.round((sec / 3600) * 10) / 10, "hour");
 }
 
+// A token count in a few characters: 980, 12k, 1.4M.
+export function tokensText(n: number): string {
+  if (n >= 1_000_000) return (Math.round(n / 100_000) / 10).toString() + "M";
+  if (n >= 10_000) return Math.round(n / 1000) + "k";
+  if (n >= 1_000) return (Math.round(n / 100) / 10).toString() + "k";
+  return String(Math.max(0, Math.round(n)));
+}
+
+// What a finished run cost, for its chapter line: "41k tokens, cost 0.12";
+// empty while it runs or when it recorded none.
+export function runCostText(run: Pick<ActivityRun, "prompt_tokens" | "completion_tokens" | "cost">): string {
+  const tokens = (run.prompt_tokens ?? 0) + (run.completion_tokens ?? 0);
+  const cost = run.cost ?? 0;
+  const parts: string[] = [];
+  if (tokens > 0) parts.push(tokensText(tokens) + " tokens");
+  if (cost > 0) parts.push("cost " + (cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)));
+  return parts.join(", ");
+}
+
 // The one line a folded chapter shows: "cinder worked 4 minutes: 3 commands,
-// 1 file changed - finished."
+// 1 file changed - finished (41k tokens, cost 0.12)."
 export function runSummaryLine(run: ActivityRun, nowMs: number): string {
   const parts: string[] = [];
   if (run.commands) parts.push(unit(run.commands, "command"));
@@ -89,7 +108,8 @@ export function runSummaryLine(run: ActivityRun, nowMs: number): string {
   const span = workedFor(run, nowMs);
   const outcome = runOutcome(run.status);
   if (run.status === "running") return run.agent + " has been on it " + (span || "a moment") + did + ".";
-  return run.agent + " worked " + (span || "briefly") + did + " \u2014 " + outcome.text + ".";
+  const spent = runCostText(run);
+  return run.agent + " worked " + (span || "briefly") + did + " \u2014 " + outcome.text + (spent ? " (" + spent + ")" : "") + ".";
 }
 
 // What a command's outcome badge says.

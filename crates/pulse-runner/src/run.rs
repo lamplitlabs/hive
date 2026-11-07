@@ -257,6 +257,51 @@ pub(crate) fn commit_message_from_command(command: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The token cost of one run: what the harness sessions it ran
+/// (`harness_sessions.run_id`, the `PULSE_SESSION` the runner hands the
+/// worker) spent - prompt and completion tokens summed from their steps,
+/// and the provider's priced cost where the provider reports one.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct RunCost {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cost: f64,
+}
+
+/// Sums the run's harness sessions: the ones that name the run, and a
+/// session of the job started during the run that names none (a worker
+/// started without `PULSE_SESSION`); zero for a worker that kept none (a
+/// custom worker command).
+pub(crate) fn run_cost(
+    q: &(impl crate::util::Querier + ?Sized),
+    run_id: &str,
+    job_id: &str,
+    since: &str,
+) -> RunCost {
+    q.conn()
+        .query_row(
+            "SELECT COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost), 0) FROM harness_sessions WHERE run_id = ?1 OR (run_id = '' AND job_id = ?2 AND job_id != '' AND started_at >= ?3)",
+            rusqlite::params![run_id, job_id, since],
+            |r| {
+                Ok(RunCost {
+                    prompt_tokens: r.get(0)?,
+                    completion_tokens: r.get(1)?,
+                    cost: r.get(2)?,
+                })
+            },
+        )
+        .unwrap_or_default()
+}
+
+/// A cost for the log: two decimals, or four under a cent.
+pub(crate) fn trim_cost(cost: f64) -> String {
+    if cost > 0.0 && cost < 0.01 {
+        format!("{cost:.4}")
+    } else {
+        format!("{cost:.2}")
+    }
+}
+
 pub(crate) fn runner_stopped(s: &pulse_store::Store) -> String {
     if s.setting("stop", "0") == "1" {
         return "the runner is stopped in the store (pulse start to resume)".to_string();
@@ -1149,6 +1194,7 @@ pub(crate) fn run_job(
     let mut summary = String::new();
     let mut exit_code: Option<i32> = None;
     let mut parsed = crate::brief::parse_result_text(None);
+    let mut outcome = crate::brief::Outcome::default();
     let mut transport_error = false;
     let mut fault = false;
     let mut unfit: Option<crate::executor::ExecutorUnfit> = None;
@@ -1612,6 +1658,24 @@ pub(crate) fn run_job(
                 current_job.str("result")
             ));
         }
+        // The worker's outcome code is read before any of its words; a
+        // summary without one falls back to the text. Which path classified
+        // the run goes in the log and on the run row (runs.outcome_source),
+        // so the fallback rate can be measured.
+        outcome = parsed.outcome();
+        log.add(format!(
+            "outcome: {} (from the {})",
+            if outcome.code.is_empty() {
+                "none"
+            } else {
+                outcome.code.as_str()
+            },
+            match outcome.source {
+                "code" => "worker's SUMMARY outcome code",
+                "text" => "summary text: no outcome code, regex fallback",
+                _ => "absence of a summary",
+            }
+        ));
         // The step budget stopped the worker with work in the clone: the
         // run is not judged on a task cut off mid-way. Like one the runner's
         // restart held, it holds, and the next run of the job - the same
@@ -2288,6 +2352,16 @@ pub(crate) fn run_job(
             Value::Object(d),
         );
     }
+    // What the run cost: the harness sessions it ran, summed onto the run.
+    let spent = run_cost(&c, &run_id, &job.str("id"), now);
+    if spent.prompt_tokens > 0 || spent.completion_tokens > 0 || spent.cost > 0.0 {
+        log.add(format!(
+            "cost: {} prompt + {} completion tokens, {} (provider units)",
+            spent.prompt_tokens,
+            spent.completion_tokens,
+            trim_cost(spent.cost)
+        ));
+    }
     write_run_log(&run_id, &log_path, &log.text());
     let exit_val: Option<i32> = exit_code;
     let record_run = |status: &str,
@@ -2297,7 +2371,7 @@ pub(crate) fn run_job(
                       verify_note: &str| {
         crate::util::exec1(
             &c,
-            "UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ?, work_mb = ? WHERE id = ?",
+            "UPDATE runs SET finished_at = ?, status = ?, exit_code = ?, seconds = ?, branch = ?, commits = ?, summary = ?, verify = ?, work_mb = ?, prompt_tokens = ?, completion_tokens = ?, cost = ?, outcome = ?, outcome_source = ? WHERE id = ?",
             &[
                 &s.now(),
                 &status,
@@ -2308,6 +2382,11 @@ pub(crate) fn run_job(
                 &summary,
                 &verify_note,
                 &work_mb,
+                &spent.prompt_tokens,
+                &spent.completion_tokens,
+                &spent.cost,
+                &outcome.code,
+                &outcome.source,
                 &run_id,
             ],
         );
@@ -2344,6 +2423,13 @@ pub(crate) fn run_job(
         if fault {
             d.insert("fault".into(), json!(true));
         }
+        if !outcome.source.is_empty() {
+            d.insert("outcome".into(), json!(outcome.code));
+            d.insert("outcome_source".into(), json!(outcome.source));
+        }
+        d.insert("prompt_tokens".into(), json!(spent.prompt_tokens));
+        d.insert("completion_tokens".into(), json!(spent.completion_tokens));
+        d.insert("cost".into(), json!(spent.cost));
         crate::util::event_at(&c, now, agent, "run.finish", &run_id, Value::Object(d));
     };
     if status == "stale" {
@@ -6109,6 +6195,251 @@ mod tests {
             String::new(),
         );
         assert!(after.is_empty(), "a voted card is still on aurora's ballot");
+    }
+
+    /// One leased task job of `proj` run with `worker` as its shell command;
+    /// the finished run's row.
+    fn run_worker(s: &pulse_store::Store, worker: &str, before: impl FnOnce(&str)) -> Row {
+        new_bare_repo(s);
+        join(s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            "look around and report".into(),
+            "report what you saw".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!job.0.is_empty(), "lease returned no job");
+        before(&job.str("id"));
+        run_job(
+            s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn seed_session_cost(
+        s: &pulse_store::Store,
+        id: &str,
+        run_id: &str,
+        job_id: &str,
+        started_at: &str,
+        tokens: [(i64, i64); 2],
+        cost: f64,
+    ) {
+        s.begin_harness_session(pulse_store::HarnessSession {
+            id: id.into(),
+            run_id: run_id.into(),
+            job_id: job_id.into(),
+            agent: "aurora".into(),
+            started_at: started_at.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        for (n, (prompt, completion)) in tokens.into_iter().enumerate() {
+            s.append_harness_step(pulse_store::HarnessStep {
+                session_id: id.into(),
+                n: n as i64,
+                kind: "assistant".into(),
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        s.finish_harness_session(id, "done", "submitted", "", "", cost, "")
+            .unwrap();
+    }
+
+    #[test]
+    fn run_cost_sums_the_runs_sessions_and_no_one_elses() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        // Two sessions of the run (a held run carried on), one of the job
+        // started during the run without a run id, and three that are not
+        // this run's: another run's, the job's from before, another job's.
+        seed_session_cost(
+            &s,
+            "h1",
+            "run-1",
+            "job-1",
+            TEST_NOW,
+            [(100, 10), (200, 20)],
+            0.5,
+        );
+        seed_session_cost(
+            &s,
+            "h2",
+            "run-1",
+            "job-1",
+            TEST_NOW,
+            [(50, 5), (0, 0)],
+            0.25,
+        );
+        seed_session_cost(&s, "h3", "", "job-1", TEST_NOW, [(7, 3), (0, 0)], 0.0);
+        seed_session_cost(
+            &s,
+            "x1",
+            "run-2",
+            "job-1",
+            TEST_NOW,
+            [(9999, 999), (0, 0)],
+            9.0,
+        );
+        seed_session_cost(
+            &s,
+            "x2",
+            "",
+            "job-1",
+            "2000-01-01T00:00:00Z",
+            [(9999, 9), (0, 0)],
+            9.0,
+        );
+        seed_session_cost(&s, "x3", "", "job-2", TEST_NOW, [(9999, 9), (0, 0)], 9.0);
+        let c = s.conn().unwrap();
+        let got = run_cost(&*c, "run-1", "job-1", TEST_NOW);
+        assert_eq!(got.prompt_tokens, 357);
+        assert_eq!(got.completion_tokens, 38);
+        assert!((got.cost - 0.75).abs() < 1e-9, "{got:?}");
+        // A run without a harness session (a custom worker) costs nothing.
+        assert_eq!(
+            run_cost(&*c, "run-none", "job-none", TEST_NOW),
+            RunCost::default()
+        );
+        assert_eq!(trim_cost(0.75), "0.75");
+        assert_eq!(trim_cost(0.0042), "0.0042");
+        assert_eq!(trim_cost(0.0), "0.00");
+    }
+
+    #[test]
+    fn a_finished_run_records_its_token_cost() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        let s = new_store();
+        let r = run_worker(&s, "echo 'SUMMARY: done - looked around'", |job_id| {
+            // The harness session of this run: it names the job and starts
+            // as the run does (the shell worker cannot write one itself).
+            seed_session_cost(
+                &s,
+                "h-run",
+                "",
+                job_id,
+                TEST_NOW,
+                [(1200, 80), (300, 20)],
+                0.04,
+            );
+        });
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        assert_eq!(r.int("prompt_tokens"), 1500, "run: {r:?}");
+        assert_eq!(r.int("completion_tokens"), 100, "run: {r:?}");
+        assert!((r.float("cost") - 0.04).abs() < 1e-9, "run: {r:?}");
+        let log = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(
+            log.contains("cost: 1500 prompt + 100 completion tokens, 0.04 (provider units)"),
+            "{log}"
+        );
+        let c = s.conn().unwrap();
+        let ev = crate::util::must_one(
+            &*c,
+            "SELECT detail FROM events WHERE action = 'run.finish' AND subject = ?",
+            &[&r.str("id")],
+        );
+        let d: Value = serde_json::from_str(&ev.str("detail")).unwrap();
+        assert_eq!(d["prompt_tokens"], 1500, "{d}");
+        assert_eq!(d["completion_tokens"], 100, "{d}");
+    }
+
+    #[test]
+    fn the_runner_reads_the_outcome_code_before_the_regex() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        for (worker, status, outcome, source, logged) in [
+            // The code classifies: a `blocked` code fails the run whatever
+            // the words after it say.
+            (
+                "echo 'SUMMARY: blocked - the executor has no login'",
+                "failed",
+                "blocked",
+                "code",
+                "outcome: blocked (from the worker's SUMMARY outcome code)",
+            ),
+            (
+                "echo 'SUMMARY: nothing-to-do - bc3f9bcc already covers it'",
+                "done",
+                "nothing-to-do",
+                "code",
+                "outcome: nothing-to-do (from the worker's SUMMARY outcome code)",
+            ),
+            // A `done` code is done, even with \"blocked:\" in its words.
+            (
+                "echo 'SUMMARY: done - unstuck the blocked: parser'",
+                "done",
+                "done",
+                "code",
+                "outcome: done (from the worker's SUMMARY outcome code)",
+            ),
+            // No code: the regex fallback, logged as such.
+            (
+                "echo 'SUMMARY: looked around'",
+                "done",
+                "done",
+                "text",
+                "outcome: done (from the summary text: no outcome code, regex fallback)",
+            ),
+            (
+                "echo 'SUMMARY: the fixture is absent, blocked on it'",
+                "done",
+                "done",
+                "text",
+                "outcome: done (from the summary text: no outcome code, regex fallback)",
+            ),
+            // No report at all.
+            (
+                "true",
+                "failed",
+                "",
+                "none",
+                "outcome: none (from the absence of a summary)",
+            ),
+        ] {
+            let s = new_store();
+            let r = run_worker(&s, worker, |_| {});
+            assert_eq!(r.str("status"), status, "{worker}: run {r:?}");
+            assert_eq!(r.str("outcome"), outcome, "{worker}: run {r:?}");
+            assert_eq!(r.str("outcome_source"), source, "{worker}: run {r:?}");
+            let log = std::fs::read_to_string(r.str("log")).unwrap();
+            assert!(log.contains(logged), "{worker}: {log}");
+            let c = s.conn().unwrap();
+            let ev = crate::util::must_one(
+                &*c,
+                "SELECT detail FROM events WHERE action = 'run.finish' AND subject = ?",
+                &[&r.str("id")],
+            );
+            let d: Value = serde_json::from_str(&ev.str("detail")).unwrap();
+            assert_eq!(d["outcome_source"], source, "{worker}: {d}");
+        }
     }
 
     fn harvest_fixture(s: &pulse_store::Store, brain: bool) -> String {

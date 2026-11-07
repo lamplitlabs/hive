@@ -1158,6 +1158,13 @@ function taskActivity(detail, messages) {
       run.commands = counts.commands;
       run.edits = counts.edits;
       run.steps = (detailOf.steps || []).length;
+      // The runner writes the session's token use and cost onto the run
+      // (TASK-083); a run without them leaves the fields out.
+      if (Number(session.prompt_tokens) > 0)
+        run.prompt_tokens = Number(session.prompt_tokens);
+      if (Number(session.completion_tokens) > 0)
+        run.completion_tokens = Number(session.completion_tokens);
+      if (Number(session.cost) > 0) run.cost = Number(session.cost);
     }
     runs.push(run);
   }

@@ -858,6 +858,27 @@ brief, skill, script, job_kind, tier, priority, run_as, times, paused`.
 
 ## Runs
 
+Every run row records what it cost as it ends: the prompt and completion
+tokens of the harness sessions it ran, summed from their steps, and the
+provider's priced cost where the provider reports one (`runs.prompt_tokens`,
+`runs.completion_tokens`, `runs.cost`; the run log says
+`cost: 1500 prompt + 100 completion tokens, 0.04 (provider units)` and the
+`run.finish` event carries the same numbers). A task's **Work** feed shows
+each run's tokens and cost on its chapter line, and `pulse status` adds a
+`cost today` row per job kind, the dearest kind first, beside an `outcomes`
+row counting how the day's runs were classified (`code` from the worker's
+`SUMMARY:` outcome code, `text` from the regex fallback, `none` without a
+summary):
+
+```
+cost today task 12 runs, 4.1M prompt + 58.2k completion tokens, cost 3.10
+           lead 30 runs, 610.0k prompt + 9.8k completion tokens
+outcomes   10 code, 31 text, 1 none today (code = the worker's SUMMARY outcome code, text = regex fallback)
+```
+
+`pulse status --json` carries both as `cost_today` and `outcomes_today`. No
+kind is capped or ranked by cost yet.
+
 Every worker run (`/harness/`) as the harness saw it: which job, agent, machine
 and model, how many model calls and commands, tokens, how it ended (finished,
 or why it stopped: step limit, time limit, format errors, provider error, not
