@@ -78,7 +78,7 @@ fn due_landings(
 		FROM events e
 		WHERE e.action = 'land.landed'
 		AND e.at >= ?1 AND e.at <= ?2
-		AND json_extract(e.detail, '$.project') = ?3
+		AND json_valid(e.detail) AND json_extract(e.detail, '$.project') = ?3
 		AND NOT EXISTS (
 			SELECT 1 FROM events m
 			WHERE m.action = 'land.measured'

@@ -10,12 +10,20 @@ import type { HarnessStep } from "@/lib/api";
 // ----- the list -------------------------------------------------------------
 
 // A row's state: working (the spinner), asks (a marigold dot - the agent
-// waits on you, or its pull request does), done (a tick), open (the quiet
-// speech bubble). Status by icon and word, never colour alone.
-export type SessionState = "working" | "asks" | "done" | "open";
+// waits on you, or its pull request does), stopped (a marigold pause - PULSE
+// stopped its turn to restart and nothing carried it on, so it waits for a
+// message), done (a tick), open (the quiet speech bubble). Status by icon and
+// word, never colour alone.
+export type SessionState = "working" | "asks" | "stopped" | "done" | "open";
+
+// The row note PULSE leaves on a conversation whose turn it stopped itself
+// (RESTART_NOTE in crates/pulse-harness/src/conversation.rs); the next turn
+// clears it.
+export const RESTART_NOTE = "PULSE restarted during the last turn";
 
 export interface SessionLike {
   status: string;
+  note?: string;
   live?: { status: string } | null;
   pr?: { state: string } | null;
 }
@@ -30,7 +38,18 @@ export function sessionState(c: SessionLike): SessionState {
   if (status === "waiting") return "asks";
   if (status === "running") return "working";
   if (status === "closed" || status === "archived") return "done";
+  if (status === "idle" && c.note === RESTART_NOTE) return "stopped";
   return "open";
+}
+
+// The sub-sessions a finished session leaves behind: still working, waiting
+// on you, or stopped by a restart with nothing carrying them on. A quiet
+// (open) or finished one is not counted.
+export function unfinished<T extends SessionLike>(subs: T[]): T[] {
+  return subs.filter((k) => {
+    const s = sessionState(k);
+    return s === "working" || s === "asks" || s === "stopped";
+  });
 }
 
 // The StatusIcon kind each state draws (status-badge.tsx); "open" has no
@@ -38,6 +57,7 @@ export function sessionState(c: SessionLike): SessionState {
 export const SESSION_STATE_ICON: Record<SessionState, string | null> = {
   working: "running",
   asks: "waiting",
+  stopped: "paused",
   done: "done",
   open: null,
 };
@@ -45,6 +65,7 @@ export const SESSION_STATE_ICON: Record<SessionState, string | null> = {
 export const SESSION_STATE_WORD: Record<SessionState, string> = {
   working: "Working",
   asks: "Asked you",
+  stopped: "Stopped by a restart",
   done: "Finished",
   open: "Open",
 };

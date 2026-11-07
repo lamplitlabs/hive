@@ -443,6 +443,12 @@ impl DaemonMaintenance {
                                 crate::backup::tend_backup(&s, &s.now(), &actor)
                             }));
                         }
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            // Once a month, ledger rows nothing reads any more
+                            // move to pulse-archive.sqlite (pulse-store archive.rs).
+                            set_stage(Some(&stage), "store archive");
+                            lines.extend(s.tend_archive(&s.now(), &actor));
+                        }
                     }
 
                     set_stage(Some(&stage), "finished");
@@ -934,7 +940,7 @@ fn first_own_deferral(q: &(impl crate::util::Querier + ?Sized), job: &str) -> Op
     crate::util::query_rows(
         q,
         "SELECT at, json_extract(detail, '$.note') AS note FROM events
-         WHERE action = 'land.deferred' AND json_extract(detail, '$.job') = ?
+         WHERE action = 'land.deferred' AND json_valid(detail) AND json_extract(detail, '$.job') = ?
            AND json_extract(detail, '$.state') = 'deferred'
          ORDER BY at ASC, seq ASC",
         &[&job],

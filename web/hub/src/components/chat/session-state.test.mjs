@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  RESTART_NOTE,
   SESSION_STATE_ICON,
   TIP_KEY,
   dismissTip,
@@ -12,6 +13,7 @@ import {
   toolGroupLabel,
   toolIcon,
   toolSummary,
+  unfinished,
 } from "./session-state.ts";
 
 const conv = (over = {}) => ({ status: "idle", live: null, pr: null, ...over });
@@ -34,8 +36,32 @@ test("a session's state: the live status wins, a waiting pull request asks", () 
 test("each state names a status icon kind, open none", () => {
   assert.equal(SESSION_STATE_ICON.working, "running");
   assert.equal(SESSION_STATE_ICON.asks, "waiting");
+  assert.equal(SESSION_STATE_ICON.stopped, "paused");
   assert.equal(SESSION_STATE_ICON.done, "done");
   assert.equal(SESSION_STATE_ICON.open, null);
+});
+
+test("a turn PULSE stopped to restart, with nothing carrying it on, reads as stopped", () => {
+  assert.equal(sessionState(conv({ status: "idle", note: RESTART_NOTE })), "stopped");
+  // The next turn clears the note; until then a live turn still wins.
+  assert.equal(sessionState(conv({ status: "idle", note: RESTART_NOTE, live: { status: "running" } })), "working");
+  assert.equal(sessionState(conv({ status: "closed", note: RESTART_NOTE })), "done");
+  assert.equal(sessionState(conv({ status: "idle", note: "waiting on the reviewer" })), "open");
+});
+
+test("a finished session's unfinished sub-sessions: working, asking or stopped", () => {
+  const subs = [
+    conv({ id: "a", status: "closed" }),
+    conv({ id: "b", status: "idle", note: RESTART_NOTE }),
+    conv({ id: "c", status: "running" }),
+    conv({ id: "d", status: "waiting" }),
+    conv({ id: "e", status: "idle" }),
+  ];
+  assert.deepEqual(
+    unfinished(subs).map((k) => k.id),
+    ["b", "c", "d"],
+  );
+  assert.deepEqual(unfinished([]), []);
 });
 
 test("the tip stays until dismissed, in the injected storage under its key", () => {
