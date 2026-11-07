@@ -239,7 +239,36 @@ pub fn verify_commit(
                 key: r.get(5)?,
             })
         })?
-        .collect::<rusqlite::Result<_>>()?;
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    // A run older than daemon.archive_days may have moved to the side file
+    // (pulse-store archive.rs); verify is one of the few reads that attaches
+    // it on purpose, so an old commit still checks against its run key.
+    let candidates = if candidates.is_empty()
+        && let Some(archive) = pulse_store::open_archive(s)?
+        && pulse_store::archive_has_table(&archive, "runs")?
+    {
+        let mut stmt = archive.prepare(
+            "SELECT id, agent, executor, status, started_at, signing_pubkey FROM runs
+		WHERE job_id = ? AND signing_pubkey != '' ORDER BY started_at DESC",
+        )?;
+        stmt.query_map([&v.pulse_job], |r| {
+            Ok(Candidate {
+                run: VerifiedRun {
+                    id: r.get(0)?,
+                    agent: r.get(1)?,
+                    executor: r.get(2)?,
+                    status: r.get(3)?,
+                    started_at: r.get(4)?,
+                    ..Default::default()
+                },
+                key: r.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        candidates
+    };
     if candidates.is_empty() {
         v.verdict = format!(
             "NOT verified: the store has no run with a key for job {}",
@@ -606,5 +635,38 @@ mod tests {
         }
         let signers = invoke(Some(s.clone()), false, "", "signers", &[]);
         assert_eq!(signers.code, 0, "{signers:?}");
+
+        // A run the monthly archive moved to pulse-archive.sqlite still
+        // vouches for its commits: verify attaches the side file when the
+        // store has no run for the job.
+        s.conn().unwrap().execute(
+            "INSERT INTO jobs(id,project,kind,title,status,created_at,finished_at) VALUES ('job-old','verify-project','task','t','done','2026-01-01T00:00:00Z','2026-01-01T01:00:00Z')",
+            [],
+        ).unwrap();
+        s.conn().unwrap().execute(
+            "INSERT INTO runs(id,job_id,agent,project,started_at,finished_at,status,executor,signing_pubkey) VALUES ('run-old','job-old','worker','verify-project','2026-01-01T00:00:00Z','2026-01-01T01:00:00Z','done','local',?)",
+            [public.trim()],
+        ).unwrap();
+        let moved = s.archive_old_rows(false, "human").unwrap();
+        assert_eq!(moved.runs, 1, "{moved:?}");
+        let commit = fixture_command(
+            root.path(),
+            "archived\n\nPulse-Agent: worker\nPulse-Job: job-old\nPulse-Executor: local\n",
+            "git",
+            &[
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                "gpg.ssh.program=ssh-keygen",
+                "-c",
+                &format!("user.signingkey={}", key.display()),
+                "commit-tree",
+                "-S",
+                &tree,
+            ],
+        );
+        let report = verify_commit(&s, &project, &commit).unwrap();
+        assert!(report.verified, "{}\n{report:?}", report.text());
+        assert_eq!(report.runs[0].id, "run-old");
     }
 }

@@ -488,6 +488,12 @@ is recorded as `backup.done`/`backup.failed` on the bus and under the Cleanup
 panel in the console; a failed backup is tried again within the hour regardless
 of the cadence. The Settings page has the three caps under **Backups**.
 
+Old ledger rows nothing reads any more are not deleted but moved, once a month,
+to `~/.pulse/pulse-archive.sqlite` next to the store (`daemon.archive_days`,
+90 by default; `pulse store archive --dry-run` shows what would go); see
+"Store archive" in [recovery.md](recovery.md). A backup copies `pulse.sqlite`
+only, so the side file is a separate copy to keep if old history matters.
+
 ## Keeping the machine awake
 
 A laptop that dozes off takes its agents with it: a run that worked for an

@@ -180,8 +180,10 @@ pub fn build(dir: &Path) -> Check {
         Ok(()) => c.page = true,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
-            c.problems
-                .push(format!("{PAGE} could not be written in {}: {e}", dir.display()));
+            c.problems.push(format!(
+                "{PAGE} could not be written in {}: {e}",
+                dir.display()
+            ));
         }
     }
     c
@@ -543,7 +545,13 @@ fn change_html(dir: &Path, i: usize, ch: &Change, pairs: &mut usize) -> String {
     s
 }
 
-fn figure(caption: &str, class: &str, title: &str, name: &str, found: &Result<(), String>) -> String {
+fn figure(
+    caption: &str,
+    class: &str,
+    title: &str,
+    name: &str,
+    found: &Result<(), String>,
+) -> String {
     let body = match found {
         Ok(()) => {
             let href = encode_name(name.trim());
@@ -554,9 +562,7 @@ fn figure(caption: &str, class: &str, title: &str, name: &str, found: &Result<()
         }
         Err(why) => format!("<div class=\"missing\">{}</div>", inline(why)),
     };
-    format!(
-        "        <figure class=\"{class}\"><figcaption>{caption}</figcaption>{body}</figure>\n"
-    )
+    format!("        <figure class=\"{class}\"><figcaption>{caption}</figcaption>{body}</figure>\n")
 }
 
 /// HTML-escaped text with `code` spans set as code.
@@ -567,7 +573,7 @@ fn inline(text: &str) -> String {
         return escaped;
     }
     let mut out = String::new();
-    let last_open = parts.len() % 2 == 0; // an odd backtick count leaves one unpaired
+    let last_open = parts.len().is_multiple_of(2); // an odd backtick count leaves one unpaired
     for (i, part) in parts.iter().enumerate() {
         let in_code = i % 2 == 1;
         if in_code && !(last_open && i == parts.len() - 1) {
@@ -737,8 +743,16 @@ mod tests {
         assert!(c.shows_change() && !c.clean());
         assert_eq!(c.counts(), "2 changes, 1 before/after pair");
         let all = c.problems.join("\n");
-        assert!(all.contains("change 1 \"Name\" (Phone), after: `missing.png` is not in the folder"), "{all}");
-        assert!(all.contains("change 2 \"Switch\", before: `shots/a.png` is not a file name in the folder"), "{all}");
+        assert!(
+            all.contains("change 1 \"Name\" (Phone), after: `missing.png` is not in the folder"),
+            "{all}"
+        );
+        assert!(
+            all.contains(
+                "change 2 \"Switch\", before: `shots/a.png` is not a file name in the folder"
+            ),
+            "{all}"
+        );
         assert!(all.contains("`fake.png` is not a picture"), "{all}");
     }
 
@@ -812,7 +826,11 @@ mod tests {
             .set_modified(later)
             .unwrap();
         ensure_page(dir);
-        assert!(std::fs::read_to_string(dir.join(PAGE)).unwrap().starts_with("<!doctype html>"));
+        assert!(
+            std::fs::read_to_string(dir.join(PAGE))
+                .unwrap()
+                .starts_with("<!doctype html>")
+        );
     }
 
     #[test]

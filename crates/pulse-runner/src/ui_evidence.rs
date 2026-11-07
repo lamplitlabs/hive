@@ -358,8 +358,7 @@ pub(crate) fn pr_evidence(
             "SELECT detail FROM events WHERE action = 'land.pr' AND json_extract(detail, '$.task') = ? ORDER BY seq DESC LIMIT 1",
             &[&task],
         );
-        let detail: serde_json::Value =
-            serde_json::from_str(&pr.str("detail")).unwrap_or_default();
+        let detail: serde_json::Value = serde_json::from_str(&pr.str("detail")).unwrap_or_default();
         let slug = detail["project"].as_str().unwrap_or_default().to_string();
         let mode = Mode::of(s, &slug);
         let jobs: Vec<String> = detail["jobs"]
@@ -390,7 +389,11 @@ pub(crate) fn pr_evidence(
 /// Why a pull request is the owner's to merge for want of its report;
 /// `None` when it shows its change, has no face, or the project does not
 /// require a report.
-pub(crate) fn pr_report_reason(s: &pulse_store::Store, head: &str, files: &[String]) -> Option<String> {
+pub(crate) fn pr_report_reason(
+    s: &pulse_store::Store,
+    head: &str,
+    files: &[String],
+) -> Option<String> {
     let e = pr_evidence(s, head, files)?;
     e.wants_report().then(|| {
         format!(
@@ -625,10 +628,9 @@ mod tests {
             lines[0].starts_with("- Report: none - 1 UI file changed and there is no report.json in $PULSE_ARTIFACTS (rule 10); the landing waits for one"),
             "{lines:?}"
         );
-        assert!(
-            e.landing_sentence()
-                .starts_with("Landed without a before/after report: 1 UI file changed (`web/hub/src/x.tsx`)")
-        );
+        assert!(e.landing_sentence().starts_with(
+            "Landed without a before/after report: 1 UI file changed (`web/hub/src/x.tsx`)"
+        ));
         assert_eq!(e.json()["unshown"], true);
         assert_eq!(e.json()["reported"], false);
 
@@ -641,8 +643,14 @@ mod tests {
         let e = UiEvidence::collect(home, "job-1", &changed, Mode::Off);
         assert!(!e.wants_report());
         let lines = e.result_lines();
-        assert!(lines[0].starts_with("- Evidence: none - 1 UI file changed"), "{lines:?}");
-        assert!(e.landing_sentence().starts_with("Landed unshown: 1 UI file changed"));
+        assert!(
+            lines[0].starts_with("- Evidence: none - 1 UI file changed"),
+            "{lines:?}"
+        );
+        assert!(
+            e.landing_sentence()
+                .starts_with("Landed unshown: 1 UI file changed")
+        );
 
         // Pictures without a report.json do not show the change.
         let dir = prepare_dir(home, "job-1").unwrap();
@@ -651,7 +659,10 @@ mod tests {
         assert!(e.shown() && !e.unshown() && e.wants_report());
         let lines = e.result_lines();
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[1].starts_with("- Evidence: `after.png` in "), "{lines:?}");
+        assert!(
+            lines[1].starts_with("- Evidence: `after.png` in "),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -669,7 +680,10 @@ mod tests {
         assert_eq!(e.result_lines()[0], format!("- Report: {link}"));
         assert_eq!(e.landing_sentence(), format!("See {link} for 1 UI file."));
         assert_eq!(e.json()["report"]["pairs"], 1);
-        assert_eq!(e.json()["report"]["href"], "/api/v1/jobs/job-1/artifacts/report.html");
+        assert_eq!(
+            e.json()["report"]["href"],
+            "/api/v1/jobs/job-1/artifacts/report.html"
+        );
 
         // No UI, no files: nothing to say.
         let quiet = UiEvidence::collect(home, "job-2", &v(&["src/lib.rs"]), Mode::Require);
@@ -689,12 +703,23 @@ mod tests {
     fn the_report_turn_names_the_files_the_base_and_the_folder() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_str().unwrap();
-        let e = UiEvidence::collect(home, "job-1", &v(&["web/a.tsx", "web/b.css"]), Mode::Require);
+        let e = UiEvidence::collect(
+            home,
+            "job-1",
+            &v(&["web/a.tsx", "web/b.css"]),
+            Mode::Require,
+        );
         let m = report_turn_message(&e, "0123456789abcdef0123");
         assert!(m.starts_with("Before this run ends: your commits change 2 UI files (`web/a.tsx`, `web/b.css`) and there is no report.json"), "{m}");
-        assert!(m.contains("git worktree add \"$TMPDIR/before\" 0123456789abcdef0123"), "{m}");
+        assert!(
+            m.contains("git worktree add \"$TMPDIR/before\" 0123456789abcdef0123"),
+            "{m}"
+        );
         assert!(m.contains("base commit 0123456789ab."), "{m}");
-        assert!(m.contains(&format!("{}/report.json", e.dir.display())), "{m}");
+        assert!(
+            m.contains(&format!("{}/report.json", e.dir.display())),
+            "{m}"
+        );
         assert!(m.contains("change no code and make no commit"), "{m}");
     }
 
@@ -721,7 +746,12 @@ mod tests {
         drop(conn);
         // A job's own head and its task's head both find the job's folder.
         let why = pr_report_reason(&s, "pulse/aurora/job-9", &files).unwrap();
-        assert!(why.starts_with("changes 1 UI file with no before/after report (there is no report.json"), "{why}");
+        assert!(
+            why.starts_with(
+                "changes 1 UI file with no before/after report (there is no report.json"
+            ),
+            "{why}"
+        );
         assert!(pr_report_reason(&s, "pulse/task-TASK-7", &files).is_some());
         // An experiment, a person's branch or a job nobody knows: no folder, no reason.
         for head in ["evolve/B-1", "feature/x", "pulse/aurora/job-404"] {

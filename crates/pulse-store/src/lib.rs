@@ -1,5 +1,6 @@
 //! SQLite store foundation for PULSE.
 
+pub mod archive;
 pub mod chat;
 pub mod chat_ddl;
 pub mod clouds;
@@ -31,6 +32,7 @@ pub mod task_source;
 pub mod tasks_ddl;
 pub mod variants;
 
+pub use archive::*;
 pub use chat::*;
 pub use chat_ddl::CHAT_DDL;
 pub use ctx::{CancellationToken, ContextError};

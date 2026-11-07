@@ -38,7 +38,11 @@ fn flags(fs: &mut FlagSet) {
         "",
         &format!("the folder that holds {MANIFEST} and the pictures (default: ${ARTIFACTS_ENV})"),
     );
-    fs.bool_var("check", false, &format!("say what the report shows without writing {PAGE}"));
+    fs.bool_var(
+        "check",
+        false,
+        &format!("say what the report shows without writing {PAGE}"),
+    );
     fs.bool_var("example", false, &format!("print an example {MANIFEST}"));
 }
 
@@ -64,7 +68,9 @@ fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         return Err(errorf(
             2,
             "pulse report: which folder?",
-            &format!("${ARTIFACTS_ENV} is not set here: this machine has no folder the hub serves."),
+            &format!(
+                "${ARTIFACTS_ENV} is not set here: this machine has no folder the hub serves."
+            ),
             "pulse report --dir <folder with report.json>",
         )
         .into());

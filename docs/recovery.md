@@ -329,9 +329,10 @@ statistics SQLite guessed wrong on a store with 30,000 vote posts and answered
 the evolution status's "has anyone else voted on this suggestion" lookup
 through the `kind` index - every vote scanned - instead of the dozen under
 the post, three hundred times slower, on each planner pass of the daemon and
-each project-registry fetch of the hub. The events ledger is otherwise untouched: forty modules read it as
-state (the last login per executor, a setting's history, a job's recovery
-ledger), so no age-based pruning of events exists and none is planned. A local
+each project-registry fetch of the hub. The events ledger is otherwise never
+pruned: forty modules read it as state (the last login per executor, a
+setting's history, a job's recovery ledger), so no event is deleted for its
+age. It is archived instead, once a month (see "Store archive" below). A local
 run of a Cargo project no longer builds a cold `target/` inside its clone:
 with `daemon.build_cache` (default on) it builds into
 `~/.pulse/cache/cargo-target/<slug>/<lane>` - one lane per run in flight, held
@@ -427,6 +428,67 @@ freed) and the cleaning events newest first (`daemon.sweep`,
 the machine and refreshes the moment a cleaning event lands, a project's
 **History → Cleanup** shows the same panel narrowed to that checkout, and the
 home feed lists the events as routine cleanup.
+
+### Store archive
+
+The ledger only grows (half a million events and 22,000 runs by November
+2026), and the store is the busiest shared resource under the daemon's tick.
+Once a month the maintenance pass (stage `store archive`) moves rows older than
+`daemon.archive_days` (default 90; 0 turns the archive off) out of
+`~/.pulse/pulse.sqlite` into `~/.pulse/pulse-archive.sqlite` next to it:
+
+- **events** of the high-volume kinds nothing reads back (`post.vote`, `post`
+  and the other `post.*` notifications, `run.start`, `run.finish`,
+  `agent.resume`, `job.done`, `harness.start`/`finish`, `record.created`/
+  `revised`, `lesson.recorded`, `mention`; the list is `COLD_ACTIONS` in
+  `crates/pulse-store/src/archive.rs`). Every other kind stays in the store
+  whatever its age: leases, failures, recoveries, landings, task, schedule and
+  setting history all have readers that look back without a time bound;
+- **runs** that finished, whose job finished too, and that no brief, harness
+  session, evolution archive entry or baseline, or post written in the run's
+  session still names;
+- **harness steps** of sessions that ended before the cutoff, unless
+  `daemon.transcript_keep_days` is 0.
+
+The retention settings set the floor: the cutoff is never younger than
+`daemon.recover_days`, twice `evolve.keep_days` (the revert scan's look-back)
+or, for steps, `daemon.transcript_keep_days`. Each batch of 5,000 rows is
+copied (`INSERT OR IGNORE`) and deleted in one transaction, with the events
+delete guard dropped and recreated inside it, so an interrupted archive leaves
+every row in at least one file and the next one finishes it; a second archive
+in a row moves nothing. An archive that moved rows writes a `store.archived`
+event with its counts; the last report is kept in `meta` under `archive`.
+
+Nothing in PULSE reads the side file on its own: archive, don't federate.
+`pulse verify` attaches it for a commit whose run moved there, `pulse remove
+project --forget` deletes the project's rows from it as well, and a report
+that wants old rows attaches it explicitly
+(`ATTACH '~/.pulse/pulse-archive.sqlite' AS archive`). To see what the
+next archive would move, without moving anything:
+
+```console
+$ pulse store archive --dry-run
+store archive: would move 121352 events, 1233 runs and 0 harness steps older than 2026-10-08T09:58:03Z to /Users/me/.pulse/pulse-archive.sqlite
+$ pulse store archive
+store archive: moved 121352 events, 1233 runs and 0 harness steps older than 2026-10-08T09:58:05Z to /Users/me/.pulse/pulse-archive.sqlite
+$ pulse store archive --dry-run
+store archive: would move 0 events, 0 runs and 0 harness steps older than 2026-10-08T09:58:20Z to /Users/me/.pulse/pulse-archive.sqlite
+```
+
+(Measured on a copy of a working store with `daemon.archive_days` set to 30:
+the dry run took 2 s, the move 9 s, the second dry run 0.3 s; at the default
+90 days the same store, whose oldest row was 63 days old, had nothing to move.)
+`--json` prints the report. With the archive off the command answers
+`store archive: daemon.archive_days is 0, so nothing is archived`.
+
+The same change indexed the JSON fields the hot ledger reads filter on:
+`events_detail_project`, `events_detail_job` and `events_detail_root` are
+partial indexes on `(action, json_extract(detail, '$.<field>'))` over rows
+whose detail is valid JSON, used by a query that repeats
+`json_valid(detail)` next to its equality on the field (a project's landings,
+a job's landing and deferral, a recovery chain by its root), and
+`events_action_actor` serves the worker pick behind every lease (each free
+worker's last `job.lease`: 0.9 s a pick before, 15 ms after, on that store).
 
 ## Executor self-heal and self-retire
 

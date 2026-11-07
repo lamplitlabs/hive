@@ -251,7 +251,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -273,6 +273,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "daemon.artifact_keep_days"=>("count",Some(0),[],None,"days a finished job's artifacts folder (PULSE_HOME/work/jobs/<job>/artifacts: the screenshots and reports its worker left for the owner, shown in the hub beside the job) is kept after the job finishes before the sweep removes it; an empty folder of a finished job goes at once, a folder of a job the store does not know goes after daemon.sweep_keep_days; 0 keeps every folder"),
         "daemon.sweep_runners"=>("text",None,[],None,"the other agent programs on this machine whose old sessions the sweep removes, by id, comma-separated: copilot (Copilot CLI, ~/.copilot/session-state), claude (Claude Code, ~/.claude/projects with the folders kept beside each transcript), codex (Codex, ~/.codex/sessions), gemini (Gemini CLI, ~/.gemini/tmp/*/chats); all names every one PULSE finds and knows how to prune, none means the owner declined and the hub stops asking, empty means PULSE only reports what it found and the hub asks. A session goes after daemon.runner_keep_days without a change, never while its program holds it, and never the program's settings, index or credentials; OpenCode is reported, never pruned"),
         "daemon.runner_keep_days"=>("count",Some(1),[],None,"days a session of an agent program listed in daemon.sweep_runners stays after its last change before the sweep removes it; the disk-floor ladder does not shorten this window, since these are the owner's conversations rather than PULSE's leftovers"),
+        "daemon.archive_days"=>("count",Some(0),[],None,"days ledger rows stay in pulse.sqlite before the maintenance thread moves them, once a month, to pulse-archive.sqlite next to it (`pulse store archive --dry-run` shows what would go): the event kinds nothing reads back (votes, posts, run starts and finishes, resumes), finished runs no brief, harness session, evolution entry or post names, and harness steps of ended sessions; never fewer days than daemon.recover_days, twice evolve.keep_days or, for steps, daemon.transcript_keep_days; nothing in PULSE reads the side file except pulse verify and a report that attaches it; 0 keeps every row in the store"),
         "daemon.log_keep_days"=>("count",Some(1),[],None,"days run logs and daemon stall/signal logs under PULSE_HOME/logs are kept before the sweep removes them"),
         "daemon.log_max_mb"=>("count",Some(0),[],None,"megabytes daemon.log and hub.log may grow to before the sweep copies each to <name>.1 and truncates it in place (the launcher opens them in append mode, so the live process keeps writing); 0 never caps them"),
         "daemon.vacuum_free_mb"=>("count",Some(0),[],None,"megabytes of free pages the store may hold before the sweep gives them back to the file system: a store in incremental auto-vacuum mode frees a slice each pass, one that is not is converted with one full VACUUM only while no run or harness session is in flight and the disk has room for a copy; 0 never vacuums"),
@@ -1573,7 +1574,8 @@ mod go_settings_tests {
         s.set_setting("human", UI_REPORT, "warn").unwrap();
         assert_eq!(s.ui_report_mode("web"), "warn");
         // One project of its own; the others follow the machine's value.
-        s.set_setting("human", &ui_report_setting("web"), "OFF").unwrap();
+        s.set_setting("human", &ui_report_setting("web"), "OFF")
+            .unwrap();
         assert_eq!(s.ui_report_mode("web"), "off");
         assert_eq!(s.ui_report_mode("api"), "warn");
         assert_eq!(s.ui_report_mode(""), "warn");
@@ -1605,6 +1607,7 @@ mod go_settings_tests {
             ("daemon.log_keep_days", "14"),
             ("daemon.log_max_mb", "32"),
             ("daemon.vacuum_free_mb", "256"),
+            ("daemon.archive_days", "90"),
             ("daemon.build_cache", "on"),
             ("daemon.build_cache_keep_days", "7"),
         ] {
@@ -1628,6 +1631,7 @@ mod go_settings_tests {
             "daemon.artifact_keep_days",
             "daemon.log_max_mb",
             "daemon.vacuum_free_mb",
+            "daemon.archive_days",
         ] {
             s.set_setting("human", key, "0").unwrap();
             assert!(s.set_setting("human", key, "-1").is_err());
