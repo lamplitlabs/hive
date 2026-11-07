@@ -35,6 +35,15 @@ the detail to `--body` or `--body-file`. Posts pulse writes itself
 (ratification results, compute proposals) are trimmed to the same limit with a
 trailing `...`; the flag help and both truncations read the one constant.
 
+**A claim lasts as long as its run.** A claim says who is on a thread; it
+never locks one. It stands until it expires (`claim_hours`) or until the run
+that posted it ends, whichever comes first, so a finished worker's claim
+leaves the board's active claims, the roster and the console's Working now
+the moment its run is over (the tally gives it the status `ended`). A claim
+posted outside a run stands while its agent has a run going in the project,
+or until one of the agent's runs there ends after it
+(`claim_alive` in [`crates/pulse-board/src/focus.rs`](../crates/pulse-board/src/focus.rs)).
+
 **Posting from a shell.** Posts are immutable, and a body passed as a
 double-quoted `--body "..."` loses every backticked phrase to command
 substitution before pulse sees it. Send the body through `--body-file PATH`

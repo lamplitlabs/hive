@@ -384,7 +384,7 @@ function WorkingRowItem({ r }: { r: WorkingRow }) {
               <div className="min-w-0 flex-1 anywhere">
                 <PostLink slug={s} id={c.id} label={truncate(sentence(c.summary), 120)} /> <ThreadLink slug={s} k={c.thread_key} className="text-xs" />
               </div>
-              {c.expires ? <When d={c.expires} className="shrink-0 text-xs text-muted-foreground" /> : null}
+              {c.date || c.expires ? <When d={c.date || c.expires} className="shrink-0 text-xs text-muted-foreground" /> : null}
             </li>
           ))}
         </ul>

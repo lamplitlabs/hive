@@ -138,7 +138,7 @@ fn add_claim_focuses(
     now: &str,
 ) -> Result<()> {
     let conn = s.conn()?;
-    let mut stmt = conn.prepare("SELECT id, project, area, thread, agent, summary, expires, date FROM posts WHERE kind = 'claim' AND expires > ? ORDER BY date DESC, id DESC")?;
+    let mut stmt = conn.prepare("SELECT id, project, area, thread, agent, summary, expires, date, session FROM posts WHERE kind = 'claim' AND expires > ? ORDER BY date DESC, id DESC")?;
     for row in stmt.query_map([&now], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -149,10 +149,11 @@ fn add_claim_focuses(
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
             r.get::<_, String>(7)?,
+            r.get::<_, String>(8)?,
         ))
     })? {
-        let (post_id, project, area, thread, agent, summary, expires, date) = row?;
-        if !claim_alive(&conn, &agent, &project, &date)? {
+        let (post_id, project, area, thread, agent, summary, expires, date, session) = row?;
+        if !claim_alive(&conn, &agent, &project, &session, &date)? {
             continue;
         }
         let f = out.entry(agent.clone()).or_insert_with(|| Focus {
@@ -174,12 +175,26 @@ fn add_claim_focuses(
     Ok(())
 }
 
-pub(crate) fn claim_alive(
+/// Whether a claim still stands: a claim posted from a run (its session
+/// names the run) lasts as long as that run; any other claim lasts while its
+/// agent has a run going in the project, or until one of the agent's runs
+/// there ends after it. Its expiry is checked by the caller.
+pub fn claim_alive(
     conn: &Connection,
     agent: &str,
     project: &str,
+    session: &str,
     claim_date: &str,
 ) -> Result<bool> {
+    if !session.is_empty()
+        && let Some(status) = conn
+            .query_row("SELECT status FROM runs WHERE id = ?1", [session], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+    {
+        return Ok(status == "running");
+    }
     let (has_running, has_finished_after_claim): (bool, bool) = conn.query_row(
         "SELECT
             EXISTS(SELECT 1 FROM runs WHERE agent = ?1 AND project = ?2 AND status = 'running'),
@@ -632,6 +647,49 @@ mod tests {
 
         assert_eq!(focuses["manual"].claims.len(), 1);
         assert_eq!(focuses["manual"].claims[0].post_id, "claim-manual");
+    }
+
+    #[test]
+    fn agent_focus_claim_ends_with_its_own_run_while_the_agent_runs_again() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s) = new_home();
+        add_focus_project(&s, "proj");
+        join_focus_agent(&s, "fjord");
+        exec_focus_sql(
+            &s,
+            "INSERT INTO runs(id,job_id,agent,project,started_at,finished_at,status)
+             VALUES('run-1','job-1','fjord','proj','2026-09-06T08:00:00Z','2026-09-06T09:30:00Z','done'),
+                   ('run-2','job-2','fjord','proj','2026-09-06T09:40:00Z','','running')",
+            &[],
+        );
+        for (id, session, date) in [
+            ("claim-1", "run-1", "2026-09-06T08:10:00Z"),
+            ("claim-2", "run-2", "2026-09-06T09:45:00Z"),
+        ] {
+            create_post(
+                &s,
+                PostInput {
+                    post_id: id.into(),
+                    project: "proj".into(),
+                    kind: "claim".into(),
+                    area: "area".into(),
+                    thread: id.into(),
+                    agent: "fjord".into(),
+                    session: session.into(),
+                    summary: "mine".into(),
+                    expires: "2026-09-06T11:00:00Z".into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let focuses = agent_focuses(&s, TEST_NOW).unwrap();
+
+        let claims = &focuses["fjord"].claims;
+        assert_eq!(claims.len(), 1, "{claims:?}");
+        assert_eq!(claims[0].post_id, "claim-2");
     }
 
     #[test]

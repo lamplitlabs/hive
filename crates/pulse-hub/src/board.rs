@@ -896,6 +896,11 @@ impl BoardData {
                 "session".into(),
                 json!(post.map(|p| str_key(p, "session")).unwrap_or_default()),
             );
+            // When the claim was made: Working now says since when, not until.
+            row.insert(
+                "date".into(),
+                json!(post.map(|p| str_key(p, "date")).unwrap_or_default()),
+            );
             match str_key(&row, "status").as_str() {
                 "active" => active.push(row),
                 "expired" | "no expiry" => stale.push(row),

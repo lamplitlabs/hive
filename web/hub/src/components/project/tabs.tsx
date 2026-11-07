@@ -379,7 +379,7 @@ function WorkingRowsList({ claims, slug, tasks }: { claims: Overview["active_cla
         const s = r.slug || slug;
         const c = r.claims[0];
         const what = r.task ? r.task.t.title : c ? sentence(c.summary) : "working";
-        const since = r.task ? r.task.w.since : c?.expires;
+        const since = r.task ? r.task.w.since : c?.date || c?.expires;
         const extra = r.task ? r.claims.length : Math.max(0, r.claims.length - 1);
         return (
           <ListRow

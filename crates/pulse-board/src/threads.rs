@@ -295,7 +295,7 @@ fn summarize_threads(
         if p.kind == "claim"
             && !p.expires.is_empty()
             && p.expires.as_str() > now
-            && crate::focus::claim_alive(&conn, &p.agent, &p.project, &p.date)?
+            && crate::focus::claim_alive(&conn, &p.agent, &p.project, &p.session, &p.date)?
         {
             sum.active_claims.push(ThreadClaim {
                 post_id: p.id.clone(),

@@ -32,7 +32,7 @@ export function WorkingNow({ claims, tasks, names }: { claims: Claim[]; tasks: T
             const agent = r.agent === "(unknown)" ? "An agent" : r.agent;
             const latest = r.claims[0];
             const what = r.task ? sentence(r.task.w.title || r.task.t.title || r.task.w.kind).replace(/[.!?]$/, "") : latest ? sentence(latest.summary).replace(/[.!?]$/, "") : "working";
-            const since = r.task?.w.since || latest?.expires || "";
+            const since = r.task?.w.since || latest?.date || latest?.expires || "";
             const name = names.get(r.slug) || r.slug;
             const href = r.task ? hrefs.task(r.task.t.id) : latest && r.slug ? hrefs.post(r.slug, latest.id) : hrefs.harness({ agent: r.agent });
             return (

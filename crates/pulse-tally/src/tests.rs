@@ -1278,6 +1278,76 @@ fn day_number_and_boundaries() {
 }
 
 #[test]
+fn a_claim_ends_with_the_run_that_made_it() {
+    let _serial = crate::test_helpers::serial();
+    crate::cache::clear_cache_for_test();
+    let home = tempfile::tempdir().unwrap();
+    pulse_store::Store::create(home.path().join("pulse.sqlite")).unwrap();
+    let st = pulse_store::Store::open(pulse_store::Options {
+        home: home.path().display().to_string(),
+        create: false,
+        read_only: false,
+        skip_records: false,
+        now: FIXTURE_NOW.into(),
+    })
+    .unwrap();
+    {
+        let conn = st.conn().unwrap();
+        conn.execute(
+            "INSERT INTO projects (slug, name, path, added_at) VALUES ('fixture', 'P', ?, ?)",
+            params![home.path().join("p").display().to_string(), FIXTURE_NOW],
+        )
+        .unwrap();
+        // fjord's first run is over; its second one still goes.
+        conn.execute_batch(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status) VALUES
+                ('run-1', 'job-1', 'fjord', 'fixture', '2026-09-10T08:00:00Z', '2026-09-10T10:00:00Z', 'done'),
+                ('run-2', 'job-2', 'fjord', 'fixture', '2026-09-10T11:00:00Z', '', 'running');",
+        )
+        .unwrap();
+    }
+    let mut f = test_fixture::Fixture {
+        home,
+        repo: PathBuf::new(),
+        st,
+        ids: BTreeMap::new(),
+        hash: String::new(),
+    };
+    let claim = |thread: &str, agent: &str, date: &str, session: &str, expires: &str| {
+        let mut p =
+            test_fixture::FPost::new("claim", "runner", thread, agent, date, thread, session);
+        p.expires = expires.into();
+        p
+    };
+    let finished = f.post(claim("finished", "fjord", "2026-09-10T08:30:00Z", "run-1", "2026-09-10T12:30:00Z"));
+    let going = f.post(claim("going", "fjord", "2026-09-10T11:30:00Z", "run-2", "2026-09-10T15:30:00Z"));
+    let by_hand = f.post(claim("by-hand", "owner", "2026-09-10T09:00:00Z", "chat-1", "2026-09-10T13:00:00Z"));
+    let lapsed = f.post(claim("lapsed", "fjord", "2026-09-10T08:10:00Z", "run-1", "2026-09-10T11:00:00Z"));
+
+    let th = crate::thresholds::load_thresholds(
+        &f.st,
+        "fixture",
+        Thresholds {
+            now: FIXTURE_NOW.into(),
+            ..Default::default()
+        },
+    );
+    let res = compute(&f.st, "fixture", "", th).unwrap();
+    let status = res
+        .claims
+        .iter()
+        .map(|c| (c.id.clone(), c.status.clone()))
+        .collect::<BTreeMap<_, _>>();
+    // Its run ended, though fjord still works in the project.
+    assert_eq!(status[&finished], "ended");
+    assert_eq!(status[&going], "active");
+    // A session that names no run: no run of the owner ended since.
+    assert_eq!(status[&by_hand], "active");
+    // Expiry is read first: a lapsed claim stays a stale one.
+    assert_eq!(status[&lapsed], "expired");
+}
+
+#[test]
 fn duplicate_cards_gate_and_leave_ballot() {
     let _serial = crate::test_helpers::serial();
     let mut f = test_fixture::new_fixture(true);

@@ -202,6 +202,8 @@ export interface Claim extends Who {
   thread_key: string;
   summary: string;
   expires: string;
+  // When the claim was posted (older hubs leave it out).
+  date?: string;
   slug?: string;
   base?: string;
 }

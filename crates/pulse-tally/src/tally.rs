@@ -305,6 +305,8 @@ struct ClaimInfo {
     agent: String,
     expires: String,
     summary: String,
+    session: String,
+    date: String,
 }
 #[derive(Clone, Default)]
 struct SuggInfo {
@@ -485,6 +487,8 @@ fn new_tally(
                     agent: r.agent.clone(),
                     expires: r.expires.clone(),
                     summary: r.summary.clone(),
+                    session: r.session.clone(),
+                    date: r.date.clone(),
                 },
             );
         }
@@ -1010,14 +1014,23 @@ fn compute_light_uncached(
         nokind: t.nokind,
         ..TallyResult::default()
     };
+    let conn = s.conn()?;
     for cid in &t.claims.keys {
         let c = &t.claims.m[cid];
+        let mut status = t.claim_status(cid);
+        // A claim ends with the run that made it, before its expiry: the
+        // board and the console count only the work still going.
+        if status == "active"
+            && !pulse_board::focus::claim_alive(&conn, &c.agent, project, &c.session, &c.date)?
+        {
+            status = "ended".into();
+        }
         res.claims.push(Claim {
             id: cid.clone(),
             key: c.key.clone(),
             agent: c.agent.clone(),
             expires: c.expires.clone(),
-            status: t.claim_status(cid),
+            status,
             summary: c.summary.clone(),
         });
     }

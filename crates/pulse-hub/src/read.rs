@@ -588,7 +588,7 @@ impl Handler {
             .map(|m| {
                 pick(
                     &m.into_iter().collect::<JsonMap>(),
-                    "id thread_key agent expires summary name session",
+                    "id thread_key agent expires summary name session date",
                 )
             })
             .collect::<Vec<_>>();
