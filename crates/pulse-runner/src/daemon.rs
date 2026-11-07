@@ -6,6 +6,13 @@ type Row = crate::util::Row;
 
 pub const DEFAULT_DAEMON_INTERVAL_SECONDS: i32 = 300;
 pub(crate) const DISPATCH_TICK_SECONDS: i32 = 15;
+/// How long a stopping daemon waits for the chores pass it asked last
+/// (daemon_chores.rs) before cancelling it between two units; every stage of
+/// it already has the daemon.stage_budget_seconds budget.
+pub(crate) const CHORES_CLOSE_WAIT: Duration = Duration::from_secs(5 * 60);
+/// How long a cancelled chores pass gets to reach the end of its unit before
+/// the daemon leaves it behind.
+pub(crate) const CHORES_CANCEL_GRACE: Duration = Duration::from_secs(30);
 pub(crate) const HANDS_WANTED_MINUTES: i32 = 30;
 /// Minutes a job whose needs no active machine meets waits before the
 /// owner is asked for such a machine.
@@ -1464,6 +1471,11 @@ pub(crate) fn daemon(
         },
     );
     let compute_wake = compute.wake_rx();
+    // The chores off the tick (daemon_chores.rs): the Dependabot alert
+    // watch, the pipeline verdicts and the compute listing run on their own
+    // thread, each stage under daemon.stage_budget_seconds; the tick only
+    // asks for a pass and goes on leasing.
+    let mut chores = crate::daemon_chores::start(s, &actor, compute.clone(), compute_ctx.clone());
     // Cleared once the subscription closes, so a closed channel never wakes the loop again.
     let mut wake_events = Some(wake_events);
     let never_wake = crossbeam_channel::never::<pulse_bus::Event>();
@@ -1876,6 +1888,9 @@ pub(crate) fn daemon(
                 }
             };
             stages.mark("reap");
+            // The projects whose security and pipeline stages the chores
+            // pass runs: set by a planning pass, none on the ticks between.
+            let mut chore_projects: Option<Vec<String>> = None;
             // The planning pass; a tick inside `daemon.pass_seconds` skips to
             // the slots below.
             if full_pass {
@@ -1926,6 +1941,7 @@ pub(crate) fn daemon(
                 }
                 stages.mark("adopt");
                 let slugs = projects.iter().map(|p| p.str("slug")).collect::<Vec<_>>();
+                chore_projects = Some(slugs.clone());
                 let environment_now = crate::recover::live_environment(s);
                 for project in &projects {
                     let slug = project.str("slug");
@@ -1990,14 +2006,6 @@ pub(crate) fn daemon(
                         say(&o, line);
                     }
                     stages.mark("recover");
-                    for line in crate::security::tend_dependency_alerts(s, &slug, &now, &actor) {
-                        say(&o, line);
-                    }
-                    stages.mark("security");
-                    for line in crate::pipeline::tend_pipeline(s, &slug, &now, &actor) {
-                        say(&o, line);
-                    }
-                    stages.mark("pipeline");
                     for line in crate::lessons::tend_lessons(s, slug, now.clone(), actor.clone()) {
                         say(&o, line);
                     }
@@ -2151,10 +2159,13 @@ pub(crate) fn daemon(
                 }
                 stages.mark("executors");
             }
-            for line in compute.tick(&compute_ctx, &now) {
-                say(&o, line);
-            }
-            stages.mark("compute");
+            // Security and pipeline (on a planning pass) and the compute
+            // listing (every tick) run on the chores thread, off this tick.
+            chores.ask(crate::daemon_chores::ChoresAsk {
+                now: now.clone(),
+                projects: chore_projects.take(),
+            });
+            stages.mark("chores");
             let mut busy = BTreeMap::new();
             for d in inflight.values() {
                 *busy.entry(d.slot.clone()).or_insert(0) += 1;
@@ -2965,6 +2976,9 @@ pub(crate) fn daemon(
         if let Err(panic) = tick {
             reason = format!("daemon error: {}", panic_message(&panic));
         }
+        for line in chores.drain() {
+            say(&o, line);
+        }
         for line in compute.drain() {
             say(&o, line);
         }
@@ -3279,6 +3293,21 @@ pub(crate) fn daemon(
     if cancel.is_cancelled() && result != "stopped" {
         result = "interrupted";
         grace = grace_for(result);
+    }
+    // The chores pass asked last still runs - its compute stage starts what
+    // the last tick saw approved - within CHORES_CLOSE_WAIT.
+    if chores.busy() {
+        let waiting = format!(
+            "{note}: waiting for the daemon chores pass ({})",
+            chores.stage()
+        );
+        say(&o, &waiting);
+        enter(waiting.clone());
+    }
+    for line in chores.close(CHORES_CLOSE_WAIT, CHORES_CANCEL_GRACE, &|| {
+        enter(format!("{note}: waiting for the daemon chores pass"));
+    }) {
+        say(&o, line);
     }
     if compute.busy() > 0 {
         say(
