@@ -25,7 +25,8 @@ tick without multiplying idle log lines. Cancellation stops the wait. Successful
 runs and work still in flight keep their existing prompt-dispatch behavior.
 The loop has two speeds: every tick (each 15 seconds while runs are in
 flight, and whenever a run ends or an event wakes it) reaps, watches the stop
-switch and a pending restart, starts approved compute and refills free slots;
+switch and a pending restart, asks the chores thread for a pass and refills
+free slots;
 the planning pass (the leads, tasks, amendments, recoveries and lessons of
 every project, evolution, schedules, the planner, idle notes, executors and
 the maintenance thread) runs at most once per `daemon.pass_seconds` (default
@@ -48,6 +49,38 @@ carries the slowest body's stages as `tick.longest`, which `pulse status`
 prints after the slowest time (`slowest 31000ms: plan 14000ms, pipeline
 9000ms`): the number alone said that seven passes after one restart took
 29-33 s each and nothing about which of the twenty tenders took them.
+
+Three chores left the tick for a background thread of their own
+(`daemon_chores.rs`): the Dependabot alert watch (`security`), the pipeline
+verdicts (`pipeline`) and the compute listing that starts approved machines
+and releases idle ones (`compute`). The log had 488 `tick N took ...` lines
+over a few weeks - median 21.5 s, p90 40 s, max 395 s against the 15 s
+cadence - with these among the longest stages, and a tick that is late leases
+late, owner's work included. The tick now asks for a chores pass and goes on
+leasing: every tick asks for `compute`, a planning pass also hands over its
+projects for `security` and `pipeline`, and asks made while a pass runs merge
+into the next one. A stopping daemon still runs the pass it asked last (so an
+approval seen by the last tick is provisioned) for up to five minutes before
+it cancels it between two projects. So the stages the slow-tick line can name
+are the tick's own - the leads, tasks, recoveries, evolution, schedules,
+planner - and `chores` only for the moment the ask takes.
+
+Every stage of the two background passes - the landing maintenance pass
+(`delivery`, `pull request reviews`, `sweep`, `reclaim`, `board hygiene`,
+`landing outcomes`, `revert scan`, `unfit re-probe`, `binary check`,
+`backup`) and the chores pass (`security`, `pipeline`, `compute`) - has the
+budget `daemon.stage_budget_seconds` sets (default 60, 0 for none;
+`stage_budget.rs`). A stage that works project by project (delivery,
+reviews, revert scan, security, pipeline) checks it between two projects:
+once spent, the stage stops before its next project, writes a
+`daemon.slow-stage` event (`stage`, `ms`, `budget_ms`, `ran`, `skipped`) and
+says `slow stage: pipeline took 1m12s, over its 1m budget; skipped until the
+next pass: a, b`, and its next pass starts with the first project it left,
+so the projects at the end of the list are not starved behind a slow one at
+the front. A project already started is never cut mid-write, and at least
+one project runs every pass. A stage that cannot be split (the sweep, the
+backup, compute) runs to its end and is recorded the same way when it went
+over. `pulse events --json` shows them among the other events.
 
 The pipeline stage reads GitHub as whichever gh account on the machine can
 see the project's repository. `gh` keeps one login active per host and

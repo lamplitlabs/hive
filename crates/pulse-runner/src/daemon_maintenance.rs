@@ -68,6 +68,8 @@ pub(crate) struct DaemonMaintenance {
     /// When the reclaim ladder (reclaim.rs) last ran; `None` while the disk
     /// is above the floor so the next crossing is answered at once.
     pub(crate) last_reclaim: std::sync::Arc<std::sync::Mutex<Option<std::time::SystemTime>>>,
+    /// Where each budgeted stage of the pass resumes (stage_budget.rs).
+    pub(crate) stage_resume: crate::stage_budget::Resume,
     pub(crate) pending: BTreeMap<String, bool>,
     /// The experiment lane: one measurement at a time, cancelled through
     /// `lane_ctx` without touching the plain landings.
@@ -283,6 +285,7 @@ impl DaemonMaintenance {
         let s = s.clone();
         let last_sweep = self.last_sweep.clone();
         let last_reclaim = self.last_reclaim.clone();
+        let stage_resume = self.stage_resume.clone();
         let handle = std::thread::Builder::new()
             .name("landing-maintenance".into())
             .spawn(move || {
@@ -299,12 +302,30 @@ impl DaemonMaintenance {
                     // branch here. One line sums the pass up; the daemon log
                     // had 40 landing lines a pass at the busiest.
                     let held: Option<BTreeMap<String, String>> = None;
+                    // Every stage below has the daemon.stage_budget_seconds
+                    // budget (stage_budget.rs): the per-project ones stop
+                    // between two projects once it is spent and the next
+                    // pass starts with the first project they left; the
+                    // others are recorded as slow once they end. Nothing is
+                    // cut mid-write.
+                    let b = crate::stage_budget::Budgeted {
+                        s: &s,
+                        actor: &actor,
+                        budget: crate::stage_budget::budget(&s),
+                        resume: &stage_resume,
+                        cancel: &cancel,
+                        stage: Some(&stage),
+                    };
+                    let slug_of = |p: &Row| p.str("slug");
                     let mut lines = if bulk_away || dry {
                         Vec::new()
                     } else {
                         set_stage(Some(&stage), "delivery");
                         let started = std::time::Instant::now();
-                        let mut delivered = crate::delivery::tend(&s, &projects, &now);
+                        let mut delivered = crate::delivery::retire_holds(&s);
+                        delivered.extend(b.each("delivery", &projects, slug_of, |p| {
+                            crate::delivery::tend_project(&s, p, &now)
+                        }));
                         if !delivered.is_empty() {
                             delivered.insert(
                                 0,
@@ -329,20 +350,22 @@ impl DaemonMaintenance {
                         delivered
                     };
                     if !(bulk_away || dry) {
-                        set_stage(Some(&stage), "pull request reviews");
-                        lines.extend(crate::review::tend_reviews(&s, &projects, &now));
+                        lines.extend(b.each("pull request reviews", &projects, slug_of, |p| {
+                            crate::review::tend_reviews(&s, std::slice::from_ref(p), &now)
+                        }));
                     }
                     if !dry && !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                         if !bulk_away {
-                            set_stage(Some(&stage), "sweep");
-                            lines.extend(crate::sweep::tend_sweep(
-                                &s,
-                                projects.clone(),
-                                s.now(),
-                                actor.clone(),
-                                inflight.clone(),
-                                &mut last_sweep.lock().unwrap_or_else(|e| e.into_inner()),
-                            ));
+                            lines.extend(b.once("sweep", || {
+                                crate::sweep::tend_sweep(
+                                    &s,
+                                    projects.clone(),
+                                    s.now(),
+                                    actor.clone(),
+                                    inflight.clone(),
+                                    &mut last_sweep.lock().unwrap_or_else(|e| e.into_inner()),
+                                )
+                            }));
                         }
                         if !bulk_away
                             && !cancel.is_cancelled()
@@ -352,65 +375,73 @@ impl DaemonMaintenance {
                             // are too patient; the ladder shortens them and
                             // clears the temp dirs, then stops once the
                             // floor is clear.
-                            set_stage(Some(&stage), "reclaim");
-                            lines.extend(crate::reclaim::tend_reclaim(
-                                &s,
-                                projects.clone(),
-                                s.now(),
-                                actor.clone(),
-                                inflight,
-                                crate::util::home_dir(),
-                                &mut last_reclaim.lock().unwrap_or_else(|e| e.into_inner()),
-                            ));
+                            lines.extend(b.once("reclaim", || {
+                                crate::reclaim::tend_reclaim(
+                                    &s,
+                                    projects.clone(),
+                                    s.now(),
+                                    actor.clone(),
+                                    inflight,
+                                    crate::util::home_dir(),
+                                    &mut last_reclaim.lock().unwrap_or_else(|e| e.into_inner()),
+                                )
+                            }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
-                            set_stage(Some(&stage), "board hygiene");
-                            lines.extend(crate::hygiene::tend_board_hygiene(
-                                &s,
-                                &projects,
-                                s.now(),
-                                actor.clone(),
-                            ));
-                            lines.extend(crate::inbox::tend_owner_inbox_retire(
-                                &s,
-                                &s.now(),
-                                &actor,
-                            ));
+                            lines.extend(b.once("board hygiene", || {
+                                let mut lines = crate::hygiene::tend_board_hygiene(
+                                    &s,
+                                    &projects,
+                                    s.now(),
+                                    actor.clone(),
+                                );
+                                lines.extend(crate::inbox::tend_owner_inbox_retire(
+                                    &s,
+                                    &s.now(),
+                                    &actor,
+                                ));
+                                lines
+                            }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
-                            set_stage(Some(&stage), "landing outcomes");
-                            lines.extend(crate::landing_outcome::tend_landing_outcomes(
-                                &s,
-                                &projects,
-                                s.now(),
-                                actor.clone(),
-                            ));
+                            lines.extend(b.once("landing outcomes", || {
+                                crate::landing_outcome::tend_landing_outcomes(
+                                    &s,
+                                    &projects,
+                                    s.now(),
+                                    actor.clone(),
+                                )
+                            }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             // ADR-049: a landed sha the default branch no
                             // longer keeps is a land.reverted, once; inert
                             // unless evolve.mode=variants.
-                            set_stage(Some(&stage), "revert scan");
-                            lines.extend(crate::revert_scan::tend_revert_scan(
-                                &s,
-                                &projects,
-                                &s.now(),
-                                &actor,
-                            ));
+                            lines.extend(b.each("revert scan", &projects, slug_of, |p| {
+                                crate::revert_scan::tend_revert_scan(
+                                    &s,
+                                    std::slice::from_ref(p),
+                                    &s.now(),
+                                    &actor,
+                                )
+                            }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
-                            set_stage(Some(&stage), "unfit re-probe");
-                            lines.extend(tend_unfit_reprobes(&s, s.now(), actor.clone()));
+                            lines.extend(b.once("unfit re-probe", || {
+                                tend_unfit_reprobes(&s, s.now(), actor.clone())
+                            }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
-                            set_stage(Some(&stage), "binary check");
-                            lines.extend(crate::selfupdate::tend_binary(&s, s.now(), binary));
+                            lines.extend(b.once("binary check", || {
+                                crate::selfupdate::tend_binary(&s, s.now(), binary)
+                            }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             // A copy of the store off this machine, on the
                             // cadence backup.every_hours sets (backup.rs).
-                            set_stage(Some(&stage), "backup");
-                            lines.extend(crate::backup::tend_backup(&s, &s.now(), &actor));
+                            lines.extend(b.once("backup", || {
+                                crate::backup::tend_backup(&s, &s.now(), &actor)
+                            }));
                         }
                     }
 

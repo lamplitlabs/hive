@@ -86,17 +86,29 @@ pub(crate) fn task_branch(task: &str) -> String {
 /// closed, deliver the work now owed, bring every default branch up to its
 /// upstream. Returns the log lines.
 pub(crate) fn tend(s: &pulse_store::Store, projects: &[Row], now: &str) -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.extend(retire_landing_holds(s));
+    let mut lines = retire_holds(s);
     for p in projects {
-        if p.str("path").is_empty() {
-            continue;
-        }
-        lines.extend(poll_open(s, p, now));
-        lines.extend(deliver(s, p, now));
-        if let Some(line) = crate::forge::sync_default_from_upstream(s, p, ACTOR, now, false) {
-            lines.push(line);
-        }
+        lines.extend(tend_project(s, p, now));
+    }
+    lines
+}
+
+/// The part of [`tend`] that is not one project's: the old landing holds.
+pub(crate) fn retire_holds(s: &pulse_store::Store) -> Vec<String> {
+    retire_landing_holds(s)
+}
+
+/// [`tend`] for one project; the maintenance pass budgets it project by
+/// project (stage_budget.rs).
+pub(crate) fn tend_project(s: &pulse_store::Store, p: &Row, now: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    if p.str("path").is_empty() {
+        return lines;
+    }
+    lines.extend(poll_open(s, p, now));
+    lines.extend(deliver(s, p, now));
+    if let Some(line) = crate::forge::sync_default_from_upstream(s, p, ACTOR, now, false) {
+        lines.push(line);
     }
     lines
 }
