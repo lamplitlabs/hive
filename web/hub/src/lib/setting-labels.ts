@@ -131,6 +131,7 @@ const LABELS: Record<string, string> = {
   "daemon.hold_seconds": "Give runs time to hold on Restart now before stopping them (seconds)",
   "daemon.planner_cache_ttl_seconds": "Reuse a planning snapshot for (seconds)",
   "daemon.pass_seconds": "Shortest time between planning passes (seconds, 0 = every pass)",
+  "daemon.stage_budget_seconds": "Time budget of each background maintenance stage (seconds, 0 = none)",
   "daemon.unfit_reprobe_minutes": "Check an unfit machine again after (minutes)",
   "daemon.recover": "Retry failed work",
   "daemon.recover_days": "Retry work that failed within (days)",
