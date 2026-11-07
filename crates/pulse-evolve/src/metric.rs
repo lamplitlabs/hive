@@ -406,7 +406,8 @@ mod tests {
             ..Default::default()
         };
         let (kept, why) = crate::api::keep(Some(&whole(2339.0)), Some(&whole(2340.0)), tolerance);
-        assert!(kept && why.starts_with("neutral"), "{why}");
+        // Noise against the whole tree is a tie, and a tie is not landed.
+        assert!(!kept && why.starts_with("neutral"), "{why}");
         let scoped = |raw: f64| crate::api::Scores {
             total: metric_score(raw, true, diff_scale(true, 2.0), None),
             diff_scoped: vec!["derived-tests".into()],

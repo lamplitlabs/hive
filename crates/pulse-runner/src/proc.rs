@@ -313,7 +313,9 @@ pub(crate) fn run_group_observed(
     if cancel.is_cancelled() {
         return Ok(finish(None, "", "", true));
     }
-    let mut cmd = Command::new(&argv[0]);
+    // The program is resolved here against the child's PATH so the spawn
+    // stays a posix_spawn (`resolve_program` says why).
+    let mut cmd = Command::new(pulse_cli::procs::resolve_program(&argv[0], env));
     cmd.args(&argv[1..]);
     if !dir.is_empty() {
         cmd.current_dir(dir);
@@ -331,8 +333,8 @@ pub(crate) fn run_group_observed(
     // The child leads its own process group so the whole tree
     // it spawns ends with it, at the nice level the daemon set for its jobs.
     own_process_group(&mut cmd);
-    crate::daemon_load::nice_child(&mut cmd);
     let mut child = cmd.spawn()?;
+    crate::daemon_load::nice_child(&child);
     if let Some(mut sin) = child.stdin.take() {
         let _ = std::thread::spawn(move || {
             use std::io::Write;
@@ -402,11 +404,11 @@ pub(crate) fn wait_command(
     }
     let start = Instant::now();
     own_process_group(cmd);
-    crate::daemon_load::nice_child(cmd);
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return (Some(e.into()), false, false),
     };
+    crate::daemon_load::nice_child(&child);
     let (beats, stop_ticks) = observer
         .map(|_| {
             (crate::heartbeat::HEARTBEAT_TICKS

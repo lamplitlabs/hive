@@ -1,6 +1,7 @@
 //! The flat-fixture gate. When a project's last `evolve.flat_cycles`
-//! experiment cycles all tied (the variant scored exactly what its baseline
-//! scored), the fixtures are not telling a better variant from a worse one:
+//! experiment cycles all tied (no variant moved its composite score past the
+//! row's tolerance, so none was an improvement or a regression), the
+//! fixtures are not telling a better variant from a worse one:
 //! every further cycle costs a worker run and a measurement and teaches
 //! nothing. The gate pauses the loop with one owner question on the project's
 //! `evolution/loop-gate` thread. A fixture enabled since the streak began, or
@@ -35,8 +36,10 @@ pub struct FlatCycle {
     pub baseline_score: f64,
     pub variant_score: f64,
     pub at: String,
-    /// Whether the fixtures that count read it as a tie. Without an archived
-    /// matrix the totals decide.
+    /// Whether the cycle was flat: its composite moved less than the row's
+    /// tolerance (the Keep rule scored it neutral), or the fixtures that
+    /// count read it as a tie. Only an improvement or a regression breaks a
+    /// streak.
     pub tied: bool,
     /// The fixtures left out of that reading: disputed in this cycle, or
     /// scoring the same baseline commit two ways inside the window.
@@ -92,6 +95,18 @@ fn same_score(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-9
 }
 
+/// Whether a cycle's composite stayed within its tolerance: neither an
+/// improvement nor a regression by the Keep rule, so the cycle taught
+/// nothing. A `+0.01` at tolerance `0.02` is flat.
+fn within_tolerance(baseline: f64, variant: f64, tolerance: f64) -> bool {
+    let delta = variant - baseline;
+    delta > -tolerance && delta < tolerance
+}
+
+/// One archived row as the window reads it: `(id, baseline_score,
+/// variant_score, tolerance, at, fixtures_json)`.
+type WindowRow = (String, f64, f64, f64, String, String);
+
 /// The archived matrix of one row, as `(baseline, variant)`, when it has one.
 fn archived_pair(fixtures_json: &str) -> Option<(crate::api::Scores, crate::api::Scores)> {
     let pair = serde_json::from_str::<crate::archive::ScorePair>(fixtures_json).ok()?;
@@ -103,15 +118,17 @@ fn archived_pair(fixtures_json: &str) -> Option<(crate::api::Scores, crate::api:
     Some((baseline, variant))
 }
 
-/// Reads a window of archived rows `(id, baseline_score, variant_score, at,
-/// fixtures_json)` into cycles. A fixture that scored the same baseline
-/// commit two ways inside the window, or that the dispute scored as a tie in
-/// a cycle, is left out of that cycle's reading; a cycle with no fixture
-/// left to read is a tie (nothing told the trees apart). A row without an
-/// archived matrix is read from its totals.
-fn read_window(rows: Vec<(String, f64, f64, String, String)>) -> Vec<FlatCycle> {
+/// Reads a window of archived rows ([`WindowRow`]) into cycles. A cycle
+/// whose composite stayed within its tolerance is a tie: the Keep rule saw
+/// neither an improvement nor a regression. One that moved past it is read
+/// fixture by fixture from its archived matrix: a fixture that scored the
+/// same baseline commit two ways inside the window, or that the dispute
+/// scored as a tie in a cycle, is left out of that cycle's reading; a cycle
+/// with no fixture left to read is a tie (nothing told the trees apart). A
+/// row without an archived matrix is read from its totals.
+fn read_window(rows: Vec<WindowRow>) -> Vec<FlatCycle> {
     let pairs: Vec<Option<(crate::api::Scores, crate::api::Scores)>> =
-        rows.iter().map(|r| archived_pair(&r.4)).collect();
+        rows.iter().map(|r| archived_pair(&r.5)).collect();
     // (name, kind) -> baseline commit -> the first score seen; a second
     // score on the same commit marks the fixture flaky in this window.
     let mut seen: std::collections::HashMap<
@@ -137,42 +154,45 @@ fn read_window(rows: Vec<(String, f64, f64, String, String)>) -> Vec<FlatCycle> 
     }
     rows.into_iter()
         .zip(pairs)
-        .map(|((id, baseline_score, variant_score, at, _), pair)| {
-            let (tied, skipped) = match pair {
-                None => (same_score(variant_score, baseline_score), Vec::new()),
-                Some((baseline, variant)) => {
-                    let mut tied = true;
-                    let mut skipped = Vec::new();
-                    for b in &baseline.fixtures {
-                        let Some(v) = variant
-                            .fixtures
-                            .iter()
-                            .find(|v| v.name == b.name && v.kind == b.kind)
-                        else {
-                            continue;
-                        };
-                        if v.note.contains(DISPUTED_NOTE)
-                            || flaky.contains(&(b.name.clone(), b.kind.clone()))
-                        {
-                            skipped.push(b.name.clone());
-                            continue;
+        .map(
+            |((id, baseline_score, variant_score, tolerance, at, _), pair)| {
+                let flat = within_tolerance(baseline_score, variant_score, tolerance);
+                let (tied, skipped) = match pair {
+                    None => (flat, Vec::new()),
+                    Some((baseline, variant)) => {
+                        let mut tied = true;
+                        let mut skipped = Vec::new();
+                        for b in &baseline.fixtures {
+                            let Some(v) = variant
+                                .fixtures
+                                .iter()
+                                .find(|v| v.name == b.name && v.kind == b.kind)
+                            else {
+                                continue;
+                            };
+                            if v.note.contains(DISPUTED_NOTE)
+                                || flaky.contains(&(b.name.clone(), b.kind.clone()))
+                            {
+                                skipped.push(b.name.clone());
+                                continue;
+                            }
+                            if !same_score(v.score, b.score) {
+                                tied = false;
+                            }
                         }
-                        if !same_score(v.score, b.score) {
-                            tied = false;
-                        }
+                        (tied || flat, skipped)
                     }
-                    (tied, skipped)
+                };
+                FlatCycle {
+                    id,
+                    baseline_score,
+                    variant_score,
+                    at,
+                    tied,
+                    skipped,
                 }
-            };
-            FlatCycle {
-                id,
-                baseline_score,
-                variant_score,
-                at,
-                tied,
-                skipped,
-            }
-        })
+            },
+        )
         .collect()
 }
 
@@ -190,14 +210,21 @@ pub fn flat_streak(s: &pulse_store::Store, project: &str) -> Result<Option<FlatS
     }
     let conn = s.conn()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT a.id, a.baseline_score, a.variant_score, a.at, a.fixtures_json FROM evolution_archive a
+        "SELECT a.id, a.baseline_score, a.variant_score, a.tolerance, a.at, a.fixtures_json FROM evolution_archive a
 		WHERE a.project = ? AND NOT {}
 		ORDER BY a.at DESC, a.rowid DESC LIMIT ?",
         crate::status::BASELINE_ROW_SQL
     ))?;
-    let rows: Vec<(String, f64, f64, String, String)> = stmt
+    let rows: Vec<WindowRow> = stmt
         .query_map(params![project, n as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let cycles = read_window(rows);
@@ -287,7 +314,7 @@ pub fn flat_reason(streak: &FlatStreak) -> String {
         )
     };
     format!(
-        "the last {} experiment cycles all tied (variant score = baseline score in {}{noise}); the fixtures cannot tell a better variant from a worse one, so the loop pauses until a fixture whose score moves is added or the question is answered",
+        "the last {} experiment cycles all tied (no variant moved past its tolerance in {}{noise}); the fixtures cannot tell a better variant from a worse one, so the loop pauses until a fixture whose score moves is added or the question is answered",
         streak.cycles.len(),
         ids.join(", ")
     )
@@ -504,7 +531,7 @@ pub fn flat_fixture_question_body(s: &pulse_store::Store, project: &str) -> Resu
         .unwrap_or_else(|| flat_cycles(s))
         .max(1);
     let mut body = format!(
-        "The last {n} experiment cycles of {project} all tied: each variant scored exactly what its baseline scored, so the fixtures cannot tell a better variant from a worse one. Every further cycle would cost a worker run and a measurement and teach nothing, so the loop pauses.\n\nTied cycles (oldest first; baseline -> variant score, archived at):\n"
+        "The last {n} experiment cycles of {project} all tied: no variant moved its score past the tolerance, so the fixtures cannot tell a better variant from a worse one. Every further cycle would cost a worker run and a measurement and teach nothing, so the loop pauses.\n\nTied cycles (oldest first; baseline -> variant score, archived at):\n"
     );
     for c in streak.iter().flat_map(|st| st.cycles.iter().rev()) {
         body.push_str(&format!(
@@ -1042,6 +1069,57 @@ mod tests {
         assert!(
             reason.contains("B-003, B-004, B-005"),
             "a difference below 1e-9 is a tie: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_cycle_inside_the_tolerance_is_flat() {
+        let _serial = crate::test_helpers::serial();
+        let s = gate_store("3");
+        tie(&s, "B-001", -40);
+        // +0.01 at tolerance 0.02: the Keep rule scored it neutral, so the
+        // cycle taught nothing and the streak holds.
+        cycle(&s, "B-002", 0.5, 0.51, -30);
+        // -0.015: not a regression either.
+        cycle(&s, "B-003", 0.5, 0.485, -20);
+        let streak = flat_streak(&s, "demo").unwrap().expect("streak");
+        assert!(streak.cycles.iter().all(tied), "{streak:?}");
+        let (_, reason) = flat_fixture_gate(&s, "demo").unwrap();
+        assert!(
+            reason.contains("B-001, B-002, B-003")
+                && reason.contains("no variant moved past its tolerance"),
+            "a +0.01 cycle inside the tolerance counts as flat: {reason}"
+        );
+        // Exactly the tolerance is an improvement by the Keep rule: not flat.
+        cycle(&s, "B-004", 0.5, 0.52, -10);
+        assert_eq!(flat_streak(&s, "demo").unwrap(), None);
+        // A regression past the tolerance breaks the streak as well.
+        tie(&s, "B-005", -8);
+        tie(&s, "B-006", -6);
+        cycle(&s, "B-007", 0.5, 0.47, -4);
+        assert_eq!(flat_streak(&s, "demo").unwrap(), None);
+        // The row's own tolerance decides, not the setting's default: +0.06
+        // is an improvement at 0.02 but flat at the 0.1 this row was
+        // measured with.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
+				baseline_score, variant_score, tolerance, kept, fixtures_json, at)
+				VALUES ('B-008', 'demo', 'S-1', 'one constant', '', 0.5, 0.56, 0.1, 0, '{}', ?)",
+                [stamp(&s, -3)],
+            )
+            .unwrap();
+        tie(&s, "B-009", -2);
+        tie(&s, "B-010", -1);
+        let streak = flat_streak(&s, "demo").unwrap().expect("streak");
+        assert_eq!(
+            streak
+                .cycles
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["B-010", "B-009", "B-008"]
         );
     }
 

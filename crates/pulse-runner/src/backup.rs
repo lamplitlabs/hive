@@ -789,13 +789,14 @@ fn real_run(
     extra: &[(String, String)],
     timeout: Duration,
 ) -> Result<(i32, String, String)> {
-    let mut cmd = std::process::Command::new(program);
+    let environ = crate::proc::environ();
+    let mut cmd = std::process::Command::new(pulse_cli::procs::resolve_program(program, &environ));
     cmd.args(args)
         .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    for kv in crate::proc::environ() {
+    for kv in environ {
         if let Some((k, v)) = kv.split_once('=') {
             cmd.env(k, v);
         }

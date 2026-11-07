@@ -24,6 +24,21 @@ pub(crate) fn brief_fields(body: String) -> BTreeMap<String, String> {
     out
 }
 
+/// Whether a Keep verdict, or an archive note that ends in one (`baseline:
+/// cached …; the discard hinged on …; neutral (…)`), names a tie rather than
+/// a regression: the last `; `-separated part that starts with a verdict
+/// word decides.
+fn note_is_neutral(reason_or_note: &str) -> bool {
+    reason_or_note
+        .rsplit("; ")
+        .find(|part| {
+            pulse_evolve::is_neutral_verdict(part)
+                || part.starts_with("improved")
+                || part.starts_with("discarded")
+        })
+        .is_some_and(pulse_evolve::is_neutral_verdict)
+}
+
 pub(crate) fn evolve_tolerance(s: &pulse_store::Store) -> f64 {
     s.setting("evolve.tolerance", "")
         .trim()
@@ -491,7 +506,13 @@ pub(crate) fn land_experiment_context(
         return ("missing".into(), why);
     }
     let tol = evolve_tolerance(s);
-    let discard = |archive_id: String, reason: String, measured: String| -> (String, String) {
+    // A branch the Keep rule did not land: `discarded` when the variant
+    // regressed, `neutral` when nothing was shown to move (a tie, an
+    // unconfirmed gain, an unmeasured variant). Both delete the branch and
+    // record `land.dropped` with the verdict, but the board post and the
+    // result line say which it was: a tie is not a regression.
+    let drop_branch = |archive_id: String, reason: String, measured: String| -> (String, String) {
+        let neutral = note_is_neutral(&reason);
         if let why = crate::landing_context::landing_stop(parent, s, root.clone())
             && !why.is_empty()
         {
@@ -507,7 +528,8 @@ pub(crate) fn land_experiment_context(
                 return (
                     "deferred".into(),
                     format!(
-                        "experiment discard (archive {archive_id}) awaits branch removal: {}",
+                        "experiment {} (archive {archive_id}) awaits branch removal: {}",
+                        if neutral { "neutral" } else { "discard" },
                         removed.stderr.trim()
                     ),
                 );
@@ -519,16 +541,38 @@ pub(crate) fn land_experiment_context(
             branch.clone(),
             actor.clone(),
             "land.dropped".into(),
-            format!(" | dropped: {reason}"),
+            format!(
+                " | {}: {reason}",
+                if neutral { "not landed" } else { "dropped" }
+            ),
             crate::land::LandOpts {
                 job: job.clone(),
                 archive_id: archive_id.clone(),
                 run_id: run_id.clone(),
                 ..Default::default()
             },
-            BTreeMap::from([("why".into(), serde_json::json!(reason.clone()))]),
+            BTreeMap::from([
+                ("why".into(), serde_json::json!(reason.clone())),
+                (
+                    "verdict".into(),
+                    serde_json::json!(if neutral { "neutral" } else { "discarded" }),
+                ),
+            ]),
         ) {
             return ("error".into(), crate::run::err_message(&e));
+        }
+        if neutral {
+            post(
+                "dropped",
+                format!("experiment {suggestion} not landed: {reason}"),
+                format!(
+                    "Branch `{branch}` was measured and scored neutral (archive {archive_id}): {measured}.\n\nNothing was shown to move, so the branch is not landed; it did not regress either. The branch is deleted; nothing changed on `{def}`.\n"
+                ),
+            );
+            return (
+                "dropped".into(),
+                format!("{branch} not landed: {reason}; archive {archive_id}"),
+            );
         }
         post(
             "dropped",
@@ -641,7 +685,7 @@ pub(crate) fn land_experiment_context(
     };
     if !prior.0.is_empty() {
         if prior.int("kept") == 0 {
-            return discard(prior.str("id"), prior.str("note"), prior.str("note"));
+            return drop_branch(prior.str("id"), prior.str("note"), prior.str("note"));
         }
         let (state, note) = deliver_kept(prior.str("id"), prior.str("note"));
         match state.as_str() {
@@ -933,11 +977,96 @@ pub(crate) fn land_experiment_context(
         }
         (keep, reason, r.variant, note)
     };
-    let archive_note = if dispute_note.is_empty() {
-        format!("{baseline_cache_note}; {reason}")
+    // A claimed gain must reproduce: the variant is measured a second time
+    // on the same fixtures (the baseline is the cached one) and the gain
+    // stands only when the second measurement also says improved. One
+    // measurement over the tolerance is what a noisy judge produces by
+    // itself; a gain that is not there the second time is scored neutral
+    // and the branch is not landed. The second scores are archived; the
+    // first delta stays in the note.
+    let (keep, reason, variant, confirm_note) = if !keep
+        || skipped.is_some()
+        || !reason.starts_with("improved")
+    {
+        (keep, reason, variant, String::new())
     } else {
-        format!("{baseline_cache_note}; {dispute_note}; {reason}")
+        let first_delta = variant.total - baseline.total;
+        let again = pulse_evolve::measure(
+            &ctx,
+            s,
+            &slug,
+            &root,
+            &variant_rev,
+            pulse_evolve::MeasureOptions {
+                scope: Some(scope.clone()),
+                card_check: card_check.clone(),
+                ..Default::default()
+            },
+        );
+        let variant_again = match again {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    "deferred".into(),
+                    format!(
+                        "{branch} not landed: measuring {branch} again to confirm the gain failed: {}",
+                        crate::run::err_message(&e)
+                    ),
+                );
+            }
+        };
+        let (keep_again, reason_again) =
+            pulse_evolve::keep(Some(&baseline), Some(&variant_again), tol);
+        let second_delta = variant_again.total - baseline.total;
+        let confirmed = keep_again && reason_again.starts_with("improved");
+        let (keep, reason, variant) = if confirmed {
+            (
+                true,
+                format!(
+                    "{reason_again} (confirmed: first measurement {first_delta:+.4}, second {second_delta:+.4})"
+                ),
+                variant_again,
+            )
+        } else {
+            (
+                false,
+                format!(
+                    "neutral (unconfirmed: first measurement {first_delta:+.4}, second {second_delta:+.4} (tolerance {tol:.4}); a gain that is not there the second time is not landed)"
+                ),
+                variant_again,
+            )
+        };
+        let note = format!(
+            "the gain was measured again on {branch}: first {first_delta:+.4}, second {second_delta:+.4}, {}",
+            if confirmed {
+                "confirmed"
+            } else {
+                "not confirmed"
+            }
+        );
+        if let Ok(conn) = s.conn() {
+            crate::util::event_at(
+                &conn,
+                &now,
+                &actor,
+                "evolution.measured_again",
+                &branch,
+                serde_json::json!({"project": slug, "confirm": true, "first": first_delta, "second": second_delta, "confirmed": confirmed, "kept": keep, "line": format!("{branch}: {note}; {reason}")}),
+            );
+        }
+        (keep, reason, variant, note)
     };
+    let mut archive_note = baseline_cache_note.clone();
+    for part in [
+        dispute_note.as_str(),
+        confirm_note.as_str(),
+        reason.as_str(),
+    ] {
+        if !part.is_empty() {
+            archive_note.push_str("; ");
+            archive_note.push_str(part);
+        }
+    }
     let sandbox = if variant.sandbox.is_empty() {
         baseline.sandbox.clone()
     } else {
@@ -1009,7 +1138,7 @@ pub(crate) fn land_experiment_context(
         format!("\n\nHypothesis: {hypothesis}")
     };
     if !keep {
-        return discard(archive_id, reason, measured + &hyp);
+        return drop_branch(archive_id, reason, measured + &hyp);
     }
     let (state, note) = deliver_kept(archive_id.clone(), format!("{measured}.{hyp}"));
     match state.as_str() {
@@ -1153,9 +1282,10 @@ mod tests {
             true,
         );
         assert_eq!(state, "landed", "{note}");
-        // Both measurements ran under the lane's mark with the daemon's build
+        // All three measurements (main, the variant, and the variant again to
+        // confirm the gain) ran under the lane's mark with the daemon's build
         // cap handed to pulse-evolve, and the mark went with them.
-        assert_eq!(marks.lock().unwrap().clone(), vec![(1, 3), (1, 3)]);
+        assert_eq!(marks.lock().unwrap().clone(), vec![(1, 3), (1, 3), (1, 3)]);
         assert_eq!(crate::daemon_load::measuring(&s.home), 0);
         pulse_evolve::process::set_build_jobs(0);
     }
@@ -1198,8 +1328,10 @@ mod tests {
         );
         assert_eq!(state, "landed", "{note}");
         let refs = refs.lock().unwrap().clone();
-        assert_eq!(refs.len(), 2, "{refs:?}");
+        // main, the merged variant, and the merged variant again to confirm.
+        assert_eq!(refs.len(), 3, "{refs:?}");
         assert_eq!(refs[0], "main");
+        assert_eq!(refs[1], refs[2], "the confirmation measures the same tree");
         let measured = &refs[1];
         assert!(
             measured != &branch && measured != &branch_before && measured.len() >= 40,
@@ -1453,7 +1585,11 @@ mod tests {
             note.contains("delivered as pull request #7"),
             "note: {note}"
         );
-        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            3,
+            "main, variant, and the variant again to confirm the gain"
+        );
         assert_eq!(bare_ref(&bare, &format!("refs/heads/{branch}")), tip);
         assert_eq!(gh.head_of(7), branch);
         assert!(
@@ -1575,7 +1711,25 @@ mod tests {
         assert_eq!(archives.len(), 2, "archives: {archives:?}");
         assert!(archives[0].kept);
         assert_eq!(archives[0].variant_score, 0.9);
-        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(
+            archives[0].outcome(),
+            pulse_evolve::ArchiveOutcome::Improved
+        );
+        assert!(
+            archives[0]
+                .note
+                .contains("the gain was measured again on evolve/")
+                && archives[0]
+                    .note
+                    .contains(": first +0.1000, second +0.1000, confirmed; improved"),
+            "the archive note keeps both deltas: {}",
+            archives[0].note
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            3,
+            "main, variant, and the variant again to confirm the gain"
+        );
         assert_eq!(pulse_evolve::status(&s, "proj").unwrap().cycles, 1);
     }
 
@@ -1626,7 +1780,11 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
-            assert_eq!(*calls.lock().unwrap(), 2);
+            assert_eq!(
+                *calls.lock().unwrap(),
+                3,
+                "{path}: measured once, confirmed once"
+            );
             assert_eq!(
                 count(&s, "SELECT COUNT(*) AS n FROM evolution_archive", &[]),
                 2
@@ -1681,7 +1839,7 @@ mod tests {
             state, "merged",
             "receipt retry did not finalize: {state}: {note}"
         );
-        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(*calls.lock().unwrap(), 3, "measured once, confirmed once");
         assert_eq!(
             count(&s, "SELECT COUNT(*) AS n FROM evolution_archive", &[]),
             2
@@ -1991,10 +2149,11 @@ mod tests {
     }
 
     #[test]
-    fn a_discard_on_a_request_fixture_that_does_not_reproduce_is_kept() {
+    fn a_discard_on_a_request_fixture_that_does_not_reproduce_is_a_tie_not_a_discard() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let (s, project, job, root, _calls) = measured_keep_fixture();
+        let before = ref_of(&root, "HEAD");
         let seen = flaky_measure(1.0, 0.0);
         let (state, note) = land_experiment(
             &s,
@@ -2004,7 +2163,13 @@ mod tests {
             TEST_NOW.into(),
             true,
         );
-        assert_eq!(state, "landed", "{note}");
+        // The flip was noise, so the variant ties its baseline: a tie does
+        // not land, but it is reported as neutral, not as a regression.
+        assert_eq!(state, "dropped", "{note}");
+        assert!(
+            note.contains("not landed: neutral (a tie:") && !note.contains("discarded"),
+            "a tie is not called a discard: {note}"
+        );
         let seen = seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 4, "both trees measured again: {seen:?}");
         assert_eq!(seen[0].0, "main");
@@ -2018,7 +2183,8 @@ mod tests {
         assert_eq!(seen[3].1, ["starter-proposes-first"]);
         assert!(seen[2].2 && seen[3].2, "the second look is exact");
         let row = pulse_evolve::list_archive(&s, "proj").unwrap().remove(0);
-        assert!(row.kept, "{row:?}");
+        assert!(!row.kept, "{row:?}");
+        assert_eq!(row.outcome(), pulse_evolve::ArchiveOutcome::Neutral);
         assert_eq!(row.baseline_score, row.variant_score);
         assert!(
             row.note.contains(
@@ -2048,8 +2214,146 @@ mod tests {
             ),
             1
         );
-        let (exists, _) = crate::land::branch_exists(root, job.str("branch"));
-        assert!(!exists, "a kept experiment lands and its branch goes");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.dropped' AND detail LIKE '%\"verdict\": \"neutral\"%'",
+                &[]
+            ),
+            1,
+            "the landing record names the verdict"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'result' AND summary LIKE '%not landed: neutral%'",
+                &[]
+            ),
+            1,
+            "the board post says the tie was not landed"
+        );
+        let (exists, _) = crate::land::branch_exists(root.clone(), job.str("branch"));
+        assert!(!exists, "a tie's branch goes like a discard's");
+        assert_eq!(ref_of(&root, "HEAD"), before, "nothing landed");
+    }
+
+    #[test]
+    fn a_tie_is_not_landed_and_is_archived_neutral() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        let before = ref_of(&root, "HEAD");
+        let seen = calls.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                *seen.lock().unwrap() += 1;
+                let score = if r#ref == "main" { 0.8 } else { 0.81 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "dropped", "{note}");
+        assert!(
+            note.contains("not landed: neutral (a tie: the hypothesis went unmeasured, no fixture moved, so the branch is not landed): variant +0.0100 vs baseline (tolerance 0.0200)"),
+            "{note}"
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            2,
+            "a tie is not measured again: there is no gain to confirm"
+        );
+        let row = pulse_evolve::list_archive(&s, "proj").unwrap().remove(0);
+        assert!(!row.kept);
+        assert_eq!(row.outcome(), pulse_evolve::ArchiveOutcome::Neutral);
+        let st = pulse_evolve::status(&s, "proj").unwrap();
+        assert_eq!((st.improved, st.neutral, st.kept), (0, 1, 0), "{st:?}");
+        let (exists, _) = crate::land::branch_exists(root.clone(), job.str("branch"));
+        assert!(!exists, "the branch is deleted");
+        assert_eq!(ref_of(&root, "HEAD"), before, "nothing landed");
+    }
+
+    #[test]
+    fn a_gain_the_second_measurement_does_not_confirm_is_neutral() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, calls) = measured_keep_fixture();
+        let before = ref_of(&root, "HEAD");
+        let seen = calls.clone();
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, opts| {
+                let n = {
+                    let mut n = seen.lock().unwrap();
+                    *n += 1;
+                    *n
+                };
+                // main 0.8; the variant 0.831 the first time, 0.804 the second.
+                let score = match (r#ref == "main", n) {
+                    (true, _) => 0.8,
+                    (false, 2) => 0.831,
+                    _ => 0.804,
+                };
+                assert!(
+                    opts.fixtures.is_empty() && !opts.exact,
+                    "the confirmation measures the same fixtures as the first look: {:?} exact={}",
+                    opts.fixtures,
+                    opts.exact
+                );
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "dropped", "{note}");
+        assert!(
+            note.contains("not landed: neutral (unconfirmed: first measurement +0.0310, second +0.0040 (tolerance 0.0200); a gain that is not there the second time is not landed)"),
+            "{note}"
+        );
+        assert_eq!(*calls.lock().unwrap(), 3, "main, variant, variant again");
+        let row = pulse_evolve::list_archive(&s, "proj").unwrap().remove(0);
+        assert!(!row.kept);
+        assert_eq!(row.outcome(), pulse_evolve::ArchiveOutcome::Neutral);
+        assert!(
+            (row.variant_score - 0.804).abs() < 1e-9,
+            "the second measurement is the archived one: {row:?}"
+        );
+        assert!(
+            row.note.contains("the gain was measured again on evolve/")
+                && row.note.contains(
+                    ": first +0.0310, second +0.0040, not confirmed; neutral (unconfirmed"
+                ),
+            "both deltas stay in the note: {}",
+            row.note
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'evolution.measured_again' AND detail LIKE '%\"confirm\": true%' AND detail LIKE '%\"confirmed\": false%'",
+                &[]
+            ),
+            1
+        );
+        let (exists, _) = crate::land::branch_exists(root.clone(), job.str("branch"));
+        assert!(!exists, "the branch is deleted");
+        assert_eq!(ref_of(&root, "HEAD"), before, "nothing landed");
     }
 
     #[test]

@@ -37,9 +37,11 @@ const ASK_KIND: &str = "lead-role";
 /// no worker task on yes (pulse-board's decision markers); the daemon reads
 /// the decision and seats the lead on its next pass (`seat_decided_leads`).
 pub(crate) const DECISION_MARKER: &str = "lead-role:";
-/// Archive rows the RSI lead's fixture rule reads, and the kept share below
-/// which the sitting must add a metric fixture: a loop that keeps fewer
-/// than one variant in five is measuring hygiene, not behaviour.
+/// Archive rows the RSI lead's fixture rule reads, and the improved share
+/// below which the sitting must add a metric fixture: a loop that improves
+/// fewer than one variant in five is measuring hygiene, not behaviour. Only
+/// an improvement counts - a neutral tie shows nothing moved, which is the
+/// very gap the fixture is meant to close.
 const ARCHIVE_WINDOW: i64 = 20;
 const ARCHIVE_KEPT_FLOOR_PCT: i64 = 20;
 /// Days of landings the docs gap looks back over.
@@ -422,6 +424,7 @@ pub const SECTION_VARIABLES: &[&str] = &[
     "blocked_jobs",
     "cycles",
     "kept_pct",
+    "improved_pct",
     "archive_rule",
 ];
 
@@ -509,7 +512,10 @@ impl<'a> Signals<'a> {
     fn landed(&self) -> bool {
         *self.landed.get_or_init(|| has_landed(self.s, self.slug))
     }
-    /// (cycles, kept) over the project's last `ARCHIVE_WINDOW` archive rows.
+    /// (cycles, improved) over the project's last `ARCHIVE_WINDOW` archive
+    /// rows: a row counts as improved when the Keep rule read it so
+    /// ([`pulse_evolve::ArchiveOutcome::Improved`]) - its delta reached the
+    /// tolerance or its card check rose. A kept tie is not an improvement.
     fn archive(&self) -> (i64, i64) {
         *self.archive.get_or_init(|| {
             let Ok(conn) = self.s.conn() else {
@@ -517,24 +523,37 @@ impl<'a> Signals<'a> {
             };
             let rows = must_rows(
                 &conn,
-                "SELECT kept FROM evolution_archive WHERE project = ? ORDER BY at DESC LIMIT ?",
+                "SELECT kept, baseline_score, variant_score, tolerance, fixtures_json FROM evolution_archive WHERE project = ? ORDER BY at DESC LIMIT ?",
                 &[&self.slug, &ARCHIVE_WINDOW],
             );
-            let kept = rows.iter().filter(|r| r.int("kept") == 1).count() as i64;
-            (rows.len() as i64, kept)
+            let improved = rows
+                .iter()
+                .filter(|r| {
+                    let archived = pulse_evolve::Archived {
+                        kept: r.int("kept") == 1,
+                        baseline_score: r.float("baseline_score"),
+                        variant_score: r.float("variant_score"),
+                        tolerance: r.float("tolerance"),
+                        fixtures: serde_json::from_str(&r.str("fixtures_json")).unwrap_or_default(),
+                        ..Default::default()
+                    };
+                    archived.outcome() == pulse_evolve::ArchiveOutcome::Improved
+                })
+                .count() as i64;
+            (rows.len() as i64, improved)
         })
     }
-    fn kept_pct(&self) -> i64 {
-        let (cycles, kept) = self.archive();
+    fn improved_pct(&self) -> i64 {
+        let (cycles, improved) = self.archive();
         if cycles == 0 {
             100
         } else {
-            kept * 100 / cycles
+            improved * 100 / cycles
         }
     }
 
     /// The fifth point of the RSI lead's section: the fixture the sitting
-    /// must add when the archive shows the loop keeping almost nothing.
+    /// must add when the archive shows the loop improving almost nothing.
     fn archive_rule(&self) -> String {
         let (cycles, _) = self.archive();
         let slug = self.slug;
@@ -543,17 +562,17 @@ impl<'a> Signals<'a> {
         );
         if cycles == 0 {
             return format!(
-                "The archive has no cycle yet, so the fixture rule does not bind this sitting; once the last {ARCHIVE_WINDOW} cycles show fewer than {ARCHIVE_KEPT_FLOOR_PCT}% improved-or-kept, a sitting MUST add one metric fixture that reads the project's own check output ({command}) before it may end with `SUMMARY: nothing to do`."
+                "The archive has no cycle yet, so the fixture rule does not bind this sitting; once the last {ARCHIVE_WINDOW} cycles show fewer than {ARCHIVE_KEPT_FLOOR_PCT}% improved (a neutral tie is not an improvement), a sitting MUST add one metric fixture that reads the project's own check output ({command}) before it may end with `SUMMARY: nothing to do`."
             );
         }
-        let pct = self.kept_pct();
+        let pct = self.improved_pct();
         if pct < ARCHIVE_KEPT_FLOOR_PCT {
             format!(
-                "The archive shows {pct}% improved-or-kept over its last {cycles} cycles - below {ARCHIVE_KEPT_FLOOR_PCT}%, so this sitting MUST add ONE metric fixture that reads the project's own check output ({command}), verify it scores HEAD (`pulse evolve measure --project {slug} --ref HEAD`), and commit it. Only then may this sitting end with `SUMMARY: nothing to do`."
+                "The archive shows {pct}% improved over its last {cycles} cycles (a neutral tie is not an improvement) - below {ARCHIVE_KEPT_FLOOR_PCT}%, so this sitting MUST add ONE metric fixture that reads the project's own check output ({command}), verify it scores HEAD (`pulse evolve measure --project {slug} --ref HEAD`), and commit it. Only then may this sitting end with `SUMMARY: nothing to do`."
             )
         } else {
             format!(
-                "The archive shows {pct}% improved-or-kept over its last {cycles} cycles, so the fixture rule does not bind this sitting; below {ARCHIVE_KEPT_FLOOR_PCT}% a sitting MUST add one metric fixture that reads the project's own check output ({command}), verify it scores HEAD (`pulse evolve measure --project {slug} --ref HEAD`) and commit it before it may end with `SUMMARY: nothing to do`."
+                "The archive shows {pct}% improved over its last {cycles} cycles, so the fixture rule does not bind this sitting; below {ARCHIVE_KEPT_FLOOR_PCT}% (a neutral tie is not an improvement) a sitting MUST add one metric fixture that reads the project's own check output ({command}), verify it scores HEAD (`pulse evolve measure --project {slug} --ref HEAD`) and commit it before it may end with `SUMMARY: nothing to do`."
             )
         }
     }
@@ -649,7 +668,8 @@ impl<'a> Signals<'a> {
                 crate::util::plural(self.blocked() as i32, "job")
             ),
             "cycles" => self.archive().0.to_string(),
-            "kept_pct" => self.kept_pct().to_string(),
+            "kept_pct" => self.improved_pct().to_string(),
+            "improved_pct" => self.improved_pct().to_string(),
             "archive_rule" => self.archive_rule(),
             _ => return None,
         })
@@ -1770,28 +1790,40 @@ mod tests {
             "{brief}"
         );
         let conn = s.conn().unwrap();
-        let archive = |id: &str, kept: i64| {
+        // A row counts as improved only when the Keep rule read it so: a
+        // kept tie (variant = baseline) is not an improvement.
+        let archive = |id: &str, kept: i64, variant: f64| {
             conn.execute(
-                "INSERT INTO evolution_archive (id, project, baseline_score, variant_score, tolerance, kept, at) VALUES (?, 'proj', 0.5, 0.5, 0.01, ?, ?)",
-                rusqlite::params![id, kept, now],
+                "INSERT INTO evolution_archive (id, project, baseline_score, variant_score, tolerance, kept, at) VALUES (?, 'proj', 0.5, ?, 0.01, ?, ?)",
+                rusqlite::params![id, variant, kept, now],
             )
             .unwrap();
         };
         for i in 0..4 {
-            archive(&format!("EVO-00{i}"), 0);
+            archive(&format!("EVO-00{i}"), 0, 0.4);
         }
-        archive("EVO-004", 1);
+        archive("EVO-004", 1, 0.6);
         let brief = role_brief(&s, &lead, &now, 2);
         assert!(
-            brief.contains("The archive shows 20% improved-or-kept over its last 5 cycles, so the fixture rule does not bind this sitting"),
+            brief.contains("The archive shows 20% improved over its last 5 cycles, so the fixture rule does not bind this sitting"),
             "{brief}"
         );
         for i in 5..10 {
-            archive(&format!("EVO-00{i}"), 0);
+            archive(&format!("EVO-00{i}"), 0, 0.4);
         }
         let brief = role_brief(&s, &lead, &now, 2);
         assert!(
-            brief.contains("5. The archive shows 10% improved-or-kept over its last 10 cycles - below 20%, so this sitting MUST add ONE metric fixture"),
+            brief.contains("5. The archive shows 10% improved over its last 10 cycles (a neutral tie is not an improvement) - below 20%, so this sitting MUST add ONE metric fixture"),
+            "{brief}"
+        );
+        // Kept ties archived before ties stopped landing do not lift the
+        // share: the rule reads the scores, not the kept flag.
+        for i in 10..20 {
+            archive(&format!("EVO-0{i}"), 1, 0.5);
+        }
+        let brief = role_brief(&s, &lead, &now, 2);
+        assert!(
+            brief.contains("5. The archive shows 5% improved over its last 20 cycles (a neutral tie is not an improvement) - below 20%"),
             "{brief}"
         );
         assert!(

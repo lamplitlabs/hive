@@ -82,11 +82,12 @@ new one arrives.
 The two private held-out fixtures that open a project's self-improvement loop
 need no step of yours: the daemon writes them itself, sealed (one model call
 each, no repository, no board, no store) and labelled *generated* wherever the
-counts appear. Set `evolve.heldout` to `owner` to take the step back: the card
+counts appear, then grows the set to six and rewrites a generated fixture
+once it is a month old, the oldest one per tick. Set `evolve.heldout` to `owner` to take the step back: the card
 returns and a dialog picks a private folder, creates the set and writes each
 fixture (a request plus a built-in effect judge or your own script); the hub
 writes the files and never reads them back; the command stays as the terminal
-alternative. An owner-written fixture is never overwritten by generation.
+alternative. An owner-written fixture is never overwritten or renewed by generation.
 
 ## Projects
 

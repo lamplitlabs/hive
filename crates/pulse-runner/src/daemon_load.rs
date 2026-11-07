@@ -32,7 +32,7 @@ pub(crate) const MIN_FREE_MEM_MB: i64 = 1024;
 /// are far from busy; a line at the CPU count held the fleet all day.
 pub(crate) const DEFAULT_LOAD_PER_CPU: f64 = 2.0;
 
-/// The nice level [`renice_child`] applies; 0 until the daemon sets it, so
+/// The nice level [`nice_child`] applies; 0 until the daemon sets it, so
 /// `pulse work` and the other commands run as before.
 static CHILD_NICE_LEVEL: AtomicI32 = AtomicI32::new(0);
 
@@ -423,7 +423,7 @@ pub(crate) fn renice_self(level: i32) {
     }
     #[cfg(not(test))]
     {
-        renice_to(own_nice_level(i64::from(level)));
+        renice_pid(0, own_nice_level(i64::from(level)));
     }
 }
 
@@ -432,8 +432,8 @@ pub(crate) fn own_nice_level(setting: i64) -> i32 {
     setting.clamp(0, i64::from(MAX_NICE)) as i32
 }
 
-/// The daemon sets the nice level its job children get; [`renice_child`]
-/// applies it from a `pre_exec` hook. Other commands leave it at 0.
+/// The daemon sets the nice level its job children get; [`nice_child`]
+/// applies to each child once spawned. Other commands leave it at 0.
 pub(crate) fn set_child_nice(level: i32) {
     CHILD_NICE_LEVEL.store(level.clamp(0, 19), Ordering::SeqCst);
 }
@@ -542,59 +542,40 @@ fn process_alive(_pid: u32) -> bool {
     true
 }
 
-/// Lowers the calling process's scheduling priority to the level the daemon
-/// set, for use inside `CommandExt::pre_exec` (a plain system call, nothing
-/// allocated): a no-op in processes that never set a level. Failure is not
-/// an error - the child still runs, only at the parent's priority.
-pub(crate) fn renice_child() -> std::io::Result<()> {
-    renice_to(child_nice());
-    Ok(())
+/// Puts `child`, just spawned, at the nice level the daemon set (nothing
+/// changes under `pulse work` and the other commands, which set none): the
+/// one line a spawn site adds after `spawn`, with `own_process_group` before
+/// it. Done from the parent rather than a `pre_exec` hook so the spawn stays
+/// a posix_spawn (a hook forks the whole process; `own_process_group` says
+/// what that costs); the child runs at the parent's level for the moment
+/// until the call lands. A child already gone, or one the parent may not
+/// lower further (a process cannot raise its priority back), stays as it is.
+pub(crate) fn nice_child(child: &std::process::Child) {
+    renice_pid(child.id(), child_nice());
 }
 
-/// Spawns `cmd` at the nice level the daemon set (nothing changes under
-/// `pulse work` and the other commands, which set none): the one line a
-/// spawn site adds next to `own_process_group`.
-pub(crate) fn nice_child(cmd: &mut std::process::Command) -> &mut std::process::Command {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: the hook only issues one setpriority system call.
-        unsafe {
-            cmd.pre_exec(renice_child);
-        }
-    }
-    cmd
-}
-
-/// Spawns `cmd` at nice [`CHILD_NICE`] whatever process runs it (the
+/// Puts `child` at nice [`CHILD_NICE`] whatever process runs it (the
 /// self-update build, which only the daemon runs).
-pub(crate) fn low_priority(cmd: &mut std::process::Command) -> &mut std::process::Command {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: the hook only issues one setpriority system call.
-        unsafe {
-            cmd.pre_exec(|| {
-                renice_to(CHILD_NICE);
-                Ok(())
-            });
-        }
-    }
-    cmd
+pub(crate) fn low_priority(child: &std::process::Child) {
+    renice_pid(child.id(), CHILD_NICE);
 }
 
+/// `setpriority` on one process (0: the calling one) with a bounded level;
+/// a failure (the process gone, or already at a higher nice, which a process
+/// cannot undo) changes nothing.
 #[cfg(unix)]
-fn renice_to(level: i32) {
+fn renice_pid(pid: u32, level: i32) {
     if level > 0 {
-        // SAFETY: setpriority on the calling process with a bounded level.
+        // SAFETY: one setpriority system call on a process id with a
+        // bounded level.
         unsafe {
-            libc::setpriority(libc::PRIO_PROCESS, 0, level);
+            libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, level);
         }
     }
 }
 
 #[cfg(not(unix))]
-fn renice_to(_level: i32) {}
+fn renice_pid(_pid: u32, _level: i32) {}
 
 /// The machine's pressure right now, as the daemon sees it. Under test the
 /// pinned pressure or a calm machine, so a loaded test host never turns a
@@ -1566,7 +1547,6 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         set_child_nice(0);
         assert_eq!(child_nice(), 0);
-        renice_child().unwrap();
         set_child_nice(CHILD_NICE);
         assert_eq!(child_nice(), CHILD_NICE);
         set_child_nice(99);
@@ -1574,10 +1554,29 @@ mod tests {
         set_child_nice(0);
     }
 
-    /// The nice level a child shell reports for itself.
+    /// The nice level a child shell reports for itself once `renice` has
+    /// had its say: the shell waits on stdin, so the parent's call lands
+    /// before the shell looks.
     #[cfg(unix)]
-    fn child_nice_of(cmd: &mut std::process::Command) -> i32 {
-        let out = cmd.output().expect("sh runs");
+    fn child_nice_of(renice: impl FnOnce(&std::process::Child)) -> i32 {
+        use std::io::Write;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "read go; ps -o nice= -p $$ 2>/dev/null || ps -o ni= -p $$",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh runs");
+        renice(&child);
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(b"\n")
+            .expect("wake the shell");
+        let out = child.wait_with_output().expect("sh ends");
         String::from_utf8_lossy(&out.stdout)
             .trim()
             .parse()
@@ -1585,16 +1584,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn nice_probe() -> std::process::Command {
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.args(["-c", "ps -o nice= -p $$ 2>/dev/null || ps -o ni= -p $$"]);
-        cmd
-    }
-
-    #[cfg(unix)]
     #[test]
     fn low_priority_runs_the_child_at_a_higher_nice() {
-        let nice = child_nice_of(low_priority(&mut nice_probe()));
+        let nice = child_nice_of(low_priority);
         assert!(
             nice >= CHILD_NICE,
             "child nice {nice}, want at least {CHILD_NICE}"
@@ -1606,14 +1598,14 @@ mod tests {
     fn nice_child_follows_the_level_the_daemon_set() {
         let _serial = crate::test_helpers::serial();
         set_child_nice(0);
-        let own = child_nice_of(&mut nice_probe());
-        let plain = child_nice_of(nice_child(&mut nice_probe()));
+        let own = child_nice_of(|_| {});
+        let plain = child_nice_of(nice_child);
         assert_eq!(
             plain, own,
             "no level set: the child runs at the parent's nice"
         );
         set_child_nice(CHILD_NICE);
-        let niced = child_nice_of(nice_child(&mut nice_probe()));
+        let niced = child_nice_of(nice_child);
         set_child_nice(0);
         assert!(
             niced >= CHILD_NICE && (niced > own || own >= CHILD_NICE),

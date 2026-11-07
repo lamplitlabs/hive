@@ -80,7 +80,7 @@ pub(crate) fn tend_heldout(s: &pulse_store::Store, now: String) -> Vec<String> {
     {
         return lines;
     }
-    if pulse_evolve::heldout_complete(pulse_evolve::heldout_count(s)) {
+    if !pulse_evolve::heldout_generation_due(s, &now) {
         return lines;
     }
     g.inflight = true;
@@ -109,12 +109,7 @@ pub(crate) fn generate_heldout(s: &pulse_store::Store, now: String) {
         }
         Ok(r) if r.wrote => {
             g.last_failure_at.clear();
-            g.lines.push(format!(
-                "held-out: generated fixture {} of {} (judge {})",
-                r.count,
-                2_i64.max(r.count + r.pending),
-                r.judge
-            ));
+            g.lines.push(heldout_generated_line(&r));
             if let Ok(conn) = s.conn() {
                 crate::util::event_at(
                     &conn,
@@ -128,6 +123,24 @@ pub(crate) fn generate_heldout(s: &pulse_store::Store, now: String) {
         }
         Ok(_) => {}
     }
+}
+
+/// The daemon's line for a pass that wrote a held-out fixture: which slot of
+/// the target it filled, or which fixture it wrote anew and how old that one
+/// was. The fixture's text never appears; the slot name and the judge do.
+pub(crate) fn heldout_generated_line(r: &pulse_evolve::GenerateResult) -> String {
+    if !r.renewed.is_empty() {
+        return format!(
+            "held-out: renewed {} ({} days old, judge {})",
+            r.renewed, r.renewed_age_days, r.judge
+        );
+    }
+    format!(
+        "held-out: generated fixture {} of {} (judge {})",
+        r.count,
+        pulse_evolve::HELDOUT_TARGET.max(r.count + r.pending),
+        r.judge
+    )
 }
 
 pub(crate) fn heldout_failure(err: anyhow::Error) -> String {
@@ -238,21 +251,25 @@ mod tests {
         let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 5.0));
         assert_eq!(
             lines,
-            vec!["held-out: generated fixture 1 of 2 (judge starter-hardstop-history)"]
+            vec!["held-out: generated fixture 1 of 6 (judge starter-hardstop-history)"]
         );
         wait_heldout_idle();
         let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 10.0));
         assert_eq!(
             lines,
-            vec!["held-out: generated fixture 2 of 2 (judge starter-hardstop-publish)"]
+            vec!["held-out: generated fixture 2 of 6 (judge starter-hardstop-publish)"]
         );
-        assert_eq!(prompts.lock().unwrap().len(), 2);
+        // Two fixtures open the loop (ADR-012), but the set is short of
+        // HELDOUT_TARGET, so that tick already started the third; let it land
+        // before reading the set.
+        wait_heldout_idle();
+        assert_eq!(prompts.lock().unwrap().len(), 3);
         assert_eq!(
             pulse_evolve::heldout_count(&s),
             pulse_evolve::HeldoutState {
-                count: 2,
+                count: 3,
                 pending: 0,
-                generated: 2,
+                generated: 3,
                 ..Default::default()
             }
         );
@@ -266,14 +283,14 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(dir.join("generated")).unwrap(),
-            "H01\nH02\n"
+            "H01\nH02\nH03\n"
         );
         let events = must_rows(
             &s,
             "SELECT * FROM events WHERE action = 'evolve.heldout' ORDER BY seq",
             &[],
         );
-        assert_eq!(events.len(), 2, "events: {events:?}");
+        assert_eq!(events.len(), 3, "events: {events:?}");
         assert_eq!(events[0].str("actor"), "daemon");
         assert_eq!(events[0].str("at"), TEST_NOW);
         assert_eq!(
@@ -284,8 +301,120 @@ mod tests {
             events[1].str("detail"),
             r#"{"count": 2, "generated": 2, "pending": 0}"#
         );
-        assert!(tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 15.0)).is_empty());
+        assert_eq!(
+            events[2].str("detail"),
+            r#"{"count": 3, "generated": 3, "pending": 0}"#
+        );
+        // The daemon keeps filling the set one judge per tick until
+        // HELDOUT_TARGET stand; each tick reports the slot the last one wrote.
+        for n in 3..=pulse_evolve::HELDOUT_TARGET {
+            let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 5.0 * n as f64));
+            assert!(
+                lines.len() == 1
+                    && lines[0].starts_with(&format!(
+                        "held-out: generated fixture {n} of {} (judge starter-",
+                        pulse_evolve::HELDOUT_TARGET
+                    )),
+                "tick {n}: {lines:?}"
+            );
+            wait_heldout_idle();
+        }
+        assert_eq!(
+            prompts.lock().unwrap().len() as i64,
+            pulse_evolve::HELDOUT_TARGET
+        );
+        assert_eq!(
+            pulse_evolve::heldout_count(&s),
+            pulse_evolve::HeldoutState {
+                count: pulse_evolve::HELDOUT_TARGET,
+                pending: 0,
+                generated: pulse_evolve::HELDOUT_TARGET,
+                ..Default::default()
+            }
+        );
+        // Full and fresh: nothing to do, no sealed call.
+        for minutes in [60.0, 65.0] {
+            assert!(tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, minutes)).is_empty());
+            wait_heldout_idle();
+        }
+        assert_eq!(
+            prompts.lock().unwrap().len() as i64,
+            pulse_evolve::HELDOUT_TARGET
+        );
+    }
+
+    /// Once the set is full, a generated fixture older than
+    /// HELDOUT_MAX_AGE_DAYS is written anew in its own slot - one per tick -
+    /// and the daemon's line names the slot and its age, never the text.
+    #[test]
+    fn tend_heldout_renews_an_old_fixture_one_per_tick() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        reset_heldout();
+        let s = auto_store();
+        let calls = Arc::new(Mutex::new(0));
+        let calls2 = calls.clone();
+        set_sealed_call(Box::new(move |_ctx, _s, _prompt| {
+            *calls2.lock().unwrap() += 1;
+            Ok(SEALED_REPLY.into())
+        }));
+        for n in 0..pulse_evolve::HELDOUT_TARGET {
+            tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 5.0 * n as f64));
+            wait_heldout_idle();
+        }
+        let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 60.0));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(*calls.lock().unwrap(), pulse_evolve::HELDOUT_TARGET as i32);
+        let dir = std::path::Path::new(&s.home)
+            .join("private")
+            .join("heldout");
+        let old = chrono::DateTime::parse_from_rfc3339(TEST_NOW).unwrap()
+            - chrono::Duration::days(pulse_evolve::HELDOUT_MAX_AGE_DAYS + 10);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("H04.request"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::from(old))
+            .unwrap();
+        let judge_before = std::fs::read_to_string(dir.join("H04.score")).unwrap();
+
+        assert!(tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 70.0)).is_empty());
         wait_heldout_idle();
+        let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 75.0));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with(&format!(
+                "held-out: renewed H04 ({} days old, judge starter-",
+                pulse_evolve::HELDOUT_MAX_AGE_DAYS + 10
+            )),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains(SEALED_REPLY));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            pulse_evolve::HELDOUT_TARGET as i32 + 1
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("H04.score")).unwrap(),
+            judge_before,
+            "the slot keeps its judge"
+        );
+        assert_eq!(
+            pulse_evolve::heldout_count(&s),
+            pulse_evolve::HeldoutState {
+                count: pulse_evolve::HELDOUT_TARGET,
+                pending: 0,
+                generated: pulse_evolve::HELDOUT_TARGET,
+                ..Default::default()
+            }
+        );
+        // Renewed and fresh again: the next tick spends no call.
+        assert!(tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 80.0)).is_empty());
+        wait_heldout_idle();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            pulse_evolve::HELDOUT_TARGET as i32 + 1
+        );
     }
 
     #[test]
@@ -318,7 +447,7 @@ mod tests {
         wait_heldout_idle();
         let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 10.0));
         assert!(
-            lines.len() == 1 && lines[0].starts_with("held-out: generated fixture 1 of 2"),
+            lines.len() == 1 && lines[0].starts_with("held-out: generated fixture 1 of 6"),
             "after release: {lines:?}"
         );
         let _ = release_tx.send(());
@@ -382,19 +511,35 @@ mod tests {
         }
         let stub = CountingSealedCall::new(SEALED_REPLY);
         set_sealed_call(Box::new(stub.clone_call()));
-        let lines = tend_heldout(&s, TEST_NOW.into());
+        // Two owner-written fixtures open the loop, but the set is short of
+        // HELDOUT_TARGET: the daemon appends generated pairs after them (the
+        // tick that reports the third already starts the fourth) and touches
+        // neither of the owner's.
+        assert!(tend_heldout(&s, TEST_NOW.into()).is_empty());
+        wait_heldout_idle();
+        let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 5.0));
+        wait_heldout_idle();
         assert!(
-            lines.is_empty() && stub.calls() == 0,
-            "complete set: {lines:?} {}",
+            lines.len() == 1
+                && lines[0].starts_with("held-out: generated fixture 3 of 6 (judge ")
+                && stub.calls() == 2,
+            "owner pair plus generated: {lines:?} {}",
             stub.calls()
         );
         assert_eq!(
             pulse_evolve::heldout_count(&s),
             pulse_evolve::HeldoutState {
-                count: 2,
+                count: 4,
+                generated: 2,
                 ..Default::default()
             }
         );
+        for stem in ["H01", "H02"] {
+            assert_eq!(
+                std::fs::read_to_string(owner.path().join(format!("{stem}.request"))).unwrap(),
+                "The owner's own request."
+            );
+        }
 
         reset_heldout();
         let s = new_store();
@@ -553,7 +698,7 @@ mod tests {
         let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 1.0));
         assert_eq!(
             lines,
-            vec!["held-out: generated fixture 1 of 2 (judge starter-hardstop-history)"]
+            vec!["held-out: generated fixture 1 of 6 (judge starter-hardstop-history)"]
         );
         let st = sealed_fake_state(&s);
         assert_eq!(st.models, vec!["gpt-light".to_string()], "model");
@@ -577,7 +722,7 @@ mod tests {
         let lines = tend_heldout(&s, crate::util::plus_minutes(TEST_NOW, 2.0));
         assert_eq!(
             lines,
-            vec!["held-out: generated fixture 2 of 2 (judge starter-hardstop-publish)"]
+            vec!["held-out: generated fixture 2 of 6 (judge starter-hardstop-publish)"]
         );
 
         let s = sealed_fake_store(
@@ -639,7 +784,7 @@ mod tests {
         assert_eq!(result, "done");
         let out = out_buf.string();
         assert!(
-            out.contains("held-out: generated fixture 1 of 2 (judge starter-hardstop-history)")
+            out.contains("held-out: generated fixture 1 of 6 (judge starter-hardstop-history)")
                 && !out.contains(SEALED_REPLY),
             "second tick:\n{out}"
         );

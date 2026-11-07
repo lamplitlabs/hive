@@ -2559,6 +2559,14 @@ pub(crate) fn run_job(
         }
         let res = if job_status == "done" { "tested" } else { "" };
         let branch_box = Box::new(branch.clone());
+        let failures = PostFailures {
+            c: &c,
+            now,
+            agent,
+            job_id: job.str("id"),
+            run_id: &run_id,
+            log: &log,
+        };
         if let Err(e) = crate::board::create_post(
             s,
             now.to_string(),
@@ -2576,21 +2584,13 @@ pub(crate) fn run_job(
                 ..Default::default()
             },
         ) {
-            let msg = result_post_failure_message(&job.str("id"), "result", &err_message(&e));
-            if let Some(msg) = msg {
-                eprintln!("run {run_id}: {msg}");
-                log.add(msg);
-            }
+            failures.note("result", &e);
         }
         if job_status == "done"
             && let Err(e) =
                 post_result_answer(s, job.clone(), agent, now, &run_id, &branch, parsed.clone())
         {
-            let msg = result_post_failure_message(&job.str("id"), "answer", &err_message(&e));
-            if let Some(msg) = msg {
-                eprintln!("run {run_id}: {msg}");
-                log.add(msg);
-            }
+            failures.note("answer", &e);
         }
         for q in &parsed.questions {
             if let Err(e) = crate::board::create_post(
@@ -2611,11 +2611,7 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg = result_post_failure_message(&job.str("id"), "question", &err_message(&e));
-                if let Some(msg) = msg {
-                    eprintln!("run {run_id}: {msg}");
-                    log.add(msg);
-                }
+                failures.note("question", &e);
             }
         }
         // Teacher mode: each lesson the worker reported becomes a `lesson`
@@ -2644,11 +2640,7 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg = result_post_failure_message(&job.str("id"), "lesson", &err_message(&e));
-                if let Some(msg) = msg {
-                    eprintln!("run {run_id}: {msg}");
-                    log.add(msg);
-                }
+                failures.note("lesson", &e);
             }
         }
         // A card about PULSE itself (`Class: pulse`) from any project but the
@@ -2698,12 +2690,7 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg =
-                    result_post_failure_message(&job.str("id"), "shared finding", &err_message(&e));
-                if let Some(msg) = msg {
-                    eprintln!("run {run_id}: {msg}");
-                    log.add(msg);
-                }
+                failures.note("shared finding", &e);
             }
         }
         for sg in &parsed.suggestions {
@@ -2768,12 +2755,7 @@ pub(crate) fn run_job(
                     ..Default::default()
                 },
             ) {
-                let msg =
-                    result_post_failure_message(&job.str("id"), "suggestion", &err_message(&e));
-                if let Some(msg) = msg {
-                    eprintln!("run {run_id}: {msg}");
-                    log.add(msg);
-                }
+                failures.note("suggestion", &e);
             }
         }
         write_run_log(&run_id, &log_path, &log.text());
@@ -2948,6 +2930,46 @@ pub(crate) fn result_post_failure_message(job_id: &str, what: &str, err: &str) -
     Some(format!(
         "warning: job {job_id}: {what} post failed, owners will not see this report on the board: {err}"
     ))
+}
+
+/// The event a lost post leaves behind: `post.failed` on the job, with the
+/// kind of post, the error and the run, so the hub and `pulse status` can
+/// show what the stderr line and the run log alone could not.
+pub(crate) fn post_failed_detail(what: &str, err: &str, run_id: &str) -> Value {
+    json!({"kind": what, "error": err.trim(), "run": run_id})
+}
+
+/// Where a run's lost posts are noted: a `what` post (result, answer,
+/// question, lesson, finding, suggestion) that could not be saved sends the
+/// warning to stderr and the run log as before, and a `post.failed` event on
+/// the job reaches the owner. A blank error is no failure (see
+/// [`result_post_failure_message`]).
+struct PostFailures<'a> {
+    c: &'a rusqlite::Connection,
+    now: &'a str,
+    agent: &'a str,
+    job_id: String,
+    run_id: &'a str,
+    log: &'a RunLog,
+}
+
+impl PostFailures<'_> {
+    fn note(&self, what: &str, err: &anyhow::Error) {
+        let err = err_message(err);
+        let Some(msg) = result_post_failure_message(&self.job_id, what, &err) else {
+            return;
+        };
+        eprintln!("run {}: {msg}", self.run_id);
+        self.log.add(msg);
+        crate::util::event_at(
+            self.c,
+            self.now,
+            self.agent,
+            "post.failed",
+            &self.job_id,
+            post_failed_detail(what, &err, self.run_id),
+        );
+    }
 }
 
 /// Warning text for a run log that could not be written: the result post
@@ -3831,6 +3853,100 @@ mod tests {
         assert!(m.starts_with("warning: run run-1"), "{m}");
         assert!(m.contains("/logs/run-1.log"), "{m}");
         assert!(m.ends_with("No space left"), "{m}");
+    }
+
+    /// A lost post leaves a `post.failed` event on the job naming the post
+    /// kind, the error and the run; a blank error leaves nothing, like the
+    /// stderr warning.
+    #[test]
+    fn note_post_failure_records_an_event_on_the_job() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let c = s.conn().expect("conn");
+        let log = RunLog::default();
+        let err = anyhow::anyhow!("summary is 600 chars; limit 240 - move detail to --body");
+        let failures = super::PostFailures {
+            c: &c,
+            now: TEST_NOW,
+            agent: "aurora",
+            job_id: "job-5".into(),
+            run_id: "run-5",
+            log: &log,
+        };
+        failures.note("suggestion", &err);
+        let events = crate::util::must_rows(
+            &c,
+            "SELECT at, actor, subject, detail FROM events WHERE action = 'post.failed'",
+            &[],
+        );
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].str("at"), TEST_NOW);
+        assert_eq!(events[0].str("actor"), "aurora");
+        assert_eq!(events[0].str("subject"), "job-5");
+        let detail: Value = serde_json::from_str(&events[0].str("detail")).expect("json detail");
+        assert_eq!(
+            detail,
+            json!({
+                "kind": "suggestion",
+                "error": "summary is 600 chars; limit 240 - move detail to --body",
+                "run": "run-5",
+            })
+        );
+        assert!(
+            log.text().contains("suggestion post failed"),
+            "the run log keeps the warning: {}",
+            log.text()
+        );
+        failures.note("result", &anyhow::anyhow!("  \n"));
+        let n = crate::util::must_one(
+            &c,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'post.failed'",
+            &[],
+        )
+        .int("n");
+        assert_eq!(n, 1, "a blank error is no failure");
+    }
+
+    /// A suggestion card whose first line runs past the board's summary
+    /// limit posts with a clipped summary and the full text in the body,
+    /// instead of failing with "summary is N chars; limit 240".
+    #[test]
+    fn suggestion_card_with_a_long_first_line_posts_clipped() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "aurora");
+        let agent = s.agent("aurora").expect("agent").map(Box::new);
+        let first = (0..100)
+            .map(|i| format!("word{i:02}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (card, sum, ok) =
+            crate::brief::card_body(format!("{first}; File: README.md; Variable: intro length"));
+        assert!(ok);
+        assert!(sum.ends_with("..."), "{sum}");
+        assert!(sum.chars().count() <= pulse_board::MAX_SUMMARY_CHARS);
+        let post = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "evolution".into(),
+                thread: "job-6".into(),
+                summary: sum.clone(),
+                body: format!("One-variable improvement.\n\n{card}\n"),
+                agent,
+                session: "run-6".into(),
+                ..Default::default()
+            },
+        )
+        .expect("the clipped summary passes the board's limit");
+        assert_eq!(post.str("summary"), sum);
+        assert!(
+            post.str("body").contains(&first),
+            "the body keeps the full first line"
+        );
     }
 
     use super::*;

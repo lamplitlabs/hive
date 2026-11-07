@@ -525,7 +525,13 @@ sooner - the wait divided by the factor, never below 10 minutes - with the
 daily cap grown by the same factor; the planner line says `(fleet idle)` while
 that applies. A shallow last research run (fewer than 5 steps and no card)
 forfeits the shortcut: the next research comes at the plain cadence and the
-planner line says `(fleet idle, last run shallow)`. A `needs votes` card
+planner line says `(fleet idle, last run shallow)`. Research that keeps
+finding nothing backs off: each finished research run in a row that left no
+suggestion card doubles the plain cadence and divides the daily cap by the
+same factor (never below one job a day), up to eight times - `(last run
+empty, cadence x2)`, `(2 empty runs in a row, cadence x4)`, `(3 empty runs
+in a row, cadence x8)` - and a run that leaves a card resets it; the idle
+shortcut, when it applies, is not stretched. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum

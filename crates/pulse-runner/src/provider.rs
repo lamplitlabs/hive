@@ -70,10 +70,11 @@ pub(crate) fn cli_command(program: String, missing: String, env: &[String]) -> B
                 timeout
             ));
         }
-        let mut cmd = Command::new(&program);
+        let environ = crate::proc::environ();
+        let mut cmd = Command::new(pulse_cli::procs::resolve_program(&program, &environ));
         cmd.args(&args);
         cmd.env_clear();
-        for kv in crate::proc::environ() {
+        for kv in environ {
             if let Some((k, v)) = kv.split_once('=') {
                 cmd.env(k, v);
             }

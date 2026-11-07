@@ -789,7 +789,7 @@ pub(crate) fn report_rows(r: &Report) -> Vec<Vec<String>> {
     rows.push(vec![
         "Lineage".to_string(),
         format!(
-            "archive {} rows, {} kept ({} improved, {} neutral), {} built on a parent, {}",
+            "archive {} rows: {} kept, {} improved, {} neutral (ties, not landed), {} built on a parent, {}",
             lineage.rows,
             lineage.kept,
             lineage.improved,

@@ -10,6 +10,14 @@
 //! the four measured values stay in the fixture's note and the archive note -
 //! and the Keep rule is applied again. A metric fixture scores the frozen
 //! tree directly and needs no second look; a discard it causes stands.
+//!
+//! A tie does not land, so the dispute no longer decides whether a branch
+//! lands on its own: it decides whether the row is a `discarded` (a
+//! regression that reproduced) or a `neutral` one (nothing shown to move) -
+//! the archive outcome, the lineage and the board post tell them apart - and
+//! a variant whose real gain one noisy fixture had hidden lands once the
+//! noise is scored as a tie. The gain itself is confirmed by a second
+//! measurement in the lane like any other.
 
 use crate::api::{FixtureScore, Scores};
 
@@ -30,12 +38,20 @@ fn score_of<'a>(scores: &'a Scores, f: &FixtureScore) -> Option<&'a FixtureScore
     scores.fixtures.iter().find(|x| same(x, f))
 }
 
+/// Whether the Keep rule discards the variant: a regression past the
+/// tolerance. A tie is not a discard, though it does not land either.
+fn discarded(baseline: &Scores, variant: &Scores, tolerance: f64) -> bool {
+    let (lands, verdict) = crate::api::keep(Some(baseline), Some(variant), tolerance);
+    !lands && !crate::api::is_neutral_verdict(&verdict)
+}
+
 /// The non-metric fixtures a discard hinges on: those whose scores differ
 /// between the baseline and the variant, when scoring them as ties would
-/// keep the variant. Empty when the variant is kept already, when no such
+/// turn the discard into a tie or an improvement. Empty when the variant is
+/// not discarded in the first place (improved or a tie), when no such
 /// fixture differs, or when the metric fixtures discard it on their own.
 pub fn hinges_on(baseline: &Scores, variant: &Scores, tolerance: f64) -> Vec<String> {
-    if crate::api::keep(Some(baseline), Some(variant), tolerance).0 {
+    if !discarded(baseline, variant, tolerance) {
         return Vec::new();
     }
     let differing: Vec<String> = variant
@@ -49,10 +65,10 @@ pub fn hinges_on(baseline: &Scores, variant: &Scores, tolerance: f64) -> Vec<Str
         return Vec::new();
     }
     let tied = as_ties(baseline, variant, &differing);
-    if crate::api::keep(Some(baseline), Some(&tied), tolerance).0 {
-        differing
-    } else {
+    if discarded(baseline, &tied, tolerance) {
         Vec::new()
+    } else {
+        differing
     }
 }
 
@@ -202,21 +218,50 @@ mod tests {
         let v = brain(0.0, 0.4938);
         assert!(!crate::api::keep(Some(&b), Some(&v), 0.02).0);
         assert_eq!(hinges_on(&b, &v, 0.02), ["starter-tier2-proposes-first"]);
-        // Kept already: nothing to dispute.
+        // A tie is not a discard: nothing to dispute (it does not land, but
+        // it did not regress either).
         assert!(hinges_on(&b, &b, 0.02).is_empty());
+        let mut tie = b.clone();
+        tie.fixtures[1].score += 0.001;
+        tie.total = weighted_total(&tie.fixtures);
+        let (lands, verdict) = crate::api::keep(Some(&b), Some(&tie), 0.02);
+        assert!(
+            !lands && crate::api::is_neutral_verdict(&verdict),
+            "{verdict}"
+        );
+        assert!(hinges_on(&b, &tie, 0.02).is_empty());
         // A metric regression beyond the tolerance discards on its own, even
         // when a request fixture flipped as well.
         let worse = brain(0.0, 0.2);
         assert!(hinges_on(&b, &worse, 0.02).is_empty());
-        // A request flip the metrics would absorb is not a discard at all.
+        // A request flip the metrics would absorb is not a discard at all
+        // (a tie here: it does not land, but there is nothing to dispute).
         let better = {
             let mut s = brain(0.0, 0.4938);
             s.fixtures[0].score = 0.9;
             s.total = weighted_total(&s.fixtures);
             s
         };
-        assert!(crate::api::keep(Some(&b), Some(&better), 0.02).0);
+        let (lands, verdict) = crate::api::keep(Some(&b), Some(&better), 0.02);
+        assert!(
+            !lands && crate::api::is_neutral_verdict(&verdict),
+            "{verdict}"
+        );
         assert!(hinges_on(&b, &better, 0.02).is_empty());
+        // A real gain one flipped request fixture hid: scoring the flip as a
+        // tie makes the variant improved, so the discard hinges on it.
+        let hidden = {
+            let mut s = brain(0.0, 0.4938);
+            s.fixtures[0].score = 0.7;
+            s.total = weighted_total(&s.fixtures);
+            s
+        };
+        let (lands, verdict) = crate::api::keep(Some(&b), Some(&hidden), 0.02);
+        assert!(!lands && verdict.starts_with("discarded"), "{verdict}");
+        assert_eq!(
+            hinges_on(&b, &hidden, 0.02),
+            ["starter-tier2-proposes-first"]
+        );
     }
 
     #[test]
@@ -230,7 +275,12 @@ mod tests {
         let r = reconcile(&b, &v, &again_b, &again_v, &names);
         assert_eq!(r.noise, ["starter-tier2-proposes-first"]);
         assert!(r.reproduced.is_empty());
-        assert!(crate::api::keep(Some(&b), Some(&r.variant), 0.02).0);
+        // Scored as a tie: no longer a discard, though a tie does not land.
+        let (lands, verdict) = crate::api::keep(Some(&b), Some(&r.variant), 0.02);
+        assert!(
+            !lands && crate::api::is_neutral_verdict(&verdict),
+            "{verdict}"
+        );
         assert_eq!(r.variant.total, b.total);
         let f = r
             .variant
@@ -306,6 +356,10 @@ mod tests {
         again_b.total = weighted_total(&again_b.fixtures);
         let r = reconcile(&b, &v, &again_b, &v, &["H1".to_string()]);
         assert_eq!(r.noise, ["H1"]);
-        assert!(crate::api::keep(Some(&b), Some(&r.variant), 0.02).0);
+        let (lands, verdict) = crate::api::keep(Some(&b), Some(&r.variant), 0.02);
+        assert!(
+            !lands && crate::api::is_neutral_verdict(&verdict),
+            "{verdict}"
+        );
     }
 }

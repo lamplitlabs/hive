@@ -77,11 +77,14 @@ pub struct Archived {
 }
 
 /// ArchiveOutcome is what the Keep rule saw in an archived row, derived from
-/// its scores: `Improved` is a kept row whose delta reached the tolerance, or
-/// a kept tie whose card's own check rose (`improved`); `Neutral` any other
-/// kept tie (`neutral`: the branch may still land, but nothing was shown to
-/// move); `Discarded` a row the rule did not keep. Lineage credits
-/// productivity to `Improved` rows only.
+/// its scores: `Improved` is a row whose delta reached the tolerance, or a
+/// tie whose card's own check rose (`improved`) - the only rows that land;
+/// `Neutral` any other tie within the tolerance (`neutral`: nothing was
+/// shown to move, so the branch is not landed, but the variant did not
+/// regress either); `Discarded` a row whose variant regressed past the
+/// tolerance. Lineage credits productivity to `Improved` rows only. The
+/// `kept` column says whether the branch landed (ties archived before the
+/// rule changed carry `kept = 1`); the outcome reads the scores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArchiveOutcome {
@@ -111,14 +114,18 @@ impl Archived {
         self.variant_score - self.baseline_score
     }
 
-    /// Mirrors [`crate::api::keep`]: `delta >= tolerance` is `improved`, and
-    /// so is a smaller kept delta whose card check rose; any other kept delta
-    /// is `neutral`.
+    /// Mirrors [`crate::api::keep`] on the archived scores: `delta >=
+    /// tolerance` is `improved`, and so is a smaller delta whose card check
+    /// rose; a delta below `-tolerance` is `discarded`; anything between is
+    /// `neutral`. A row the rule did not keep is never `improved`, whatever
+    /// its scores say (an unmeasured variant is archived with its baseline's
+    /// scores and `kept = 0`: neutral). A kept row is never `discarded`.
     pub fn outcome(&self) -> ArchiveOutcome {
-        if !self.kept {
-            ArchiveOutcome::Discarded
-        } else if self.delta() >= self.tolerance || self.card_check_rose() {
+        let delta = self.delta();
+        if self.kept && (delta >= self.tolerance || self.card_check_rose()) {
             ArchiveOutcome::Improved
+        } else if !self.kept && delta < -self.tolerance {
+            ArchiveOutcome::Discarded
         } else {
             ArchiveOutcome::Neutral
         }
@@ -208,8 +215,12 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
             "pulse settings set evolve.tolerance 0.02",
         )));
     }
-    let (keep, _) = crate::api::keep(Some(&baseline), Some(&variant), row.tolerance);
-    if row.kept && !keep && !baseline_shape(&row, &baseline, &variant) {
+    // A kept row must not be a regression: the lane never lands one, and a
+    // row that says it did is a bug or a forgery. A kept tie is accepted - the
+    // baseline refresh rows have that shape, and so do the ties archived
+    // before ties stopped landing - but it is `neutral`, never `improved`.
+    let (_, verdict) = crate::api::keep(Some(&baseline), Some(&variant), row.tolerance);
+    if row.kept && verdict.starts_with("discarded") && !baseline_shape(&row, &baseline, &variant) {
         return Err(invalid(anyhow!(
             "a kept archive row must satisfy the unchanged Keep rule"
         )));
@@ -540,27 +551,64 @@ mod tests {
         );
         let tie = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.51)), 0.02);
         assert!(
-            tie.0
+            !tie.0
                 && tie
                     .1
-                    .starts_with("neutral (a tie: the hypothesis went unmeasured"),
-            "a tie within the tolerance still goes to landing, labelled neutral: {tie:?}"
+                    .starts_with("neutral (a tie: the hypothesis went unmeasured")
+                && tie.1.contains("so the branch is not landed"),
+            "a tie within the tolerance is neutral and does not land: {tie:?}"
         );
+        assert!(crate::api::is_neutral_verdict(&tie.1), "{tie:?}");
         assert!(
-            !tie.1.contains("kept"),
-            "a tie is not called a win: {tie:?}"
+            !tie.1.contains("kept") && !tie.1.contains("discarded"),
+            "a tie is neither a win nor a regression: {tie:?}"
         );
         let exact = crate::api::keep(Some(&scores(0.875)), Some(&scores(0.875)), 0.02);
         assert!(
-            exact.0 && exact.1.starts_with("neutral"),
-            "pass/fail fixtures tie exactly: {exact:?}"
+            !exact.0 && exact.1.starts_with("neutral"),
+            "pass/fail fixtures tie exactly and do not land: {exact:?}"
         );
         let regressed = crate::api::keep(Some(&scores(0.5)), Some(&scores(0.47)), 0.02);
         assert!(
             !regressed.0 && regressed.1.starts_with("discarded: "),
             "a regression beyond the tolerance is discarded: {regressed:?}"
         );
+        assert!(!crate::api::is_neutral_verdict(&regressed.1));
+        assert!(!crate::api::is_neutral_verdict(&improved.1));
         assert!(!crate::api::keep(None, Some(&scores(1.0)), 0.02).0);
+    }
+
+    #[test]
+    fn an_unmeasured_variant_does_not_land_but_a_lockfile_only_change_does() {
+        let scores = |total: f64| crate::api::Scores {
+            total,
+            ..Default::default()
+        };
+        let pair = |skipped: Option<&str>| crate::api::MeasuredPair {
+            base: scores(0.5),
+            variant: scores(0.5),
+            scope: Default::default(),
+            skipped: skipped.map(str::to_string),
+        };
+        let lockfile = crate::api::keep_pair(&pair(Some(crate::api::LOCKFILE_ONLY)), 0.02);
+        assert_eq!(
+            lockfile,
+            (true, crate::api::LOCKFILE_ONLY_VERDICT.to_string()),
+            "nothing to measure and no hypothesis to prove: the change lands"
+        );
+        let unmeasured = crate::api::keep_pair(&pair(Some("measuring deferred")), 0.02);
+        assert!(
+            !unmeasured.0
+                && unmeasured.1
+                    == "neutral (measuring deferred: the variant was not measured, so the branch is not landed)",
+            "{unmeasured:?}"
+        );
+        assert!(crate::api::is_neutral_verdict(&unmeasured.1));
+        let measured = crate::api::keep_pair(&pair(None), 0.02);
+        assert!(
+            !measured.0 && measured.1.starts_with("neutral"),
+            "{measured:?}"
+        );
     }
 
     #[test]
@@ -587,20 +635,20 @@ mod tests {
             Some(&scores(0.51, Some(0.5))),
             0.02,
         );
-        assert!(flat.0 && flat.1.starts_with("neutral"), "{flat:?}");
+        assert!(!flat.0 && flat.1.starts_with("neutral"), "{flat:?}");
         let fell = crate::api::keep(
             Some(&scores(0.5, Some(1.0))),
             Some(&scores(0.51, Some(0.0))),
             0.02,
         );
-        assert!(fell.0 && fell.1.starts_with("neutral"), "{fell:?}");
+        assert!(!fell.0 && fell.1.starts_with("neutral"), "{fell:?}");
         let unmeasured = crate::api::keep(
             Some(&scores(0.5, None)),
             Some(&scores(0.51, Some(1.0))),
             0.02,
         );
         assert!(
-            unmeasured.0 && unmeasured.1.starts_with("neutral"),
+            !unmeasured.0 && unmeasured.1.starts_with("neutral"),
             "a check that only the variant ran proves nothing: {unmeasured:?}"
         );
         let regressed = crate::api::keep(
@@ -627,9 +675,11 @@ mod tests {
         assert_eq!(archived.outcome(), ArchiveOutcome::Improved);
         let mut tied = archived.clone();
         tied.fixtures.variant.as_mut().unwrap().card_check = Some(0.5);
+        tied.kept = false;
         assert_eq!(tied.outcome(), ArchiveOutcome::Neutral);
         let mut without = archived;
         without.fixtures.variant = None;
+        without.kept = false;
         assert_eq!(without.outcome(), ArchiveOutcome::Neutral);
     }
 
@@ -652,14 +702,19 @@ mod tests {
         );
         assert_eq!(archived(0.5, 1.0, true).outcome(), ArchiveOutcome::Improved);
         assert_eq!(
-            archived(0.5, 0.625, true).outcome(),
+            archived(0.5, 0.625, false).outcome(),
             ArchiveOutcome::Neutral,
-            "a kept change inside the tolerance is a tie, not an improvement"
+            "a change inside the tolerance is a tie, not an improvement; it is archived unkept"
         );
         assert_eq!(
-            archived(0.875, 0.875, true).outcome(),
+            archived(0.875, 0.875, false).outcome(),
             ArchiveOutcome::Neutral,
             "pass/fail fixtures tie exactly"
+        );
+        assert_eq!(
+            archived(0.5, 0.625, true).outcome(),
+            ArchiveOutcome::Neutral,
+            "a tie archived as kept before ties stopped landing is still a tie, not an improvement"
         );
         assert_eq!(
             archived(0.5, 0.125, false).outcome(),
@@ -667,8 +722,13 @@ mod tests {
         );
         assert_eq!(
             archived(0.5, 1.0, false).outcome(),
-            ArchiveOutcome::Discarded,
-            "the stored kept flag decides, not the scores alone"
+            ArchiveOutcome::Neutral,
+            "a row the rule did not keep is never an improvement, whatever its scores say"
+        );
+        assert_eq!(
+            archived(0.5, 0.125, true).outcome(),
+            ArchiveOutcome::Neutral,
+            "a kept row is never a discard"
         );
         for (outcome, label) in [
             (ArchiveOutcome::Improved, "improved"),
@@ -805,7 +865,8 @@ mod tests {
             assert!(err.to_string().contains("Keep rule"));
         }
         assert_eq!(count_rows(&s, "evolution_archive"), 1);
-        // A tie on a real hypothesis is a kept row under the no-regression rule.
+        // A tie on a real hypothesis may still be archived as kept (rows from
+        // before ties stopped landing have that shape); it is neutral.
         let tie = ArchiveRow {
             project: "demo".into(),
             hypothesis: "one variable".into(),
@@ -819,6 +880,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(crate::api::archive_row(&s, tie).unwrap(), "B-002");
+        let archived = list_archive(&s, "demo").unwrap();
+        let tie_row = archived.iter().find(|r| r.id == "B-002").unwrap();
+        assert_eq!(tie_row.outcome(), ArchiveOutcome::Neutral);
         let mut discarded = row;
         discarded.kept = false;
         discarded.note = "not kept".into();

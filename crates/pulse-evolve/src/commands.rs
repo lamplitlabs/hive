@@ -1219,7 +1219,7 @@ fn run_evolve_sub(c: &mut pulse_cli::Context, sub: &str, args: &[String]) -> Res
                 print_lineage(&mut *c.out, &tree);
                 writeln!(
                     c.out,
-                    "Archive: {} rows, {} kept ({} improved, {} neutral); only improvements earn cmp",
+                    "Archive: {} rows, {} kept, {} improved, {} neutral (ties, not landed); only improvements earn cmp",
                     summary.rows, summary.kept, summary.improved, summary.neutral
                 )?;
                 writeln!(

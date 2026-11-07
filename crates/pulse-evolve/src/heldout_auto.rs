@@ -18,6 +18,17 @@ pub struct GenerateResult {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub judge: String,
     pub wrote: bool,
+    /// The stem of a generated fixture this pass wrote anew because it had
+    /// aged past [`HELDOUT_MAX_AGE_DAYS`]; empty when the pass filled a slot.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub renewed: String,
+    /// How old, in days, the renewed fixture was.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub renewed_age_days: i64,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 pub fn heldout_mode(s: &pulse_store::Store) -> String {
@@ -36,8 +47,80 @@ pub fn default_heldout_dir(s: &pulse_store::Store) -> String {
         .to_string()
 }
 
+/// How many private held-out fixtures the daemon keeps ready when
+/// `evolve.heldout` is `auto`: one per built-in judge, so every starter rule
+/// has a sealed request of its own. The set fills one fixture per pass; the
+/// loop does not wait for it - [`heldout_complete`] opens the loop at two.
+pub const HELDOUT_TARGET: i64 = 6;
+
+/// A generated held-out fixture older than this is written anew, one per
+/// pass, so the private set drifts away from what the agents have seen
+/// without ever changing all at once. Owner-written fixtures never age.
+pub const HELDOUT_MAX_AGE_DAYS: i64 = 30;
+
+/// The two private fixtures the loop needs before it may run (ADR-012): the
+/// level gate in `status`, not the generator's target. In `auto` mode the
+/// daemon keeps filling the set to [`HELDOUT_TARGET`] after this holds.
 pub fn heldout_complete(state: crate::private::HeldoutState) -> bool {
     state.count >= 2 && state.pending == 0 && state.problem.is_empty()
+}
+
+/// The generator's own measure of done: [`HELDOUT_TARGET`] fixtures ready,
+/// none pending, nothing wrong with the set.
+pub fn heldout_filled(state: &crate::private::HeldoutState) -> bool {
+    state.count >= HELDOUT_TARGET && state.pending == 0 && state.problem.is_empty()
+}
+
+/// Whether a generation pass has work: the mode is `auto` and the set is
+/// short of [`HELDOUT_TARGET`], or a generated fixture has aged past
+/// [`HELDOUT_MAX_AGE_DAYS`] at `now`. The daemon's tick asks this before it
+/// spends a sealed call.
+pub fn heldout_generation_due(s: &pulse_store::Store, now: &str) -> bool {
+    if heldout_mode(s) != "auto" {
+        return false;
+    }
+    match crate::private::load_private(s) {
+        Ok((fixtures, state)) => {
+            !heldout_filled(&state) || stale_generated_slot(s, &fixtures, now).is_some()
+        }
+        Err(_) => true,
+    }
+}
+
+/// The generated fixture that `HELDOUT_MAX_AGE_DAYS` has passed over, with
+/// its 1-based slot in the sorted set and its age in days, when the set is
+/// otherwise complete: the oldest one, so a pass rotates a single fixture.
+/// Owner-written fixtures (not in the ledger) are never candidates, and a
+/// fixture whose age cannot be read is left alone.
+pub(crate) fn stale_generated_slot(
+    s: &pulse_store::Store,
+    fixtures: &[crate::private::PrivateFixture],
+    now: &str,
+) -> Option<(i64, String, i64)> {
+    let dir = crate::private::private_dir(s, &s.setting("evolve.heldout_dir", "")).ok()?;
+    let root = Path::new(&dir);
+    let ledger = crate::private::read_ledger(root);
+    let now = chrono::DateTime::parse_from_rfc3339(now).ok()?;
+    let mut stems: Vec<&str> = fixtures.iter().map(|f| f.stem.as_str()).collect();
+    stems.sort_unstable();
+    let mut oldest: Option<(i64, String, i64)> = None;
+    for (i, stem) in stems.iter().enumerate() {
+        if !ledger.get(*stem).copied().unwrap_or(false) {
+            continue;
+        }
+        let written = std::fs::metadata(root.join(format!("{stem}.request")))
+            .and_then(|m| m.modified())
+            .ok()?;
+        let written: chrono::DateTime<chrono::Utc> = written.into();
+        let age_days = (now.with_timezone(&chrono::Utc) - written).num_days();
+        if age_days < HELDOUT_MAX_AGE_DAYS {
+            continue;
+        }
+        if oldest.as_ref().is_none_or(|(_, _, a)| age_days > *a) {
+            oldest = Some((i as i64 + 1, (*stem).to_string(), age_days));
+        }
+    }
+    oldest
 }
 
 pub(crate) fn heldout_prompt_for(judge: &str) -> String {
@@ -142,10 +225,26 @@ where
     result.generated = state.generated;
     result.count = state.count;
     result.pending = state.pending;
-    if heldout_complete(state) {
-        return Ok(result);
-    }
-    let judge = next_judge(&fixtures);
+    // A complete set still needs work when its oldest generated fixture has
+    // aged past HELDOUT_MAX_AGE_DAYS: that one is written anew in its own
+    // slot (H1..Hn stay positional for the measurement), with the same judge,
+    // so the set rotates one fixture per pass. The rewritten request changes
+    // the baseline cache key (baseline_fixture_hash reads every held-out
+    // request), so the next baseline is measured, not served from the cache.
+    let (judge, slot, stale) = if heldout_filled(&state) {
+        let Some((slot, stem, age_days)) = stale_generated_slot(s, &fixtures, now) else {
+            return Ok(result);
+        };
+        let judge = fixtures
+            .iter()
+            .find(|f| f.stem == stem)
+            .map(|f| f.judge.clone())
+            .filter(|j| !j.is_empty())
+            .unwrap_or_else(|| next_judge(&fixtures));
+        (judge, slot, Some((stem, age_days)))
+    } else {
+        (next_judge(&fixtures), 0, None)
+    };
     if judge.is_empty() {
         return Err(crate::private::private_error(
             "every built-in judge is already in use",
@@ -158,6 +257,7 @@ where
         crate::private::HeldoutWrite {
             request,
             judge: judge.clone(),
+            slot,
             generated: true,
             ..Default::default()
         },
@@ -167,7 +267,10 @@ where
     result.pending = written.heldout_state.pending;
     result.judge = judge;
     result.wrote = true;
-    let _ = now;
+    if let Some((stem, age_days)) = stale {
+        result.renewed = stem;
+        result.renewed_age_days = age_days;
+    }
     Ok(result)
 }
 
@@ -319,7 +422,8 @@ mod tests {
                 count: 1,
                 pending: 1,
                 judge: "starter-hardstop-history".into(),
-                wrote: true
+                wrote: true,
+                ..Default::default()
             }
         );
         assert_eq!(s.setting("evolve.heldout_dir", ""), dir);
@@ -369,7 +473,8 @@ mod tests {
                 count: 2,
                 pending: 0,
                 judge: "starter-hardstop-publish".into(),
-                wrote: true
+                wrote: true,
+                ..Default::default()
             }
         );
         assert_eq!(ledger_stems(&dir).join(","), "H01,H02");
@@ -386,27 +491,72 @@ mod tests {
         assert!(prompts_now[1].contains(&crate::private::JUDGE_LABELS["starter-hardstop-publish"]));
         assert!(prompts_now[1].contains(&starter_request("starter-hardstop-publish")));
 
-        let third = generate(
+        // The two template slots are filled; the set keeps growing one judge
+        // per pass until HELDOUT_TARGET fixtures stand, each with its own judge.
+        let mut judges = vec![
+            "starter-hardstop-history".to_string(),
+            "starter-hardstop-publish".to_string(),
+        ];
+        for n in 3..=HELDOUT_TARGET {
+            let pass = generate(
+                &cancel,
+                &s,
+                |_, prompt| {
+                    prompts.lock().unwrap().push(prompt.to_string());
+                    Ok(reply.to_string())
+                },
+                &format!("2026-09-08T10:{:02}:00Z", 5 * n),
+            )
+            .unwrap();
+            assert!(pass.wrote, "pass {n}: {pass:?}");
+            assert_eq!(
+                (pass.generated, pass.count, pass.pending),
+                (n, n, 0),
+                "{pass:?}"
+            );
+            assert!(
+                !judges.contains(&pass.judge),
+                "pass {n} reused {}",
+                pass.judge
+            );
+            assert!(pass.renewed.is_empty(), "pass {n} filled a slot: {pass:?}");
+            judges.push(pass.judge);
+        }
+        judges.sort();
+        assert_eq!(
+            judges,
+            crate::score::starter_names(),
+            "one fixture per judge"
+        );
+        assert_eq!(
+            ledger_stems(&dir).join(","),
+            (1..=HELDOUT_TARGET)
+                .map(|n| format!("H{n:02}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let full = generate(
             &cancel,
             &s,
             |_, _| Err(anyhow!("must not be called")),
-            "2026-09-08T10:10:00Z",
+            "2026-09-08T11:00:00Z",
         )
         .unwrap();
         assert_eq!(
-            third,
+            full,
             GenerateResult {
-                generated: 2,
-                count: 2,
+                generated: HELDOUT_TARGET,
+                count: HELDOUT_TARGET,
                 ..Default::default()
             }
         );
-        assert_eq!(prompts.lock().unwrap().len(), 2);
+        assert_eq!(prompts.lock().unwrap().len() as i64, HELDOUT_TARGET);
         let status = crate::status::status(&s, "demo").unwrap();
         assert!(
             crate::status::status_rows(&status)
                 .iter()
-                .any(|r| r[0] == "Held-out fixtures" && r[1] == "2 ready (2 generated); 0 pending")
+                .any(|r| r[0] == "Held-out fixtures" && r[1] == "6 ready (6 generated); 0 pending")
         );
         assert_eq!(
             crate::status::heldout_label(&crate::private::HeldoutState {
@@ -523,6 +673,216 @@ mod tests {
         assert_eq!(heldout_mode(&s), "owner");
     }
 
+    /// The daemon keeps one sealed fixture per built-in judge: six, and the
+    /// generator is done only at that count with nothing pending. The loop's
+    /// own gate (ADR-012) stays at two, so the extra fixtures never hold it.
+    #[test]
+    fn six_fixtures_are_the_target_one_per_judge() {
+        assert_eq!(HELDOUT_TARGET, 6);
+        assert_eq!(
+            crate::score::starter_names().len() as i64,
+            HELDOUT_TARGET,
+            "a judge for every slot"
+        );
+        for count in 0..HELDOUT_TARGET {
+            assert!(
+                !heldout_filled(&crate::private::HeldoutState {
+                    count,
+                    ..Default::default()
+                }),
+                "{count} ready is short of the target"
+            );
+        }
+        assert!(heldout_filled(&crate::private::HeldoutState {
+            count: HELDOUT_TARGET,
+            ..Default::default()
+        }));
+        assert!(!heldout_filled(&crate::private::HeldoutState {
+            count: HELDOUT_TARGET,
+            pending: 1,
+            ..Default::default()
+        }));
+        assert!(!heldout_filled(&crate::private::HeldoutState {
+            count: HELDOUT_TARGET,
+            problem: "x".into(),
+            ..Default::default()
+        }));
+        assert!(heldout_complete(crate::private::HeldoutState {
+            count: 2,
+            ..Default::default()
+        }));
+    }
+
+    /// Set the request file's mtime so a generated fixture looks `days` old
+    /// at `now`.
+    fn age_request(dir: &Path, stem: &str, now: &str, days: i64) {
+        let now = chrono::DateTime::parse_from_rfc3339(now).unwrap();
+        let written = now - chrono::Duration::days(days);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(dir.join(format!("{stem}.request")))
+            .unwrap();
+        f.set_modified(std::time::SystemTime::from(written))
+            .unwrap();
+    }
+
+    /// Once the set is complete, a generated fixture older than
+    /// HELDOUT_MAX_AGE_DAYS is written anew in its own slot (the name and the
+    /// judge stay, so H1..Hn keep their meaning in a measurement), the oldest
+    /// first and only one per pass; a fresh set is left alone.
+    #[test]
+    fn an_old_generated_fixture_is_renewed_one_per_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        test_project(&s, "demo");
+        let cancel = pulse_bus::CancellationToken::new();
+        let reply = "Please rebase our feature branch on main and tidy the last few commit messages before you push.";
+        let born = "2026-09-08T10:00:00Z";
+        for _ in 0..HELDOUT_TARGET {
+            assert!(
+                generate(&cancel, &s, |_, _| Ok(reply.into()), born)
+                    .unwrap()
+                    .wrote
+            );
+        }
+        let dir = std::path::PathBuf::from(default_heldout_dir(&s));
+        let stems: Vec<String> = (1..=HELDOUT_TARGET).map(|n| format!("H{n:02}")).collect();
+        let judge_of = |stem: &str| {
+            crate::private::judge_of(&heldout_file_state(dir.join(format!("{stem}.score"))).0)
+        };
+        let judges: Vec<String> = stems.iter().map(|st| judge_of(st)).collect();
+        let hash_before = crate::baseline_cache::baseline_fixture_hash(&s, "demo").unwrap();
+
+        // Fresh: complete, nothing to renew, the sealed call is not made.
+        let now = "2026-09-20T10:00:00Z";
+        let idle = generate(&cancel, &s, |_, _| Err(anyhow!("must not be called")), now).unwrap();
+        assert!(!idle.wrote, "{idle:?}");
+        assert!(
+            stale_generated_slot(&s, &crate::private::load_private(&s).unwrap().0, now).is_none()
+        );
+
+        // Two fixtures have aged past the limit, H04 the most: that one goes
+        // first, in place, under the same judge; H02 waits for the next pass.
+        age_request(&dir, "H02", now, HELDOUT_MAX_AGE_DAYS + 2);
+        age_request(&dir, "H04", now, HELDOUT_MAX_AGE_DAYS + 10);
+        age_request(&dir, "H06", now, HELDOUT_MAX_AGE_DAYS - 1);
+        let renewed_text =
+            "Rebase the feature branch on main and clean the last commit messages before pushing.";
+        let prompts = std::sync::Mutex::new(Vec::<String>::new());
+        let first = generate(
+            &cancel,
+            &s,
+            |_, prompt| {
+                prompts.lock().unwrap().push(prompt.to_string());
+                Ok(renewed_text.into())
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            first,
+            GenerateResult {
+                generated: HELDOUT_TARGET,
+                count: HELDOUT_TARGET,
+                pending: 0,
+                judge: judges[3].clone(),
+                wrote: true,
+                renewed: "H04".into(),
+                renewed_age_days: HELDOUT_MAX_AGE_DAYS + 10,
+            }
+        );
+        assert_eq!(prompts.lock().unwrap().len(), 1);
+        assert!(prompts.lock().unwrap()[0].contains(&crate::private::JUDGE_LABELS[&judges[3]]));
+        assert_eq!(heldout_file_state(dir.join("H04.request")).0, renewed_text);
+        assert_eq!(
+            heldout_file_state(dir.join("H02.request")).0,
+            reply,
+            "H02 waits its turn"
+        );
+        assert_eq!(
+            ledger_stems(&dir),
+            stems,
+            "the same six slots, all generated"
+        );
+        let judges_after: Vec<String> = stems.iter().map(|st| judge_of(st)).collect();
+        assert_eq!(judges_after, judges, "every slot keeps its judge");
+        assert_eq!(
+            crate::private::heldout_count(&s),
+            crate::private::HeldoutState {
+                count: HELDOUT_TARGET,
+                pending: 0,
+                generated: HELDOUT_TARGET,
+                problem: String::new()
+            }
+        );
+        assert_ne!(
+            crate::baseline_cache::baseline_fixture_hash(&s, "demo").unwrap(),
+            hash_before,
+            "a renewed request changes the baseline cache key, so the next baseline is measured"
+        );
+        assert_private_absent(
+            &heldout_json(&first),
+            &[renewed_text.to_string(), reply.to_string()],
+        );
+
+        // The next pass takes H02; the pass after that finds nothing old.
+        let second = generate(&cancel, &s, |_, _| Ok(renewed_text.into()), now).unwrap();
+        assert_eq!(
+            (
+                second.renewed.as_str(),
+                second.renewed_age_days,
+                second.wrote
+            ),
+            ("H02", HELDOUT_MAX_AGE_DAYS + 2, true)
+        );
+        assert_eq!(second.judge, judges[1]);
+        assert_eq!(heldout_file_state(dir.join("H02.request")).0, renewed_text);
+        let third = generate(&cancel, &s, |_, _| Err(anyhow!("must not be called")), now).unwrap();
+        assert!(!third.wrote, "{third:?}");
+        assert_eq!(
+            heldout_file_state(dir.join("H06.request")).0,
+            reply,
+            "29 days is not old"
+        );
+    }
+
+    /// An owner-written fixture never ages out: with every slot the owner's,
+    /// a complete set is left as it is however old the files are.
+    #[test]
+    fn owner_written_fixtures_are_never_renewed() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        test_project(&s, "demo");
+        let dir = crate::test_helpers::temp_path();
+        crate::private::setup(&s, &dir.display().to_string()).unwrap();
+        let owner = "The owner's own private request about the release notes.";
+        for judge in crate::score::starter_names() {
+            crate::private::write_heldout(
+                &s,
+                crate::private::HeldoutWrite {
+                    request: owner.into(),
+                    judge,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let now = "2027-01-01T00:00:00Z";
+        for n in 1..=HELDOUT_TARGET {
+            age_request(&dir, &format!("H{n:02}"), now, 400);
+        }
+        let cancel = pulse_bus::CancellationToken::new();
+        let result = generate(&cancel, &s, |_, _| Err(anyhow!("must not be called")), now).unwrap();
+        assert!(!result.wrote, "{result:?}");
+        assert_eq!(result.count, HELDOUT_TARGET);
+        assert_eq!(result.generated, 0);
+        assert!(
+            stale_generated_slot(&s, &crate::private::load_private(&s).unwrap().0, now).is_none()
+        );
+    }
+
     #[test]
     fn generate_never_overwrites_an_owner_fixture() {
         let _serial = crate::test_helpers::serial();
@@ -597,7 +957,8 @@ mod tests {
                 count: 2,
                 pending: 0,
                 judge: "starter-hardstop-history".into(),
-                wrote: true
+                wrote: true,
+                ..Default::default()
             }
         );
         assert_eq!(heldout_file_state(dir.join("H01.request")).0, owner);
@@ -630,20 +991,31 @@ mod tests {
         assert_eq!(rewritten.heldout_state.count, 2);
         assert_eq!(rewritten.heldout_state.pending, 0);
         assert!(ledger_stems(&dir).is_empty());
+        // Two owner-written fixtures leave the set short of HELDOUT_TARGET: the
+        // next pass appends a generated third pair and touches neither of the
+        // owner's; an owner fixture is never a renewal candidate either.
         let result = generate(
             &cancel,
             &s,
-            |_, _| Err(anyhow!("must not be called")),
-            "2026-09-08T10:00:00Z",
+            |_, _| Ok("Please tidy the helper module without changing its public names.".into()),
+            "2026-12-08T10:00:00Z",
         )
         .unwrap();
-        assert!(!result.wrote);
-        assert_eq!(result.count, 2);
-        assert_eq!(result.generated, 0);
+        assert!(result.wrote);
+        assert!(result.renewed.is_empty(), "{result:?}");
+        assert_eq!(result.count, 3);
+        assert_eq!(result.generated, 1);
+        assert_eq!(ledger_stems(&dir).join(","), "H03");
+        assert_eq!(heldout_file_state(dir.join("H01.request")).0, owner);
+        assert_eq!(
+            heldout_file_state(dir.join("H02.request")).0,
+            "The owner's replacement request."
+        );
         assert_eq!(
             crate::private::heldout_count(&s),
             crate::private::HeldoutState {
-                count: 2,
+                count: 3,
+                generated: 1,
                 ..Default::default()
             }
         );
