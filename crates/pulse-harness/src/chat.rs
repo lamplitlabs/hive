@@ -1656,10 +1656,14 @@ const PR_TASK: &str = "Open a pull request for the current branch. First see wha
 /// rest.
 const REVIEW_LIMIT: usize = 48 * 1024;
 
+/// A read-only git in `cwd`: GIT_OPTIONAL_LOCKS=0, because the agent or a
+/// background shell may be committing in the same worktree and must never
+/// meet an `index.lock` we took to refresh stat data.
 fn git_in(cwd: &str, args: &[&str]) -> std::result::Result<String, String> {
     let out = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("could not run git: {e}"))?;
@@ -1678,6 +1682,13 @@ fn git_in(cwd: &str, args: &[&str]) -> std::result::Result<String, String> {
 /// `/review [REF]`: what there is to review - the working tree against
 /// HEAD (untracked files named), or this branch since REF - as a heading
 /// and the diff, or why there is nothing.
+///
+/// Read-only like `/diff`: porcelain `git diff` refreshes a stat-stale index
+/// under `index.lock` even with GIT_OPTIONAL_LOCKS=0, so the working tree is
+/// read with plumbing `diff-index` against HEAD (`diff-files` before the
+/// first commit), which never writes the index; `-M` keeps the renames the
+/// porcelain showed. A REF...HEAD range compares two commits and leaves the
+/// working tree (and the index) alone.
 fn review_diff(cwd: &str, reference: &str) -> std::result::Result<(String, String), String> {
     if git_in(cwd, &["rev-parse", "--is-inside-work-tree"]).is_err() {
         return Err(format!(
@@ -1703,12 +1714,17 @@ fn review_diff(cwd: &str, reference: &str) -> std::result::Result<(String, Strin
             Some(format!("{reference}...HEAD")),
         )
     };
-    let mut stat_args = vec!["diff", "--stat"];
-    let mut diff_args = vec!["diff"];
-    if let Some(r) = range.as_deref() {
-        stat_args.push(r);
-        diff_args.push(r);
-    }
+    let (stat_args, diff_args): (Vec<&str>, Vec<&str>) = match range.as_deref() {
+        Some("HEAD") if reference.is_empty() => (
+            vec!["diff-index", "--stat", "-M", "HEAD", "--"],
+            vec!["diff-index", "-p", "-M", "HEAD", "--"],
+        ),
+        Some(r) => (vec!["diff", "--stat", r], vec!["diff", r]),
+        None => (
+            vec!["diff-files", "--stat", "-M"],
+            vec!["diff-files", "-p", "-M"],
+        ),
+    };
     let stat = git_in(cwd, &stat_args)?;
     let diff = git_in(cwd, &diff_args)?;
     let untracked = if reference.is_empty() {
@@ -3348,6 +3364,55 @@ esac
                 .unwrap_err()
                 .starts_with("nothing to review: no changes since HEAD")
         );
+    }
+
+    #[test]
+    fn review_never_rewrites_the_worktree_index() {
+        let dir = tmp();
+        let cwd = dir.path().to_str().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        for (name, body) in [("a.txt", "one\n"), ("old.txt", "kept\n"), ("README", "r\n")] {
+            std::fs::write(dir.path().join(name), body).unwrap();
+        }
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-q", "-m", "one"]);
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+        git(dir.path(), &["mv", "old.txt", "new.txt"]);
+        // An unchanged file whose mtime no longer matches the index: porcelain
+        // `git diff` would refresh it under index.lock.
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path().join("README"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .unwrap();
+        let index = dir.path().join(".git").join("index");
+        let before = std::fs::read(&index).unwrap();
+        let (heading, block) = review_diff(cwd, "").unwrap();
+        assert_eq!(
+            heading,
+            "the working tree against HEAD: 2 files changed, 1 insertion(+)"
+        );
+        assert!(block.contains("old.txt => new.txt"), "{block}");
+        assert!(
+            block.contains("rename from old.txt\nrename to new.txt"),
+            "{block}"
+        );
+        assert!(block.contains(" one\n+two"), "{block}");
+        assert!(!block.contains("README"), "{block}");
+        assert!(
+            std::fs::read(&index).unwrap() == before,
+            "/review rewrote the index"
+        );
+        // Before the first commit: the working tree against the index.
+        let fresh = tmp();
+        git(fresh.path(), &["init", "-q"]);
+        std::fs::write(fresh.path().join("b.txt"), "one\n").unwrap();
+        git(fresh.path(), &["add", "b.txt"]);
+        std::fs::write(fresh.path().join("b.txt"), "two\n").unwrap();
+        let (heading, block) = review_diff(fresh.path().to_str().unwrap(), "").unwrap();
+        assert!(heading.contains("1 file changed"), "{heading}");
+        assert!(block.contains("-one\n+two"), "{block}");
     }
 
     #[test]
