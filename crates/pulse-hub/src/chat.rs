@@ -368,8 +368,7 @@ impl Handler {
                 .artifacts_dir(id)
                 .join(pulse_harness::report::PAGE)
                 .is_file()
-            && let Err(e) =
-                pulse_runner::work_report::session(store, id, &chats.artifacts_dir(id))
+            && let Err(e) = pulse_runner::work_report::session(store, id, &chats.artifacts_dir(id))
         {
             eprintln!("session {id}: the report page could not be built: {e:#}");
         }

@@ -279,8 +279,10 @@ pub fn build_full(dir: &Path, facts: &Facts) -> Check {
         Ok(()) => c.page = true,
         Err(e) => {
             let _ = std::fs::remove_file(&tmp);
-            c.problems
-                .push(format!("{PAGE} could not be written in {}: {e}", dir.display()));
+            c.problems.push(format!(
+                "{PAGE} could not be written in {}: {e}",
+                dir.display()
+            ));
         }
     }
     c
@@ -769,7 +771,9 @@ const FILES_SHOWN: usize = 80;
 
 /// The work's commits and the files they changed.
 fn changed_html(f: &Facts) -> String {
-    let mut s = String::from("  <section id=\"changed\">\n    <h2>What changed</h2>\n    <div class=\"change\">\n");
+    let mut s = String::from(
+        "  <section id=\"changed\">\n    <h2>What changed</h2>\n    <div class=\"change\">\n",
+    );
     if !f.commits.is_empty() {
         s.push_str(&format!(
             "      <h3>{}</h3>\n      <ol class=\"commits\">\n{}      </ol>\n",
@@ -1200,12 +1204,26 @@ mod tests {
             summary: "Runs record `tokens` and cost.".into(),
             state: "Merged".into(),
             status: "Merged into main as pull request #125.".into(),
-            about: vec![("Agent".into(), "borealis-28".into()), ("Cost".into(), String::new())],
-            links: vec![("Pull request #125".into(), "https://github.com/o/r/pull/125".into())],
+            about: vec![
+                ("Agent".into(), "borealis-28".into()),
+                ("Cost".into(), String::new()),
+            ],
+            links: vec![(
+                "Pull request #125".into(),
+                "https://github.com/o/r/pull/125".into(),
+            )],
             commits: vec![("a4c067b".into(), "runner: runs record <cost>".into())],
             files: vec![
-                FileChange { path: "crates/run.rs".into(), added: Some(12), removed: Some(3) },
-                FileChange { path: "web/shot.png".into(), added: None, removed: None },
+                FileChange {
+                    path: "crates/run.rs".into(),
+                    added: Some(12),
+                    removed: Some(3),
+                },
+                FileChange {
+                    path: "web/shot.png".into(),
+                    added: None,
+                    removed: None,
+                },
             ],
             checks: vec!["Verified: `cargo test`".into()],
             notes: vec!["RSI B: stopped by a restart".into()],
@@ -1221,7 +1239,10 @@ mod tests {
         let c = build_full(&dir, &facts());
         assert!(c.page, "{c:?}");
         let html = std::fs::read_to_string(dir.join(PAGE)).unwrap();
-        assert!(html.contains("<title>Runs record token cost</title>"), "{html}");
+        assert!(
+            html.contains("<title>Runs record token cost</title>"),
+            "{html}"
+        );
         assert!(html.contains("<span class=\"state ok\">Merged</span>Task TASK-083"));
         assert!(html.contains("Runs record <code>tokens</code> and cost."));
         assert!(html.contains("<li>Agent <b>borealis-28</b></li>"));
@@ -1229,7 +1250,9 @@ mod tests {
         assert!(!html.contains("Cost <b>"));
         assert!(html.contains("<li><b>1</b> commit</li><li><b>2</b> files</li>"));
         assert!(html.contains("<code>a4c067b</code> runner: runs record &lt;cost&gt;"));
-        assert!(html.contains("<span class=\"add\">+12</span> <span class=\"del\">&minus;3</span>"));
+        assert!(
+            html.contains("<span class=\"add\">+12</span> <span class=\"del\">&minus;3</span>")
+        );
         assert!(html.contains("<td class=\"add\">binary</td>"));
         assert!(html.contains("href=\"https://github.com/o/r/pull/125\""));
         assert!(html.contains("Also part of this work:"));
@@ -1253,7 +1276,10 @@ mod tests {
             r#"{"title":"Owner row","summary":"The row fits.","status":"On the branch.","checks":["`npm test`: 3 passed"],
                 "changes":[{"title":"Name","was":"cut","now":"whole","before":"before.png","after":"after.png"}]}"#,
         );
-        assert_eq!(loose_pictures(dir, read_manifest(dir).unwrap().as_ref()), vec!["extra shot.png"]);
+        assert_eq!(
+            loose_pictures(dir, read_manifest(dir).unwrap().as_ref()),
+            vec!["extra shot.png"]
+        );
         let c = build_full(dir, &facts());
         assert!(c.page && c.shows_change(), "{c:?}");
         let html = std::fs::read_to_string(dir.join(PAGE)).unwrap();
@@ -1268,7 +1294,10 @@ mod tests {
         assert!(html.contains("src=\"extra%20shot.png\""));
         assert!(!html.contains("notes.txt"));
         assert!(html.contains("and the agent's <code>report.json</code>"));
-        assert!(html.contains("<a href=\"#pictures\">More screenshots</a>") || !html.contains("nav class"));
+        assert!(
+            html.contains("<a href=\"#pictures\">More screenshots</a>")
+                || !html.contains("nav class")
+        );
     }
 
     #[test]

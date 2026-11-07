@@ -50,11 +50,27 @@ struct Run {
 
 fn job_facts(s: &pulse_store::Store, job_id: &str) -> Result<Facts> {
     let conn = s.conn()?;
-    let (project, kind, title, source, status, result): (String, String, String, String, String, String) = conn
+    let (project, kind, title, source, status, result): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = conn
         .query_row(
             "SELECT project, kind, title, source, status, result FROM jobs WHERE id = ?1",
             [job_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| anyhow!("no job {job_id}"))?;
@@ -88,7 +104,9 @@ fn job_facts(s: &pulse_store::Store, job_id: &str) -> Result<Facts> {
     let task = pulse_store::task_source_id(&source).map(str::to_string);
     let task_title = match &task {
         Some(id) => conn
-            .query_row("SELECT title FROM tasks WHERE id = ?1", [id], |r| r.get::<_, String>(0))
+            .query_row("SELECT title FROM tasks WHERE id = ?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
             .optional()?
             .unwrap_or_default(),
         None => String::new(),
@@ -173,7 +191,9 @@ fn session_facts(s: &pulse_store::Store, id: &str) -> Result<Facts> {
     let conn = s.conn()?;
     let messages = s.chat_messages(id, 0).unwrap_or_default();
     let found = if row.branch.is_empty() {
-        landings(&conn, id, |d| d.get("conversation").and_then(Value::as_str) == Some(id))?
+        landings(&conn, id, |d| {
+            d.get("conversation").and_then(Value::as_str) == Some(id)
+        })?
     } else {
         landings(&conn, &row.branch, |d| {
             d.get("conversation").and_then(Value::as_str) == Some(id)
@@ -209,7 +229,11 @@ fn session_facts(s: &pulse_store::Store, id: &str) -> Result<Facts> {
         "SELECT title, status, note FROM conversations WHERE parent = ?1 AND id != ?1 ORDER BY created_at",
     )?;
     for sub in subs.query_map([id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })? {
         let (title, status, note) = sub?;
         let word = match status.as_str() {
@@ -222,11 +246,19 @@ fn session_facts(s: &pulse_store::Store, id: &str) -> Result<Facts> {
             }
             _ => "open",
         };
-        notes.push(format!("Sub-session \u{201c}{}\u{201d}: {word}.", untitled(&title)));
+        notes.push(format!(
+            "Sub-session \u{201c}{}\u{201d}: {word}.",
+            untitled(&title)
+        ));
     }
-    let mut tasks = conn.prepare("SELECT id, title, status FROM tasks WHERE created_by = ?1 ORDER BY id")?;
+    let mut tasks =
+        conn.prepare("SELECT id, title, status FROM tasks WHERE created_by = ?1 ORDER BY id")?;
     for task in tasks.query_map([id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })? {
         let (task_id, title, status) = task?;
         notes.push(format!(
@@ -294,7 +326,10 @@ impl Landing {
     }
 
     fn number(&self) -> i64 {
-        self.detail.get("number").and_then(Value::as_i64).unwrap_or(0)
+        self.detail
+            .get("number")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
     }
 }
 
@@ -311,7 +346,11 @@ fn landings(
          ORDER BY seq DESC LIMIT 40",
     )?;
     let rows = stmt.query_map([format!("%{needle}%")], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
@@ -425,7 +464,10 @@ fn landed_state(l: &Landing, default_branch: &str) -> Option<(String, String)> {
         "land.landed" => ("Landed", format!("Landed on {into}{}.", on(&l.at))),
         "land.pr" => (
             "In review",
-            format!("Pull request #{number} is open for review, since{}.", on(&l.at).replacen(" on", "", 1)),
+            format!(
+                "Pull request #{number} is open for review, since{}.",
+                on(&l.at).replacen(" on", "", 1)
+            ),
         ),
         "land.held" => {
             let why = [l.str("reason"), l.str("note")]
@@ -437,7 +479,11 @@ fn landed_state(l: &Landing, default_branch: &str) -> Option<(String, String)> {
                 if why.is_empty() {
                     format!("Held{}.", on(&l.at))
                 } else {
-                    format!("Held{}: {}.", on(&l.at), cap(why.trim_end_matches('.'), 240))
+                    format!(
+                        "Held{}: {}.",
+                        on(&l.at),
+                        cap(why.trim_end_matches('.'), 240)
+                    )
                 },
             )
         }
@@ -464,7 +510,14 @@ fn job_commits(repo: &str, job_id: &str) -> (Vec<(String, String)>, Vec<FileChan
     let grep = format!("--grep=^Pulse-Job: {id}$");
     let out = crate::util::git(
         repo,
-        &["log", "--all", "--reverse", "-E", &grep, "--format=%h%x09%H%x09%s"],
+        &[
+            "log",
+            "--all",
+            "--reverse",
+            "-E",
+            &grep,
+            "--format=%h%x09%H%x09%s",
+        ],
     );
     if !out.ok() {
         return (Vec::new(), Vec::new());
@@ -508,12 +561,21 @@ fn session_commits(
 ) -> (Vec<(String, String)>, Vec<FileChange>) {
     let git = |args: &[&str]| crate::util::git(repo, args);
     let has_branch = !branch.is_empty()
-        && git(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok();
+        && git(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .ok();
     let (base, head) = if has_branch {
         let base = if !from.is_empty() && git(&["merge-base", "--is-ancestor", from, branch]).ok() {
             from.to_string()
         } else {
-            git(&["merge-base", default_branch, branch]).stdout.trim().to_string()
+            git(&["merge-base", default_branch, branch])
+                .stdout
+                .trim()
+                .to_string()
         };
         (base, branch.to_string())
     } else if number > 0 {
@@ -540,7 +602,12 @@ fn session_commits(
     if base.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let log = git(&["log", "--reverse", "--format=%h%x09%s", &format!("{base}..{head}")]);
+    let log = git(&[
+        "log",
+        "--reverse",
+        "--format=%h%x09%s",
+        &format!("{base}..{head}"),
+    ]);
     let commits = log
         .stdout
         .lines()
@@ -586,13 +653,11 @@ fn numstat(out: &str, files: &mut Vec<FileChange>, index: &mut BTreeMap<String, 
 /// The session's last word: what its agent said when it finished it, or the
 /// first paragraph of its last reply.
 fn session_summary(messages: &[ConversationMessage]) -> String {
-    if let Some(m) = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "note" && m.extra.get("closed").and_then(Value::as_str) == Some("agent"))
-        && let Some(rest) = m
-            .content
-            .strip_prefix(pulse_harness::conversation::FINISHED_BY_AGENT_LINE)
+    if let Some(m) = messages.iter().rev().find(|m| {
+        m.role == "note" && m.extra.get("closed").and_then(Value::as_str) == Some("agent")
+    }) && let Some(rest) = m
+        .content
+        .strip_prefix(pulse_harness::conversation::FINISHED_BY_AGENT_LINE)
         && !rest.trim().is_empty()
     {
         return rest.trim().to_string();
@@ -646,7 +711,11 @@ fn cap(text: &str, max: usize) -> String {
 fn capital(word: &str) -> String {
     let mut c = word.chars();
     match c.next() {
-        Some(f) => f.to_uppercase().chain(c).collect::<String>().replace('_', " "),
+        Some(f) => f
+            .to_uppercase()
+            .chain(c)
+            .collect::<String>()
+            .replace('_', " "),
         None => String::new(),
     }
 }
@@ -709,7 +778,11 @@ fn took(seconds: f64) -> String {
 
 fn built_at(s: &pulse_store::Store) -> String {
     chrono::DateTime::parse_from_rfc3339(&s.now())
-        .map(|t| t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|t| {
+            t.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%d %H:%M UTC")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -743,7 +816,12 @@ mod tests {
         let _serial = serial();
         let s = new_store();
         let (_p, repo) = new_repo(&s);
-        commit(&repo, "notes.md", "one\ntwo\n", "docs: notes\n\nPulse-Agent: fjord\nPulse-Job: job-1\n");
+        commit(
+            &repo,
+            "notes.md",
+            "one\ntwo\n",
+            "docs: notes\n\nPulse-Agent: fjord\nPulse-Job: job-1\n",
+        );
         commit(&repo, "other.md", "x\n", "unrelated\n\nPulse-Job: job-10\n");
         let conn = s.conn().unwrap();
         task(&conn, "TASK-9", "Write the notes", "owner");
@@ -881,7 +959,9 @@ mod tests {
         assert!(html.contains("session: a"));
         assert!(html.contains("<code>a.txt</code></td><td class=\"add\">+2</td>"));
         assert!(html.contains("Sub-session \u{201c}RSI A\u{201d}: finished."));
-        assert!(html.contains("Sub-session \u{201c}RSI B\u{201d}: stopped by a restart before it finished."));
+        assert!(html.contains(
+            "Sub-session \u{201c}RSI B\u{201d}: stopped by a restart before it finished."
+        ));
         assert!(html.contains("TASK-80 \u{201c}Judge fixtures\u{201d}: done."));
         assert!(html.contains("<li>Turns <b>7</b></li>"));
         assert!(html.contains("<li>Took <b>4h 38m</b></li>"));
@@ -891,14 +971,20 @@ mod tests {
         let tmp2 = tempfile::tempdir().unwrap();
         session(&s, "chat-2", tmp2.path()).unwrap();
         let html = page(tmp2.path());
-        assert!(html.contains("<span class=\"state wait\">Stopped</span>Sub-session"), "{html}");
+        assert!(
+            html.contains("<span class=\"state wait\">Stopped</span>Sub-session"),
+            "{html}"
+        );
         assert!(html.contains("send it \u{201c}continue\u{201d}"));
     }
 
     #[test]
     fn summaries_lose_their_outcome_code_and_times_read_short() {
         assert_eq!(clean_summary("SUMMARY: done - fixed it"), "fixed it");
-        assert_eq!(clean_summary("nothing-to-do - already there"), "already there");
+        assert_eq!(
+            clean_summary("nothing-to-do - already there"),
+            "already there"
+        );
         assert_eq!(clean_summary("blocked: needs a key"), "needs a key");
         assert_eq!(clean_summary("donetastic work"), "donetastic work");
         assert_eq!(took(45.0), "45s");

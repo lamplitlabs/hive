@@ -700,7 +700,10 @@ mod tests {
         assert_eq!(names, vec!["report.html"], "{raw}");
         let dir = pulse_harness::artifacts::job_artifacts_dir(&s.home, "job-one");
         let built = std::fs::read_to_string(dir.join("report.html")).unwrap();
-        assert!(built.contains("<title>Improve the project</title>"), "{built}");
+        assert!(
+            built.contains("<title>Improve the project</title>"),
+            "{built}"
+        );
         assert!(built.contains("Built by PULSE"), "{built}");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("shot.png"), b"png").unwrap();
@@ -779,8 +782,14 @@ mod tests {
         assert_eq!(resp.headers()["x-frame-options"], "SAMEORIGIN");
         // The report is PULSE's, built again as it is opened.
         let page = resp.text().unwrap();
-        assert!(page.contains("<title>Improve the project</title>"), "{page}");
-        assert!(page.contains("<span class=\"state bad\">Failed</span>Improve job"), "{page}");
+        assert!(
+            page.contains("<title>Improve the project</title>"),
+            "{page}"
+        );
+        assert!(
+            page.contains("<span class=\"state bad\">Failed</span>Improve job"),
+            "{page}"
+        );
         let resp = client
             .get(format!(
                 "{}/api/v1/jobs/job-one/artifacts/data.bin",
