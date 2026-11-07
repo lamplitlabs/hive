@@ -365,8 +365,9 @@ permanently retired names are unchanged.
 A run this daemon supervises on a hand is watched another way, since a hand
 does not report the run's progress back: while the run goes, the runner probes
 the machine every five minutes over the connection the run already shares
-(`probe`, two minutes to answer; any answer counts, a failing one too). Three
-probes in a row without one - a quarter of an hour of silence - end the run:
+(`probe`, five minutes to answer; any answer counts, a failing one too). A
+busy machine is slow, not silent, so the bar is high: three probes in a row
+without an answer - a quarter to half an hour of silence - end the run:
 it is closed as `lost` with the summary *the machine NAME stopped answering:
 3 probes in a row over N min went unanswered; the job returns to the queue*,
 its job is queued again as above, and the machine turns `unreachable` with

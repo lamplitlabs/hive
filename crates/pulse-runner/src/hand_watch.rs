@@ -9,11 +9,15 @@
 //! [`PROBE_EVERY`] over the connection the run already shares (from behind
 //! the hub's NAT a fresh connect is often refused while the open one works,
 //! executor.rs `ssh_options`). Any answer counts, a failing one too: only a
-//! probe that times out or cannot reach the machine is a miss. After
-//! [`PROBES_MISSED`] misses in a row the run is ended - it reads as lost and
-//! its job goes back to the queue (run.rs) - the machine is marked
-//! unreachable, so nothing new is sent there until the runner's probe
-//! passes again, and the run log and the bus (`executor.silent`) say why.
+//! probe that cannot reach the machine or gets no answer within
+//! [`PROBE_TIMEOUT`] is a miss. A busy machine is slow, not silent - the
+//! same day tundra-29's run on that hand ended after two hours on a machine
+//! two short probes could not get an answer from - so the bar is high: after
+//! [`PROBES_MISSED`] misses in a row, a quarter to half an hour without one
+//! answer, the run is ended - it reads as lost and its job goes back to the
+//! queue (run.rs) - the machine is marked unreachable, so nothing new is sent
+//! there until the runner's probe passes again, and the run log and the bus
+//! (`executor.silent`) say why.
 use crate::exec::RunLog;
 use crate::executor::LOCAL_EXECUTOR;
 use crate::util::{Row, event_at, exec1, plus_minutes, trunc};
@@ -23,10 +27,11 @@ use std::time::{Duration, Instant};
 
 /// How often a busy hand is probed.
 pub(crate) const PROBE_EVERY: Duration = Duration::from_secs(5 * 60);
-/// Misses in a row that end the run: about a quarter of an hour of silence.
+/// Misses in a row that end the run.
 pub(crate) const PROBES_MISSED: u32 = 3;
-/// How long one probe may take; the run's own start allows the same.
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long one probe may take before it is a miss: a loaded two-core hand
+/// building and testing the workspace still answers a probe well within it.
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The watch's pace, so a test can run it in milliseconds.
 #[derive(Debug, Clone, Copy)]
