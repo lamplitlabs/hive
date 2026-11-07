@@ -3078,7 +3078,7 @@ pub(crate) fn held_landings(
 ) -> Vec<String> {
     let rows = query_rows_dyn(
         q,
-        "SELECT subject FROM events WHERE action = 'env.held' AND json_extract(detail, '$.project') = ? ORDER BY seq DESC",
+        "SELECT subject FROM events WHERE action = 'env.held' AND json_valid(detail) AND json_extract(detail, '$.project') = ? ORDER BY seq DESC",
         &[&slug],
     )
     .unwrap_or_default();

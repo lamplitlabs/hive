@@ -472,7 +472,7 @@ fn landings_of(conn: &rusqlite::Connection, work: &TaskWork) -> Result<Vec<LandE
         let marks = vec!["?"; work.jobs.len()].join(",");
         let mut stmt = conn.prepare(&format!(
             "SELECT seq, at, actor, action, detail FROM events \
-             WHERE action = 'land.landed' AND json_extract(detail, '$.job') IN ({marks}) ORDER BY seq"
+             WHERE action = 'land.landed' AND json_valid(detail) AND json_extract(detail, '$.job') IN ({marks}) ORDER BY seq"
         ))?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(work.jobs.iter()), |r| {

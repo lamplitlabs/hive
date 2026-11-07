@@ -58,6 +58,21 @@ pub const RUNNER_DDL: &[&str] = &[
     // Likewise for the questions one project addresses to another: the
     // open-asks query in `asks.rs` repeats these terms.
     r####"CREATE INDEX IF NOT EXISTS posts_asking ON posts (kind, date DESC) WHERE json_valid(extra) AND json_extract(extra, '$.projects') IS NOT NULL"####,
+    // The ledger's hot JSON reads: a project's landings and verify times
+    // (the lease's lane count, `jobs::project_lanes`, on every lease), a
+    // job's landing, deferral and recovery events, and a recovery chain by
+    // its root. Without these each one walked every event of its action and
+    // parsed the detail (2,600 landings, 4,000 recoveries on the measured
+    // store of 515,000 events). Partial like `posts_mentioning`: only rows
+    // whose detail is JSON naming the field are indexed, so a query uses one
+    // when it repeats `json_valid(detail)` with an equality on the field.
+    r####"CREATE INDEX IF NOT EXISTS events_detail_project ON events (action, json_extract(detail, '$.project')) WHERE json_valid(detail) AND json_extract(detail, '$.project') IS NOT NULL"####,
+    r####"CREATE INDEX IF NOT EXISTS events_detail_job ON events (action, json_extract(detail, '$.job')) WHERE json_valid(detail) AND json_extract(detail, '$.job') IS NOT NULL"####,
+    r####"CREATE INDEX IF NOT EXISTS events_detail_root ON events (action, json_extract(detail, '$.root')) WHERE json_valid(detail) AND json_extract(detail, '$.root') IS NOT NULL"####,
+    // The worker pick behind every lease orders the free workers by their
+    // last `job.lease` (`run::pick_worker_on`): 0.9 s a pick over 22,000
+    // leases as a walk of the action, 15 ms from this index.
+    r####"CREATE INDEX IF NOT EXISTS events_action_actor ON events (action, actor, seq)"####,
     // The pending-landing scan asks for a project's done jobs with a branch;
     // with branch in the index SQLite answers from the index entries instead
     // of reading each done job's row (brief included) to find none.

@@ -304,6 +304,9 @@ impl Store {
         if let Some(err) = refusal(&rep) {
             return Err(err);
         }
+        // The side file first (archive.rs): its rows are found by the ids
+        // the store's rows still hold.
+        let archived = self.forget_archived(slug, &rep.lead)?;
         let tables: Vec<String> = CASCADE.iter().map(|(t, _)| (*t).to_string()).collect();
         let guards = delete_guards(&tx, &tables)?;
         for (name, _) in &guards {
@@ -362,6 +365,7 @@ impl Store {
                 "lead": rep.lead,
                 "rows": rows,
                 "total": rep.total(),
+                "archived": archived,
             }))?,
         )?;
         tx.commit()?;

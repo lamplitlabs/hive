@@ -334,7 +334,7 @@ pub(crate) fn project_lanes(s: &pulse_store::Store, slug: &str) -> Lanes {
     };
     let mut secs: Vec<i64> = query_rows_dyn(
         &conn,
-        "SELECT CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action IN ('land.landed', 'land.batch') AND json_extract(detail, '$.project') = ? AND json_extract(detail, '$.verify_seconds') IS NOT NULL ORDER BY at DESC, seq DESC LIMIT ?",
+        "SELECT CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action IN ('land.landed', 'land.batch') AND json_valid(detail) AND json_extract(detail, '$.project') = ? AND json_extract(detail, '$.verify_seconds') IS NOT NULL ORDER BY at DESC, seq DESC LIMIT ?",
         &[&slug, &(LANE_SAMPLE as i64)],
     )
     .unwrap_or_default()
