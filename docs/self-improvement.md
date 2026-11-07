@@ -289,7 +289,22 @@ gives the baseline headroom when governance fixtures already score `1.0`:
 `pulse evolve fixture add --project P --name N --metric --scorer 'pulse evolve
 score metric --higher --scale S -- CMD ARGS...'`. The helper takes the last
 number printed by `CMD`; `--higher` scores `min(1, raw/S)`, `--lower` scores
-`S/(S+raw)`, and `--floor F` clamps the final score upward. `pulse evolve
+`S/(S+raw)`, and `--floor F` clamps the final score upward. A metric fixture
+is deterministic and runs once per measurement. A judge-scored fixture - every
+request fixture (the `starter-*` set and your own non-metric ones) and every
+held-out `H*` fixture, whose score depends on a model's answer - runs three
+times per measurement, each run in a fresh clone of the measured commit and a
+fresh measurement home (build caches kept), and the fixture scores the value
+two of the three runs agree on (`1, 1, 0` scores `1`), or their median when
+all three differ (`0, 0.5, 1` scores `0.5`). Baseline and variant are measured
+the same way, so the delta compares like with like; one flip of a single judge
+run no longer lands as progress. The log line ends in the raw runs (`starter-x:
+1.0000 [runs 1, 1, 0]`), each fixture score in the archive keeps them as
+`runs`, and the archive row's note appends `judge runs: baseline NAME 1, 1, 0
+-> 1, ...; variant ...` so a dispute can see what the agreed scores were
+agreed from. The run count is part of the baseline cache key, so a baseline
+cached when judge fixtures ran once is measured again, and the daemon's
+baseline budget counts three runs per judge fixture. `pulse evolve
 status` shows each cached baseline fixture score and a `Headroom` line
 (`none - every fixture scores 1.0 at baseline; add a metric fixture (pulse
 evolve fixture add --metric)` or `N of M fixtures below 1.0`). Fixtures run in

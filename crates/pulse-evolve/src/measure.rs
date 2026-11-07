@@ -464,45 +464,6 @@ fn measure_fixture(
         .join((i + 1).to_string())
         .display()
         .to_string();
-    let fixture_result = (|| -> Result<(f64, String, bool)> {
-        crate::clones::stripped_clone(cancel, repo, commit, &clone, keys)?;
-        fs::create_dir_all(&home)?;
-        crate::process::prepare_measurement_caches(&home)?;
-        fs::create_dir_all(Path::new(&home).join("scratch"))?;
-        if !f.metric {
-            crate::process::seed_provider_logins(&s.home, &home)?;
-            let argv = crate::process::measurement_argv(s, exe, &f.request)?;
-            let mut sink = std::io::sink();
-            let job_cancel = cancel.with_timeout(timeout);
-            crate::process::run_process(
-                &job_cancel,
-                &clone,
-                &crate::process::isolated_env(&home),
-                &argv,
-                &mut sink,
-            )
-            .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
-            if crate::clones::detach_head(cancel, &clone)? {
-                let _ = writeln!(
-                    &mut output,
-                    "[{}/{}] {}: the harness left HEAD on a branch; detached again",
-                    i + 1,
-                    len,
-                    label
-                );
-            }
-            crate::clones::check_clone(cancel, &clone, keys)?;
-            crate::clones::drop_ignored(cancel, &clone)?;
-        }
-        let score_cancel = cancel.with_timeout(timeout);
-        let mut env = scorer_env(&home, commit, exe);
-        if let Some(scope) = scope {
-            env.extend(scope_env(scope, &clone));
-        }
-        score_clone(&score_cancel, &clone, &env, &f.scorer)
-            .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
-    })();
-    let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, i + 1);
     let failed = |output: String, error: anyhow::Error| FixtureResult {
         index: i,
         score: None,
@@ -512,24 +473,98 @@ fn measure_fixture(
         error: Some(error),
         diff_scoped: false,
     };
-    let (value, reason, diff_scoped) = match (fixture_result, clone_cleanup) {
-        (Ok(value), Ok(())) => value,
-        (Err(e), Ok(())) => return failed(output, e),
-        (Ok(_), Err(e)) => {
-            return failed(output, anyhow!("measurement clone cleanup failed: {e}"));
+    // A judge-scored fixture runs JUDGE_RUNS times and counts the score its
+    // runs agree on; a metric (or card) fixture scores the frozen tree
+    // deterministically and runs once.
+    let runs = if f.metric {
+        1
+    } else {
+        crate::dispute::JUDGE_RUNS
+    };
+    let mut measured: Vec<(f64, String, bool)> = Vec::with_capacity(runs);
+    for run in 0..runs {
+        if run > 0 {
+            if let Some(e) = cancel.err() {
+                return failed(output, e.into());
+            }
+            // Every run starts from the measured commit and a home with only
+            // its build caches, so one run's answer never leaks into the next.
+            if let Err(e) = reset_home(&home) {
+                return failed(output, anyhow!("measurement home reset failed: {e}"));
+            }
         }
-        (Err(e), Err(clean)) => {
-            return failed(
-                output,
-                anyhow!("{e}; measurement clone cleanup failed: {clean}"),
-            );
+        let run_result = (|| -> Result<(f64, String, bool)> {
+            crate::clones::stripped_clone(cancel, repo, commit, &clone, keys)?;
+            fs::create_dir_all(&home)?;
+            crate::process::prepare_measurement_caches(&home)?;
+            fs::create_dir_all(Path::new(&home).join("scratch"))?;
+            if !f.metric {
+                crate::process::seed_provider_logins(&s.home, &home)?;
+                let argv = crate::process::measurement_argv(s, exe, &f.request)?;
+                let mut sink = std::io::sink();
+                let job_cancel = cancel.with_timeout(timeout);
+                crate::process::run_process(
+                    &job_cancel,
+                    &clone,
+                    &crate::process::isolated_env(&home),
+                    &argv,
+                    &mut sink,
+                )
+                .map_err(|e| measurement_failure(cancel, label, "harness", e))?;
+                if crate::clones::detach_head(cancel, &clone)? {
+                    let _ = writeln!(
+                        &mut output,
+                        "[{}/{}] {}: the harness left HEAD on a branch; detached again",
+                        i + 1,
+                        len,
+                        label
+                    );
+                }
+                crate::clones::check_clone(cancel, &clone, keys)?;
+                crate::clones::drop_ignored(cancel, &clone)?;
+            }
+            let score_cancel = cancel.with_timeout(timeout);
+            let mut env = scorer_env(&home, commit, exe);
+            if let Some(scope) = scope {
+                env.extend(scope_env(scope, &clone));
+            }
+            score_clone(&score_cancel, &clone, &env, &f.scorer)
+                .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
+        })();
+        let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, i + 1);
+        match (run_result, clone_cleanup) {
+            (Ok(value), Ok(())) => measured.push(value),
+            (Err(e), Ok(())) => return failed(output, e),
+            (Ok(_), Err(e)) => {
+                return failed(output, anyhow!("measurement clone cleanup failed: {e}"));
+            }
+            (Err(e), Err(clean)) => {
+                return failed(
+                    output,
+                    anyhow!("{e}; measurement clone cleanup failed: {clean}"),
+                );
+            }
         }
+    }
+    let run_scores: Vec<f64> = measured.iter().map(|(v, _, _)| *v).collect();
+    let agreed = crate::dispute::agreed_score(&run_scores);
+    // The reason and scope reported are those of a run that scored the
+    // agreed value (the first run when the median is no run's score).
+    let (value, reason, diff_scoped) = measured
+        .iter()
+        .find(|(v, _, _)| *v == agreed)
+        .map(|(_, reason, scoped)| (agreed, reason.clone(), *scoped))
+        .unwrap_or_else(|| (agreed, measured[0].1.clone(), measured[0].2));
+    let runs_shown = if run_scores.len() > 1 {
+        format!(" [runs {}]", crate::dispute::run_values(&run_scores))
+    } else {
+        String::new()
     };
     let scoped = if diff_scoped { " [diff-scoped]" } else { "" };
     if !reason.is_empty() && f.kind != "heldout" && !pulse_store::secret_shaped(&reason) {
         let _ = writeln!(
             &mut output,
-            "[{}/{}] {}: {:.4}{scoped} ({})",
+            "[{}/{}] {}: {:.4}{scoped} ({}){runs_shown}",
             i + 1,
             len,
             label,
@@ -539,7 +574,7 @@ fn measure_fixture(
     } else {
         let _ = writeln!(
             &mut output,
-            "[{}/{}] {}: {:.4}{scoped}",
+            "[{}/{}] {}: {:.4}{scoped}{runs_shown}",
             i + 1,
             len,
             label,
@@ -555,6 +590,11 @@ fn measure_fixture(
             weight: f.weight,
             metric: f.metric,
             note: String::new(),
+            runs: if run_scores.len() > 1 {
+                run_scores
+            } else {
+                Vec::new()
+            },
         }),
         value,
         normalized_weight: f.weight / max_weight,
@@ -562,6 +602,32 @@ fn measure_fixture(
         error: None,
         diff_scoped,
     }
+}
+
+/// Empty a fixture's measurement home between two runs of a judge-scored
+/// fixture, keeping only its build caches (`build/`): the next run gets
+/// fresh provider logins, a fresh scratch directory and none of the state
+/// the previous harness run left behind.
+fn reset_home(home: &str) -> std::io::Result<()> {
+    let entries = match fs::read_dir(home) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_name() == "build" {
+            continue;
+        }
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.is_dir() && !meta.file_type().is_symlink() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Lay the scope out under the measurement root: the changed-file list and,
@@ -850,7 +916,8 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
             "original\n"
         );
         let calls = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(lines(&calls).len(), 4);
+        // Four judge-scored fixtures, each run three times in its own clone.
+        assert_eq!(lines(&calls).len(), 4 * crate::dispute::JUDGE_RUNS);
         let unique: std::collections::BTreeSet<_> = lines(&calls).into_iter().collect();
         assert_eq!(unique.len(), 4);
         for name in unique {
@@ -1020,6 +1087,151 @@ printf 'score: 0.75\n'
         assert_eq!(scores.fixtures[0].score, 0.75);
         assert!(scores.fixtures[0].metric);
         assert_no_clones(&s);
+    }
+
+    /// A scorer that answers the next of `scores` on each call, counting its
+    /// calls in `counter` (outside the clone, which the scorer may not write).
+    fn scripted_scorer(counter: &Path, scores: &[&str]) -> String {
+        let mut cases = String::new();
+        for (i, score) in scores.iter().enumerate() {
+            cases.push_str(&format!("  {}) printf 'score: {score}\\n' ;;\n", i + 1));
+        }
+        format!(
+            "n=$(cat '{c}' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s' \"$n\" > '{c}'\ncase \"$n\" in\n{cases}  *) exit 9 ;;\nesac\n",
+            c = counter.display()
+        )
+    }
+
+    #[test]
+    fn a_metric_fixture_runs_once_and_a_judge_fixture_counts_the_agreed_score() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        let tmp = crate::test_helpers::temp_path();
+        let (metric_calls, agree_calls, median_calls, harness_calls) = (
+            tmp.join("metric"),
+            tmp.join("agree"),
+            tmp.join("median"),
+            tmp.join("harness"),
+        );
+        crate::fixtures::add_fixture(
+            &s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: "metric-count".into(),
+                scorer: scripted_scorer(&metric_calls, &["0.25"]),
+                metric: true,
+                weight: 1.0,
+                actor: "human".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        fixture(
+            &s,
+            "demo",
+            "starter-agree",
+            &scripted_scorer(&agree_calls, &["1", "1", "0"]),
+            1.0,
+        );
+        fixture(
+            &s,
+            "demo",
+            "starter-split",
+            &scripted_scorer(&median_calls, &["0", "0.5", "1"]),
+            1.0,
+        );
+        fake_harness(
+            &s,
+            &format!(
+                "test ! -e \"$PULSE_HOME/scratch/left-behind\"\ntouch \"$PULSE_HOME/scratch/left-behind\"\nprintf '%s\\n' \"$PWD\" >> '{}'",
+                harness_calls.display()
+            ),
+        );
+        let mut out = Vec::new();
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let by_name = |name: &str| {
+            scores
+                .fixtures
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("no {name} in {scores:?}"))
+                .clone()
+        };
+        // (a) A metric fixture is scored once and keeps no runs.
+        assert_eq!(std::fs::read_to_string(&metric_calls).unwrap(), "1");
+        let metric = by_name("metric-count");
+        assert_eq!(metric.score, 0.25);
+        assert!(metric.runs.is_empty());
+        // (b) A judge fixture runs three times: two runs agreeing on 1 score
+        // 1; three different runs score their median.
+        assert_eq!(std::fs::read_to_string(&agree_calls).unwrap(), "3");
+        assert_eq!(std::fs::read_to_string(&median_calls).unwrap(), "3");
+        let agree = by_name("starter-agree");
+        assert_eq!(agree.score, 1.0);
+        assert_eq!(agree.runs, [1.0, 1.0, 0.0]);
+        let split = by_name("starter-split");
+        assert_eq!(split.score, 0.5);
+        assert_eq!(split.runs, [0.0, 0.5, 1.0]);
+        assert!((scores.total - (0.25 + 1.0 + 0.5) / 3.0).abs() < 1e-9);
+        // Only the judge fixtures run the harness, each run from a fresh home.
+        let harness = std::fs::read_to_string(&harness_calls).unwrap();
+        assert_eq!(lines(&harness).len(), 2 * crate::dispute::JUDGE_RUNS);
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("starter-agree: 1.0000 [runs 1, 1, 0]"),
+            "{out}"
+        );
+        assert!(
+            out.contains("starter-split: 0.5000 [runs 0, 0.5, 1]"),
+            "{out}"
+        );
+        assert!(!out.contains("metric-count: 0.2500 [runs"), "{out}");
+        assert_no_clones(&s);
+        // (c) The archive note carries the raw runs behind the agreed scores.
+        let id = crate::api::archive_row(
+            &s,
+            crate::api::ArchiveRow {
+                project: "demo".into(),
+                hypothesis: crate::api::BASELINE_HYPOTHESIS.into(),
+                branch: "main".into(),
+                baseline: Some(scores.clone()),
+                variant: Some(scores.clone()),
+                tolerance: 0.02,
+                kept: true,
+                run_id: "run-baseline".into(),
+                note: "baseline measurement".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let rows = crate::archive::list_archive(&s, "demo").unwrap();
+        let row = rows.iter().find(|r| r.id == id).unwrap();
+        let runs = "starter-agree 1, 1, 0 -> 1, starter-split 0, 0.5, 1 -> 0.5";
+        assert_eq!(
+            row.note,
+            format!("baseline measurement; judge runs: baseline {runs}; variant {runs}")
+        );
+        let archived = row.fixtures.variant.as_ref().unwrap();
+        let agree = archived
+            .fixtures
+            .iter()
+            .find(|f| f.name == "starter-agree")
+            .unwrap();
+        assert_eq!(agree.runs, [1.0, 1.0, 0.0]);
     }
 
     /// A metric fixture that reads the scope the measurement exports and
@@ -1242,6 +1454,7 @@ fi
             weight: 1.0,
             metric: true,
             note: String::new(),
+            runs: Vec::new(),
         };
         // The cached whole-tree baseline holds stale numbers for both; only
         // the diff-scoped one is measured again.
@@ -1348,6 +1561,7 @@ fi
                 weight: 1.0,
                 metric: true,
                 note: String::new(),
+                runs: Vec::new(),
             }],
             total: 0.3,
             ..Default::default()
