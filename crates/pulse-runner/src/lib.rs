@@ -36,6 +36,7 @@ pub mod failure;
 pub(crate) mod forge;
 pub mod gcp;
 pub mod gh_auth;
+pub(crate) mod hand_watch;
 pub mod hands;
 pub mod heartbeat;
 pub mod heldout;

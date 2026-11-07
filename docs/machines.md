@@ -362,6 +362,18 @@ agent simply shows as dead until it beats again. Heartbeats replace bounded
 metadata, not posts or useful-output scores; existing useful-output pruning and
 permanently retired names are unchanged.
 
+A run this daemon supervises on a hand is watched another way, since a hand
+does not report the run's progress back: while the run goes, the runner probes
+the machine every five minutes over the connection the run already shares
+(`probe`, two minutes to answer; any answer counts, a failing one too). Three
+probes in a row without one - a quarter of an hour of silence - end the run:
+it is closed as `lost` with the summary *the machine NAME stopped answering:
+3 probes in a row over N min went unanswered; the job returns to the queue*,
+its job is queued again as above, and the machine turns `unreachable` with
+the reason in its probe note (`executor.silent` on the bus), so nothing new
+goes there until the runner's probe passes again
+([`hand_watch.rs`](../crates/pulse-runner/src/hand_watch.rs)).
+
 ## Moving a project
 
 `pulse move <slug> <path> [--force]` points a project at the checkout it now

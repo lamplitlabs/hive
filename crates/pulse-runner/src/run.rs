@@ -1225,6 +1225,17 @@ pub(crate) fn run_job(
     let cancel = cancel_child(&o.cancel);
     let owner_cancelled = Arc::new(AtomicBool::new(false));
     let stop_watch = watch_run_harness_cancel(&cancel, s, &run_id, Arc::clone(&owner_cancelled));
+    // A run on a hand: the machine is probed while the run goes, and one
+    // that stops answering ends the run instead of holding its slot, its
+    // lease and a restart for the run's whole budget (hand_watch.rs).
+    let mut hand_watch = crate::hand_watch::watch_hand(
+        &cancel,
+        s,
+        &crate::executor::executor_row(s, &ex.name()),
+        &run_id,
+        &job.str("id"),
+        log.clone(),
+    );
     if job.str("kind") == "baseline" {
         // ADR-031: the runner measures the default branch itself; no clone, brief, worker or landing.
         let r = crate::baseline::run_baseline(
@@ -1239,6 +1250,7 @@ pub(crate) fn run_job(
             o,
         );
         stop_watch();
+        hand_watch.stop();
         return r;
     }
     let model_class = crate::lead_roles::model_class_of_job(s, &job);
@@ -1863,12 +1875,15 @@ pub(crate) fn run_job(
                 log.add(format!("timeout after {minutes} minutes"));
             } else if stopped_by_runner(&cancel) {
                 // The runner stopped the worker before its cap (a restart
-                // the owner asked for now, a stall, the stop grace) - a
-                // deadline would read DeadlineExceeded. The run is lost like
-                // one the runner died under, and the job goes back to the
-                // queue instead of failing on work it never got to finish.
+                // the owner asked for now, a stall, the stop grace, a hand
+                // that stopped answering) - a deadline would read
+                // DeadlineExceeded. The run is lost like one the runner died
+                // under, and the job goes back to the queue instead of
+                // failing on work it never got to finish.
                 status = "lost".into();
-                summary = LOST_RUN_SUMMARY.into();
+                summary = hand_watch
+                    .why()
+                    .unwrap_or_else(|| LOST_RUN_SUMMARY.to_string());
                 exit_code = None;
                 log.add("stopped by the runner before the cap; the job returns to the queue");
             } else {
@@ -2423,6 +2438,7 @@ pub(crate) fn run_job(
         log.put(&summary);
     }
     stop_watch();
+    hand_watch.stop();
     // The worker is gone: close any session it left `running` with a reason,
     // instead of waiting hours for the sweep to mark it `lost` with no error.
     let closed = crate::steps_mirror::close_running_sessions(
