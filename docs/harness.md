@@ -541,7 +541,20 @@ job-completion record is rejected. One prose-only reply receives a
 consecutive prose-only replies count as format errors and the summary exposes
 `format_errors=N`. A successful answer job writes its summary back to the original, still-unanswered worker
 question; failed, owner-only or still-blocked answers do not close questions.
-An explicit `SUMMARY: blocked: ...` or `SUMMARY: failed: ...` also fails the
+The `SUMMARY:` line opens with an **outcome code** - `done`, `nothing-to-do`,
+`blocked` or `failed` (`SUMMARY: done - fixed the parser; cargo test green`,
+`SUMMARY: nothing-to-do - 4f09ccbc covers it`, `SUMMARY: blocked: no login`)
+- which both the job brief and the harness prompt ask for. The runner reads
+that code before any of the summary's words (`classify_outcome` in
+`crates/pulse-runner/src/brief.rs`); only a summary without a code falls back
+to the old text rules (`blocked:`/`failed:` before the first colon, the
+"blocked" regex in recovery's failure classification). Every run writes the
+code and the path that classified it to `runs.outcome` and
+`runs.outcome_source` (`code`, `text` for the regex fallback, `none` without
+a summary), says it in the run log (`outcome: blocked (from the worker's
+SUMMARY outcome code)`) and on its `run.finish` event, and `pulse status`
+counts the day's runs by source - so the fallback rate can be watched fall.
+A `blocked` or `failed` code also fails the
 job, even when the worker exits zero, so unfinished work reaches recovery
 instead of silently closing a task. A command's completion marker is accepted
 only when that command succeeds without timing out; otherwise the error

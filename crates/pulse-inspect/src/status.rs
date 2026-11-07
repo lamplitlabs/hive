@@ -27,6 +27,15 @@ pub struct StatusReport {
     pub schedules: Vec<StatusCount>,
     pub runs_today: i64,
     pub daily_cap: i64,
+    /// What today's finished runs cost, per job kind (runs.prompt_tokens,
+    /// completion_tokens and cost, summed onto each run as it ends).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cost_today: Vec<KindCost>,
+    /// How today's finished runs were classified (runs.outcome_source):
+    /// `code` from the worker's SUMMARY outcome code, `text` from the regex
+    /// fallback, `none` without a summary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes_today: Vec<StatusCount>,
     pub runner: String,
     pub harness: String,
     pub daemon: String,
@@ -51,6 +60,67 @@ pub struct StatusReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<String>,
     pub settings: Vec<pulse_store::SettingRow>,
+}
+
+/// One job kind's runs of a day and what they cost.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct KindCost {
+    pub kind: String,
+    pub runs: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    /// The providers' priced cost, in their units; 0 where none reports one.
+    pub cost: f64,
+}
+
+/// Runs that finished on `day` (YYYY-MM-DD, UTC) and what they cost, per
+/// job kind, the dearest kind first.
+pub fn cost_by_kind(conn: &rusqlite::Connection, day: &str) -> Result<Vec<KindCost>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(j.kind, '?') AS kind, COUNT(*), COALESCE(SUM(r.prompt_tokens), 0), \
+                COALESCE(SUM(r.completion_tokens), 0), COALESCE(SUM(r.cost), 0) \
+         FROM runs r LEFT JOIN jobs j ON j.id = r.job_id \
+         WHERE substr(r.finished_at, 1, 10) = ?1 AND r.status != 'running' \
+         GROUP BY kind ORDER BY 5 DESC, 3 + 4 DESC, kind",
+    )?;
+    let rows = stmt.query_map([day], |r| {
+        Ok(KindCost {
+            kind: r.get(0)?,
+            runs: r.get(1)?,
+            prompt_tokens: r.get(2)?,
+            completion_tokens: r.get(3)?,
+            cost: r.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// A token count for the status line: 980, 12.3k, 4.1M.
+fn tokens_text(n: i64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// The `cost` row of the text status: one kind per entry.
+fn kind_cost_text(k: &KindCost) -> String {
+    let runs = if k.runs == 1 { "run" } else { "runs" };
+    let mut text = format!(
+        "{} {} {}, {} prompt + {} completion tokens",
+        k.kind,
+        k.runs,
+        runs,
+        tokens_text(k.prompt_tokens),
+        tokens_text(k.completion_tokens)
+    );
+    if k.cost > 0.0 {
+        text.push_str(&format!(", cost {:.2}", k.cost));
+    }
+    text
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,6 +778,21 @@ pub fn status(s: &pulse_store::Store) -> Result<StatusReport> {
     // number the runner holds against jobs_per_day, so "N of M" here is the
     // runner's own arithmetic.
     r.runs_today = conn.query_row(pulse_store::DAILY_CAP_COUNT_SQL, [&today], |row| row.get(0))?;
+    r.cost_today = cost_by_kind(&conn, &today)?;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT outcome_source, COUNT(*) FROM runs \
+             WHERE substr(finished_at, 1, 10) = ?1 AND status != 'running' AND outcome_source != '' \
+             GROUP BY outcome_source ORDER BY outcome_source",
+        )?;
+        let rows = stmt.query_map([&today], |row| {
+            Ok(StatusCount {
+                status: row.get(0)?,
+                n: row.get(1)?,
+            })
+        })?;
+        r.outcomes_today = rows.collect::<rusqlite::Result<_>>()?;
+    }
     r.settings = s.setting_rows()?;
     let mut values = BTreeMap::new();
     for setting in &mut r.settings {
@@ -768,6 +853,16 @@ impl StatusReport {
             out.push_str(&format!(" of {} (jobs_per_day)\n", self.daily_cap));
         } else {
             out.push_str(" (no daily cap; jobs_per_day=0)\n");
+        }
+        for (i, k) in self.cost_today.iter().enumerate() {
+            let label = if i == 0 { "cost today" } else { "" };
+            out.push_str(&format!("{label:<10} {}\n", kind_cost_text(k)));
+        }
+        if !self.outcomes_today.is_empty() {
+            out.push_str(&format!(
+                "outcomes   {} today (code = the worker's SUMMARY outcome code, text = regex fallback)\n",
+                join_counts(&self.outcomes_today)
+            ));
         }
         out.push_str(&format!(
             "runner     {}\nharness    {}\ndaemon     {}\n",
@@ -1166,6 +1261,66 @@ mod tests {
             s.conn().unwrap().execute("INSERT INTO meta(key,value) VALUES ('daemon',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [raw]).unwrap();
             assert_eq!(daemon_status(&s).unwrap(), want);
         }
+    }
+
+    #[test]
+    fn status_shows_cost_per_job_kind_and_how_runs_were_classified() {
+        let (_dir, s) = temporary_store();
+        let before = status(&s).unwrap();
+        assert!(before.cost_today.is_empty());
+        assert!(!before.text().contains("cost today"), "{}", before.text());
+        exec_sql(
+            &s,
+            "INSERT INTO jobs(id,project,kind,title,created_at) VALUES \
+             ('j-task','p','task','t','2026-09-06T01:00:00Z'), \
+             ('j-lead','p','lead','l','2026-09-06T01:00:00Z'), \
+             ('j-old','p','task','o','2026-09-05T01:00:00Z')",
+        );
+        exec_sql(
+            &s,
+            "INSERT INTO runs(id,job_id,agent,project,started_at,finished_at,status,prompt_tokens,completion_tokens,cost,outcome,outcome_source) VALUES \
+             ('r1','j-task','a','p','2026-09-06T02:00:00Z','2026-09-06T02:30:00Z','done',120000,4000,1.5,'done','code'), \
+             ('r2','j-task','a','p','2026-09-06T03:00:00Z','2026-09-06T03:30:00Z','failed',30000,1000,0.5,'done','text'), \
+             ('r3','j-lead','a','p','2026-09-06T04:00:00Z','2026-09-06T04:10:00Z','done',900,50,0,'','none'), \
+             ('r4','j-old','a','p','2026-09-05T04:00:00Z','2026-09-05T04:10:00Z','done',999999,9,9,'done','code'), \
+             ('r5','j-task','a','p','2026-09-06T18:00:00Z','','running',5,5,5,'','')",
+        );
+        let report = status(&s).unwrap();
+        assert_eq!(
+            report.cost_today,
+            vec![
+                KindCost {
+                    kind: "task".into(),
+                    runs: 2,
+                    prompt_tokens: 150_000,
+                    completion_tokens: 5_000,
+                    cost: 2.0,
+                },
+                KindCost {
+                    kind: "lead".into(),
+                    runs: 1,
+                    prompt_tokens: 900,
+                    completion_tokens: 50,
+                    cost: 0.0,
+                },
+            ]
+        );
+        let text = report.text();
+        assert!(
+            text.contains(
+                "cost today task 2 runs, 150.0k prompt + 5.0k completion tokens, cost 2.00\n           lead 1 run, 900 prompt + 50 completion tokens\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("outcomes   1 code, 1 none, 1 text today (code = the worker's SUMMARY outcome code, text = regex fallback)\n"),
+            "{text}"
+        );
+        // The JSON report carries both and reads back the same.
+        let json = serde_json::to_string(&report).unwrap();
+        let decoded: StatusReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.cost_today, report.cost_today);
+        assert_eq!(decoded.outcomes_today, report.outcomes_today);
     }
 
     #[test]
