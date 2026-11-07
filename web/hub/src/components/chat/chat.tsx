@@ -28,6 +28,7 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
+  CirclePauseIcon,
   CircleStopIcon,
   CornerDownRightIcon,
   CpuIcon,
@@ -128,6 +129,7 @@ import {
   lockdownOf,
 } from "@/components/chat/lockdown-state";
 import {
+  RESTART_NOTE,
   SESSION_STATE_WORD,
   dismissTip,
   groupToolCalls,
@@ -136,6 +138,7 @@ import {
   toolDuration,
   toolGroupLabel,
   toolIcon,
+  unfinished,
   type SessionState,
   type ToolIconName,
 } from "@/components/chat/session-state";
@@ -286,6 +289,15 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
       pip: "curious",
       dot: "bg-muted-foreground/60",
     };
+  // PULSE stopped the turn to restart and nothing carried it on: it waits
+  // for a message ("continue" is enough), so it is the owner's turn.
+  if (status === "idle" && c.note === RESTART_NOTE)
+    return {
+      word: SESSION_STATE_WORD.stopped,
+      tone: "wait",
+      pip: "waiting",
+      dot: "bg-warn",
+    };
   return {
     word: c.turns ? "Idle" : "New",
     tone: "ok",
@@ -327,6 +339,17 @@ function SessionStateIcon({
       >
         <title>{SESSION_STATE_WORD.open}</title>
       </MessageSquareIcon>
+    );
+  if (state === "stopped")
+    return (
+      <CirclePauseIcon
+        className={cn("size-4 shrink-0 text-warn", className)}
+        strokeWidth={1.75}
+        role="img"
+        aria-label={SESSION_STATE_WORD.stopped}
+      >
+        <title>{SESSION_STATE_WORD.stopped}</title>
+      </CirclePauseIcon>
     );
   return (
     <StatusIcon
@@ -1861,6 +1884,7 @@ function ConversationItem({
           >
             {subs.map((k) => {
               const km = moodOf(k);
+              const ks = sessionState(k);
               const kActive = k.id === current;
               return (
                 <li key={k.id} className="min-w-0">
@@ -1891,6 +1915,16 @@ function ConversationItem({
                         className="lockdown-mark size-3.5 shrink-0 text-lock"
                         aria-label={LOCKDOWN_BADGE}
                       />
+                    ) : null}
+                    {/* Which sub-session is still at it, or stopped: the
+                        word beside the icon, so the family reads at a glance. */}
+                    {ks === "working" || ks === "asks" || ks === "stopped" ? (
+                      <span
+                        className={cn("shrink-0 font-medium", TONE_TEXT[km.tone])}
+                        aria-hidden
+                      >
+                        {ks === "stopped" ? "Stopped" : km.word}
+                      </span>
                     ) : null}
                     <span className="shrink-0 tabular-nums text-muted-foreground">
                       {relShort(k.last_at || k.created_at, now)}
@@ -2569,6 +2603,9 @@ function ConversationBody({
         .find((m) => m.role === "note" && typeof m.extra.closed === "string")
         ?.extra.closed
     : undefined;
+  // Sub-sessions still at it, asking, or stopped by a restart once this one
+  // is finished: the banner names them, since the list's tick hides them.
+  const left = unfinished(d.children);
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
@@ -3050,9 +3087,38 @@ function ConversationBody({
         <Notice tone="info">
           {closedBy === "owner"
             ? "You finished this session."
-            : "The agent finished this session" +
-              (c.note ? ": " + c.note : ".")}{" "}
+            : (closedBy === "pulse" ? "PULSE" : "The agent") +
+              " finished this session" +
+              (c.note ? ": " + c.note.replace(/[.\s]*$/, "") + "." : ".")}{" "}
           Write below to reopen it, or archive it to put it away.
+        </Notice>
+      ) : null}
+      {(closed || archived) && left.length ? (
+        <Notice tone="warn">
+          {left.length === 1
+            ? "A sub-session didn't finish: "
+            : plural(left.length, "sub-session") + " didn't finish: "}
+          {left.map((k, i) => {
+            const ks = sessionState(k);
+            return (
+              <span key={k.id}>
+                {i ? "; " : ""}
+                <Link
+                  href={hrefs.conversations(k.id)}
+                  className="font-medium underline underline-offset-2"
+                >
+                  {k.title || "Untitled"}
+                </Link>{" "}
+                {ks === "stopped"
+                  ? "(stopped by a restart; open it and send \u201ccontinue\u201d)"
+                  : ks === "asks"
+                    ? "(waits for your answer)"
+                    : "(still working)"}
+              </span>
+            );
+          })}
+          . {left.length === 1 ? "Its" : "Their"} work isn&apos;t in this
+          session&apos;s pull request.
         </Notice>
       ) : null}
 
