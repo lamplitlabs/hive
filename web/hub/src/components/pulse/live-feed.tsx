@@ -9,13 +9,17 @@ import type { EventsPayload, StoreEvent } from "@/lib/api";
 import { statusTone, type Tone } from "@/lib/format";
 import { settingLabel } from "@/lib/setting-labels";
 import { statusWord, threadName } from "@/lib/words";
+import { MOVED, eventDetailText, eventVerb, rec, scalar, str } from "@/lib/event-words";
 import { cn } from "@/lib/utils";
 
 function actionTone(a: string): Tone {
   if (a === "mention" || a === "post.question" || a === "post.handoff") return "warn";
   if (a === "hook.failed") return "bad";
   if (a === "land.pushed" || a === "land.landed" || a === "land.batch") return "ok";
+  if (a === "land.merged" || a === "review.merged") return "ok";
   if (a === "land.held" || a === "land.reverted") return "warn";
+  // A pull request that needs someone: failing checks, a conflict, your call.
+  if (a === "land.pr-checks" || a === "land.pr-conflict" || a === "land.missing" || a === "review.owner" || a === "review.changes") return "warn";
   // Housekeeping: a run's own cleanup, a worker retiring once its run is over
   // and the daemon's sweep are routine, not failures.
   if (a === "agent.cleanup" || a === "agent.retire" || a === "daemon.sweep" || a.endsWith(".swept")) return "neutral";
@@ -36,78 +40,6 @@ const DOT: Record<Tone, string> = {
   you: "bg-you",
 };
 
-// What a post of each kind reads as in a sentence: "aurora picked up a thread".
-const POSTED: Record<string, string> = {
-  claim: "picked up a thread",
-  handoff: "handed work over",
-  finding: "posted a finding",
-  question: "asked a question",
-  answer: "answered a question",
-  suggestion: "made a suggestion",
-  opinion: "gave an opinion",
-  vote: "voted",
-  amendment: "proposed a rule change",
-  result: "posted a result",
-  notice: "posted a notice",
-  proposal: "made a proposal",
-};
-
-// The rest of the store's actions, as verbs. Unknown actions read as their
-// own words ("thing.happened" reads "thing happened").
-const VERB: Record<string, string> = {
-  "compute.requested": "asked for an extra machine",
-  "compute.approved": "approved an extra machine",
-  "compute.denied": "turned down an extra machine",
-  "compute.released": "released an extra machine",
-  "job.add": "queued a job",
-  "job.done": "finished a job",
-  "job.failed": "stopped a job that failed",
-  "job.cancelled": "cancelled a job",
-  "message.sent": "sent a message",
-  "record.created": "added a record",
-  "record.updated": "updated a record",
-  "record.revised": "updated a record",
-  "executor.add": "added a machine",
-  "executor.remove": "removed a machine",
-  "executor.removed": "removed a machine",
-  "task.created": "created a task",
-  "task.amended": "changed a task",
-  "task.cancelled": "cancelled a task",
-  "land.landed": "merged finished work",
-  "land.batch": "merged several finished branches, checked as one",
-  "land.batch-failed": "could not merge several finished branches as one",
-  "land.pushed": "pushed merged work",
-  "land.held": "held back a merge",
-  "land.reverted": "saw merged work reverted",
-  "hook.failed": "had a check fail",
-  "project.add": "added the project",
-  "project.removed": "removed the project",
-  "project.restored": "restored the project",
-  "settings.set": "changed a setting",
-  "memory.remembered": "kept a memory for later runs",
-  "memory.forgotten": "forgot a memory",
-  "agent.cleanup": "cleaned up after a run",
-  "agent.retire": "retired a worker after its run",
-  "daemon.sweep": "ran the runner's cleanup",
-};
-
-const rec = (d: unknown): Record<string, unknown> | null => (d && typeof d === "object" && !Array.isArray(d) ? (d as Record<string, unknown>) : null);
-const str = (v: unknown) => (typeof v === "string" ? v : "");
-const scalar = (v: unknown) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : "");
-
-// A task's new status as what the agent did: "started on a task".
-const MOVED: Record<string, string> = {
-  needs_owner: "asked you about a task",
-  review: "asked you about a task",
-  in_progress: "started on a task",
-  planned: "planned a task",
-  done: "finished a task",
-  cancelled: "cancelled a task",
-  open: "reopened a task",
-};
-
-// The author a post id ends with: "20260901T203300Z-cinder" -> "cinder".
-const postAuthor = (id: string) => id.replace(/^\d{8}T\d{6}Z-?/, "");
 // A value kept private ("[owner-private]") is not printed.
 const hidden = (v: string) => /^\[.*\]$/.test(v);
 const isSetting = (a: string) => a === "setting" || a === "settings.set";
@@ -116,33 +48,13 @@ const isMachine = (a: string) => a.startsWith("executor.");
 function verb(e: StoreEvent): string {
   const d = rec(e.detail);
   const a = e.action;
-  if (a === "mention") return "was mentioned" + (str(d?.by) ? " by " + str(d?.by) : "");
-  if (a === "post" || a.startsWith("post.")) {
-    const kind = a.startsWith("post.") ? a.slice(5) : str(d?.kind);
-    return POSTED[kind] ?? "posted on the board";
-  }
-  if (a === "decide") {
-    const answer = str(d?.answer);
-    const who = postAuthor(e.subject || "");
-    const what = who ? " to " + who + "\u2019s proposal" : "";
-    return answer === "yes" ? "said yes" + what : answer === "no" ? "said no" + what : "answered" + (who ? " " + who + "\u2019s proposal" : "");
-  }
   if (a === "task.status" && str(d?.to)) return MOVED[str(d?.to)] ?? "moved a task to " + statusWord(str(d?.to)).toLowerCase();
-  if (a === "message.sent") return "sent a message" + (str(d?.task_id) ? " about " + str(d?.task_id) : "");
   if (isSetting(a)) {
     const value = scalar(e.detail) || scalar(d?.value);
     if (!e.subject) return "changed a setting";
     return "changed \u201c" + settingLabel(e.subject) + "\u201d" + (value && !hidden(value) ? " to " + value : "");
   }
-  if (isMachine(a) && VERB[a] && e.subject) return VERB[a].replace(/a machine$/, "the machine " + e.subject);
-  // The subject is the worker's name: "retired the worker cinder after its run".
-  if (a === "agent.retire" && e.subject) return VERB[a].replace(/a worker/, "the worker " + e.subject);
-  if (VERB[a]) return VERB[a];
-  return a
-    .replace(/[._-]+/g, " ")
-    .replace(/\bdaemon\b/g, "runner")
-    .replace(/\bexecutor\b/g, "machine")
-    .trim();
+  return eventVerb(e);
 }
 
 function actorName(e: StoreEvent): string {
@@ -165,12 +77,10 @@ function detailText(e: StoreEvent, project?: string): string {
   if (!o) return "";
   const where = !project && str(o.project) ? str(o.project) : "";
   if ((e.action === "post" || e.action.startsWith("post.")) && str(o.thread)) return "In \u201c" + threadName(str(o.thread)) + "\u201d" + (where ? " on " + where : "");
-  // A red base names the checks main itself fails (the runner's `failures`),
-  // not its 1500-char verify tail.
-  if (e.action === "land.base-red" && Array.isArray(o.failures)) {
-    const names = o.failures.filter((f): f is string => typeof f === "string" && f.trim() !== "");
-    if (names.length) return (str(o.note) ? str(o.note) + ": " : "") + names.slice(0, 5).join(", ") + (names.length > 5 ? " +" + (names.length - 5) + " more" : "");
-  }
+  // Events whose own fields make the line: a red base's failing checks, a
+  // slow stage's name and time (lib/event-words.ts).
+  const own = eventDetailText(e);
+  if (own) return own;
   for (const k of ["summary", "title", "reason", "words", "note", "text"]) if (str(o[k])) return str(o[k]);
   return where ? "In " + where : "";
 }
@@ -181,7 +91,7 @@ function detailText(e: StoreEvent, project?: string): string {
 function subjectText(e: StoreEvent, project?: string): string {
   const s = (e.subject || "").trim();
   if (!s || s === project) return "";
-  if (e.action === "mention" || e.action === "decide" || e.action === "message.sent" || e.action === "agent.retire" || isSetting(e.action) || isMachine(e.action)) return "";
+  if (e.action === "mention" || e.action === "decide" || e.action === "message.sent" || e.action === "agent.retire" || e.action === "daemon.slow-stage" || isSetting(e.action) || isMachine(e.action)) return "";
   if (/^\d{8}T\d{6}Z/.test(s) || /^(job|msg)-/i.test(s) || /^[0-9a-f]{12,}$/i.test(s)) return "";
   return s;
 }
