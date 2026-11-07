@@ -14,7 +14,7 @@ import { BotIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CornerDownRightI
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { DeliveryLine, reportWhere } from "@/components/chat/chat-pane";
-import { JobEvidence } from "@/components/chat/job-evidence";
+import { JobEvidence, JobReportLink } from "@/components/chat/job-evidence";
 import { Markdown } from "@/components/pulse/markdown";
 import { Disclosure, EmptyState, ErrorNotice, SkeletonRows } from "@/components/pulse/panel";
 import { Avatar, Mono, ToneBadge, When } from "@/components/pulse/who";
@@ -268,6 +268,7 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
             </Link>
           ) : null}
           {evidence}
+          {evidence ? <JobReportLink job={job} /> : null}
         </>
       ) : undefined;
   }

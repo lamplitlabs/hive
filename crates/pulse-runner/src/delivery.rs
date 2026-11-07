@@ -946,6 +946,16 @@ fn deliver(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         if next == Next::Nothing {
             continue;
         }
+        // A change that has a face opens its pull request with its report
+        // (`landing.ui_report = require`): the session is asked once and the
+        // pull request waits for it a while (ui_evidence.rs).
+        if matches!(next, Next::Open)
+            && let Some(line) =
+                crate::ui_evidence::session_waits_for_report(s, project, &cb.branch, now)
+        {
+            lines.push(line);
+            continue;
+        }
         if matches!(next, Next::Open) {
             if opened >= CREATIONS_PER_PASS {
                 break;
@@ -3926,6 +3936,110 @@ mod tests {
         assert!(tend_proj(&s, &proj, later).is_empty());
         assert_eq!(events(&s, pulse_harness::conversation::FINISH_ACTION), 1);
         run(&repo, &["git", "worktree", "remove", "--force", &wt]);
+    }
+
+    /// The before/after report of a session's change: two pictures and the
+    /// manifest in the session's artifacts folder.
+    fn write_session_report(s: &pulse_store::Store, id: &str) {
+        let dir = pulse_harness::conversation::artifacts_dir(&s.home, id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("before.png"), b"\x89PNG\r\n\x1a\n-1").unwrap();
+        std::fs::write(dir.join("after.png"), b"\x89PNG\r\n\x1a\n-2").unwrap();
+        std::fs::write(
+            dir.join("report.json"),
+            r#"{"title":"Page","changes":[{"title":"Page","was":"w","now":"n","before":"before.png","after":"after.png"}]}"#,
+        )
+        .unwrap();
+    }
+
+    /// A session's change that has a face opens its pull request with its
+    /// before/after report (`landing.ui_report = require`): the first pass
+    /// asks the session (a wake) and waits, a pass within the hour waits
+    /// without asking again, and the pull request opens once the report
+    /// shows the change. A change without a face is proposed as before.
+    #[test]
+    fn a_conversation_branch_with_a_face_waits_for_its_report() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        seed_conversation(&s, "face1", &repo);
+        run(&repo, &["git", "branch", "pulse/chat-face1", "main"]);
+        commit_dated(&repo, "pulse/chat-face1", "page.tsx", "2026-09-06T09:40:00Z");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            ["proposed proj pulse/chat-face1: waits for its before/after report; session face1 asked"]
+        );
+        assert_eq!(events(&s, "land.pr"), 0);
+        let wake = last_detail(&s, pulse_harness::conversation::WAKE_ACTION);
+        let text = wake["text"].as_str().unwrap_or_default();
+        assert!(
+            text.starts_with("Your branch pulse/chat-face1 changes 1 UI file (`page.tsx`) and there is no report.json in $PULSE_ARTIFACTS."),
+            "{text}"
+        );
+        assert!(text.contains("run `pulse report` until it names nothing"), "{text}");
+        // Within the hour: it waits, and the session is not asked again.
+        let lines = tend_proj(&s, &proj, "2026-09-06T10:30:00Z");
+        assert_eq!(
+            lines,
+            ["proposed proj pulse/chat-face1: waits for its before/after report until 2026-09-06T11:00:00Z"]
+        );
+        assert_eq!(events(&s, pulse_harness::conversation::WAKE_ACTION), 1);
+        // The report shows the change: the pull request opens, and the
+        // review has no report to ask for.
+        write_session_report(&s, "face1");
+        let lines = tend_proj(&s, &proj, "2026-09-06T10:31:00Z");
+        assert_eq!(
+            lines,
+            ["proposed pr proj conversation face1: #7 opened https://github.com/o/r/pull/7"]
+        );
+        let view = crate::review::PrView {
+            head: "pulse/chat-face1".into(),
+            files: vec![("page.tsx".into(), 1, 0)],
+            ..Default::default()
+        };
+        assert!(crate::review::reasons_for(&s, &view).is_empty());
+    }
+
+    /// The hour passes without the report: the pull request opens anyway,
+    /// and the review gives it to the owner for want of the report. The
+    /// session's agent proposing the branch itself is told what to bring.
+    #[test]
+    fn a_conversation_branch_opens_for_the_owner_when_its_report_never_comes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        seed_conversation(&s, "face2", &repo);
+        run(&repo, &["git", "branch", "pulse/chat-face2", "main"]);
+        commit_dated(&repo, "pulse/chat-face2", "site.css", "2026-09-06T09:40:00Z");
+        let e = crate::ui_evidence::chat_branch_evidence(&s, &proj, "pulse/chat-face2").unwrap();
+        assert!(e.wants_report(), "{e:?}");
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(events(&s, "land.pr"), 0);
+        let lines = tend_proj(&s, &proj, "2026-09-06T11:00:30Z");
+        assert_eq!(
+            lines,
+            ["proposed pr proj conversation face2: #7 opened https://github.com/o/r/pull/7"]
+        );
+        let view = crate::review::PrView {
+            head: "pulse/chat-face2".into(),
+            files: vec![("site.css".into(), 1, 0)],
+            ..Default::default()
+        };
+        let reasons = crate::review::reasons_for(&s, &view);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(
+            reasons[0].starts_with("changes 1 UI file with no before/after report (there is no report.json"),
+            "{reasons:?}"
+        );
+        // Warn for this project: no reason, no wait.
+        s.set_setting("human", &pulse_store::ui_report_setting("proj"), "warn")
+            .unwrap();
+        assert!(crate::review::reasons_for(&s, &view).is_empty());
     }
 
     #[test]

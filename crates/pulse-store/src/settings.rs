@@ -251,7 +251,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -282,6 +282,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "hygiene.cargo_target_hours"=>("count",Some(1),[],None,"hours an incremental cache directory, or a workspace crate's compiled unit, must sit unmodified before the hygiene sweep removes it from a shared Cargo target; registry and git dependencies are never pruned for idleness"),
         "landing.push"=>("choice",None,["off","main","pr"],None,"main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. pr: the daemon pushes the default branch to the pulse/landed branch on the upstream instead and keeps one pull request open from it (gh, logged in as the user the daemon runs as), so every landing waits for your merge on the forge; a conflict with the upstream shows on the pull request. off: you push - or ask for a pull request from a task's sheet or with pulse land --pr (ADR-037)"),
         "landing.auto_stash"=>("choice",None,["on","off"],None,"on: before landing, the daemon stashes uncommitted changes in the checkout with a clear message so the landing can proceed; off: a dirty checkout defers landing (ADR-024)"),
+        "landing.ui_report"=>("choice",None,["require","warn","off"],None,"require: a change that touches a screen (a page, a view, a stylesheet) reaches the default branch only with its before/after report - report.html, which pulse report builds from report.json and the screenshots in the agent's artifacts folder; a worker that finished without one gets one more turn to make it, a local landing waits for it, a pull request without one is the owner's to merge and a session is asked for it before its pull request opens; warn: the change lands without one and the landing says so; off: no report is asked for (a screenshot is still welcome); landing.ui_report.<project slug> sets it for one project"),
         "verify.lock"=>("choice",None,["off","project","machine"],None,"off: a worker commit, a finished run and a landing each verify whenever they are ready; project: verifications of one project take turns on a machine, so checkouts sharing one build cache (a Cargo target directory, a Gradle cache) never rewrite each other's artifacts mid-run; machine: every verification on the machine takes turns. While verifications take turns, a project runs only as many improve and task jobs at once as its measured check time fits into harness.step_timeout (its idle line names the lanes)"),
         "landing.base_red_retry_minutes"=>("count",Some(1),[],None,"minutes a project waits before the daemon re-checks landings after the default branch itself fails verify"),
         "landing.verify_memo"=>("choice",None,["on","off"],None,"on: skip a run's own check, a local landing's and a base verify when this user recently verified the identical Git tree with the identical verify command (the pre-commit hook's memo under ~/.pulse/verified/); off restores the old always-verify behaviour"),
@@ -462,8 +463,35 @@ fn incumbent_rule(name: &str) -> Option<SettingRule> {
     })
 }
 
+/// Whether a change that touches a screen must bring its before/after
+/// report (`pulse report`) before it lands: `require`, `warn` or `off`.
+pub const UI_REPORT: &str = "landing.ui_report";
+/// The per-project form of `landing.ui_report`: `landing.ui_report.<slug>`
+/// takes the same values for one project and, unset, the project follows
+/// the machine's setting. A family keyed by project like the incumbent
+/// pointer, so it is not in the listed catalogue.
+pub const UI_REPORT_PREFIX: &str = "landing.ui_report.";
+/// The values `landing.ui_report` takes.
+pub const UI_REPORT_MODES: &[&str] = &["require", "warn", "off"];
+/// The per-project `landing.ui_report` setting of `slug`.
+pub fn ui_report_setting(slug: &str) -> String {
+    format!("{UI_REPORT_PREFIX}{slug}")
+}
+fn ui_report_rule(name: &str) -> Option<SettingRule> {
+    let slug = name.strip_prefix(UI_REPORT_PREFIX)?;
+    INCUMBENT_SLUG.is_match(slug).then(|| {
+        SettingRule::new(
+            "choice",
+            None,
+            UI_REPORT_MODES,
+            None,
+            "this project's own landing.ui_report: require, warn or off; unset, the project follows landing.ui_report",
+        )
+    })
+}
+
 fn known_setting(name: &str) -> Option<SettingRule> {
-    if let Some(rule) = incumbent_rule(name) {
+    if let Some(rule) = incumbent_rule(name).or_else(|| ui_report_rule(name)) {
         return Some(rule);
     }
     if DEFAULT_SETTINGS.contains_key(name) {
@@ -998,6 +1026,27 @@ impl Store {
             default_setting(key)
         }
     }
+    /// `landing.ui_report` for project `slug`: its own
+    /// `landing.ui_report.<slug>` when set, else the machine's; a value the
+    /// store does not know reads as the default, `require`.
+    pub fn ui_report_mode(&self, slug: &str) -> String {
+        let own = if slug.trim().is_empty() {
+            String::new()
+        } else {
+            self.setting(&ui_report_setting(slug.trim()), "-")
+        };
+        let v = if own.trim().is_empty() || own == "-" {
+            self.setting(UI_REPORT, "")
+        } else {
+            own
+        };
+        let v = v.trim().to_ascii_lowercase();
+        if UI_REPORT_MODES.contains(&v.as_str()) {
+            v
+        } else {
+            "require".into()
+        }
+    }
     pub fn setting_int(&self, key: &str) -> i64 {
         self.setting(key, "")
             .parse()
@@ -1511,6 +1560,31 @@ mod go_settings_tests {
         );
         s.set_setting("human", "push.credential", "").unwrap();
         assert_eq!(s.setting("push.credential", ""), "");
+    }
+
+    #[test]
+    fn ui_report_is_required_by_default_and_set_per_project() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-11-07T10:00:00Z");
+        assert_eq!(s.setting(UI_REPORT, ""), "require");
+        assert!(extra_setting_names().contains(&UI_REPORT.to_string()));
+        assert_eq!(s.ui_report_mode("web"), "require");
+        s.set_setting("human", UI_REPORT, "warn").unwrap();
+        assert_eq!(s.ui_report_mode("web"), "warn");
+        // One project of its own; the others follow the machine's value.
+        s.set_setting("human", &ui_report_setting("web"), "OFF").unwrap();
+        assert_eq!(s.ui_report_mode("web"), "off");
+        assert_eq!(s.ui_report_mode("api"), "warn");
+        assert_eq!(s.ui_report_mode(""), "warn");
+        // The family is not in the listed catalogue, and takes only the three values.
+        assert!(!extra_setting_names().contains(&ui_report_setting("web")));
+        let err = s
+            .set_setting("human", &ui_report_setting("web"), "maybe")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("takes one of"), "{err}");
+        assert!(s.set_setting("human", UI_REPORT, "sometimes").is_err());
     }
 
     #[test]

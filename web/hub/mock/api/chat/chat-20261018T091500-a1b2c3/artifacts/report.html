@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="pulse report">
+<title>Settings has a theme toggle</title>
+<style>
+:root {
+  --bg: oklch(0.985 0.002 255);
+  --card: #fff;
+  --ink: oklch(0.26 0.04 262);
+  --muted: oklch(0.48 0.02 262);
+  --line: oklch(0.92 0.004 255);
+  --teal: oklch(0.52 0.095 186);
+  --was: oklch(0.55 0.16 30);
+  --now: oklch(0.5 0.12 155);
+  --shade: oklch(0.96 0.004 255);
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: oklch(0.17 0.01 260);
+    --card: oklch(0.21 0.01 260);
+    --ink: oklch(0.94 0.005 260);
+    --muted: oklch(0.72 0.01 260);
+    --line: oklch(0.32 0.01 260);
+    --teal: oklch(0.78 0.1 186);
+    --was: oklch(0.75 0.13 30);
+    --now: oklch(0.78 0.12 155);
+    --shade: oklch(0.25 0.01 260);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: oklch(0.17 0.01 260);
+  --card: oklch(0.21 0.01 260);
+  --ink: oklch(0.94 0.005 260);
+  --muted: oklch(0.72 0.01 260);
+  --line: oklch(0.32 0.01 260);
+  --teal: oklch(0.78 0.1 186);
+  --was: oklch(0.75 0.13 30);
+  --now: oklch(0.78 0.12 155);
+  --shade: oklch(0.25 0.01 260);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 var(--font); padding: 40px 16px 64px; -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 40px; }
+header { display: grid; gap: 10px; max-width: 76ch; }
+h1 { font-size: 30px; line-height: 1.15; font-weight: 600; letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); font-size: 16px; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 0; padding: 0; list-style: none; }
+.facts li { font-size: 13px; color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; }
+.facts b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.checks { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--muted); }
+.note { font-size: 14px; color: var(--muted); border-left: 2px solid var(--teal); padding: 2px 0 2px 12px; margin: 4px 0 0; }
+.hint { font-size: 13px; color: var(--muted); margin: 0; }
+code { font-family: var(--mono); font-size: 0.88em; background: var(--shade); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; }
+a { color: var(--teal); }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+section { display: grid; gap: 20px; scroll-margin-top: 16px; }
+h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.change { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: grid; gap: 14px; min-width: 0; }
+h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+h4 { font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 4px 0 -6px; }
+.delta { margin: 0; display: grid; gap: 6px; max-width: 80ch; }
+.delta div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.delta dt { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.delta .was dt { color: var(--was); }
+.delta .now dt { color: var(--now); }
+.delta dd { margin: 0; min-width: 0; }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (min-width: 900px) { .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+figure { margin: 0; min-width: 0; display: grid; gap: 6px; justify-items: start; }
+figcaption { font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--was); }
+.after figcaption { color: var(--now); }
+figure a { display: block; max-width: 100%; }
+figure img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--shade); }
+.missing { width: 100%; min-height: 120px; display: grid; place-items: center; text-align: center; padding: 16px; font-size: 13px; color: var(--was); border: 1px dashed var(--was); border-radius: 10px; background: var(--shade); }
+.same { font-size: 13px; color: var(--muted); margin: 0; }
+footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; max-width: 80ch; }
+footer p { margin: 0; }
+footer ul { margin: 0; padding-left: 18px; }
+a:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <h1>Settings has a theme toggle</h1>
+    <p class="lede">The settings page had no way to pick a theme; the app always followed the system. It now has Light, Dark and System, remembered per device.</p>
+    <ul class="facts"><li><b>1</b> change</li><li><b>1</b> before/after pair</li><li><b>3</b> checks run</li></ul>
+    <ul class="checks" aria-label="Checks">
+      <li><code>npm test</code>: 212 passed</li>
+      <li><code>npx tsc --noEmit</code>: clean</li>
+      <li>Contrast of the three theme states checked (test-report.md)</li>
+    </ul>
+    <p class="note">On the session&#39;s branch pulse/chat-a1b2c3; the pull request opens for review.</p>
+    <p class="hint">Open a picture to see it full size; go back to return here.</p>
+  </header>
+  <section id="area-1">
+    <h2>Settings</h2>
+    <article class="change" id="change-1">
+      <h3>Theme row</h3>
+      <dl class="delta">
+        <div class="was"><dt>Was</dt><dd>No theme choice: the app always followed the system.</dd></div>
+        <div class="now"><dt>Now</dt><dd>A Theme row with Light, Dark and System; System is the default.</dd></div>
+      </dl>
+      <div class="pair">
+        <figure class="before"><figcaption>Before</figcaption><a href="before-settings.webp"><img src="before-settings.webp" alt="Before: Theme row" loading="lazy"></a></figure>
+        <figure class="after"><figcaption>After</figcaption><a href="after-settings.webp"><img src="after-settings.webp" alt="After: Theme row" loading="lazy"></a></figure>
+      </div>
+    </article>
+  </section>
+  <footer>
+    <p>Also changed, not pictured:</p>
+    <ul>
+      <li>The dark theme&#39;s muted labels were raised to 70% for contrast (settings-dark.png).</li>
+    </ul>
+    <p>Built by <code>pulse report</code> from <code>report.json</code>, written 2026-11-07 08:03 UTC.</p>
+  </footer>
+</main>
+</body>
+</html>

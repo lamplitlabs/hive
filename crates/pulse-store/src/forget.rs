@@ -111,7 +111,7 @@ const CASCADE: &[(&str, &str)] = &[
     ("variant_outcomes", "island = ?1"),
     (
         "settings",
-        "name = 'project.goal.' || ?1 OR name = 'evolve.incumbent.' || ?1",
+        "name = 'project.goal.' || ?1 OR name = 'evolve.incumbent.' || ?1 OR name = 'landing.ui_report.' || ?1",
     ),
     (
         "meta",

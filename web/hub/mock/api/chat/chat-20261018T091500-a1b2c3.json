@@ -375,6 +375,21 @@
   "after": 19,
   "artifacts": [
     {
+      "name": "report.html",
+      "size": 6909,
+      "modified": "2026-10-18T09:52:40Z"
+    },
+    {
+      "name": "report.json",
+      "size": 861,
+      "modified": "2026-10-18T09:52:30Z"
+    },
+    {
+      "name": "after-settings.webp",
+      "size": 9504,
+      "modified": "2026-10-18T09:51:10Z"
+    },
+    {
       "name": "settings-dark.png",
       "size": 525,
       "modified": "2026-10-18T09:40:30Z"
@@ -383,6 +398,11 @@
       "name": "test-report.md",
       "size": 1041,
       "modified": "2026-10-18T09:33:10Z"
+    },
+    {
+      "name": "before-settings.webp",
+      "size": 7114,
+      "modified": "2026-10-18T09:12:05Z"
     }
   ],
   "changes": {

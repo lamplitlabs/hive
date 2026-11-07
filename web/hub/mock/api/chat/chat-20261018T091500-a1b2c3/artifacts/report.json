@@ -1,0 +1,23 @@
+{
+  "title": "Settings has a theme toggle",
+  "summary": "The settings page had no way to pick a theme; the app always followed the system. It now has Light, Dark and System, remembered per device.",
+  "changes": [
+    {
+      "area": "Settings",
+      "title": "Theme row",
+      "was": "No theme choice: the app always followed the system.",
+      "now": "A Theme row with Light, Dark and System; System is the default.",
+      "before": "before-settings.webp",
+      "after": "after-settings.webp"
+    }
+  ],
+  "checks": [
+    "`npm test`: 212 passed",
+    "`npx tsc --noEmit`: clean",
+    "Contrast of the three theme states checked (test-report.md)"
+  ],
+  "status": "On the session's branch pulse/chat-a1b2c3; the pull request opens for review.",
+  "notes": [
+    "The dark theme's muted labels were raised to 70% for contrast (settings-dark.png)."
+  ]
+}

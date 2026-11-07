@@ -621,6 +621,20 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
         let def = crate::baseline::default_branch(proj.clone());
         let has_upstream = crate::forge::upstream_of(&proj.str("path"), &def).is_some();
         if !local && has_upstream {
+            // A session's agent proposing its own change that has a face
+            // brings the before/after report first; the owner proposing it
+            // by hand has looked at it.
+            if actor != crate::util::HUMAN_AGENT
+                && let Some(e) = crate::ui_evidence::chat_branch_evidence(&s, &proj, &branch)
+                    .filter(|e| e.wants_report())
+            {
+                c.printf(format_args!(
+                    "{slug} not proposed: {}\n",
+                    crate::ui_evidence::session_report_message(&e, &branch, &def)
+                ))?;
+                worst = worst.max(1);
+                continue;
+            }
             match crate::delivery::propose_branch(&s, &proj, &branch, &now) {
                 Ok(d) => c.printf(format_args!("{}\n", d.line))?,
                 Err(why) => {

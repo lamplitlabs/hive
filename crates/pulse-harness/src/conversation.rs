@@ -1878,7 +1878,12 @@ impl Runtime {
     /// What the agent reads before the owner's first message of a session.
     fn brief(&self, row: &Row) -> String {
         let projects = self.store.projects(true).unwrap_or_default();
-        brief_text(row, &projects, &artifacts_dir(&self.home, &row.id))
+        brief_text_with(
+            row,
+            &projects,
+            &artifacts_dir(&self.home, &row.id),
+            &self.store.ui_report_mode(&row.project),
+        )
     }
 
     /// Hands the owner's answer to the parked agent and records it in the
@@ -3868,6 +3873,12 @@ fn list_artifacts(dir: &Path) -> Vec<Artifact> {
 
 /// The brief the agent reads with the first message of each session.
 pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
+    brief_text_with(row, projects, artifacts, "require")
+}
+
+/// `brief_text` for a session whose project's `landing.ui_report` is
+/// `ui_report` (require, warn or off): what a change with a face brings.
+pub fn brief_text_with(row: &Row, projects: &[Project], artifacts: &Path, ui_report: &str) -> String {
     let mut b = String::new();
     if row.parent.is_empty() {
         b.push_str(&format!(
@@ -3890,6 +3901,20 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
         "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in ${ARTIFACTS_ENV} ({}); the hub shows that folder beside this session.\n",
         artifacts.display()
     ));
+    if ui_report != "off" {
+        b.push_str(&format!(
+            "When your change touches anything a person sees (a page, a view, a stylesheet, a native screen), finish it with a before/after report in ${ARTIFACTS_ENV}: \
+             before you change a screen, save a picture of it as it is (run the project's dev server; before-<screen>.png at 1440x900, plus 390x844 for a screen people open on a phone, plus the dark theme when the change touches colour); \
+             when the change is done, save the same screens the same way as after-<screen>.png; \
+             then write report.json beside them (`pulse report --example` prints its shape: a title, what changed for the person looking, a was and a now line per change with its before and after pictures, the checks you ran, where the work stands) and run `pulse report` until it names nothing. \
+             The owner reads that page (the hub shows it beside this session) rather than the diff; {}\n",
+            if ui_report == "warn" {
+                "a change with a face and no report still lands, and its landing says it has none."
+            } else {
+                "the pull request of a change with a face waits for it (landing.ui_report)."
+            }
+        ));
+    }
     b.push_str("The `pulse` command is on PATH.\n");
     b.push_str(
         "Work that runs for hours or days (a benchmark, a soak, a long build, a job on another machine) is not waited for inside a turn. \
@@ -5559,6 +5584,12 @@ mod tests {
         assert!(text.contains("file it with the task tool (action create, project SLUG"));
         assert!(!text.contains("pulse task new"));
         assert!(text.contains("$PULSE_ARTIFACTS (/tmp/art)"));
+        // A change with a face brings its before/after report, built by `pulse report`.
+        assert!(text.contains("before you change a screen, save a picture of it as it is"), "{text}");
+        assert!(text.contains("run `pulse report` until it names nothing"), "{text}");
+        assert!(text.contains("waits for it (landing.ui_report)"), "{text}");
+        assert!(brief_text_with(&loose, &projects, art, "warn").contains("still lands, and its landing says it has none"));
+        assert!(!brief_text_with(&loose, &projects, art, "off").contains("pulse report"));
         // The owner's words are looked up on the shared board before the
         // agent asks what they mean.
         assert!(text.contains("The owner's words are PULSE's own - RSI, lead, board"));

@@ -142,6 +142,114 @@ fn step_budget_carried_on(c: &(impl crate::util::Querier + ?Sized), job_id: &str
         > 0
 }
 
+/// How long the report turn may take.
+pub(crate) const REPORT_TURN_MINUTES: i32 = 20;
+
+/// What the report turn needs of the run it carries on.
+struct ReportTurn<'a> {
+    job: &'a Row,
+    project: &'a Row,
+    run_id: &'a str,
+    base: &'a str,
+    clone: &'a str,
+    changed: &'a [String],
+    model_class: &'a str,
+    spec: Option<&'a pulse_harness::agents::AgentDef>,
+    pins: &'a [String],
+    env: &'a BTreeMap<String, String>,
+}
+
+/// The report turn (`landing.ui_report = require`): a verified run whose
+/// change has a face and whose artifacts folder shows no change before and
+/// after carries the worker's session on once more, for the before/after
+/// report alone. The branch was taken from the verified clone already, so
+/// nothing the turn commits lands; what it leaves in the folder is what the
+/// landing reads. A session with no trajectory to carry on, or a project
+/// that does not require the report, gets no turn.
+fn report_turn(
+    s: &pulse_store::Store,
+    ex: &mut dyn crate::exec::Executor,
+    cancel: &pulse_bus::CancellationToken,
+    t: ReportTurn<'_>,
+    log: &mut RunLog,
+) {
+    let home = s.home.clone();
+    let job_id = t.job.str("id");
+    let mode = crate::ui_evidence::Mode::of(s, &t.project.str("slug"));
+    let before = crate::ui_evidence::UiEvidence::collect(&home, &job_id, t.changed, mode);
+    if !before.wants_report() {
+        return;
+    }
+    let trajectory = match s.harness_session_head(t.run_id) {
+        Ok(Some(h)) if !h.trajectory.is_empty() && Path::new(&h.trajectory).is_file() => {
+            h.trajectory
+        }
+        _ => {
+            log.add(format!(
+                "report turn: the change has a face and {}, but the worker's session {} left no trajectory to carry on; the landing waits for the report",
+                before.report_trouble(),
+                t.run_id
+            ));
+            return;
+        }
+    };
+    let session = format!("{}-report", t.run_id);
+    let message = crate::ui_evidence::report_turn_message(&before, t.base);
+    let (cmd, _) = crate::exec::worker_command_as(
+        s,
+        &t.job.str("kind"),
+        t.model_class,
+        &message,
+        t.clone,
+        "",
+        false,
+        t.spec,
+    );
+    let mut cmd = crate::exec::with_resume(cmd, &trajectory);
+    cmd.extend(["--session".to_string(), session.clone()]);
+    if !t.pins.is_empty() {
+        let mut prefix = crate::recipe::mise_exec_argv(t.pins);
+        prefix.extend(cmd);
+        cmd = prefix;
+    }
+    log.add(format!(
+        "report turn: {} changed and {}; session {} carries on as {session} for the before/after report (up to {REPORT_TURN_MINUTES} min)",
+        before.ui_paths.len(),
+        before.report_trouble(),
+        t.run_id
+    ));
+    match ex.run_worker(cancel, &cmd, t.env, REPORT_TURN_MINUTES) {
+        Ok(out) => {
+            log.add(tail(&out.stdout, 4000));
+            log.add(tail(&out.stderr, 4000));
+        }
+        Err(e) => log.add(format!("report turn could not run: {}", err_message(&e))),
+    }
+    // A hold for the runner's restart has nothing to carry on: the job's
+    // run is over, and the landing reads the folder as it stands.
+    if let Ok(Some(h)) = s.held_harness_session_for_job(&job_id)
+        && h.id == session
+    {
+        let _ = s.mark_harness_session_resumed(
+            &h.id,
+            "not carried on: the report turn of a finished run",
+        );
+    }
+    let after = crate::ui_evidence::UiEvidence::collect(&home, &job_id, t.changed, mode);
+    if after.reported() {
+        log.add(format!(
+            "report turn: {} shows {}",
+            pulse_harness::report::PAGE,
+            after.report.counts()
+        ));
+    } else {
+        log.add(format!(
+            "report turn ended without a report ({}); the landing waits for one",
+            after.report_trouble()
+        ));
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RunOpts {
     pub(crate) dry_run: bool,
@@ -2221,6 +2329,34 @@ pub(crate) fn run_job(
                                 if !verify_note.is_empty() {
                                     summary.push_str(&format!(" ({verify_note})"));
                                 }
+                                // The change has a face and its folder shows
+                                // no change before and after: the worker's
+                                // session carries on once more, for the
+                                // report alone, while the clone is here.
+                                if !custom_worker
+                                    && !ex.remote()
+                                    && !owner_cancelled.load(Ordering::SeqCst)
+                                    && lease_ok(REPORT_TURN_MINUTES + 5)
+                                {
+                                    report_turn(
+                                        s,
+                                        &mut *ex,
+                                        &cancel,
+                                        ReportTurn {
+                                            job: &job,
+                                            project: &project,
+                                            run_id: &run_id,
+                                            base: &base,
+                                            clone: &clone,
+                                            changed: &changed_files,
+                                            model_class: &model_class,
+                                            spec: agent_spec.as_ref(),
+                                            pins: &pins,
+                                            env: &env,
+                                        },
+                                        &mut log,
+                                    );
+                                }
                             }
                             let _ = crate::util::git(&root, &["update-ref", "-d", &holding]);
                         }
@@ -2565,11 +2701,13 @@ pub(crate) fn run_job(
         // What there is to look at: the files the worker left in the job's
         // artifacts folder, or the plain word that a UI change left none.
         if !ex.remote() {
-            let evidence =
-                crate::ui_evidence::UiEvidence::collect(&home, &job.str("id"), &changed_files);
-            if let Some(line) = evidence.result_line() {
-                lines.push(line);
-            }
+            let evidence = crate::ui_evidence::UiEvidence::collect(
+                &home,
+                &job.str("id"),
+                &changed_files,
+                crate::ui_evidence::Mode::of(s, &project.str("slug")),
+            );
+            lines.extend(evidence.result_lines());
         }
         for f in &parsed.findings {
             lines.push(format!("- Finding: {f}"));
@@ -4320,10 +4458,13 @@ mod tests {
             &[],
         )
         .str("body");
+        // A custom worker keeps no session to carry on, so it gets no report
+        // turn; the post says the change has no report and what that costs.
         assert!(
-            body.contains("- Evidence: none - 1 UI file changed and nothing was left in $PULSE_ARTIFACTS (rule 10)"),
+            body.contains("- Report: none - 1 UI file changed and there is no report.json in $PULSE_ARTIFACTS (rule 10); the landing waits for one (landing.ui_report)"),
             "{body}"
         );
+        assert!(!body.contains("- Evidence:"), "{body}");
     }
 
     /// The pre-commit hook verified the committed tree and left its memo: the

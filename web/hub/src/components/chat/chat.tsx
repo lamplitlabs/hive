@@ -179,6 +179,7 @@ import {
   CHAT_ATTACHMENTS_PER_MESSAGE,
   CHAT_ATTACHMENT_LIMIT,
   api,
+  chatArtifactHref,
   chatAttachmentHref,
   chatAttachments,
   chatReport,
@@ -190,6 +191,8 @@ import {
   query,
   writes,
 } from "@/lib/api";
+import { ReportLink } from "@/components/chat/job-evidence";
+import { hasReportPage, REPORT_PAGE, reportTip } from "@/components/chat/job-evidence-state";
 import { num, plural, sentence, span } from "@/lib/format";
 import { messageStatus, type MessageStatus } from "@/lib/message-status";
 import {
@@ -4603,6 +4606,13 @@ function ArtifactsPanel({
     t?.kind === "artifact" ? { kind: "artifact", name: t.key } : null;
   return (
     <>
+      {hasReportPage(d.artifacts) ? (
+        <ReportLink
+          href={chatArtifactHref(d.conversation.id, REPORT_PAGE)}
+          tip={reportTip("session")}
+          className="justify-self-start px-1 text-[13px]"
+        />
+      ) : null}
       {d.artifacts.length ? (
         <ArtifactList
           id={d.conversation.id}

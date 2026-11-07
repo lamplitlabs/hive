@@ -1168,6 +1168,112 @@ fn wait_for_release_age(
     )
 }
 
+/// Whether the newest run of `job_id` ran on a remote hand: such a hand has
+/// no artifacts folder the hub serves, so its job cannot leave a report.
+fn ran_on_hands(s: &pulse_store::Store, job_id: &str) -> bool {
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    let run = crate::util::must_one(
+        &conn,
+        "SELECT executor FROM runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 1",
+        &[&job_id],
+    );
+    !run.0.is_empty() && run.str("executor") != crate::executor::LOCAL_EXECUTOR
+}
+
+/// A job branch whose change has a face and whose worker left no
+/// before/after report, under `landing.ui_report = require`: held like a
+/// lockfile branch (`land.held`, reason `ui-report`), looked at again every
+/// HELD_RECHECK_MINUTES and landed once the report shows a change. The
+/// first hold records the event and asks the owner once - land it as it is
+/// by hand, or let the project's UI changes land without a report; a
+/// recheck that finds it still missing only renews the hold.
+pub(crate) fn hold_unreported_branch(
+    s: &pulse_store::Store,
+    slug: &str,
+    branch: &str,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+    ui: &crate::ui_evidence::UiEvidence,
+) -> (String, String) {
+    let command = format!("pulse land --project {slug} --branch {branch}");
+    let files = format!(
+        "{} {}",
+        ui.ui_paths.len(),
+        crate::util::plural(ui.ui_paths.len() as i32, "UI file")
+    );
+    let trouble = ui.report_trouble();
+    if let Ok(conn) = s.conn() {
+        let earlier = crate::util::must_one(
+            &conn,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.held' AND subject = ? AND json_extract(detail, '$.reason') = 'ui-report'",
+            &[&branch],
+        )
+        .int("n");
+        if earlier == 0 {
+            crate::util::event_at(
+                &conn,
+                now,
+                actor,
+                "land.held",
+                branch,
+                serde_json::json!({
+                    "slug": slug,
+                    "job": job_id_of(job.clone()),
+                    "reason": "ui-report",
+                    "ui_paths": ui.ui_paths,
+                    "note": trouble,
+                    "dir": ui.dir.display().to_string(),
+                }),
+            );
+            let shown = ui
+                .ui_paths
+                .iter()
+                .take(6)
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let body = format!(
+                "`{branch}` changes {files} ({shown}) and job `{}` left no before/after report in its artifacts folder: {trouble}. Under `landing.ui_report = require` the branch waits and lands by itself once `report.json` there shows a change (`pulse report` builds the page).\n\nTo land it as it is, look at the change and run\n\n    {command}\n\nor let this project's UI changes land without a report:\n\n    pulse settings set {} warn\n",
+                job.str("id"),
+                pulse_store::ui_report_setting(slug)
+            );
+            if let Err(e) = crate::board::create_post(
+                s,
+                now.to_string(),
+                crate::board::PostOpts {
+                    kind: "question".into(),
+                    project: slug.to_string(),
+                    area: "jobs".into(),
+                    thread: job.str("id"),
+                    summary: crate::util::trunc(
+                        &format!(
+                            "{branch} waits for its before/after report ({files} changed)"
+                        ),
+                        230,
+                    ),
+                    body,
+                    agent: crate::board::actor_agent(s, actor.to_string()),
+                    date: now.to_string(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            ) {
+                eprintln!("landing: {branch} is held for its report but the owner could not be asked: {e:#}");
+            }
+        }
+    }
+    set_held_branch(s, slug, branch, now);
+    (
+        "held".to_string(),
+        format!(
+            "{branch} changes {files} and its worker left no before/after report ({trouble}); it lands once the report shows a change, or by hand: {command}"
+        ),
+    )
+}
+
 /// A branch that bumps a dependency changes a manifest with its lockfile. The
 /// owner's release-age rule decides it (`release_age_check`): every new
 /// version old enough and within its compatible range lands like any other
@@ -1421,6 +1527,26 @@ pub(crate) fn land_branch_with_registry(
         if !o.by_hand {
             return Ok(hold_recipe_branch(
                 s, project, root, base, branch, actor, job, now,
+            ));
+        }
+    }
+    // A job's change that has a face lands with its before/after report
+    // (`landing.ui_report = require`, ui_evidence.rs): without one the branch
+    // waits, is looked at again every HELD_RECHECK_MINUTES and lands once the
+    // report shows a change. A human landing it by hand has looked at it, a
+    // sync landing is the owner's published truth, and a job that ran on a
+    // remote hand has no folder the hub serves, so its summary is all it can
+    // show.
+    if !o.sync && !o.by_hand && !job.0.is_empty() {
+        let ui = crate::ui_evidence::UiEvidence::collect(
+            &home,
+            &job.str("id"),
+            &files,
+            crate::ui_evidence::Mode::of(s, &slug),
+        );
+        if ui.wants_report() && !ran_on_hands(s, &job.str("id")) {
+            return Ok(hold_unreported_branch(
+                s, &slug, &branch, &job, &actor, &now, &ui,
             ));
         }
     }
@@ -2261,6 +2387,7 @@ pub(crate) fn land_branch_with_registry(
             &home,
             &job.str("id"),
             &files,
+            crate::ui_evidence::Mode::of(s, &slug),
         ))
     };
     let mut detail = BTreeMap::from([
@@ -5802,6 +5929,8 @@ mod tests {
             "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, executor) VALUES('run-code-delivery', ?, 'aurora', 'proj', ?, ?, 'done', 'local')",
             &[&job.str("id"), &TEST_NOW, &TEST_NOW],
         );
+        // card.css has a face; what its report costs is another test's.
+        set_setting(&s, "landing.ui_report", "warn");
         let (state, note) = super::land_branch(
             &s,
             project,
@@ -5933,6 +6062,132 @@ mod tests {
         let states = res.iter().map(|r| r.state.as_str()).collect::<Vec<_>>();
         assert_eq!(states, ["landed", "landed"], "{res:?}");
         assert_eq!(verify_runs(&log), 2);
+    }
+
+    /// A job's change that has a face waits for its before/after report
+    /// (`landing.ui_report = require`): the branch is held and the owner asked
+    /// once, a second look only renews the hold, and once the report shows
+    /// the change the branch lands with a post that links the page.
+    #[test]
+    fn a_ui_change_waits_for_its_report_then_lands_with_a_link_to_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, root, _log) = checked_project();
+        let (id, branch) = finished_branch(
+            &s,
+            &root,
+            "face",
+            "page.tsx",
+            "export default 1;\n",
+            "2026-09-06T09:00:00Z",
+        );
+        let land = || {
+            super::land_branch(
+                &s,
+                project.clone(),
+                branch.clone(),
+                "daemon".into(),
+                TEST_NOW.into(),
+                super::LandOpts {
+                    job: job_row(&s, &id),
+                    verify: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let asked = || {
+            must_rows(
+                &s,
+                "SELECT summary FROM posts WHERE kind = 'question' AND area = 'jobs' AND thread = lower(?)",
+                &[&id],
+            )
+        };
+        let (state, note) = land();
+        assert_eq!(state, "held", "{note}");
+        assert!(
+            note.contains("changes 1 UI file and its worker left no before/after report (there is no report.json"),
+            "{note}"
+        );
+        assert!(note.contains(&format!("pulse land --project proj --branch {branch}")), "{note}");
+        assert_eq!(asked().len(), 1);
+        assert!(asked()[0].str("summary").contains("waits for its before/after report"));
+        let (state, _) = land();
+        assert_eq!(state, "held");
+        assert_eq!(asked().len(), 1, "the owner is asked once");
+        let held = must_rows(
+            &s,
+            "SELECT detail FROM events WHERE action = 'land.held' AND subject = ?",
+            &[&branch],
+        );
+        assert_eq!(held.len(), 1);
+        let detail: serde_json::Value = serde_json::from_str(&held[0].str("detail")).unwrap();
+        assert_eq!(detail["reason"], "ui-report", "{detail}");
+        assert_eq!(detail["ui_paths"][0], "page.tsx", "{detail}");
+
+        let dir = crate::ui_evidence::prepare_dir(&s.home, &id).unwrap();
+        std::fs::write(dir.join("before.png"), b"\x89PNG\r\n\x1a\n-1").unwrap();
+        std::fs::write(dir.join("after.png"), b"\x89PNG\r\n\x1a\n-2").unwrap();
+        std::fs::write(
+            dir.join("report.json"),
+            r#"{"title":"Page","changes":[{"title":"Page","was":"w","now":"n","before":"before.png","after":"after.png"}]}"#,
+        )
+        .unwrap();
+        let (state, note) = land();
+        assert_eq!(state, "landed", "{note}");
+        let body = must_rows(
+            &s,
+            "SELECT body FROM posts WHERE kind = 'result' AND area = 'jobs' AND thread = lower(?) ORDER BY created_at DESC LIMIT 1",
+            &[&id],
+        )[0]
+        .str("body");
+        assert!(
+            body.contains(&format!("See [the before/after report](/api/v1/jobs/{id}/artifacts/report.html) (1 change, 1 before/after pair) for 1 UI file.")),
+            "{body}"
+        );
+        assert!(dir.join("report.html").is_file(), "the landing built the page");
+    }
+
+    /// The owner landing a UI change by hand has looked at it: it lands as it
+    /// is, and its post says it has no report.
+    #[test]
+    fn the_owner_lands_a_ui_change_without_its_report_by_hand() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, root, _log) = checked_project();
+        let (id, branch) = finished_branch(
+            &s,
+            &root,
+            "face",
+            "page.css",
+            "body{}\n",
+            "2026-09-06T09:00:00Z",
+        );
+        let (state, note) = super::land_branch(
+            &s,
+            project,
+            branch,
+            pulse_store::HUMAN_AGENT.into(),
+            TEST_NOW.into(),
+            super::LandOpts {
+                job: job_row(&s, &id),
+                verify: true,
+                by_hand: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state, "landed", "{note}");
+        let body = must_rows(
+            &s,
+            "SELECT body FROM posts WHERE kind = 'result' AND area = 'jobs' AND thread = lower(?) ORDER BY created_at DESC LIMIT 1",
+            &[&id],
+        )[0]
+        .str("body");
+        assert!(
+            body.contains("Landed without a before/after report: 1 UI file changed (`page.css`)"),
+            "{body}"
+        );
     }
 }
 

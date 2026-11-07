@@ -15,6 +15,7 @@ import {
   CircleHelpIcon,
   CircleIcon,
   CircleXIcon,
+  Columns2Icon,
   ClipboardIcon,
   ClipboardListIcon,
   CopyIcon,
@@ -61,8 +62,9 @@ import { SectionHeading } from "@/components/pulse/section-heading";
 import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
 import { StatusBadge, StatusIcon } from "@/components/pulse/status-badge";
 import { Avatar, When } from "@/components/pulse/who";
-import type { HarnessModel, HarnessModelsResponse, HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, ProjectsPayload } from "@/lib/api";
-import { api, apiHref, enc, errorText, projectLabel, query, writes } from "@/lib/api";
+import type { HarnessModel, HarnessModelsResponse, HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, JobArtifactsResponse, ProjectsPayload } from "@/lib/api";
+import { api, apiHref, enc, errorText, jobArtifactHref, jobArtifactsPath, projectLabel, query, writes } from "@/lib/api";
+import { hasReportPage, REPORT_PAGE, REPORT_WORD as SEE_REPORT, reportTip } from "@/components/chat/job-evidence-state";
 import { num, parseDate, plural, sentence, span } from "@/lib/format";
 import { agentName, statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
@@ -1071,6 +1073,7 @@ function RunPanel({ id, models, projects, onClose }: { id: string | null; models
       actions={
         d ? (
           <>
+            {s?.job_id ? <RunReportButton jobId={s.job_id} /> : null}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1301,5 +1304,25 @@ export function HarnessPageClient() {
       )}
       <RunPanel id={selected} models={modelRows} projects={projects.data} onClose={() => setSelected(null)} />
     </>
+  );
+}
+
+// The run's job left a before/after report (`pulse report`): an icon in the
+// panel's actions opens it in a new tab. A job the hub does not know, or a
+// folder without the page, shows nothing.
+function RunReportButton({ jobId }: { jobId: string }) {
+  const { data } = useApi<JobArtifactsResponse>(jobArtifactsPath(jobId), { refresh: false });
+  if (!hasReportPage(data?.artifacts)) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button size="icon-sm" variant="ghost" asChild>
+          <a href={jobArtifactHref(jobId, REPORT_PAGE)} target="_blank" rel="noreferrer" aria-label={SEE_REPORT + ": " + reportTip("run")} data-report-link>
+            <Columns2Icon />
+          </a>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{SEE_REPORT}</TooltipContent>
+    </Tooltip>
   );
 }

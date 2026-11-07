@@ -478,6 +478,11 @@ pub(crate) fn reasons_for(s: &pulse_store::Store, pr: &PrView) -> Vec<String> {
     for p in guarded_paths(&paths, &pr.head) {
         reasons.push(format!("touches {p}"));
     }
+    // A change that has a face shows it before and after (`pulse report`,
+    // `landing.ui_report = require`); without that page it is the owner's.
+    if let Some(why) = crate::ui_evidence::pr_report_reason(s, &pr.head, &paths) {
+        reasons.push(why);
+    }
     // PULSE's own heads are `pulse/...` (jobs, tasks, conversations) and
     // `evolve/<id>` (a kept experiment, already measured against its card);
     // anything else was pushed by a person or another tool and gets the owner.

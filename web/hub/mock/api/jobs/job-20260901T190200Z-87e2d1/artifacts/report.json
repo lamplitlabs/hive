@@ -1,0 +1,22 @@
+{
+  "title": "Checkout shows its total after the price lookup",
+  "summary": "The checkout read the total before the async price lookup had answered, so a slow lookup left the page showing $NaN. The total now waits for the lookup, and a regression test covers the race.",
+  "changes": [
+    {
+      "area": "Checkout",
+      "title": "Order total",
+      "was": "On a slow price lookup the total read $NaN in red.",
+      "now": "The total shows $42.50 once the lookup answers.",
+      "before": "before-checkout.webp",
+      "after": "after-checkout.webp"
+    }
+  ],
+  "checks": [
+    "`checkout renders totals after the price lookup`: 20 of 20 runs passed (the old assertion failed 4 of 20)",
+    "`npm test`: 212 passed"
+  ],
+  "status": "On pulse/cinder/job-20260901T190200Z-87e2d1; it lands with task TASK-002.",
+  "notes": [
+    "The regression test `checkout renders totals after the price lookup` is new; test-run.md has its 20 runs."
+  ]
+}

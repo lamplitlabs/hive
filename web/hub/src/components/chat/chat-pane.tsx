@@ -13,7 +13,7 @@ import { Markdown } from "@/components/pulse/markdown";
 import { EmptyState } from "@/components/pulse/panel";
 import { Avatar, ToneBadge, When } from "@/components/pulse/who";
 import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
-import { JobEvidence } from "@/components/chat/job-evidence";
+import { JobEvidence, JobReportLink } from "@/components/chat/job-evidence";
 import { cn } from "@/lib/utils";
 import { fmtDate, type Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -155,6 +155,7 @@ function ReportBubble({ m, job, sameAuthor }: { m: Message; job?: TaskJob; sameA
               </Link>
             ) : null}
             {evidence ? <JobEvidence job={job} variant="link" /> : null}
+            {evidence ? <JobReportLink job={job} /> : null}
           </div>
         ) : null}
       </div>

@@ -44,7 +44,11 @@ were a task "branch" that did not exist yet) - a job that ended without a commit
 deliver; the job is simply done), a failed run (its commits were never
 verified; the job is retried as before, see [Recovery](recovery.md)), and a
 `review` job, which changes nothing in the project and has no branch of its
-own. The first push of a branch is a plain `--force` (the branch is PULSE's
+own - and, while `landing.ui_report` is `require`, a conversation branch
+whose change has a face and whose session left no before/after report: the
+session is woken once with what to do, and its pull request opens when the
+report shows the change, or an hour after the ask for the owner to merge
+([Before/after reports](reports.md)). The first push of a branch is a plain `--force` (the branch is PULSE's
 own); a push onto an open pull request is `--force-with-lease` against the
 commit the last push left there, so a branch someone moved on the forge is
 not overwritten. A pass opens at most ten pull requests per project

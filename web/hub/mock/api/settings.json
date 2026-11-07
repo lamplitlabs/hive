@@ -1327,6 +1327,22 @@
       "value": "on"
     },
     {
+      "choices": [
+        "require",
+        "warn",
+        "off"
+      ],
+      "default": "require",
+      "description": "require: a change that touches a screen (a page, a view, a stylesheet) reaches the default branch only with its before/after report - report.html, which pulse report builds from report.json and the screenshots in the agent's artifacts folder; a worker that finished without one gets one more turn to make it, a local landing waits for it, a pull request without one is the owner's to merge and a session is asked for it before its pull request opens; warn: the change lands without one and the landing says so; off: no report is asked for (a screenshot is still welcome); landing.ui_report.<project slug> sets it for one project",
+      "kind": "choice",
+      "min": null,
+      "name": "landing.ui_report",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "require"
+    },
+    {
       "choices": null,
       "default": "",
       "description": "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)",

@@ -103,3 +103,26 @@ export function evidenceEmptyText(error: string): string {
   if (error) return "The files did not load (" + error + ").";
   return "This step left no files. Screenshots and reports an agent saves in its artifacts folder show up here.";
 }
+
+// The before/after page an agent builds with `pulse report` from the
+// report.json and screenshots it saved in the same folder: each visible
+// change as it was and as it is now. It is the file the owner opens first,
+// so the task, the session and the run link it on its own.
+export const REPORT_PAGE = "report.html";
+
+export const REPORT_WORD = "See the report";
+
+export function hasReportPage(
+  artifacts: Pick<ChatArtifact, "name">[] | undefined,
+): boolean {
+  return !!artifacts?.some((a) => a.name === REPORT_PAGE);
+}
+
+// The tooltip of a report link: whose report it is and where it opens.
+export function reportTip(of: "job" | "session" | "run"): string {
+  return (
+    "The before/after report this " +
+    of +
+    "'s agent built: each change as it was and as it is now. Opens in a new tab."
+  );
+}

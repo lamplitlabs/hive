@@ -5,8 +5,9 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 
 // Record bodies, briefs and chat messages are Markdown stored in SQL. Links
-// open in the same tab when relative (the hub serves them) and in a new tab
-// when absolute; raw HTML is never rendered.
+// to console pages open in the same tab; absolute links, and files the hub
+// serves under /api/ (a job's before/after report), open in a new tab. Raw
+// HTML is never rendered.
 export function Markdown({ source, className }: { source: string; className?: string }) {
   if (!source?.trim()) return <p className={cn("text-sm text-muted-foreground", className)}>No text yet.</p>;
   return (
@@ -16,9 +17,9 @@ export function Markdown({ source, className }: { source: string; className?: st
         skipHtml
         components={{
           a: ({ href, children }) => {
-            const abs = /^https?:\/\//.test(href || "");
+            const away = /^https?:\/\//.test(href || "") || /^\/api\//.test(href || "");
             return (
-              <a href={href} target={abs ? "_blank" : undefined} rel={abs ? "noreferrer noopener" : undefined}>
+              <a href={href} target={away ? "_blank" : undefined} rel={away ? "noreferrer noopener" : undefined}>
                 {children}
               </a>
             );

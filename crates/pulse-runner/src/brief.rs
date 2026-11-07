@@ -648,7 +648,12 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "   clone, removes whatever you left behind, and writes it down against your name (`agent.cleanup` on the"
     );
     w!("   hub's Hygiene panel) - a clean finish leaves nothing to write down.");
-    write_evidence_rule(&mut b, &o.artifacts_dir, o.remote);
+    let ui_mode = o
+        .store
+        .as_ref()
+        .map(|st| crate::ui_evidence::Mode::of(st, &o.project.str("slug")))
+        .unwrap_or_default();
+    write_evidence_rule(&mut b, &o.artifacts_dir, o.remote, ui_mode);
     if o.has_ball {
         w!("");
         w!("## Ballot (cards still needing votes; answer with `VOTE:` lines in your report)");
@@ -691,7 +696,12 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
 /// changed and left no screenshot or report is landed unshown, and the
 /// result post says so. A remote hand has no folder the hub serves, so the
 /// evidence goes into the report instead.
-pub(crate) fn write_evidence_rule(b: &mut Vec<String>, artifacts_dir: &str, remote: bool) {
+pub(crate) fn write_evidence_rule(
+    b: &mut Vec<String>,
+    artifacts_dir: &str,
+    remote: bool,
+    mode: crate::ui_evidence::Mode,
+) {
     if remote || artifacts_dir.is_empty() {
         b.push(
             "10. Show your work when it has a face: when the change touches anything a person sees (a page, a view, a"
@@ -711,27 +721,83 @@ pub(crate) fn write_evidence_rule(b: &mut Vec<String>, artifacts_dir: &str, remo
         "10. Show your work when it has a face: when the change touches anything a person sees (a page, a view, a"
             .into(),
     );
+    if mode == crate::ui_evidence::Mode::Off {
+        b.push(format!(
+            "    stylesheet, a native screen), leave evidence in $PULSE_ARTIFACTS ({artifacts_dir}) before you finish: a"
+        ));
+        b.push(
+            "    screenshot of the changed screen (a browser tool's screenshot lands there by itself when it is set up to; otherwise"
+                .into(),
+        );
+        b.push(
+            "    render the page with the project's own dev server or test harness and save a PNG), or an HTML/Markdown report"
+                .into(),
+        );
+        b.push(
+            "    with the before/after when a screenshot is out of reach. Name each file in your SUMMARY. The owner reads the hub,"
+                .into(),
+        );
+        b.push(
+            "    not the diff: a UI change with nothing in that folder is landed unshown and the result post says so. Work"
+                .into(),
+        );
+        b.push(
+            "    without a face (a library, a daemon, a migration) needs none; a benchmark table or a report is still welcome there."
+                .into(),
+        );
+        return;
+    }
     b.push(format!(
-        "    stylesheet, a native screen), leave evidence in $PULSE_ARTIFACTS ({artifacts_dir}) before you finish: a"
+        "    stylesheet, a native screen), finish with a before/after report in $PULSE_ARTIFACTS ({artifacts_dir})."
     ));
     b.push(
-        "    screenshot of the changed screen (a browser tool's screenshot lands there by itself when it is set up to; otherwise"
+        "    Before you change a screen, picture it as it is: run the project's dev server or test harness and save"
             .into(),
     );
     b.push(
-        "    render the page with the project's own dev server or test harness and save a PNG), or an HTML/Markdown report"
+        "    before-<screen>.png at 1440x900, plus 390x844 for a screen people open on a phone, plus the dark theme when"
             .into(),
     );
     b.push(
-        "    with the before/after when a screenshot is out of reach. Name each file in your SUMMARY. The owner reads the hub,"
+        "    the change touches colour (a browser tool's screenshot lands in that folder by itself when it is set up to)."
             .into(),
     );
     b.push(
-        "    not the diff: a UI change with nothing in that folder is landed unshown and the result post says so. Work"
+        "    When the change is done, save the same screens the same way as after-<screen>.png. Then write report.json"
             .into(),
     );
     b.push(
-        "    without a face (a library, a daemon, a migration) needs none; a benchmark table or a report is still welcome there."
+        "    beside them (`pulse report --example` prints its shape: a title, what changed for the person looking, one"
+            .into(),
+    );
+    b.push(
+        "    entry per visible change with a `was` and a `now` line and its `before` and `after` pictures, the checks you"
+            .into(),
+    );
+    b.push(
+        "    ran, where the work stands) and run `pulse report`: it builds report.html and names anything missing; run it"
+            .into(),
+    );
+    b.push(
+        "    until it names nothing, and name report.html in your SUMMARY. The owner reads that page, not the diff:"
+            .into(),
+    );
+    if mode == crate::ui_evidence::Mode::Require {
+        b.push(
+            "    a change with a face and no report does not land on its own - the runner asks you for it before the run"
+                .into(),
+        );
+        b.push(
+            "    ends, and without it the landing waits for the owner (landing.ui_report).".into(),
+        );
+    } else {
+        b.push(
+            "    a change with a face and no report still lands, and its landing says it has none (landing.ui_report is warn)."
+                .into(),
+        );
+    }
+    b.push(
+        "    Work without a face (a library, a daemon, a migration) needs none; a benchmark table or a report is still welcome there."
             .into(),
     );
 }
@@ -1915,11 +1981,57 @@ mod tests {
             "{local}"
         );
         assert!(
-            local.contains("leave evidence in $PULSE_ARTIFACTS (/h/work/jobs/job-mcp/artifacts) before you finish"),
+            local.contains("finish with a before/after report in $PULSE_ARTIFACTS (/h/work/jobs/job-mcp/artifacts)."),
             "{local}"
         );
-        assert!(local.contains("landed unshown"), "{local}");
-        assert!(local.contains("Name each file in your SUMMARY"), "{local}");
+        // Before pictures come first, the page is built by `pulse report`,
+        // and the brief says what a missing report costs.
+        for want in [
+            "Before you change a screen, picture it as it is",
+            "before-<screen>.png at 1440x900, plus 390x844",
+            "after-<screen>.png",
+            "`pulse report --example` prints its shape",
+            "run `pulse report`: it builds report.html",
+            "name report.html in your SUMMARY",
+            "the landing waits for the owner (landing.ui_report)",
+        ] {
+            assert!(local.contains(want), "{want}: {local}");
+        }
+        // Warn: the report is asked for, nothing waits.
+        s.set_setting("human", "landing.ui_report", "warn").unwrap();
+        let warned = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            artifacts_dir: "/h/work/jobs/job-mcp/artifacts".into(),
+            ..Default::default()
+        });
+        assert!(warned.contains("still lands, and its landing says it has none"), "{warned}");
+        assert!(!warned.contains("the landing waits for the owner"), "{warned}");
+        // Off, for this project alone: the screenshot rule of before.
+        s.set_setting("human", &pulse_store::ui_report_setting(&project.str("slug")), "off")
+            .unwrap();
+        let off = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project: project.clone(),
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 10,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            artifacts_dir: "/h/work/jobs/job-mcp/artifacts".into(),
+            ..Default::default()
+        });
+        assert!(
+            off.contains("leave evidence in $PULSE_ARTIFACTS (/h/work/jobs/job-mcp/artifacts) before you finish"),
+            "{off}"
+        );
+        assert!(off.contains("landed unshown"), "{off}");
+        assert!(!off.contains("pulse report"), "{off}");
         // A remote hand has no served folder: the evidence goes in the report.
         let remote = must_write_brief(BriefOpts {
             job: brief_job(),

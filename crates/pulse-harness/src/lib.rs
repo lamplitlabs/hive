@@ -21,6 +21,8 @@ pub mod memory;
 pub mod permissions;
 pub mod readonly;
 pub mod repair;
+pub mod report;
+pub mod report_command;
 pub mod retitle;
 pub mod rewind;
 pub mod search;
@@ -44,6 +46,7 @@ pub use trim::*;
 pub fn register() {
     commands::register();
     chat_command::register();
+    report_command::register();
     *pulse_board::AGENT_SPEC_CHECK
         .write()
         .unwrap_or_else(|e| e.into_inner()) = Some(agent_spec_check);

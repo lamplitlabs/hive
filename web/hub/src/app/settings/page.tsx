@@ -75,7 +75,7 @@ interface Group {
 // #evolve #daemon #provider #other) are linked from other pages.
 const RUNNER_CLUSTERS: Cluster[] = [
   { title: "How much work runs", keys: ["stop", "capacity", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
-  { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.auto_stash", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
+  { title: "Merging finished work", keys: ["landing", "landing.push", "push.credential", "landing.ui_report", "landing.auto_stash", "landing.base_red_retry_minutes", "landing.verify_memo", "landing.verify_memo_hours", "verify.lock"] },
   { title: "Dependencies", keys: ["dependencies.security_updates", "dependencies.major_updates", "dependencies.min_release_age_days", "dependencies.alert_check_minutes"] },
   { title: "Checks on GitHub", keys: ["pipeline.watch", "pipeline.wait_hours"] },
   { title: "Reviewing pull requests", keys: ["review.merge", "review.max_files", "review.max_lines"] },
@@ -117,7 +117,7 @@ const GROUPS: Group[] = [
     keys: keysOf(RUNNER_CLUSTERS),
     match: (n) => n.startsWith("lead.") || n.startsWith("landing.") || n.startsWith("plan.") || n.startsWith("board.") || n.startsWith("verify.") || n.startsWith("dependencies."),
     clusters: RUNNER_CLUSTERS,
-    primary: ["capacity", "jobs_per_day", "minutes_per_job", "landing", "landing.push", "push.credential", "quorum"],
+    primary: ["capacity", "jobs_per_day", "minutes_per_job", "landing", "landing.push", "push.credential", "landing.ui_report", "quorum"],
   },
   {
     id: "compute",
@@ -279,6 +279,7 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "owner.presence": { choices: { present: "I'm here", away: "I'm away: lead agents decide for me" } },
   landing: { choices: { agents: "Agents merge it themselves", human: "I merge it myself" } },
   "landing.push": { choices: { off: "Don't push, I push myself", main: "Push the main branch", pr: "Open a pull request" } },
+  "landing.ui_report": { choices: { require: "Wait for the report", warn: "Merge, and say it has none", off: "Don't ask for one" } },
   "landing.auto_stash": { choices: ON_OFF },
   "dependencies.security_updates": { on: "On: agents fix the alerts, one small update at a time", off: "Off: the alerts wait for me" },
   "dependencies.major_updates": { choices: { ask: "Ask me: a major upgrade waits in For you with Yes / No", auto: "Automatic: agents do major upgrades like any other fix" } },

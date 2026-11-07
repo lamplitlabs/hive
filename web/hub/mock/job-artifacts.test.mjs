@@ -89,12 +89,19 @@ test("mime by extension, names as the hub accepts them, newest first with a name
   );
 });
 
-test("the shipped fixture folder has one image and one report for a TASK-002 job", async () => {
+test("the shipped fixture folder has a screenshot, a note and a before/after report for a TASK-002 job", async () => {
   const root = new URL("./api", import.meta.url).pathname;
   const mock = createJobArtifactsMock({ root });
   const l = await mock.list("job-20260901T190200Z-87e2d1");
   assert.deepEqual(
     l.artifacts.map((a) => a.name).sort(),
-    ["checkout-total.png", "test-run.md"],
+    [
+      "after-checkout.webp",
+      "before-checkout.webp",
+      "checkout-total.png",
+      "report.html",
+      "report.json",
+      "test-run.md",
+    ],
   );
 });

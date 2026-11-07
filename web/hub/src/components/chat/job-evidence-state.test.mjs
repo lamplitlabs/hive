@@ -5,6 +5,7 @@ import {
   defaultEvidenceFile,
   evidenceEmptyText,
   hasJobEvidence,
+  hasReportPage,
   isImageName,
   jobEvidenceCount,
   jobEvidenceLabel,
@@ -12,6 +13,9 @@ import {
   jobEvidenceTip,
   jobEvidenceWord,
   keepSelection,
+  REPORT_PAGE,
+  REPORT_WORD,
+  reportTip,
   shortTitle,
 } from "./job-evidence-state.ts";
 
@@ -87,4 +91,16 @@ test("the selection survives a refresh while its file is still listed", () => {
 test("an empty folder and a failed listing read differently", () => {
   assert.match(evidenceEmptyText(""), /left no files/);
   assert.match(evidenceEmptyText("HTTP 404"), /did not load \(HTTP 404\)/);
+});
+
+test("the report link shows only for a folder that holds the before/after page", () => {
+  assert.equal(REPORT_PAGE, "report.html");
+  assert.equal(REPORT_WORD, "See the report");
+  assert.equal(hasReportPage(undefined), false);
+  assert.equal(hasReportPage([]), false);
+  // The manifest and the pictures alone are not the page.
+  assert.equal(hasReportPage([{ name: "report.json" }, { name: "before-home.png" }]), false);
+  assert.equal(hasReportPage([{ name: "after.png" }, { name: "report.html" }]), true);
+  assert.match(reportTip("session"), /^The before\/after report this session's agent built/);
+  assert.match(reportTip("run"), /Opens in a new tab\.$/);
 });

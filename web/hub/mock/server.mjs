@@ -1229,6 +1229,7 @@ const MIME = {
   woff2: "font/woff2",
   ico: "image/x-icon",
   png: "image/png",
+  webp: "image/webp",
 };
 async function serveStatic(res, pathname) {
   const clean = normalize(decodeURIComponent(pathname));

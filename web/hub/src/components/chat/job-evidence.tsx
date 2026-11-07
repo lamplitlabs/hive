@@ -4,16 +4,21 @@
 // the screenshots and reports the job left in its artifacts folder, the
 // owner's evidence for what is being landed. Where a canvas is near (the
 // task view) it opens the job's evidence tab; elsewhere (the project's
-// chat) it is a link to the newest file, in a new tab. The words and rules
-// are in job-evidence-state.ts.
+// chat) it is a link to the newest file, in a new tab. Beside it, "See the
+// report" opens the before/after page the agent built with `pulse report`,
+// when the folder has one. The words and rules are in job-evidence-state.ts.
 
-import { ImagesIcon } from "lucide-react";
+import { Columns2Icon, ImagesIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   hasJobEvidence,
+  hasReportPage,
   jobEvidenceCount,
   jobEvidenceTip,
   jobEvidenceWord,
+  REPORT_PAGE,
+  REPORT_WORD,
+  reportTip,
 } from "@/components/chat/job-evidence-state";
 import {
   apiHref,
@@ -106,5 +111,64 @@ function EvidenceLink({
     >
       {children}
     </a>
+  );
+}
+
+// "See the report": the before/after page, in a new tab (the hub serves it
+// sandboxed, its pictures beside it in the same folder).
+export function ReportLink({
+  href,
+  tip,
+  className,
+}: {
+  href: string;
+  tip: string;
+  className?: string;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={cn(LINK, className)}
+      title={tip}
+      data-report-link
+    >
+      <Columns2Icon className="size-3.5" aria-hidden />
+      {REPORT_WORD}
+    </a>
+  );
+}
+
+// The job's report link, when its folder holds the page; nothing while the
+// listing loads or for a job without files.
+export function JobReportLink({
+  job,
+  className,
+}: {
+  job: TaskJob | undefined;
+  className?: string;
+}) {
+  if (!job || !hasJobEvidence(job)) return null;
+  return <JobReportLinkLoaded job={job} className={className} />;
+}
+
+function JobReportLinkLoaded({
+  job,
+  className,
+}: {
+  job: TaskJob;
+  className?: string;
+}) {
+  const { data } = useApi<JobArtifactsResponse>(jobArtifactsPath(job.id), {
+    refresh: false,
+  });
+  if (!hasReportPage(data?.artifacts)) return null;
+  return (
+    <ReportLink
+      href={jobArtifactHref(job.id, REPORT_PAGE)}
+      tip={reportTip("job")}
+      className={className}
+    />
   );
 }
