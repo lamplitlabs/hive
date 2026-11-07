@@ -2104,6 +2104,7 @@ mod tests {
                 weight: 2.0,
                 metric: true,
                 note: String::new(),
+                runs: Vec::new(),
             },
             pulse_evolve::FixtureScore {
                 name: "starter-proposes-first".into(),
@@ -2112,6 +2113,7 @@ mod tests {
                 weight: 1.0,
                 metric: false,
                 note: String::new(),
+                runs: Vec::new(),
             },
         ];
         if !only.is_empty() {

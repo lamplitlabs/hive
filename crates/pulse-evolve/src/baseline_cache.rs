@@ -139,6 +139,14 @@ pub fn baseline_fixture_key(s: &pulse_store::Store, project: &str) -> Result<Str
     if !reasoning.is_empty() && reasoning != "default" {
         push_kv(&mut canonical, "setting.measure_reasoning", &reasoning)?;
     }
+    // A baseline cached when each judge-scored fixture ran once is not the
+    // like-for-like base of a variant whose judge fixtures agree over
+    // several runs: the run count is part of the key.
+    push_kv(
+        &mut canonical,
+        "measure.judge_runs",
+        &crate::dispute::JUDGE_RUNS.to_string(),
+    )?;
     for key in BASELINE_CACHE_SETTINGS {
         push_kv(
             &mut canonical,

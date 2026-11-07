@@ -246,6 +246,16 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
             )));
         }
     }
+    // The raw scores of every judge-scored fixture's runs go in the note
+    // too, so a dispute reads what the agreed scores were agreed from.
+    let runs = crate::dispute::judge_runs_note(&baseline, &variant);
+    let note = if runs.is_empty() || row.note.contains(&runs) {
+        row.note.clone()
+    } else if row.note.is_empty() {
+        runs
+    } else {
+        format!("{}; {runs}", row.note)
+    };
     let fixtures = pulse_store::gojson::to_string(&ScorePair {
         baseline: Some(baseline.clone()),
         variant: Some(variant.clone()),
@@ -281,7 +291,7 @@ pub(crate) fn archive(s: &pulse_store::Store, row: ArchiveRow) -> Result<String>
             sandbox,
             row.run_id,
             s.now(),
-            row.note,
+            note,
             row.parent,
             row.patch,
             row.base_commit
@@ -401,6 +411,7 @@ mod tests {
                     weight: 1.0,
                     metric: false,
                     note: "private annotation".into(),
+                    runs: Vec::new(),
                 }],
                 ..Default::default()
             }),

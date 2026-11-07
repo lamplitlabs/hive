@@ -21,6 +21,76 @@
 
 use crate::api::{FixtureScore, Scores};
 
+/// How many times one measurement runs a judge-scored fixture (a request
+/// fixture or a held-out one: `metric` is false and a model's answer is
+/// scored 0/0.5/1). A metric fixture scores the frozen tree
+/// deterministically and runs once.
+pub const JUDGE_RUNS: usize = 3;
+
+/// The score a judge-scored fixture's runs agree on: the value at least two
+/// of the runs scored, or the median when every run differs. One run is its
+/// own score; no run scores 0.
+pub fn agreed_score(runs: &[f64]) -> f64 {
+    match runs {
+        [] => 0.0,
+        [one] => *one,
+        _ => {
+            for (i, a) in runs.iter().enumerate() {
+                if runs[i + 1..].iter().any(|b| b == a) {
+                    return *a;
+                }
+            }
+            let mut sorted = runs.to_vec();
+            sorted.sort_by(f64::total_cmp);
+            let mid = sorted.len() / 2;
+            if sorted.len() % 2 == 1 {
+                sorted[mid]
+            } else {
+                (sorted[mid - 1] + sorted[mid]) / 2.0
+            }
+        }
+    }
+}
+
+/// The raw runs of every judge-scored fixture a measurement ran more than
+/// once, as `name 1, 1, 0 -> 1` items joined by `, ` - empty when none did.
+pub fn runs_line(scores: &Scores) -> String {
+    scores
+        .fixtures
+        .iter()
+        .filter(|f| f.runs.len() > 1)
+        .map(|f| format!("{} {} -> {}", f.name, run_values(&f.runs), f.score))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `1, 1, 0`: a fixture's raw run scores as they are written in a note.
+pub(crate) fn run_values(runs: &[f64]) -> String {
+    runs.iter()
+        .map(f64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What the archive note says about the judge runs behind both
+/// measurements, so a dispute can see the raw scores: `judge runs: baseline
+/// starter-a 1, 1, 0 -> 1; variant starter-a 0, 0.5, 1 -> 0.5`. Empty when
+/// neither measurement ran a judge-scored fixture more than once.
+pub fn judge_runs_note(baseline: &Scores, variant: &Scores) -> String {
+    let parts: Vec<String> = [("baseline", baseline), ("variant", variant)]
+        .into_iter()
+        .filter_map(|(label, scores)| {
+            let line = runs_line(scores);
+            (!line.is_empty()).then(|| format!("{label} {line}"))
+        })
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("judge runs: {}", parts.join("; "))
+    }
+}
+
 /// The weighted total a measurement computes: Σ score·weight / Σ weight.
 pub fn weighted_total(fixtures: &[FixtureScore]) -> f64 {
     let weights: f64 = fixtures.iter().map(|f| f.weight).sum();
@@ -173,6 +243,7 @@ mod tests {
             weight,
             metric,
             note: String::new(),
+            runs: Vec::new(),
         }
     }
 
@@ -201,6 +272,38 @@ mod tests {
             fx("H1", 1.0, 1.0, false),
             fx("H2", 1.0, 1.0, false),
         ])
+    }
+
+    #[test]
+    fn agreed_score_takes_the_value_two_runs_agree_on_or_the_median() {
+        assert_eq!(agreed_score(&[1.0, 1.0, 0.0]), 1.0);
+        assert_eq!(agreed_score(&[0.0, 1.0, 0.0]), 0.0);
+        assert_eq!(agreed_score(&[0.5, 1.0, 0.5]), 0.5);
+        assert_eq!(agreed_score(&[0.0, 0.5, 1.0]), 0.5);
+        assert_eq!(agreed_score(&[1.0, 0.0, 0.5]), 0.5);
+        assert_eq!(agreed_score(&[1.0, 1.0, 1.0]), 1.0);
+        assert_eq!(agreed_score(&[0.75]), 0.75);
+        assert_eq!(agreed_score(&[]), 0.0);
+        assert_eq!(agreed_score(&[0.0, 1.0]), 0.5);
+    }
+
+    #[test]
+    fn judge_runs_note_names_only_fixtures_run_more_than_once() {
+        let mut judged = fx("starter-a", 1.0, 1.0, false);
+        judged.runs = vec![1.0, 1.0, 0.0];
+        let base = Scores {
+            fixtures: vec![judged, fx("tests", 0.4, 1.0, true)],
+            ..Default::default()
+        };
+        let plain = Scores {
+            fixtures: vec![fx("tests", 0.4, 1.0, true)],
+            ..Default::default()
+        };
+        assert_eq!(
+            judge_runs_note(&base, &plain),
+            "judge runs: baseline starter-a 1, 1, 0 -> 1"
+        );
+        assert_eq!(judge_runs_note(&plain, &plain), "");
     }
 
     #[test]

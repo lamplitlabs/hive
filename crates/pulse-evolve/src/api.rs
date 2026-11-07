@@ -22,6 +22,11 @@ pub struct FixtureScore {
     pub metric: bool,
     #[serde(rename = "note", skip_serializing_if = "String::is_empty", default)]
     pub note: String,
+    /// The raw scores of a judge-scored fixture's runs, in run order; `score`
+    /// is the value they agreed on (see [`crate::dispute::agreed_score`]).
+    /// Empty for a fixture measured once (every metric fixture).
+    #[serde(rename = "runs", skip_serializing_if = "Vec::is_empty", default)]
+    pub runs: Vec<f64>,
 }
 
 /// Scores is one measurement of a tree against a project's fixtures.
@@ -500,6 +505,7 @@ mod tests {
             weight,
             metric: true,
             note: String::new(),
+            runs: Vec::new(),
         };
         let cached = Scores {
             ref_name: "base".into(),
