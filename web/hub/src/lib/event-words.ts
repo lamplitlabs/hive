@@ -100,7 +100,67 @@ export const VERB: Record<string, string> = {
   "daemon.slow-stage": "took longer than planned on one step of its pass",
   // awake.rs: the computer slept; runs in flight lost that time.
   "daemon.slept": "noticed the computer was asleep",
+  // The self-improvement loop (pulse-evolve): a fixture is one measurement
+  // the loop scores every experiment with.
+  "evolution.archived": "recorded the result of an improvement experiment",
+  "evolution.feedback": "asked an agent to reflect on a finished improvement experiment",
+  "evolution.fixture.added": "added a measurement to the improvement loop",
+  "evolution.fixture.derived": "added or adjusted measurements the improvement loop read off the project",
+  "evolution.fixture.derive_failed": "could not read new measurements off the project for the improvement loop",
+  "evolution.fixture.enabled": "switched a measurement of the improvement loop on or off",
+  "evolution.fixture.rearmed": "raised the bar of a measurement the project had outgrown",
+  "evolution.fixture.retired": "switched off a measurement that kept disagreeing with itself",
+  "evolution.fixture.seeded": "gave the improvement loop its starter measurements",
+  "evolution.fixture.seed_failed": "could not give the improvement loop its starter measurements",
+  "evolution.flat.resumed": "let the improvement loop carry on, as its stalled question no longer holds",
+  "evolution.flat.self_reviewed": "let the improvement loop carry on after a question went unanswered",
+  "evolution.healed": "added measurements so the stalled improvement loop can tell changes apart",
+  "evolution.records.seeded": "wrote the improvement loop\u2019s rules and evaluators for the project",
+  "evolution.records.seed_failed": "could not write the improvement loop\u2019s rules and evaluators",
+  "evolution.fleet.prepared": "prepared workspaces for an improvement experiment",
+  "evolution.fleet.cleaned": "cleared away an improvement experiment\u2019s workspaces",
+  // Schedules (pulse-tasks schedules.rs): a repeating job, check or watch.
+  "schedule.added": "added a schedule",
+  "schedule.updated": "changed a schedule",
+  "schedule.ended": "finished a schedule after its last run",
+  "schedule.fired": "queued a job for a schedule",
+  "schedule.ran": "ran a scheduled check",
+  "schedule.run": "asked a schedule to run now",
+  "schedule.red": "saw a scheduled check start failing",
+  // Leads (pulse-tasks leads.rs, pulse-runner lead.rs): the agent that plans
+  // a project's tasks into jobs.
+  "lead.run": "asked a lead to plan now",
+  "lead.seated": "gave a project a lead",
+  "task.followup": "followed up on a task whose job failed",
+  "task.lead": "handed a task to its lead to plan",
+  "task.nudged": "moved a task\u2019s jobs up the queue because you asked about it",
+  // Suggested work (pulse-tasks suggestions.rs): a task an agent proposes
+  // and another agent reviews.
+  "suggestion.new": "suggested a task",
+  "suggestion.review": "reviewed a suggested task",
+  "suggestion.reviewing": "started reviewing a suggested task",
+  "suggestion.unreviewed": "put a suggested task back for another review",
+  "suggestion.withdrawn": "withdrew a suggested task",
 };
+
+// suggestion.review's statuses (suggestions.rs).
+const REVIEWED: Record<string, string> = {
+  accepted: "accepted a suggested task",
+  declined: "declined a suggested task",
+  owner: "asked you to decide on a suggested task",
+};
+
+// evolution.archived's outcomes (archive.rs ArchiveOutcome).
+const ARCHIVED: Record<string, string> = {
+  improved: "kept an improvement experiment that made things better",
+  neutral: "recorded an improvement experiment that changed nothing measurable",
+  discarded: "discarded an improvement experiment that made things worse",
+};
+
+// A schedule's state after a run: the bad and good states of a check
+// (red/green) and of a watch (broken/ok).
+const FAILING = new Set(["red", "broken"]);
+const PASSING = new Set(["green", "ok"]);
 
 // job.recover's outcomes (recover.rs, pulse-board jobs.rs).
 const RECOVERED: Record<string, string> = {
@@ -174,6 +234,12 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   if (a === "daemon.slept" && typeof d?.seconds === "number" && d.seconds > 0) return "noticed the computer was asleep for about " + durationWords(d.seconds * 1000);
   if (a === "land.pr") return namePr(d ? landPr(d) : VERB[a], d);
   if (a === "land.measured" && d?.regressed === true) return "measured a merged change and found the work after it got slower";
+  if (a === "suggestion.review") return REVIEWED[str(d?.status)] ?? VERB[a];
+  if (a === "evolution.archived") return ARCHIVED[str(d?.outcome)] ?? VERB[a];
+  if (a === "evolution.fixture.enabled" && typeof d?.enabled === "boolean") return (d.enabled ? "switched on" : "switched off") + " a measurement of the improvement loop";
+  if (a === "schedule.ran" && FAILING.has(str(d?.state))) return "ran a scheduled check, which failed";
+  if (a === "schedule.ran" && PASSING.has(str(d?.state))) return "ran a scheduled check, which passed";
+  if (a === "schedule.red" && str(d?.kind) === "watch") return "saw a watched script stop working";
   if (VERB[a]) return a.startsWith("land.") || a.startsWith("review.") ? namePr(VERB[a], d) : VERB[a];
   return a
     .replace(/[._-]+/g, " ")
