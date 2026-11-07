@@ -2773,6 +2773,12 @@ export interface ActivityRun {
   commands: number;
   edits: number;
   steps: number;
+  // What the run cost, recorded when it ended (runs.prompt_tokens,
+  // completion_tokens, cost); absent while it runs or when it kept no
+  // harness session.
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cost?: number;
 }
 
 export interface TaskActivity {

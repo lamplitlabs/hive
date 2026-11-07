@@ -2701,9 +2701,9 @@ impl Agent {
             ));
         }
         let close = if self.cfg.read_only {
-            "Stop exploring. Reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work."
+            "Stop exploring. Reply with no command and your final report starting with an outcome code: SUMMARY: done - ... (or SUMMARY: nothing-to-do - ..., SUMMARY: blocked: ..., SUMMARY: failed: ... if unfinished). Do not start new work."
         } else {
-            "Stop exploring. If you changed files, run the targeted check and commit finished work now, then reply with no command and your final report starting with SUMMARY: (use SUMMARY: blocked: or SUMMARY: failed: if unfinished). Do not start new work."
+            "Stop exploring. If you changed files, run the targeted check and commit finished work now, then reply with no command and your final report starting with an outcome code: SUMMARY: done - ... (or SUMMARY: nothing-to-do - ..., SUMMARY: blocked: ..., SUMMARY: failed: ... if unfinished). Do not start new work."
         };
         Some(format!(
             "Budget notice: {remaining} model calls remain of {}. {close}",
@@ -5850,7 +5850,7 @@ pub const DEFAULT_PROMPT_TEMPLATE: &str = concat!(
     "If it still fails, try a different evidence-based approach or use the task's peer-help channel; do not repeat an unchanged failure or poll while waiting for help.\n",
     "Never bypass a policy refusal or approval boundary, weaken a check, or report unfinished work as completed.\n",
     "A budget notice arrives when few model calls remain; after it, stop exploring and finish with the targeted check, commit, and final SUMMARY report.\n",
-    "An unfinished task is reported as SUMMARY: blocked: <cause and attempted fixes> or SUMMARY: failed: <cause and attempted fixes>.\n",
+    "The SUMMARY: line opens with one outcome code, which a program reads before the rest: SUMMARY: done - <what changed and what you measured>, SUMMARY: nothing-to-do - <what already covers it or what you checked>, SUMMARY: blocked: <cause and attempted fixes> or SUMMARY: failed: <cause and attempted fixes>; an unfinished task is reported as blocked or failed.\n",
     "When done, or when you cannot continue, reply with no command and a plain-text final report.\n",
     "The report must include a SUMMARY: line and any FINDING:, SUGGESTION:, QUESTION:, or VOTE: lines the task asked for.\n",
     "Those key words must start their lines because a program reads the report.\n",
@@ -8066,6 +8066,16 @@ mod tests {
         assert!(rendered.contains("Output over 1234 characters"));
         assert!(rendered.contains("already the clone root"));
         assert!(rendered.contains("exactly one fenced block"));
+        // The report's outcome code, which the runner reads before the
+        // summary's words (pulse-runner brief::classify_outcome).
+        for code in [
+            "SUMMARY: done - ",
+            "SUMMARY: nothing-to-do - ",
+            "SUMMARY: blocked: ",
+            "SUMMARY: failed: ",
+        ] {
+            assert!(rendered.contains(code), "missing {code:?} in:\n{rendered}");
+        }
         let custom = render_prompt(
             "{{.Cwd}} {{.Provider}} {{.Model}} {{.Info.shell}}",
             prompt_data(&info, &cfg),

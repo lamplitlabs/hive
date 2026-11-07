@@ -94,4 +94,36 @@ pub const RUNNER_COLUMNS: &[Column] = &[
         name: r####"variant"####,
         ddl: r####"TEXT NOT NULL DEFAULT ''"####,
     },
+    // What a run cost: the tokens and the provider's priced cost of the
+    // harness sessions it ran (harness_sessions.run_id), summed onto the run
+    // as it ends; zero for a worker that keeps no harness session.
+    Column {
+        table: r####"runs"####,
+        name: r####"prompt_tokens"####,
+        ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
+    },
+    Column {
+        table: r####"runs"####,
+        name: r####"completion_tokens"####,
+        ddl: r####"INTEGER NOT NULL DEFAULT 0"####,
+    },
+    Column {
+        table: r####"runs"####,
+        name: r####"cost"####,
+        ddl: r####"REAL NOT NULL DEFAULT 0"####,
+    },
+    // The outcome code the worker's SUMMARY line opened with (done, blocked,
+    // failed, nothing-to-do; empty without one) and what classified the run:
+    // `code` when that code did, `text` when the runner fell back to reading
+    // the summary's words, `none` when the worker wrote no summary.
+    Column {
+        table: r####"runs"####,
+        name: r####"outcome"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
+    Column {
+        table: r####"runs"####,
+        name: r####"outcome_source"####,
+        ddl: r####"TEXT NOT NULL DEFAULT ''"####,
+    },
 ];

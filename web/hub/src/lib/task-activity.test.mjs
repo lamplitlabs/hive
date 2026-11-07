@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chapterLineCount, durationText, eventTouchesTask, exitBadge, groupActivity, lastAt, runOutcome, runSummaryLine, systemLine, whoWord, workedFor } from "./task-activity.ts";
+import { chapterLineCount, durationText, eventTouchesTask, exitBadge, groupActivity, lastAt, runCostText, runOutcome, runSummaryLine, systemLine, tokensText, whoWord, workedFor } from "./task-activity.ts";
 
 const run = (over = {}) => ({
   id: "RUN-1",
@@ -57,6 +57,21 @@ test("the summary line says who worked how long on what, and how it ended", () =
   assert.equal(runSummaryLine(run({ status: "held", edits: 2, commands: 1 }), now), "cinder worked 4 minutes: 1 command, 2 files changed \u2014 paused for the runner's restart.");
   assert.equal(workedFor({ started_at: "2026-10-27T08:00:00Z", finished_at: "2026-10-27T09:30:00Z" }, now), "1.5 hours");
   assert.equal(workedFor({ started_at: "bad", finished_at: "" }, now), "");
+});
+
+test("a finished run's chapter line says what it cost", () => {
+  const now = Date.parse("2026-10-27T10:10:00Z");
+  assert.equal(
+    runSummaryLine(run({ prompt_tokens: 40_000, completion_tokens: 1_200, cost: 0.12 }), now),
+    "cinder worked 4 minutes: 3 commands, 1 file changed \u2014 finished (41k tokens, cost 0.12).",
+  );
+  assert.equal(runCostText({ prompt_tokens: 900, completion_tokens: 50 }), "950 tokens");
+  assert.equal(runCostText({ cost: 0.004 }), "cost 0.0040");
+  assert.equal(runCostText({}), "");
+  assert.equal(tokensText(1_234), "1.2k");
+  assert.equal(tokensText(4_150_000), "4.2M");
+  // A live run has recorded no cost yet; its line is unchanged.
+  assert.equal(runSummaryLine(run({ status: "running", finished_at: "", commands: 0, edits: 0, calls: 2 }), now), "cinder has been on it 10 minutes: 2 model calls.");
 });
 
 test("outcome words cover every run status the store writes", () => {

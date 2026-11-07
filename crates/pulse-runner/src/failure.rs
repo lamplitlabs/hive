@@ -172,13 +172,23 @@ pub(crate) fn classify_failure(
         }
     }
     let text = format!("{reason}\n{run_summary}").to_lowercase();
+    // The worker's outcome code is read before the words: `blocked` is a
+    // stop no retry of the same brief gets past, `done` and `nothing-to-do`
+    // say the worker did not stop on a blocker, and a `failed` verdict or
+    // one without a code falls back to looking for "blocked" in its first
+    // clause ("failed: blocked by the missing fixture").
+    let blocked = match crate::brief::outcome_code(&reason) {
+        Some("blocked") => true,
+        Some("done" | "nothing-to-do") => false,
+        _ => SUMMARY_BLOCKED_RE.is_match(&text),
+    };
     let mut class = FailureClass(FAILURE_DETERMINISTIC.into());
     if asked_owner {
         class = FailureClass(FAILURE_STRUCTURAL.into());
         reason = format!("the worker asked the owner a question: {reason}");
     } else if hard_stop_text(&text)
         || OWNER_BLOCKED_RE.is_match(&text)
-        || SUMMARY_BLOCKED_RE.is_match(&text)
+        || blocked
         || TIER2_VERDICT_RE.is_match(&text)
         || CHECK_MISSING_RE.is_match(&text)
         || STRUCTURAL_MARKS.iter().any(|m| text.contains(m))
@@ -374,6 +384,25 @@ mod tests {
                 "",
                 false,
                 FAILURE_TRANSIENT,
+            ),
+            // The outcome code is read before the words: a `blocked` code is
+            // structural however it is worded, a `done` code is not a blocker
+            // even when its words say "blocked".
+            (
+                "blocked outcome code",
+                "SUMMARY: blocked - the fixture corpus is absent",
+                "failed",
+                "",
+                false,
+                FAILURE_STRUCTURAL,
+            ),
+            (
+                "done outcome code with blocked in the words",
+                "done - unstuck the blocked retry path but verify exit 1",
+                "failed",
+                "",
+                false,
+                FAILURE_DETERMINISTIC,
             ),
             (
                 "runner errors exhausted",

@@ -463,6 +463,12 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
     }
     w!("   - `SUMMARY:` one line saying what changed and what you measured");
     w!(
+        "     It opens with one outcome code the runner reads before your words: `SUMMARY: done - <what changed and what you measured>`,"
+    );
+    w!(
+        "     `SUMMARY: nothing-to-do - <the commit or worker that already covers it, or what you checked>`, `SUMMARY: blocked: <cause and attempts>` or `SUMMARY: failed: <cause and attempts>`"
+    );
+    w!(
         "   - `QUESTION:` one line when you stopped for a Tier 2 decision or a hard stop (optional)"
     );
     w!(
@@ -1447,10 +1453,107 @@ impl Report {
             || !self.votes.is_empty()
             || !self.decisions.is_empty()
     }
+    /// The worker left its work unfinished: its outcome code says blocked
+    /// or failed. The code is the first word of the summary
+    /// ([`outcome_code`]); a summary without one is read the old way, a
+    /// `blocked:` or `failed:` before its first colon.
     pub(crate) fn incomplete(&mut self) -> bool {
-        self.summary
-            .split_once(':')
-            .is_some_and(|(p, _)| matches!(p.trim().to_lowercase().as_str(), "blocked" | "failed"))
+        self.outcome().unfinished()
+    }
+
+    /// How the run's summary classifies: its outcome code first, the text
+    /// only when the code is missing.
+    pub(crate) fn outcome(&self) -> Outcome {
+        classify_outcome(&self.summary)
+    }
+}
+
+/// The outcome codes a worker's `SUMMARY:` line opens with (the job brief
+/// and the harness prompt ask for them): the runner reads the code before it
+/// reads any of the summary's words.
+pub(crate) const OUTCOME_CODES: &[&str] = &["done", "blocked", "failed", "nothing-to-do"];
+
+/// What the runner read from a summary: the outcome code (`done`,
+/// `blocked`, `failed`, `nothing-to-do`; empty when there was none) and the
+/// path that classified it - `code` when the summary opened with an outcome
+/// code, `text` when the runner fell back to the summary's words, `none`
+/// when there was no summary. `runs.outcome_source` keeps the path so the
+/// fallback rate can be measured.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Outcome {
+    pub code: String,
+    pub source: &'static str,
+}
+
+impl Outcome {
+    pub(crate) fn unfinished(&self) -> bool {
+        matches!(self.code.as_str(), "blocked" | "failed")
+    }
+}
+
+/// The outcome code a summary opens with: its first word, lowercased, when
+/// it is one of [`OUTCOME_CODES`] and is followed by the end of the line, a
+/// `:`, a dash or whitespace - `done - fixed the parser`, `blocked: no
+/// login`, `nothing-to-do`. A `SUMMARY:` prefix (a stored result) is
+/// skipped. `done` and `nothing-to-do` must be followed by a separator
+/// (or end the line) so "done the parser" is still text; `blocked`/`failed`
+/// need a `:` or a dash, as before, so "failed tests now pass" is not a
+/// failure.
+pub(crate) fn outcome_code(summary: &str) -> Option<&'static str> {
+    let mut text = summary.trim_start();
+    if let Some(rest) = text
+        .get(..8)
+        .filter(|p| p.eq_ignore_ascii_case("summary:"))
+        .map(|_| &text[8..])
+    {
+        text = rest.trim_start();
+    }
+    let text = text.trim_start_matches(['*', '`']);
+    let word_end = text
+        .find(|c: char| !(c.is_ascii_alphabetic() || c == '-' || c == '_'))
+        .unwrap_or(text.len());
+    let word = text[..word_end]
+        .trim_end_matches('-')
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    let code = OUTCOME_CODES.iter().find(|c| **c == word)?;
+    let rest = text[word_end..].trim_start_matches(['*', '`']);
+    let rest_trim = rest.trim_start();
+    let separated = rest_trim.is_empty()
+        || rest_trim.starts_with(':')
+        || rest_trim.starts_with('-')
+        || rest_trim.starts_with('—')
+        || rest_trim.starts_with('–')
+        || rest_trim.starts_with(';')
+        || rest_trim.starts_with('.')
+        || rest_trim.starts_with(',');
+    if separated { Some(code) } else { None }
+}
+
+/// Classifies a worker's summary: the outcome code when it opens with one,
+/// otherwise the text fallback the runner always used (`blocked:` or
+/// `failed:` before the first colon is unfinished, anything else is
+/// `done`).
+pub(crate) fn classify_outcome(summary: &str) -> Outcome {
+    if summary.trim().is_empty() {
+        return Outcome {
+            code: String::new(),
+            source: "none",
+        };
+    }
+    if let Some(code) = outcome_code(summary) {
+        return Outcome {
+            code: code.to_string(),
+            source: "code",
+        };
+    }
+    let unfinished = summary
+        .split_once(':')
+        .map(|(p, _)| p.trim().to_lowercase())
+        .filter(|p| p == "blocked" || p == "failed");
+    Outcome {
+        code: unfinished.unwrap_or_else(|| "done".into()),
+        source: "text",
     }
 }
 
@@ -1459,6 +1562,91 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_completion::must_write_brief;
+
+    #[test]
+    fn the_outcome_code_classifies_before_the_text() {
+        let _serial = crate::test_helpers::serial();
+        for (summary, code, source) in [
+            // The code first: whatever the words say after it.
+            ("done - fixed the blocked: parser", "done", "code"),
+            ("Done: three tests added", "done", "code"),
+            ("done", "done", "code"),
+            (
+                "nothing-to-do - 4f09ccbc already covers it",
+                "nothing-to-do",
+                "code",
+            ),
+            ("nothing_to_do: aurora-28 holds it", "nothing-to-do", "code"),
+            ("blocked: no login on the executor", "blocked", "code"),
+            ("BLOCKED - Tier 2 dependency", "blocked", "code"),
+            ("failed: the fixture still fails", "failed", "code"),
+            ("SUMMARY: failed - verify exit 1", "failed", "code"),
+            ("**done** - bolded by a markdown habit", "done", "code"),
+            // No code: the regex fallback reads the words as it always did.
+            ("fixed the previously blocked fixture", "done", "text"),
+            ("failed tests now pass", "done", "text"),
+            ("done the parser rewrite", "done", "text"),
+            // The old `blocked :` prefix reads as a code now too.
+            ("Blocked : missing evidence", "blocked", "code"),
+            ("diagnosis: failed parser guard", "done", "text"),
+            ("", "", "none"),
+            ("   ", "", "none"),
+        ] {
+            let got = classify_outcome(summary);
+            assert_eq!(
+                (got.code.as_str(), got.source),
+                (code, source),
+                "classify_outcome({summary:?})"
+            );
+            let mut report = Report {
+                summary: summary.into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                report.incomplete(),
+                code == "blocked" || code == "failed",
+                "incomplete({summary:?})"
+            );
+        }
+        // The parsed SUMMARY line carries its code through.
+        let r = parse_result_text(Some(
+            "SUMMARY: nothing-to-do - covered by bc3f9bcc\nFINDING: x".into(),
+        ));
+        assert_eq!(r.outcome().code, "nothing-to-do");
+        assert_eq!(r.outcome().source, "code");
+    }
+
+    #[test]
+    fn the_brief_asks_for_an_outcome_code_on_the_summary_line() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        let brief = must_write_brief(BriefOpts {
+            job: brief_job(),
+            project,
+            agent: "aurora".into(),
+            clone: "/clone".into(),
+            minutes: 30,
+            store: Some((*s).clone()),
+            now: TEST_NOW.into(),
+            ..Default::default()
+        });
+        for code in [
+            "`SUMMARY: done - <what changed and what you measured>`",
+            "`SUMMARY: nothing-to-do - ",
+            "`SUMMARY: blocked: <cause and attempts>`",
+            "`SUMMARY: failed: <cause and attempts>`",
+        ] {
+            assert!(brief.contains(code), "missing {code:?} in:\n{brief}");
+        }
+        // Every code the brief names is one the runner reads.
+        for code in OUTCOME_CODES {
+            assert!(
+                brief.contains(&format!("`SUMMARY: {code}")),
+                "the brief does not name {code}"
+            );
+        }
+    }
 
     #[test]
     fn shared_findings_leave_the_result_for_the_commons() {
