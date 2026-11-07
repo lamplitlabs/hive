@@ -108,7 +108,7 @@ const CLOSED_BY_OWNER_NOTE: &str = "closed by you";
 const CLOSED_BY_OWNER_LINE: &str = "You finished this conversation. Write again to reopen it.";
 /// What the transcript says where the agent finished the conversation;
 /// its summary follows.
-const FINISHED_BY_AGENT_LINE: &str = "The agent finished this conversation:";
+pub const FINISHED_BY_AGENT_LINE: &str = "The agent finished this conversation:";
 /// What the transcript says where PULSE finished the conversation (its
 /// pull request merged); the reason follows.
 const FINISHED_BY_PULSE_LINE: &str = "PULSE finished this conversation:";

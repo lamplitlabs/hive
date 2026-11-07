@@ -105,6 +105,7 @@ pub(crate) mod ui_evidence;
 pub mod util;
 pub mod verify_lock;
 pub mod verify_memo;
+pub mod work_report;
 pub(crate) mod yield_lane;
 
 pub(crate) use board::*;

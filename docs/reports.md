@@ -9,6 +9,11 @@ or the session. PULSE builds that page itself (`pulse report`), so every
 agent's report reads the same, and `landing.ui_report` decides what a change
 without one costs.
 
+Every other piece of work gets a report too: once a job or a session is
+done, PULSE builds the same page from what it knows of the work (see
+[PULSE's report](#pulses-report-for-every-job-and-session)), and the console
+shows it to the owner by itself.
+
 ## What the agent does
 
 Rule 10 of a worker's brief, and the same paragraph of a session's brief,
@@ -89,7 +94,46 @@ experiment's `evolve/` branch, a branch you land or propose by hand
 (`pulse land --project <slug> --branch <branch>` from your own shell), and an
 archived session.
 
+## PULSE's report for every job and session
+
+`report.html` in the work's folder is PULSE's page of the whole piece of
+work, built by the hub (`crates/pulse-runner/src/work_report.rs`, the page in
+`crates/pulse-harness/src/report.rs` `build_full`):
+
+- **Where it stands**, first and in words: merged as pull request #N, landed
+  on the default branch, in review, held and why, done with nothing landed,
+  failed, or - for a session - stopped by a restart.
+- **What it did**: the agent's `report.json` title and summary when there is
+  one; otherwise the task's or session's title and the worker's summary
+  (without its `done -` outcome code) or the session's last word.
+- **Who and how**: the agent, the model, the steps, how long it took, the
+  cost, the job or session id.
+- **The before/after pairs** of `report.json`, as above, and **every other
+  picture** in the folder under Screenshots.
+- **What changed**: the commits - a job's are the ones that carry its
+  `Pulse-Job:` trailer, so the list holds after the branch is gone; a
+  session's come from its branch or its pull request's merge - and the files
+  they changed with the lines added and removed.
+- **The checks**: the agent's, and the verify step the landing ran.
+- **For a session**: its sub-sessions and how each ended, and the tasks it
+  filed and where they stand.
+
+The hub builds the page the first time a finished job's folder or a finished
+session is listed without one, and again each time the page is opened, so it
+says where the work stands now rather than where it stood. An agent's own
+`pulse report` writes the same file without PULSE's part; the next opening
+puts it back.
+
 ## Where the owner sees it
+
+- A done task opens on its report: the canvas shows the page of the step that
+  did the work (the finished step whose run made the most commits), and the
+  task's "done" line says **See the report** and **Open it in a new tab**. A
+  done task's card on the board offers **Report** where a working one offers
+  **Session**.
+- A finished session opens its report on the canvas too, and its "finished"
+  line links it the same way.
+- A step's files on the canvas open on the report first.
 
 - A run's result post has a `- Report:` line linking the page, or saying
   there is none and what that costs; the landing post ends with a link to it.

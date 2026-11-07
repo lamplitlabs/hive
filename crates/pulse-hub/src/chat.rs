@@ -361,6 +361,18 @@ impl Handler {
                 }
             }
         };
+        // A finished session always has its report: PULSE builds the page
+        // the first time the session is shown without one.
+        if pulse_runner::work_report::session_finished(&row.status)
+            && !chats
+                .artifacts_dir(id)
+                .join(pulse_harness::report::PAGE)
+                .is_file()
+            && let Err(e) =
+                pulse_runner::work_report::session(store, id, &chats.artifacts_dir(id))
+        {
+            eprintln!("session {id}: the report page could not be built: {e:#}");
+        }
         let artifacts = chats.artifacts(id);
         let changes = chats.changes(&row);
         // The family: the conversation this one is a sub-conversation of,
@@ -634,6 +646,15 @@ impl Handler {
     ) {
         if self.chat_row(w, id).is_none() {
             return;
+        }
+        // The report says where the session stands now: PULSE builds it
+        // again each time it is opened.
+        if kind == "artifacts"
+            && name == pulse_harness::report::PAGE
+            && let Some(store) = self.store.as_deref()
+            && let Err(e) = pulse_runner::work_report::session(store, id, &chats.artifacts_dir(id))
+        {
+            eprintln!("session {id}: the report page could not be built: {e:#}");
         }
         let path = if kind == "attachments" {
             chats.attachment_path(id, name)
@@ -1612,7 +1633,10 @@ mod tests {
         );
         // The chat page frames artifacts; the hub's blanket DENY gives way.
         assert_eq!(resp.headers()["x-frame-options"], "SAMEORIGIN");
-        assert_eq!(resp.text().unwrap(), "<h1>hi</h1>");
+        // The report is PULSE's, built again as it is opened.
+        let page = resp.text().unwrap();
+        assert!(page.contains("Built by PULSE"), "{page}");
+        assert!(page.contains(">Session</p>"), "{page}");
         let resp = client
             .get(format!("{}/api/v1/chat/{id}/artifacts/data.bin", srv.url))
             .send()

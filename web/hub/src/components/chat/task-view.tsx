@@ -26,7 +26,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Canvas, useCanvas } from "@/components/chat/canvas";
 import { useSeen } from "@/components/chat/chat-pane";
 import { JobEvidence } from "@/components/chat/job-evidence";
-import { jobEvidenceTab } from "@/components/chat/job-evidence-state";
+import {
+  jobEvidenceTab,
+  REPORT_PAGE,
+  REPORT_WORD,
+  reportJob,
+} from "@/components/chat/job-evidence-state";
 import { MicButton, useDictation } from "@/components/chat/mic";
 import { BackButton, Pane } from "@/components/chat/split";
 import {
@@ -63,6 +68,7 @@ import {
 import {
   api,
   enc,
+  jobArtifactHref,
   query,
   taskProgress,
   writes,
@@ -212,6 +218,18 @@ function TaskBody({
     live: working,
     initial: [makeTab("steps"), makeTab("brief")],
   });
+  // A done task shows its report: the step that did the work opens on its
+  // page in the canvas (PULSE builds it), on the way in and the moment the
+  // task is done.
+  const reportStep = t.status === "done" ? reportJob(d.jobs) : undefined;
+  const reportTab = reportStep ? jobEvidenceTab(reportStep) : null;
+  const openTab = ctl.openTab;
+  const shownReport = useRef("");
+  useEffect(() => {
+    if (!reportTab || shownReport.current === reportTab.id) return;
+    shownReport.current = reportTab.id;
+    openTab(reportTab);
+  }, [reportTab, openTab]);
   const leadName = t.lead || "the lead agent";
   const [amend, setAmend] = useState(false);
   const [cancel, setCancel] = useState(false);
@@ -436,8 +454,30 @@ function TaskBody({
       {closed ? (
         <Notice tone="info">
           {t.status === "done"
-            ? "This task is done. The session stays here to read; give a new task to carry on."
+            ? "This task is done" +
+              (reportTab ? "; its report is open beside the session" : "") +
+              ". The session stays here to read; give a new task to carry on."
             : "This task was cancelled. The session stays here to read; give a new task to carry on."}
+          {reportTab && reportStep ? (
+            <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <button
+                type="button"
+                className="font-medium text-link underline-offset-2 hover:underline"
+                onClick={() => ctl.openTab(reportTab)}
+                data-report-link
+              >
+                {REPORT_WORD}
+              </button>
+              <a
+                href={jobArtifactHref(reportStep.id, REPORT_PAGE)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Open it in a new tab
+              </a>
+            </span>
+          ) : null}
         </Notice>
       ) : null}
 

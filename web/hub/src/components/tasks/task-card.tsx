@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ArrowDownIcon, ArrowUpIcon, BanIcon, CircleDashedIcon, MessageCircleQuestionIcon, MessagesSquareIcon, MinusIcon, MoreHorizontalIcon, PanelRightOpenIcon, PencilIcon, type LucideIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, BanIcon, CircleDashedIcon, Columns2Icon, MessageCircleQuestionIcon, MessagesSquareIcon, MinusIcon, MoreHorizontalIcon, PanelRightOpenIcon, PencilIcon, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -50,7 +50,8 @@ export function CancelTaskDialog({ t, open, onOpenChange }: { t: Task; open: boo
 // The owner's moves on a task - talk to the lead, change the task, cancel
 // it - without opening it first. At most two buttons show; the rest sit
 // under "…". Edit and Cancel confirm. `chat={false}` drops the Session
-// button when the card already offers one.
+// button when the card already offers one. A done task's reads "Report":
+// its page opens with the report PULSE built beside the session.
 export function TaskQuickActions({ t, onOpen, size = "xs", showOpen, chat = true }: { t: Task; onOpen?: () => void; size?: "xs" | "sm"; showOpen?: boolean; chat?: boolean }) {
   const [amend, setAmend] = useState(false);
   const [cancel, setCancel] = useState(false);
@@ -66,9 +67,15 @@ export function TaskQuickActions({ t, onOpen, size = "xs", showOpen, chat = true
       ) : null}
       {chat ? (
         <Button size={size} variant="outline" asChild>
-          <Link href={hrefs.task(t.id)} aria-label={"Session with the lead agent about " + t.title}>
-            <MessagesSquareIcon /> Session
-          </Link>
+          {t.status === "done" ? (
+            <Link href={hrefs.task(t.id)} aria-label={"The report of " + t.title + ", beside its session"} data-report-link>
+              <Columns2Icon /> Report
+            </Link>
+          ) : (
+            <Link href={hrefs.task(t.id)} aria-label={"Session with the lead agent about " + t.title}>
+              <MessagesSquareIcon /> Session
+            </Link>
+          )}
         </Button>
       ) : null}
       <DropdownMenu>

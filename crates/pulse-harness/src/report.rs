@@ -11,7 +11,15 @@
 //! The page is built here, never by hand, so every agent's report reads the
 //! same; it needs no script and no font from elsewhere, and names its
 //! pictures by their file names, which the hub serves from the same folder.
+//!
+//! PULSE builds the same page itself for every job and session once the work
+//! is done ([`build_full`], pulse-runner's work_report.rs gathers the
+//! [`Facts`]): what PULSE knows - where the work stands, who did it and how,
+//! its commits and files, the checks - around the agent's own report.json
+//! when there is one, and every other picture the agent saved, so each piece
+//! of work has one page to read whether or not it changed a screen.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::Path;
 
@@ -128,6 +136,47 @@ impl Check {
     }
 }
 
+/// What PULSE knows about a piece of work, for the page it builds when the
+/// work is done; every text is a sentence or a few words.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// What the work is: "Task TASK-083", "Job", "Session".
+    pub kind: String,
+    /// The heading when report.json gives none: the task's or session's title.
+    pub title: String,
+    /// What it did when report.json says nothing: the worker's summary, the
+    /// session's last word.
+    pub summary: String,
+    /// One word for where it stands: Merged, Landed, In review, Done,
+    /// Working, Failed, Stopped.
+    pub state: String,
+    /// One sentence on where it stands, read before the agent's own.
+    pub status: String,
+    /// Who did it and how: ("Agent", "borealis-28"), ("Took", "1h 21m").
+    pub about: Vec<(String, String)>,
+    /// Where to read more: a label and a URL.
+    pub links: Vec<(String, String)>,
+    /// The work's commits, oldest first: a short sha and its subject.
+    pub commits: Vec<(String, String)>,
+    /// The files those commits changed.
+    pub files: Vec<FileChange>,
+    /// What PULSE checked on it (the verify step, the landing), one line each.
+    pub checks: Vec<String>,
+    /// More that belongs to the work: sub-sessions and tasks, one line each.
+    pub notes: Vec<String>,
+    /// When PULSE built the page, for its foot.
+    pub built: String,
+}
+
+/// One file a piece of work changed, with its lines added and removed
+/// (`None` for a binary file).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub added: Option<u64>,
+    pub removed: Option<u64>,
+}
+
 /// The manifest in `dir`: `Ok(None)` when there is none, the parse error in
 /// words when it does not read.
 pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>, String> {
@@ -203,6 +252,63 @@ pub fn ensure_page(dir: &Path) -> Check {
         (Some(_), _) => build(dir),
         _ => check(dir),
     }
+}
+
+/// Builds `report.html` in `dir` from what PULSE knows of the work and the
+/// agent's report.json when there is one (an unreadable one is left out and
+/// named among the problems). The page is written either way: every finished
+/// job and session gets one.
+pub fn build_full(dir: &Path, facts: &Facts) -> Check {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return Check {
+            problems: vec![format!("{} could not be made: {e}", dir.display())],
+            ..Check::default()
+        };
+    }
+    let mut c = check(dir);
+    let manifest = read_manifest(dir).ok().flatten();
+    let html = render_page(dir, manifest.as_ref(), Some(facts), &facts.built);
+    // A name of its own per writer: two requests for the page at once each
+    // write a whole page and the last rename wins.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{PAGE}.{}.{nanos}.tmp", std::process::id()));
+    match std::fs::write(&tmp, html).and_then(|_| std::fs::rename(&tmp, dir.join(PAGE))) {
+        Ok(()) => c.page = true,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            c.problems
+                .push(format!("{PAGE} could not be written in {}: {e}", dir.display()));
+        }
+    }
+    c
+}
+
+/// The pictures in `dir` that no before/after pair of `m` names, by name:
+/// the screenshots an agent saved outside a pair still show.
+pub fn loose_pictures(dir: &Path, m: Option<&Manifest>) -> Vec<String> {
+    let used: BTreeSet<String> = m
+        .map(|m| {
+            m.changes
+                .iter()
+                .flat_map(Change::all_pairs)
+                .flat_map(|p| [p.before.trim().to_string(), p.after.trim().to_string()])
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| !name.starts_with('.') && !used.contains(name))
+        .filter(|name| picture(dir, name).is_ok())
+        .collect();
+    out.sort();
+    out
 }
 
 /// When the manifest was written, for the page's foot.
@@ -378,14 +484,22 @@ pub fn example() -> String {
 
 /// The page for `m`, its pictures named relative to the page.
 pub fn render(dir: &Path, m: &Manifest, built: &str) -> String {
-    let title = if m.title.trim().is_empty() {
-        "What changed".to_string()
-    } else {
-        m.title.trim().to_string()
-    };
+    render_page(dir, Some(m), None, built)
+}
+
+/// The page: the agent's manifest when there is one, PULSE's facts when it
+/// builds the page itself, and the pictures no pair names.
+fn render_page(dir: &Path, m: Option<&Manifest>, f: Option<&Facts>, built: &str) -> String {
+    let empty = Manifest::default();
+    let mm = m.unwrap_or(&empty);
+    let title = [mm.title.trim(), f.map_or("", |f| f.title.trim())]
+        .into_iter()
+        .find(|t| !t.is_empty())
+        .unwrap_or("What changed")
+        .to_string();
     let mut pairs = 0;
     let mut sections = String::new();
-    let groups = grouped(&m.changes);
+    let groups = grouped(&mm.changes);
     let named_groups = groups.iter().filter(|(area, _)| !area.is_empty()).count();
     let mut toc = Vec::new();
     for (gi, (area, items)) in groups.iter().enumerate() {
@@ -401,86 +515,308 @@ pub fn render(dir: &Path, m: &Manifest, built: &str) -> String {
         }
         sections.push_str("  </section>\n");
     }
-    let mut facts = vec![
-        format!(
+    // PULSE's page shows every picture; the agent's own lists its pairs only.
+    let loose = if f.is_some() {
+        loose_pictures(dir, m)
+    } else {
+        Vec::new()
+    };
+    if !loose.is_empty() {
+        let heading = if mm.changes.is_empty() {
+            "Screenshots"
+        } else {
+            "More screenshots"
+        };
+        sections.push_str(&format!(
+            "  <section id=\"pictures\">\n    <h2>{heading}</h2>\n    <div class=\"gallery\">\n{}    </div>\n  </section>\n",
+            loose.iter().map(|name| shot_html(name)).collect::<String>()
+        ));
+        if !toc.is_empty() {
+            toc.push(format!("<a href=\"#pictures\">{heading}</a>"));
+        }
+    }
+    if let Some(f) = f
+        && (!f.commits.is_empty() || !f.files.is_empty())
+    {
+        sections.push_str(&changed_html(f));
+        if !toc.is_empty() {
+            toc.push("<a href=\"#changed\">What changed</a>".to_string());
+        }
+    }
+    let mut facts = Vec::new();
+    if !mm.changes.is_empty() {
+        facts.push(format!(
             "<li><b>{}</b> {}</li>",
-            m.changes.len(),
-            if m.changes.len() == 1 {
+            mm.changes.len(),
+            if mm.changes.len() == 1 {
                 "change"
             } else {
                 "changes"
             }
-        ),
-        format!(
+        ));
+        facts.push(format!(
             "<li><b>{pairs}</b> before/after {}</li>",
             if pairs == 1 { "pair" } else { "pairs" }
-        ),
-    ];
-    if !m.checks.is_empty() {
+        ));
+    } else if f.is_none() {
+        facts.push("<li><b>0</b> changes</li>".to_string());
+        facts.push(format!(
+            "<li><b>{pairs}</b> before/after {}</li>",
+            if pairs == 1 { "pair" } else { "pairs" }
+        ));
+    }
+    if !loose.is_empty() {
+        facts.push(format!(
+            "<li><b>{}</b> {}</li>",
+            loose.len(),
+            if loose.len() == 1 {
+                "screenshot"
+            } else {
+                "screenshots"
+            }
+        ));
+    }
+    let checks_all: Vec<&String> = mm
+        .checks
+        .iter()
+        .chain(f.map(|f| f.checks.iter()).into_iter().flatten())
+        .collect();
+    if !checks_all.is_empty() {
         facts.push(format!(
             "<li><b>{}</b> {} run</li>",
-            m.checks.len(),
-            if m.checks.len() == 1 {
+            checks_all.len(),
+            if checks_all.len() == 1 {
                 "check"
             } else {
                 "checks"
             }
         ));
     }
-    let summary = if m.summary.trim().is_empty() {
+    if let Some(f) = f {
+        if !f.commits.is_empty() {
+            facts.push(format!(
+                "<li><b>{}</b> {}</li>",
+                f.commits.len(),
+                if f.commits.len() == 1 {
+                    "commit"
+                } else {
+                    "commits"
+                }
+            ));
+        }
+        if !f.files.is_empty() {
+            facts.push(format!(
+                "<li><b>{}</b> {}</li>",
+                f.files.len(),
+                if f.files.len() == 1 { "file" } else { "files" }
+            ));
+        }
+        for (label, value) in &f.about {
+            if !value.trim().is_empty() {
+                facts.push(format!(
+                    "<li>{} <b>{}</b></li>",
+                    esc(label.trim()),
+                    esc(value.trim())
+                ));
+            }
+        }
+    }
+    let kicker = match f {
+        Some(f) if !f.state.trim().is_empty() || !f.kind.trim().is_empty() => format!(
+            "    <p class=\"kicker\">{}{}</p>\n",
+            if f.state.trim().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<span class=\"state {}\">{}</span>",
+                    state_class(&f.state),
+                    esc(f.state.trim())
+                )
+            },
+            esc(f.kind.trim())
+        ),
+        _ => String::new(),
+    };
+    let summary_text = [mm.summary.trim(), f.map_or("", |f| f.summary.trim())]
+        .into_iter()
+        .find(|t| !t.is_empty())
+        .unwrap_or("");
+    let summary = if summary_text.is_empty() {
         String::new()
     } else {
-        format!("    <p class=\"lede\">{}</p>\n", inline(&m.summary))
+        format!("    <p class=\"lede\">{}</p>\n", inline(summary_text))
     };
-    let status = if m.status.trim().is_empty() {
-        String::new()
-    } else {
-        format!("    <p class=\"note\">{}</p>\n", inline(&m.status))
-    };
-    let checks = if m.checks.is_empty() {
+    let status = [f.map_or("", |f| f.status.trim()), mm.status.trim()]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("    <p class=\"note\">{}</p>\n", inline(t)))
+        .collect::<String>();
+    let checks = if checks_all.is_empty() {
         String::new()
     } else {
         format!(
             "    <ul class=\"checks\" aria-label=\"Checks\">\n{}    </ul>\n",
-            m.checks
+            checks_all
                 .iter()
                 .map(|c| format!("      <li>{}</li>\n", inline(c)))
                 .collect::<String>()
         )
     };
+    let links = match f {
+        Some(f) if !f.links.is_empty() => format!(
+            "    <p class=\"links\">{}</p>\n",
+            f.links
+                .iter()
+                .map(|(label, url)| format!(
+                    "<a href=\"{}\" rel=\"noreferrer\">{}</a>",
+                    esc(url.trim()),
+                    esc(label.trim())
+                ))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ),
+        _ => String::new(),
+    };
+    let hint = if pairs > 0 || !loose.is_empty() {
+        "    <p class=\"hint\">Open a picture to see it full size; go back to return here.</p>\n"
+    } else {
+        ""
+    };
     let nav = if toc.len() > 1 {
         format!(
-            "  <nav class=\"toc\" aria-label=\"Areas\">{}</nav>\n",
+            "  <nav class=\"toc\" aria-label=\"Sections\">{}</nav>\n",
             toc.join("")
         )
     } else {
         String::new()
     };
-    let notes = if m.notes.is_empty() {
+    let mut notes = if mm.notes.is_empty() {
         String::new()
     } else {
         format!(
             "    <p>Also changed, not pictured:</p>\n    <ul>\n{}    </ul>\n",
-            m.notes
+            mm.notes
                 .iter()
                 .map(|n| format!("      <li>{}</li>\n", inline(n)))
                 .collect::<String>()
         )
     };
-    let built = if built.is_empty() {
-        "Built by <code>pulse report</code> from <code>report.json</code>.".to_string()
-    } else {
-        format!(
-            "Built by <code>pulse report</code> from <code>report.json</code>, written {}.",
-            esc(built)
-        )
+    if let Some(f) = f
+        && !f.notes.is_empty()
+    {
+        notes.push_str(&format!(
+            "    <p>Also part of this work:</p>\n    <ul>\n{}    </ul>\n",
+            f.notes
+                .iter()
+                .map(|n| format!("      <li>{}</li>\n", inline(n)))
+                .collect::<String>()
+        ));
+    }
+    let built = match (f, m.is_some()) {
+        (Some(_), true) => format!(
+            "Built by PULSE from the work's record and the agent's <code>report.json</code>{}.",
+            when(built)
+        ),
+        (Some(_), false) => format!("Built by PULSE from the work's record{}.", when(built)),
+        (None, _) => format!(
+            "Built by <code>pulse report</code> from <code>report.json</code>{}.",
+            if built.is_empty() {
+                String::new()
+            } else {
+                format!(", written {}", esc(built))
+            }
+        ),
     };
+    let generator = if f.is_some() { "pulse" } else { "pulse report" };
     format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"pulse report\">\n<title>{title}</title>\n<style>\n{STYLE}</style>\n</head>\n<body>\n<main class=\"wrap\">\n  <header>\n    <h1>{h1}</h1>\n{summary}    <ul class=\"facts\">{facts}</ul>\n{checks}{status}    <p class=\"hint\">Open a picture to see it full size; go back to return here.</p>\n  </header>\n{nav}{sections}  <footer>\n{notes}    <p>{built}</p>\n  </footer>\n</main>\n</body>\n</html>\n",
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"{generator}\">\n<title>{title}</title>\n<style>\n{STYLE}</style>\n</head>\n<body>\n<main class=\"wrap\">\n  <header>\n{kicker}    <h1>{h1}</h1>\n{summary}    <ul class=\"facts\">{facts}</ul>\n{status}{checks}{links}{hint}  </header>\n{nav}{sections}  <footer>\n{notes}    <p>{built}</p>\n  </footer>\n</main>\n</body>\n</html>\n",
         title = esc(&title),
         h1 = esc(&title),
         facts = facts.join(""),
     )
+}
+
+/// ", 2026-11-07 09:56 UTC" for the foot, or nothing.
+fn when(built: &str) -> String {
+    if built.trim().is_empty() {
+        String::new()
+    } else {
+        format!(", {}", esc(built.trim()))
+    }
+}
+
+/// The colour a state word reads in.
+fn state_class(state: &str) -> &'static str {
+    match state.trim().to_ascii_lowercase().as_str() {
+        "merged" | "landed" | "done" | "finished" => "ok",
+        "failed" | "cancelled" | "refused" => "bad",
+        "working" | "in review" | "queued" => "run",
+        _ => "wait",
+    }
+}
+
+/// One loose picture: the shot, captioned with its file name.
+fn shot_html(name: &str) -> String {
+    let href = encode_name(name);
+    format!(
+        "      <figure class=\"shot\"><a href=\"{href}\"><img src=\"{href}\" alt=\"{alt}\" loading=\"lazy\"></a><figcaption>{alt}</figcaption></figure>\n",
+        alt = esc(name)
+    )
+}
+
+/// How many file rows the page lists before it says how many more.
+const FILES_SHOWN: usize = 80;
+
+/// The work's commits and the files they changed.
+fn changed_html(f: &Facts) -> String {
+    let mut s = String::from("  <section id=\"changed\">\n    <h2>What changed</h2>\n    <div class=\"change\">\n");
+    if !f.commits.is_empty() {
+        s.push_str(&format!(
+            "      <h3>{}</h3>\n      <ol class=\"commits\">\n{}      </ol>\n",
+            if f.commits.len() == 1 {
+                "1 commit".to_string()
+            } else {
+                format!("{} commits", f.commits.len())
+            },
+            f.commits
+                .iter()
+                .map(|(sha, subject)| format!(
+                    "        <li><code>{}</code> {}</li>\n",
+                    esc(sha),
+                    esc(subject)
+                ))
+                .collect::<String>()
+        ));
+    }
+    if !f.files.is_empty() {
+        let (added, removed) = f.files.iter().fold((0u64, 0u64), |(a, r), x| {
+            (a + x.added.unwrap_or(0), r + x.removed.unwrap_or(0))
+        });
+        s.push_str(&format!(
+            "      <h3>{} {} <span class=\"sum\"><span class=\"add\">+{added}</span> <span class=\"del\">&minus;{removed}</span></span></h3>\n      <div class=\"files-wrap\"><table class=\"files\">\n        <thead><tr><th scope=\"col\">File</th><th scope=\"col\">Added</th><th scope=\"col\">Removed</th></tr></thead>\n        <tbody>\n",
+            f.files.len(),
+            if f.files.len() == 1 { "file" } else { "files" }
+        ));
+        for x in f.files.iter().take(FILES_SHOWN) {
+            let (a, r) = match (x.added, x.removed) {
+                (Some(a), Some(r)) => (format!("+{a}"), format!("&minus;{r}")),
+                _ => ("binary".to_string(), String::new()),
+            };
+            s.push_str(&format!(
+                "          <tr><td><code>{}</code></td><td class=\"add\">{a}</td><td class=\"del\">{r}</td></tr>\n",
+                esc(&x.path)
+            ));
+        }
+        s.push_str("        </tbody>\n      </table></div>\n");
+        if f.files.len() > FILES_SHOWN {
+            s.push_str(&format!(
+                "      <p class=\"hint\">And {} more files.</p>\n",
+                f.files.len() - FILES_SHOWN
+            ));
+        }
+    }
+    s.push_str("    </div>\n  </section>\n");
+    s
 }
 
 /// The changes by area, areas in the order they first come.
@@ -633,6 +969,7 @@ const STYLE: &str = r#":root {
   --was: oklch(0.55 0.16 30);
   --now: oklch(0.5 0.12 155);
   --shade: oklch(0.96 0.004 255);
+  --warn: oklch(0.58 0.13 70);
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light;
@@ -648,6 +985,7 @@ const STYLE: &str = r#":root {
     --was: oklch(0.75 0.13 30);
     --now: oklch(0.78 0.12 155);
     --shade: oklch(0.25 0.01 260);
+    --warn: oklch(0.8 0.12 75);
     color-scheme: dark;
   }
 }
@@ -661,6 +999,7 @@ const STYLE: &str = r#":root {
   --was: oklch(0.75 0.13 30);
   --now: oklch(0.78 0.12 155);
   --shade: oklch(0.25 0.01 260);
+  --warn: oklch(0.8 0.12 75);
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -704,6 +1043,27 @@ footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; max-widt
 footer p { margin: 0; }
 footer ul { margin: 0; padding-left: 18px; }
 a:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.kicker { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.state { font-weight: 600; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid currentColor; border-radius: 999px; padding: 1px 9px; }
+.state.ok { color: var(--now); }
+.state.bad { color: var(--was); }
+.state.run { color: var(--teal); }
+.state.wait { color: var(--warn); }
+.links { margin: 2px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 16px; }
+.shot figcaption { font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--muted); overflow-wrap: anywhere; }
+.commits { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; }
+.commits code { margin-right: 4px; }
+.sum { font-size: 13px; font-weight: 500; margin-left: 6px; }
+.add { color: var(--now); }
+.del { color: var(--was); }
+.files-wrap { overflow-x: auto; }
+.files { width: 100%; border-collapse: collapse; font-size: 13px; }
+.files th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.files td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.files td:first-child { width: 100%; }
+.files td code { background: none; padding: 0; word-break: break-all; }
+.files td.add, .files td.del, .files th:not(:first-child) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 "#;
 
 #[cfg(test)]
@@ -831,6 +1191,84 @@ mod tests {
                 .unwrap()
                 .starts_with("<!doctype html>")
         );
+    }
+
+    fn facts() -> Facts {
+        Facts {
+            kind: "Task TASK-083".into(),
+            title: "Runs record token cost".into(),
+            summary: "Runs record `tokens` and cost.".into(),
+            state: "Merged".into(),
+            status: "Merged into main as pull request #125.".into(),
+            about: vec![("Agent".into(), "borealis-28".into()), ("Cost".into(), String::new())],
+            links: vec![("Pull request #125".into(), "https://github.com/o/r/pull/125".into())],
+            commits: vec![("a4c067b".into(), "runner: runs record <cost>".into())],
+            files: vec![
+                FileChange { path: "crates/run.rs".into(), added: Some(12), removed: Some(3) },
+                FileChange { path: "web/shot.png".into(), added: None, removed: None },
+            ],
+            checks: vec!["Verified: `cargo test`".into()],
+            notes: vec!["RSI B: stopped by a restart".into()],
+            built: "2026-11-07 10:00 UTC".into(),
+        }
+    }
+
+    #[test]
+    fn pulse_builds_a_page_for_work_without_a_report_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        // No folder yet: the page makes it.
+        let c = build_full(&dir, &facts());
+        assert!(c.page, "{c:?}");
+        let html = std::fs::read_to_string(dir.join(PAGE)).unwrap();
+        assert!(html.contains("<title>Runs record token cost</title>"), "{html}");
+        assert!(html.contains("<span class=\"state ok\">Merged</span>Task TASK-083"));
+        assert!(html.contains("Runs record <code>tokens</code> and cost."));
+        assert!(html.contains("<li>Agent <b>borealis-28</b></li>"));
+        // An empty fact is left out rather than shown blank.
+        assert!(!html.contains("Cost <b>"));
+        assert!(html.contains("<li><b>1</b> commit</li><li><b>2</b> files</li>"));
+        assert!(html.contains("<code>a4c067b</code> runner: runs record &lt;cost&gt;"));
+        assert!(html.contains("<span class=\"add\">+12</span> <span class=\"del\">&minus;3</span>"));
+        assert!(html.contains("<td class=\"add\">binary</td>"));
+        assert!(html.contains("href=\"https://github.com/o/r/pull/125\""));
+        assert!(html.contains("Also part of this work:"));
+        assert!(html.contains("Built by PULSE from the work's record, 2026-11-07 10:00 UTC."));
+        // Nothing before/after to count, and no picture hint without pictures.
+        assert!(!html.contains("before/after pair"));
+        assert!(!html.contains("Open a picture"));
+        assert!(!html.contains("<script"));
+    }
+
+    #[test]
+    fn pulse_s_page_keeps_the_agent_s_pairs_and_shows_every_other_picture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("before.png"), PNG).unwrap();
+        std::fs::write(dir.join("after.png"), PNG2).unwrap();
+        std::fs::write(dir.join("extra shot.png"), PNG).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not a picture").unwrap();
+        manifest(
+            dir,
+            r#"{"title":"Owner row","summary":"The row fits.","status":"On the branch.","checks":["`npm test`: 3 passed"],
+                "changes":[{"title":"Name","was":"cut","now":"whole","before":"before.png","after":"after.png"}]}"#,
+        );
+        assert_eq!(loose_pictures(dir, read_manifest(dir).unwrap().as_ref()), vec!["extra shot.png"]);
+        let c = build_full(dir, &facts());
+        assert!(c.page && c.shows_change(), "{c:?}");
+        let html = std::fs::read_to_string(dir.join(PAGE)).unwrap();
+        // The agent's title and summary lead; PULSE's status reads first.
+        assert!(html.contains("<title>Owner row</title>"));
+        assert!(html.contains("The row fits."));
+        let pulse = html.find("Merged into main as pull request #125.").unwrap();
+        let agent = html.find("On the branch.").unwrap();
+        assert!(pulse < agent);
+        assert!(html.contains("<li><b>1</b> before/after pair</li><li><b>1</b> screenshot</li><li><b>2</b> checks run</li>"));
+        assert!(html.contains("<h2>More screenshots</h2>"));
+        assert!(html.contains("src=\"extra%20shot.png\""));
+        assert!(!html.contains("notes.txt"));
+        assert!(html.contains("and the agent's <code>report.json</code>"));
+        assert!(html.contains("<a href=\"#pictures\">More screenshots</a>") || !html.contains("nav class"));
     }
 
     #[test]

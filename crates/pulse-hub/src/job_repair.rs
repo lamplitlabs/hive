@@ -281,6 +281,28 @@ impl Handler {
             return;
         }
         let dir = pulse_harness::artifacts::job_artifacts_dir(&store.home, id);
+        let page = pulse_harness::report::PAGE;
+        // Every finished job has its report: PULSE builds the page the first
+        // time the job's folder is listed without one, and again each time
+        // the page itself is opened, so it says where the work stands now.
+        let finished = store
+            .conn()
+            .ok()
+            .and_then(|c| {
+                c.query_row("SELECT status FROM jobs WHERE id = ?1", [id], |r| {
+                    r.get::<_, String>(0)
+                })
+                .ok()
+            })
+            .is_some_and(|status| pulse_runner::work_report::job_finished(&status));
+        let wanted = if parts.len() == 3 {
+            finished && !dir.join(page).is_file()
+        } else {
+            parts[3] == page
+        };
+        if wanted && let Err(e) = pulse_runner::work_report::job(store, id, &dir) {
+            eprintln!("job {id}: the report page could not be built: {e:#}");
+        }
         if parts.len() == 3 {
             let artifacts = pulse_harness::artifacts::list(&dir);
             crate::write_json(w, 200, json!({"job": id, "artifacts": artifacts}));
@@ -668,8 +690,18 @@ mod tests {
         );
         assert_eq!(status, 200, "{raw}");
         assert_eq!(body["job"], "job-one");
-        assert_eq!(body["artifacts"], serde_json::json!([]), "no folder yet");
+        // A finished job left nothing: PULSE's report is there all the same.
+        let names: Vec<&str> = body["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["report.html"], "{raw}");
         let dir = pulse_harness::artifacts::job_artifacts_dir(&s.home, "job-one");
+        let built = std::fs::read_to_string(dir.join("report.html")).unwrap();
+        assert!(built.contains("<title>Improve the project</title>"), "{built}");
+        assert!(built.contains("Built by PULSE"), "{built}");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("shot.png"), b"png").unwrap();
         std::fs::write(dir.join("report.html"), "<h1>hi</h1>").unwrap();
@@ -698,11 +730,17 @@ mod tests {
             .unwrap();
         assert_eq!(report["size"], 11);
         assert!(report["modified"].as_str().unwrap().ends_with('Z'));
-        // The other job's folder is its own.
+        // The other job's folder is its own: its own report, nothing of job-one's.
         let (status, body, raw) =
             crate::test_helpers_http::request(h, "GET", "/api/v1/jobs/job-two/artifacts", "", &[]);
         assert_eq!(status, 200, "{raw}");
-        assert_eq!(body["artifacts"], serde_json::json!([]));
+        let names: Vec<&str> = body["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["report.html"], "{raw}");
     }
 
     #[test]
@@ -739,7 +777,10 @@ mod tests {
         assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
         assert_eq!(resp.headers()["cache-control"], "no-store");
         assert_eq!(resp.headers()["x-frame-options"], "SAMEORIGIN");
-        assert_eq!(resp.text().unwrap(), "<h1>hi</h1>");
+        // The report is PULSE's, built again as it is opened.
+        let page = resp.text().unwrap();
+        assert!(page.contains("<title>Improve the project</title>"), "{page}");
+        assert!(page.contains("<span class=\"state bad\">Failed</span>Improve job"), "{page}");
         let resp = client
             .get(format!(
                 "{}/api/v1/jobs/job-one/artifacts/data.bin",

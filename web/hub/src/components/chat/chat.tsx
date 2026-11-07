@@ -195,7 +195,12 @@ import {
   writes,
 } from "@/lib/api";
 import { ReportLink } from "@/components/chat/job-evidence";
-import { hasReportPage, REPORT_PAGE, reportTip } from "@/components/chat/job-evidence-state";
+import {
+  hasReportPage,
+  REPORT_PAGE,
+  REPORT_WORD,
+  reportTip,
+} from "@/components/chat/job-evidence-state";
 import { num, plural, sentence, span } from "@/lib/format";
 import { messageStatus, type MessageStatus } from "@/lib/message-status";
 import {
@@ -2637,6 +2642,17 @@ function ConversationBody({
     ],
     ensure: d.changes ? [makeTab("changes")] : [],
   });
+  // A finished session shows its report (PULSE builds it as the session is
+  // shown finished): it opens in the canvas on the way in and the moment the
+  // session is done.
+  const reportReady = (closed || archived) && hasReportPage(d.artifacts);
+  const openCanvas = ctl.open;
+  const shownReport = useRef(false);
+  useEffect(() => {
+    if (!reportReady || shownReport.current) return;
+    shownReport.current = true;
+    openCanvas("artifact", REPORT_PAGE);
+  }, [reportReady, openCanvas]);
   const texts = useMemo(
     () => [
       ...d.messages.map((m) => m.content),
@@ -3091,6 +3107,26 @@ function ConversationBody({
               " finished this session" +
               (c.note ? ": " + c.note.replace(/[.\s]*$/, "") + "." : ".")}{" "}
           Write below to reopen it, or archive it to put it away.
+          {reportReady ? (
+            <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <button
+                type="button"
+                className="font-medium text-link underline-offset-2 hover:underline"
+                onClick={() => ctl.open("artifact", REPORT_PAGE)}
+                data-report-link
+              >
+                {REPORT_WORD}
+              </button>
+              <a
+                href={chatArtifactHref(c.id, REPORT_PAGE)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Open it in a new tab
+              </a>
+            </span>
+          ) : null}
         </Notice>
       ) : null}
       {(closed || archived) && left.length ? (

@@ -2638,6 +2638,9 @@ export interface TaskJob {
   // the agent left as evidence): 0 or absent when none. GET
   // jobs/{id}/artifacts lists them.
   artifacts?: number;
+  // The commits its latest run made (null before a run), which picks the
+  // step whose report a finished task opens.
+  commits?: number | null;
 }
 
 // An answer the owner can pick under an agent's message instead of writing:

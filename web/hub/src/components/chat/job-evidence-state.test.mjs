@@ -14,6 +14,7 @@ import {
   jobEvidenceWord,
   keepSelection,
   REPORT_PAGE,
+  reportJob,
   REPORT_WORD,
   reportTip,
   shortTitle,
@@ -71,6 +72,8 @@ test("the tab opens on the newest image, else the newest file", () => {
   assert.equal(defaultEvidenceFile(files), "task-view.png");
   assert.equal(defaultEvidenceFile(files.slice(0, 1)), "report.md");
   assert.equal(defaultEvidenceFile([]), "");
+  // The report comes first: it holds the pictures and what they mean.
+  assert.equal(defaultEvidenceFile([...files, { name: "report.html", size: 5, modified: "" }]), "report.html");
   assert.equal(isImageName("a.webp"), true);
   assert.equal(isImageName("a.SVG"), true);
   assert.equal(isImageName(".png"), false);
@@ -101,6 +104,20 @@ test("the report link shows only for a folder that holds the before/after page",
   // The manifest and the pictures alone are not the page.
   assert.equal(hasReportPage([{ name: "report.json" }, { name: "before-home.png" }]), false);
   assert.equal(hasReportPage([{ name: "after.png" }, { name: "report.html" }]), true);
-  assert.match(reportTip("session"), /^The before\/after report this session's agent built/);
+  assert.match(reportTip("session"), /^The report PULSE built for this session: /);
   assert.match(reportTip("run"), /Opens in a new tab\.$/);
+});
+
+test("a finished task shows the report of the step that did the work", () => {
+  const step = (id, status, commits) => ({ id, status, commits });
+  // The work made the commits; the rebase after it made none of its own.
+  assert.equal(reportJob([step("work", "done", 3), step("rebase", "done", 0)]).id, "work");
+  assert.equal(reportJob([step("a", "failed", 0), step("b", "done", 1), step("c", "done", 2)]).id, "c");
+  // Equals: the earliest. No commits at all: the first done step.
+  assert.equal(reportJob([step("a", "done", 1), step("b", "done", 1)]).id, "a");
+  assert.equal(reportJob([step("a", "done", null), step("b", "done", undefined)]).id, "a");
+  // Nothing done: the latest that ended; still running: none.
+  assert.equal(reportJob([step("a", "failed", 0), step("b", "cancelled", 0)]).id, "b");
+  assert.equal(reportJob([step("a", "leased", 0)]), undefined);
+  assert.equal(reportJob([]), undefined);
 });

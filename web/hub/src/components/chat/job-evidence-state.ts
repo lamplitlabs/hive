@@ -76,6 +76,7 @@ export function jobEvidenceTip(j: Pick<TaskJob, "id" | "artifacts">): string {
 // listing comes newest first from the hub.
 export function defaultEvidenceFile(artifacts: ChatArtifact[]): string {
   if (!artifacts.length) return "";
+  if (hasReportPage(artifacts)) return REPORT_PAGE;
   const image = artifacts.find((a) => isImageName(a.name));
   return (image ?? artifacts[0]).name;
 }
@@ -104,10 +105,12 @@ export function evidenceEmptyText(error: string): string {
   return "This step left no files. Screenshots and reports an agent saves in its artifacts folder show up here.";
 }
 
-// The before/after page an agent builds with `pulse report` from the
-// report.json and screenshots it saved in the same folder: each visible
-// change as it was and as it is now. It is the file the owner opens first,
-// so the task, the session and the run link it on its own.
+// The report: the page PULSE builds for every finished job and session
+// (pulse-runner work_report.rs) - where the work stands, who did it, its
+// commits and files, the checks - around the before/after pairs and the
+// screenshots the agent saved (report.json, `pulse report`). It is the file
+// the owner opens first: a step's files open on it, a finished task and a
+// finished session show it by themselves, and the run links it on its own.
 export const REPORT_PAGE = "report.html";
 
 export const REPORT_WORD = "See the report";
@@ -121,8 +124,25 @@ export function hasReportPage(
 // The tooltip of a report link: whose report it is and where it opens.
 export function reportTip(of: "job" | "session" | "run"): string {
   return (
-    "The before/after report this " +
+    "The report PULSE built for this " +
     of +
-    "'s agent built: each change as it was and as it is now. Opens in a new tab."
+    ": where it stands, what changed, the checks and the screenshots. Opens in a new tab."
   );
+}
+
+// The step whose report a finished task shows: the finished one whose run
+// made the most commits (the work, not a rebase or a check after it), the
+// earliest of equals; a task whose steps all failed shows its latest.
+export function reportJob<J extends Pick<TaskJob, "id" | "status" | "commits">>(
+  jobs: J[],
+): J | undefined {
+  let best: J | undefined;
+  for (const j of jobs) {
+    if (j.status !== "done") continue;
+    if (!best || (j.commits ?? 0) > (best.commits ?? 0)) best = j;
+  }
+  if (best) return best;
+  return [...jobs]
+    .reverse()
+    .find((j) => j.status === "failed" || j.status === "cancelled");
 }

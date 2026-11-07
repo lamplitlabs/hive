@@ -566,10 +566,13 @@ Files the agent saves for you - a screenshot, a report, an HTML page - go to a
 folder it knows as `$PULSE_ARTIFACTS` and appear under **Artifacts** as a list;
 pick one and it opens as a tab on the canvas - images at their size, Markdown
 rendered, text as text, HTML and PDF in a frame, anything else as a download
-(every tab has **Download** too). When the agent built a before/after report
-([Before/after reports](reports.md)), **See the report** above the list opens
-it in a new tab; a task's worker reports and a run's panel link a job's report
-the same way.
+(every tab has **Download** too). Every finished session and job has a
+report PULSE builds ([Before/after reports](reports.md)): where the work
+stands, who did it, its commits and files, the checks and the screenshots.
+A finished session and a done task open it on the canvas by themselves, the
+"finished" line links it, and **See the report** above the list opens it in a
+new tab; a task's worker reports and a run's panel link a job's report the
+same way.
 
 Each session runs on one harness session at a time (the **Harness** page
 shows it too, with cost); when that harness session ends (a limit, a provider
