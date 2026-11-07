@@ -28,7 +28,6 @@ pub(crate) struct MeasuredFixture {
 }
 
 struct FixtureResult {
-    index: usize,
     score: Option<crate::api::FixtureScore>,
     value: f64,
     normalized_weight: f64,
@@ -285,10 +284,14 @@ pub(crate) fn measure(
             )?;
         }
         let requested_parallel = s.setting_int("evolve.measure_parallel");
+        // With more than one slot a judge fixture's runs are queued apart,
+        // so they fill free slots beside each other instead of running
+        // one after another.
+        let units = measure_units(&matrix, requested_parallel > 1);
         let parallel = if requested_parallel <= 1 {
             1
         } else {
-            (requested_parallel as usize).min(len)
+            (requested_parallel as usize).min(units.len())
         };
         crate::process::set_measure_parallel(parallel);
         if let Some(w) = out.as_deref_mut() {
@@ -296,7 +299,7 @@ pub(crate) fn measure(
         }
         let next = AtomicUsize::new(0);
         let failed = AtomicBool::new(false);
-        let mut results = Vec::new();
+        let mut unit_results: Vec<UnitResult> = Vec::new();
         std::thread::scope(|scope| -> Result<()> {
             let mut handles = Vec::new();
             for _ in 0..parallel {
@@ -311,6 +314,7 @@ pub(crate) fn measure(
                 let next = &next;
                 let failed = &failed;
                 let matrix = &matrix;
+                let units = &units;
                 let scope_env = scope_env.as_ref();
                 handles.push(scope.spawn(move || {
                     let mut worker_results = Vec::new();
@@ -318,11 +322,11 @@ pub(crate) fn measure(
                         if failed.load(Ordering::SeqCst) || cancel.err().is_some() {
                             break;
                         }
-                        let i = next.fetch_add(1, Ordering::SeqCst);
-                        if i >= matrix.len() {
+                        let u = next.fetch_add(1, Ordering::SeqCst);
+                        let Some(&unit) = units.get(u) else {
                             break;
-                        }
-                        let result = measure_fixture(
+                        };
+                        let result = measure_unit(
                             &cancel,
                             &store,
                             &repo,
@@ -332,9 +336,8 @@ pub(crate) fn measure(
                             &keys,
                             &exe,
                             timeout,
-                            max_weight,
                             matrix,
-                            i,
+                            unit,
                             scope_env,
                         );
                         if result.error.is_some() {
@@ -346,7 +349,7 @@ pub(crate) fn measure(
                 }));
             }
             for handle in handles {
-                results.extend(
+                unit_results.extend(
                     handle
                         .join()
                         .map_err(|_| anyhow!("measurement worker panicked"))?,
@@ -354,7 +357,16 @@ pub(crate) fn measure(
             }
             Ok(())
         })?;
-        results.sort_by_key(|r| r.index);
+        unit_results.sort_by_key(|r| (r.unit.fixture, r.unit.first_run));
+        let mut by_fixture: Vec<Vec<UnitResult>> = (0..len).map(|_| Vec::new()).collect();
+        for result in unit_results {
+            by_fixture[result.unit.fixture].push(result);
+        }
+        let results: Vec<FixtureResult> = by_fixture
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, units)| fixture_result(&matrix, i, max_weight, units))
+            .collect();
         // A cancelled or timed-out run may stop before any fixture scored; report the
         // cancellation itself rather than the 0/0 total it would otherwise leave behind.
         if let Some(ctx_err) = cancel.err() {
@@ -424,8 +436,83 @@ pub(crate) fn measure(
     }
 }
 
+/// One unit of a measurement's worker pool: fixture `fixture`'s runs
+/// `first_run..end_run`, one after another in one clone slot. A sequential
+/// measurement queues a judge fixture's runs as one unit; a parallel one
+/// queues every run on its own, so the runs of a judge fixture fill free
+/// slots of the `evolve.measure_parallel` pool instead of waiting on each
+/// other.
+#[derive(Debug, Clone, Copy)]
+struct MeasureUnit {
+    fixture: usize,
+    first_run: usize,
+    end_run: usize,
+}
+
+/// What one unit measured: the scored runs in order, the output its runs
+/// wrote, and the error that stopped it.
+struct UnitResult {
+    unit: MeasureUnit,
+    measured: Vec<(f64, String, bool)>,
+    output: String,
+    error: Option<anyhow::Error>,
+}
+
+/// How many times fixture `f` is measured: a judge-scored fixture runs
+/// JUDGE_RUNS times and counts the score its runs agree on; a metric (or
+/// card) fixture scores the frozen tree deterministically and runs once.
+fn fixture_runs(f: &MeasuredFixture) -> usize {
+    if f.metric {
+        1
+    } else {
+        crate::dispute::JUDGE_RUNS
+    }
+}
+
+/// The pool's queue, in matrix order: one unit per fixture when the
+/// measurement is sequential, one per run when it runs in parallel.
+fn measure_units(matrix: &[MeasuredFixture], split_runs: bool) -> Vec<MeasureUnit> {
+    let mut units = Vec::new();
+    for (fixture, f) in matrix.iter().enumerate() {
+        let runs = fixture_runs(f);
+        if split_runs {
+            units.extend((0..runs).map(|run| MeasureUnit {
+                fixture,
+                first_run: run,
+                end_run: run + 1,
+            }));
+        } else {
+            units.push(MeasureUnit {
+                fixture,
+                first_run: 0,
+                end_run: runs,
+            });
+        }
+    }
+    units
+}
+
+/// The clone (and home) number a unit measures in: a fixture's first run
+/// keeps the fixture's own number; a later run started on its own takes a
+/// number past every fixture's, so parallel runs never share a clone.
+fn unit_slot(len: usize, unit: MeasureUnit) -> usize {
+    if unit.first_run == 0 {
+        unit.fixture + 1
+    } else {
+        len + unit.fixture * (crate::dispute::JUDGE_RUNS - 1) + unit.first_run
+    }
+}
+
+fn fixture_label(f: &MeasuredFixture) -> &str {
+    if f.kind == "heldout" {
+        "held-out fixture"
+    } else {
+        &f.name
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn measure_fixture(
+fn measure_unit(
     cancel: &pulse_bus::CancellationToken,
     s: &pulse_store::Store,
     repo: &str,
@@ -435,62 +522,35 @@ fn measure_fixture(
     keys: &[String],
     exe: &str,
     timeout: Duration,
-    max_weight: f64,
     matrix: &[MeasuredFixture],
-    i: usize,
+    unit: MeasureUnit,
     scope: Option<&ScopeEnv>,
-) -> FixtureResult {
+) -> UnitResult {
+    let i = unit.fixture;
     let f = &matrix[i];
     let len = matrix.len();
-    let label = if f.kind == "heldout" {
-        "held-out fixture"
-    } else {
-        &f.name
-    };
-    let mut output = String::new();
-    let _ = writeln!(
-        &mut output,
-        "[{}/{}] {}: isolated measurement",
-        i + 1,
-        len,
-        label
-    );
-    let clone = Path::new(root)
-        .join((i + 1).to_string())
-        .display()
-        .to_string();
+    let label = fixture_label(f);
+    let slot = unit_slot(len, unit);
+    let clone = Path::new(root).join(slot.to_string()).display().to_string();
     let home = Path::new(root)
         .join("homes")
-        .join((i + 1).to_string())
+        .join(slot.to_string())
         .display()
         .to_string();
-    let failed = |output: String, error: anyhow::Error| FixtureResult {
-        index: i,
-        score: None,
-        value: 0.0,
-        normalized_weight: 0.0,
-        output,
-        error: Some(error),
-        diff_scoped: false,
-    };
-    // A judge-scored fixture runs JUDGE_RUNS times and counts the score its
-    // runs agree on; a metric (or card) fixture scores the frozen tree
-    // deterministically and runs once.
-    let runs = if f.metric {
-        1
-    } else {
-        crate::dispute::JUDGE_RUNS
-    };
-    let mut measured: Vec<(f64, String, bool)> = Vec::with_capacity(runs);
-    for run in 0..runs {
-        if run > 0 {
+    let mut output = String::new();
+    let mut measured: Vec<(f64, String, bool)> = Vec::with_capacity(unit.end_run - unit.first_run);
+    let mut error = None;
+    for run in unit.first_run..unit.end_run {
+        if run > unit.first_run {
             if let Some(e) = cancel.err() {
-                return failed(output, e.into());
+                error = Some(e.into());
+                break;
             }
             // Every run starts from the measured commit and a home with only
             // its build caches, so one run's answer never leaks into the next.
             if let Err(e) = reset_home(&home) {
-                return failed(output, anyhow!("measurement home reset failed: {e}"));
+                error = Some(anyhow!("measurement home reset failed: {e}"));
+                break;
             }
         }
         let run_result = (|| -> Result<(f64, String, bool)> {
@@ -531,20 +591,74 @@ fn measure_fixture(
             score_clone(&score_cancel, &clone, &env, &f.scorer)
                 .map_err(|e| measurement_failure(cancel, label, "read-only scorer", e))
         })();
-        let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, i + 1);
+        let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, slot);
         match (run_result, clone_cleanup) {
             (Ok(value), Ok(())) => measured.push(value),
-            (Err(e), Ok(())) => return failed(output, e),
+            (Err(e), Ok(())) => {
+                error = Some(e);
+                break;
+            }
             (Ok(_), Err(e)) => {
-                return failed(output, anyhow!("measurement clone cleanup failed: {e}"));
+                error = Some(anyhow!("measurement clone cleanup failed: {e}"));
+                break;
             }
             (Err(e), Err(clean)) => {
-                return failed(
-                    output,
-                    anyhow!("{e}; measurement clone cleanup failed: {clean}"),
-                );
+                error = Some(anyhow!("{e}; measurement clone cleanup failed: {clean}"));
+                break;
             }
         }
+    }
+    UnitResult {
+        unit,
+        measured,
+        output,
+        error,
+    }
+}
+
+/// Fold the units of fixture `i` (in run order) into its result: the first
+/// error any run met, or the score its runs agree on. `None` when a run
+/// never started because the measurement stopped on another fixture.
+fn fixture_result(
+    matrix: &[MeasuredFixture],
+    i: usize,
+    max_weight: f64,
+    units: Vec<UnitResult>,
+) -> Option<FixtureResult> {
+    let f = &matrix[i];
+    let len = matrix.len();
+    let label = fixture_label(f);
+    let mut output = String::new();
+    let _ = writeln!(
+        &mut output,
+        "[{}/{}] {}: isolated measurement",
+        i + 1,
+        len,
+        label
+    );
+    let mut measured: Vec<(f64, String, bool)> = Vec::new();
+    let mut error = None;
+    for unit in units {
+        output.push_str(&unit.output);
+        measured.extend(unit.measured);
+        if error.is_none() {
+            error = unit.error;
+        }
+    }
+    if let Some(error) = error {
+        return Some(FixtureResult {
+            score: None,
+            value: 0.0,
+            normalized_weight: 0.0,
+            output,
+            error: Some(error),
+            diff_scoped: false,
+        });
+    }
+    // A run the pool never started (another fixture failed first) leaves
+    // the fixture unscored; the failing fixture reports the error.
+    if measured.len() < fixture_runs(f) {
+        return None;
     }
     let run_scores: Vec<f64> = measured.iter().map(|(v, _, _)| *v).collect();
     let agreed = crate::dispute::agreed_score(&run_scores);
@@ -581,8 +695,7 @@ fn measure_fixture(
             value
         );
     }
-    FixtureResult {
-        index: i,
+    Some(FixtureResult {
         score: Some(crate::api::FixtureScore {
             name: f.name.clone(),
             kind: f.kind.clone(),
@@ -601,7 +714,7 @@ fn measure_fixture(
         output,
         error: None,
         diff_scoped,
-    }
+    })
 }
 
 /// Empty a fixture's measurement home between two runs of a judge-scored
@@ -916,10 +1029,11 @@ printf 'HIDDEN_HARNESS_OUTPUT\n'
             "original\n"
         );
         let calls = std::fs::read_to_string(&log).unwrap();
-        // Four judge-scored fixtures, each run three times in its own clone.
+        // Four judge-scored fixtures, each run three times; with free slots
+        // in the default pool every run takes a clone of its own.
         assert_eq!(lines(&calls).len(), 4 * crate::dispute::JUDGE_RUNS);
         let unique: std::collections::BTreeSet<_> = lines(&calls).into_iter().collect();
-        assert_eq!(unique.len(), 4);
+        assert_eq!(unique.len(), 4 * crate::dispute::JUDGE_RUNS);
         for name in unique {
             assert!(
                 std::fs::metadata(name).is_err(),
@@ -1108,6 +1222,10 @@ printf 'score: 0.75\n'
         let _guard = measure_test_lock();
         let s = test_store();
         let repo = test_project(&s, "demo");
+        // The scripted scorers answer in call order, so the runs are
+        // measured one after another here; parallel runs have their own test.
+        s.set_setting("human", "evolve.measure_parallel", "1")
+            .unwrap();
         let tmp = crate::test_helpers::temp_path();
         let (metric_calls, agree_calls, median_calls, harness_calls) = (
             tmp.join("metric"),
@@ -1232,6 +1350,84 @@ printf 'score: 0.75\n'
             .find(|f| f.name == "starter-agree")
             .unwrap();
         assert_eq!(agree.runs, [1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn parallel_slots_run_a_judge_fixtures_runs_side_by_side() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        s.set_setting("human", "evolve.measure_parallel", "3")
+            .unwrap();
+        // One judge fixture whose three runs score 1, 0 and 1 by the clone
+        // they ran in (never by call order, which parallel runs do not keep).
+        fixture(
+            &s,
+            "demo",
+            "starter-judge",
+            "if [ -e ran-second ]; then printf 'score: 0\\n'; else printf 'score: 1\\n'; fi",
+            1.0,
+        );
+        let tmp = crate::test_helpers::temp_path();
+        let (marker, harness_calls) = (tmp.join("overlap"), tmp.join("harness"));
+        fake_harness(
+            &s,
+            &format!(
+                r#"
+test ! -e "$PULSE_HOME/scratch/left-behind"
+touch "$PULSE_HOME/scratch/left-behind"
+root=$(dirname "$PWD")
+running="$root/running"
+mkdir -p "$running"
+touch "$running/$(basename "$PWD")"
+count=$(ls "$running" | wc -l | tr -d ' ')
+if [ "$count" -ge 2 ]; then touch '{marker}'; fi
+if [ "$(basename "$PWD")" = 3 ]; then touch ran-second; fi
+printf '%s\n' "$PWD" >> '{calls}'
+sleep 1
+rm -f "$running/$(basename "$PWD")"
+"#,
+                marker = marker.display(),
+                calls = harness_calls.display()
+            ),
+        );
+        let mut out = Vec::new();
+        let cancel = pulse_bus::CancellationToken::new();
+        let scores = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains("measuring 1 fixtures with 3 in parallel"),
+            "{out}"
+        );
+        assert!(marker.exists(), "the judge runs did not overlap: {out}");
+        let harness = std::fs::read_to_string(&harness_calls).unwrap();
+        let mut clones = lines(&harness);
+        clones.sort();
+        clones.dedup();
+        assert_eq!(clones.len(), crate::dispute::JUDGE_RUNS, "{harness}");
+        assert_eq!(scores.fixtures.len(), 1);
+        let judged = &scores.fixtures[0];
+        // Runs keep run order: slot 1 is run 1, slots 2 and 3 runs 2 and 3.
+        assert_eq!(judged.runs, [1.0, 1.0, 0.0]);
+        assert_eq!(judged.score, 1.0);
+        assert!(
+            out.contains("starter-judge: 1.0000 [runs 1, 1, 0]"),
+            "{out}"
+        );
+        assert_eq!(out.matches("isolated measurement").count(), 1, "{out}");
+        assert_no_clones(&s);
     }
 
     /// A metric fixture that reads the scope the measurement exports and
