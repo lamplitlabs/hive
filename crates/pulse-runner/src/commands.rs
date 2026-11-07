@@ -48,6 +48,7 @@ pub fn register() {
         cli_register(Command { name:"daemon".into(), group:"runner".into(), summary:"the runner loop: land, plan, dispatch workers, sweep".into(), usage:DAEMON_USAGE.into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_daemon, flags:Some(daemon_flags) });
         cli_register(Command { name:"sweep".into(), group:"runner".into(), summary:"remove what runs and landings left on this machine and nothing holds any more (the daemon does this every ten minutes); --reclaim runs the disk reclaim ladder the daemon climbs under daemon.min_free_mb".into(), usage:"pulse sweep [--dry-run] [--held] [--json] [--reclaim]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_sweep, flags:Some(sweep_flags) });
         cli_register(Command { name:"backup".into(), group:"runner".into(), summary:"copy the store off this machine: a checked, gzipped copy of pulse.sqlite to backup.to - a directory, az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage), or `run: COMMAND {file} {name}` (the daemon does this every backup.every_hours); --status shows the last one and when the next is due".into(), usage:"pulse backup [--to DEST] [--keep N] [--status] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_backup, flags:Some(backup_flags) });
+        cli_register(Command { name:"store".into(), group:"runner".into(), summary:"store upkeep: `archive` moves ledger rows older than daemon.archive_days that nothing reads any more (cold events, finished runs, ended transcripts) to pulse-archive.sqlite next to pulse.sqlite (the daemon does this once a month); --dry-run only counts them".into(), usage:"pulse store archive [--dry-run] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_store, flags:Some(store_flags) });
         cli_register(Command { name:"service".into(), group:"runner".into(), summary:"install, uninstall or show the user services that keep the daemon and the hub alive (launchd / systemd --user)".into(), usage:"pulse service install|uninstall|status|show [--interval S] [--hub-port N] [--no-hub] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_service, flags:Some(service_flags) });
         cli_register(Command { name:"bulk".into(), group:"runner".into(), summary:"keep the regenerable bulk (work, cache, worktrees, build dirs) on another disk; the daemon waits while that disk is away".into(), usage:"pulse bulk status | attach VOLUME [--any-folder] [--dry-run] | detach [--lost] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_bulk, flags:Some(bulk_flags) });
         cli_register(Command { name:"lead".into(), group:"agents".into(), summary:"the role leads of a project: seat one per concern (rsi, docs, security, monitor, or a word of your own), list, pause, resume, end, run, and ask which roles the project is missing".into(), usage:"pulse lead add --project SLUG --role R [--title T] [--brief B | --brief-file F] [--every 1d]\npulse lead list [--project SLUG] [--status S] [--json]\npulse lead show LEAD-NNN [--json]\npulse lead pause|resume|end|run LEAD-NNN [--note N]\npulse lead suggest --project SLUG [--json]\npulse lead roles --project SLUG [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::lead_cli::cmd_lead, flags:Some(crate::lead_cli::lead_flags) });
@@ -157,6 +158,14 @@ fn backup_flags(fs: &mut FlagSet) {
         "status",
         false,
         "show the last backup, the settings in force and when the daemon takes the next; copy nothing",
+    );
+}
+
+fn store_flags(fs: &mut FlagSet) {
+    fs.bool_var(
+        "dry-run",
+        false,
+        "count what the archive would move; move nothing",
     );
 }
 
@@ -1596,6 +1605,33 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
         )
         .into()),
     }
+}
+
+/// `pulse store archive [--dry-run]`: the monthly archive of
+/// pulse-store archive.rs, by hand.
+pub(crate) fn cmd_store(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    let s = c
+        .store
+        .clone()
+        .ok_or_else(|| anyhow!("store: store is needed"))?;
+    if args.len() != 1 || args[0] != "archive" {
+        return Err(crate::util::fail(2, "usage: pulse store archive [--dry-run] [--json]").into());
+    }
+    let rep = s.archive_old_rows(bool_flag(fs, "dry-run"), &actor_of(c))?;
+    if c.json {
+        pulse_cli::write_json(&mut c.out, &rep)?;
+    } else {
+        writeln!(c.out, "{}", rep.line())?;
+        if rep.skipped.is_empty() && !rep.steps_cutoff.is_empty() && rep.steps_cutoff != rep.cutoff
+        {
+            writeln!(
+                c.out,
+                "harness steps of sessions ended before {}",
+                rep.steps_cutoff
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn cmd_env(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {

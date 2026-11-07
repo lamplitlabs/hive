@@ -3966,11 +3966,18 @@ mod tests {
         let (proj, repo, _bare) = push_fixture(&s);
         seed_conversation(&s, "face1", &repo);
         run(&repo, &["git", "branch", "pulse/chat-face1", "main"]);
-        commit_dated(&repo, "pulse/chat-face1", "page.tsx", "2026-09-06T09:40:00Z");
+        commit_dated(
+            &repo,
+            "pulse/chat-face1",
+            "page.tsx",
+            "2026-09-06T09:40:00Z",
+        );
         let lines = tend_proj(&s, &proj, TEST_NOW);
         assert_eq!(
             lines,
-            ["proposed proj pulse/chat-face1: waits for its before/after report; session face1 asked"]
+            [
+                "proposed proj pulse/chat-face1: waits for its before/after report; session face1 asked"
+            ]
         );
         assert_eq!(events(&s, "land.pr"), 0);
         let wake = last_detail(&s, pulse_harness::conversation::WAKE_ACTION);
@@ -3979,12 +3986,17 @@ mod tests {
             text.starts_with("Your branch pulse/chat-face1 changes 1 UI file (`page.tsx`) and there is no report.json in $PULSE_ARTIFACTS."),
             "{text}"
         );
-        assert!(text.contains("run `pulse report` until it names nothing"), "{text}");
+        assert!(
+            text.contains("run `pulse report` until it names nothing"),
+            "{text}"
+        );
         // Within the hour: it waits, and the session is not asked again.
         let lines = tend_proj(&s, &proj, "2026-09-06T10:30:00Z");
         assert_eq!(
             lines,
-            ["proposed proj pulse/chat-face1: waits for its before/after report until 2026-09-06T11:00:00Z"]
+            [
+                "proposed proj pulse/chat-face1: waits for its before/after report until 2026-09-06T11:00:00Z"
+            ]
         );
         assert_eq!(events(&s, pulse_harness::conversation::WAKE_ACTION), 1);
         // The report shows the change: the pull request opens, and the
@@ -4015,7 +4027,12 @@ mod tests {
         let (proj, repo, _bare) = push_fixture(&s);
         seed_conversation(&s, "face2", &repo);
         run(&repo, &["git", "branch", "pulse/chat-face2", "main"]);
-        commit_dated(&repo, "pulse/chat-face2", "site.css", "2026-09-06T09:40:00Z");
+        commit_dated(
+            &repo,
+            "pulse/chat-face2",
+            "site.css",
+            "2026-09-06T09:40:00Z",
+        );
         let e = crate::ui_evidence::chat_branch_evidence(&s, &proj, "pulse/chat-face2").unwrap();
         assert!(e.wants_report(), "{e:?}");
         tend_proj(&s, &proj, TEST_NOW);
@@ -4033,7 +4050,9 @@ mod tests {
         let reasons = crate::review::reasons_for(&s, &view);
         assert_eq!(reasons.len(), 1, "{reasons:?}");
         assert!(
-            reasons[0].starts_with("changes 1 UI file with no before/after report (there is no report.json"),
+            reasons[0].starts_with(
+                "changes 1 UI file with no before/after report (there is no report.json"
+            ),
             "{reasons:?}"
         );
         // Warn for this project: no reason, no wait.

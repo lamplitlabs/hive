@@ -599,7 +599,7 @@ pub fn activity_for(s: &pulse_store::Store, task_id: &str, limit: usize) -> Resu
         // too (one row per event).
         let mut stmt = conn.prepare(
             "SELECT seq, at, actor, action, subject, detail FROM events \
-             WHERE action LIKE 'land.%' AND (subject = ? OR json_extract(detail, '$.job') = ?) ORDER BY seq",
+             WHERE action LIKE 'land.%' AND (subject = ? OR (json_valid(detail) AND json_extract(detail, '$.job') = ?)) ORDER BY seq",
         )?;
         let mut keys: Vec<String> = branches.iter().cloned().collect();
         keys.extend(job_ids.iter().cloned());

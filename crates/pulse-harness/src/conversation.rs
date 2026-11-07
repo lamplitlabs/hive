@@ -3878,7 +3878,12 @@ pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
 
 /// `brief_text` for a session whose project's `landing.ui_report` is
 /// `ui_report` (require, warn or off): what a change with a face brings.
-pub fn brief_text_with(row: &Row, projects: &[Project], artifacts: &Path, ui_report: &str) -> String {
+pub fn brief_text_with(
+    row: &Row,
+    projects: &[Project],
+    artifacts: &Path,
+    ui_report: &str,
+) -> String {
     let mut b = String::new();
     if row.parent.is_empty() {
         b.push_str(&format!(
@@ -5585,10 +5590,19 @@ mod tests {
         assert!(!text.contains("pulse task new"));
         assert!(text.contains("$PULSE_ARTIFACTS (/tmp/art)"));
         // A change with a face brings its before/after report, built by `pulse report`.
-        assert!(text.contains("before you change a screen, save a picture of it as it is"), "{text}");
-        assert!(text.contains("run `pulse report` until it names nothing"), "{text}");
+        assert!(
+            text.contains("before you change a screen, save a picture of it as it is"),
+            "{text}"
+        );
+        assert!(
+            text.contains("run `pulse report` until it names nothing"),
+            "{text}"
+        );
         assert!(text.contains("waits for it (landing.ui_report)"), "{text}");
-        assert!(brief_text_with(&loose, &projects, art, "warn").contains("still lands, and its landing says it has none"));
+        assert!(
+            brief_text_with(&loose, &projects, art, "warn")
+                .contains("still lands, and its landing says it has none")
+        );
         assert!(!brief_text_with(&loose, &projects, art, "off").contains("pulse report"));
         // The owner's words are looked up on the shared board before the
         // agent asks what they mean.
