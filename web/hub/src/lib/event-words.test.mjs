@@ -13,7 +13,7 @@ const ADDED = [
   "land.pr-conflict",
   "land.pr-held",
   "land.pr-refreshed",
-  "land.pr-unstacked",
+  "land.pr-rebuilt",
   "land.rebase",
   "land.merged",
   "land.missing",

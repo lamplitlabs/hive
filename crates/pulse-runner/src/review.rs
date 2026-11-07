@@ -195,11 +195,24 @@ pub(crate) struct PrView {
     pub deletions: i64,
     /// (path, additions, deletions) per changed file.
     pub files: Vec<(String, i64, i64)>,
+    /// A draft (`isDraft`): the forge will not merge it.
+    pub is_draft: bool,
+    /// `mergeStateStatus`: `CLEAN`, `DIRTY` (conflicts), `BLOCKED` (a
+    /// required check or review is missing), `BEHIND`, `UNSTABLE`,
+    /// `HAS_HOOKS` or `UNKNOWN`; empty from an older gh.
+    pub merge_state: String,
+    /// How many checks the head reports (`statusCheckRollup` entries).
+    pub checks: usize,
+    /// The checks that failed, were cancelled, timed out or want action.
+    pub failing_checks: Vec<String>,
+    /// The checks still queued or running.
+    pub pending_checks: Vec<String>,
 }
 
 impl PrView {
     pub(crate) fn from_json(v: &Value) -> Self {
         let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let forge = crate::landing_pr::pr_state(v);
         PrView {
             number: v["number"].as_i64().unwrap_or(0),
             title: s("title"),
@@ -229,6 +242,11 @@ impl PrView {
                         .collect()
                 })
                 .unwrap_or_default(),
+            is_draft: forge.is_draft,
+            merge_state: forge.merge_state,
+            checks: v["statusCheckRollup"].as_array().map(Vec::len).unwrap_or(0),
+            failing_checks: forge.failing_checks,
+            pending_checks: forge.pending_checks,
         }
     }
 }
@@ -372,7 +390,8 @@ pub(crate) fn gh(
     Err(first)
 }
 
-/// `gh pr view` of one pull request, the fields the rule and brief read.
+/// `gh pr view` of one pull request: the fields the rule and brief read,
+/// and what the forge says stands between it and its merge.
 pub(crate) fn pr_view(
     s: &pulse_store::Store,
     slug: &str,
@@ -388,7 +407,7 @@ pub(crate) fn pr_view(
             "view",
             &number.to_string(),
             "--json",
-            "number,title,body,url,state,headRefName,headRefOid,baseRefName,author,additions,deletions,files",
+            "number,title,body,url,state,headRefName,headRefOid,baseRefName,author,additions,deletions,files,isDraft,mergeStateStatus,statusCheckRollup",
         ],
         GH_TIMEOUT,
     )?;
@@ -621,7 +640,7 @@ pub(crate) fn review_brief(
     b.push("5. Exactly ONE verdict command:".into());
     if reasons.is_empty() {
         b.push(format!(
-            "   - `pulse review merge {n}` - correct, safe, in scope, check green: it merges on GitHub and records review.merged."
+            "   - `pulse review merge {n}` - correct, safe, in scope, check green: it merges on GitHub and records review.merged. The command reads the pull request on GitHub first and refuses, without a verdict, a head that moved since this review was queued, a draft, a failing or still running check, or a merge GitHub blocks; a refusal is not a failure, so read the reason and finish the job with it."
         ));
         b.push(format!(
             "   - `pulse review changes {n} --note \"<the exact fixes>\"` - fixable: GitHub gets the request, and one follow-up job makes the fixes on the pull request's head; your note is its brief, so name files and what to change."
@@ -857,7 +876,10 @@ fn honour_asks(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> 
 
 /// Merges a pull request as the owner (`review.merged` with `by: owner`),
 /// bypassing the complexity rule: the hub's Merge button and `pulse review
-/// merge N --by owner` come here. A failure is a `review.failed`.
+/// merge N --by owner` come here. The forge's own gate ([`merge_refusal`])
+/// is not bypassed: a red or running check, a draft, a blocked pull
+/// request or a head that moved since the hub showed it is refused, and
+/// the ask stands for the next pass. A failure of gh is a `review.failed`.
 pub(crate) fn merge_as_owner(
     s: &pulse_store::Store,
     project: &Row,
@@ -867,11 +889,138 @@ pub(crate) fn merge_as_owner(
     merge(s, project, number, "owner", ACTOR, now)
 }
 
-/// `gh pr merge --merge --delete-branch`, then `review.merged`; on a gh
-/// failure `review.failed` with the error. Returns the pull request's url.
-/// A pull request stacked on another is refused before gh is asked, and
-/// without a `review.failed`: it is not a failure of the merge, only its
-/// turn has not come, and an owner's ask stands until it does.
+/// The head of a pull request as PULSE last saw it: the sha its newest
+/// review was queued at (`review.queued`: what the reviewer read), or,
+/// when no review was queued yet, the one its newest `land.pr` pushed
+/// (what the hub shows the owner).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeenHead {
+    pub sha: String,
+    /// The sha is the one a review was queued at.
+    pub reviewed: bool,
+}
+
+fn seen_head(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    number: i64,
+) -> Option<SeenHead> {
+    let reviewed = crate::util::query_rows(
+        q,
+        "SELECT COALESCE(json_extract(detail, '$.sha'), '') AS sha FROM events WHERE subject = ? AND action = 'review.queued'
+         AND json_extract(detail, '$.number') = ? AND COALESCE(json_extract(detail, '$.sha'), '') != '' ORDER BY seq DESC LIMIT 1",
+        &[&slug, &number],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .next()
+    .map(|r| r.str("sha"));
+    if let Some(sha) = reviewed {
+        return Some(SeenHead {
+            sha,
+            reviewed: true,
+        });
+    }
+    pr_state(q, slug, number)
+        .map(|(pr, _)| pr.sha)
+        .filter(|sha| !sha.is_empty())
+        .map(|sha| SeenHead {
+            sha,
+            reviewed: false,
+        })
+}
+
+/// Why `gh pr merge` must not be asked for this pull request as the forge
+/// shows it now, or None when nothing stands in the way: the head moved
+/// since PULSE reviewed (or pushed) it, it is a draft, a check failed or
+/// still runs, or `mergeStateStatus` says the forge would refuse (`DIRTY`:
+/// conflicts, `BLOCKED`: a rule of the repository, `BEHIND`: the base must
+/// be merged in first). A pull request with no checks at all passes: the
+/// project may have no CI, and the caller records that none reported.
+pub(crate) fn merge_refusal(view: &PrView, seen: Option<&SeenHead>) -> Option<String> {
+    let n = view.number;
+    if !view.state.is_empty() && view.state != "OPEN" {
+        return Some(format!(
+            "pull request #{n} is {} on GitHub; nothing to merge",
+            view.state.to_ascii_lowercase()
+        ));
+    }
+    if let Some(seen) = seen
+        && !view.head_sha.is_empty()
+        && seen.sha != view.head_sha
+    {
+        let was = crate::recipe::short(&seen.sha, 12);
+        let now = crate::recipe::short(&view.head_sha, 12);
+        return Some(if seen.reviewed {
+            format!(
+                "the pull request moved since it was reviewed: reviewed {was}, now {now}; it is reviewed again"
+            )
+        } else {
+            format!(
+                "the pull request moved since PULSE pushed it: pushed {was}, now {now}; it is reviewed again"
+            )
+        });
+    }
+    if view.is_draft {
+        return Some(format!(
+            "pull request #{n} is a draft; GitHub does not merge a draft"
+        ));
+    }
+    if !view.failing_checks.is_empty() {
+        return Some(format!(
+            "pull request #{n} has failing checks: {}; a red check is never merged",
+            view.failing_checks.join(", ")
+        ));
+    }
+    if !view.pending_checks.is_empty() {
+        return Some(format!(
+            "pull request #{n} has checks pending: {}; it is merged when they are green",
+            view.pending_checks.join(", ")
+        ));
+    }
+    match view.merge_state.as_str() {
+        "DIRTY" => Some(format!(
+            "pull request #{n} conflicts with its base (mergeStateStatus DIRTY); delivery merges the base in when that is clean"
+        )),
+        "BLOCKED" => Some(format!(
+            "pull request #{n} is blocked on GitHub (mergeStateStatus BLOCKED: a required check, review or rule of the repository is not met)"
+        )),
+        "BEHIND" => Some(format!(
+            "pull request #{n} is behind its base (mergeStateStatus BEHIND); the base must be merged in before GitHub takes it"
+        )),
+        _ => None,
+    }
+}
+
+/// Whether the project expects checks on a pull request: `pipeline.watch`
+/// is on and the checkout has a workflow under `.github/workflows`. A merge
+/// with no check reported is fine without; with, it is recorded as such.
+fn ci_expected(s: &pulse_store::Store, project: &Row) -> bool {
+    if s.setting(crate::pipeline::WATCH, "fix").trim() == "off" {
+        return false;
+    }
+    let dir = std::path::Path::new(&project.str("path")).join(".github/workflows");
+    std::fs::read_dir(dir)
+        .map(|d| {
+            d.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                name.ends_with(".yml") || name.ends_with(".yaml")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// `gh pr view`, then `gh pr merge --merge --delete-branch`, then
+/// `review.merged`; on a gh failure of the merge `review.failed` with the
+/// error. Returns the pull request's url. Refused before gh is asked to
+/// merge, and without a `review.failed`: a pull request stacked on another
+/// (its turn has not come), and whatever [`merge_refusal`] names from the
+/// forge's view - the head moved since it was reviewed, a draft, a red or
+/// running check, a blocked or dirty merge state. None of these is a
+/// failure of the merge; an owner's ask stands until the next pass finds
+/// the pull request ready. The `review.merged` records the head sha merged
+/// and how many checks reported (`no_checks` when none did although the
+/// project has workflows).
 pub(crate) fn merge(
     s: &pulse_store::Store,
     project: &Row,
@@ -880,12 +1029,29 @@ pub(crate) fn merge(
     actor: &str,
     now: &str,
 ) -> Result<String, String> {
+    merge_viewed(s, project, number, None, by, actor, now)
+}
+
+/// [`merge`] with the `gh pr view` a caller has just read (`pulse review
+/// merge` reads it for its own preconditions): the view is not read twice,
+/// and the gate judges the one given.
+pub(crate) fn merge_viewed(
+    s: &pulse_store::Store,
+    project: &Row,
+    number: i64,
+    viewed: Option<&PrView>,
+    by: &str,
+    actor: &str,
+    now: &str,
+) -> Result<String, String> {
     let slug = project.str("slug");
-    let known = s
-        .conn()
-        .ok()
-        .and_then(|c| pr_state(&c, &slug, number))
-        .map(|(pr, _)| pr);
+    let (known, seen) = match s.conn().ok() {
+        Some(c) => (
+            pr_state(&c, &slug, number).map(|(pr, _)| pr),
+            seen_head(&c, &slug, number),
+        ),
+        None => (None, None),
+    };
     let def = crate::baseline::default_branch(project.clone());
     if let Some(below) = known.as_ref().and_then(|p| stacked_on(p, &def)) {
         return Err(format!(
@@ -894,6 +1060,13 @@ pub(crate) fn merge(
     }
     let url = known.as_ref().map(|p| p.url.clone()).unwrap_or_default();
     let repo = repo_of(project, &url);
+    let view = match viewed {
+        Some(v) => v.clone(),
+        None => pr_view(s, &slug, &repo, number)?,
+    };
+    if let Some(why) = merge_refusal(&view, seen.as_ref()) {
+        return Err(why);
+    }
     let result = gh(
         s,
         &slug,
@@ -910,9 +1083,16 @@ pub(crate) fn merge(
     let job = std::env::var("PULSE_JOB").unwrap_or_default();
     match result {
         Ok(_) => {
-            let mut detail = json!({"project": slug, "number": number, "url": url, "by": by});
+            let mut detail = json!({"project": slug, "number": number, "url": url, "by": by,
+                "head_sha": view.head_sha, "checks": view.checks});
             if !job.is_empty() {
                 detail["job"] = json!(job);
+            }
+            if view.checks == 0 && ci_expected(s, project) {
+                detail["no_checks"] = json!(true);
+                detail["note"] = json!(
+                    "merged with no checks reported, although the project has workflows under .github/workflows"
+                );
             }
             event(s, now, actor, "review.merged", &slug, detail);
             Ok(url)
@@ -1479,6 +1659,12 @@ mod tests {
     }
 
     fn view_json(number: i64, head: &str, files: &[(&str, i64, i64)]) -> String {
+        view_value(number, head, files).to_string()
+    }
+
+    /// The `gh pr view` answer for an open pull request at `abc123` with
+    /// one green check; a test edits the fields it wants otherwise.
+    fn view_value(number: i64, head: &str, files: &[(&str, i64, i64)]) -> Value {
         let adds: i64 = files.iter().map(|f| f.1).sum();
         let dels: i64 = files.iter().map(|f| f.2).sum();
         json!({
@@ -1487,8 +1673,16 @@ mod tests {
             "headRefName": head, "headRefOid": "abc123", "baseRefName": "main",
             "author": {"login": "pulse-bot"}, "additions": adds, "deletions": dels,
             "files": files.iter().map(|(p, a, d)| json!({"path": p, "additions": a, "deletions": d})).collect::<Vec<_>>(),
+            "isDraft": false, "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [{"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "SUCCESS"}],
         })
-        .to_string()
+    }
+
+    /// Rewrites the fake gh's `pr view` answer for #7 with `edit` applied.
+    fn view_with(view: &std::path::Path, edit: impl FnOnce(&mut Value)) {
+        let mut v = view_value(7, "pulse/task/TASK-001", &[("src/a.rs", 5, 2)]);
+        edit(&mut v);
+        std::fs::write(view, v.to_string()).unwrap();
     }
 
     fn view_of(number: i64, head: &str, files: &[(&str, i64, i64)]) -> PrView {
@@ -1819,7 +2013,10 @@ mod tests {
         assert_eq!(merged[0]["by"], "owner");
         assert_eq!(merged[0]["number"], 7);
         assert_eq!(merged[0]["url"], "https://github.com/o/r/pull/7");
-        assert_eq!(calls(&log), ["pr merge 7"]);
+        assert_eq!(merged[0]["head_sha"], "abc123");
+        assert_eq!(merged[0]["checks"], 1);
+        assert!(merged[0].get("no_checks").is_none(), "{}", merged[0]);
+        assert_eq!(calls(&log), ["pr view 7", "pr merge 7"]);
         assert!(
             jobs_of(&s, "review").is_empty(),
             "a merged pull request needs no review"
@@ -1828,7 +2025,165 @@ mod tests {
         // Settled: the ask is not honoured twice.
         let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
         assert!(lines.is_empty(), "{lines:?}");
-        assert_eq!(calls(&log), ["pr merge 7"]);
+        assert_eq!(calls(&log), ["pr view 7", "pr merge 7"]);
+    }
+
+    /// The owner's click, like the reviewer's verdict, goes through the
+    /// forge's gate: a red or running check, a draft, a blocked merge state
+    /// or a head that moved is refused without a `review.failed`, and the
+    /// ask stands for the pass that finds the pull request ready.
+    #[test]
+    fn the_owners_merge_click_waits_for_green_checks_and_the_shown_head() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        event(
+            &s,
+            TEST_NOW,
+            "human",
+            "review.ask",
+            "proj",
+            json!({"project": "proj", "number": 7, "action": "merge", "task": "TASK-001"}),
+        );
+        // Before any review was queued, the head the hub showed is the one
+        // the newest land.pr pushed; the forge holds another commit now.
+        view_with(&view, |v| v["headRefOid"] = json!("def456def456def456"));
+        assert_eq!(
+            merge_as_owner(&s, &proj, 7, TEST_NOW).unwrap_err(),
+            "the pull request moved since PULSE pushed it: pushed abc123, now def456def456; it is reviewed again"
+        );
+        assert!(events(&s, "review.failed").is_empty());
+        let refused = |why: &str| {
+            let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+            let line = lines
+                .iter()
+                .find(|l| l.contains("#7 could not be merged for the owner"))
+                .unwrap_or_else(|| panic!("{lines:?}"));
+            assert!(line.contains(why), "{line}");
+            assert!(events(&s, "review.merged").is_empty());
+            assert!(
+                events(&s, "review.failed").is_empty(),
+                "a refusal is no failure"
+            );
+            assert!(
+                !calls(&log).iter().any(|c| c.starts_with("pr merge")),
+                "{:?}",
+                calls(&log)
+            );
+        };
+
+        view_with(&view, |v| {
+            v["statusCheckRollup"] = json!([
+                {"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "lint", "status": "IN_PROGRESS", "conclusion": null}
+            ]);
+        });
+        refused("pull request #7 has failing checks: check; a red check is never merged");
+
+        view_with(&view, |v| {
+            v["statusCheckRollup"] = json!([
+                {"__typename": "CheckRun", "name": "check", "status": "QUEUED", "conclusion": null},
+                {"__typename": "StatusContext", "context": "ci/slow", "state": "PENDING"}
+            ]);
+        });
+        refused(
+            "pull request #7 has checks pending: check, ci/slow; it is merged when they are green",
+        );
+
+        view_with(&view, |v| v["isDraft"] = json!(true));
+        refused("pull request #7 is a draft");
+
+        view_with(&view, |v| v["mergeStateStatus"] = json!("BLOCKED"));
+        refused("pull request #7 is blocked on GitHub (mergeStateStatus BLOCKED");
+
+        view_with(&view, |v| v["mergeStateStatus"] = json!("DIRTY"));
+        refused("pull request #7 conflicts with its base (mergeStateStatus DIRTY)");
+
+        view_with(&view, |v| v["mergeStateStatus"] = json!("BEHIND"));
+        refused("pull request #7 is behind its base (mergeStateStatus BEHIND)");
+
+        // The pass queued a review at abc123; the forge holds another commit
+        // now: the refusal names the review.
+        assert_eq!(events(&s, "review.queued")[0]["sha"], "abc123");
+        view_with(&view, |v| v["headRefOid"] = json!("def456def456def456"));
+        refused(
+            "the pull request moved since it was reviewed: reviewed abc123, now def456def456; it is reviewed again",
+        );
+
+        // Green, clean and at the head the owner saw: merged, the ask honoured.
+        view_with(&view, |_| {});
+        let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged for the owner")),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "review.merged").len(), 1);
+        assert_eq!(
+            calls(&log)
+                .iter()
+                .filter(|c| c.starts_with("pr merge"))
+                .count(),
+            1
+        );
+    }
+
+    /// A pull request with no check at all merges: the project may have no
+    /// CI. When it has workflows, the `review.merged` says none reported.
+    #[test]
+    fn a_merge_with_no_checks_reported_is_allowed_and_noted_when_the_project_has_workflows() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, _log, view) = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        view_with(&view, |v| v["statusCheckRollup"] = json!([]));
+        merge(&s, &proj, 7, "reviewer", "reviewer", TEST_NOW).unwrap();
+        let merged = events(&s, "review.merged");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["checks"], 0);
+        assert!(
+            merged[0].get("no_checks").is_none(),
+            "no workflows, no note: {}",
+            merged[0]
+        );
+
+        land_pr(&s, 8, "job", "", "JOB-b");
+        let wf = std::path::Path::new(&repo).join(".github/workflows");
+        std::fs::create_dir_all(&wf).unwrap();
+        std::fs::write(wf.join("ci.yml"), "name: ci\n").unwrap();
+        view_with(&view, |v| {
+            v["number"] = json!(8);
+            v["statusCheckRollup"] = json!([]);
+        });
+        merge(&s, &proj, 8, "reviewer", "reviewer", TEST_NOW).unwrap();
+        let merged = events(&s, "review.merged");
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1]["no_checks"], true);
+        assert!(
+            merged[1]["note"]
+                .as_str()
+                .unwrap()
+                .contains("merged with no checks reported"),
+            "{}",
+            merged[1]
+        );
+
+        // pipeline.watch off: the project watches no CI, no note.
+        land_pr(&s, 9, "job", "", "JOB-c");
+        s.set_setting("owner", crate::pipeline::WATCH, "off")
+            .unwrap();
+        view_with(&view, |v| {
+            v["number"] = json!(9);
+            v["statusCheckRollup"] = json!([]);
+        });
+        merge(&s, &proj, 9, "reviewer", "reviewer", TEST_NOW).unwrap();
+        let merged = events(&s, "review.merged");
+        assert_eq!(merged.len(), 3);
+        assert!(merged[2].get("no_checks").is_none(), "{}", merged[2]);
     }
 
     #[test]

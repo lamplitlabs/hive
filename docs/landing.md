@@ -137,10 +137,22 @@ absent, `opened` false and `retargeted_from` naming the old base; a forge
 failure leaves no event and the next pass tries again. GitHub moves a pull
 request itself when the branch below is deleted; PULSE does not count on it.
 A pull request below that is closed unmerged leaves its commits in the one
-above: that one is moved the same way and its task is told once that it
-carries the closed pull request's commits and may be rebuilt without them or
-merged as it is (`land.pr-unstacked` says the same for a job's, an
-experiment's or a proposed branch's). A merge conflict with the pull request
+above, and moving that one down would carry the rejected work into the
+base through its merge; so the pass rebuilds it instead: the branch as the
+forge has it is fetched, its own commits (what it has past the point it
+left the closed branch; the merge that took the stack in goes with them)
+are replayed onto the new base in a scratch worktree, force-pushed to the
+same branch (`--force-with-lease` on the head fetched), and only then is
+the pull request retargeted. A fresh `land.pr` records the new `base`,
+`from`, `to` and `commits` with `rebuilt` true, `land.pr-rebuilt` names
+what was dropped, and the origin is told once - a task in its conversation,
+a conversation in its transcript. The project's check runs on the new head
+and the reviewer reads it again. Each pull request stacked on a rebuilt one
+is rebuilt the same way on its new tip, so the whole stack above loses the
+commits. A replay that conflicts changes nothing: the pull request keeps
+its base and head, a `land.pr-held` hold names the closed pull request and
+the files, the origin is told what to do by hand, and the pull requests
+above it are left alone. A merge conflict with the pull request
 below - rather than with the default branch - goes where a conflict went
 before: a task's branch to a rebase job whose brief names the pull request
 it must go onto, a job's branch to a `land.pr-held` hold that names the
@@ -191,8 +203,9 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   stays on the remote; write here to carry on*) and stays as it was, its
   agent gets no turn; anything else is only the log line. The branch stays
   on the remote, so nothing is lost and nothing delivers it again; a new job
-  of the task makes a new pull request. The pull requests stacked on it move
-  onto its base too, carrying its commits, and are told so.
+  of the task makes a new pull request. The pull requests stacked on it are
+  rebuilt without its commits and moved onto its base
+  ([Stacked pull requests](#stacked-pull-requests)).
 - **Open** - where the review stands is the reviewer's record
   (`review.queued`, `review.owner`, `review.changes`), and the hub reads both
   ([Where the work stands](#where-the-work-stands-in-the-hub)). What the
@@ -314,7 +327,7 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr-checks` | checks failed on an open pull request's head; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `checks` (the failing names) |
 | `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
 | `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
-| `land.pr-unstacked` | a job's, experiment's or proposed pull request was moved off one closed unmerged and carries its commits | `project`, `kind`, `number`, `url`, `head`, `base` (the new one), `closed` (the pull request that was below), `note`; a task's pull request gets a message in the task's conversation instead |
+| `land.pr-rebuilt` | a pull request stacked on one closed unmerged was rebuilt on the new base without the closed one's commits, force-pushed and retargeted | `project`, `kind`, `number`, `url`, `head`, `old_base`, `base` (the new one), `from` (the head before), `to` (the new head), `commits` (its own), `dropped` (`number` of the closed pull request, `commits` it took with it); the matching `land.pr` carries `rebuilt` true and `retargeted_from`. A rebuild that conflicts is a `land.pr-held` with `closed`, `base` and `files` instead |
 | `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
 | `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |
 | `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not |
