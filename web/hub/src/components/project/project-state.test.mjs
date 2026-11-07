@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { healthLines, parseRemote, posterNames, projectHealth, repoChip, tabCountLabel, topThreads } from "./project-state.ts";
+import { healthLines, parseRemote, posterNames, projectHealth, recentFailures, repoChip, tabCountLabel, topThreads } from "./project-state.ts";
 
 test("parseRemote reads ssh and https remotes into a host and a path", () => {
   assert.deepEqual(parseRemote("git@github.com:owner/demo-app.git"), { host: "github", path: "owner/demo-app", web: "https://github.com/owner/demo-app" });
@@ -27,12 +27,21 @@ test("projectHealth folds the project's state into one badge, worst first", () =
   assert.equal(projectHealth({ ...ok, error: "boom" }).status, "lost");
   assert.equal(projectHealth({ ...ok, board_present: false }).kind, "no-board");
   assert.equal(projectHealth({ ...ok, stop_present: true }).kind, "stopped");
-  assert.deepEqual(projectHealth(ok, { failed: 2, forYou: 3 }), { kind: "failing", status: "failed", label: "2 jobs failed" });
+  assert.deepEqual(projectHealth(ok, { failed: 2, forYou: 3 }), { kind: "failing", status: "failed", label: "2 jobs failed today" });
+  assert.equal(projectHealth(ok, { failed: 1 }).label, "1 job failed today");
+  assert.equal(projectHealth(ok, { failed: 20 }).label, "20+ jobs failed today", "a full page means there may be more");
   assert.deepEqual(projectHealth(ok, { forYou: 1 }), { kind: "waits", status: "waiting", label: "1 thing waits for you" });
   assert.equal(projectHealth(ok, { forYou: 3 }).label, "3 things wait for you");
   assert.deepEqual(projectHealth({ ...ok, claims_active: 2 }), { kind: "working", status: "running", label: "Agents are working" });
   assert.equal(projectHealth(ok, { step: "add test cases" }).label, "Next step: add test cases");
   assert.deepEqual(projectHealth(ok), { kind: "quiet", status: "ok", label: "All quiet" });
+});
+
+test("recentFailures counts only the jobs that failed in the last day", () => {
+  const now = Date.parse("2026-11-07T12:00:00Z");
+  const jobs = [{ finished_at: "2026-11-07T09:00:00Z" }, { finished_at: "2026-11-06T13:00:00Z" }, { finished_at: "2026-11-06T11:00:00Z" }, { finished_at: "2026-09-01T00:00:00Z" }, { finished_at: "" }, {}];
+  assert.equal(recentFailures(jobs, now), 2, "old failures (hundreds on a long-lived project) don't turn the badge red");
+  assert.equal(recentFailures(null, now), 0);
 });
 
 test("posterNames lists the agents who post here, newest first, without the owner", () => {

@@ -113,6 +113,26 @@ export function changeTone(f: Pick<KpiFigure, "change">, dir: KpiDirection): "ok
   return up ? "bad" : "ok";
 }
 
+// The comparison with the window before as the tile shows it: an arrow and
+// a percent ("111%"), coloured by whether the move is good news for this
+// count, and the same said in full (`words`) for the tooltip and screen
+// readers, so colour never carries the meaning alone.
+export interface KpiTrend {
+  arrow: "up" | "down" | "flat" | "new" | "none";
+  text: string;
+  tone: "ok" | "bad" | "neutral";
+  words: string;
+}
+
+export function kpiTrend(f: Pick<KpiFigure, "change" | "total">, dir: KpiDirection, range: KpiRange): KpiTrend {
+  const before = "the " + KPI_RANGE_LABEL[range] + " before";
+  if (f.change === null) return f.total > 0 ? { arrow: "new", text: "New", tone: "neutral", words: "New in the last " + KPI_RANGE_LABEL[range] } : { arrow: "none", text: "", tone: "neutral", words: "Nothing yet" };
+  if (f.change === 0) return { arrow: "flat", text: "Same", tone: "neutral", words: "Same as " + before };
+  const tone = changeTone(f, dir);
+  const pct = Math.abs(f.change) + "%";
+  return { arrow: f.change > 0 ? "up" : "down", text: pct, tone, words: (f.change > 0 ? "Up " : "Down ") + pct + " on " + before + (tone === "ok" ? ": better" : tone === "bad" ? ": worse" : "") };
+}
+
 // One row per day for the chart, with a short label.
 export interface KpiChartRow {
   day: string;

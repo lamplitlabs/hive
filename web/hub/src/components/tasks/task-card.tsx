@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ArrowDownIcon, ArrowRightIcon, ArrowUpIcon, BanIcon, CircleDashedIcon, MessageCircleQuestionIcon, MessagesSquareIcon, MoreHorizontalIcon, PanelRightOpenIcon, PencilIcon, type LucideIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, BanIcon, CircleDashedIcon, MessageCircleQuestionIcon, MessagesSquareIcon, MinusIcon, MoreHorizontalIcon, PanelRightOpenIcon, PencilIcon, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -138,9 +138,9 @@ export function TaskProgressBar({ t, className, bar }: { t: Task; className?: st
   );
 }
 
-const PRIORITY_ICON: Record<ReturnType<typeof priorityIcon>, LucideIcon> = { up: ArrowUpIcon, right: ArrowRightIcon, down: ArrowDownIcon };
+const PRIORITY_ICON: Record<ReturnType<typeof priorityIcon>, LucideIcon> = { up: ArrowUpIcon, flat: MinusIcon, down: ArrowDownIcon };
 
-// The priority as an arrow and its word ("High"); urgent reads in red.
+// The priority as its mark and its word ("High"); urgent reads in red.
 export function PriorityMark({ p, wordless, className }: { p: number; wordless?: boolean; className?: string }) {
   const Icon = PRIORITY_ICON[priorityIcon(p)];
   const word = priorityWord(p);
@@ -206,7 +206,7 @@ function LeadFace({ t }: { t: Task }) {
 }
 
 // One task as a card (spec "Tasks"): the lead's face and the project's
-// avatar on the first line with the priority arrow, the title at 14 px, one
+// avatar on the first line with the priority mark, the title at 14 px, one
 // meta line - status, the progress ring, when it last moved - and at most
 // two buttons. A task asked you keeps its marigold edge.
 export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task; showProject?: boolean; onOpen?: (t: Task) => void; active?: boolean; compact?: boolean }) {
@@ -233,7 +233,9 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
           </Tooltip>
         ) : null}
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{t.id}</span>
-        <PriorityMark p={t.priority} wordless={t.priority >= 10 && t.priority < 30} className="text-xs" />
+        {/* Only a priority that differs from normal earns a mark on the card;
+            the title's chevron is the card's one "open" cue. */}
+        {t.priority >= 30 || t.priority < 10 ? <PriorityMark p={t.priority} className="text-xs" /> : null}
       </div>
       <ItemCardTitle chevron className="text-sm font-medium leading-5">
         {t.title}

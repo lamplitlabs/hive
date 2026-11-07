@@ -12,7 +12,7 @@ import { ProjectAvatar } from "@/components/pulse/avatar";
 import { showApiError } from "@/components/pulse/confirm";
 import { CardGrid, ItemCard, ItemCardTitle } from "@/components/pulse/item-card";
 import { KindTile } from "@/components/pulse/kind-tile";
-import { LogoTile } from "@/components/pulse/logo";
+import { BrandLogo, LogoTile } from "@/components/pulse/logo";
 import { PageHeader } from "@/components/pulse/page-header";
 import { Disclosure, EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/pulse/panel";
 import { SectionHeading } from "@/components/pulse/section-heading";
@@ -28,6 +28,11 @@ import { num, plural } from "@/lib/format";
 import { DEFAULT_OPTIONS, TRANSPORT_SHORT, authLabel, checkReason, endpoint, lastCheck, scopeLabel, scopeTitle, sortScoped, toolNames, type McpForm } from "@/lib/mcp";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+
+// A tool with no brand mark of its own wears the MCP mark (spec "Logos" -
+// tools with no logo), not its initials: every tool here is an MCP server.
+const MCP_40 = <BrandLogo id="modelcontextprotocol" size={20} title="MCP server" />;
+const MCP_28 = <BrandLogo id="modelcontextprotocol" size={16} title="MCP server" />;
 
 // Connections (spec "Connections"): the tools and skills agents can use.
 // A tool connection (an MCP server) is the bridge to another system -
@@ -81,7 +86,7 @@ function SuggestedTools({ project, servers, onAdd }: { project: string; servers:
       <CardGrid cols={3}>
         {rows.map((t) => (
           <article key={t.name} className="flex min-w-0 items-start gap-3 rounded-lg border border-dashed bg-card/60 p-4" aria-label={"Suggested tool " + t.title}>
-            <LogoTile name={t.name} size={40} title={t.title} />
+            <LogoTile name={t.name} size={40} title={t.title} fallback={MCP_40} />
             <div className="min-w-0 flex-1">
               <h3 className="truncate text-sm font-semibold leading-5">{t.title || t.name}</h3>
               <p className="mt-0.5 line-clamp-2 text-[13px] leading-5 text-muted-foreground anywhere" title={t.why}>
@@ -279,7 +284,7 @@ export function ConnectionsPageClient() {
         </div>
       </main>
 
-      <SidePanel open={!!open} onClose={() => setOpenId(null)} width="detail" title={open?.name ?? "Tool"} subtitle={open ? scopeTitle(open.project) : undefined} lead={open ? <LogoTile name={open.name} size={28} /> : undefined}>
+      <SidePanel open={!!open} onClose={() => setOpenId(null)} width="detail" title={open?.name ?? "Tool"} subtitle={open ? scopeTitle(open.project) : undefined} lead={open ? <LogoTile name={open.name} size={28} fallback={MCP_28} /> : undefined}>
         {open ? <ServerDetails s={open} onConnect={setConnecting} onEdit={setEditMcp} onSignIn={setSigningIn} /> : null}
       </SidePanel>
 
@@ -422,7 +427,7 @@ function ServerCard({ s, selected, onOpen, onConnect, onEdit, onSignIn }: { s: M
   return (
     <ItemCard onOpen={onOpen} active={selected} ariaLabel={"Open " + s.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && "opacity-80")}>
       <div className="flex min-w-0 items-start gap-3">
-        <LogoTile name={s.name} size={40} />
+        <LogoTile name={s.name} size={40} fallback={MCP_40} />
         <div className="min-w-0 flex-1">
           <ItemCardTitle className="text-base font-semibold leading-6 tracking-tight">
             <span title={"Id " + s.id}>{s.name}</span>

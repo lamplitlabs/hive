@@ -63,14 +63,14 @@ export function OwnerRow({ active }: { active: boolean }) {
   const { data: org } = useApi<Org>("org");
   const name = (org?.owner_name || "").trim() || "You";
   return (
-    <div className="flex items-center gap-2 px-1 collapsed:flex-col collapsed:gap-1 collapsed:px-0">
+    <div className="flex items-center gap-1 px-1 collapsed:flex-col collapsed:px-0">
       <RailTip label={name} hint="Your name and presence; change them in Settings">
         <Link href={hrefs.settings("owner")} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-[13px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:flex-none collapsed:px-0" aria-label={"Owner: " + name}>
           <OwnerAvatar name={name} size={24} />
           <span className="min-w-0 truncate collapsed:sr-only">{name}</span>
         </Link>
       </RailTip>
-      <PresenceSwitch className="collapsed:hidden" />
+      <PresenceSwitch className="mr-1 collapsed:hidden" />
       <RailTip label={SETTINGS_ITEM.label} hint={SETTINGS_ITEM.hint}>
         <Button asChild variant="ghost" size="icon-sm" className={cn("text-muted-foreground hover:text-foreground", active && "bg-accent text-link")}>
           <Link href={SETTINGS_ITEM.href} aria-label="Settings" aria-current={active ? "page" : undefined}>

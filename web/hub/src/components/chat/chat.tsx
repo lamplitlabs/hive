@@ -102,9 +102,9 @@ import {
   EmptyState,
   ErrorNotice,
   Notice,
-  PageTitle,
   SkeletonRows,
 } from "@/components/pulse/panel";
+import { PageHeader } from "@/components/pulse/page-header";
 import { Avatar, ProjectLink, When } from "@/components/pulse/who";
 import { ProjectAvatar } from "@/components/pulse/avatar";
 import { BrandLogo } from "@/components/pulse/logo";
@@ -346,8 +346,9 @@ function taskState(t: ChatTask): SessionState {
 }
 
 // One row of the list: 44 px (36 compact), the state icon, the project's
-// avatar, the title on one line and the age at the right; a teal bar marks
-// the open one. Tasks and conversations share it.
+// avatar, the title and the age at the right; a teal bar marks the open one.
+// The column is narrow, so a long title takes a second line rather than
+// ending after a few words. Tasks and conversations share it.
 function SessionRow({
   state,
   project,
@@ -402,7 +403,7 @@ function SessionRow({
         </span>
       )}
       <span
-        className="min-w-0 flex-1 truncate text-sm font-medium leading-5 text-foreground"
+        className="line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-5 text-foreground anywhere"
         title={title}
       >
         {title}
@@ -947,13 +948,18 @@ function ModelPicker({
         aria-label={label}
         title={label}
       >
-        <ModelLogo
-          vendor={picked?.vendor}
-          className="shrink-0 text-muted-foreground"
-        />
-        {/* The trigger shows the name alone; the items below carry a second line. */}
-        <SelectValue placeholder="Model" className="min-w-0 flex-1">
-          <span className="truncate">{current}</span>
+        {/* The trigger shows the name alone; the items below carry a second
+            line. The logo rides inside the value: Radix drops a className
+            on SelectValue, so a value beside it would float to the middle
+            of the trigger's justify-between row. */}
+        <SelectValue placeholder="Model">
+          <span className="flex min-w-0 items-center gap-2">
+            <ModelLogo
+              vendor={picked?.vendor}
+              className="shrink-0 text-muted-foreground"
+            />
+            <span className="truncate">{current}</span>
+          </span>
         </SelectValue>
       </SelectTrigger>
       <SelectContent
@@ -1055,7 +1061,7 @@ function EffortPicker({
   compact?: boolean;
   label: string;
 }) {
-  const current = value ? effortName(value) : "Settings effort";
+  const current = value ? effortName(value) : "Effort from Settings";
   return (
     <Select
       value={value || SETTING_EFFORT}
@@ -1064,13 +1070,16 @@ function EffortPicker({
     >
       <SelectTrigger
         size={compact ? "sm" : "default"}
-        className={cn(compact ? "min-w-0 max-w-44 gap-1 px-2.5" : "w-52")}
+        className={cn(compact ? "min-w-0 max-w-52 gap-1 px-2.5" : "w-52")}
         aria-label={label}
         title={label}
       >
-        <BrainIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <SelectValue placeholder="Effort" className="min-w-0 flex-1">
-          <span className="truncate">{current}</span>
+        {/* The icon rides inside the value, as in the model picker. */}
+        <SelectValue placeholder="Effort">
+          <span className="flex min-w-0 items-center gap-2">
+            <BrainIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="truncate">{current}</span>
+          </span>
         </SelectValue>
       </SelectTrigger>
       <SelectContent
@@ -1080,9 +1089,9 @@ function EffortPicker({
       >
         <SelectItem value={SETTING_EFFORT}>
           <span className="grid">
-            <span>Settings effort</span>
+            <span>Effort from Settings</span>
             <span className="text-xs text-muted-foreground">
-              The reasoning effort from Settings; changes with it.
+              The reasoning effort set in Settings; changes with it.
             </span>
           </span>
         </SelectItem>
@@ -1358,25 +1367,27 @@ export function ChatPageClient() {
 
   // One Split for the page, whatever is open: the list inside it stays
   // mounted across conversations, so opening one leaves the list where it
-  // was - scrolled, folded, unmoved - instead of drawing it anew.
+  // was - scrolled, folded, unmoved - instead of drawing it anew. With
+  // nothing open the page reads like every other one: the shell gives chat
+  // a wider column with 24 px gutters, so the landing caps itself at the
+  // other pages' 1240 px (less two 24 px gutters) and pads 16 px more, to
+  // start on their 40 px edge.
   return (
     <div
       className={cn(
         "grid min-w-0 gap-4",
         opened
           ? "lg:flex lg:h-[calc(100dvh-1rem)] lg:min-h-[34rem] lg:flex-col"
-          : "lg:pb-10",
+          : "lg:mx-auto lg:w-full lg:max-w-[1192px] lg:px-4 lg:pb-10",
       )}
     >
-      <PageTitle
-        icon={MessageSquareIcon}
-        className={opened ? "mb-0 pt-4 sm:pt-5" : undefined}
-        sub={
-          opened
-            ? undefined
-            : "Ask an agent to do something. It works in its own branch, shows every step, and asks when it needs you. Leave a session without a project and the agent picks the project itself."
+      <PageHeader
+        title="Sessions"
+        className={opened ? "mb-0 pt-4 sm:pt-5" : "mb-2"}
+        subtitle={
+          opened ? undefined : "Ask an agent to do something and follow every step"
         }
-        actions={
+        action={
           // On a phone the list is off-screen while a conversation is open,
           // so the header carries the button; on wide screens the list's
           // own button is always in view.
@@ -1391,9 +1402,7 @@ export function ChatPageClient() {
             </Button>
           ) : undefined
         }
-      >
-        Sessions
-      </PageTitle>
+      />
       {unavailable ? (
         <Notice tone="warn">
           Conversations need a hub built with this feature. Update PULSE (
@@ -1729,15 +1738,18 @@ function TaskItem({
                       aria-hidden
                     />
                   )}
-                  <span className="min-w-0 flex-1 truncate text-foreground">
-                    {s.title || s.kind}
+                  {/* The step's title, then its state under it: side by side, a long state ("Waiting for its pull request") left the title a couple of letters. */}
+                  <span className="grid min-w-0 flex-1">
+                    <span className="truncate text-foreground">
+                      {s.title || s.kind}
+                    </span>
+                    <span
+                      className={cn("truncate font-medium", TONE_TEXT[w.tone])}
+                    >
+                      {w.word}
+                    </span>
                   </span>
-                  <span
-                    className={cn("shrink-0 font-medium", TONE_TEXT[w.tone])}
-                  >
-                    {w.word}
-                  </span>
-                  <span className="shrink-0 tnum text-muted-foreground">
+                  <span className="shrink-0 self-start tnum text-muted-foreground">
                     {relShort(s.updated_at || s.started_at, now)}
                   </span>
                 </>
@@ -2206,8 +2218,12 @@ function NewConversation({
             ) : null}
             <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
               {team ? null : (
-                <>
-                  <label className="flex items-center gap-2 text-sm text-foreground">
+                // The two switches stack on one left edge. Each label is a
+                // padded box (Lockdown's turns into the sealed surface when
+                // on), so the stack bleeds left by the box's padding and
+                // border to line the switches up with the pickers above.
+                <div className="-ml-[9px] grid min-w-0 gap-1">
+                  <label className="flex items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-sm text-foreground">
                     <Switch
                       checked={auto}
                       onCheckedChange={setAuto}
@@ -2256,7 +2272,7 @@ function NewConversation({
                       </span>
                     </span>
                   </label>
-                </>
+                </div>
               )}
               <Button
                 type="button"
@@ -2674,7 +2690,7 @@ function ConversationBody({
       () => writes.chatReasoning(c.id, reasoning),
       reasoning
         ? effortName(reasoning) + " effort from the next turn."
-        : "Back to the Settings effort on the next turn.",
+        : "Back to the effort from Settings on the next turn.",
     );
   };
 
@@ -2711,7 +2727,7 @@ function ConversationBody({
             ? "Effort: " +
               effortName(c.reasoning) +
               " - change it for the next turn"
-            : "Effort: the Settings effort - pick one for the next turn"
+            : "Effort: from Settings - pick one for the next turn"
         }
       />
       <label

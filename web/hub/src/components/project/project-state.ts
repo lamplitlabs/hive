@@ -51,8 +51,24 @@ export interface Health {
   label: string;
 }
 
+// How many failed jobs the header fetches to colour its badge, and the
+// window that counts: a job that failed in the last day. The store keeps
+// every job still marked failed, of every age - hundreds on a project that
+// has run for months, most of them needing nothing - so the total alone
+// would keep the badge red for good. Older failures stay on the Runs page.
+export const RECENT_FAILURES_PAGE = 20;
+const RECENT_FAILURE_MS = 24 * 60 * 60 * 1000;
+
+export function recentFailures(jobs: { finished_at?: string | null }[] | null | undefined, now: number): number {
+  return (jobs || []).filter((j) => {
+    const t = Date.parse(j.finished_at || "");
+    return Number.isFinite(t) && now - t < RECENT_FAILURE_MS;
+  }).length;
+}
+
 // The one badge in the header: the project's state in a word, the same
-// order the project card on Home uses, plus "no board" and failing jobs.
+// order the project card on Home uses, plus "no board" and jobs that failed
+// in the last day (`failed`, from recentFailures).
 export function projectHealth(p: {
   present?: boolean;
   missing?: boolean;
@@ -65,7 +81,7 @@ export function projectHealth(p: {
   if (p.error || p.missing || p.present === false) return { kind: "missing", status: "lost", label: "Missing on disk" };
   if (p.board_present === false) return { kind: "no-board", status: "warning", label: "No board" };
   if (p.stop_present) return { kind: "stopped", status: "stopped", label: "Self-improvement stopped" };
-  if (opts.failed) return { kind: "failing", status: "failed", label: opts.failed === 1 ? "1 job failed" : opts.failed + " jobs failed" };
+  if (opts.failed) return { kind: "failing", status: "failed", label: (opts.failed === 1 ? "1 job" : (opts.failed >= RECENT_FAILURES_PAGE ? RECENT_FAILURES_PAGE + "+" : opts.failed) + " jobs") + " failed today" };
   if (opts.forYou) return { kind: "waits", status: "waiting", label: opts.forYou === 1 ? "1 thing waits for you" : opts.forYou + " things wait for you" };
   if ((p.claims_active ?? 0) > 0) return { kind: "working", status: "running", label: "Agents are working" };
   if (opts.step) return { kind: "step", status: "pending", label: "Next step: " + opts.step };

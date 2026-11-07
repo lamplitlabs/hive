@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ArrowRightIcon, CheckIcon, GitMergeIcon, MessageSquarePlusIcon, PlusIcon, ScaleIcon, XIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { CheckIcon, GitMergeIcon, MessageSquarePlusIcon, PlusIcon, ReplyIcon, ScaleIcon, XIcon } from "lucide-react";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { ProjectAvatar } from "@/components/pulse/avatar";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { DecideButtons } from "@/components/pulse/decide-buttons";
@@ -14,23 +14,24 @@ import { KindTile, type Kind } from "@/components/pulse/kind-tile";
 import { ListRow, ListRows } from "@/components/pulse/list-row";
 import { EmptyState } from "@/components/pulse/panel";
 import { SectionHeading } from "@/components/pulse/section-heading";
-import { StatusBadge } from "@/components/pulse/status-badge";
 import { When } from "@/components/pulse/who";
 import { ComputeDecide } from "@/components/compute/compute";
-import { RecordDecisionButtons } from "@/components/records/decide-record";
+import { awaitsDecision, DecideRecordDialog } from "@/components/records/decide-record";
 import { DraftActions } from "@/components/records/draft-panel";
 import { AcceptSuggestionDialog, DeclineSuggestionDialog } from "@/components/tasks/suggested-work";
 import { NewTaskDialog } from "@/components/tasks/task-dialogs";
-import { writes, type Org, type Proposal, type WorkSuggestion } from "@/lib/api";
+import { writes, type Org, type Proposal, type RecordDecision, type RecordRow, type WorkSuggestion } from "@/lib/api";
 import { sentence } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { decisionLabels, isOpenQuestion } from "@/lib/owner-questions";
-import { itemProject, seeAllLabel, topFive, type NeedsYouItem } from "./home-state";
+import { agentName } from "@/lib/words";
+import { itemProject, needsYouWord, seeAllLabel, topFive, type NeedsYouItem } from "./home-state";
 
 // "Needs you" (spec "Home" 3): the top five waiting items as rows, each with
 // its kind tile, title, project avatar and age, and the item's own yes / no
-// on the right. The buttons are the ones the cards use elsewhere (the same
-// confirms, the same writes); the row itself opens the item's page.
+// on the right, always in sight. The buttons are the ones the cards use
+// elsewhere (the same confirms, the same writes); the row itself opens the
+// item's page.
 // "See all 10" leads to For you. With nothing waiting: "Nothing needs you"
 // and three ways to start something.
 export function NeedsYou({ inbox, org }: { inbox: Inbox; org: Org }) {
@@ -103,78 +104,150 @@ const KIND: Record<NeedsYouItem["kind"], Kind> = {
   step: "rule",
 };
 
+// Two lines and the answer (spec "Home" 3, 56 px rows): the title alone on
+// the first, so it keeps its words; where it is, what it is and how long it
+// has waited on the second; the item's own buttons in sight on the right.
+const ROW = "min-h-[calc(var(--row-h)+0.75rem)]";
+
 function NeedsYouRow({ item, slug, name, canDecide }: { item: NeedsYouItem; slug: string; name: string; canDecide: boolean }) {
-  const meta = (
-    <>
-      <ProjectAvatar slug={slug} name={name} size={20} />
-      <span className="truncate">{name}</span>
-    </>
-  );
   const lead = <KindTile kind={KIND[item.kind]} waiting />;
-  const time = item.at ? <When d={item.at} /> : undefined;
+  const line = (what: string) => (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 leading-5">
+      <ProjectAvatar slug={slug} name={name} size={20} />
+      {/* On a narrow screen the kind word gives way first; the name and the age keep theirs. */}
+      <span className="max-w-40 shrink-0 truncate">{name}</span>
+      <span aria-hidden>·</span>
+      <span className="min-w-0 truncate">{what}</span>
+      {item.at ? (
+        <>
+          <span aria-hidden>·</span>
+          <When d={item.at} className="shrink-0" />
+        </>
+      ) : null}
+    </span>
+  );
+  const word = needsYouWord(item);
   switch (item.kind) {
     case "question": {
       const q = item.q;
       const stop = q.stop === true;
       const open = !stop && isOpenQuestion(q.summary, q.body);
-      const labels = decisionLabels(q.body, stop ? { yes: "Yes, carry on", no: "No, keep it paused" } : { yes: "Yes", no: "No" });
-      const title = stop ? "Self-improvement on " + slug + " stopped. May it carry on?" : sentence(q.summary);
+      const labels = decisionLabels(q.body, stop ? { yes: "Carry on", no: "Keep paused" } : { yes: "Yes", no: "No" });
+      const title = stop ? "Self-improvement stopped. May it carry on?" : sentence(q.summary);
+      const who = stop ? "" : agentName(q.agent || q.name || "", slug);
       return (
         <ListRow
+          className={ROW}
           lead={lead}
           title={title}
-          meta={meta}
-          time={time}
-          status={stop ? <StatusBadge status="paused" label="Paused" size="sm" /> : undefined}
-          // A "which…?" question needs words: its row leads to For you, where the
-          // answer box is. The row is the link; the cue is a span (an <a> inside
-          // the row's <a> would be invalid HTML).
-          href={open ? hrefs.forYou({ project: slug }) : hrefs.post(slug, q.id)}
-          actionsVisible={open}
+          // A "which…?" question needs words: its row leads to For you with
+          // the answer box open. The row is the link; the button is its cue
+          // (an <a> or a <button> inside the row's <a> would be invalid HTML).
+          href={open ? answerHref(slug, q.id) : hrefs.post(slug, q.id)}
+          actionsVisible
           actions={
             open ? (
-              <span className="inline-flex items-center gap-1 text-xs font-medium text-link">
-                Answer <ArrowRightIcon className="size-3.5" aria-hidden />
-              </span>
+              canDecide ? (
+                <span className={buttonVariants({ size: "xs" })}>
+                  <ReplyIcon aria-hidden /> Answer
+                </span>
+              ) : undefined
             ) : (
-              <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide && q.decider !== "setting"} size="xs" yesLabel={labels.yes} noLabel={labels.no} />
+              <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide && q.decider !== "setting"} size="xs" yesLabel={labels.yes} noLabel={labels.no} className="w-auto justify-end" />
             )
           }
-          ariaLabel={(stop ? "Self-improvement paused: " : "Question for you: ") + q.summary}
-        />
+          ariaLabel={(stop ? "Self-improvement paused on " + name + ": " : "Question for you: ") + q.summary}
+        >
+          {line(who ? word + " from " + inSentence(who) : word)}
+        </ListRow>
       );
     }
     case "decision": {
       const r = item.r;
-      return <ListRow lead={lead} title={r.title} meta={meta} time={time} href={hrefs.record(r.id, r.project)} actions={canDecide ? <RecordDecisionButtons record={r} size="xs" /> : undefined} ariaLabel={"Decision waiting: " + r.title} />;
+      return (
+        <ListRow className={ROW} lead={lead} title={sentence(r.title)} href={hrefs.record(r.id, r.project)} actionsVisible actions={canDecide && awaitsDecision(r) ? <RecordPair record={r} /> : undefined} ariaLabel={"Decision waiting: " + r.title}>
+          {line(word)}
+        </ListRow>
+      );
     }
     case "proposal": {
       const p = item.p;
-      return <ListRow lead={lead} title={sentence(p.summary)} meta={meta} time={time} href={hrefs.post(slug, p.id)} actions={canDecide && p.can_decide !== false ? <ProposalDecide p={p} /> : undefined} ariaLabel={"Proposal: " + p.summary} />;
+      const who = agentName(p.agent || p.name || "", slug);
+      return (
+        <ListRow className={ROW} lead={lead} title={sentence(p.summary)} href={hrefs.post(slug, p.id)} actionsVisible actions={canDecide && p.can_decide !== false ? <ProposalDecide p={p} /> : undefined} ariaLabel={"Proposal: " + p.summary}>
+          {line(who ? word + " from " + inSentence(who) : word)}
+        </ListRow>
+      );
     }
     case "compute": {
       const c = item.c;
-      const title = c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours") + (c.reason ? ": " + sentence(c.reason) : "");
-      return <ListRow lead={lead} title={title} meta={meta} time={time} href={hrefs.compute()} actions={canDecide ? <ComputeDecide r={c} size="xs" /> : undefined} ariaLabel={"Machine request: " + title} />;
+      const title = "Extra machine for " + c.hours + (c.hours === 1 ? " hour" : " hours") + (c.reason ? ": " + sentence(c.reason) : "");
+      return (
+        <ListRow className={ROW} lead={lead} title={title} href={hrefs.compute()} actionsVisible actions={canDecide ? <ComputeDecide r={c} size="xs" /> : undefined} ariaLabel={"Machine request: " + title}>
+          {line(word + (c.size ? " · " + c.size : ""))}
+        </ListRow>
+      );
     }
     case "work": {
       const s = item.s;
-      return <ListRow lead={lead} title={s.title} meta={meta} time={time} href={hrefs.project(s.project, "suggestions")} actions={canDecide ? <WorkDecide s={s} /> : undefined} ariaLabel={"Suggested work: " + s.title} />;
+      return (
+        <ListRow className={ROW} lead={lead} title={s.title} href={hrefs.project(s.project, "suggestions")} actionsVisible actions={canDecide ? <WorkDecide s={s} /> : undefined} ariaLabel={"Suggested work: " + s.title}>
+          {line(word)}
+        </ListRow>
+      );
     }
     case "draft": {
       const d = item.d;
       const what = d.r.id.includes("evaluators") ? "New evaluators drafted" : "A new constitution drafted";
-      return <ListRow lead={lead} title={what} meta={meta} time={time} href={hrefs.project(d.slug, "evolution")} actions={canDecide ? <DraftActions r={d.r} size="xs" /> : undefined} ariaLabel={what + " for " + name} />;
+      return (
+        <ListRow className={ROW} lead={lead} title={what} href={hrefs.project(d.slug, "evolution")} actionsVisible actions={canDecide ? <DraftActions r={d.r} size="xs" /> : undefined} ariaLabel={what + " for " + name}>
+          {line(word)}
+        </ListRow>
+      );
     }
     case "step": {
       const step = item.step;
       return (
-        <ListRow lead={lead} title={step.title} meta={meta} href={hrefs.project(step.slug, "evolution")} actions={step.command ? <CopyButton text={step.command} label="Copy command" size="xs" variant="outline" /> : undefined} ariaLabel={"Next step for " + name + ": " + step.title}>
-          {step.label}
+        <ListRow className={ROW} lead={lead} title={step.title} href={hrefs.project(step.slug, "evolution")} actionsVisible actions={step.command ? <CopyButton text={step.command} label="Copy command" size="xs" variant="outline" /> : undefined} ariaLabel={"Next step for " + name + ": " + step.title}>
+          {line(step.label || word)}
         </ListRow>
       );
     }
   }
+}
+
+// For you, filtered to the question's project, with its answer box open.
+function answerHref(slug: string, id: string): string {
+  const base = hrefs.forYou({ project: slug || undefined });
+  return base + (base.includes("?") ? "&" : "?") + "answer=" + encodeURIComponent(id);
+}
+
+// agentName() starts a sentence ("The runner", "You"); after "from" it reads
+// in lower case.
+function inSentence(who: string): string {
+  return who === "The runner" || who === "You" ? who.toLowerCase() : who;
+}
+
+// Decline / Accept for a decision record: the record's own confirm
+// (components/records/decide-record.tsx); Defer waits on the record's page.
+function RecordPair({ record }: { record: RecordRow }) {
+  const [action, setAction] = useState<RecordDecision>("accept");
+  const [open, setOpen] = useState(false);
+  const start = (a: RecordDecision) => {
+    setAction(a);
+    setOpen(true);
+  };
+  return (
+    <>
+      <Button size="xs" variant="outline" onClick={() => start("Rejected")} aria-label={"Decline " + record.id + ": " + record.title}>
+        <XIcon /> Decline
+      </Button>
+      <Button size="xs" onClick={() => start("accept")} aria-label={"Accept " + record.id + ": " + record.title}>
+        <CheckIcon /> Accept
+      </Button>
+      <DecideRecordDialog record={record} action={action} open={open} onOpenChange={setOpen} />
+    </>
+  );
 }
 
 // Yes / No for a proposal: the card's confirm (components/pulse/cards.tsx

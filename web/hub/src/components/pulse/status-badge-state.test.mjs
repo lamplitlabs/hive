@@ -8,12 +8,22 @@ test("every status kind has a tint class", () => {
   assert.equal(STATUS_CLASS.paused, STATUS_CLASS.neutral);
 });
 
-test("running states", () => {
-  for (const s of ["running", "active", "in_progress", "working", "leased", "starting", "provisioning"]) assert.equal(statusKind(s), "running", s);
+test("running states: only work under way right now spins", () => {
+  for (const s of ["running", "in_progress", "working", "leased", "starting", "provisioning", "cancelling", "stopping", "deploying"]) assert.equal(statusKind(s), "running", s);
 });
 
-test("done states", () => {
+test("done states, including things switched on but idle", () => {
   for (const s of ["done", "completed", "landed", "merged", "accepted", "closed", "succeeded", "finished", "passed", "eligible", "online", "connected", "enabled", "delivered", "answered"]) assert.equal(statusKind(s), "done", s);
+  // An active lead, an automation that is on, a record in force: no spinner.
+  for (const s of ["active", "Active", "on", "resumed", "live"]) assert.equal(statusKind(s), "done", s);
+});
+
+test("a kind's own name stands for itself", () => {
+  for (const k of STATUS_KINDS) assert.equal(statusKind(k), k, k);
+  // "warning" ends in -ing but is no work under way.
+  assert.equal(statusKind("Warning"), "warning");
+  assert.equal(statusKind("failing"), "failed");
+  for (const s of ["missing", "expiring", "lagging"]) assert.equal(statusKind(s), "warning", s);
 });
 
 test("states that wait on the owner", () => {

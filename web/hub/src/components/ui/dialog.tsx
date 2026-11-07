@@ -53,6 +53,7 @@ function DialogContent({
   onInteractOutside,
   onOpenAutoFocus,
   onCloseAutoFocus,
+  onFocusCapture,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -71,6 +72,10 @@ function DialogContent({
           data-placement={placement}
           onOpenAutoFocus={focus.onOpenAutoFocus}
           onCloseAutoFocus={focus.onCloseAutoFocus}
+          onFocusCapture={(e) => {
+            focus.onFocusCapture(e)
+            onFocusCapture?.(e)
+          }}
           onInteractOutside={(e) => {
             onInteractOutside?.(e)
             if (stay) e.preventDefault()

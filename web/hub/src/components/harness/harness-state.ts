@@ -167,8 +167,10 @@ export function badgeStatus(key: string): string {
 }
 
 // A live row's time so far, ticking every second: "42s", "3m 07s",
-// "1h 02m 05s"; empty without a start, never negative when the browser's
-// clock lags the server's.
+// "1h 02m 05s"; past two days the seconds stop mattering, so it reads in
+// days ("2 days 5 h", then "56 days" from a week on) instead of "1363h 24m
+// 40s". Empty without a start, never negative when the browser's clock
+// lags the server's.
 export function elapsedWords(startedAt: string | undefined, now: number): string {
   const start = startedAt ? Date.parse(startedAt) : NaN;
   if (!Number.isFinite(start) || !start) return "";
@@ -178,10 +180,20 @@ export function elapsedWords(startedAt: string | undefined, now: number): string
   const m = Math.floor(s / 60);
   if (m < 60) return m + "m " + two(s % 60) + "s";
   const h = Math.floor(m / 60);
-  return h + "h " + two(m % 60) + "m " + two(s % 60) + "s";
+  if (h < 48) return h + "h " + two(m % 60) + "m " + two(s % 60) + "s";
+  return daysWords(h);
 }
 
-// Milliseconds as the owner reads them: "420 ms", "3 s", "2 min 5 s".
+// Whole hours past two days as days: "2 days 5 h" within the first week,
+// "56 days" after it.
+function daysWords(hours: number): string {
+  const d = Math.floor(hours / 24);
+  const rest = hours % 24;
+  return d + " days" + (d < 7 && rest ? " " + rest + " h" : "");
+}
+
+// Milliseconds as the owner reads them: "420 ms", "3 s", "2 min 5 s",
+// "1 h 2 min", and in days past two days.
 export function msText(ms: number): string {
   if (!ms || ms < 0) return "";
   if (ms < 1000) return Math.round(ms) + " ms";
@@ -191,7 +203,8 @@ export function msText(ms: number): string {
   const rest = sec % 60;
   if (min < 60) return rest ? min + " min " + rest + " s" : min + " min";
   const h = Math.floor(min / 60);
-  return h + " h " + (min % 60) + " min";
+  if (h < 48) return h + " h " + (min % 60) + " min";
+  return daysWords(h);
 }
 
 // Seconds between two timestamps; a run with no end ends now. Parsing is

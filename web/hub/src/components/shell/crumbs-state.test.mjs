@@ -41,8 +41,9 @@ test("a filter or an open detail adds a crumb", () => {
   assert.deepEqual(defaultCrumbs("/code-deliveries/", q()).map((c) => c.label), ["Records", "Code delivered"]);
 });
 
-test("an unknown route gets a readable word rather than nothing", () => {
-  assert.deepEqual(defaultCrumbs("/some-thing/", q()), [{ label: "Some thing", href: "/some-thing/" }]);
+test("a route the console doesn't have is the 404 page", () => {
+  assert.deepEqual(defaultCrumbs("/nope/", q()), [{ label: "Page not found" }]);
+  assert.deepEqual(defaultCrumbs("/some-thing/", q()), [{ label: "Page not found" }], "never a word made from the path");
   assert.equal(normalizePath("/x?y=1"), "/x/");
 });
 

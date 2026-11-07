@@ -2,7 +2,6 @@
 
 import { Suspense, useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FileDiffIcon } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CodeDeliveriesReport } from "@/components/code-delivery/report";
 import { PageHeader } from "@/components/pulse/page-header";
@@ -39,9 +38,8 @@ function CodeDeliveriesScreen() {
   return (
     <>
       <PageHeader
-        lead={<FileDiffIcon />}
         title="Code delivered"
-        subtitle="How much of the agents’ finished work changed your projects’ source files. Docs alone don’t count."
+        subtitle="Finished work that changed your source code"
         action={
           <div className="flex items-center gap-2">
             <Select value={project || "__all"} onValueChange={(v) => setProject(v === "__all" ? "" : v)}>

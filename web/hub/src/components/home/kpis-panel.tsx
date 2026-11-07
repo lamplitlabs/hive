@@ -1,17 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDownIcon, TrendingUpIcon } from "lucide-react";
+import { ArrowDownRightIcon, ArrowUpRightIcon, ChevronDownIcon, MinusIcon, TrendingUpIcon } from "lucide-react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sparkline } from "@/components/pulse/charts";
 import { EmptyState, ErrorNotice, Kpi, KpiGrid, Panel, SkeletonRows } from "@/components/pulse/panel";
-import { KPI_RANGE_DAYS, KPI_RANGE_LABEL, KPI_RANGES, changeText, changeTone, costText, kpiAutonomyLine, kpiChartRows, kpiFigure, kpiPath, kpiSummaryLine, kpiTokensFigure, kpiWindow, kpisEmpty, perDayText, tokensText, type KpiChartRow, type KpiDirection, type KpiFigure, type KpiKey, type KpiRange } from "@/lib/kpis";
+import { KPI_RANGE_DAYS, KPI_RANGE_LABEL, KPI_RANGES, costText, kpiAutonomyLine, kpiChartRows, kpiFigure, kpiPath, kpiSummaryLine, kpiTokensFigure, kpiTrend, kpiWindow, kpisEmpty, perDayText, tokensText, type KpiChartRow, type KpiDirection, type KpiFigure, type KpiKey, type KpiRange, type KpiTrend } from "@/lib/kpis";
 import { hrefs } from "@/lib/nav";
 import { num } from "@/lib/format";
 import type { KpisPayload } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 
 type Lens = "work" | "spend" | "autonomy";
 const LENS_LABEL: Record<Lens, string> = { work: "Work", spend: "Spend", autonomy: "Autonomy" };
@@ -70,9 +71,47 @@ function initialChart(): boolean {
   return window.localStorage.getItem(CHART_STORAGE) === "open";
 }
 
-function cellSub(f: KpiFigure, range: KpiRange, perDay: boolean): string {
-  const change = changeText(f, range);
-  return perDay && f.total > 0 ? perDayText(f.perDay) + " · " + change : change;
+// The comparison with the window before, as an arrow and a percent in the
+// good-or-bad colour (spec "Home": the old red and green dots never said
+// what they meant). The sentence rides in the tooltip and for screen
+// readers; the legend over the strip says what the colours mean.
+const TREND_ICON = { up: ArrowUpRightIcon, down: ArrowDownRightIcon, flat: MinusIcon } as const;
+const TREND_TONE: Record<KpiTrend["tone"], string> = { ok: "text-ok", bad: "text-bad", neutral: "text-muted-foreground" };
+
+function Trend({ t }: { t: KpiTrend }) {
+  if (t.arrow === "none") return null;
+  const Icon = t.arrow === "new" ? null : TREND_ICON[t.arrow];
+  return (
+    <span className={cn("inline-flex items-center gap-0.5 whitespace-nowrap align-bottom font-medium tnum", TREND_TONE[t.tone])} title={t.words}>
+      {Icon ? <Icon className="size-3.5 shrink-0" strokeWidth={2} aria-hidden /> : null}
+      <span aria-hidden>{t.text}</span>
+      <span className="sr-only">{t.words}</span>
+    </span>
+  );
+}
+
+// A tile's sparkline. Not on a phone: in a two-column tile it squeezes the
+// label until "Landings" breaks mid-word; the number and its trend carry
+// the tile there.
+function spark(values: number[]): React.ReactNode {
+  return values.length > 1 ? (
+    <span className="max-sm:hidden">
+      <Sparkline values={values} w={72} h={20} />
+    </span>
+  ) : undefined;
+}
+
+// A tile's sub line: the trend first, then what else the tile knows (per
+// day, tokens in and out, a companion count).
+function cellSub(f: KpiFigure, dir: KpiDirection, range: KpiRange, rest: string): React.ReactNode {
+  const t = kpiTrend(f, dir, range);
+  if (t.arrow === "none") return rest || t.words;
+  return (
+    <>
+      <Trend t={t} />
+      {rest ? " · " + rest : null}
+    </>
+  );
 }
 
 // What the fleet got done and what it spent, per day: landings, jobs, tasks
@@ -161,13 +200,16 @@ export function KpisPanel({ project, height = 200, range: forced }: { project?: 
   const bars = lens === "spend" ? null : BAR_SERIES[lens];
   return (
     <Panel title="Over time" icon={TrendingUpIcon} actions={controls} contentClassName="pt-0">
+      <p className="mt-3 mb-2 text-xs text-muted-foreground">
+        Arrows compare with the {KPI_RANGE_LABEL[range]} before: <span className="font-medium text-ok">green is better</span>, <span className="font-medium text-bad">red is worse</span>.
+      </p>
       <KpiGrid className={"mb-0 rounded-xl " + (priced ? "md:grid-cols-6" : "md:grid-cols-5")}>
         {CELLS.map((c) => {
           const f = figures[c.key];
-          return <Kpi key={c.key} n={c.text ? c.text(f.total) : f.total} label={c.label} href={c.href} tone={changeTone(f, c.dir)} spark={f.spark.length > 1 ? <Sparkline values={f.spark} w={72} h={20} /> : undefined} sub={cellSub(f, range, !!c.perDay)} />;
+          return <Kpi key={c.key} n={c.text ? c.text(f.total) : f.total} label={c.label} href={c.href} spark={spark(f.spark)} sub={cellSub(f, c.dir, range, c.perDay && f.total > 0 ? perDayText(f.perDay) : "")} />;
         })}
-        <Kpi n={tokensText(tokens.total)} label="Tokens" href={hrefs.harness()} tone={changeTone(tokens, "up-bad")} spark={tokens.spark.length > 1 ? <Sparkline values={tokens.spark} w={72} h={20} /> : undefined} sub={tokens.total > 0 ? tokensText(figures.prompt_tokens.total) + " in · " + tokensText(figures.completion_tokens.total) + " out · " + changeText(tokens, range) : changeText(tokens, range)} />
-        {priced ? <Kpi n={costText(figures.cost.total)} label="Spent" href={hrefs.harness()} tone={changeTone(figures.cost, "up-bad")} spark={figures.cost.spark.length > 1 ? <Sparkline values={figures.cost.spark} w={72} h={20} /> : undefined} sub={changeText(figures.cost, range)} /> : null}
+        <Kpi n={tokensText(tokens.total)} label="Tokens" href={hrefs.harness()} spark={spark(tokens.spark)} sub={cellSub(tokens, "up-bad", range, tokens.total > 0 ? tokensText(figures.prompt_tokens.total) + " in · " + tokensText(figures.completion_tokens.total) + " out" : "")} />
+        {priced ? <Kpi n={costText(figures.cost.total)} label="Spent" href={hrefs.harness()} spark={spark(figures.cost.spark)} sub={cellSub(figures.cost, "up-bad", range, "")} /> : null}
       </KpiGrid>
       <section aria-labelledby="pulse-home-kpis-alone" className="mt-4 min-w-0">
         <div className="mb-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -178,7 +220,7 @@ export function KpisPanel({ project, height = 200, range: forced }: { project?: 
           {ALONE_CELLS.map((c) => {
             const f = figures[c.key];
             const companion = c.with ? figures[c.with].total : 0;
-            return <Kpi key={c.key} n={f.total} label={c.label} href={c.href} tone={changeTone(f, c.dir)} spark={f.spark.length > 1 ? <Sparkline values={f.spark} w={72} h={20} /> : undefined} sub={c.sub(f.total, companion) + " · " + changeText(f, range)} />;
+            return <Kpi key={c.key} n={f.total} label={c.label} href={c.href} spark={spark(f.spark)} sub={cellSub(f, c.dir, range, c.sub(f.total, companion))} />;
           })}
         </KpiGrid>
       </section>

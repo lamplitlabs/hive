@@ -122,7 +122,7 @@ export default function ComputePage() {
                 <CardGrid cols={3}>
                   {executors.map((e) => (
                     // The local executor is this machine and a removed row is already gone: neither gets Remove.
-                    <MachineCard key={e.name} e={e} provider={c.caps.provider} action={e.name !== "local" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
+                    <MachineCard key={e.name} e={e} provider={c.caps.provider} host={org.data?.host} action={e.name !== "local" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
                   ))}
                 </CardGrid>
               ) : null}

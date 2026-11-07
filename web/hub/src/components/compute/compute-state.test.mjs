@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestReason, requestTitle, runnerState, slotsMeter } from "./compute-state.ts";
+import { diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs } from "./compute-state.ts";
 
 test("meterTone: ok below 70, warning below 90, failed from 90", () => {
   assert.equal(meterTone(0), "ok");
@@ -43,6 +43,14 @@ test("machineOs reads the offers line first, then hints", () => {
   assert.equal(machineOs({ offers: "-", probe_note: "this machine" }, "Manish's Mac"), "macos");
   assert.equal(machineOs({ offers: "", kind: "ssh" }), "linux", "ssh assumes linux like the runner");
   assert.equal(machineOs({ offers: "", kind: "local" }), null);
+});
+
+test("thisMachineOs: the machine's own row, then its host name, then the browser", () => {
+  const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)";
+  assert.equal(thisMachineOs({ kind: "local", offers: "linux amd64" }, "", mac), "linux", "the row wins over the browser");
+  assert.equal(thisMachineOs({ kind: "local", offers: "-" }, "Manish's Mac", ""), "macos");
+  assert.equal(thisMachineOs(null, "", mac), "macos", "the console is mostly opened on the machine itself");
+  assert.equal(thisMachineOs({ kind: "local", offers: "" }, "", "Mozilla/5.0 (X11; Linux x86_64)"), null);
 });
 
 test("machineLogoKey: system for local/ssh, provider for cloud", () => {

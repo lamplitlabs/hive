@@ -39,14 +39,16 @@ export function groupByColumn<T extends { status: string }>(tasks: T[]): Record<
   return out;
 }
 
-export type PriorityIcon = "up" | "right" | "down";
+export type PriorityIcon = "up" | "flat" | "down";
 
-// Which arrow stands for a priority: up for high and urgent (30+), right
-// for normal (10-29), down for low. The word next to it comes from
-// priorityWord(); the icon never carries the meaning alone.
+// Which mark stands for a priority: an up arrow for high and urgent (30+),
+// a flat bar for normal (10-29), a down arrow for low. Normal is never an
+// arrow pointing right: beside a card's title that reads as "open". The
+// word next to it comes from priorityWord(); the icon never carries the
+// meaning alone.
 export function priorityIcon(p: number): PriorityIcon {
   if (p >= 30) return "up";
-  if (p >= 10) return "right";
+  if (p >= 10) return "flat";
   return "down";
 }
 

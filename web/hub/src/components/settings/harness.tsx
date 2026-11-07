@@ -12,10 +12,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Disclosure, ErrorNotice, Notice } from "@/components/pulse/panel";
-import { BrandLogo, LogoTile } from "@/components/pulse/logo";
+import { BrandLogo } from "@/components/pulse/logo";
 import { Mono, ToneBadge } from "@/components/pulse/who";
 import { EMPTY_CHOICE, SettingKey } from "@/components/settings/setting-row";
-import { connectedWords, ProviderWizard } from "@/components/settings/provider-wizard";
+import { connectedWords, ProviderGlyph, ProviderWizard } from "@/components/settings/provider-wizard";
 import { contextChip, modelFamily } from "@/components/settings/settings-state";
 import { errorText, writes, type HarnessModel, type HarnessModelsResponse, type HarnessPrompt, type HarnessProviderInfo, type HarnessStatus, type Runner, type Setting } from "@/lib/api";
 import { fmtDate, num, rel } from "@/lib/format";
@@ -521,7 +521,7 @@ function ProviderBlock({ h, runner, expired, commands, onReload }: { h: HarnessS
     <Block title="Model provider" note="Where agents get their models. Keys and sign-ins stay on this machine.">
       <div className={cn("grid gap-4 rounded-lg border p-4", signedIn ? "bg-card" : "border-warn/40 bg-warn/5")}>
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-3">
-          <LogoTile id={logoFor(p.name)} name={info.title} size={40} color="brand" title={info.title} />
+          <ProviderGlyph name={p.name} title={info.title} size={40} />
           <div className="min-w-0 flex-1 basis-56">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="text-sm font-semibold">{info.title}</span>

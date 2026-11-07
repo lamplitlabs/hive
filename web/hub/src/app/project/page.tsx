@@ -20,11 +20,11 @@ import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { AddProjectButton, MoveDialog, RemoveDialog, RenameDialog, RestoreButton } from "@/components/project/project-dialogs";
 import { AmendmentsTab, ChatTab, CleanupTab, EvolutionTab, ForYouTab, HistoryActivity, NoticesTab, OverviewTab, SuggestionsTab, TasksTab, TeamTab, ThreadsTab, TimelineTab } from "@/components/project/tabs";
-import { posterNames, projectHealth, repoChip, tabCountLabel, type CountedTab } from "@/components/project/project-state";
+import { posterNames, projectHealth, RECENT_FAILURES_PAGE, recentFailures, repoChip, tabCountLabel, type CountedTab } from "@/components/project/project-state";
 import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from "@/lib/nav";
 import { allProjects, projectPath, registeredProjects, type Org, type Overview, type ProjectInfo, type ProjectsPayload, type RegisteredProject, type TasksPayload } from "@/lib/api";
 import { failedJobsPath, type FailedJobsPage } from "@/lib/job-repair";
-import { useApi } from "@/lib/use-api";
+import { useApi, useNow } from "@/lib/use-api";
 import { useInbox } from "@/components/pulse/inbox";
 import { gateStep } from "@/components/pulse/evolve";
 import { num } from "@/lib/format";
@@ -98,7 +98,8 @@ function ProjectScreen() {
   // The header's repository chip and the faces of the agents who post here.
   const info = useApi<ProjectInfo>(slug && slug !== "commons" ? projectPath(slug, "project") : null, { refresh: 60000 });
   const ov = useApi<Overview>(slug ? projectPath(slug, "overview") : null);
-  const failed = useApi<FailedJobsPage>(slug && slug !== "commons" ? failedJobsPath(slug, "", 1) : null, { refresh: 30000 });
+  const failed = useApi<FailedJobsPage>(slug && slug !== "commons" ? failedJobsPath(slug, "", RECENT_FAILURES_PAGE) : null, { refresh: 30000 });
+  const now = useNow(60000);
   // The registry (inactive rows included) only matters on the picker.
   const reg = useApi<ProjectsPayload>(!slug ? "projects" : null, { refresh: false });
   // The one "for you" count, shared with the home page and the sidebar.
@@ -226,7 +227,7 @@ function ProjectScreen() {
       ? forYou
         ? { status: "waiting", label: forYou === 1 ? "1 thing waits for you" : forYou + " things wait for you" }
         : { status: "ok", label: "All quiet" }
-      : projectHealth(card, { forYou, step: step?.label ?? null, failed: failed.error ? 0 : failed.data?.historical_total ?? 0 })
+      : projectHealth(card, { forYou, step: step?.label ?? null, failed: failed.error ? 0 : recentFailures(failed.data?.jobs, now) })
     : null;
   const posters = posterNames(ov.data?.agents ?? card?.active_claims ?? []);
 

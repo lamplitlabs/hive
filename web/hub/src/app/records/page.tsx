@@ -130,11 +130,12 @@ function RecordsScreen() {
   const filters = (
     <div className="mb-4 grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative w-full shrink-0 sm:w-60">
+        {/* On a phone the search shares its row with the two buttons and the chips take a row of their own (order-last), so neither gets squeezed. */}
+        <div className="relative min-w-0 flex-1 sm:w-60 sm:flex-none">
           <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
           <Input type="search" aria-label="Search records" placeholder="Search records" value={text} onChange={(e) => setText(e.target.value)} className="h-8 pl-8" />
         </div>
-        <div ref={chipsRef} role="group" aria-label="Kind of record" className="scroll-strip -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 px-1 py-0.5">
+        <div ref={chipsRef} role="group" aria-label="Kind of record" className="scroll-strip -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 px-1 py-0.5 max-sm:order-last max-sm:basis-full">
           <FilterChip active={!kind && !showFramework} count={q.data ? base.length : undefined} onClick={() => setParams({ kind: null, fw: null })}>
             All
           </FilterChip>
@@ -165,7 +166,7 @@ function RecordsScreen() {
           ) : null}
         </div>
         <Button size="sm" variant={more || moreActive ? "secondary" : "ghost"} className="shrink-0" aria-expanded={more} aria-controls="records-more-filters" onClick={() => setMore((v) => !v)}>
-          <SlidersHorizontalIcon /> More filters
+          <SlidersHorizontalIcon /> <span className="max-sm:sr-only">More filters</span>
           {moreActive ? <span className="tnum inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground/10 px-1.5 text-xs leading-none">{[status, area].filter(Boolean).length}</span> : null}
         </Button>
         <Tabs value={view} onValueChange={(v) => setView(v === "cards" ? "cards" : "table")} className="ml-auto gap-0">

@@ -57,9 +57,17 @@ export function PanelSlot({ nested }: { nested: boolean }) {
 // <body>. The opener is whatever had focus when the panel opened; `self`
 // focuses the panel itself on open (a reading sheet), so no ring lands on its
 // close button. Caller handlers still run first and may preventDefault.
+// A field with autoFocus (a confirm's words box) takes focus while the panel
+// mounts, and Radix then skips its open event altogether, so the opener is
+// also read off the first focus that enters the panel from outside
+// (onFocusCapture): the row Y or N was pressed on, say.
 export function useFocusReturn(onOpenAutoFocus?: (e: Event) => void, onCloseAutoFocus?: (e: Event) => void, self = false) {
   const opener = React.useRef<HTMLElement | null>(null)
   return {
+    onFocusCapture: (e: React.FocusEvent<HTMLElement>) => {
+      const from = e.relatedTarget
+      if (from instanceof HTMLElement && from !== document.body && !e.currentTarget.contains(from)) opener.current = from
+    },
     onOpenAutoFocus: (e: Event) => {
       const active = document.activeElement
       opener.current = active instanceof HTMLElement && active !== document.body ? active : null

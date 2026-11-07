@@ -92,7 +92,9 @@ function sourceWord(s: AskSource): string {
 // The trigger: `sidebar` is the full-width button under Search in the desktop
 // sidebar; `icon` is the speech bubble in the phone header. Extra props reach
 // the button, so a tooltip (the sidebar's rail) can wrap it.
-export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<React.ComponentProps<typeof Button>, "variant" | "size"> & { variant?: "sidebar" | "icon" }) {
+// "sidebar" folds to its icon on the rail; "bar" (the desktop top bar) keeps
+// its words and ⌘J whatever the sidebar does; "icon" is the phone header's.
+export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<React.ComponentProps<typeof Button>, "variant" | "size"> & { variant?: "sidebar" | "bar" | "icon" }) {
   const open = useAskOpen();
   return (
     <Button
@@ -100,7 +102,7 @@ export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<Re
       data-ask-trigger=""
       variant={variant === "icon" ? "ghost" : "outline"}
       size={variant === "icon" ? "icon" : "default"}
-      className={cn(variant === "icon" ? "size-10 text-muted-foreground" : "h-9 w-full justify-start gap-2 px-2.5 font-normal text-muted-foreground collapsed:justify-center collapsed:px-0", className)}
+      className={cn(variant === "icon" ? "size-10 text-muted-foreground" : variant === "bar" ? "h-8 gap-2 px-2.5 font-normal text-muted-foreground" : "h-9 w-full justify-start gap-2 px-2.5 font-normal text-muted-foreground collapsed:justify-center collapsed:px-0", className)}
       onClick={(event) => {
         props.onClick?.(event);
         openAsk("", event.currentTarget);
@@ -116,6 +118,11 @@ export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<Re
           <span className="collapsed:sr-only">Ask</span>
           {/* The same Kbd as the Search row above it, so the two hints match. */}
           <Kbd className="pointer-events-none ml-auto collapsed:hidden">⌘J</Kbd>
+        </>
+      ) : variant === "bar" ? (
+        <>
+          <span>Ask</span>
+          <Kbd className="pointer-events-none">⌘J</Kbd>
         </>
       ) : null}
     </Button>

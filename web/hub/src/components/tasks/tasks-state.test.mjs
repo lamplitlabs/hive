@@ -28,11 +28,11 @@ test("the board keeps the list's order inside each column and shows every column
   assert.deepEqual(g.done.map((t) => t.id), [1, 5]);
 });
 
-test("priority arrows: up from 30, right from 10, down below", () => {
+test("priority marks: up from 30, flat from 10, down below", () => {
   assert.equal(priorityIcon(50), "up");
   assert.equal(priorityIcon(30), "up");
-  assert.equal(priorityIcon(29), "right");
-  assert.equal(priorityIcon(10), "right");
+  assert.equal(priorityIcon(29), "flat");
+  assert.equal(priorityIcon(10), "flat");
   assert.equal(priorityIcon(9), "down");
   assert.equal(priorityIcon(0), "down");
 });

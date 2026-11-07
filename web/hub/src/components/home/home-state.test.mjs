@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attentionRows, dateLine, greetingFor, greetingLine, isFirstRun, itemProject, needsYou, projectLine, runnerKeptRunning, seeAllLabel, setupSteps, topFive, weekNumbers } from "./home-state.ts";
+import { attentionRows, dateLine, greetingFor, greetingLine, isFirstRun, itemProject, needsYou, needsYouWord, projectLine, runnerKeptRunning, seeAllLabel, setupSteps, topFive, weekNumbers } from "./home-state.ts";
 
 const hrefs = { settings: (s) => "/settings/#" + (s || ""), connect: (p) => "/settings/#harness-" + p };
 const quietInbox = { machine: false, provider: null, down: [], downWhy: [] };
@@ -103,6 +103,14 @@ test("needs-you orders questions and decisions first, then proposals, compute, w
   );
   assert.equal(topFive(items({ proposals: out.filter((i) => i.kind === "proposal").map((i) => i.p), questions: [1, 2, 3, 4].map((n) => ({ id: "q" + n, date: "" })) })).length, 5);
   assert.deepEqual(topFive(items()), []);
+});
+
+test("each waiting item says what it is under its title", () => {
+  assert.equal(needsYouWord({ kind: "question", key: "", at: "", q: { id: "q", stop: true } }), "Self-improvement paused");
+  assert.equal(needsYouWord({ kind: "question", key: "", at: "", q: { id: "q", stop: false } }), "Question");
+  assert.equal(needsYouWord({ kind: "decision", key: "", at: "", r: { id: "ADR-1" } }), "Decision");
+  assert.equal(needsYouWord({ kind: "compute", key: "", at: "", c: { id: "CR-1" } }), "Machine request");
+  assert.equal(needsYouWord({ kind: "step", key: "", at: "", step: { kind: "k", slug: "demo", title: "", label: "" } }), "Setup step");
 });
 
 test("see-all names the count only when more wait than the column shows", () => {

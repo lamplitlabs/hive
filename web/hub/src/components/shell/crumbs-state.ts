@@ -54,7 +54,8 @@ function projectHref(slug: string, tab?: string | null, sub?: string | null): st
 }
 
 // What the top bar shows when the page says nothing: Home on "/", the page's
-// nav label elsewhere, and "project › Tab" on a project page. A detail id in
+// nav label elsewhere, "project › Tab" on a project page and "Page not
+// found" on a path the console doesn't have. A detail id in
 // the query (a record, a task, a run, a conversation) adds a last crumb so
 // the phone's back arrow has somewhere to go.
 export function defaultCrumbs(pathname: string, search: URLSearchParams, projects: CrumbProject[] = [], pages: CrumbPage[] = []): Crumb[] {
@@ -81,11 +82,11 @@ export function defaultCrumbs(pathname: string, search: URLSearchParams, project
     ];
   }
 
+  // Every page the console has is in `pages` or handled above, so a path
+  // that matches none is the 404 page; naming it from the path read "Nope"
+  // for /nope/.
   const page = pages.find((p) => normalizePath(p.href) === path);
-  if (!page) {
-    const word = path.split("/").filter(Boolean).pop() || "";
-    return [{ label: word ? word[0].toUpperCase() + word.slice(1).replace(/-/g, " ") : "PULSE", href: path }];
-  }
+  if (!page) return [{ label: "Page not found" }];
   const crumbs: Crumb[] = [{ label: page.label, href: path }];
   const project = search.get("project");
   if (project) crumbs.push({ label: projectName(project, projects), href: path + "?project=" + enc(project) });

@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog, showApiError } from "./confirm";
 import { writes } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 
 export function DecideButtons({
   id,
@@ -17,6 +18,7 @@ export function DecideButtons({
   size = "default",
   yesLabel = "Yes",
   noLabel = "No",
+  className,
 }: {
   id: string;
   summary: string;
@@ -25,13 +27,15 @@ export function DecideButtons({
   size?: "xs" | "sm" | "default";
   yesLabel?: string;
   noLabel?: string;
+  // In a list row the pair keeps to the row's right edge on a phone too ("w-auto justify-end").
+  className?: string;
 }) {
   const [open, setOpen] = useState<"yes" | "no" | null>(null);
   if (!canDecide) return <span className="ml-auto text-[13px] text-muted-foreground">To answer, open PULSE on the machine that runs it.</span>;
   const yes = open === "yes";
   return (
     <>
-      <span className="flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end">
+      <span className={cn("flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end", className)}>
         <Button size={size} variant="outline" onClick={() => setOpen("no")} aria-label={noLabel + " to: " + summary}>
           <XIcon /> {noLabel}
         </Button>
@@ -64,7 +68,7 @@ export function DecideButtons({
 // board records it as the owner's yes with these words, which the agents
 // read as the answer. Declining (not now, don't pursue it) stays a quiet
 // second choice, before the answer as everywhere else.
-export function AnswerBox({ id, summary, canDecide = true }: { id: string; summary: string; canDecide?: boolean }) {
+export function AnswerBox({ id, summary, canDecide = true, autoFocus }: { id: string; summary: string; canDecide?: boolean; autoFocus?: boolean }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [declining, setDeclining] = useState(false);
@@ -104,6 +108,7 @@ export function AnswerBox({ id, summary, canDecide = true }: { id: string; summa
         aria-label={"Your answer to: " + summary}
         className="min-h-16 bg-card"
         disabled={busy}
+        autoFocus={autoFocus}
       />
       <span className="flex flex-wrap items-center justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={() => setDeclining(true)} disabled={busy} aria-label={"Decline to answer: " + summary}>

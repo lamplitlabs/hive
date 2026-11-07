@@ -65,6 +65,8 @@ export interface ForYouRow {
   urgent?: boolean;
   /** When the row answers to yes / no keys. */
   yesNo?: boolean;
+  /** The button word on a row whose fix is a page away (the row links there). */
+  fix?: string;
 }
 
 export interface ForYouInput {
@@ -84,18 +86,23 @@ export interface ForYouInput {
 
 const first = (...v: (string | undefined | null)[]) => v.find((x) => !!x) || "";
 
+// A self-improvement stop reads the same wherever it waits (Home, the
+// project, here): the question it asks, not the gate's log line.
+export const STOP_TITLE = "Self-improvement stopped. May it carry on?";
+const isStop = (q: { stop?: boolean; summary: string }) => q.stop === true || /Evolution stopped; owner review needed/i.test(q.summary || "");
+
 export function forYouRows(i: ForYouInput): ForYouRow[] {
   const brain = i.brain || "";
   const rows: ForYouRow[] = [];
-  if (i.machine) rows.push({ key: "machine", section: "problems", kind: "machine", project: "", title: "The runner isn't working", meta: i.machineWhy || "Agents can't start work on this machine", href: "/#daemon-controls", at: "", urgent: true });
-  if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true });
-  for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: q.summary, at: q.date, urgent: !!q.stop, yesNo: true });
+  if (i.machine) rows.push({ key: "machine", section: "problems", kind: "machine", project: "", title: "The runner isn't working", meta: i.machineWhy || "Agents can't start work on this machine", href: "/#daemon-controls", at: "", urgent: true, fix: "Fix it" });
+  if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true, fix: i.provider.expired ? "Sign in" : "Connect" });
+  for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, at: q.date, urgent: !!q.stop, yesNo: true });
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
   for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, at: p.date, yesNo: true });
   for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
   for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
   for (const d of i.drafts) rows.push({ key: "draft:" + d.slug + ":" + d.r.id, section: "drafts", kind: "record", project: d.slug, title: d.r.id === "EVO-evaluators" ? "New evaluators drafted" : "A new constitution drafted", meta: d.r.draft?.author ? "By " + d.r.draft.author : undefined, at: d.r.draft?.at || "" });
-  for (const s of i.steps) rows.push({ key: "step:" + s.kind + ":" + (s.slugs?.join(",") || s.slug), section: "steps", kind: "rule", project: s.slugs && s.slugs.length > 1 ? "" : s.slug, title: s.title, meta: s.label, at: "" });
+  for (const s of i.steps) rows.push({ key: "step:" + s.kind + ":" + (s.slugs?.join(",") || s.slug), section: "steps", kind: "rule", project: s.slugs && s.slugs.length > 1 ? "" : s.slug, title: s.title, meta: s.label, at: "", fix: "Open" });
   return rows;
 }
 

@@ -23,9 +23,10 @@ export const STATUS_CLASS: Record<StatusKind, string> = {
 };
 
 const EXACT: Record<string, StatusKind> = {
-  // running
+  // running: work actually under way right now - the only kind whose icon
+  // spins. Something switched on but idle (an active lead, an automation, a
+  // record in force) is "done"'s calm tick, never a spinner.
   running: "running",
-  active: "running",
   in_progress: "running",
   working: "running",
   leased: "running",
@@ -33,8 +34,7 @@ const EXACT: Record<string, StatusKind> = {
   provisioning: "running",
   cancelling: "running",
   reviewing: "running",
-  resumed: "running",
-  live: "running",
+  stopping: "running",
   // done
   done: "done",
   completed: "done",
@@ -60,6 +60,10 @@ const EXACT: Record<string, StatusKind> = {
   ready: "done",
   ok: "done",
   healthy: "done",
+  active: "done",
+  on: "done",
+  resumed: "done",
+  live: "done",
   // waits on you
   waiting: "waits",
   awaiting: "waits",
@@ -121,6 +125,10 @@ const EXACT: Record<string, StatusKind> = {
   short: "warning",
   "no expiry": "warning",
   degraded: "warning",
+  missing: "warning",
+  expiring: "warning",
+  lagging: "warning",
+  failing: "failed",
   // info
   superseded: "info",
   released: "info",
@@ -130,12 +138,15 @@ const EXACT: Record<string, StatusKind> = {
   unknown: "neutral",
 };
 
-// Map a raw store state onto a status kind. Exact words first, then a few
-// suffix rules ("*_error" fails, "*_limit" needs fixing), then neutral.
+// Map a raw store state onto a status kind. One of the nine kinds itself
+// ("warning", "waits", "info") stands for itself; then exact words, then a
+// few suffix rules ("*_error" fails, "*_limit" needs fixing, a leftover
+// "*ing" is work under way), then neutral.
 export function statusKind(raw: string | null | undefined): StatusKind {
   const v = (raw || "").trim().toLowerCase();
   if (!v) return "neutral";
   const key = v.replace(/[\s-]+/g, "_");
+  if ((STATUS_KINDS as string[]).includes(key)) return key as StatusKind;
   if (EXACT[key]) return EXACT[key];
   if (EXACT[v]) return EXACT[v];
   if (/(^|_)(error|failed|failure)$/.test(key)) return "failed";

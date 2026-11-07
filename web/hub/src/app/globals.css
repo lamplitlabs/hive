@@ -522,6 +522,13 @@ html[data-awake="holding"] body::before {
   ::selection {
     background: color-mix(in oklch, var(--teal) 25%, transparent);
   }
+  /* A grid's implicit column is as wide as its widest item's content, so one
+     row that can't wrap (a set of buttons, a long path) would widen the whole
+     page on a phone. Grid items may shrink instead; what can't shrink
+     truncates or wraps inside its own box. */
+  .grid > * {
+    min-width: 0;
+  }
   /* Thin, unobtrusive scrollbars inside panels and lists; the page keeps the platform's. */
   .scroll-thin {
     scrollbar-width: thin;
@@ -573,7 +580,11 @@ html[data-awake="holding"] body::before {
   border-color: var(--border);
 }
 /* A row of tabs or chips wider than its box: scrolls sideways, fades at the
-   edge that has more, never shows a scrollbar. Put it on the scroller. */
+   edge that has more, never shows a scrollbar. Put it on the scroller.
+   Where the browser drives animations by scrolling, the fades follow the
+   scroll (fade-edges below) at every width, so a strip that fits shows none
+   and a cut-off chip on a desktop fades out instead of ending mid-word;
+   elsewhere a phone gets a fixed fade at the right. */
 @utility scroll-strip {
   overflow-x: auto;
   scrollbar-width: none;
@@ -587,6 +598,27 @@ html[data-awake="holding"] body::before {
   @media (min-width: 40rem) {
     -webkit-mask-image: none;
     mask-image: none;
+  }
+  @supports (animation-timeline: scroll()) {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
+    animation: fade-edges linear both;
+    animation-timeline: scroll(self inline);
+    @media (min-width: 40rem) {
+      -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
+      mask-image: linear-gradient(to right, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
+    }
+  }
+}
+/* The same for a list that scrolls up and down (the sidebar): the top fades
+   once it has scrolled, the bottom while more waits below. Nothing fades
+   when the list fits, or where the browser can't tie the fade to scrolling. */
+@utility scroll-fade-y {
+  @supports (animation-timeline: scroll()) {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
+    animation: fade-edges linear both;
+    animation-timeline: scroll(self block);
   }
 }
 @utility ring-soft {
@@ -652,6 +684,35 @@ html[data-awake="holding"] body::before {
 @keyframes shimmer {
   100% {
     transform: translateX(100%);
+  }
+}
+/* Edge fades driven by scrolling (scroll-strip, scroll-fade-y): at the start
+   only the far edge fades, at the end only the near one. The lengths are
+   registered so they animate; unscrolled or unscrollable, both stay 0. */
+@property --fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes fade-edges {
+  0% {
+    --fade-start: 0px;
+    --fade-end: 2rem;
+  }
+  6% {
+    --fade-start: 1.5rem;
+  }
+  94% {
+    --fade-end: 2rem;
+  }
+  100% {
+    --fade-start: 1.5rem;
+    --fade-end: 0px;
   }
 }
 @keyframes live-beat {

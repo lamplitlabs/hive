@@ -13,11 +13,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Disclosure, Notice } from "@/components/pulse/panel";
+import { BrandLogo } from "@/components/pulse/logo";
 import { Mono } from "@/components/pulse/who";
 import { errorText, harnessModelsPath, harnessProviderPath, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessProviderInfo, type HarnessStatus } from "@/lib/api";
 import { num } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { groupProviders, keyProblem, providerInfo, suggestLightModel, suggestModel, type ProviderInfo, type ProviderKind } from "@/lib/providers";
+import { LOGOS, logoFor } from "@/lib/logos";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
@@ -149,9 +151,37 @@ export function connectedWords(login: Pick<HarnessLogin, "user" | "source"> | un
   return user + (how ? ", " + how : "");
 }
 
-// A small square with the provider's initials, in a hue of its own, so the
-// cards and the summary card are told apart at a glance without logos.
-export function ProviderGlyph({ name, title, className }: { name: string; title: string; className?: string }) {
+const GLYPH = {
+  24: { tile: "size-6 rounded-md text-[10px]", logo: "size-3.5" },
+  28: { tile: "size-7 rounded-md text-xs", logo: "size-4" },
+  40: { tile: "size-10 rounded-lg text-sm", logo: "size-5" },
+} as const;
+
+// Whether a brand colour is too dark to see on a dark tile (relative
+// luminance under 0.1: Anthropic, GitHub, Copilot, Ollama, LM Studio).
+function darkMark(hex: string): boolean {
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.1;
+}
+
+// The provider's face, the same on the wizard's cards, its review and the
+// Settings card: the brand mark in its own colour on a neutral tile when
+// PULSE ships one (spec "Logo rules": full colour only in the wizard and on
+// connection cards), else the initials in a hue of their own. A near-black
+// mark takes the text colour in dark mode, where its own would vanish.
+export function ProviderGlyph({ name, title, size = 28, className }: { name: string; title: string; size?: 24 | 28 | 40; className?: string }) {
+  const s = GLYPH[size];
+  const logo = logoFor(name) ?? logoFor(title);
+  if (logo) {
+    return (
+      <span aria-hidden className={cn("inline-flex shrink-0 items-center justify-center bg-muted text-foreground", s.tile, className)} data-logo={logo}>
+        <BrandLogo id={logo} color="brand" className={cn(s.logo, darkMark(LOGOS[logo].hex) && "dark:fill-current")} />
+      </span>
+    );
+  }
   let hash = 0;
   for (const c of name) hash = (hash * 31 + c.charCodeAt(0)) % 360;
   const words = title.replace(/\(.*\)/, "").trim().split(/\s+/);
@@ -159,7 +189,7 @@ export function ProviderGlyph({ name, title, className }: { name: string; title:
   return (
     <span
       aria-hidden
-      className={cn("inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-[oklch(0.93_0.05_var(--glyph-h))] text-xs font-bold tracking-tight text-[oklch(0.38_0.1_var(--glyph-h))] dark:bg-[oklch(0.34_0.06_var(--glyph-h))] dark:text-[oklch(0.88_0.07_var(--glyph-h))]", className)}
+      className={cn("inline-flex shrink-0 items-center justify-center bg-[oklch(0.93_0.05_var(--glyph-h))] font-bold tracking-tight text-[oklch(0.38_0.1_var(--glyph-h))] dark:bg-[oklch(0.34_0.06_var(--glyph-h))] dark:text-[oklch(0.88_0.07_var(--glyph-h))]", s.tile, className)}
       style={{ "--glyph-h": hash } as React.CSSProperties}
     >
       {initials}
@@ -449,7 +479,7 @@ function ConnectStep({ h, provider, address, setAddress, addressError, login, on
   return (
     <div className="grid gap-5">
       <div className="flex items-start gap-3">
-        <ProviderGlyph name={provider} title={info.title} className="size-10 text-sm" />
+        <ProviderGlyph name={provider} title={info.title} size={40} />
         <div className="min-w-0">
           <h3 className="text-base font-semibold">{info.title}</h3>
           {info.blurb ? <p className="text-[13px] leading-relaxed text-muted-foreground">{info.blurb}</p> : null}
@@ -814,7 +844,7 @@ function ProviderSteps({ h, start, onClose, busyRef }: { h: HarnessStatus; start
               <dl className="divide-y rounded-lg border bg-card px-4">
                 <ReviewRow label="Provider">
                   <span className="flex items-center gap-2">
-                    <ProviderGlyph name={choice} title={info.title} className="size-6 text-xs" />
+                    <ProviderGlyph name={choice} title={info.title} size={24} />
                     {info.title}
                     {!switching ? <Badge variant="secondary">In use</Badge> : null}
                   </span>

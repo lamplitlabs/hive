@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Fragment, Suspense, useCallback, useEffect, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
@@ -261,7 +261,7 @@ function Waiting({ n, className }: { n: number; className?: string }) {
 }
 
 const navRow =
-  "group relative flex h-9 items-center gap-3 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors duration-120 ease-out-soft hover:bg-muted hover:text-foreground motion-reduce:transition-none collapsed:w-9 collapsed:justify-center collapsed:px-0";
+  "group relative flex h-8 items-center gap-3 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors duration-120 ease-out-soft hover:bg-muted hover:text-foreground motion-reduce:transition-none collapsed:w-9 collapsed:justify-center collapsed:px-0";
 const navOn = "bg-accent text-foreground hover:bg-accent";
 
 function NavLink({
@@ -552,6 +552,41 @@ function Sidebar({ pathname }: { pathname: string }) {
   const [adding, setAdding] = useState(false);
   const settingsActive = pathname.startsWith("/settings");
   const onAdd = useCallback(() => setAdding(true), []);
+  const slug = useSearchParams().get("slug") || "";
+  const navBox = useRef<HTMLDivElement>(null);
+  // On a short window the list scrolls; keep the page you are on in sight,
+  // so Automations or Insights don't open with their own item below the
+  // fold. The projects arrive after the first paint and push System down,
+  // so it looks again as the list fills in - for a few seconds, and never
+  // once the owner has scrolled it. The list scrolls itself, never the page.
+  useEffect(() => {
+    const box = navBox.current;
+    if (!box) return;
+    let touched = false;
+    const reveal = () => {
+      const on = box.querySelector<HTMLElement>('[aria-current="page"]');
+      if (touched || !on) return;
+      const b = box.getBoundingClientRect();
+      const r = on.getBoundingClientRect();
+      if (r.top < b.top) box.scrollTop -= b.top - r.top + 12;
+      else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom + 12;
+    };
+    const touch = () => {
+      touched = true;
+    };
+    reveal();
+    const mo = new MutationObserver(reveal);
+    mo.observe(box, { childList: true, subtree: true });
+    const stop = window.setTimeout(() => mo.disconnect(), 4000);
+    box.addEventListener("wheel", touch, { passive: true });
+    box.addEventListener("touchmove", touch, { passive: true });
+    return () => {
+      mo.disconnect();
+      window.clearTimeout(stop);
+      box.removeEventListener("wheel", touch);
+      box.removeEventListener("touchmove", touch);
+    };
+  }, [pathname, slug]);
   return (
     <aside
       id="sidebar"
@@ -569,7 +604,7 @@ function Sidebar({ pathname }: { pathname: string }) {
         </Suspense>
         <SearchRow />
       </div>
-      <div className="scroll-thin flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 pt-1 pb-4 collapsed:items-center collapsed:gap-3 collapsed:px-2">
+      <div ref={navBox} className="scroll-thin scroll-fade-y flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 pt-1 pb-4 collapsed:items-center collapsed:gap-3 collapsed:px-2">
         <NavGroups
           pathname={pathname}
           projects={

@@ -11,7 +11,8 @@ import { KindTile } from "@/components/pulse/kind-tile";
 import { ListRow, ListRows, RowSkeleton } from "@/components/pulse/list-row";
 import { PageHeader } from "@/components/pulse/page-header";
 import { EmptyState, ErrorNotice, Kv } from "@/components/pulse/panel";
-import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
+import { SidePanel, useDesktop, useOpenItem } from "@/components/pulse/side-panel";
+import { useCrumbs } from "@/components/shell/crumbs";
 import { StatusBadge } from "@/components/pulse/status-badge";
 import { Avatar, PostLink, ThreadLink, VoteBadge, When } from "@/components/pulse/who";
 import { nextStep, TONE_ICON, uncountedText, voteBadge, whoName } from "@/components/board/vote-cards";
@@ -80,6 +81,9 @@ export function VotesPageClient() {
   const kind = validKind(sp.get("kind"));
   const sort = validSort(sp.get("sort"));
   const [openId, setOpenId] = useOpenItem("id");
+  // With the panel docked beside it the list is half as wide: rows drop the
+  // bar and the age (the panel shows both) so each title keeps its words.
+  const desktop = useDesktop();
   const q = useApi<Votes>("votes", { refresh: 30000 });
   const now = useNow();
   const setParams = useCallback((patch: Record<string, string | null | undefined>) => router.push(patchQuery(sp, pathname, patch), { scroll: false }), [sp, router, pathname]);
@@ -105,6 +109,9 @@ export function VotesPageClient() {
     const a = allAmendments.find((x) => x.id === openId);
     return a ? { kind: "amendment", a } : null;
   }, [openId, allSuggestions, allAmendments]);
+  // The top bar names the open vote by its words, never by its post id.
+  const openTitle = open ? sentence(open.kind === "suggestion" ? open.s.summary : open.a.summary) : openId ? "Vote" : "";
+  useCrumbs(openId ? [{ label: "Votes", href: hrefs.votes() }, ...(project ? [{ label: project, href: hrefs.votes({ project }) }] : []), { label: openTitle }] : null);
   const nothingAnywhere = allSuggestions.length + allAmendments.length === 0;
   const filtered = !!project || !!status;
   const clear = filtered ? (
@@ -190,7 +197,7 @@ export function VotesPageClient() {
             {rows.length ? (
               <ListRows ariaLabel={kind === "amendments" ? "Rule changes" : "Suggestions"}>
                 {rows.map((r) => (
-                  <VoteRow key={rowSlug(r) + "/" + rowId(r)} row={r} now={now} showProject={!project} selected={openId === rowId(r)} onOpen={() => setOpenId(rowId(r))} />
+                  <VoteRow key={rowSlug(r) + "/" + rowId(r)} row={r} now={now} showProject={!project} narrow={!!openId && desktop} selected={openId === rowId(r)} onOpen={() => setOpenId(rowId(r))} />
                 ))}
               </ListRows>
             ) : (
@@ -230,35 +237,39 @@ export function VotesPageClient() {
 
 // ----- rows -----------------------------------------------------------------
 
-function VoteRow({ row, now, showProject, selected, onOpen }: { row: Row; now: number; showProject: boolean; selected: boolean; onOpen: () => void }) {
+function VoteRow({ row, now, showProject, narrow, selected, onOpen }: { row: Row; now: number; showProject: boolean; narrow: boolean; selected: boolean; onOpen: () => void }) {
   if (row.kind === "suggestion") {
     const s = row.s;
     const quorum = s.quorum ?? 2;
     const step = nextStep(s, quorum, now);
+    const badge = <span className="inline-flex shrink-0 items-center">{voteBadge(s, quorum, now) ?? <StatusBadge status={s.status} size="sm" />}</span>;
     return (
       <ListRow
         lead={<KindTile kind="vote" size={28} />}
         title={sentence(s.summary)}
         meta={
-          <>
-            {showProject && s.slug ? (
-              <span className="inline-flex items-center gap-1">
-                <ProjectAvatar slug={s.slug} size={20} /> {s.slug}
-              </span>
-            ) : null}
-            <span className="inline-flex items-center">{voteBadge(s, quorum, now) ?? <StatusBadge status={s.status} size="sm" />}</span>
-          </>
+          narrow ? undefined : (
+            <>
+              {showProject && s.slug ? (
+                <span className="inline-flex items-center gap-1">
+                  <ProjectAvatar slug={s.slug} size={20} /> {s.slug}
+                </span>
+              ) : null}
+              {badge}
+            </>
+          )
         }
-        status={<SplitBar up={s.up} down={s.down} needed={quorum} />}
-        time={<When d={s.date} />}
+        status={narrow ? undefined : <SplitBar up={s.up} down={s.down} needed={quorum} />}
+        time={narrow ? undefined : <When d={s.date} />}
         selected={selected}
         onOpen={onOpen}
         ariaLabel={"Suggestion: " + s.summary}
       >
-        {step ? (
-          <span className="inline-flex min-w-0 items-center gap-1.5" title={step.title}>
-            <step.icon className={cn("size-3.5 shrink-0", TONE_ICON[step.tone])} aria-hidden />
-            <span className="min-w-0 truncate">{step.text}</span>
+        {step || narrow ? (
+          <span className="inline-flex min-w-0 max-w-full items-center gap-1.5" title={step?.title}>
+            {narrow ? badge : null}
+            {step ? <step.icon className={cn("size-3.5 shrink-0", TONE_ICON[step.tone])} aria-hidden /> : null}
+            {step ? <span className="min-w-0 truncate">{step.text}</span> : null}
           </span>
         ) : null}
       </ListRow>
@@ -273,23 +284,26 @@ function VoteRow({ row, now, showProject, selected, onOpen }: { row: Row; now: n
       lead={<KindTile kind="rule" size={28} />}
       title={sentence(a.summary)}
       meta={
-        <>
-          {showProject && a.slug ? (
-            <span className="inline-flex items-center gap-1">
-              <ProjectAvatar slug={a.slug} size={20} /> {a.slug}
-            </span>
-          ) : null}
-          <StatusBadge status={a.status} size="sm" />
-          {a.section ? <span className="truncate">{"Section: " + a.section}</span> : null}
-        </>
+        narrow ? undefined : (
+          <>
+            {showProject && a.slug ? (
+              <span className="inline-flex items-center gap-1">
+                <ProjectAvatar slug={a.slug} size={20} /> {a.slug}
+              </span>
+            ) : null}
+            <StatusBadge status={a.status} size="sm" />
+            {a.section ? <span className="truncate">{"Section: " + a.section}</span> : null}
+          </>
+        )
       }
-      status={<SplitBar up={a.up} down={a.down} needed={a.quorum} />}
-      time={<When d={a.date} />}
+      status={narrow ? undefined : <SplitBar up={a.up} down={a.down} needed={a.quorum} />}
+      time={narrow ? undefined : <When d={a.date} />}
       selected={selected}
       onOpen={onOpen}
       ariaLabel={"Rule change: " + a.summary}
     >
-      <span className="inline-flex min-w-0 items-center gap-1.5">
+      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+        {narrow ? <StatusBadge status={a.status} size="sm" /> : null}
         {uncounted ? <CircleSlashIcon className="size-3.5 shrink-0 text-warn" aria-hidden /> : null}
         <span className="min-w-0 truncate">{uncounted ? line + " " + uncounted + "." : line}</span>
       </span>

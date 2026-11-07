@@ -643,18 +643,36 @@ function LiveRuns({ rows, models, selected, onOpen, onDone }: { rows: HarnessSes
             key={r.id}
             lead={r.agent ? <Avatar seed={r.agent} size={28} /> : <ProjectAvatar slug={r.project || "pulse"} size={20} />}
             title={r.job_title || r.job_id}
+            // On a phone the meta line keeps what fits one thumb's width -
+            // project, steps and the time so far (the row's time column is
+            // desktop-only); the agent and the model wait for a wider screen.
             meta={
               <>
-                {r.agent ? <span title={r.agent}>{agentName(r.agent)}</span> : null}
-                {r.project ? <span>{r.project}</span> : null}
-                <ModelCell session={r} models={models} />
-                <span>{plural(r.steps, "step")}</span>
+                {r.agent ? <span className="max-sm:hidden" title={r.agent}>{agentName(r.agent)}</span> : null}
+                {r.project ? <span className="truncate">{r.project}</span> : null}
+                <ModelCell session={r} models={models} className="max-sm:hidden" />
+                <span className="shrink-0 whitespace-nowrap">{plural(r.steps, "step")}</span>
+                <Elapsed startedAt={r.started_at} className="shrink-0 sm:hidden" />
               </>
             }
-            status={<StatusBadge status={r.cancel_requested_at ? "cancelling" : "running"} label={r.cancel_requested_at ? "Cancelling" : "Running"} size="sm" />}
-            time={<Elapsed startedAt={r.started_at} />}
-            actions={<CancelRunButton session={r} onDone={onDone} iconOnly />}
-            actionsVisible
+            // Cancel sits in the status slot, which never wraps: as a row
+            // action it would drop onto a line of its own on a phone.
+            status={
+              <>
+                <StatusBadge status={r.cancel_requested_at ? "cancelling" : "running"} label={r.cancel_requested_at ? "Cancelling" : "Running"} size="sm" className="max-sm:hidden" />
+                <StatusIcon status={r.cancel_requested_at ? "cancelling" : "running"} label={r.cancel_requested_at ? "Cancelling" : "Running"} className="sm:hidden" />
+                <Elapsed startedAt={r.started_at} className="max-sm:hidden" />
+                <span
+                  className="inline-flex"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                  }}
+                >
+                  <CancelRunButton session={r} onDone={onDone} iconOnly />
+                </span>
+              </>
+            }
             selected={selected === r.id}
             onOpen={() => onOpen(r.id)}
           />
@@ -686,10 +704,11 @@ function runColumns(projects: ProjectsPayload | undefined, models: HarnessModel[
           <span className="min-w-0 truncate font-medium text-foreground" title={r.job_title || r.job_id}>
             {r.job_title || r.job_id}
           </span>
-          <span className="flex min-w-0 items-center gap-x-2 truncate text-xs text-muted-foreground md:hidden">
-            {r.project ? <span>{r.project}</span> : null}
-            {r.agent ? <span>{agentName(r.agent)}</span> : null}
-            <span>{runState(r).word}</span>
+          {/* The folded meta on a narrow screen: the state word gives way (with an ellipsis), the names stay whole. */}
+          <span className="flex min-w-0 items-center gap-x-2 overflow-hidden text-xs text-muted-foreground md:hidden">
+            {r.project ? <span className="shrink-0">{r.project}</span> : null}
+            {r.agent ? <span className="shrink-0">{agentName(r.agent)}</span> : null}
+            <span className="min-w-0 truncate">{runState(r).word}</span>
           </span>
         </span>
       ),
@@ -1182,7 +1201,8 @@ export function HarnessPageClient() {
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <ProjectSelect project={project} projects={projects.data} onChange={(slug) => change({ project: slug })} />
           <span aria-hidden className="mx-0.5 hidden h-4 w-px shrink-0 bg-border sm:inline-block" />
-          <div role="group" aria-label="Filter runs by how they went" className="scroll-strip -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 px-1 py-0.5">
+          {/* On a phone the chips take a row of their own under the project and the filters button, so neither gets squeezed. */}
+          <div role="group" aria-label="Filter runs by how they went" className="scroll-strip -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 px-1 py-0.5 max-sm:order-last max-sm:basis-full">
           <FilterChip active={!status} count={machineRows.length} onClick={() => change({ status: "" })}>
             All
           </FilterChip>
@@ -1197,8 +1217,8 @@ export function HarnessPageClient() {
             </FilterChip>
           ) : null}
           </div>
-          <Button type="button" variant={moreOpen || moreActive ? "secondary" : "ghost"} size="sm" className="shrink-0" aria-expanded={moreOpen} aria-controls="runs-more-filters" onClick={() => setMoreOpen((v) => !v)}>
-            <SlidersHorizontalIcon /> More filters
+          <Button type="button" variant={moreOpen || moreActive ? "secondary" : "ghost"} size="sm" className="shrink-0 max-sm:ml-auto" aria-expanded={moreOpen} aria-controls="runs-more-filters" onClick={() => setMoreOpen((v) => !v)}>
+            <SlidersHorizontalIcon /> <span className="max-sm:sr-only">More filters</span>
             {moreActive ? <span className="tnum inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-foreground/10 px-1.5 text-xs leading-none">{[agent, executor].filter(Boolean).length}</span> : null}
           </Button>
         </div>

@@ -11,20 +11,24 @@ import { Mono } from "@/components/pulse/who";
 import { writes, type ServicePayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { invalidate } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 import type { AttentionFix, AttentionRow } from "./home-state";
 
 // The attention strip (spec "Home" 2): one row per thing that is wrong, with
 // its icon, one sentence and the button that fixes it. Shown only when
-// something is wrong; the page computes the rows with attentionRows().
+// something is wrong; the page computes the rows with attentionRows(). Each
+// row takes its own tone: red for what stops all work (the runner), orange
+// for what needs a step (an expired sign-in, a page that didn't load).
 export function AttentionStrip({ rows, service, onRetry }: { rows: AttentionRow[]; service: ServicePayload | undefined; onRetry: () => void }) {
   if (!rows.length) return null;
+  const failed = rows.some((r) => r.tone === "failed");
   return (
     <section aria-label="Needs attention" className="min-w-0">
-      <ListRows ariaLabel="Problems and their fixes" className="border-status-failed/30">
+      <ListRows ariaLabel="Problems and their fixes" className={failed ? "border-status-failed/30" : "border-status-warning/30"}>
         {rows.map((row) => (
           // The fix sits in the row's status slot, which is always visible: a
           // problem's button does not wait for a hover the way row actions do.
-          <ListRow key={row.id} lead={<StatusIcon status={row.tone} className="size-5" />} title={<span title={row.why || undefined}>{row.text}</span>} status={<FixButton fix={row.fix} label={row.action} why={row.why} service={service} onRetry={onRetry} />} ariaLabel={row.text + ". " + row.action} className="bg-status-failed-soft/40 py-2">
+          <ListRow key={row.id} lead={<StatusIcon status={row.tone} className="size-5" />} title={<span title={row.why || undefined}>{row.text}</span>} status={<FixButton fix={row.fix} label={row.action} why={row.why} service={service} onRetry={onRetry} />} ariaLabel={row.text + ". " + row.action} className={cn("py-2", row.tone === "failed" ? "bg-status-failed-soft/40" : "bg-status-warning-soft/40")}>
             {row.why || undefined}
           </ListRow>
         ))}

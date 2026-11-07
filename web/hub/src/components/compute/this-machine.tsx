@@ -17,7 +17,7 @@ import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { RUNNER_STATE_WORD, diskMeter, keepAwakeOn, machineOs, runnerState, slotsMeter } from "./compute-state";
+import { RUNNER_STATE_WORD, diskMeter, keepAwakeOn, runnerState, slotsMeter, thisMachineOs } from "./compute-state";
 import { Meter } from "./meter";
 
 const CHANGES = (p: string) => ["settings", "runner", "service", "running", "compute", "org", "events"].some((path) => p === path || p.startsWith(path + "?"));
@@ -43,7 +43,7 @@ export function ThisMachineCard({ runner, host, local, className }: { runner: Ru
   const state = available ? runnerState(r) : "stopped";
   const paused = state === "paused" || stopSetting?.value === "1";
   const badge = paused ? "paused" : state;
-  const os = machineOs(local ?? { offers: "", kind: "local", probe_note: "this machine" }, host) ?? (typeof navigator !== "undefined" && /mac/i.test(navigator.userAgent) ? "macos" : null);
+  const os = thisMachineOs(local, host, typeof navigator !== "undefined" ? navigator.userAgent : "");
   const logo = os === "macos" ? "apple" : logoFor(os);
   const name = (host || "").trim() || local?.name || "This machine";
   const slots = local ? slotsMeter(local) : r ? { pct: r.hands.slots ? Math.round(((r.hands.slots - r.hands.free) / r.hands.slots) * 100) : null, text: r.hands.slots ? num(r.hands.free) + " of " + num(r.hands.slots) + " free" : "—" } : { pct: null, text: "—" };

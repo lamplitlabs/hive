@@ -57,7 +57,8 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
               <Kpi n={leftOut} label="Left out" sub="Docs-only or no code" />
               <Kpi n={d.summary.unknown} label="Couldn't check" sub={d.summary.unknown ? "Left out of the count" : "Every merge was checked"} tone={d.summary.unknown ? "warn" : "neutral"} />
             </KpiGrid>
-            {coverageTone === "warn" ? <Notice tone="warn">{coverage}</Notice> : <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{coverage}</p>}
+            {/* Only a search that stopped short is a warning (its zero isn't real); what was left out or couldn't be checked is a plain note, since the tiles above already mark it. */}
+            {incomplete ? <Notice tone="warn">{coverage}</Notice> : coverageTone === "warn" ? <Notice tone="neutral">{coverage}</Notice> : <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{coverage}</p>}
           </div>
           <div>
             <SectionHeading

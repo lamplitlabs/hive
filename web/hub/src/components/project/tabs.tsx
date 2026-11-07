@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ReplyIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -18,7 +18,7 @@ import { DocRev, GateCard, SelfImprovementPanel } from "@/components/pulse/evolv
 import { useInbox } from "@/components/pulse/inbox";
 import { KindTile } from "@/components/pulse/kind-tile";
 import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { ComputeInboxCard } from "@/components/compute/compute";
+import { ComputeDecide, ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
 import { LiveFeed } from "@/components/pulse/live-feed";
@@ -183,11 +183,47 @@ function NeedsYou({ slug, mine, canDecide, limit = 3, heading = true }: { slug: 
   );
 }
 
-// Each inbox item as a ListRow: a kind tile, the one-line ask, who asked
-// and when, and the action that settles it. With `expand`, a row opens its
-// full card underneath (the For you tab) instead of leaving the page.
+// Each inbox item as a ListRow, in the two lines Home uses: the ask alone on
+// the first, so it keeps its words; who asked, how long ago and the first
+// line of the text on the second; the action that settles it in sight on the
+// right. With `expand`, a row opens its full card underneath (the For you
+// tab) instead of leaving the page.
 type InboxRow = { key: string; node: React.ReactNode };
 type Expand = { expanded: string | null; onExpand: (key: string | null) => void };
+
+const TWO_LINES = "min-h-[calc(var(--row-h)+0.75rem)]";
+
+// The second line: who or what, the age, then as much of the text as fits
+// (the text goes last, so it is what the ellipsis cuts), without its
+// Markdown ticks and stars.
+function SecondLine({ who, at, text }: { who: string; at?: string | null; text?: string | null }) {
+  return (
+    <>
+      {who}
+      {at ? (
+        <>
+          {" · "}
+          <When d={at} />
+        </>
+      ) : null}
+      {text ? " · " + text.replace(/`|\*\*/g, "") : null}
+    </>
+  );
+}
+
+// agentName() starts a sentence ("The runner", "You"); after "from" it reads
+// in lower case.
+const inSentence = (who: string) => (who === "The runner" || who === "You" ? who.toLowerCase() : who);
+
+// The cue on a row that leads to an answer box: drawn as a button, but a
+// span, since the row itself is the link or the opener.
+function AnswerCue() {
+  return (
+    <span className={buttonVariants({ size: "xs" })}>
+      <ReplyIcon aria-hidden /> Answer
+    </span>
+  );
+}
 
 function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbox>["forProject"]>, "total" | "agentsDeciding" | "machine" | "provider">, canDecide: boolean, openRecord: (r: RecordRow) => void, expand?: Expand): InboxRow[] {
   const rows: InboxRow[] = [];
@@ -198,35 +234,34 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="record" waiting title="Record to adopt" />}
           title={r.title}
-          meta={<span>{kindLabel(r.kind) + " " + r.id}</span>}
           status={<StatusBadge status={r.status} size="sm" />}
-          time={r.date ? <When d={r.date} /> : undefined}
           onOpen={() => openRecord(r)}
           ariaLabel={"Record proposed: " + r.title}
         >
-          {"Proposed as " + r.id + ". Open it to adopt or send it back."}
+          <SecondLine who={kindLabel(r.kind) + " " + r.id} at={r.date} text="Open it to adopt or send it back." />
         </ListRow>
       ),
     });
   }
   for (const p of mine.proposals) {
     const key = "p" + p.id;
-    const who = p.agent || p.name || p.session || "an agent";
+    const who = p.agent || p.name || p.session || "";
     rows.push({
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="proposal" waiting title="Proposal" />}
           title={p.summary}
-          meta={<span>{"from " + agentName(who)}</span>}
-          time={<When d={p.date} />}
-          actions={canDecide && p.can_decide !== false ? <DecideButtons id={p.id} summary={p.summary} canDecide={canDecide} size="xs" /> : undefined}
+          actionsVisible
+          actions={canDecide && p.can_decide !== false ? <DecideButtons id={p.id} summary={p.summary} canDecide={canDecide} size="xs" className="w-auto justify-end" /> : undefined}
           {...opener(key, hrefs.post(p.slug || slug, p.id))}
           ariaLabel={"Proposal: " + p.summary}
         >
-          {firstLine(p.proposal_text) || "Open it to read the whole proposal."}
+          <SecondLine who={who ? "Proposal from " + inSentence(agentName(who)) : "Proposal"} at={p.date} text={firstLine(p.proposal_text)} />
         </ListRow>
       ),
     });
@@ -234,23 +269,24 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
   for (const q of mine.questions) {
     const key = "q" + q.id;
     const stop = q.stop === true;
-    const who = q.agent || q.name || q.session || "an agent";
+    const who = q.agent || q.name || q.session || "";
     const openQ = !stop && isOpenQuestion(q.summary, q.body);
-    const labels = decisionLabels(q.body, stop ? { yes: "Yes, carry on", no: "No, keep it paused" } : { yes: "Yes", no: "No" });
+    const labels = decisionLabels(q.body, stop ? { yes: "Carry on", no: "Keep paused" } : { yes: "Yes", no: "No" });
+    const title = stop ? "Self-improvement stopped. May it carry on?" : q.summary;
+    const what = stop ? "Self-improvement paused" : askTitle(q.kind, who ? inSentence(agentName(who)) : "an agent");
     rows.push({
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="question" waiting title={stop ? "Self-improvement paused" : "Question for you"} />}
-          title={q.summary}
-          meta={<span>{askTitle(q.kind, agentName(who))}</span>}
-          status={stop ? <StatusBadge status="paused" label="Paused" size="sm" /> : q.stale ? <StatusBadge status="stale" label="Older thread" size="sm" /> : undefined}
-          time={<When d={q.date} />}
-          actions={canDecide && !openQ ? <DecideButtons id={q.id} summary={q.summary} stop={stop} canDecide={canDecide} size="xs" yesLabel={labels.yes} noLabel={labels.no} /> : undefined}
+          title={title}
+          actionsVisible
+          actions={canDecide ? openQ ? <AnswerCue /> : <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} size="xs" yesLabel={labels.yes} noLabel={labels.no} className="w-auto justify-end" /> : undefined}
           {...(openQ && !expand ? { href: hrefs.project(q.slug || slug, "for-you") } : opener(key, hrefs.post(q.slug || slug, q.id)))}
           ariaLabel={(stop ? "Self-improvement paused: " : "Question for you: ") + q.summary}
         >
-          {openQ && !expand ? "Needs an answer in words: open For you." : firstLine(q.body) || "Open it to read the whole question."}
+          <SecondLine who={q.stale ? what + " · older thread" : what} at={q.date} text={firstLine(q.body)} />
         </ListRow>
       ),
     });
@@ -261,14 +297,15 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="machine" waiting title="Machine request" />}
-          title={"A machine for " + (cr.hours === 1 ? "1 hour" : cr.hours + " hours") + (cr.size ? " (" + cr.size + ")" : "")}
-          meta={<span>{"asked by " + agentName(cr.requested_by)}</span>}
-          status={<StatusBadge status={cr.status} size="sm" />}
+          title={"Extra machine for " + (cr.hours === 1 ? "1 hour" : cr.hours + " hours") + (cr.size ? " (" + cr.size + ")" : "")}
+          actionsVisible
+          actions={canDecide ? <ComputeDecide r={cr} size="xs" /> : undefined}
           {...opener(key, hrefs.compute())}
           ariaLabel={"Machine request: " + cr.reason}
         >
-          {cr.reason}
+          <SecondLine who={"Asked by " + inSentence(agentName(cr.requested_by))} at={cr.at} text={cr.reason} />
         </ListRow>
       ),
     });
@@ -279,14 +316,14 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="work" waiting title="Suggested work" />}
           title={w.title}
-          meta={<span>{"suggested by " + (w.suggested_by === "human" ? "you" : agentName(w.suggested_by))}</span>}
           status={<StatusBadge status={w.status} size="sm" />}
           {...opener(key, hrefs.tasks({ project: slug }))}
           ariaLabel={"Suggested work: " + w.title}
         >
-          {w.verdict || "Your call: make it a task or let it go."}
+          <SecondLine who={"Suggested by " + (w.suggested_by === "human" ? "you" : inSentence(agentName(w.suggested_by)))} at={w.updated_at || w.created_at} text={w.verdict || "Your call: make it a task or let it go."} />
         </ListRow>
       ),
     });
@@ -298,13 +335,13 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="rule" waiting title="Draft to review" />}
           title={"A new " + what + " to review"}
-          meta={<span>{d.r.id}</span>}
           {...opener(key, hrefs.project(slug, "evolution"))}
           ariaLabel={"Draft to review: " + d.r.id}
         >
-          An agent drafted the project&apos;s own text; adopt it or keep the template.
+          <SecondLine who={d.r.draft?.author ? "Drafted by " + inSentence(agentName(d.r.draft.author)) : "Draft " + d.r.id} at={d.r.draft?.at} text="An agent drafted the project's own text; adopt it or keep the template." />
         </ListRow>
       ),
     });
@@ -315,13 +352,13 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
       key,
       node: (
         <ListRow
+          className={TWO_LINES}
           lead={<KindTile kind="plan" waiting title="Setup step" />}
           title={st.title}
-          meta={<span>{st.label}</span>}
           {...opener(key, hrefs.project(slug, "evolution"))}
           ariaLabel={"Setup step: " + st.title}
         >
-          {st.body}
+          <SecondLine who={st.label} text={st.body} />
         </ListRow>
       ),
     });

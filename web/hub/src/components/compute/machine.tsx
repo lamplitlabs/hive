@@ -17,7 +17,7 @@ import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
 import type { Executor, LandingHold, Runner } from "@/lib/api";
-import { machineLabels, machineLogoKey, machineProjects, slotsMeter } from "./compute-state";
+import { machineLabels, machineLogoKey, machineProjects, slotsMeter, thisMachineOs } from "./compute-state";
 import { Meter } from "./meter";
 
 // ----- the machine ---------------------------------------------------------
@@ -258,14 +258,17 @@ function cardTip(e: Executor): string {
 // system's or cloud provider's mark, its name and state, a slots meter,
 // its labels as chips and the projects it serves as a stack of avatars.
 // `provider` is the cloud the runner provisions on (caps.provider), so a
-// requested machine shows that provider's mark. `action` holds a Remove menu.
-export function MachineCard({ e, provider, action, className }: { e: Executor; provider?: string | null; action?: React.ReactNode; className?: string }) {
-  const logoKey = machineLogoKey(e, provider);
+// requested machine shows that provider's mark. `host` is this machine's
+// name, so the local card wears the same mark as the "This machine" card.
+// `action` holds a Remove menu.
+export function MachineCard({ e, provider, host, action, className }: { e: Executor; provider?: string | null; host?: string | null; action?: React.ReactNode; className?: string }) {
+  const local = e.kind === "local" || e.name === "local";
+  const localOs = local ? thisMachineOs(e, host, typeof navigator !== "undefined" ? navigator.userAgent : "") : null;
+  const logoKey = machineLogoKey(e, provider) ?? (localOs === "macos" || localOs === "linux" ? localOs : null);
   const slots = slotsMeter(e);
   const labels = machineLabels(e.offers);
   const projects = machineProjects(e.projects);
   const reserved = Boolean(e.reserved) || /\(reserved\)/.test(e.offers || "");
-  const local = e.kind === "local" || e.name === "local";
   const why = e.status !== "active" ? e.probe_note?.trim() : "";
   return (
     <article className={cn("enter flex min-w-0 flex-col gap-3 rounded-lg border bg-card p-4 text-sm", className)} aria-label={"Machine " + e.name} title={cardTip(e)}>

@@ -15,7 +15,7 @@ import { showApiError } from "@/components/pulse/confirm";
 import { copyText } from "@/components/pulse/evolve";
 import { PulseMascot } from "@/components/pulse/mascots";
 import { Disclosure, Notice } from "@/components/pulse/panel";
-import { LogoTile } from "@/components/pulse/logo";
+import { BrandLogo, LogoTile } from "@/components/pulse/logo";
 import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, useWizardLock, type WizardStep } from "@/components/pulse/stepper";
 import { Mono } from "@/components/pulse/who";
 import { api, enc, errorText, writes, type McpAuth, type McpConnectResult, type McpLoginFlow, type McpLoginInput, type McpLoginState, type McpOptions, type McpServer, type McpServersPayload, type McpTransport, type ProjectsPayload, type ToolkitPayload, type ToolSuggestion } from "@/lib/api";
@@ -497,7 +497,7 @@ function PresetGroup({ title, note, items, choice, onPick, onNext, suggested }: 
               className={cn("grid min-w-0 gap-1 rounded-lg border bg-card p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", on ? "border-primary ring-1 ring-primary" : "hover:border-foreground/25 hover:bg-muted/40")}
             >
               <span className="flex min-w-0 items-center gap-2">
-                <LogoTile name={p.name} size={28} title={p.title} />
+                <LogoTile name={p.name} size={28} title={p.title} fallback={<BrandLogo id="modelcontextprotocol" size={16} title="MCP server" />} />
                 <span className="min-w-0 flex-1 truncate text-sm font-semibold">{p.title}</span>
                 <Badge variant="outline" className="shrink-0">
                   {presetAccess(p)}

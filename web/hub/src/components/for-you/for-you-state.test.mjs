@@ -31,6 +31,8 @@ test("every inbox item becomes one row with its project, and the brain takes the
   assert.equal(byKey["proposal:P-2"].project, "amistio");
   assert.equal(byKey["proposal:P-1"].project, "demo-app");
   assert.equal(byKey["question:Q-2"].urgent, true);
+  assert.equal(byKey["question:Q-2"].title, "Self-improvement stopped. May it carry on?", "a stop reads as the question it asks");
+  assert.equal(byKey["question:Q-1"].title, "Keep the old API?");
   assert.ok(!byKey["question:Q-1"].urgent);
   assert.equal(byKey["compute:C-7"].title, "Standard_D4s_v5 for 2 hours");
   assert.equal(byKey["step:heldout:demo-app,web"].project, "", "a shared step belongs to no one project");
@@ -40,6 +42,12 @@ test("every inbox item becomes one row with its project, and the brain takes the
   assert.match(byKey["provider:anthropic"].href, /connect=anthropic/);
   assert.equal(byKey["decision:ADR-0042"].yesNo, true);
   assert.equal(byKey["draft:web:EVO-constitution"].yesNo, undefined);
+  // A row whose fix is a page away names it on its button.
+  assert.equal(byKey["provider:anthropic"].fix, "Sign in");
+  assert.equal(forYouRows({ ...empty, provider: { name: "openai", label: "OpenAI", expired: false } })[0].fix, "Connect");
+  assert.equal(byKey["machine"].fix, "Fix it");
+  assert.equal(byKey["step:heldout:demo-app,web"].fix, "Open");
+  assert.equal(byKey["question:Q-1"].fix, undefined);
 });
 
 test("sections keep the fixed order and drop when empty", () => {

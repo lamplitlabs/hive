@@ -166,7 +166,8 @@ export function RecordDecisionButtons({ record, size = "sm", onDone }: { record:
   };
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Button size={size} variant="ghost" className="text-bad hover:bg-bad/10 hover:text-bad" onClick={() => start("Rejected")} aria-label={"Decline " + record.id}>
+      {/* The same outlined red Decline as every other yes/no pair (Home, For you), so a decision's "no" looks like the rest. */}
+      <Button size={size} variant="outline" className="text-bad hover:text-bad" onClick={() => start("Rejected")} aria-label={"Decline " + record.id}>
         <XIcon /> Decline
       </Button>
       <Button size={size} variant="outline" onClick={() => start("Deferred")} aria-label={"Defer " + record.id}>

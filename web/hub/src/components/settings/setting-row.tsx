@@ -320,7 +320,8 @@ export function PauseCard({ s, canEdit }: { s: Setting; canEdit: boolean }) {
           <RowMeta s={s} className="mt-1" />
         </div>
         <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
-          {paused ? <StatusBadge status="warning" label="Paused" /> : <StatusBadge status="done" label="Running" />}
+          {/* The chip says what the brake is set to, so it never claims work runs while the runner is off. */}
+          {paused ? <StatusBadge status="warning" label="Paused" /> : live ? <StatusBadge status="done" label="Running" /> : <StatusBadge status="neutral" label="Not paused" />}
           {paused ? (
             <Button className="flex-1 sm:flex-none" disabled={!canEdit} onClick={() => setPending("0")}>
               <PlayIcon /> Resume work

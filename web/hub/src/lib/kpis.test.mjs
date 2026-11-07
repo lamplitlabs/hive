@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { changeText, changeTone, costText, dayLabel, kpiAutonomyLine, kpiChartRows, kpiFigure, kpiPath, kpiPreviousWindow, kpiSummaryLine, kpiTokensFigure, kpiWindow, kpisEmpty, perDayText, reviewsAloneShare, tokensText } from "./kpis.ts";
+import { changeText, changeTone, costText, kpiTrend, dayLabel, kpiAutonomyLine, kpiChartRows, kpiFigure, kpiPath, kpiPreviousWindow, kpiSummaryLine, kpiTokensFigure, kpiWindow, kpisEmpty, perDayText, reviewsAloneShare, tokensText } from "./kpis.ts";
 
 const day = (d, over = {}) => ({ day: d, sessions: 0, prompt_tokens: 0, completion_tokens: 0, cost: 0, jobs_done: 0, jobs_failed: 0, landings: 0, tasks_done: 0, reviews: 0, reviews_merged: 0, findings: 0, vulns_found: 0, vuln_fixes: 0, owner_asks: 0, ...over });
 // Fourteen days, Sept 1 to Sept 14: landings climb 1..14, one session a day.
@@ -89,6 +89,19 @@ test("the change line and its tone depend on direction and on what is counted", 
   assert.equal(changeTone({ change: 12 }, "neutral"), "neutral");
   assert.equal(changeTone({ change: 0 }, "up-good"), "neutral");
   assert.equal(changeTone({ change: null }, "up-bad"), "neutral");
+});
+
+test("the trend says the change as an arrow, a percent and a sentence", () => {
+  assert.deepEqual(kpiTrend({ change: 9, total: 176 }, "up-good", "7d"), { arrow: "up", text: "9%", tone: "ok", words: "Up 9% on the 7 days before: better" });
+  assert.deepEqual(kpiTrend({ change: 111, total: 4.9e9 }, "up-bad", "30d"), { arrow: "up", text: "111%", tone: "bad", words: "Up 111% on the 30 days before: worse" });
+  assert.deepEqual(kpiTrend({ change: -4, total: 24 }, "up-good", "30d"), { arrow: "down", text: "4%", tone: "bad", words: "Down 4% on the 30 days before: worse" });
+  assert.deepEqual(kpiTrend({ change: -12, total: 3 }, "up-bad", "7d"), { arrow: "down", text: "12%", tone: "ok", words: "Down 12% on the 7 days before: better" });
+  // A count with no good or bad direction moves without a verdict.
+  assert.deepEqual(kpiTrend({ change: 105, total: 2580 }, "neutral", "30d"), { arrow: "up", text: "105%", tone: "neutral", words: "Up 105% on the 30 days before" });
+  assert.equal(kpiTrend({ change: 0, total: 5 }, "up-good", "14d").words, "Same as the 14 days before");
+  assert.equal(kpiTrend({ change: 0, total: 5 }, "up-good", "14d").arrow, "flat");
+  assert.equal(kpiTrend({ change: null, total: 5 }, "up-good", "7d").arrow, "new");
+  assert.equal(kpiTrend({ change: null, total: 0 }, "up-good", "7d").arrow, "none");
 });
 
 test("chart rows carry a short UTC day label, a tokens total and the autonomy counts", () => {

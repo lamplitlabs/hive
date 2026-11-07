@@ -62,6 +62,14 @@ export function machineOs(e: { offers?: string | null; kind?: string | null; pro
   return null;
 }
 
+// This machine's system: what its own row or the host's name says, else what
+// the browser runs on (the console is mostly opened on the machine itself).
+// The "This machine" card and the local machine's card in "All machines"
+// share it, so the one machine wears one mark.
+export function thisMachineOs(local: { offers?: string | null; kind?: string | null; probe_note?: string | null; name?: string | null } | null | undefined, host?: string | null, userAgent?: string | null): MachineOs {
+  return machineOs(local ?? { offers: "", kind: "local", probe_note: "this machine" }, host) ?? (/mac/i.test(userAgent || "") ? "macos" : null);
+}
+
 // The brand mark for a machine card: the system for a local/ssh machine,
 // the cloud provider for one that was requested. Returns a logoFor() key
 // (a word logos.ts matches by substring) or null for the Server icon.

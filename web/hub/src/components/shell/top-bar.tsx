@@ -95,9 +95,7 @@ export function TopBar({ onHelp }: { onHelp: () => void }) {
     >
       <Breadcrumbs className="min-w-0 flex-1" />
       <div className="flex shrink-0 items-center gap-1">
-        <AskTrigger className="h-8 w-auto gap-2 px-2.5 text-[13px] text-muted-foreground hover:text-foreground">
-          <span className="sr-only">Ask PULSE</span>
-        </AskTrigger>
+        <AskTrigger variant="bar" className="text-[13px] hover:text-foreground" />
         <Bell />
         <LiveStatus compact />
         <Tooltip>

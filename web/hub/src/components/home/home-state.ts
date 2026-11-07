@@ -350,6 +350,28 @@ export function topFive(items: HomeInboxItems): NeedsYouItem[] {
   return needsYou(items).slice(0, NEEDS_YOU_SHOWN);
 }
 
+// What a waiting item is, in the words under its title on Home ("Decision",
+// "Machine request"). A stop question is self-improvement waiting to carry
+// on; the row adds who asked a question when the post names an agent.
+export function needsYouWord(item: NeedsYouItem): string {
+  switch (item.kind) {
+    case "question":
+      return item.q.stop ? "Self-improvement paused" : "Question";
+    case "decision":
+      return "Decision";
+    case "proposal":
+      return "Proposal";
+    case "compute":
+      return "Machine request";
+    case "work":
+      return "Suggested work";
+    case "draft":
+      return "Draft to review";
+    case "step":
+      return "Setup step";
+  }
+}
+
 // "See all 10" when more wait than the column shows; "See all" otherwise.
 export function seeAllLabel(total: number): string {
   return total > NEEDS_YOU_SHOWN ? "See all " + total.toLocaleString("en-US") : "See all";

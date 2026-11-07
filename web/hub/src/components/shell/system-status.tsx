@@ -106,7 +106,7 @@ export function SystemStatus({ className }: { className?: string }) {
         <RailTip key={l.key} label={l.label} hint={l.sub || undefined}>
           <Link
             href={l.href}
-            className="group flex min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1.5 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:justify-center collapsed:px-0 collapsed:py-1.5"
+            className="group flex min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:justify-center collapsed:px-0 collapsed:py-1.5"
             aria-label={l.label + (l.sub ? ": " + l.sub : "")}
           >
             <StatusGlyph line={l} />

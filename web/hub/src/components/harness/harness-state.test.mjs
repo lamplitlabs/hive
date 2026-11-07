@@ -84,6 +84,9 @@ test("msText and runSeconds read durations the way the owner does", () => {
   assert.equal(msText(125000), "2 min 5 s");
   assert.equal(msText(120000), "2 min");
   assert.equal(msText(3_720_000), "1 h 2 min");
+  assert.equal(msText(47 * 3_600_000), "47 h 0 min");
+  assert.equal(msText(53 * 3_600_000), "2 days 5 h");
+  assert.equal(msText(30 * 24 * 3_600_000), "30 days");
   const now = Date.parse("2026-11-06T10:00:00Z");
   assert.equal(runSeconds("2026-11-06T09:59:00Z", "", now), 60);
   assert.equal(runSeconds("2026-11-06T09:59:00Z", "2026-11-06T09:59:30Z", now), 30);
@@ -142,6 +145,11 @@ test("elapsedWords ticks a live row's time so far", () => {
   assert.equal(elapsedWords("2026-11-06T09:59:18Z", now), "42s");
   assert.equal(elapsedWords("2026-11-06T09:56:53Z", now), "3m 07s");
   assert.equal(elapsedWords("2026-11-06T08:57:55Z", now), "1h 02m 05s");
+  assert.equal(elapsedWords("2026-11-04T10:00:01Z", now), "47h 59m 59s");
+  // Past two days the clock reads in days, not "1363h 24m 40s".
+  assert.equal(elapsedWords("2026-11-04T10:00:00Z", now), "2 days");
+  assert.equal(elapsedWords("2026-11-04T05:00:00Z", now), "2 days 5 h");
+  assert.equal(elapsedWords("2026-09-09T18:35:20Z", now), "57 days");
   // A browser clock behind the server never reads negative.
   assert.equal(elapsedWords("2026-11-06T10:00:30Z", now), "0s");
 });

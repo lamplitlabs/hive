@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ArrowRightIcon, CheckIcon, ClockIcon, XIcon } from "lucide-react";
+import { ArrowRightIcon, CheckIcon, ChevronUpIcon, ClockIcon, ReplyIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/pulse/confirm";
 import { AnswerBox } from "@/components/pulse/decide-buttons";
 import { EmptyState, ErrorNotice, SkeletonRows } from "@/components/pulse/panel";
@@ -50,6 +50,8 @@ export function ForYou() {
   const brain = o?.totals.brain || "";
   const canDecide = o?.can_decide !== false;
   const project = sp.get("project") || "";
+  // ?answer=<question id> (Home's Answer button) opens that question's answer box.
+  const answerKey = sp.get("answer") ? "question:" + sp.get("answer") : "";
   const [openId, setOpenId] = useOpenItem();
 
   const all = useMemo(() => forYouRows({ ...inbox, brain, machineWhy: inbox.downWhy[0] }), [inbox, brain]);
@@ -106,7 +108,7 @@ export function ForYou() {
                 </SectionHeading>
                 <ListRows ariaLabel={SECTION_TITLE[g.section]}>
                   {g.rows.map((r) => (
-                    <Row key={r.key} r={r} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={nameOf(o, r.project)} router={router} />
+                    <Row key={r.key} r={r} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} startOpen={r.key === answerKey} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={nameOf(o, r.project)} router={router} />
                   ))}
                 </ListRows>
               </section>
@@ -137,17 +139,35 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
 
 // ----- rows -----------------------------------------------------------------
 
-function Row({ r, inbox, brain, canDecide, caps, selected, onOpen, projectName, router }: { r: ForYouRow; inbox: ReturnType<typeof useInbox>; brain: string; canDecide: boolean; caps?: { vms_now: number; max_vms: number; hours_today: number; max_hours_per_day: number }; selected: boolean; onOpen?: () => void; projectName: string; router: ReturnType<typeof useRouter> }) {
+function Row({ r, inbox, brain, canDecide, caps, startOpen, selected, onOpen, projectName, router }: { r: ForYouRow; inbox: ReturnType<typeof useInbox>; brain: string; canDecide: boolean; caps?: { vms_now: number; max_vms: number; hours_today: number; max_hours_per_day: number }; startOpen?: boolean; selected: boolean; onOpen?: () => void; projectName: string; router: ReturnType<typeof useRouter> }) {
   const [yn, setYn] = useState<YesNo | null>(null);
+  // A question or a proposal opens in place, under its row: its whole text
+  // and, for a question that wants words, the answer box. Closed, the row is
+  // one line like the rest.
+  const [expanded, setExpanded] = useState(!!startOpen);
+  const toggle = useCallback(() => setExpanded((v) => !v), []);
+  // A link that opens this row (Home's Answer) brings it into view once.
+  const item = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (startOpen) item.current?.scrollIntoView({ block: "center" });
+  }, [startOpen]);
   const [kind, ...rest] = r.key.split(":");
   const id = rest.join(":");
   let actions: React.ReactNode = null;
+  let details: React.ReactNode = null;
   if (kind === "question") {
     const q = inbox.questions.find((x) => x.id === id);
-    if (q) actions = <QuestionActions q={q} brain={brain} canDecide={canDecide} register={setYn} />;
+    if (q) {
+      const shape = questionShape(q);
+      actions = <QuestionActions q={q} shape={shape} brain={brain} canDecide={canDecide} register={setYn} answering={expanded} onAnswer={toggle} />;
+      if (expanded) details = <QuestionDetails q={q} slug={q.slug || brain} asksWords={shape.asksWords} canDecide={canDecide} />;
+    }
   } else if (kind === "proposal") {
     const p = inbox.proposals.find((x) => x.id === id);
-    if (p) actions = <ProposalActions p={p} canDecide={canDecide} register={setYn} />;
+    if (p) {
+      actions = <ProposalActions p={p} canDecide={canDecide} register={setYn} />;
+      if (expanded) details = <ItemText text={p.proposal_text} post={hrefs.post(p.slug || brain, p.id)} empty="The proposal says no more than its title." />;
+    }
   } else if (kind === "decision") {
     const rec = inbox.decisions.find((x) => x.id === id);
     if (rec) actions = <RecordDecide record={rec} size="xs" register={setYn} />;
@@ -161,11 +181,12 @@ function Row({ r, inbox, brain, canDecide, caps, selected, onOpen, projectName, 
     const d = inbox.drafts.find((x) => x.slug + ":" + x.r.id === id);
     if (d) actions = <DraftActions r={d.r} size="xs" />;
   } else if (kind === "step" || kind === "machine" || kind === "provider") {
-    // The row itself is the link to the fix; this is only its visible cue
-    // (an <a> inside the row's <a> would be invalid HTML).
+    // The row itself is the link to the fix; this is only its visible cue,
+    // drawn as a button (an <a> or a <button> inside the row's <a> would be
+    // invalid HTML).
     actions = (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-link">
-        {kind === "step" ? "Open" : "Fix it"} <ArrowRightIcon className="size-3.5" aria-hidden />
+      <span className={buttonVariants({ variant: kind === "step" ? "outline" : "default", size: "xs" })}>
+        {r.fix || "Open"} <ArrowRightIcon aria-hidden />
       </span>
     );
   }
@@ -181,9 +202,11 @@ function Row({ r, inbox, brain, canDecide, caps, selected, onOpen, projectName, 
       yn.no();
     }
   };
-  const href = onOpen ? undefined : kind === "question" || kind === "proposal" || kind === "compute" || kind === "work" ? undefined : rowHref(r);
+  const opensInPlace = kind === "question" || kind === "proposal";
+  const href = onOpen || opensInPlace || kind === "compute" || kind === "work" ? undefined : rowHref(r);
   return (
-    <div onKeyDown={onKeyDown} className="contents">
+    // One list item: the row and, while it is open, its details under it.
+    <div ref={item} onKeyDown={onKeyDown}>
       <ListRow
         lead={<KindTile kind={r.kind} size={28} waiting={r.urgent} />}
         title={r.title}
@@ -195,12 +218,51 @@ function Row({ r, inbox, brain, canDecide, caps, selected, onOpen, projectName, 
           </>
         }
         time={r.at ? <When d={r.at} /> : undefined}
+        // Answering is this page's job: every row's buttons stay in sight.
         actions={actions}
-        selected={selected}
+        actionsVisible
+        selected={selected || expanded}
+        expanded={opensInPlace ? expanded : undefined}
         href={href}
-        onOpen={onOpen}
+        onOpen={onOpen ?? (opensInPlace ? toggle : undefined)}
         ariaLabel={r.title + (projectName ? " · " + projectName : "")}
       />
+      {details ? (
+        <div className="border-t bg-muted/30 px-3 py-3 sm:pl-[3.25rem]" data-row-details>
+          {details}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// A question's whole text and, when it wants an answer in words, the box to
+// write it in (focused as it opens). The post on the board is one link away.
+function QuestionDetails({ q, slug, asksWords, canDecide }: { q: ReturnType<typeof useInbox>["questions"][number]; slug: string; asksWords: boolean; canDecide: boolean }) {
+  return (
+    <div className="grid max-w-[68ch] gap-3">
+      <ItemText text={q.body} post={hrefs.post(slug, q.id)} empty={asksWords ? "" : "The question says no more than its title."} />
+      {asksWords ? <AnswerBox id={q.id} summary={q.summary} canDecide={canDecide} autoFocus /> : null}
+    </div>
+  );
+}
+
+// An item's own words as Markdown, and the link to its post.
+function ItemText({ text, post, empty }: { text?: string | null; post: string; empty: string }) {
+  const body = (text || "").trim();
+  return (
+    <div className="grid min-w-0 gap-1.5">
+      {body ? (
+        <article className="min-w-0">
+          {/* .prose-pulse reads long text at 16 px; under a row it keeps the list's 14 (hence the !). */}
+          <Markdown source={body} className="text-sm! leading-relaxed!" />
+        </article>
+      ) : empty ? (
+        <p className="text-sm text-muted-foreground">{empty}</p>
+      ) : null}
+      <Link href={post} className="inline-flex w-fit items-center gap-1 text-xs font-medium text-link hover:underline">
+        Read it on the board <ArrowRightIcon className="size-3.5" aria-hidden />
+      </Link>
     </div>
   );
 }
@@ -231,18 +293,32 @@ function useRegister(register: ((p: YesNo | null) => void) | undefined, pair: Ye
   }, [register, !!yes, yesLabel, noLabel]);
 }
 
-function QuestionActions({ q, brain, canDecide, register }: { q: ReturnType<typeof useInbox>["questions"][number]; brain: string; canDecide: boolean; register: (p: YesNo | null) => void }) {
-  const [open, setOpen] = useState<"yes" | "no" | null>(null);
+type QuestionShape = { stop: boolean; asksWords: boolean; labels: { yes: string; no: string } };
+
+// How a question is answered: a stop question carries on or stays paused; a
+// "which…?" question wants words; the rest are a yes or a no.
+function questionShape(q: ReturnType<typeof useInbox>["questions"][number]): QuestionShape {
   const body = (q.body || "").trim();
   const stop = q.stop === true || /Evolution stopped; owner review needed|evolution constraint violation/i.test((q.summary || "") + "\n" + body);
-  const labels = decisionLabels(body, stop ? { yes: "Yes, carry on", no: "No, keep it paused" } : { yes: "Yes", no: "No" });
-  const asksWords = !stop && isOpenQuestion(q.summary, body);
+  const labels = decisionLabels(body, stop ? { yes: "Carry on", no: "Keep paused" } : { yes: "Yes", no: "No" });
+  return { stop, labels, asksWords: !stop && isOpenQuestion(q.summary, body) };
+}
+
+function QuestionActions({ q, shape, brain, canDecide, register, answering, onAnswer }: { q: ReturnType<typeof useInbox>["questions"][number]; shape: QuestionShape; brain: string; canDecide: boolean; register: (p: YesNo | null) => void; answering: boolean; onAnswer: () => void }) {
+  const [open, setOpen] = useState<"yes" | "no" | null>(null);
+  const { stop, labels, asksWords } = shape;
   const yes = useCallback(() => setOpen("yes"), []);
   const no = useCallback(() => setOpen("no"), []);
   useRegister(register, canDecide && !asksWords ? { yes, no, yesLabel: labels.yes, noLabel: labels.no } : null);
   const slug = q.slug || brain;
   if (!canDecide) return <span className="text-xs text-muted-foreground">Answer on the machine that runs PULSE</span>;
-  if (asksWords) return <AnswerBox id={q.id} summary={q.summary} canDecide />;
+  // The answer box opens under the row (Row's details), not in it.
+  if (asksWords)
+    return (
+      <Button size="xs" variant={answering ? "outline" : "default"} onClick={onAnswer} aria-expanded={answering} aria-label={(answering ? "Close the answer to: " : "Answer: ") + q.summary}>
+        {answering ? <ChevronUpIcon /> : <ReplyIcon />} Answer
+      </Button>
+    );
   const isYes = open === "yes";
   return (
     <>
@@ -359,7 +435,7 @@ function RecordDecide({ record, size = "sm", onDone, register }: { record: Recor
   useRegister(register, { yes, no, yesLabel: "Accept", noLabel: "Decline" });
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-1.5", size === "sm" && "w-full justify-end gap-2")}>
-      <Button size={size} variant="ghost" className="text-bad hover:bg-bad/10 hover:text-bad" onClick={no} aria-label={"Decline " + record.id} title="Decline (N)">
+      <Button size={size} variant="outline" className="text-bad hover:text-bad" onClick={no} aria-label={"Decline " + record.id} title="Decline (N)">
         <XIcon /> Decline
       </Button>
       <Button size={size} variant="outline" onClick={() => start("Deferred")} aria-label={"Defer " + record.id}>
