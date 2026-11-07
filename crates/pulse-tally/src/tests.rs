@@ -1319,10 +1319,34 @@ fn a_claim_ends_with_the_run_that_made_it() {
         p.expires = expires.into();
         p
     };
-    let finished = f.post(claim("finished", "fjord", "2026-09-10T08:30:00Z", "run-1", "2026-09-10T12:30:00Z"));
-    let going = f.post(claim("going", "fjord", "2026-09-10T11:30:00Z", "run-2", "2026-09-10T15:30:00Z"));
-    let by_hand = f.post(claim("by-hand", "owner", "2026-09-10T09:00:00Z", "chat-1", "2026-09-10T13:00:00Z"));
-    let lapsed = f.post(claim("lapsed", "fjord", "2026-09-10T08:10:00Z", "run-1", "2026-09-10T11:00:00Z"));
+    let finished = f.post(claim(
+        "finished",
+        "fjord",
+        "2026-09-10T08:30:00Z",
+        "run-1",
+        "2026-09-10T12:30:00Z",
+    ));
+    let going = f.post(claim(
+        "going",
+        "fjord",
+        "2026-09-10T11:30:00Z",
+        "run-2",
+        "2026-09-10T15:30:00Z",
+    ));
+    let by_hand = f.post(claim(
+        "by-hand",
+        "owner",
+        "2026-09-10T09:00:00Z",
+        "chat-1",
+        "2026-09-10T13:00:00Z",
+    ));
+    let lapsed = f.post(claim(
+        "lapsed",
+        "fjord",
+        "2026-09-10T08:10:00Z",
+        "run-1",
+        "2026-09-10T11:00:00Z",
+    ));
 
     let th = crate::thresholds::load_thresholds(
         &f.st,

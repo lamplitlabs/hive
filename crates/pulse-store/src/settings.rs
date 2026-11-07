@@ -1573,7 +1573,8 @@ mod go_settings_tests {
         s.set_setting("human", UI_REPORT, "warn").unwrap();
         assert_eq!(s.ui_report_mode("web"), "warn");
         // One project of its own; the others follow the machine's value.
-        s.set_setting("human", &ui_report_setting("web"), "OFF").unwrap();
+        s.set_setting("human", &ui_report_setting("web"), "OFF")
+            .unwrap();
         assert_eq!(s.ui_report_mode("web"), "off");
         assert_eq!(s.ui_report_mode("api"), "warn");
         assert_eq!(s.ui_report_mode(""), "warn");

@@ -1249,9 +1249,7 @@ pub(crate) fn hold_unreported_branch(
                     area: "jobs".into(),
                     thread: job.str("id"),
                     summary: crate::util::trunc(
-                        &format!(
-                            "{branch} waits for its before/after report ({files} changed)"
-                        ),
+                        &format!("{branch} waits for its before/after report ({files} changed)"),
                         230,
                     ),
                     body,
@@ -1261,7 +1259,9 @@ pub(crate) fn hold_unreported_branch(
                     ..Default::default()
                 },
             ) {
-                eprintln!("landing: {branch} is held for its report but the owner could not be asked: {e:#}");
+                eprintln!(
+                    "landing: {branch} is held for its report but the owner could not be asked: {e:#}"
+                );
             }
         }
     }
@@ -6109,9 +6109,16 @@ mod tests {
             note.contains("changes 1 UI file and its worker left no before/after report (there is no report.json"),
             "{note}"
         );
-        assert!(note.contains(&format!("pulse land --project proj --branch {branch}")), "{note}");
+        assert!(
+            note.contains(&format!("pulse land --project proj --branch {branch}")),
+            "{note}"
+        );
         assert_eq!(asked().len(), 1);
-        assert!(asked()[0].str("summary").contains("waits for its before/after report"));
+        assert!(
+            asked()[0]
+                .str("summary")
+                .contains("waits for its before/after report")
+        );
         let (state, _) = land();
         assert_eq!(state, "held");
         assert_eq!(asked().len(), 1, "the owner is asked once");
@@ -6145,7 +6152,10 @@ mod tests {
             body.contains(&format!("See [the before/after report](/api/v1/jobs/{id}/artifacts/report.html) (1 change, 1 before/after pair) for 1 UI file.")),
             "{body}"
         );
-        assert!(dir.join("report.html").is_file(), "the landing built the page");
+        assert!(
+            dir.join("report.html").is_file(),
+            "the landing built the page"
+        );
     }
 
     /// The owner landing a UI change by hand has looked at it: it lands as it
