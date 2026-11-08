@@ -12,14 +12,14 @@ test("mock code delivery endpoint reports the frozen response shape", () => {
   const { status, body } = createCodeDeliveryMock(fixture).read(params("limit=10"));
   assert.equal(status, 200);
   assert.equal(body.scope.project, null);
-  assert.equal(body.scope.scanned, 7);
+  assert.equal(body.scope.scanned, 8);
   assert.equal(body.summary.code_deliveries, 3);
   assert.equal(body.summary.code_files, 5);
   assert.equal(body.summary.docs_only, 1);
   assert.equal(body.summary.non_code, 1);
-  assert.equal(body.summary.unknown, 1);
+  assert.equal(body.summary.unknown, 2);
   assert.equal(body.summary.duplicates, 1);
-  assert.equal(body.unavailable.length, 1);
+  assert.equal(body.unavailable.length, 2);
   assert.equal(body.deliveries[0].suggestion.votes.score, 3);
 });
 

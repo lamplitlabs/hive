@@ -8,7 +8,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { CardGrid, ItemCard, ItemCardActions, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
 import { Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
 import { Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, When, Who } from "@/components/pulse/who";
-import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryCoverageTone, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryWindowLabel, shortCommit } from "@/lib/code-deliveries";
+import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryCoverageTone, codeDeliveryEmptyState, codeDeliveryIncompleteWindow, codeDeliveryPending, codeDeliveryKpiState, codeDeliveryWindowLabel, shortCommit } from "@/lib/code-deliveries";
 import { codeDeliveriesPath, type CodeDeliveriesPayload, type CodeDelivery, type CodeDeliveryJob, type CodeDeliverySuggestion, type CodeDeliveryTask, type CodeDeliveryWorker, type ProjectsPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { plural, sentence, truncate } from "@/lib/format";
@@ -40,6 +40,8 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
   const canOlder = !!d?.scope.has_more && d.scope.next_before !== null;
   const projectCount = d ? new Set(d.deliveries.map((row) => row.project)).size : 0;
   const leftOut = d ? d.summary.docs_only + d.summary.non_code : 0;
+  const empty = d ? codeDeliveryEmptyState(d) : null;
+  const pending = codeDeliveryPending(d);
 
   return (
     <section id="code-deliveries" aria-label="Code delivered" className="scroll-mt-32">
@@ -55,7 +57,7 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
               <Kpi n={incomplete ? "—" : d.summary.code_deliveries} label="Changes delivered" sub={projectCount ? "Across " + plural(projectCount, "project") : "Merges that changed source files"} />
               <Kpi n={d.summary.code_files} label="Source files changed" sub="Code, tests and styles" />
               <Kpi n={leftOut} label="Left out" sub="Docs-only or no code" />
-              <Kpi n={d.summary.unknown} label="Couldn't check" sub={d.summary.unknown ? "Left out of the count" : "Every merge was checked"} tone={d.summary.unknown ? "warn" : "neutral"} />
+              <Kpi n={d.summary.unknown} label="Couldn't check" sub={pending ? plural(pending, "merge") + " still being read" : d.summary.unknown ? "Left out of the count" : d.scope.scanned ? "Every merge was checked" : "No merges to check"} tone={d.summary.unknown ? "warn" : "neutral"} />
             </KpiGrid>
             {/* Only a search that stopped short is a warning (its zero isn't real); what was left out or couldn't be checked is a plain note, since the tiles above already mark it. */}
             {incomplete ? <Notice tone="warn">{coverage}</Notice> : coverageTone === "warn" ? <Notice tone="neutral">{coverage}</Notice> : <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{coverage}</p>}
@@ -77,19 +79,11 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
                   <CodeDeliveryCard key={row.project + "/" + row.event_seq + "/" + row.commit} row={row} remote={remotes.get(row.project)} onOpenJob={() => setJobDelivery(row)} />
                 ))}
               </CardGrid>
-            ) : incomplete ? (
-              <EmptyState title="The search stopped early" icon={<AlertTriangleIcon className="size-[18px]" />}>
-                It ran out of room before it reached any merges, so this is not a real zero. Use Older to keep looking further back.
+            ) : empty ? (
+              <EmptyState title={empty.title} icon={empty.tone === "warn" ? <AlertTriangleIcon className="size-[18px]" /> : <FileDiffIcon className="size-[18px]" />}>
+                {empty.body}
               </EmptyState>
-            ) : d.summary.unknown || d.unavailable.length ? (
-              <EmptyState title="Nothing proven yet" icon={<AlertTriangleIcon className="size-[18px]" />}>
-                Some merges here couldn&apos;t be checked, so this is not a real zero. See the list below, or look at older merges.
-              </EmptyState>
-            ) : (
-              <EmptyState title="No code changes here" icon={<FileDiffIcon className="size-[18px]" />}>
-                Every merge here was checked, and none of them changed source code, tests or styles. Finished work that changes code shows up here as it merges.
-              </EmptyState>
-            )}
+            ) : null}
           </div>
           {d.unavailable.length ? <UnavailableRows rows={d.unavailable} /> : null}
           <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-muted-foreground">
@@ -112,7 +106,8 @@ export function CodeDeliveriesReport({ project }: { project?: string }) {
           </div>
           <Disclosure summary="How this is counted" className="rounded-xl border bg-card px-4 py-3" contentClassName="text-[13px] leading-relaxed text-muted-foreground">
             <ul className="grid list-disc gap-1 pl-5">
-              <li>Only recent merges of finished work count. A merge that changes both code and docs counts once.</li>
+              <li>Every merge of finished work counts: a branch merged on this machine, or a pull request merged on the forge. A merge that changes both code and docs counts once.</li>
+              <li>A pull request&apos;s changed files are read by the runner after it merges, a few each pass; until then it shows as still being read, never as zero.</li>
               <li>Merges that only change docs, or change no code at all, are left out.</li>
               <li>Votes show what the agents thought of the idea, not whether the change is good.</li>
               <li>Commit links work once the commit has been pushed to the project&apos;s repository.</li>

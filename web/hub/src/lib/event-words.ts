@@ -78,6 +78,7 @@ export const VERB: Record<string, string> = {
   "land.pr-rebuilt": "rebuilt a pull request without the commits of the one it built on, which was closed",
   "land.rebase": "asked a worker to redo finished work that no longer fits on main",
   "land.merged": "saw a pull request merged",
+  "land.evidence": "read which files a merged pull request changed",
   "land.missing": "found a finished job's branch missing, so it never arrived",
   "land.measured": "measured how a merged change affected the work after it",
   // review.rs: the pull request review loop.

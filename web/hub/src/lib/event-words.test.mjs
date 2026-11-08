@@ -16,6 +16,7 @@ const ADDED = [
   "land.pr-rebuilt",
   "land.rebase",
   "land.merged",
+  "land.evidence",
   "land.missing",
   "land.measured",
   "review.queued",
