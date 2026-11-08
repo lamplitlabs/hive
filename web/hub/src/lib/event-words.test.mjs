@@ -185,3 +185,47 @@ test("schedule and suggestion events say how they went", () => {
   assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: { status: "owner" } }), "asked you to decide on a suggested task");
   assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: {} }), "reviewed a suggested task");
 });
+
+// Credential, conversation, goal, rules, hook, setting and PULSE-file events
+// (pulse-cred-setup setup.rs, pulse-harness conversation.rs, pulse-goals
+// review.rs, pulse-tally amend.rs, pulse-hooks hooks.rs, pulse-store store.rs,
+// pulse-tasks and pulse-runner manifest.rs).
+const OWNER = [
+  "cred.set",
+  "cred.clear",
+  "chat.wake",
+  "chat.finish",
+  "goal.amend",
+  "constitution.amended",
+  "hook.added",
+  "setting.retired",
+  "manifest.synced",
+  "manifest.problems",
+  "manifest.problems_cleared",
+];
+
+test("every credential, goal, rules and PULSE-file event has a plain-words sentence", () => {
+  for (const action of OWNER) {
+    assert.ok(VERB[action], action + " has a VERB entry");
+    for (const detail of [null, {}, { project: "demo-app", applied: true, problems: [] }]) {
+      const said = eventVerb({ action, subject: "demo-app", detail });
+      assert.ok(said.length > 0, action + " says something");
+      assert.notEqual(said, raw(action), action + " is not its raw words");
+      assert.doesNotMatch(said, /\b(cred|manifest|constitution|amend(ed)?|retired|synced|problems_cleared)\b/i, action + " uses no jargon: " + said);
+    }
+  }
+});
+
+test("goal and PULSE-file events say how they went", () => {
+  assert.equal(eventVerb({ action: "goal.amend", subject: "demo-app", detail: { applied: true } }), "set the project\u2019s goal from an accepted proposal");
+  assert.equal(eventVerb({ action: "goal.amend", subject: "demo-app", detail: { applied: false, why: "too long" } }), "could not set the project\u2019s goal from an accepted proposal");
+  assert.equal(eventDetailText({ action: "goal.amend", detail: { applied: false, why: "too long" } }), "too long");
+  assert.equal(eventDetailText({ action: "goal.amend", detail: { applied: true } }), "");
+  assert.equal(eventVerb({ action: "manifest.synced", subject: "demo-app", detail: { problems: [] } }), "applied the project\u2019s PULSE files from its default branch");
+  assert.equal(
+    eventVerb({ action: "manifest.synced", subject: "demo-app", detail: { problems: ["nightly: unknown kind"] } }),
+    "applied the project\u2019s PULSE files from its default branch, some with problems",
+  );
+  assert.equal(eventDetailText({ action: "manifest.problems", detail: { problems: ["a: bad", "b: bad"] } }), "a: bad, b: bad");
+  assert.equal(eventDetailText({ action: "manifest.problems_cleared", detail: { problems: [] } }), "");
+});
