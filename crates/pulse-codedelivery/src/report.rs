@@ -1,6 +1,7 @@
 use crate::{
-    EVIDENCE_UNAVAILABLE, REASON_EVIDENCE_TOO_LARGE, REASON_NO_TRUSTWORTHY_EVIDENCE,
-    decode_evidence, decode_work_snapshot, public_reason, safe_code_paths_for_report,
+    EVIDENCE_UNAVAILABLE, REASON_EVIDENCE_PENDING, REASON_EVIDENCE_TOO_LARGE,
+    REASON_NO_TRUSTWORTHY_EVIDENCE, decode_evidence, decode_work_snapshot, public_reason,
+    safe_code_paths_for_report,
 };
 use anyhow::{Result, anyhow};
 use pulse_store::{CancellationToken, ctx_error};
@@ -163,6 +164,20 @@ pub fn recent(
     Ok(report)
 }
 
+/// The event a pull request merged on the forge writes once its changed
+/// files are known, for a `land.merged` that was recorded without them
+/// (every merge from the pull-request lane before evidence was recorded at
+/// settle time). Its `merged_seq` names the `land.merged` it completes.
+pub const MERGE_EVIDENCE_ACTION: &str = "land.evidence";
+
+/// The merges of finished work, newest first: a branch merged on this
+/// machine (`land.landed`) or a pull request merged on the forge
+/// (`land.merged` with its `number`; one without a number is the land lane
+/// noticing a branch some other landing already delivered, so it is not a
+/// delivery of its own). The lookup goes through the action indexes, so
+/// merges are found however much other history lies between them - a window
+/// of the latest N events found none once the runner wrote tens of
+/// thousands of other events a day.
 fn landing_events(
     ctx: &CancellationToken,
     s: &pulse_store::Store,
@@ -170,62 +185,73 @@ fn landing_events(
     limit: i32,
     before: i64,
 ) -> Result<(Vec<EventRow>, bool, i64)> {
-    const MINIMUM_EVENT_SCAN: i64 = 5000;
-    let mut scan_limit = i64::from(limit) * 100;
-    if scan_limit < MINIMUM_EVENT_SCAN {
-        scan_limit = MINIMUM_EVENT_SCAN;
-    }
-    let conn = s.conn_ctx(ctx)?;
-    let max_seq: i64 = conn
-        .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))
-        .map_err(|e| ctx_error(ctx, e.into()))?;
-    let mut high = before - 1;
-    if high > max_seq {
-        high = max_seq;
-    }
-    if high <= 0 {
+    if before <= 1 {
         return Ok((Vec::new(), false, 0));
     }
-    let low = (high - scan_limit + 1).max(1);
-    let mut stmt = conn
-        .prepare(
-            "SELECT seq, at, action, detail FROM events WHERE seq BETWEEN ? AND ? ORDER BY seq DESC",
-        )
-        .map_err(|e| ctx_error(ctx, e.into()))?;
-    let mut rows = stmt
-        .query(rusqlite::params![low, high])
-        .map_err(|e| ctx_error(ctx, e.into()))?;
-    let mut events = Vec::new();
-    while let Some(row) = rows.next().map_err(|e| ctx_error(ctx, e.into()))? {
-        let action: String = row.get(2)?;
-        if action != "land.landed" {
-            continue;
-        }
-        let ev = EventRow {
-            seq: row.get(0)?,
-            at: row.get(1)?,
-            detail: row.get(3)?,
-        };
-        if !project.is_empty() {
-            let (detail, ok) = decode_detail(&ev.detail);
-            if !ok || string_field(&detail, "project") != project {
-                continue;
-            }
-        }
-        events.push(ev);
-        if events.len() > limit as usize {
-            break;
-        }
-    }
-    let has_more = events.len() > limit as usize || low > 1;
+    let conn = s.conn_ctx(ctx)?;
+    let fetch = i64::from(limit) + 1;
+    let delivered = "(action = 'land.landed' OR (action = 'land.merged' AND json_valid(detail) AND json_extract(detail, '$.number') IS NOT NULL))";
+    let rows: Vec<EventRow> = if project.is_empty() {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT seq, at, detail FROM events WHERE action IN ('land.landed', 'land.merged') AND seq < ?1 AND {delivered} ORDER BY seq DESC LIMIT ?2"
+            ))
+            .map_err(|e| ctx_error(ctx, e.into()))?;
+        stmt.query_map(rusqlite::params![before, fetch], event_row)
+            .map_err(|e| ctx_error(ctx, e.into()))?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(|e| ctx_error(ctx, e.into()))?
+    } else {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT seq, at, detail FROM events WHERE action IN ('land.landed', 'land.merged') AND json_valid(detail) AND json_extract(detail, '$.project') = ?1 AND seq < ?2 AND {delivered} ORDER BY seq DESC LIMIT ?3"
+            ))
+            .map_err(|e| ctx_error(ctx, e.into()))?;
+        stmt.query_map(rusqlite::params![project, before, fetch], event_row)
+            .map_err(|e| ctx_error(ctx, e.into()))?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(|e| ctx_error(ctx, e.into()))?
+    };
+    let mut events = rows;
+    let has_more = events.len() > limit as usize;
     let mut next_before = 0;
-    if events.len() > limit as usize {
+    if has_more {
         events.truncate(limit as usize);
         next_before = events.last().map_or(0, |ev| ev.seq);
-    } else if low > 1 {
-        next_before = low;
     }
     Ok((events, has_more, next_before))
+}
+
+fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
+    Ok(EventRow {
+        seq: row.get(0)?,
+        at: row.get(1)?,
+        detail: row.get(2)?,
+    })
+}
+
+/// The `land.evidence` written later for the `land.merged` at `merged_seq`:
+/// its `code_delivery`, `work` and `sha`, if the runner has gathered them.
+fn merge_evidence(
+    ctx: &CancellationToken,
+    s: &pulse_store::Store,
+    project: &str,
+    merged_seq: i64,
+) -> Result<Option<BTreeMap<String, Value>>> {
+    let conn = s.conn_ctx(ctx)?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT detail FROM events WHERE action = ?1 AND subject = ?2 AND json_valid(detail)
+             AND json_extract(detail, '$.merged_seq') = ?3 ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![MERGE_EVIDENCE_ACTION, project, merged_seq],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| ctx_error(ctx, e.into()))?;
+    Ok(raw.and_then(|raw| {
+        let (detail, ok) = decode_detail(&raw);
+        ok.then_some(detail)
+    }))
 }
 
 fn add_event(
@@ -236,11 +262,24 @@ fn add_event(
     seen_commits: &mut BTreeMap<String, bool>,
     suggestions: &mut BTreeMap<String, Option<SuggestionRef>>,
 ) -> Result<()> {
-    let (detail, ok) = decode_detail(&ev.detail);
+    let (mut detail, ok) = decode_detail(&ev.detail);
     let project = string_field(&detail, "project");
     if !ok {
         add_unavailable(report, &ev, &project, REASON_NO_TRUSTWORTHY_EVIDENCE);
         return Ok(());
+    }
+    if !detail.contains_key("code_delivery") && detail.contains_key("number") {
+        // A pull request merged before its changed files were recorded:
+        // the runner gathers them afterwards into a `land.evidence`.
+        let Some(later) = merge_evidence(ctx, s, &project, ev.seq)? else {
+            add_unavailable(report, &ev, &project, REASON_EVIDENCE_PENDING);
+            return Ok(());
+        };
+        for key in ["code_delivery", "work", "sha"] {
+            if let Some(value) = later.get(key) {
+                detail.insert(key.to_string(), value.clone());
+            }
+        }
     }
     let (evidence, evidence_ok) = decode_evidence(detail.get("code_delivery"));
     if !evidence_ok || evidence.evidence == EVIDENCE_UNAVAILABLE {

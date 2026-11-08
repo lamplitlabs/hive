@@ -16,6 +16,10 @@ pub const REASON_MISSING_TRANSITION: &str = "Missing landing transition evidence
 pub const REASON_GIT_UNAVAILABLE: &str = "Git changed-file evidence is unavailable";
 pub const REASON_EVIDENCE_MALFORMED: &str = "Changed-file evidence is malformed";
 pub const REASON_EVIDENCE_TOO_LARGE: &str = "Changed-file evidence exceeded the bounded scan";
+/// A pull request merged on the forge whose changed files the runner has not
+/// gathered yet (it does so on its next pass, `land.evidence`).
+pub const REASON_EVIDENCE_PENDING: &str =
+    "The merged pull request's changed files are not gathered yet";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,7 +114,8 @@ pub fn public_reason(reason: &str) -> String {
         | REASON_MISSING_TRANSITION
         | REASON_GIT_UNAVAILABLE
         | REASON_EVIDENCE_MALFORMED
-        | REASON_EVIDENCE_TOO_LARGE => reason,
+        | REASON_EVIDENCE_TOO_LARGE
+        | REASON_EVIDENCE_PENDING => reason,
         _ => {
             let lower = reason.to_ascii_lowercase();
             if lower.contains("exceeded") {

@@ -331,6 +331,7 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr-conflict` | an open pull request conflicted with its base and the merge did not go cleanly; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `files` (the paths left unmerged) |
 | `land.pr-checks` | checks failed on an open pull request's head; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `checks` (the failing names) |
 | `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
+| `land.evidence` | the pass after a merge read which files the pull request changed: the merge commit on the default branch against its first parent, or the pull request's base against its head when the history no longer holds that merge; the Code delivered report counts source changes from it | `project`, `number`, `merged_seq` (the `land.merged` it completes), `sha`, `code_delivery`, `work` |
 | `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
 | `land.pr-rebuilt` | a pull request stacked on one closed unmerged was rebuilt on the new base without the closed one's commits, force-pushed and retargeted | `project`, `kind`, `number`, `url`, `head`, `old_base`, `base` (the new one), `from` (the head before), `to` (the new head), `commits` (its own), `dropped` (`number` of the closed pull request, `commits` it took with it); the matching `land.pr` carries `rebuilt` true and `retargeted_from`. A rebuild that conflicts is a `land.pr-held` with `closed`, `base` and `files` instead |
 | `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
@@ -344,10 +345,13 @@ reviewer](review.md#events). Older stores hold the events of the local flow -
 `land.landed`, `land.batch`, `land.pushed`, `land.synced`, `land.held`,
 `land.failed-verify`, `land.deferred`, `land.conflict` - as history; only a
 project without an upstream writes `land.landed` now. The goal review counts
-`land.landed` and `land.merged` alike ([Goal review](board.md#goal-review-how-far-the-work-has-moved-it)); the loop report's
-landing counts and the code-delivery report still read `land.landed` only,
-so for a project with an upstream they count nothing under this flow until
-they are taught `land.merged`.
+`land.landed` and `land.merged` alike ([Goal review](board.md#goal-review-how-far-the-work-has-moved-it)), and so does the
+code-delivery report (the hub's Code delivered), which reads a pull
+request's changed files from its `land.evidence`; a merge whose
+`land.evidence` is not written yet shows as still being read, never as
+zero. The loop report's landing counts still read `land.landed` only, so for
+a project with an upstream they count nothing under this flow until they
+are taught `land.merged`.
 
 ## When delivery fails
 
