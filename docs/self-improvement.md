@@ -465,7 +465,10 @@ with an upstream: the per-project landing workers (`landing.parallel`) are
 gone with the verifies they were made to get through, and the batch landing
 (`landing.batch`) is removed; a project without one lands its branches one
 at a time. Experiments stay on a
-second thread, the experiment lane, which measures one experiment at a time;
+second thread, the experiment lane, which measures one experiment at a time
+(up to `evolve.experiments_in_flight` experiments, two by default, are in
+flight per project: their workers make their changes side by side, each on a
+voted card of its own, and the lane measures and lands them in turn);
 a ninety-minute measurement therefore holds no delivery. The lane obeys the
 load governor: while the machine is saturated (the `machine saturated` hold
 below) it does not start a measurement - the log says `landing experiment
@@ -497,7 +500,13 @@ unmeasured, so the worker brief asks every card to name a check that will move
 tie whose card-check score rose counts as `improved`. Held-out fixtures are
 mostly pass/fail, so a voted change that keeps every fixture green measures
 as an exact tie; over one month 178 of 220 kept experiments were such ties
-(113 exact zero deltas), which is why ties stopped landing. A claimed gain
+(113 exact zero deltas), which is why ties stopped landing - and why the owner
+can let them land again: with `evolve.land_neutral` on (the default since
+2026-11-08, when 76 of 85 experiments had tied and nothing the loop tried
+reached the owner) a measured tie lands like an improvement - the verdict says
+`landed: evolve.land_neutral is on` and the row is kept - but earns no
+lineage credit; a variant that was never measured, or regressed, never lands.
+`pulse settings set evolve.land_neutral off` restores the strict rule. A claimed gain
 must reproduce: when the first measurement says `improved`, the lane measures
 the variant once more on the same fixtures (the baseline is the cached one)
 and the gain stands only when the second measurement also says `improved`;

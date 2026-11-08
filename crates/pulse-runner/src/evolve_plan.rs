@@ -152,6 +152,9 @@ mod tests {
         let s = new_store();
         new_repo(&s);
         evolve_plan_ready(&s);
+        // One at a time: the second tick waits on the first.
+        s.set_setting("human", pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT, "1")
+            .unwrap();
         let suggestion = evolve_suggestion(&s);
         let lines = tend_evolve(&s, TEST_NOW.into(), "daemon".into(), &["proj".into()]);
         let jobs = must_rows(&s, "SELECT * FROM jobs WHERE kind = 'experiment'", &[]);

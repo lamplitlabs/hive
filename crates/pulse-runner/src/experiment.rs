@@ -1056,6 +1056,22 @@ pub(crate) fn land_experiment_context(
         }
         (keep, reason, variant, note)
     };
+    // A measured tie lands when the owner lets it (evolve.land_neutral): the
+    // change did no harm on any fixture, only shown no gain. A variant that
+    // was never measured, or regressed, does not.
+    let (keep, reason) = if !keep
+        && skipped.is_none()
+        && pulse_evolve::is_neutral_verdict(&reason)
+        && s.setting_bool(pulse_store::EVOLVE_LAND_NEUTRAL)
+    {
+        let tidy = reason.replace(", so the branch is not landed", "").replace(
+            "; a gain that is not there the second time is not landed",
+            "",
+        );
+        (true, format!("{tidy}; landed: evolve.land_neutral is on"))
+    } else {
+        (keep, reason)
+    };
     let mut archive_note = baseline_cache_note.clone();
     for part in [
         dispute_note.as_str(),
@@ -2155,6 +2171,9 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let (s, project, job, root, _calls) = measured_keep_fixture();
+        // The strict rule: a tie does not land.
+        s.set_setting("human", pulse_store::EVOLVE_LAND_NEUTRAL, "off")
+            .unwrap();
         let before = ref_of(&root, "HEAD");
         let seen = flaky_measure(1.0, 0.0);
         let (state, note) = land_experiment(
@@ -2244,6 +2263,9 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let (s, project, job, root, calls) = measured_keep_fixture();
+        // The strict rule: a tie does not land.
+        s.set_setting("human", pulse_store::EVOLVE_LAND_NEUTRAL, "off")
+            .unwrap();
         let before = ref_of(&root, "HEAD");
         let seen = calls.clone();
         let _old =
@@ -2285,10 +2307,51 @@ mod tests {
     }
 
     #[test]
+    fn a_tie_lands_when_the_owner_lets_ties_land() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        assert!(
+            s.setting_bool(pulse_store::EVOLVE_LAND_NEUTRAL),
+            "on by default"
+        );
+        let before = ref_of(&root, "HEAD");
+        let _old =
+            pulse_evolve::set_measure(Box::new(move |_ctx, _s, slug, _repo, r#ref, _opts| {
+                let score = if r#ref == "main" { 0.8 } else { 0.81 };
+                Ok(pulse_evolve::Scores {
+                    project: slug.into(),
+                    total: score,
+                    ..Default::default()
+                })
+            }));
+        let (state, note) = land_experiment(
+            &s,
+            project,
+            job.clone(),
+            "daemon".into(),
+            TEST_NOW.into(),
+            true,
+        );
+        assert_eq!(state, "landed", "{note}");
+        assert!(
+            note.contains("neutral (a tie: the hypothesis went unmeasured, no fixture moved): variant +0.0100 vs baseline (tolerance 0.0200); landed: evolve.land_neutral is on"),
+            "{note}"
+        );
+        assert!(!note.contains("not landed"), "{note}");
+        let row = pulse_evolve::list_archive(&s, "proj").unwrap().remove(0);
+        assert!(row.kept, "{row:?}");
+        assert_ne!(ref_of(&root, "HEAD"), before, "the tie landed");
+    }
+
+    #[test]
     fn a_gain_the_second_measurement_does_not_confirm_is_neutral() {
         let _serial = crate::test_helpers::serial();
         let _env = pulse_testutil::env_lock();
         let (s, project, job, root, calls) = measured_keep_fixture();
+        // The strict rule: a tie does not land.
+        s.set_setting("human", pulse_store::EVOLVE_LAND_NEUTRAL, "off")
+            .unwrap();
         let before = ref_of(&root, "HEAD");
         let seen = calls.clone();
         let _old =

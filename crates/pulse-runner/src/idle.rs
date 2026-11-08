@@ -110,6 +110,11 @@ pub(crate) fn suggestion_idle_part_with_tally(
     let mut file_gone = 0;
     let mut over_operating_cap = 0;
     let mut duplicates = 0;
+    let mut file_stale = 0;
+    let mut no_op_check = 0;
+    // Any other hold, by its reason: the line says what holds a card rather
+    // than calling every hold missing evidence.
+    let mut other: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut needs_votes = 0;
     let mut rejected = 0;
     let mut tried = 0;
@@ -145,11 +150,15 @@ pub(crate) fn suggestion_idle_part_with_tally(
                     owner_paths += 1;
                 } else if gate == pulse_tally::GATE_UNLANDED {
                     unlanded += 1;
-                } else if gate == pulse_tally::GATE_NO_EVIDENCE
-                    || gate == pulse_tally::GATE_NO_OP_CHECK
-                    || !gate.is_empty()
-                {
+                } else if gate == pulse_tally::GATE_NO_EVIDENCE {
                     no_evidence += 1;
+                } else if gate == pulse_tally::GATE_FILE_STALE {
+                    file_stale += 1;
+                } else if gate == pulse_tally::GATE_NO_OP_CHECK {
+                    no_op_check += 1;
+                } else if !gate.is_empty() {
+                    let reason = gate.split(':').next().unwrap_or(&gate).trim().to_string();
+                    *other.entry(reason).or_default() += 1;
                 } else {
                     plannable += 1;
                 }
@@ -185,6 +194,17 @@ pub(crate) fn suggestion_idle_part_with_tally(
     }
     if no_evidence > 0 {
         held.push(format!("{no_evidence} without evidence"));
+    }
+    if file_stale > 0 {
+        held.push(format!(
+            "{file_stale} name a File that holds none of their Signal's terms"
+        ));
+    }
+    if no_op_check > 0 {
+        held.push(format!("{no_op_check} name a check that selects no test"));
+    }
+    for (reason, n) in &other {
+        held.push(format!("{n} held: {reason}"));
     }
     // Owner-only paths and unlanded signals are not evidence problems a
     // worker can fix: the owner decides the first, a landing clears the
