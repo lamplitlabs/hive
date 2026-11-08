@@ -185,3 +185,66 @@ test("schedule and suggestion events say how they went", () => {
   assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: { status: "owner" } }), "asked you to decide on a suggested task");
   assert.equal(eventVerb({ action: "suggestion.review", subject: "SUG-1", detail: {} }), "reviewed a suggested task");
 });
+
+// The tool connection, skill, record, project and agent events the Rust
+// crates write (pulse-store mcp_servers.rs, skills.rs, records.rs, forget.rs;
+// pulse-hub mcp.rs, lifecycle.rs; pulse-board projects.rs, agents.rs; the
+// runner's auto_adopt.rs; pulse-records drafts).
+const SETUP = [
+  "mcp.added",
+  "mcp.updated",
+  "mcp.enabled",
+  "mcp.disabled",
+  "mcp.checked",
+  "mcp.signed_in",
+  "mcp.signed_out",
+  "skill.added",
+  "skill.updated",
+  "skill.enabled",
+  "skill.disabled",
+  "record.status",
+  "record.draft",
+  "record.auto_adopted",
+  "record.imported",
+  "project.moved",
+  "project.renamed",
+  "project.forgotten",
+  "project.hook_failed",
+  "agent.join",
+  "agent.resume",
+  "agent.prune",
+];
+
+test("every tool connection, skill, record, project and agent event has a plain-words sentence", () => {
+  for (const action of SETUP) {
+    assert.ok(VERB[action], action + " has a VERB entry");
+    for (const detail of [null, {}, "Accepted", { project: "demo-app", name: "github", ok: false, from: "a", to: "b", changed: ["body"] }]) {
+      const said = eventVerb({ action, subject: "MCP-001", detail });
+      assert.ok(said.length > 0, action + " says something");
+      assert.notEqual(said, raw(action), action + " is not its raw words");
+      assert.doesNotMatch(said, /\b(mcp|hook|prune|auto_adopted|signed_in|signed_out)\b/i, action + " uses no jargon: " + said);
+    }
+  }
+});
+
+test("tool connection and skill events name what they changed", () => {
+  assert.equal(eventVerb({ action: "mcp.added", subject: "MCP-003", detail: { name: "github" } }), "added the tool connection github");
+  assert.equal(eventVerb({ action: "mcp.added", subject: "MCP-003", detail: {} }), "added a tool connection");
+  assert.equal(eventVerb({ action: "mcp.signed_out", subject: "MCP-003", detail: { name: "clerk" } }), "signed out of the tool connection clerk");
+  assert.equal(eventVerb({ action: "mcp.checked", subject: "MCP-003", detail: { name: "github", ok: true } }), "checked the tool connection github, which answered");
+  assert.equal(eventVerb({ action: "mcp.checked", subject: "MCP-003", detail: { name: "github", ok: false } }), "checked the tool connection github, which did not answer");
+  assert.equal(eventVerb({ action: "skill.disabled", subject: "SKILL-2", detail: { name: "flake-triager" } }), "switched off the skill flake-triager");
+  assert.equal(eventDetailText({ action: "skill.updated", detail: { name: "x", changed: ["description", "body"] } }), "Changed: description, body");
+  assert.equal(eventDetailText({ action: "mcp.updated", detail: { name: "x", changed: [] } }), "");
+});
+
+test("project and record events say what happened to them", () => {
+  assert.equal(eventVerb({ action: "project.renamed", subject: "demo-app", detail: { from: "Demo", to: "Demo App" } }), "renamed the project from \u201cDemo\u201d to \u201cDemo App\u201d");
+  assert.equal(eventVerb({ action: "project.renamed", subject: "demo-app", detail: {} }), "renamed the project");
+  assert.equal(eventDetailText({ action: "project.moved", detail: { from: "/old", to: "/new" } }), "Now in /new");
+  assert.equal(eventDetailText({ action: "project.hook_failed", detail: { error: "no starter records" } }), "no starter records");
+  assert.equal(eventDetailText({ action: "project.forgotten", detail: { total: 1 } }), "1 stored row removed");
+  assert.equal(eventDetailText({ action: "project.forgotten", detail: { total: 42 } }), "42 stored rows removed");
+  assert.equal(eventVerb({ action: "record.auto_adopted", subject: "ADR-001", detail: {} }), "adopted a drafted record change while you were away");
+  assert.equal(eventVerb({ action: "agent.join", subject: "cinder", detail: {} }), "joined as a new agent");
+});

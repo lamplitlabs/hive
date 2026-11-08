@@ -141,7 +141,44 @@ export const VERB: Record<string, string> = {
   "suggestion.reviewing": "started reviewing a suggested task",
   "suggestion.unreviewed": "put a suggested task back for another review",
   "suggestion.withdrawn": "withdrew a suggested task",
+  // Tool connections (pulse-store mcp_servers.rs, pulse-hub mcp.rs): an MCP
+  // server the agents call. The event's `name` replaces "a tool connection"
+  // (TOOL_OR_SKILL).
+  "mcp.added": "added a tool connection",
+  "mcp.updated": "changed a tool connection",
+  "mcp.enabled": "switched on a tool connection",
+  "mcp.disabled": "switched off a tool connection",
+  "mcp.checked": "checked a tool connection",
+  "mcp.signed_in": "signed in to a tool connection",
+  "mcp.signed_out": "signed out of a tool connection",
+  // Skills (pulse-store skills.rs): instructions every worker reads before
+  // the work they cover.
+  "skill.added": "added a skill",
+  "skill.updated": "changed a skill",
+  "skill.enabled": "switched on a skill",
+  "skill.disabled": "switched off a skill",
+  // Records (pulse-store records.rs, pulse-records drafts, the runner's
+  // auto_adopt.rs, pulse-board projects.rs).
+  "record.status": "changed a record\u2019s status",
+  "record.draft": "drafted a change to a record for you to adopt",
+  "record.auto_adopted": "adopted a drafted record change while you were away",
+  "record.imported": "imported a record from the project\u2019s files",
+  // Projects (pulse-board projects.rs, pulse-store forget.rs, pulse-hub
+  // lifecycle.rs).
+  "project.moved": "moved the project to a new folder",
+  "project.renamed": "renamed the project",
+  "project.forgotten": "forgot the project and everything kept about it",
+  "project.hook_failed": "could not finish setting up the project",
+  // Agents (pulse-board agents.rs): the actor is the agent itself, except
+  // for a prune, whose subject is the agent let go.
+  "agent.join": "joined as a new agent",
+  "agent.resume": "came back for another session",
+  "agent.prune": "let go of an agent that had done nothing useful for a while",
 };
+
+// The tool connections and skills an event names: "added the skill
+// pnpm-v11-overrides" rather than "added a skill".
+const TOOL_OR_SKILL = /\ba (tool connection|skill)$/;
 
 // suggestion.review's statuses (suggestions.rs).
 const REVIEWED: Record<string, string> = {
@@ -230,6 +267,13 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   if (isMachine(a) && VERB[a] && e.subject) return VERB[a].replace(/a machine$/, "the machine " + e.subject);
   // The subject is the worker's name: "retired the worker cinder after its run".
   if (a === "agent.retire" && e.subject) return VERB[a].replace(/a worker/, "the worker " + e.subject);
+  if (a === "project.renamed" && str(d?.from) && str(d?.to)) return "renamed the project from \u201c" + str(d?.from) + "\u201d to \u201c" + str(d?.to) + "\u201d";
+  if ((a.startsWith("mcp.") || a.startsWith("skill.")) && VERB[a]) {
+    const name = str(d?.name).trim();
+    let said = name ? VERB[a].replace(TOOL_OR_SKILL, "the $1 " + name) : VERB[a];
+    if (a === "mcp.checked" && typeof d?.ok === "boolean") said += d.ok ? ", which answered" : ", which did not answer";
+    return said;
+  }
   if (a === "job.recover") return RECOVERED[str(d?.outcome)] ?? VERB[a];
   if (a === "daemon.slept" && typeof d?.seconds === "number" && d.seconds > 0) return "noticed the computer was asleep for about " + durationWords(d.seconds * 1000);
   if (a === "land.pr") return namePr(d ? landPr(d) : VERB[a], d);
@@ -282,5 +326,10 @@ export function eventDetailText(e: Pick<StoreEvent, "action" | "detail">): strin
     if (files.length) return "Both changed " + firstFive(files);
   }
   if (a === "review.failed" && str(o.error)) return str(o.error);
+  if (a === "project.hook_failed" && str(o.error)) return str(o.error);
+  if (a === "project.moved" && str(o.to)) return "Now in " + str(o.to);
+  // A changed tool connection or skill names what changed.
+  if ((a === "mcp.updated" || a === "skill.updated") && names(o.changed).length) return "Changed: " + firstFive(names(o.changed));
+  if (a === "project.forgotten" && typeof o.total === "number") return o.total + " stored row" + (o.total === 1 ? "" : "s") + " removed";
   return "";
 }
