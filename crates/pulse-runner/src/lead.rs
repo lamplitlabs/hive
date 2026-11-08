@@ -737,8 +737,11 @@ pub(crate) fn lead_due(
             continue;
         }
         if let Some(at) = reopened_unplanned_at(s, &t, &finished) {
+            let folded = folded_into(s, &t)
+                .map(|(id, source, title)| format!(" Its title words are in job {id} ({source}, \"{}\"): if that job does its work, it was folded in there - still queue its own job, or one whose brief names {} on a `Covers:` line.", trunc(&title, 80), t.id))
+                .unwrap_or_default();
             due.push(DueTask {
-                detail: format!("unplanned: your run {} marked it planned but queued no job for it, so I reopened it at {at}. Queue its own job now with `--source task:{}` (or `task:{}:<label>`); do not fold it into another task's job unless that job's brief names it on a `Covers:` line.", job.str("id"), t.id, t.id),
+                detail: format!("unplanned: your run {} marked it planned but queued no job for it, so I reopened it at {at}. Queue its own job now with `--source task:{}` (or `task:{}:<label>`); do not fold it into another task's job unless that job's brief names it on a `Covers:` line.{folded}", job.str("id"), t.id, t.id),
                 why: UNPLANNED_WHY.into(),
                 task: t,
             });
@@ -2225,6 +2228,60 @@ fn reopen_unplanned(s: &pulse_store::Store, t: &pulse_tasks::Task, actor: &str) 
     ))
 }
 
+/// The words of a task title that say what it is about: lowercased,
+/// four letters or more, the common filler dropped.
+fn title_words(title: &str) -> Vec<String> {
+    const FILLER: &[&str] = &[
+        "that", "this", "with", "from", "into", "when", "then", "than", "them", "they", "what",
+        "which", "where", "each", "every", "make", "makes", "have", "does", "only", "also", "more",
+        "less", "after", "before", "task", "fix", "show", "shows",
+    ];
+    let mut words: Vec<String> = Vec::new();
+    for w in title
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+    {
+        if w.chars().count() >= 4 && !FILLER.contains(&w.as_str()) && !words.contains(&w) {
+            words.push(w);
+        }
+    }
+    words
+}
+
+/// The job of another task that last carried most of `t`'s title words in
+/// its title or brief: `(job id, source, job title)`. When a lead marks a
+/// task planned and queues nothing for it, it has usually folded the work
+/// into a sibling task's job (TASK-057 into TASK-056's, TASK-068 likewise);
+/// naming that job tells the lead where the work went, so it queues the
+/// missing job - or the `Covers:` line - on its first return instead of
+/// arguing past the generic reason until the task lands in review.
+fn folded_into(s: &pulse_store::Store, t: &pulse_tasks::Task) -> Option<(String, String, String)> {
+    let words = title_words(&t.title);
+    if words.is_empty() {
+        return None;
+    }
+    let conn = s.conn().ok()?;
+    let own = format!("task:{}", t.id);
+    let own_labelled = format!("task:{}:%", t.id);
+    let rows = crate::util::query_rows(
+        &conn,
+        "SELECT id, source, title, brief FROM jobs WHERE project = ? AND kind != ? AND source LIKE 'task:%' AND source != ? AND source NOT LIKE ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 50",
+        &[&t.project, &LEAD_KIND, &own, &own_labelled, &t.created_at],
+    )
+    .ok()?;
+    let need = words.len().div_ceil(2);
+    rows.into_iter().find_map(|r| {
+        let text = format!("{}\n{}", r.str("title"), r.str("brief")).to_lowercase();
+        let said: Vec<String> = text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect();
+        let hits = words.iter().filter(|w| said.contains(w)).count();
+        (hits >= need).then(|| (r.str("id"), r.str("source"), r.str("title")))
+    })
+}
+
 /// When `t` was last sent back to `open` by [`reopen_unplanned`] at or
 /// after `since` (its lead's last sitting ended), with nothing changed on
 /// it since: the stamp. `None` otherwise.
@@ -2542,7 +2599,11 @@ mod tests {
         let lead = sitting(1);
         // The sitting queues one job for the first task that also does the
         // second, and marks both planned.
-        task_job(&s, "Both changes", &format!("task:{}", first.id));
+        let both = task_job(
+            &s,
+            "First and second changes",
+            &format!("task:{}", first.id),
+        );
         for t in [&first, &second] {
             pulse_tasks::set_status(&s, &t.id, "planned", "proj-lead").expect("planned");
         }
@@ -2593,6 +2654,17 @@ mod tests {
                 && back
                     .detail
                     .contains("do not fold it into another task's job"),
+            "{}",
+            back.detail
+        );
+        // It names the job that carried its title words, so the lead sees
+        // where its work was folded in.
+        assert!(
+            back.detail.contains(&format!(
+                "Its title words are in job {} (task:{}",
+                both.str("id"),
+                first.id
+            )),
             "{}",
             back.detail
         );
