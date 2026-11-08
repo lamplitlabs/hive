@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { codeDeliveriesPath } from "./api.ts";
-import { codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryKpiSub, codeDeliveryWindowLabel, shortCommit } from "./code-deliveries.ts";
+import { CODE_DELIVERY_PENDING_REASON, codeDeliveryCommitURL, codeDeliveryCoverageText, codeDeliveryEmptyState, codeDeliveryIncompleteWindow, codeDeliveryKpiState, codeDeliveryKpiSub, codeDeliveryWindowLabel, shortCommit } from "./code-deliveries.ts";
+import { readFileSync } from "node:fs";
+import { createCodeDeliveryMock } from "../../mock/code-deliveries.mjs";
 
 const payload = (overrides = {}) => ({
   scope: { project: null, limit: 100, scanned: 4, has_more: false, next_before: null, ...(overrides.scope || {}) },
@@ -99,4 +101,55 @@ test("local-only, unsupported and invalid targets keep an unlinked commit", () =
   for (const commit of ["", "main", "abc123", "g".repeat(40), "a".repeat(41), "a".repeat(63), "a".repeat(65), "../main"]) {
     assert.equal(codeDeliveryCommitURL("https://github.com/team/project", commit), null, commit);
   }
+});
+
+// TASK-085: the page showed an empty "Code delivered" though 150 pull
+// requests had merged. From the payload the hub serves to what the tile and
+// the page say: a merge whose files are still being read, no merges at all,
+// and a checked zero each read differently, and only the last is a real zero.
+const mockFixture = JSON.parse(readFileSync(new URL("../../mock/api/code-deliveries.json", import.meta.url), "utf8"));
+const mock = createCodeDeliveryMock(mockFixture, ["demo-app", "demo-lib", "pulse", "old-site", "fresh"]);
+
+test("payload to displayed state: merged pull requests are counted on the tile and the page", () => {
+  const { body } = mock.read(new URLSearchParams("limit=100"));
+  const kpi = codeDeliveryKpiState(body, false, "");
+  assert.equal(kpi.n, 3);
+  assert.equal(kpi.sub, "5 source files changed in 8 merges checked; 1 still being read; 1 couldn't be checked");
+  assert.equal(codeDeliveryEmptyState(body), null, "deliveries show as cards, not an empty state");
+});
+
+test("payload to displayed state: a merge still being read is not a zero", () => {
+  const { body } = mock.read(new URLSearchParams("project=pulse"));
+  assert.equal(body.summary.code_deliveries, 0);
+  assert.equal(body.unavailable[0].reason, CODE_DELIVERY_PENDING_REASON);
+  const empty = codeDeliveryEmptyState(body);
+  assert.equal(empty.kind, "pending");
+  assert.equal(empty.title, "Still reading the latest merges");
+  assert.match(empty.body, /1 merged pull request in pulse is waiting/);
+  assert.match(empty.body, /not a real zero/);
+  assert.equal(codeDeliveryKpiState(body, false, "").sub, "0 source files changed in 1 merge checked; 1 still being read");
+  assert.match(codeDeliveryCoverageText(body), /1 merge is still being read, so it isn't counted yet\./);
+  assert.doesNotMatch(codeDeliveryCoverageText(body), /zero really means none|couldn't be checked/);
+});
+
+test("payload to displayed state: no merges at all says so instead of 'every merge was checked'", () => {
+  const { body } = mock.read(new URLSearchParams("project=fresh"));
+  assert.equal(body.scope.scanned, 0);
+  const empty = codeDeliveryEmptyState(body);
+  assert.equal(empty.kind, "no-merges");
+  assert.equal(empty.title, "No merges yet");
+  assert.match(empty.body, /No finished work has merged in fresh yet/);
+  assert.deepEqual(codeDeliveryKpiState(body, false, ""), { n: 0, sub: "No merges yet", tone: "neutral" });
+  assert.match(codeDeliveryCoverageText(body), /No merges were found/);
+  assert.doesNotMatch(codeDeliveryCoverageText(body), /zero really means none/);
+});
+
+test("payload to displayed state: a checked zero names what was left out", () => {
+  const d = payload({ scope: { scanned: 3 }, summary: { docs_only: 2, non_code: 1 } });
+  const empty = codeDeliveryEmptyState(d);
+  assert.equal(empty.kind, "no-code");
+  assert.match(empty.body, /2 merges only changed docs, 1 merge changed no code/);
+  assert.match(codeDeliveryCoverageText(d), /zero really means none/);
+  assert.equal(codeDeliveryEmptyState(payload({ scope: { scanned: 0, has_more: true, next_before: 9 } })).kind, "incomplete");
+  assert.equal(codeDeliveryEmptyState(payload({ summary: { unknown: 1 }, unavailable: [{ event_seq: 1, project: "p", at: "", reason: "legacy" }] })).kind, "unknown");
 });

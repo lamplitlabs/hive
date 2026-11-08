@@ -110,6 +110,7 @@ pub(crate) fn tend_project(s: &pulse_store::Store, p: &Row, now: &str) -> Vec<St
         return lines;
     }
     lines.extend(poll_open(s, p, now));
+    lines.extend(backfill_merge_evidence(s, p, now));
     lines.extend(deliver(s, p, now));
     if let Some(line) = crate::forge::sync_default_from_upstream(s, p, ACTOR, now, false) {
         lines.push(line);
@@ -3109,6 +3110,172 @@ fn clear_branches(s: &pulse_store::Store, slug: &str, pr: &Value) {
     }
 }
 
+/// The transition a merged pull request made on the default branch: the
+/// merge commit that has the head the forge merged (`to`) as a parent, as
+/// its first parent and itself; else, when the history no longer holds that
+/// merge (a squashed main, a squash merge), the base the pull request was
+/// first built on (`from` of its first `land.pr`) and the head.
+fn merged_transition(root: &str, def: &str, first_from: &str, to: &str) -> (String, String) {
+    if to.is_empty() {
+        return (String::new(), String::new());
+    }
+    for tip in [
+        format!("refs/heads/{def}"),
+        format!("refs/remotes/origin/{def}"),
+    ] {
+        let out = crate::util::git_timeout(
+            root,
+            Duration::from_secs(30),
+            &[
+                "rev-list",
+                "--merges",
+                "--parents",
+                "--ancestry-path",
+                "--reverse",
+                &format!("{to}..{tip}"),
+            ],
+        );
+        if !out.ok() {
+            continue;
+        }
+        for line in out.stdout.lines() {
+            let ids: Vec<&str> = line.split_whitespace().collect();
+            if ids.len() >= 3 && ids[2..].contains(&to) {
+                return (ids[1].to_string(), ids[0].to_string());
+            }
+        }
+    }
+    (first_from.to_string(), to.to_string())
+}
+
+/// The changed-file evidence of a merged pull request (see
+/// [`merged_transition`]), with the snapshot of the job that did the work
+/// and the commit that carried it. A diff the checkout cannot read any more
+/// is recorded as unavailable with its reason, never as zero.
+fn merge_evidence(
+    s: &pulse_store::Store,
+    project: &Row,
+    first_from: &str,
+    pr: &Value,
+) -> (Value, Value, String) {
+    let slug = project.str("slug");
+    let root = project.str("path");
+    let def = crate::baseline::default_branch(project.clone());
+    let (before, after) = merged_transition(&root, &def, first_from, field(pr, "to"));
+    let ctx = pulse_bus::CancellationToken::new();
+    let evidence =
+        crate::landing_evidence::landing_code_delivery_evidence(&ctx, root, before, after.clone());
+    let evidence = serde_json::to_value(evidence).unwrap_or(Value::Null);
+    let job = jobs_of(pr)
+        .last()
+        .and_then(|id| {
+            let conn = s.conn().ok()?;
+            crate::util::query_one(
+                &conn,
+                "SELECT * FROM jobs WHERE id = ? AND project = ?",
+                &[id, &slug],
+            )
+            .ok()
+            .flatten()
+        })
+        .unwrap_or_default();
+    let work = crate::landing_evidence::landing_work_snapshot(
+        s,
+        project.clone(),
+        job,
+        crate::land::LandOpts {
+            run_id: field_of(pr, "run_id"),
+            ..Default::default()
+        },
+    );
+    let work = if work.job.is_some() || work.worker.is_some() {
+        serde_json::to_value(work).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    (evidence, work, after)
+}
+
+/// Merged pull requests whose changed files one pass gathers at most per
+/// project: each costs a `rev-list` and two bounded `git diff`s.
+const EVIDENCE_PER_PASS: usize = 10;
+
+/// Gathers the changed files of the project's merged pull requests into a
+/// `land.evidence` naming the merge (`merged_seq`), newest first, once each,
+/// found or not. It runs right after [`poll_open`] settled the merges and
+/// moved the checkout, so a merge is counted by the Code delivered report
+/// within the pass that saw it; the merges recorded before this existed are
+/// worked through the same way, a few a pass. Without it the report counted
+/// none of the pull-request lane's merges (TASK-085).
+fn backfill_merge_evidence(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
+    let slug = project.str("slug");
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let merged = crate::util::query_rows(
+        &conn,
+        "SELECT m.seq, m.detail FROM events m
+         WHERE m.action = 'land.merged' AND m.subject = ?1 AND json_valid(m.detail)
+           AND json_extract(m.detail, '$.number') IS NOT NULL
+           AND json_extract(m.detail, '$.code_delivery') IS NULL
+           AND NOT EXISTS (SELECT 1 FROM events e WHERE e.action = ?2 AND e.subject = ?1
+             AND json_valid(e.detail) AND json_extract(e.detail, '$.merged_seq') = m.seq)
+         ORDER BY m.seq DESC LIMIT ?3",
+        &[
+            &slug,
+            &pulse_codedelivery::MERGE_EVIDENCE_ACTION,
+            &(EVIDENCE_PER_PASS as i64),
+        ],
+    )
+    .unwrap_or_default();
+    if merged.is_empty() {
+        return Vec::new();
+    }
+    let mut readable = 0;
+    for m in &merged {
+        let seq = i64::from(m.int("seq"));
+        let merged: Value = serde_json::from_str(&m.str("detail")).unwrap_or(Value::Null);
+        let number = number_of(&merged);
+        let prs: Vec<Value> = crate::util::query_rows(
+            &conn,
+            "SELECT detail FROM events WHERE action = 'land.pr' AND subject = ? AND json_valid(detail)
+             AND json_extract(detail, '$.number') = ? AND seq < ? ORDER BY seq",
+            &[&slug, &number, &seq],
+        )
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| serde_json::from_str::<Value>(&r.str("detail")).ok())
+        .collect();
+        let first_from = prs.first().map(|d| field_of(d, "from")).unwrap_or_default();
+        let pr = prs.last().cloned().unwrap_or_else(|| merged.clone());
+        let (evidence, work, sha) = merge_evidence(s, project, &first_from, &pr);
+        if field(&evidence, "evidence") != pulse_codedelivery::EVIDENCE_UNAVAILABLE {
+            readable += 1;
+        }
+        let mut detail = json!({"project": slug, "number": number, "merged_seq": seq,
+            "code_delivery": evidence});
+        if !work.is_null() {
+            detail["work"] = work;
+        }
+        if !sha.is_empty() {
+            detail["sha"] = json!(sha);
+        }
+        crate::util::event_at(
+            &conn,
+            now,
+            ACTOR,
+            pulse_codedelivery::MERGE_EVIDENCE_ACTION,
+            &slug,
+            detail,
+        );
+    }
+    vec![format!(
+        "{slug}: gathered the changed files of {} merged pull request{} ({readable} readable)",
+        merged.len(),
+        if merged.len() == 1 { "" } else { "s" }
+    )]
+}
+
 /// The detail a `land.merged` or `land.pr-closed` carries: the pull
 /// request's identity and ids, from its `land.pr`.
 fn settle_detail(pr: &Value, slug: &str, st: &crate::landing_pr::PrState) -> Value {
@@ -3379,6 +3546,82 @@ mod tests {
         assert!(tend(&s, &[], TEST_NOW).is_empty(), "nothing to say twice");
     }
 
+    fn last_seq(s: &pulse_store::Store, action: &str) -> i64 {
+        let conn = s.conn().unwrap();
+        conn.query_row(
+            "SELECT MAX(seq) FROM events WHERE action = ?",
+            [action],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_merge_commit_names_what_the_pull_request_changed_on_main() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_proj, repo) = new_repo(&s);
+        let base = ref_of(&repo, "refs/heads/main");
+        run(
+            &repo,
+            &["git", "checkout", "-q", "-b", "pulse/w/code", "main"],
+        );
+        std::fs::create_dir_all(std::path::Path::new(&repo).join("src")).unwrap();
+        std::fs::write(
+            std::path::Path::new(&repo).join("src/lib.rs"),
+            "pub fn f() {}\n",
+        )
+        .unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "code"]);
+        let head = ref_of(&repo, "refs/heads/pulse/w/code");
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        std::fs::write(std::path::Path::new(&repo).join("NOTES.md"), "other work\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "other"]);
+        let other = ref_of(&repo, "refs/heads/main");
+        run(
+            &repo,
+            &[
+                "git",
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                "Merge pull request #9",
+                "pulse/w/code",
+            ],
+        );
+        let merge = ref_of(&repo, "refs/heads/main");
+
+        // The merge commit's own change, not the base the pull request
+        // was built on: the other work merged in between is not its.
+        assert_eq!(
+            merged_transition(&repo, "main", &base, &head),
+            (other.clone(), merge.clone())
+        );
+        let ctx = pulse_bus::CancellationToken::new();
+        let e = crate::landing_evidence::landing_code_delivery_evidence(
+            &ctx,
+            repo.clone(),
+            other,
+            merge,
+        );
+        assert_eq!(e.code_files, 1);
+        assert_eq!(e.code_paths, vec!["src/lib.rs".to_string()]);
+
+        // A head the history does not hold as a merged parent (a squashed
+        // main): the pull request's own base to its head.
+        assert_eq!(
+            merged_transition(&repo, "main", &base, &base),
+            (base.clone(), base)
+        );
+        assert_eq!(
+            merged_transition(&repo, "main", "", ""),
+            (String::new(), String::new())
+        );
+    }
+
     /// A task with two done jobs on their own branches.
     fn task_with_two_branches(s: &pulse_store::Store, proj: &Row, repo: &str) -> String {
         task_with_branches(
@@ -3551,6 +3794,23 @@ mod tests {
         assert_eq!(merged["number"], 7);
         assert_eq!(merged["merged_at"], "2026-11-04T07:00:00Z");
         assert_eq!(events(&s, "land.merged"), 1);
+        // The pass that saw the merge gathered what it changed, so the Code
+        // delivered report counts it (TASK-085): the two branch files,
+        // from the base the pull request was built on to the merged head.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l
+                    .contains("gathered the changed files of 1 merged pull request (1 readable)")),
+            "{lines:?}"
+        );
+        let evidence = last_detail(&s, pulse_codedelivery::MERGE_EVIDENCE_ACTION);
+        assert_eq!(evidence["merged_seq"], last_seq(&s, "land.merged"));
+        assert_eq!(evidence["number"], 7);
+        assert_eq!(evidence["sha"], head);
+        assert_eq!(evidence["code_delivery"]["before"], main_before);
+        assert_eq!(evidence["code_delivery"]["files_changed"], 2);
+        assert_eq!(evidence["work"]["job"]["source"], format!("task:{task}"));
         // Settled: no more polls.
         let lines = tend_proj(&s, &proj, TEST_NOW);
         assert!(lines.is_empty(), "{lines:?}");

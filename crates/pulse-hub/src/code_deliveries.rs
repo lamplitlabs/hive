@@ -572,10 +572,114 @@ mod tests {
                 WorkSnapshot::default(),
             );
         }
+        // The one merge of demo lies behind 5001 of another project's, and
+        // is found on the first page all the same: the lookup goes by
+        // project, not through a window of the latest events.
         let (status, page) =
             code_delivery_report("/api/v1/code-deliveries?project=demo&limit=1", &s);
         assert_eq!(status, 200);
-        assert!(page.scope.has_more);
+        assert_eq!(page.scope.scanned, 1);
+        assert_eq!(page.summary.code_deliveries, 1);
+        assert_eq!(page.deliveries[0].commit, "demo-sha");
+        assert!(!page.scope.has_more);
+        assert_eq!(page.scope.next_before, None);
+    }
+
+    /// TASK-085: Code delivered showed 0 though 150 pull requests had merged.
+    /// The report read only `land.landed` among the latest 5000-10000 events;
+    /// every merge since the pull-request lane is a `land.merged`, and the
+    /// runner writes tens of thousands of other events a day.
+    #[test]
+    fn code_deliveries_count_merged_pull_requests_behind_busy_history() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers_http::additions_store(false);
+        crate::test_helpers_http::additions_project(&s, "demo");
+        let merged = |number: i64, extra: Value| {
+            let mut detail = json!({"project": "demo", "kind": "task", "number": number,
+                "head": format!("pulse/task-TASK-{number}"), "base": "main", "jobs": ["job-1"]});
+            for (k, v) in extra.as_object().unwrap() {
+                detail[k] = v.clone();
+            }
+            s.event("daemon", "land.merged", "demo", detail).unwrap();
+            s.conn()
+                .unwrap()
+                .query_row("SELECT MAX(seq) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        // Evidence recorded at settle time.
+        merged(
+            1,
+            json!({"sha": "sha-one", "code_delivery": go_value(&code_evidence("sha-one", &["src/a.rs"]))}),
+        );
+        // A merge settled before evidence was recorded, completed by a
+        // later `land.evidence`.
+        let two = merged(2, json!({}));
+        // One the runner has not reached yet: unknown, never zero.
+        let three = merged(3, json!({}));
+        // The land lane noticing a branch some landing already delivered:
+        // not a delivery of its own.
+        s.event(
+            "daemon",
+            "land.merged",
+            "pulse/w/job-old",
+            json!({"project": "demo", "job": "job-old"}),
+        )
+        .unwrap();
+        for i in 0..12000 {
+            s.event(
+                "daemon",
+                "harness.step",
+                "demo",
+                json!({"project": "demo", "i": i}),
+            )
+            .unwrap();
+        }
+        s.event(
+            "daemon",
+            pulse_codedelivery::MERGE_EVIDENCE_ACTION,
+            "demo",
+            json!({"project": "demo", "number": 2, "merged_seq": two, "sha": "sha-two",
+                "code_delivery": go_value(&code_evidence("sha-two", &["web/x.tsx", "web/y.ts"])),
+                "work": {"job": {"id": "job-2", "title": "Fix the page", "kind": "task", "status": "done"}}}),
+        )
+        .unwrap();
+        for i in 0..3000 {
+            s.event(
+                "daemon",
+                "harness.step",
+                "demo",
+                json!({"project": "demo", "i": i}),
+            )
+            .unwrap();
+        }
+
+        let (status, report) = code_delivery_report("/api/v1/code-deliveries?project=demo", &s);
+        assert_eq!(status, 200);
+        assert_eq!(report.scope.scanned, 3);
+        assert_eq!(report.summary.code_deliveries, 2);
+        assert_eq!(report.summary.code_files, 3);
+        assert_eq!(report.summary.unknown, 1);
+        assert_eq!(report.deliveries[0].commit, "sha-two");
+        assert_eq!(
+            report.deliveries[0].job.as_ref().unwrap().title,
+            "Fix the page"
+        );
+        assert_eq!(report.deliveries[1].commit, "sha-one");
+        assert_eq!(report.unavailable[0].event_seq, three);
+        assert_eq!(
+            report.unavailable[0].reason,
+            pulse_codedelivery::REASON_EVIDENCE_PENDING
+        );
+        let (_, all) = code_delivery_report("/api/v1/code-deliveries", &s);
+        assert_eq!(all.summary.code_deliveries, 2);
+        let (_, page) = code_delivery_report("/api/v1/code-deliveries?limit=2", &s);
+        assert_eq!(page.scope.scanned, 2);
+        assert_eq!(page.scope.next_before, Some(two));
+        let (_, older) =
+            code_delivery_report(&format!("/api/v1/code-deliveries?limit=2&before={two}"), &s);
+        assert_eq!(older.deliveries.len(), 1);
+        assert_eq!(older.deliveries[0].commit, "sha-one");
+        assert!(!older.scope.has_more);
     }
 
     #[test]

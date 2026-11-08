@@ -8,6 +8,13 @@
   ],
   "records": [
     {
+      "type": "unavailable",
+      "event_seq": 231,
+      "project": "pulse",
+      "at": "2026-09-07T09:05:00Z",
+      "reason": "The merged pull request's changed files are not gathered yet"
+    },
+    {
       "type": "delivery",
       "event_seq": 230,
       "project": "demo-app",
