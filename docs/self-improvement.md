@@ -301,7 +301,12 @@ gives the baseline headroom when governance fixtures already score `1.0`:
 score metric --higher --scale S -- CMD ARGS...'`. The helper takes the last
 number printed by `CMD`; `--higher` scores `min(1, raw/S)`, `--lower` scores
 `S/(S+raw)`, and `--floor F` clamps the final score upward. A metric fixture
-is deterministic and runs once per measurement. A judge-scored fixture - every
+is deterministic and runs once per measurement, so its command must be: a
+scorer that reads coverage from Node's test runner passes
+`--experimental-test-isolation=none` with `--experimental-test-coverage`,
+because with one process per test file the merged report changes from run to
+run (the hub's `src/lib` line coverage read 81.6 to 89.1 on one tree, and
+89.1 every time without isolation). A judge-scored fixture - every
 request fixture (the `starter-*` set and your own non-metric ones) and every
 held-out `H*` fixture, whose score depends on a model's answer - runs three
 times per measurement, each run in a fresh clone of the measured commit and a
