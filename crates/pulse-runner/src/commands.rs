@@ -668,6 +668,14 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             "SELECT * FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
             &[&slug, &branch],
         );
+        // The job's last run names the commit its clone was made from: a branch
+        // forked before main was squashed to a new root replays from there
+        // instead of conflicting on every file (land.rs replay_from).
+        let run_id = if job.str("id").is_empty() {
+            String::new()
+        } else {
+            crate::experiment::last_run_id(&s, job.str("id"))
+        };
         let (state, note) = crate::land::land_branch(
             &s,
             proj.clone(),
@@ -676,6 +684,7 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             now.clone(),
             crate::land::LandOpts {
                 job,
+                run_id,
                 verify,
                 by_hand: actor == crate::util::HUMAN_AGENT,
                 ..Default::default()
@@ -2259,6 +2268,77 @@ mod tests {
             code == 0 && out.trim() == "proj: nothing waiting",
             "land again: {code} {out:?}"
         );
+    }
+
+    #[test]
+    fn land_branch_by_hand_replays_a_job_branch_forked_before_main_was_squashed() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_row, repo) = new_bare_repo(&s);
+        let fork = run(&repo, &["git", "rev-parse", "main"]).trim().to_string();
+        let branch = "pulse/aurora/job-squashed";
+        run(&repo, &["git", "checkout", "-q", "-b", branch, "main"]);
+        std::fs::write(
+            std::path::Path::new(&repo).join("README.md"),
+            "# job change\n",
+        )
+        .unwrap();
+        run(&repo, &["git", "commit", "-q", "-am", "job change"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        // The owner squashes main to a new root commit after the job's run forked.
+        std::fs::write(std::path::Path::new(&repo).join("squash.txt"), "squash\n").unwrap();
+        run(&repo, &["git", "add", "squash.txt"]);
+        let tree = run(&repo, &["git", "write-tree"]).trim().to_string();
+        let squashed = run(&repo, &["git", "commit-tree", &tree, "-m", "Squash"])
+            .trim()
+            .to_string();
+        run(&repo, &["git", "reset", "-q", "--hard", &squashed]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "change the readme".into(),
+            "change the readme".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "UPDATE jobs SET status = 'done', branch = ?, finished_at = ? WHERE id = ?",
+            rusqlite::params![branch, s.now(), job.str("id")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, base) VALUES ('run-squashed', ?, 'aurora', 'proj', ?, ?, 'done', ?)",
+            rusqlite::params![job.str("id"), s.now(), s.now(), fork],
+        )
+        .unwrap();
+        drop(conn);
+
+        let (out, err_text, code) =
+            invoke(&s, "land", "proj", &["--branch", branch, "--no-verify"]);
+        assert!(
+            code == 0
+                && out.contains("proj landed: ")
+                && out.contains("replayed from its run base"),
+            "land --branch: {code} {out:?} {err_text:?}"
+        );
+        assert_eq!(
+            run(&repo, &["git", "show", "main:README.md"]),
+            "# job change\n"
+        );
+        assert_eq!(run(&repo, &["git", "show", "main:squash.txt"]), "squash\n");
+        let reachable = std::process::Command::new("git")
+            .args(["-C", &repo, "merge-base", "--is-ancestor", &fork, "main"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap()
+            .success();
+        assert!(!reachable, "the squashed-away history came back into main");
     }
 
     #[test]
