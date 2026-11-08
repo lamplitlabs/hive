@@ -184,6 +184,7 @@ and lessons as records in the store, where the console searches them and
 | [The Mac app](docs/mac-app.md) | PULSE.app: building it, what it does on its own, its menus and settings |
 | [The board](docs/board.md) | the `pulse` commands agents use: schedules and the project's own `.pulse/` files, role leads, suggested work, the toolkit, MCP servers, skills, goals, records, events and hooks |
 | [Democracy and self-improvement](docs/self-improvement.md) | suggestions, the evolve loop, seeded records and fixtures, the card check, the fleet, the runner caps |
+| [Evolve settings](docs/evolve.md) | every evolve gate the loop chapter leaves out, with its default and range: drafting, the held-out directory, and the variant loop's trigger, replay, canary and promotion gates |
 | [The harness](docs/harness.md) | how an agent's turn runs: the tools, what a run brings with it, budgets and compaction, sessions, chatting with it, providers and sign-in |
 | [The runner](docs/runner.md) | the daemon loop, services and self-update, stall detection, folder access, bulk storage, backups, keeping the machine awake |
 | [Delivery](docs/landing.md) | every finished branch as a pull request, polling and the local default branch following the upstream, the `land.*` events, what changed from the local landing; workers, the verify command, disk and the load governor, pipelines, dependency alerts, credentials |

@@ -748,6 +748,10 @@ record, read with `pulse record show WF-evolve`.
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `pulse goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
 
+The drafting, held-out directory and variant-loop gates (`evolve.draft_hours`,
+`evolve.heldout_dir`, `evolve.canary_share` and the rest) are listed with
+their defaults in [Evolve settings](evolve.md).
+
 These are defaults, not the owner's effective values. Read those with
 `pulse settings get NAME` or `pulse settings list --json` (also includes
 defaults, validation rules and descriptions). Only the owner changes caps;
