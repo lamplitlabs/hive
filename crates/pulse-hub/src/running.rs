@@ -271,7 +271,22 @@ impl Handler {
             .and_then(pulse_cli::update::stored_state)
             .unwrap_or_default();
         let notice = pulse_cli::update::notice(&running, &st);
+        let (channel, apply) = match self.store.as_deref() {
+            Some(s) => (
+                pulse_runner::release_update::update_channel(s).as_str(),
+                json!(pulse_runner::release_update::apply_state(s)),
+            ),
+            None => (
+                "",
+                json!(pulse_runner::release_update::ApplyState {
+                    state: "idle".into(),
+                    ..Default::default()
+                }),
+            ),
+        };
         map_from_pairs(vec![
+            ("channel", json!(channel)),
+            ("apply", apply),
             ("enabled", json!(enabled)),
             ("running", json!(running)),
             ("latest", json!(st.latest)),
@@ -294,6 +309,69 @@ impl Handler {
         self.respond(w, json!(self.update_status()), String::new());
     }
 
+    /// `POST /api/v1/update/apply` (TASK-093): the banner's "Update now".
+    /// Installs the release `update.latest_url` names the way `pulse update`
+    /// does (checksum-verified, signed, smoke-tested), on a thread of its
+    /// own; answers 202 with the update status, whose `apply` says
+    /// `installing` and later how it ended. 409 while `update.channel`
+    /// resolves to source (the daemon builds from the brain's checkout),
+    /// while no release source is set, or while an install already runs.
+    pub(crate) fn addition_update_apply(
+        &self,
+        w: &mut crate::httpx::ResponseWriter,
+        r: &crate::httpx::Request,
+    ) {
+        use pulse_runner::release_update::{ApplyRefusal, start_apply};
+        if r.method != "POST" {
+            crate::server::write_error(
+                w,
+                405,
+                "method not allowed".into(),
+                "Only POST installs an update.".into(),
+                "Send POST /api/v1/update/apply.".into(),
+            );
+            return;
+        }
+        if !crate::server::same_origin_write(w, r) {
+            return;
+        }
+        let Some(store) = self.store.as_deref() else {
+            crate::server::write_error(
+                w,
+                404,
+                "not found".into(),
+                "This hub has no store.".into(),
+                "Run the hub with a PULSE home.".into(),
+            );
+            return;
+        };
+        match start_apply(store, pulse_store::HUMAN_AGENT, apply_target()) {
+            Ok(_running) => crate::server::write_json(w, 202, json!(self.update_status())),
+            Err(refusal) => {
+                let (status, hint) = match refusal {
+                    ApplyRefusal::SourceChannel => (
+                        409,
+                        "To install published releases instead: pulse settings set update.channel release",
+                    ),
+                    ApplyRefusal::NoSource => (
+                        409,
+                        "Set update.latest_url to the release document, e.g. https://api.github.com/repos/OWNER/REPO/releases/latest",
+                    ),
+                    ApplyRefusal::Busy => (409, "Wait for the install running to end."),
+                    ApplyRefusal::NoTarget => (409, "Build pulse from source on this machine."),
+                    ApplyRefusal::Spawn(_) => (500, "Try again, or run pulse update."),
+                };
+                crate::server::write_error(
+                    w,
+                    status,
+                    "update not started".into(),
+                    refusal.to_string(),
+                    hint.into(),
+                );
+            }
+        }
+    }
+
     pub(crate) fn addition_running(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -307,6 +385,23 @@ impl Handler {
             Err(err) => self.respond(w, Value::Null, err.to_string()),
         }
     }
+}
+
+/// Tests install into a scratch binary instead of the hub's own.
+#[cfg(test)]
+pub(crate) static APPLY_TARGET: Mutex<Option<pulse_runner::release_update::ApplyTarget>> =
+    Mutex::new(None);
+
+fn apply_target() -> pulse_runner::release_update::ApplyTarget {
+    #[cfg(test)]
+    if let Some(t) = APPLY_TARGET
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return t;
+    }
+    pulse_runner::release_update::ApplyTarget::this_process()
 }
 
 fn map_from_pairs(pairs: Vec<(&str, Value)>) -> JsonMap {
@@ -546,6 +641,180 @@ mod tests {
         assert_eq!(result["newer"], semver);
         let (status, _) = http::additions_request(h, "POST", "/api/v1/update", "{}");
         assert_ne!(status, 200);
+        assert_eq!(result["channel"], "release");
+        assert_eq!(result["apply"]["state"], "idle");
+    }
+
+    /// A release folder served over HTTP the way release_update.rs's tests
+    /// build one: a fake `pulse` printing `v0.2.0`, packed as this
+    /// machine's archive, its SHA256SUMS line and the release document.
+    /// Returns the document's URL and keeps the server alive.
+    fn served_release(dir: &std::path::Path) -> (String, pulse_testutil::httptest::Server) {
+        use pulse_testutil::httptest::{Response, Server};
+        let root = dir.to_path_buf();
+        let server = Server::new(move |req| {
+            match std::fs::read(root.join(req.path().trim_start_matches('/'))) {
+                Ok(bytes) => Response::new(200).body(bytes),
+                Err(_) => Response::text(404, "missing"),
+            }
+        });
+        let base = server.url();
+        let target =
+            pulse_cli::update::running_target().expect("a release target for this machine");
+        let stage = dir.join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let pulse = stage.join("pulse");
+        std::fs::write(
+            &pulse,
+            "#!/bin/sh\ncase \"$1\" in version) echo '{\"version\":\"v0.2.0\"}';; help) exit 0;; *) exit 1;; esac\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&pulse, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let name = pulse_cli::update::archive_name("v0.2.0", &target);
+        let packed = Command::new("tar")
+            .arg("-czf")
+            .arg(dir.join(&name))
+            .arg("-C")
+            .arg(&stage)
+            .arg("pulse")
+            .status()
+            .unwrap();
+        assert!(packed.success());
+        let digest =
+            pulse_runner::release_update::sha256_hex(&std::fs::read(dir.join(&name)).unwrap());
+        std::fs::write(dir.join("SHA256SUMS"), format!("{digest}  {name}\n")).unwrap();
+        let doc = json!({
+            "tag_name": "v0.2.0",
+            "html_url": format!("{base}/page"),
+            "assets": [
+                {"name": name, "browser_download_url": format!("{base}/{name}")},
+                {"name": "SHA256SUMS", "browser_download_url": format!("{base}/SHA256SUMS")},
+            ]
+        });
+        std::fs::write(dir.join("latest.json"), doc.to_string()).unwrap();
+        (format!("{base}/latest.json"), server)
+    }
+
+    /// Restores the hub's own apply target when a test ends.
+    struct ScratchTarget;
+    impl Drop for ScratchTarget {
+        fn drop(&mut self) {
+            *APPLY_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
+    #[test]
+    fn update_apply_is_refused_off_the_release_channel_and_for_other_sites() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        // No release source yet.
+        let (status, result) =
+            http::additions_request(h.clone_for_test(), "POST", "/api/v1/update/apply", "{}");
+        assert_eq!(status, 409, "{result:?}");
+        s.set_setting(
+            "human",
+            pulse_cli::update::LATEST_URL_SETTING,
+            "https://releases.test/latest.json",
+        )
+        .unwrap();
+        s.set_setting("human", pulse_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        let (status, result) =
+            http::additions_request(h.clone_for_test(), "POST", "/api/v1/update/apply", "{}");
+        assert_eq!(status, 409, "{result:?}");
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("update not started"),
+            "{result:?}"
+        );
+        let (_, result) = http::additions_request(h.clone_for_test(), "GET", "/api/v1/update", "");
+        assert_eq!(result["channel"], "source");
+        assert_eq!(result["apply"]["state"], "idle");
+        // GET is not an install.
+        let (status, _) =
+            http::additions_request(h.clone_for_test(), "GET", "/api/v1/update/apply", "");
+        assert_eq!(status, 405);
+        // A page from another site may not start one.
+        s.set_setting("human", pulse_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        let server = http::server(h.clone_for_test());
+        let response = crate::test_helpers::client()
+            .post(format!("{}/api/v1/update/apply", server.url))
+            .header("Origin", "https://evil.example")
+            .header("Content-Type", "application/json")
+            .body("{}")
+            .send()
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 403);
+        assert!(!matches!(
+            s.meta(pulse_runner::release_update::APPLY_KEY),
+            Ok((_, true))
+        ));
+    }
+
+    #[test]
+    fn update_apply_installs_the_release_in_the_background_and_reports_it() {
+        let _serial = crate::test_helpers::serial();
+        let _restore = ScratchTarget;
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        let dir = tempfile::tempdir().unwrap();
+        let (url, _server) = served_release(dir.path());
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let binary = bin.join("pulse").display().to_string();
+        std::fs::write(&binary, "old binary").unwrap();
+        *APPLY_TARGET.lock().unwrap() = Some(pulse_runner::release_update::ApplyTarget {
+            binary: binary.clone(),
+            running: "v0.1.0".into(),
+        });
+        s.set_setting("human", pulse_cli::update::LATEST_URL_SETTING, &url)
+            .unwrap();
+        s.set_setting("human", pulse_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+
+        let (status, result) =
+            http::additions_request(h.clone_for_test(), "POST", "/api/v1/update/apply", "{}");
+        assert_eq!(status, 202, "{result:?}");
+        assert_eq!(result["channel"], "release");
+        let first = result["apply"]["state"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(first == "installing" || first == "installed", "{result:?}");
+        assert_eq!(result["apply"]["from"], "v0.1.0");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        let result = loop {
+            let (_, result) =
+                http::additions_request(h.clone_for_test(), "GET", "/api/v1/update", "");
+            if result["apply"]["state"] != "installing" {
+                break result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the install did not end: {result:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(result["apply"]["state"], "installed", "{result:?}");
+        assert_eq!(result["apply"]["latest"], "v0.2.0");
+        assert_eq!(result["apply"]["error"], "");
+        let now = std::fs::read_to_string(&binary).unwrap();
+        assert!(now.contains("\"version\":\"v0.2.0\""), "{now}");
+        assert_eq!(
+            std::fs::read_to_string(format!("{binary}.prev")).unwrap(),
+            "old binary"
+        );
+        // The daily check's state now names the release it installed.
+        assert_eq!(result["latest"], "v0.2.0");
     }
 
     #[test]

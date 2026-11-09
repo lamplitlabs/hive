@@ -847,6 +847,9 @@ async function readBody(req) {
   }
 }
 
+// What the mock's "Update now" is doing; reset when the mock restarts.
+const updateApply = { state: "idle", at: "", actor: "", from: "", latest: "", error: "", endsAt: 0 };
+
 async function fixture(rel) {
   const file = normalize(join(root, rel + ".json"));
   if (!file.startsWith(root)) return null;
@@ -1439,6 +1442,31 @@ async function handle(req, res) {
       : skillWrite(req, res, segs, q, body);
   }
 
+  // The update banner's "Update now" (TASK-093): POST update/apply starts an
+  // install that ends a few seconds later; GET update follows it. MOCK_UPDATE_CHANNEL=source
+  // shows the refusal; MOCK_UPDATE_FAIL=1 a failed install.
+  if (segs[0] === "update" && segs.length <= 2) {
+    const base = await fixture("update");
+    const channel = process.env.MOCK_UPDATE_CHANNEL || base.channel || "release";
+    const apply = () => {
+      if (updateApply.state === "installing" && Date.now() >= updateApply.endsAt) {
+        updateApply.state = process.env.MOCK_UPDATE_FAIL ? "failed" : "installed";
+        updateApply.error = process.env.MOCK_UPDATE_FAIL ? "download SHA256SUMS: HTTP 404" : "";
+        updateApply.at = now();
+      }
+      const rest = { ...updateApply };
+      delete rest.endsAt;
+      return rest;
+    };
+    if (segs.length === 1) return send(res, 200, { ...base, channel, apply: apply() });
+    if (segs[1] !== "apply") return fail(res, 404, "not found", "no route " + url.pathname, "use update or update/apply");
+    if (req.method !== "POST") return fail(res, 405, "method not allowed", "Only POST installs an update.", "Send POST /api/v1/update/apply.");
+    if (channel === "source")
+      return fail(res, 409, "update not started", "update.channel resolves to source here: the daemon rebuilds pulse from the brain project's checkout after each landing", "To install published releases instead: pulse settings set update.channel release");
+    if (apply().state === "installing") return fail(res, 409, "update not started", "an update is already being installed", "Wait for the install running to end.");
+    Object.assign(updateApply, { state: "installing", at: now(), actor: "human", from: base.running, latest: base.latest, error: "", endsAt: Date.now() + Number(process.env.MOCK_UPDATE_MS || 4000) });
+    return send(res, 202, { ...base, channel, apply: apply() });
+  }
   if (req.method === "POST") {
     let body;
     try {

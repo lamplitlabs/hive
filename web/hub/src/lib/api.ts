@@ -2166,6 +2166,22 @@ export interface UpdatePayload {
   error: string;
   newer: boolean;
   notice: string | null;
+  // Where a newer PULSE comes from here (update.channel, `auto` resolved):
+  // `release` installs the published release, `source` rebuilds from the
+  // brain's checkout. Absent from a hub older than TASK-093.
+  channel?: "release" | "source" | "";
+  // What the banner's "Update now" (POST update/apply) is doing or last did.
+  apply?: UpdateApply;
+}
+
+export interface UpdateApply {
+  state: "idle" | "installing" | "installed" | "current" | "failed";
+  at: string;
+  actor: string;
+  // The build that ran when the install started, and the release it installs.
+  from: string;
+  latest: string;
+  error: string;
 }
 
 export interface RunningPayload {
@@ -3794,6 +3810,11 @@ export const writes = {
   // carry on under the new console either way.
   restartNow: (now?: boolean) =>
     post<RestartNowResult>("running/restart", now ? { now: true } : {}),
+  // The update banner's "Update now" (TASK-093): the hub installs the
+  // release update.latest_url names (checksum-verified, signed,
+  // smoke-tested) in the background; GET update's `apply` follows it. 409
+  // while update.channel resolves to source.
+  applyUpdate: () => post<UpdatePayload>("update/apply", {}),
   // Sign-in for a provider: the one in use unless `provider` names another,
   // so the Connect a provider wizard can sign in before it switches. A
   // device flow with an empty `user_code` is a browser sign-in on the

@@ -6,6 +6,14 @@
 // this browser which release the owner dismissed, so the notice comes back
 // for the next release but not on every page load for this one.
 // Pure: no DOM, no fetch; update-banner.tsx owns the hook and localStorage.
+//
+// "Update now" (TASK-093): on update.channel release the banner offers to
+// install the release through the hub (POST update/apply), which runs what
+// `pulse update` runs in the background; `apply` in the payload follows it.
+// Once it is in place the runner and the console restart on it when their
+// runs finish - the banner then shows the runner's own wait words
+// (daemonUpdateText in components/pulse/daemon-control-state.ts), handed in
+// as `waitText` so this module stays free of runtime imports.
 import type { UpdatePayload } from "./api";
 
 export const UPDATE_DISMISS_KEY = "pulse.update.dismissed";
@@ -66,4 +74,78 @@ export function writeDismissed(storage: UpdateStorage | null, latest: string): v
   } catch {
     // private mode or storage disabled: the banner simply hides until reload
   }
+}
+
+// How often the banner asks again while an install runs, and otherwise.
+export const UPDATE_POLL_INSTALLING_MS = 2000;
+export const UPDATE_POLL_IDLE_MS = 15 * 60_000;
+
+export type UpdateApplyTone = "info" | "ok" | "bad";
+
+export interface UpdateApplyView {
+  // Whether the "Update now" button shows, and what it says.
+  button: string | null;
+  // The button shows but cannot be pressed (an install is running).
+  busy: boolean;
+  // The tooltip that says what pressing it does.
+  buttonTitle: string;
+  // One line under the title about the install, or null.
+  line: string | null;
+  tone: UpdateApplyTone | null;
+  // Poll fast while the hub installs.
+  installing: boolean;
+}
+
+export interface UpdateApplyInput {
+  // The POST is in flight.
+  posting?: boolean;
+  // The POST was refused (a 409 on source, a 403...): its words.
+  postError?: string;
+  // The runner's own wait phrase once the release is in place ("A new
+  // version waits for ..."), or "" when it announced none.
+  waitText?: string;
+}
+
+// What the banner says and offers about installing `p.latest`. An apply
+// state about another release than the one on the banner is old news and
+// reads as idle.
+export function updateApplyView(p: UpdatePayload | null | undefined, input: UpdateApplyInput = {}): UpdateApplyView {
+  const none: UpdateApplyView = { button: null, busy: false, buttonTitle: "", line: null, tone: null, installing: false };
+  if (!p) return none;
+  const latest = (p.latest ?? "").trim();
+  const apply = p.apply;
+  const applyLatest = (apply?.latest ?? "").trim();
+  const ours = !!apply && (!applyLatest || applyLatest === latest);
+  const state = ours ? apply.state : "idle";
+  const release = p.channel === "release";
+  const buttonTitle = `Download ${latest || "the release"}, check it against the release's SHA256SUMS and install it. The runner and this console restart on it once their runs finish.`;
+  if (input.posting || state === "installing") {
+    return { button: "Installing…", busy: true, buttonTitle, line: `Downloading and checking ${applyLatest || latest || "the release"}…`, tone: "info", installing: true };
+  }
+  if (state === "installed") {
+    const wait = (input.waitText ?? "").trim().replace(/\.$/, "");
+    const what = applyLatest || latest;
+    return {
+      ...none,
+      line: wait
+        ? `Installed ${what}. ${wait}.`
+        : `Installed ${what}. The runner and this console restart on it once their runs in flight finish.`,
+      tone: "ok",
+    };
+  }
+  if (input.postError) {
+    return { ...none, button: release ? "Try again" : null, buttonTitle, line: `Not started: ${input.postError}`, tone: "bad" };
+  }
+  if (state === "failed") {
+    const why = (apply?.error ?? "").trim() || "it stopped without saying why";
+    return { ...none, button: release ? "Try again" : null, buttonTitle, line: `The update did not install: ${why}`, tone: "bad" };
+  }
+  if (state === "current") {
+    return { ...none, line: `Nothing to install: the release source names ${applyLatest || latest}, which this build already runs.`, tone: "info" };
+  }
+  if (p.channel === "source") {
+    return { ...none, line: "This machine builds PULSE from source (update.channel), so the runner updates itself after each landing.", tone: null };
+  }
+  if (release && latest) return { ...none, button: "Update now", buttonTitle };
+  return none;
 }
