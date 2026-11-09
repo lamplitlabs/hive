@@ -27,6 +27,7 @@ import { GOAL_ANCHOR, GoalEditor } from "@/components/project/goal";
 import { LeadsPanel } from "@/components/project/leads";
 import { MachinesPanel } from "@/components/project/machines";
 import { healthLines, topThreads } from "@/components/project/project-state";
+import { AGENTS_DECIDED_HINT, AGENTS_DECIDED_SUMMARY, settledLabel, splitQuestions, waitingNote, whoSettled } from "@/components/project/tabs-state";
 import { ToolkitPanel } from "@/components/project/toolkit";
 import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
 import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
@@ -728,8 +729,7 @@ export function ForYouTab({ slug, canDecide }: { slug: string; canDecide: boolea
         // The project's own routes are the source for proposals and questions; the shared inbox adds the rest.
         // Count only what the owner alone can decide: questions the lead answers while the owner is away, or that a setting answers, are the agents' to settle.
         const allQuestions = qs.data ?? mine.questions;
-        const questions = allQuestions.filter((x) => (x.decider ?? "owner") === "owner");
-        const agentsDecided = allQuestions.filter((x) => (x.decider ?? "owner") !== "owner");
+        const { questions, agentsDecided } = splitQuestions(allQuestions);
         const awaiting = all.filter((p) => p.status === "awaiting");
         const decided = all.filter((p) => p.status !== "awaiting");
         const waiting = mine.decisions.length + awaiting.length + questions.length + mine.compute.length + mine.work.length + mine.drafts.length + mine.steps.length;
@@ -746,7 +746,7 @@ export function ForYouTab({ slug, canDecide }: { slug: string; canDecide: boolea
         return (
           <div className="grid gap-6">
             <section aria-label="Waiting for you" className="min-w-0">
-              <SectionHeading icon={ScaleIcon} count={waiting || undefined} note={!canDecide ? "To answer, open PULSE on the machine that runs it." : agentsDecided.length ? plural(agentsDecided.length, "question") + " the agents are deciding themselves." : undefined} as="h2">
+              <SectionHeading icon={ScaleIcon} count={waiting || undefined} note={waitingNote(canDecide, agentsDecided.length)} as="h2">
                 Waiting for you
               </SectionHeading>
               {waiting ? (
@@ -809,22 +809,16 @@ export function ForYouTab({ slug, canDecide }: { slug: string; canDecide: boolea
 // you" count but auditable here, collapsed under a toggle so the audit never
 // reads as more waiting work. The rows are read-only: the decision is already
 // recorded, so there are no buttons - only a link to the thread with the
-// answer.
-export const AGENTS_DECIDED_SUMMARY = "Answered by the agents";
-
-function whoSettled(decider: OwnerQuestion["decider"]): string {
-  return decider === "setting" ? "a setting" : "the lead";
-}
-
+// answer. Which questions those are, and the words, live in tabs-state.ts.
 export function AgentsDecidedAudit({ questions, slug }: { questions: OwnerQuestion[]; slug: string }) {
   const [open, setOpen] = useState(false);
-  const hint = open ? null : <span>Settled by the lead or a setting; never counted as waiting for you.</span>;
+  const hint = open ? null : <span>{AGENTS_DECIDED_HINT}</span>;
   return (
     <div className="mb-4" data-agents-decided="">
       <Disclosure summary={<span>{AGENTS_DECIDED_SUMMARY} · {num(questions.length)}</span>} hint={hint} open={open} onToggle={setOpen}>
         <CardGrid cols={2}>
           {questions.map((x) => (
-            <ItemCard key={x.id} ariaLabel={"Settled by " + whoSettled(x.decider) + ": " + x.summary}>
+            <ItemCard key={x.id} ariaLabel={settledLabel(x)}>
               <ItemCardHeader right={<When d={x.date} />}>
                 <ItemCardKind icon={MessageCircleQuestionIcon}>Settled by {whoSettled(x.decider)}</ItemCardKind>
               </ItemCardHeader>
