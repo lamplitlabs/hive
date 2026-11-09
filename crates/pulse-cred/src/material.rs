@@ -96,10 +96,10 @@ mod tests {
                 source: String::new(),
             })
             .unwrap();
-        let info = fs::metadata(&m.key_path).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let info = fs::metadata(&m.key_path).unwrap();
             assert_eq!(info.permissions().mode() & 0o777, 0o600);
             assert_eq!(
                 fs::metadata(&m.dir).unwrap().permissions().mode() & 0o777,

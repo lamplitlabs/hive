@@ -83,6 +83,7 @@ pub const OPEN_FILES_SHORT: u64 = 1024;
 /// per-process cap when it names one (an unlimited hard limit means "as
 /// many as the kernel allows", and the kernel says how many that is), and
 /// never below what the process already has.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn raised(soft: u64, hard: u64, cap: Option<u64>) -> u64 {
     let want = match cap {
         Some(cap) => hard.min(cap),
