@@ -4085,6 +4085,154 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let ex = crate::executor::executor_row(&s, "hands");
         assert_eq!(ex.int("runs_done"), 1, "executor row not noted: {ex:?}");
     }
+    /// `executor.transport local-hand` (ADR-070 step 1b): this machine's
+    /// own job is leased to its `pulse-hand` over a pipe, the worker commits
+    /// in the hand's clone, the brain checks the commits' identity and the
+    /// hand pushes the branch with the key `push.credential` names, leased
+    /// to it for that one push and gone from its workdir afterwards.
+    #[test]
+    fn a_job_leased_to_a_local_pulse_hand_pushes_with_the_leased_credential() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let bin = crate::test_helpers::build_pulse();
+        let _stage = crate::test_helpers_staged_pulse::stage_local_pulse(&bin);
+        let s = crate::test_helpers::new_store();
+        let (proj, repo, bare) = crate::test_helpers_daemon::push_fixture(&s);
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
+            .unwrap();
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            crate::executor::TRANSPORT_SETTING,
+            crate::executor::TRANSPORT_LOCAL_HAND,
+        )
+        .unwrap();
+        // The upstream is reached over ssh; the hand's ssh is a stand-in
+        // that writes down the key it was given and serves the bare repo.
+        let tools = tempfile::tempdir().unwrap();
+        let seen = tools.path().join("seen.key");
+        let fake_ssh = tools.path().join("fake-ssh");
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 1 ]; do case \"$1\" in -i) shift; cat \"$1\" > '{}';; esac; shift; done\nexec sh -c \"$1\"\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        crate::test_helpers::run(".", &["chmod", "+x", fake_ssh.to_str().unwrap()]);
+        crate::test_helpers::run(
+            &repo,
+            &[
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                &format!("ssh://git.example.invalid{bare}"),
+            ],
+        );
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nleased-for-one-push\n-----END OPENSSH PRIVATE KEY-----";
+        let key_file = tools.path().join("push.key");
+        std::fs::write(&key_file, format!("{key}\n")).unwrap();
+        crate::test_helpers::run(".", &["chmod", "600", key_file.to_str().unwrap()]);
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            "push.credential",
+            &format!("file://{}", key_file.display()),
+        )
+        .unwrap();
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let old_hand = crate::executor::set_local_hand(Some((
+            crate::test_helpers_hands::pulse_hand_binary(),
+            vec![
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("PULSE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                (
+                    "PATH".into(),
+                    fake_path.trim_start_matches("PATH=").to_string(),
+                ),
+                ("PULSE_HANDS_SSH".into(), fake_ssh.display().to_string()),
+            ],
+        )));
+        struct Restore(Option<crate::executor::HandOverride>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::executor::set_local_hand(self.0.take());
+            }
+        }
+        let _hand = Restore(old_hand);
+        let job = crate::jobs::add_job(
+            &s,
+            proj.str("slug"),
+            "task".into(),
+            "hand push".into(),
+            "commit a note".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        let (run, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the hand'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(reason.is_empty(), "{reason}");
+        let log = std::fs::read_to_string(run.str("log")).unwrap_or_default();
+        assert_eq!(run.str("status"), "done", "run {run:?}\n{log}");
+        assert_eq!(run.str("executor"), crate::executor::LOCAL_EXECUTOR);
+        let workdir = std::path::Path::new(&s.home).join("hands");
+        assert!(
+            run.str("clone").starts_with(&workdir.display().to_string()),
+            "the clone is the hand's: {}",
+            run.str("clone")
+        );
+        let job = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+        assert_eq!(job.str("status"), "done");
+        let branch = job.str("branch");
+        let local = crate::util::git(&repo, &["rev-parse", &format!("refs/heads/{branch}")]);
+        let pushed = crate::util::git(&bare, &["rev-parse", &format!("refs/heads/{branch}")]);
+        assert!(local.ok() && pushed.ok(), "{branch} not pushed:\n{log}");
+        assert_eq!(pushed.stdout.trim(), local.stdout.trim());
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap().trim_end(),
+            key,
+            "the push used the leased key"
+        );
+        assert!(log.contains("with the leased push credential"), "{log}");
+        assert!(
+            !log.contains("leased-for-one-push"),
+            "the key is in the log"
+        );
+        let entries = std::fs::read_dir(&workdir)
+            .map(|rd| rd.collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(entries.is_empty(), "hand job dir not cleaned: {entries:?}");
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'hand.push'",
+                &[]
+            ),
+            1
+        );
+    }
     #[test]
     fn remote_run_through_a_local_pulse_hand() {
         let _serial = crate::test_helpers::serial();

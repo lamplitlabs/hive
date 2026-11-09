@@ -391,7 +391,7 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 os={} arch={} found={} cores={} mem_mb={}",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} pulse={pulsev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 push=1 os={} arch={} found={} cores={} mem_mb={}",
             self.workdir,
             dash(jobs),
             dash(keys),
@@ -620,6 +620,111 @@ impl Hands {
         }
         Ok(())
     }
+    /// Pushes the accepted commit `sha` of the job's clone to `refs/heads/HEAD`
+    /// at `url` with the credential the brain leased for this push (ADR-070
+    /// step 1b): an SSH private key on stdin, written beside the clone with
+    /// mode 0600 for the seconds of the push and removed whatever the push
+    /// did. An empty stdin pushes with what git on this machine already
+    /// uses. Only a `pulse/` branch, and only one the remote does not hold
+    /// yet: a branch already there (an open pull request a reviewer may have
+    /// pushed to) stays the brain's delivery to update, never this push's to
+    /// overwrite.
+    pub fn push(&mut self, job: &str, url: &str, sha: &str, head: &str) -> Result<()> {
+        let dir = self.job_dir(job)?;
+        let clone = self.clone_dir(job)?;
+        if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
+            return Err(hands_die("bad push url"));
+        }
+        if !Regex::new(r"^[0-9a-f]{40,64}$").unwrap().is_match(sha) {
+            return Err(hands_die("bad sha"));
+        }
+        if !HANDS_BRANCH_RE.is_match(head)
+            || !head.starts_with("pulse/")
+            || head.contains("..")
+            || head.ends_with('/')
+        {
+            return Err(hands_die("push: the branch must be a pulse/ branch"));
+        }
+        if !crate::util::git(&clone, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).ok() {
+            return Err(hands_die(format!(
+                "push: {sha} is not a commit of job {job}"
+            )));
+        }
+        let mut key = Vec::new();
+        self.stdin.read_to_end(&mut key)?;
+        while key.last().is_some_and(u8::is_ascii_whitespace) {
+            key.pop();
+        }
+        struct Remove(String);
+        impl Drop for Remove {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let mut env = Vec::new();
+        let _key_file = if key.is_empty() {
+            None
+        } else {
+            let head_text = String::from_utf8_lossy(&key[..key.len().min(64)]).to_string();
+            if !(head_text.starts_with("-----BEGIN ") && head_text.contains("PRIVATE KEY-----")) {
+                return Err(hands_die(
+                    "push: the leased credential is not an ssh private key",
+                ));
+            }
+            let path = format!("{dir}/push.key");
+            let guard = Remove(path.clone());
+            let mut f = {
+                let mut o = std::fs::OpenOptions::new();
+                o.write(true).create(true).truncate(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    o.mode(0o600);
+                }
+                o.open(&path).map_err(|e| hands_die(e.to_string()))?
+            };
+            f.write_all(&key)?;
+            f.write_all(b"\n")?;
+            drop(f);
+            // PULSE_HANDS_SSH names another ssh client (a test's stand-in,
+            // or one the machine's owner prefers); it gets the same flags.
+            let ssh = std::env::var("PULSE_HANDS_SSH")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "ssh".to_string());
+            env.push(format!(
+                "GIT_SSH_COMMAND={ssh} -oBatchMode=yes -oIdentitiesOnly=yes -oIdentityAgent=none -i '{}'",
+                path.replace('\'', r#"'\''"#)
+            ));
+            Some(guard)
+        };
+        let lease = format!("--force-with-lease=refs/heads/{head}:");
+        let r = crate::util::git_timeout_env(
+            &clone,
+            Duration::from_secs(300),
+            &env,
+            &[
+                "push",
+                "-q",
+                &lease,
+                url,
+                &format!("{sha}:refs/heads/{head}"),
+            ],
+        );
+        if !r.ok() {
+            write!(
+                self.stderr,
+                "{}{}",
+                r.stderr,
+                r.err.as_deref().unwrap_or("")
+            )?;
+            return Err(anyhow!(HandsExit {
+                code: if r.code == 0 { 1 } else { r.code }
+            }));
+        }
+        writeln!(self.stdout, "pushed {sha} {head}")?;
+        Ok(())
+    }
     pub fn drop_result(&mut self, job: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         if crate::util::git(&clone, &["ls-files", "--error-unmatch", "PULSE_RESULT.md"]).ok() {
@@ -804,6 +909,10 @@ impl Hands {
             "changed" => {
                 need(2, "changed JOB BASE")?;
                 self.changed(&rest[0], &rest[1])
+            }
+            "push" => {
+                need(4, "push JOB URL SHA BRANCH")?;
+                self.push(&rest[0], &rest[1], &rest[2], &rest[3])
             }
             "drop-result" => {
                 need(1, "drop-result JOB")?;
@@ -1140,6 +1249,95 @@ mod tests {
         ] {
             assert!(!hands_allowed_worker(&argv(&bad)), "{bad:?} allowed");
         }
+    }
+
+    #[test]
+    fn hands_push_uses_the_leased_key_and_removes_it() {
+        let _serial = crate::test_helpers::serial();
+        let job = "job-20261109T000000Z-push01";
+        let workdir = tempfile::tempdir().unwrap();
+        let clone = workdir.path().join(job).join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        let run = |args: &[&str]| crate::test_helpers::run(&clone, args);
+        run(&["git", "init", "-q", "-b", "main"]);
+        run(&["git", "config", "user.name", "t"]);
+        run(&["git", "config", "user.email", "t@x"]);
+        run(&["git", "commit", "-q", "--allow-empty", "-m", "work"]);
+        let sha = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&clone)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let origin = workdir.path().join("origin.git");
+        crate::test_helpers::run(
+            workdir.path(),
+            &["git", "init", "-q", "--bare", "origin.git"],
+        );
+        // A stand-in ssh: it records the key it was given, then runs the
+        // remote command locally.
+        let seen = workdir.path().join("seen.key");
+        let fake = workdir.path().join("fake-ssh");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 1 ]; do case \"$1\" in -i) shift; cat \"$1\" > '{}';; esac; shift; done\nexec sh -c \"$1\"\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        unsafe { std::env::set_var("PULSE_HANDS_SSH", &fake) };
+        let url = format!("ssh://example.invalid{}", origin.display());
+        let key =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nleased\n-----END OPENSSH PRIVATE KEY-----\n";
+        let wd = workdir.path().display().to_string();
+
+        let mut h = make_hands(&wd, "junk");
+        let err = h
+            .push(job, &url, &sha, "pulse/a/job")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not an ssh private key"), "{err}");
+        let mut h = make_hands(&wd, key);
+        let err = h.push(job, &url, &sha, "main").unwrap_err().to_string();
+        assert!(err.contains("pulse/ branch"), "{err}");
+
+        let mut h = make_hands(&wd, key);
+        h.push(job, &url, &sha, "pulse/a/job").unwrap();
+        unsafe { std::env::remove_var("PULSE_HANDS_SSH") };
+        assert_eq!(std::fs::read_to_string(&seen).unwrap(), key);
+        assert!(!workdir.path().join(job).join("push.key").exists());
+        let got = std::process::Command::new("git")
+            .args(["rev-parse", "refs/heads/pulse/a/job"])
+            .current_dir(&origin)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&got.stdout).trim(), sha);
+
+        // A branch the remote already holds is not this push's to move.
+        run(&["git", "commit", "-q", "--allow-empty", "-m", "more"]);
+        let mut h = make_hands(&wd, "");
+        let again = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&clone)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let url = format!("file://{}", origin.display());
+        assert!(h.push(job, &url, again.trim(), "pulse/a/job").is_err());
     }
 
     #[test]

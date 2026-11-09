@@ -472,6 +472,22 @@ pub(crate) fn push_credential_env(
     (env, Box::new(move |_, _| material.cleanup()), String::new())
 }
 
+/// The push credential leased to a hand for one push (ADR-070 step 1b):
+/// the key `push.credential` names, resolved here on the brain, or empty
+/// when the setting is unset (the hand pushes with what git there already
+/// uses). Err says why the reference could not be read, never the key.
+pub(crate) fn push_credential_key(s: &pulse_store::Store) -> Result<Vec<u8>, String> {
+    let ref_ = s.setting("push.credential", "").trim().to_string();
+    if ref_.is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed = pulse_cred::parse(&ref_).map_err(|e| e.to_string())?;
+    pulse_cred::new(&s.home)
+        .resolve(parsed)
+        .map(|secret| secret.key)
+        .map_err(|e| pulse_cred::redact(&e.to_string(), &[]))
+}
+
 pub(crate) fn push_env(root: String) -> Vec<String> {
     if std::env::var("GIT_SSH_COMMAND").unwrap_or_default() != ""
         || !crate::util::git_timeout(

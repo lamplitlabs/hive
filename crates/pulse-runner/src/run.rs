@@ -1614,7 +1614,18 @@ pub(crate) fn run_job(
                     env.insert(k.clone(), v.clone());
                 }
             }
-            env.insert("PULSE_CLI".into(), remote_pulse_cli(recipe.as_ref()));
+            // A local pulse-hand runs on this machine: its worker uses this
+            // pulse, unless the recipe names one.
+            let cli = if ex.pushes()
+                && recipe
+                    .as_ref()
+                    .is_none_or(|r| crate::recipe::recipe_pulse_cli(r).is_empty())
+            {
+                crate::exec::local_cli(&home)
+            } else {
+                remote_pulse_cli(recipe.as_ref())
+            };
+            env.insert("PULSE_CLI".into(), cli);
             if !pins.is_empty() {
                 for kv in crate::recipe::mise_env(&clone) {
                     env.insert(kv[0].clone(), kv[1].clone());
@@ -2335,6 +2346,18 @@ pub(crate) fn run_job(
                                     &root,
                                     &["update-ref", &format!("refs/heads/{branch}"), &holding],
                                 )?;
+                                if ex.pushes() {
+                                    log.add(push_from_hand(
+                                        s,
+                                        ex.as_ref(),
+                                        &project,
+                                        &root,
+                                        &branch,
+                                        &holding,
+                                        agent,
+                                        now,
+                                    ));
+                                }
                                 status = "done".into();
                                 summary = if parsed.summary.is_empty() {
                                     format!("{commits} commit(s) landed on {branch}")
@@ -3721,6 +3744,73 @@ pub(crate) fn cli_on_path(path_env: &str, exe: &str) -> String {
             path_env
         )
     }
+}
+
+/// A local `pulse-hand` pushes the commits the identity check accepted,
+/// from its own clone, with the push credential the brain leases it for
+/// that one push (ADR-070 step 1b): `push.credential` resolved here and
+/// handed over on the verb's stdin, never written into the run's env. A
+/// project without an upstream lands locally and nothing is pushed; a push
+/// that fails is left to the delivery pass, which pushes the same branch
+/// from the checkout. Returns the log line.
+#[allow(clippy::too_many_arguments)]
+fn push_from_hand(
+    s: &pulse_store::Store,
+    ex: &dyn crate::exec::Executor,
+    project: &Row,
+    root: &str,
+    branch: &str,
+    holding: &str,
+    agent: &str,
+    now: &str,
+) -> String {
+    let def = crate::baseline::default_branch(project.clone());
+    let Some(up) = crate::forge::upstream_of(root, &def) else {
+        return "hand push skipped: the project has no upstream; it lands locally".into();
+    };
+    let sha = crate::util::git(root, &["rev-parse", "--verify", "-q", holding])
+        .stdout
+        .trim()
+        .to_string();
+    let key = match crate::forge::push_credential_key(s) {
+        Ok(k) => k,
+        Err(why) => {
+            return format!(
+                "hand push skipped: push.credential could not be read ({why}); the delivery pass pushes {branch}"
+            );
+        }
+    };
+    let leased = !key.is_empty();
+    let (line, ok) = match ex.push_from_hand(&up.url, &sha, branch, &key) {
+        Ok(out) => (
+            format!(
+                "{} pushed {branch} to {}{}: {out}",
+                ex.name(),
+                up.name(),
+                if leased {
+                    " with the leased push credential"
+                } else {
+                    ""
+                }
+            ),
+            true,
+        ),
+        Err(e) => (
+            format!("hand push failed, the delivery pass pushes {branch}: {e}"),
+            false,
+        ),
+    };
+    if let Ok(c) = s.conn() {
+        crate::util::event_at(
+            &c,
+            now,
+            agent,
+            if ok { "hand.push" } else { "hand.push_failed" },
+            branch,
+            json!({"executor": ex.name(), "sha": sha, "remote": up.name(), "leased": leased}),
+        );
+    }
+    line
 }
 
 pub(crate) fn remote_pulse_cli(recipe: Option<&crate::recipe::Recipe>) -> String {
