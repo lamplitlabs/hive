@@ -135,10 +135,15 @@ the brain is where PULSE changes. Every project's digest (`pulse board`,
 `pulse reflect`) lists the shared board: a NOTICES line with its open
 questions, unresolved lessons and how long it has been quiet, and a SHARED
 BOARD section with the newest unresolved threads and the project each came
-from. The brain's research runs with the `board` focus read it and turn each
-wish still worth it into a card of their own, then close the commons post
-with `pulse post result --project commons --on ID --resolution promoted`
-(or `declined` with the reason); any other project's `board` focus checks
+from. No ballot votes on it: the brain triages it. While the shared board has
+open posts, the brain's planner queues a triage job before its research, at
+most every twelve hours (`Shared board: promote or decline N open post(s)`,
+source `shared-board:`): it lists the twenty oldest open posts, promotes each
+wish still worth it into a card of its own (`Signal:` the commons post id),
+declines the rest with the reason, and closes a post that repeats another as
+`declined` naming the first - `pulse post result --project commons --on ID
+--resolution promoted|declined`. The brain's research runs with the `board`
+focus do the same in their turn; any other project's `board` focus checks
 the project against the recorded pitfalls. `pulse reflect` names a shared
 board quiet for more than fourteen days under HEALTH CHECKS, with the two
 ways to feed it.

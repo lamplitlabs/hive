@@ -219,7 +219,7 @@ pub static COMPUTE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
     m
 });
 pub static EVOLVE_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.heal"=>"on","evolve.flat_wait_hours"=>"24","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","evolve.mode"=>"fixtures","evolve.canary_share"=>"20","evolve.canaries_per_island"=>"3","evolve.keep_days"=>"7","evolve.guard_margin"=>"10","evolve.min_trials"=>"40","evolve.promote_confidence"=>"0.95","evolve.replay_set"=>"20","evolve.trigger_failures"=>"5","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
+    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.land_neutral"=>"on","evolve.experiments_in_flight"=>"2","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.heal"=>"on","evolve.flat_wait_hours"=>"24","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","evolve.mode"=>"fixtures","evolve.canary_share"=>"20","evolve.canaries_per_island"=>"3","evolve.keep_days"=>"7","evolve.guard_margin"=>"10","evolve.min_trials"=>"40","evolve.promote_confidence"=>"0.95","evolve.replay_set"=>"20","evolve.trigger_failures"=>"5","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
 );
 pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -231,6 +231,8 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "evolve.draft_hours"=>("count",Some(0),[],None,"hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button"),
         "evolve.measure_parallel"=>("count",Some(0),[],None,"fixtures one measurement may run at once; 0 or 1 keeps fixture measurement sequential. Each fixture's build gets the cores divided by this (CARGO_BUILD_JOBS) and every measurement process runs at nice 10"),
         "evolve.flat_cycles"=>("count",Some(0),[],None,"experiment cycles in a row that all tie (variant score = baseline score) before the loop pauses with one owner question on the project's evolution/loop-gate thread; a fixture enabled since, or an answer or decision on that question, lets it run again; at least 2, and 0 turns the gate off"),
+        "evolve.land_neutral"=>("choice",None,["on","off"],None,"on: an experiment that measured as a tie - no fixture moved past evolve.tolerance either way - lands like an improvement, without the credit an improvement earns; off: only an improvement lands, and a tie is archived neutral with its branch dropped. A variant that was never measured, or regressed, never lands"),
+        "evolve.experiments_in_flight"=>("count",Some(1),[],Some(8.0),"how many experiments one project may have in flight at once; each measures on clones of its own against the same baseline, so more in flight tries more voted cards a day for more of the machine"),
         "evolve.heal"=>("choice",None,["on","off"],None,"on: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's own tree (test declarations, TODO markers) and re-arms a derived fixture whose count reached its scale - and posts what it did as a finding on evolution/loop-gate; off: the gate waits for the owner alone"),
         "evolve.flat_wait_hours"=>("count",Some(0),[],None,"hours the flat-fixture gate's owner question may stay unanswered before the planner reviews it itself (an answer post in the loop's name that lets the project run evolve.flat_cycles more cycles; it asks again after that many more tied cycles); 0 waits for the owner"),
         "evolve.baseline_ttl_hours"=>("count",Some(0),[],None,"hours an experiment lane may reuse a measured default-branch baseline for the same commit and fixture hash; 0 means cached baselines never expire"),
@@ -467,6 +469,10 @@ fn incumbent_rule(name: &str) -> Option<SettingRule> {
 /// Whether a change that touches a screen must bring its before/after
 /// report (`pulse report`) before it lands: `require`, `warn` or `off`.
 pub const UI_REPORT: &str = "landing.ui_report";
+/// Whether a measured tie lands (evolve.land_neutral).
+pub const EVOLVE_LAND_NEUTRAL: &str = "evolve.land_neutral";
+/// How many experiments one project may have in flight.
+pub const EVOLVE_EXPERIMENTS_IN_FLIGHT: &str = "evolve.experiments_in_flight";
 /// The per-project form of `landing.ui_report`: `landing.ui_report.<slug>`
 /// takes the same values for one project and, unset, the project follows
 /// the machine's setting. A family keyed by project like the incumbent

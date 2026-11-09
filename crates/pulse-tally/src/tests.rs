@@ -2918,6 +2918,40 @@ fn plan_gate_outcomes() {
         "",
         &["up", "up"],
     );
+    // A check's command words are no paths: the File is the other gates'.
+    let file_check_signal = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "71",
+        "runner-worker/model",
+        "check-signal",
+        "Worker card whose evidence is a check",
+        "Class: operating-layer\nFile: crates/src/redbase.rs\nVariable: redbase landing\nTier: 1\nSignal: check:cargo test -p pulse-runner --lib landing_pr",
+        "",
+        &["up", "up"],
+    );
+    // The Signal names the evidence in another file; the Variable's code
+    // identifier is in the File, so the variable still lives there.
+    let file_variable_ident = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "72",
+        "runner-worker/model",
+        "variable-ident",
+        "Worker card whose evidence lives in another file",
+        "Class: operating-layer\nFile: crates/src/redbase.rs\nVariable: make redbase() count mark.failures once\nTier: 1\nSignal: docs/eval.md",
+        "",
+        &["up", "up"],
+    );
+    // The same identifiers in a File that holds neither: still stale.
+    let file_variable_gone = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "73",
+        "runner-worker/model",
+        "variable-gone",
+        "Worker card naming a file its variable's code is not in",
+        "Class: operating-layer\nFile: docs/eval.md\nVariable: make redbase() count mark.failures once\nTier: 1\nSignal: crates/src/redbase.rs",
+        "",
+        &["up", "up"],
+    );
     // The owner gate reads the File (what the job edits), not the Signal
     // (what the worker read): a card on an agent-writable file whose evidence
     // cites an ADR plans; a card whose File is a workflow is the owner's.
@@ -3082,6 +3116,9 @@ fn plan_gate_outcomes() {
         (file_new.as_str(), ""),
         (file_stale.as_str(), GATE_FILE_STALE),
         (file_matches_path.as_str(), ""),
+        (file_check_signal.as_str(), ""),
+        (file_variable_ident.as_str(), ""),
+        (file_variable_gone.as_str(), GATE_FILE_STALE),
         (file_agent_owner_signal.as_str(), ""),
         (file_owner.as_str(), GATE_OWNER_PATHS),
         (clone_evidence.as_str(), ""),

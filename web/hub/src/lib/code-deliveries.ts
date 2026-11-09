@@ -22,8 +22,11 @@ export function codeDeliveryKpiSub(d: CodeDeliveriesPayload | undefined, loading
   if (error && !d) return "Couldn't load";
   if (!d) return loading ? "Loading the latest merges" : "Not loaded yet";
   if (codeDeliveryIncompleteWindow(d)) return "The search stopped early; older merges are left to check";
+  if (!d.scope.scanned) return "No merges yet";
   let line = many(d.summary.code_files, "source file") + " changed in " + many(d.scope.scanned, "merge") + " checked";
-  const unknown = Math.max(d.summary.unknown, d.unavailable.length);
+  const pending = codeDeliveryPending(d);
+  const unknown = Math.max(d.summary.unknown, d.unavailable.length) - pending;
+  if (pending) line += "; " + n(pending) + " still being read";
   if (unknown) line += "; " + n(unknown) + " couldn't be checked";
   return line;
 }
@@ -54,9 +57,63 @@ export function codeDeliveryCoverageText(d: CodeDeliveriesPayload): string {
     bits.push("Left out " + left.join(" and ") + ".");
   }
   if (s.duplicates) bits.push("Counted " + many(s.duplicates, "repeated merge") + " once.");
-  if (s.unknown) bits.push(many(s.unknown, "merge") + " couldn't be checked, so " + (s.unknown === 1 ? "it isn't" : "they aren't") + " counted, not even as zero.");
-  if (!s.code_deliveries && !s.unknown && d.unavailable.length === 0) bits.push("Every merge here was checked, so zero really means none.");
+  const pending = Math.min(codeDeliveryPending(d), s.unknown);
+  const unknown = s.unknown - pending;
+  if (pending) bits.push(many(pending, "merge") + " " + (pending === 1 ? "is" : "are") + " still being read, so " + (pending === 1 ? "it isn't" : "they aren't") + " counted yet.");
+  if (unknown) bits.push(many(unknown, "merge") + " couldn't be checked, so " + (unknown === 1 ? "it isn't" : "they aren't") + " counted, not even as zero.");
+  if (!d.scope.scanned) bits.push("No merges were found, so there is nothing to count yet.");
+  else if (!s.code_deliveries && !s.unknown && d.unavailable.length === 0) bits.push("Every merge here was checked, so zero really means none.");
   return bits.join(" ");
+}
+
+// The reason the runner gives a pull request merged on the forge whose
+// changed files it has not gathered yet (pulse-codedelivery
+// REASON_EVIDENCE_PENDING); it gathers them on its next passes.
+export const CODE_DELIVERY_PENDING_REASON = "The merged pull request's changed files are not gathered yet";
+
+export function codeDeliveryPending(d: CodeDeliveriesPayload | undefined): number {
+  return d ? d.unavailable.filter((row) => row.reason === CODE_DELIVERY_PENDING_REASON).length : 0;
+}
+
+export type CodeDeliveryEmpty = { kind: "incomplete" | "pending" | "unknown" | "no-merges" | "no-code"; title: string; body: string; tone: CodeDeliveryKpiTone };
+
+// What the page says when a page of results holds no code change, and why:
+// a zero is only called real when every merge was read and none changed
+// code, and no merges at all is said as that, not as "every merge checked".
+export function codeDeliveryEmptyState(d: CodeDeliveriesPayload): CodeDeliveryEmpty | null {
+  if (d.deliveries.length) return null;
+  const s = d.summary;
+  const where = d.scope.project ? " in " + d.scope.project : "";
+  if (codeDeliveryIncompleteWindow(d)) {
+    return { kind: "incomplete", title: "The search stopped early", body: "It ran out of room before it reached any merges, so this is not a real zero. Use Older to keep looking further back.", tone: "warn" };
+  }
+  const pending = codeDeliveryPending(d);
+  if (pending) {
+    return {
+      kind: "pending",
+      title: "Still reading the latest merges",
+      body: many(pending, "merged pull request") + where + (pending === 1 ? " is" : " are") + " waiting for the runner to read which files " + (pending === 1 ? "it" : "they") + " changed. It reads a few on each pass, so the count fills in within minutes. This is not a real zero.",
+      tone: "warn",
+    };
+  }
+  if (s.unknown || d.unavailable.length) {
+    return { kind: "unknown", title: "Nothing proven yet", body: "Some merges here couldn't be checked, so this is not a real zero. See the list below, or look at older merges.", tone: "warn" };
+  }
+  if (!d.scope.scanned) {
+    return {
+      kind: "no-merges",
+      title: "No merges yet",
+      body: "No finished work has merged" + where + " yet, so there is nothing to count. Work that agents finish shows up here once its pull request merges.",
+      tone: "neutral",
+    };
+  }
+  const left = [s.docs_only ? many(s.docs_only, "merge") + " only changed docs" : "", s.non_code ? many(s.non_code, "merge") + " changed no code" : ""].filter(Boolean);
+  return {
+    kind: "no-code",
+    title: "No code changes here",
+    body: "Every merge here was checked, and none of them changed source code, tests or styles" + (left.length ? " (" + left.join(", ") + ")" : "") + ". Finished work that changes code shows up here as it merges.",
+    tone: "neutral",
+  };
 }
 
 export function shortCommit(sha: string): string {

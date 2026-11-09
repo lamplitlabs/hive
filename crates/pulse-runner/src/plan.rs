@@ -1068,6 +1068,15 @@ A quiet run is a completed task: when the checks pass and you find nothing to fi
             }
         }
     }
+    // The brain works the shared board before it researches: no ballot votes
+    // on what the other projects left there (research.rs plan_shared_board).
+    if created.is_empty() {
+        let (job, is_new) =
+            crate::research::plan_shared_board(s, slug.clone(), now.clone(), created_by.clone())?;
+        if is_new {
+            created.push(job);
+        }
+    }
     if created.is_empty() {
         let (job, is_new) = crate::research::plan_research(s, slug, now, created_by)?;
         if is_new {
@@ -3600,6 +3609,9 @@ mod tests {
         let s = new_store();
         new_repo(&s);
         crate::test_helpers_daemon::evolve_plan_ready(&s);
+        // One experiment at a time: the second tick builds the improve job.
+        s.set_setting("human", pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT, "1")
+            .unwrap();
         for name in ["proposer", "voter-one", "voter-two", "voter-three"] {
             join(&s, name);
         }

@@ -301,7 +301,12 @@ gives the baseline headroom when governance fixtures already score `1.0`:
 score metric --higher --scale S -- CMD ARGS...'`. The helper takes the last
 number printed by `CMD`; `--higher` scores `min(1, raw/S)`, `--lower` scores
 `S/(S+raw)`, and `--floor F` clamps the final score upward. A metric fixture
-is deterministic and runs once per measurement. A judge-scored fixture - every
+is deterministic and runs once per measurement, so its command must be: a
+scorer that reads coverage from Node's test runner passes
+`--experimental-test-isolation=none` with `--experimental-test-coverage`,
+because with one process per test file the merged report changes from run to
+run (the hub's `src/lib` line coverage read 81.6 to 89.1 on one tree, and
+89.1 every time without isolation). A judge-scored fixture - every
 request fixture (the `starter-*` set and your own non-metric ones) and every
 held-out `H*` fixture, whose score depends on a model's answer - runs three
 times per measurement, each run in a fresh clone of the measured commit and a
@@ -465,7 +470,10 @@ with an upstream: the per-project landing workers (`landing.parallel`) are
 gone with the verifies they were made to get through, and the batch landing
 (`landing.batch`) is removed; a project without one lands its branches one
 at a time. Experiments stay on a
-second thread, the experiment lane, which measures one experiment at a time;
+second thread, the experiment lane, which measures one experiment at a time
+(up to `evolve.experiments_in_flight` experiments, two by default, are in
+flight per project: their workers make their changes side by side, each on a
+voted card of its own, and the lane measures and lands them in turn);
 a ninety-minute measurement therefore holds no delivery. The lane obeys the
 load governor: while the machine is saturated (the `machine saturated` hold
 below) it does not start a measurement - the log says `landing experiment
@@ -497,7 +505,13 @@ unmeasured, so the worker brief asks every card to name a check that will move
 tie whose card-check score rose counts as `improved`. Held-out fixtures are
 mostly pass/fail, so a voted change that keeps every fixture green measures
 as an exact tie; over one month 178 of 220 kept experiments were such ties
-(113 exact zero deltas), which is why ties stopped landing. A claimed gain
+(113 exact zero deltas), which is why ties stopped landing - and why the owner
+can let them land again: with `evolve.land_neutral` on (the default since
+2026-11-08, when 76 of 85 experiments had tied and nothing the loop tried
+reached the owner) a measured tie lands like an improvement - the verdict says
+`landed: evolve.land_neutral is on` and the row is kept - but earns no
+lineage credit; a variant that was never measured, or regressed, never lands.
+`pulse settings set evolve.land_neutral off` restores the strict rule. A claimed gain
 must reproduce: when the first measurement says `improved`, the lane measures
 the variant once more on the same fixtures (the baseline is the cached one)
 and the gain stands only when the second measurement also says `improved`;
@@ -738,6 +752,10 @@ record, read with `pulse record show WF-evolve`.
 | `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`pulse toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `pulse goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
+
+The drafting, held-out directory and variant-loop gates (`evolve.draft_hours`,
+`evolve.heldout_dir`, `evolve.canary_share` and the rest) are listed with
+their defaults in [Evolve settings](evolve.md).
 
 These are defaults, not the owner's effective values. Read those with
 `pulse settings get NAME` or `pulse settings list --json` (also includes

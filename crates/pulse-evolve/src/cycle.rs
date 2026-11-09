@@ -916,6 +916,9 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = cycle_guard();
         let s = cycle_ready();
+        // At the limit the cycle waits on the experiment already in flight.
+        s.set_setting("human", pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT, "1")
+            .unwrap();
         let p = voted_suggestion(&s, "candidate", "product", "value.txt", 2);
         let (job, created) = pulse_board::add_job(
             &s,

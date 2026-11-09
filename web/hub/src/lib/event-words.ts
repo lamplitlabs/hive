@@ -78,6 +78,7 @@ export const VERB: Record<string, string> = {
   "land.pr-rebuilt": "rebuilt a pull request without the commits of the one it built on, which was closed",
   "land.rebase": "asked a worker to redo finished work that no longer fits on main",
   "land.merged": "saw a pull request merged",
+  "land.evidence": "read which files a merged pull request changed",
   "land.missing": "found a finished job's branch missing, so it never arrived",
   "land.measured": "measured how a merged change affected the work after it",
   // review.rs: the pull request review loop.
@@ -174,6 +175,27 @@ export const VERB: Record<string, string> = {
   "agent.join": "joined as a new agent",
   "agent.resume": "came back for another session",
   "agent.prune": "let go of an agent that had done nothing useful for a while",
+  // pulse-cred-setup setup.rs: the push credential (push.credential).
+  "cred.set": "saved the credential PULSE pushes with",
+  "cred.clear": "removed the credential PULSE pushes with",
+  // pulse-harness conversation.rs WAKE_ACTION/FINISH_ACTION: a message for a
+  // conversation (`pulse chat wake`), its pull request merged.
+  "chat.wake": "woke a conversation with a message",
+  "chat.finish": "finished a conversation whose pull request was merged",
+  // pulse-goals review.rs AMEND_ACTION: a decided goal proposal applied.
+  "goal.amend": "set the project\u2019s goal from an accepted proposal",
+  // pulse-tally amend.rs: a voted amendment written into the rules.
+  "constitution.amended": "changed the project\u2019s rules after a vote",
+  // pulse-hooks hooks.rs: a script or web address run on an event.
+  "hook.added": "added a hook that runs when something happens",
+  // pulse-store store.rs: a setting PULSE dropped is removed on upgrade.
+  "setting.retired": "removed a setting PULSE no longer uses",
+  // The project's own PULSE files (.pulse/automations, .pulse/pulse.yaml,
+  // skill folders) read off the default branch: pulse-tasks manifest.rs and
+  // the runner's manifest.rs.
+  "manifest.synced": "applied the project\u2019s PULSE files from its default branch",
+  "manifest.problems": "found problems in the project\u2019s PULSE files",
+  "manifest.problems_cleared": "saw the problems in the project\u2019s PULSE files fixed",
 };
 
 // The tool connections and skills an event names: "added the skill
@@ -284,6 +306,8 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   if (a === "schedule.ran" && FAILING.has(str(d?.state))) return "ran a scheduled check, which failed";
   if (a === "schedule.ran" && PASSING.has(str(d?.state))) return "ran a scheduled check, which passed";
   if (a === "schedule.red" && str(d?.kind) === "watch") return "saw a watched script stop working";
+  if (a === "goal.amend" && d?.applied === false) return "could not set the project\u2019s goal from an accepted proposal";
+  if (a === "manifest.synced" && names(d?.problems).length) return VERB[a] + ", some with problems";
   if (VERB[a]) return a.startsWith("land.") || a.startsWith("review.") ? namePr(VERB[a], d) : VERB[a];
   return a
     .replace(/[._-]+/g, " ")
@@ -331,5 +355,10 @@ export function eventDetailText(e: Pick<StoreEvent, "action" | "detail">): strin
   // A changed tool connection or skill names what changed.
   if ((a === "mcp.updated" || a === "skill.updated") && names(o.changed).length) return "Changed: " + firstFive(names(o.changed));
   if (a === "project.forgotten" && typeof o.total === "number") return o.total + " stored row" + (o.total === 1 ? "" : "s") + " removed";
+  if (a === "goal.amend" && o.applied === false && str(o.why)) return str(o.why);
+  if (a === "manifest.synced" || a === "manifest.problems") {
+    const problems = names(o.problems);
+    if (problems.length) return firstFive(problems);
+  }
   return "";
 }

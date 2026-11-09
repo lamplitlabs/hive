@@ -93,13 +93,13 @@ pub(crate) fn loop_claims(
     }
     let mut claims = Vec::new();
     let mut reason = String::new();
-    if let Some(id) = in_flight_experiment(s, project, true)? {
-        if let Some(job) = pulse_board::job_by_id(s, &id)?
-            && let Some(rest) = job.source.strip_prefix("suggestion:")
-        {
+    for (id, source) in in_flight_experiments(s, project, true)? {
+        if let Some(rest) = source.strip_prefix("suggestion:") {
             claims.push(rest.to_string());
         }
-        reason = format!("an experiment is in flight: {id}");
+        if reason.is_empty() {
+            reason = format!("an experiment is in flight: {id}");
+        }
     }
     let result =
         match pulse_tally::compute_light(s, project, "", pulse_tally::Thresholds::default()) {
@@ -266,13 +266,26 @@ pub(crate) fn plan_experiment_locked(
             ..Default::default()
         });
     }
-    if let Some(id) = in_flight_experiment(s, project, true)? {
+    // Up to evolve.experiments_in_flight experiments go at once: each
+    // worker's change is made beside the others', the lane measures and lands
+    // them one at a time. A card in flight is not planned twice.
+    let in_flight = in_flight_experiments(s, project, true)?;
+    let limit = s
+        .setting_int(pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT)
+        .max(1) as usize;
+    if let Some((id, _)) = in_flight.first()
+        && in_flight.len() >= limit
+    {
         return Ok(PlanResult {
             job_id: id.clone(),
             reason: format!("an experiment is in flight: {id}"),
             ..Default::default()
         });
     }
+    let busy: std::collections::BTreeSet<String> = in_flight
+        .iter()
+        .filter_map(|(_, source)| source.strip_prefix("suggestion:").map(str::to_string))
+        .collect();
     let result =
         match pulse_tally::compute_light(s, project, "", pulse_tally::Thresholds::default()) {
             Ok(r) => r,
@@ -342,6 +355,9 @@ pub(crate) fn plan_experiment_locked(
     let mut card_created = false;
     for candidate in candidates {
         let p = candidate.post;
+        if busy.contains(&p.id) {
+            continue;
+        }
         let mut card = match crate::card::make_card(s, &p, &status) {
             Ok(card) => card,
             Err(e) => {
@@ -745,6 +761,20 @@ pub(crate) fn in_flight_experiment(
     project: &str,
     include_landing: bool,
 ) -> Result<Option<String>> {
+    Ok(in_flight_experiments(s, project, include_landing)?
+        .into_iter()
+        .next()
+        .map(|(id, _)| id))
+}
+
+/// Every experiment of `project` in flight (queued, leased, or - with
+/// `include_landing` - finished and waiting for or on the experiment lane),
+/// newest first: its job id and source (`suggestion:<post id>`).
+pub(crate) fn in_flight_experiments(
+    s: &pulse_store::Store,
+    project: &str,
+    include_landing: bool,
+) -> Result<Vec<(String, String)>> {
     let landing = if include_landing {
         r#" OR (status = 'done' AND (branch != '' OR EXISTS (
 			SELECT 1 FROM runs r WHERE r.job_id = jobs.id AND r.status = 'running')))"#
@@ -752,12 +782,16 @@ pub(crate) fn in_flight_experiment(
         ""
     };
     let q = format!(
-        r#"SELECT id FROM jobs WHERE project = ? AND kind = 'experiment'
+        r#"SELECT id, source FROM jobs WHERE project = ? AND kind = 'experiment'
 		AND (status IN ('queued', 'leased'){landing})
-		ORDER BY created_at DESC, rowid DESC LIMIT 1"#
+		ORDER BY created_at DESC, rowid DESC"#
     );
     let conn = s.conn()?;
-    Ok(conn.query_row(&q, [project], |r| r.get(0)).optional()?)
+    let mut stmt = conn.prepare(&q)?;
+    let rows = stmt
+        .query_map([project], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+    Ok(rows)
 }
 
 pub(crate) fn thread_has_card(
@@ -1200,10 +1234,62 @@ mod tests {
         );
     }
     #[test]
+    fn a_second_experiment_goes_beside_the_first_and_no_card_twice() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = plan_test_lock();
+        set_read_plan_preflight(None);
+        let s = cycle_ready();
+        let first = voted_suggestion_with_votes(
+            &s,
+            "first-card",
+            "operating-layer",
+            "README.md",
+            &["up", "up"],
+        );
+        let second = voted_suggestion_with_votes(
+            &s,
+            "second-card",
+            "operating-layer",
+            "README.md",
+            &["up", "up"],
+        );
+        let plan = || {
+            plan_experiment(
+                &s,
+                "demo",
+                PlanOptions {
+                    agent: "tester".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // The default lets two go at once, each on a card of its own.
+        let one = plan();
+        assert!(one.created, "{one:?}");
+        let two = plan();
+        assert!(two.created, "{two:?}");
+        let mut planned = vec![one.suggestion.clone(), two.suggestion.clone()];
+        planned.sort();
+        let mut want = vec![first.id.clone(), second.id.clone()];
+        want.sort();
+        assert_eq!(planned, want, "the card in flight is not planned again");
+        // Two in flight is the limit.
+        let three = plan();
+        assert!(!three.created, "{three:?}");
+        assert!(
+            three.reason.starts_with("an experiment is in flight: "),
+            "{three:?}"
+        );
+    }
+    #[test]
     fn plan_experiment_in_flight_experiment() {
         let _serial = crate::test_helpers::serial();
         let _guard = plan_test_lock();
         let s = cycle_ready();
+        // One at a time: the in-flight one blocks the next.
+        s.set_setting("human", pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT, "1")
+            .unwrap();
         let (job, created) = pulse_board::add_job(
             &s,
             pulse_board::JobInput {
@@ -1235,6 +1321,9 @@ mod tests {
         assert!(!result.created);
 
         let s = cycle_ready();
+        // One at a time: the in-flight one blocks the next.
+        s.set_setting("human", pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT, "1")
+            .unwrap();
         let (job, created) = pulse_board::add_job(
             &s,
             pulse_board::JobInput {
@@ -2474,6 +2563,9 @@ mod tests {
         let s = cycle_ready();
         let candidate = voted_suggestion(&s, "candidate", "operating-layer", "README.md", 2);
         s.set_setting("human", "evolve.limits", "cycles=1").unwrap();
+        // At the limit every caller shares the one reservation.
+        s.set_setting("human", pulse_store::EVOLVE_EXPERIMENTS_IN_FLIGHT, "1")
+            .unwrap();
         let other = pulse_store::Store::open(pulse_store::Options {
             home: s.home.clone(),
             now: s.now(),

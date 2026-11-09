@@ -53,6 +53,21 @@ export async function load(url, context, nextLoad) {
     const name = url.slice(url.indexOf("/.stub-") + "/.stub-".length, -".mjs".length).replace("-", "/");
     return { format: "module", source: STUBS[name], shortCircuit: true };
   }
+  if (url.endsWith(".ts") && url.includes("/src/")) {
+    // Plain .ts goes through node's own type stripping, which keeps every
+    // offset, so coverage of a module loaded after this loader registers
+    // (one process under --experimental-test-isolation=none) still lines up
+    // with its source. transpileModule's shorter output would leave the
+    // module's tail counted as uncovered (and its lines shifted). Syntax
+    // stripping cannot erase (enums, namespaces) falls through to the
+    // transpile below. Like a test importing a .ts directly, a stripped module
+    // must import its types with `import type`.
+    try {
+      return await nextLoad(url, context);
+    } catch (e) {
+      if (e?.code !== "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX") throw e;
+    }
+  }
   if (url.endsWith(".tsx") || (url.endsWith(".ts") && url.includes("/src/"))) {
     const source = await readFile(fileURLToPath(url), "utf8");
     const out = ts.transpileModule(source, {

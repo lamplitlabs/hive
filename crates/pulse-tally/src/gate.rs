@@ -480,10 +480,36 @@ pub fn signal_matches_file(project_path: &str, file: &str, signal: &str) -> bool
     if signal_names_file && path.exists() {
         return true;
     }
+    file_holds_any(&path, &signal_terms(signal))
+}
+
+/// Whether the card's `Variable:` names a code identifier its File holds
+/// (`restartDrainDetail()`, `lead_due`, `watch_one`): the variable still
+/// lives there whatever the Signal points at - a Signal often names the
+/// evidence in another file (the daemon behind a console dialog, the check
+/// that proves it), and only the Variable says what the job edits.
+pub fn variable_matches_file(project_path: &str, file: &str, body: &str) -> bool {
+    if project_path.is_empty() || file.is_empty() {
+        return false;
+    }
+    let Some(clean) = signal_rel(project_path, file) else {
+        return false;
+    };
+    let fields = crate::card_class::card_fields(body);
+    let terms = code_terms(&fields.get("variable").cloned().unwrap_or_default());
+    !terms.is_empty() && file_holds_any(&Path::new(project_path).join(clean), &terms)
+}
+
+/// Whether the file at `path` - or, for a directory, any file under it -
+/// holds one of `terms`.
+fn file_holds_any(path: &Path, terms: &[SignalTerm]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
     let read = |path: &Path| {
         std::fs::read_to_string(path).ok().map(|body| {
             let lower = body.to_lowercase();
-            signal_terms(signal).iter().any(|term| {
+            terms.iter().any(|term| {
                 if term.ident {
                     body.contains(term.text.as_str())
                 } else {
@@ -492,12 +518,12 @@ pub fn signal_matches_file(project_path: &str, file: &str, signal: &str) -> bool
             })
         })
     };
-    if let Some(found) = read(&path) {
+    if let Some(found) = read(path) {
         return found;
     }
     if path.is_dir() {
         // A File that names a directory matches when any file in it does.
-        let mut stack = vec![path];
+        let mut stack = vec![path.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
@@ -513,6 +539,34 @@ pub fn signal_matches_file(project_path: &str, file: &str, signal: &str) -> bool
         }
     }
     false
+}
+
+/// The code identifiers in a card's prose: words carrying `_`, `.` or `::`,
+/// a call's `()`, or a lowerCamel inner capital - never plain words, so prose
+/// that happens to share a word with a file is no match.
+fn code_terms(text: &str) -> Vec<SignalTerm> {
+    let mut terms: Vec<SignalTerm> = Vec::new();
+    for word in text.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
+        let call = word.contains("()");
+        let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        let w = w.split("::").last().unwrap_or(w).trim_end_matches("()");
+        if w.len() < 4 {
+            continue;
+        }
+        let camel = w
+            .chars()
+            .zip(w.chars().skip(1))
+            .any(|(a, b)| a.is_ascii_lowercase() && b.is_ascii_uppercase());
+        if call || camel || w.contains('_') || w.contains('.') {
+            terms.push(SignalTerm {
+                text: w.to_string(),
+                ident: true,
+            });
+        }
+    }
+    terms.sort_by(|a, b| a.text.cmp(&b.text));
+    terms.dedup_by(|a, b| a.text == b.text);
+    terms
 }
 
 struct SignalTerm {
@@ -697,22 +751,29 @@ pub fn plan_gate_with(
         return GATE_FILE_GONE.into();
     }
     // A card whose Signal names a live repository path but whose existing File
-    // holds none of the Signal's terms is stale: the variable moved files and
-    // the worker would land in the wrong file reconciling the pointer. Hold it
-    // so the next card names the file the evidence actually lives in. Cards
-    // whose signal is a check name or a store post carry no production path to
-    // match a File against; the other gates speak for them.
+    // holds none of the Signal's terms, nor a code identifier its Variable
+    // names, is stale: the variable moved files and the worker would land in
+    // the wrong file reconciling the pointer. Hold it so the next card names
+    // the file the evidence actually lives in. Cards whose signal is a check
+    // or a store post carry no production path to match a File against; the
+    // other gates speak for them.
     if post.is_some() {
         let file_text = card_file_text(body);
         let signal_text = signal_text_of(summary, body);
-        let signal_has_path = signal_word_tokens(&signal_text)
-            .iter()
-            .any(|tok| !tok.starts_with("check:") && signal_rel(project_path, tok).is_some());
+        // A live path: one the checkout holds. The words of a check's
+        // command (`check:cargo test -p pulse-runner ...`) are no path, so a
+        // check Signal leaves the File to the other gates.
+        let pointer = signal_text.split("check:").next().unwrap_or("");
+        let signal_has_path = signal_word_tokens(pointer).iter().any(|tok| {
+            signal_rel(project_path, tok)
+                .is_some_and(|rel| Path::new(project_path).join(rel).exists())
+        });
         if !file_text.is_empty()
             && signal_has_path
             && is_worker_post(s, agent)
             && signal_resolves(s, project_path, summary, body)
             && !signal_matches_file(project_path, &file_text, &signal_text)
+            && !variable_matches_file(project_path, &file_text, body)
         {
             return GATE_FILE_STALE.into();
         }
