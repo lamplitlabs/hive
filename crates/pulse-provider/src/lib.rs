@@ -419,6 +419,14 @@ pub struct Model {
     pub chat: bool,
     #[serde(rename = "tool_calls")]
     pub tool_calls: bool,
+    /// Whether the model accepts images in a message (`Message.images`):
+    /// Copilot's `capabilities.supports.vision`, an OpenAI-compatible list's
+    /// vision capability; Anthropic and Gemini chat models all take images.
+    /// False means the vendor does not say so, and the caller should not send
+    /// the model attached images or offer it tools whose output is an image.
+    /// Lists cached before the field existed read back as false.
+    #[serde(rename = "vision", default)]
+    pub vision: bool,
     #[serde(rename = "premium")]
     pub premium: f64,
     #[serde(rename = "preview")]

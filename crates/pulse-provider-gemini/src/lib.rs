@@ -889,6 +889,7 @@ fn map_models(items: Vec<ModelItem>) -> Vec<Model> {
             vendor: "google".to_string(),
             chat,
             tool_calls: chat,
+            vision: chat,
             premium: 0.0,
             preview: lower.contains("preview") || lower.contains("exp"),
             context_window: clamp_i32(m.input_token_limit),

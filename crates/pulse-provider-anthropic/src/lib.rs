@@ -1294,6 +1294,7 @@ fn map_models(items: Vec<ModelItem>) -> Vec<Model> {
                 vendor: NAME.to_string(),
                 chat: true,
                 tool_calls: true,
+                vision: true,
                 premium: 0.0,
                 preview: false,
                 context_window,

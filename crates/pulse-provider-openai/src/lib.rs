@@ -1679,6 +1679,20 @@ fn parse_model(vendor: &Vendor, item: &Value) -> Option<Model> {
         Some(Value::Array(list)) => has_word(list, &["tools"]),
         _ => true,
     };
+    // Vision as the list advertises it: a capability word (`vision`), a
+    // Mistral-style `capabilities.vision`, or input modalities naming `image`
+    // (OpenRouter's `architecture.input_modalities`, GitHub Models'
+    // `supported_input_modalities`). Silence means false.
+    let vision = match caps {
+        Some(Value::Array(list)) => has_word(list, &["vision", "image", "images"]),
+        Some(Value::Object(map)) => map.get("vision").and_then(Value::as_bool).unwrap_or(false),
+        _ => false,
+    } || [
+        "/architecture/input_modalities",
+        "/supported_input_modalities",
+    ]
+    .iter()
+    .any(|p| matches!(item.pointer(p), Some(Value::Array(list)) if has_word(list, &["image"])));
     let chat = caps
         .and_then(|c| c.get("completion_chat"))
         .and_then(Value::as_bool)
@@ -1694,6 +1708,7 @@ fn parse_model(vendor: &Vendor, item: &Value) -> Option<Model> {
             .unwrap_or_else(|| vendor.name.to_string()),
         chat,
         tool_calls,
+        vision,
         premium: 0.0,
         preview: false,
         context_window: number(&[
