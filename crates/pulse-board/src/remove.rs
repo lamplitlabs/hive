@@ -724,19 +724,31 @@ pub(crate) fn volume_root(path: &str) -> Option<PathBuf> {
 /// now: the mount point is missing, or it is a plain directory on the same
 /// device as its parent with nothing mounted on it.
 pub(crate) fn unmounted_volume(path: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::MetadataExt;
     let root = volume_root(path)?;
     let Ok(meta) = fs::metadata(&root) else {
         return Some(root);
     };
+    if same_device_as_parent(&root, &meta) {
+        return Some(root);
+    }
+    None
+}
+
+#[cfg(unix)]
+fn same_device_as_parent(root: &Path, meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
     let parent_dev = root
         .parent()
         .and_then(|p| fs::metadata(p).ok())
         .map(|m| m.dev());
-    if parent_dev == Some(meta.dev()) {
-        return Some(root);
-    }
-    None
+    parent_dev == Some(meta.dev())
+}
+
+/// Off unix a mount point that exists counts as mounted: the device number
+/// is not exposed, and `volume_root` only names unix mount parents anyway.
+#[cfg(not(unix))]
+fn same_device_as_parent(_root: &Path, _meta: &fs::Metadata) -> bool {
+    false
 }
 
 pub(crate) fn yours_for_project(s: &pulse_store::Store, p: &pulse_store::Project) -> Vec<String> {
