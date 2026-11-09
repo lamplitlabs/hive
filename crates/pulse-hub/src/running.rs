@@ -257,7 +257,12 @@ impl Handler {
     /// found (TASK-087), compared with this console's own build. `enabled`
     /// is false while `update.latest_url` is empty; `newer` is true only
     /// when the release it named outranks the running version, and `notice`
-    /// is then the line `pulse version` prints.
+    /// is then the line `pulse version` prints. `channel` is where a newer
+    /// PULSE comes from here (`update.channel`, `auto` resolved);
+    /// `can_install` says whether `pulse update` (and the banner's Update
+    /// now) can install the release on this machine, `install_command` is
+    /// then the command to run in a terminal, and `install_blocked` otherwise
+    /// says why not - the same words the apply refusal would give.
     pub(crate) fn update_status(&self) -> JsonMap {
         let running = pulse_cli::version();
         let enabled = self.store.as_ref().is_some_and(|s| {
@@ -284,9 +289,23 @@ impl Handler {
                 }),
             ),
         };
+        let blocked = match self.store.as_deref() {
+            Some(s) => install_blocked(s),
+            None => Some("this hub has no store".to_string()),
+        };
         map_from_pairs(vec![
             ("channel", json!(channel)),
             ("apply", apply),
+            ("can_install", json!(blocked.is_none())),
+            (
+                "install_command",
+                json!(if blocked.is_none() {
+                    "pulse update"
+                } else {
+                    ""
+                }),
+            ),
+            ("install_blocked", json!(blocked.unwrap_or_default())),
             ("enabled", json!(enabled)),
             ("running", json!(running)),
             ("latest", json!(st.latest)),
@@ -402,6 +421,26 @@ fn apply_target() -> pulse_runner::release_update::ApplyTarget {
         return t;
     }
     pulse_runner::release_update::ApplyTarget::this_process()
+}
+
+/// Why `pulse update` cannot install a release on this machine, or `None`
+/// when it can: the checks [`pulse_runner::release_update::start_apply`]
+/// makes before it starts, short of an install already running.
+fn install_blocked(s: &pulse_store::Store) -> Option<String> {
+    use pulse_runner::release_update::{ApplyRefusal, update_channel};
+    if s.setting(pulse_cli::update::LATEST_URL_SETTING, "")
+        .trim()
+        .is_empty()
+    {
+        return Some(ApplyRefusal::NoSource.to_string());
+    }
+    if update_channel(s).as_str() == "source" {
+        return Some(ApplyRefusal::SourceChannel.to_string());
+    }
+    if pulse_cli::update::running_target().is_none() {
+        return Some(ApplyRefusal::NoTarget.to_string());
+    }
+    None
 }
 
 fn map_from_pairs(pairs: Vec<(&str, Value)>) -> JsonMap {
@@ -643,6 +682,59 @@ mod tests {
         assert_ne!(status, 200);
         assert_eq!(result["channel"], "release");
         assert_eq!(result["apply"]["state"], "idle");
+    }
+
+    #[test]
+    fn update_says_whether_pulse_update_can_install_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        // No release source: nothing to install from, and the payload says so.
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/update", "");
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["can_install"], false, "{result:?}");
+        assert_eq!(result["install_command"], "");
+        assert!(
+            result["install_blocked"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(pulse_cli::update::LATEST_URL_SETTING),
+            "{result:?}"
+        );
+        s.set_setting(
+            "human",
+            pulse_cli::update::LATEST_URL_SETTING,
+            "https://releases.test/latest.json",
+        )
+        .unwrap();
+        // On the source channel the daemon rebuilds; pulse update is not the way.
+        s.set_setting("human", pulse_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/update", "");
+        assert_eq!(result["channel"], "source");
+        assert_eq!(result["can_install"], false, "{result:?}");
+        assert_eq!(result["install_command"], "");
+        assert!(
+            result["install_blocked"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("update.channel"),
+            "{result:?}"
+        );
+        // On the release channel the banner can tell the owner what to run.
+        s.set_setting("human", pulse_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        let (_, result) = http::additions_request(h, "GET", "/api/v1/update", "");
+        assert_eq!(result["channel"], "release");
+        let here = pulse_cli::update::running_target().is_some();
+        assert_eq!(result["can_install"], here, "{result:?}");
+        if here {
+            assert_eq!(result["install_command"], "pulse update");
+            assert_eq!(result["install_blocked"], "");
+        } else {
+            assert_eq!(result["install_command"], "");
+            assert_ne!(result["install_blocked"], "");
+        }
     }
 
     /// A release folder served over HTTP the way release_update.rs's tests
