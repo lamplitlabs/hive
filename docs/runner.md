@@ -311,6 +311,26 @@ when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
 restarts onto it after the runs in flight. Set `daemon.self_update` to `off` to keep the build you
 have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
 
+Self-update follows the brain's checkout; it does not say when a newer
+published release exists. For that, point `update.latest_url` at a JSON
+document naming the latest release - a GitHub `releases/latest` URL
+(`https://api.github.com/repos/OWNER/REPO/releases/latest`), a GitHub
+releases list (drafts and pre-releases are skipped), or
+`{"version": "v1.2.3", "url": "https://..."}`. The maintenance pass then
+reads it at most once a day (at once after the setting changes), keeps what
+it found in the store's `meta` row `update`, and logs one line when a newer
+release first shows up. `pulse version` prints a second line,
+`A newer PULSE is available: v1.2.3 (running v1.2.2) - <release link>`
+(`--json` adds an `update` object), and the console shows a banner above
+every page except chat, with the release link and a button that hides it
+until the next release (`GET /api/v1/update`). Versions compare by semver
+precedence, so a pseudo-version build after `v1.2.2` (`v1.2.3-0.<stamp>`)
+is behind `v1.2.3`, and a `dev` build is never told it is behind. A failed
+read keeps the release it last knew and logs the reason once. Nothing is
+downloaded or installed. The setting is empty by default: no check and no
+network request (crates/pulse-cli/src/update.rs,
+crates/pulse-runner/src/update_check.rs).
+
 The owner need not wait for the drain. **Restart** (under **Settings →
 Running** and beside the update notice in the Home page's runner controls;
 `POST /api/v1/running/restart`) drains like a self-update by default

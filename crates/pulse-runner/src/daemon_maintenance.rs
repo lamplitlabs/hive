@@ -437,6 +437,18 @@ impl DaemonMaintenance {
                             }));
                         }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
+                            // At most once a day, whether a newer PULSE
+                            // release exists (update.latest_url, off when
+                            // empty; update_check.rs).
+                            lines.extend(b.once("update check", || {
+                                crate::update_check::tend_update_check(
+                                    &s,
+                                    &s.now(),
+                                    &pulse_cli::version(),
+                                )
+                            }));
+                        }
+                        if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             // A copy of the store off this machine, on the
                             // cadence backup.every_hours sets (backup.rs).
                             lines.extend(b.once("backup", || {

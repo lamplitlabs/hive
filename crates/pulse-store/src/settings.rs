@@ -253,7 +253,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -314,6 +314,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "backup.every_hours"=>("count",Some(0),[],None,"hours between two backups the daemon takes to backup.to on its maintenance pass; a failed one is tried again after an hour; 0 leaves backups to `pulse backup`"),
         "backup.keep"=>("count",Some(0),[],None,"copies of this machine's store kept at a directory or Azure destination, the newest first; older ones are removed after each backup; 0 keeps every copy"),
         "backup.subscription"=>("text",None,[],None,"the Azure subscription (name or id) that holds the az:// account in backup.to, when it is not the az CLI's default one: every az call a backup makes (keys list, upload, list, delete) carries it as --subscription, so the key is found and the login's token is cut for that tenant. Empty: the CLI's default subscription"),
+        "update.latest_url"=>("text",None,[],None,"where the daemon looks, at most once a day, for the latest PULSE release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, pulse version and the console say so with the release link. Nothing is downloaded or installed. Empty (the default): no check and no network"),
         "daemon.nice"=>("count",Some(0),[],None,"nice level the daemon's own process runs at from startup (setpriority), under the owner's foreground work at 0 and over its job children at 10, so planning, sweeps and landing passes yield to what the owner is doing while the loop still comes before the fleet's builds; 0 leaves the level the service started it at"),
         "daemon.build_jobs"=>("count",Some(0),[],None,"parallel compile jobs a build the daemon causes may use: exported as CARGO_BUILD_JOBS to its job children, their pre-commit verification and the landing verification when the environment does not set it, and passed as -j to the self-update build; 0 is half the physical cores, so no single build takes the whole machine"),
         "daemon.keep_awake"=>("choice",None,["off","on","always"],None,"on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say. A paused or stopped daemon holds nothing, and closing a laptop's lid still sleeps a Mac without an external display. Each tick the daemon also notices when the machine slept anyway (the wall clock jumped while the loop waited) and says for how long"),
@@ -729,6 +730,27 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
             )));
         }
         return Ok(name_text);
+    }
+    if name == "update.latest_url" {
+        let url = text.to_string();
+        if url.is_empty() {
+            return Ok(url);
+        }
+        if !(url.starts_with("https://") || url.starts_with("http://"))
+            || url.len() <= "https://".len()
+            || url.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(input_err(format!(
+                "update.latest_url takes an http(s) URL that answers JSON, such as https://api.github.com/repos/OWNER/REPO/releases/latest, or empty for no check; not {}",
+                py_repr(text)
+            )));
+        }
+        if secret_shaped(&url) {
+            return Err(input_err(
+                "update.latest_url looks like it carries a credential; PULSE never stores secrets - use a public URL",
+            ));
+        }
+        return Ok(url);
     }
     if name == "capacity" {
         let lower = text.to_ascii_lowercase();
@@ -2012,6 +2034,38 @@ mod go_settings_tests {
                 .to_string()
                 .contains("Owner settings: owner.name, owner.presence")
         );
+    }
+
+    #[test]
+    fn update_latest_url_is_off_by_default_and_takes_a_web_url() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(DAEMON_SETTINGS["update.latest_url"], "");
+        assert!(daemon_setting_names().contains(&"update.latest_url".to_string()));
+        assert_eq!(validate_setting("update.latest_url", "  ").unwrap(), "");
+        let gh = "https://api.github.com/repos/lamplitlabs/pulse/releases/latest";
+        assert_eq!(
+            validate_setting("update.latest_url", &format!(" {gh} ")).unwrap(),
+            gh
+        );
+        assert_eq!(
+            validate_setting("update.latest_url", "http://127.0.0.1:8080/latest.json").unwrap(),
+            "http://127.0.0.1:8080/latest.json"
+        );
+        for bad in [
+            "file:///etc/passwd",
+            "api.github.com/repos/o/r/releases/latest",
+            "https://",
+            "https://example.test/a b",
+        ] {
+            let err = validate_setting("update.latest_url", bad)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("takes an http(s) URL"), "{bad}: {err}");
+        }
+        let err = validate_setting("update.latest_url", "https://user:pass@example.test/x")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("credential"), "{err}");
     }
 
     #[test]

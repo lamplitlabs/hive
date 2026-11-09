@@ -157,6 +157,18 @@
       "value": ""
     },
     {
+      "choices": null,
+      "default": "",
+      "description": "where the daemon looks, at most once a day, for the latest PULSE release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, pulse version and the console say so with the release link. Nothing is downloaded or installed. Empty (the default): no check and no network",
+      "kind": "text",
+      "min": null,
+      "name": "update.latest_url",
+      "secret": false,
+      "updated_at": "2026-09-09T10:00:00Z",
+      "updated_by": "human",
+      "value": "https://api.github.com/repos/lamplitlabs/pulse/releases/latest"
+    },
+    {
       "choices": [
         "off",
         "on"

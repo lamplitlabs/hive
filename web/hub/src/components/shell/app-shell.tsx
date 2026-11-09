@@ -58,6 +58,7 @@ import { RailTip } from "./rail-tip";
 import { sidebarToggleLabel } from "./sidebar-state";
 import { SystemStatus } from "./system-status";
 import { PhoneBar, TopBar, TOPBAR_H } from "./top-bar";
+import { UpdateBanner } from "./update-banner";
 import { useSidebarCollapsed } from "./use-sidebar";
 
 const focusRing =
@@ -669,6 +670,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             chat ? "max-w-[1680px] lg:px-6 lg:pb-4" : "max-w-[1240px]",
           )}
         >
+          {/* A newer PULSE release, when the daily check found one (update.latest_url). Chat fits the window, so it goes without. */}
+          {chat ? null : <UpdateBanner />}
           {children}
         </main>
 

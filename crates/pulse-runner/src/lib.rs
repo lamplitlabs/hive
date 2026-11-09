@@ -103,6 +103,7 @@ pub mod tmpspace;
 pub mod token;
 pub mod toolkit;
 pub(crate) mod ui_evidence;
+pub(crate) mod update_check;
 pub mod util;
 pub mod verify_lock;
 pub mod verify_memo;
