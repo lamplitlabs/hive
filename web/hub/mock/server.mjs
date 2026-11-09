@@ -14,6 +14,7 @@ import { createJobRepairMock } from "./job-repair.mjs";
 import { createJobArtifactsMock } from "./job-artifacts.mjs";
 import { createSuggestedMock } from "./suggested.mjs";
 import { createCodeDeliveryMock } from "./code-deliveries.mjs";
+import { createReportsMock } from "./reports.mjs";
 import { createKpisMock } from "./kpis.mjs";
 import { createAutomationsMock } from "./automations.mjs";
 
@@ -57,6 +58,7 @@ const state = {
   goals: new Map(),
   jobRepairs: null,
   codeDeliveries: null,
+  reports: null,
   kpis: null,
   records: {},
   seq: 5000,
@@ -287,6 +289,10 @@ async function init() {
   });
   state.codeDeliveries = createCodeDeliveryMock(
     await loadJson("code-deliveries.json"),
+    state.projects.map((p) => p.slug),
+  );
+  state.reports = createReportsMock(
+    await loadJson("reports.json"),
     state.projects.map((p) => p.slug),
   );
   state.kpis = createKpisMock(
@@ -3778,6 +3784,10 @@ async function handle(req, res) {
   }
   if (segs[0] === "code-deliveries" && segs.length === 1) {
     const result = state.codeDeliveries.read(q);
+    return send(res, result.status, result.body);
+  }
+  if (segs[0] === "reports" && segs.length === 1) {
+    const result = state.reports.read(q);
     return send(res, result.status, result.body);
   }
   if (segs[0] === "kpis" && segs.length === 1) {

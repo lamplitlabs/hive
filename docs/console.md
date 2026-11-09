@@ -909,6 +909,26 @@ the limits.
 ADRs, plans, features, guides, memory, prompts, environment recipes, the
 constitution and the evolution archive, with revisions and delivery marks.
 
+## Reports
+
+**Reports** (`/reports/`, under Knowledge) lists every done task, newest
+first, as a work report: what each of its jobs landed and where (the merged
+commit, the pull request, or "not landed"), the first release tag that
+contains the landed commit (the nearest one), whether the project's check passed, and the
+evidence the agent left in its job folder. Open a task to see its brief and
+one panel per job: the agent's summary, the landing, the commit and pull
+request links, the checks named in the job's `report.json`, and every file
+in the job's artifacts folder - **Open the report** opens `report.html`
+when the job wrote one. The project picker narrows the list to one project,
+and the search box matches task words, job ids, agents and release tags.
+
+The page reads `GET /api/v1/reports[?project=SLUG][&limit=N]` (newest first,
+50 by default, at most 200): each done task with its jobs, and for each job
+its landing (`land.merged`, `land.landed` or `land.pr` with the commit,
+pull request and verify line), the release tag (`git name-rev --tags` on the
+project's checkout), the run's verify line, its artifact files and the
+title, summary, status and checks of its `report.json`.
+
 ## What just happened
 
 The live event feed (server-sent events over the store's event log) under

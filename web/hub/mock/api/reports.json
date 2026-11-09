@@ -1,0 +1,143 @@
+{
+  "reports": [
+    {
+      "id": "TASK-014",
+      "project": "demo-app",
+      "title": "Checkout shows its total after the price lookup",
+      "brief": "On a slow price lookup the checkout total reads $NaN. Make the total wait for the lookup and cover the race with a regression test.",
+      "priority": 30,
+      "created_by": "human",
+      "created_at": "2026-09-01T17:20:00Z",
+      "done_at": "2026-09-01T20:05:00Z",
+      "jobs": [
+        {
+          "id": "job-20260901T190200Z-87e2d1",
+          "kind": "task",
+          "title": "Fix the flaky checkout test",
+          "status": "done",
+          "agent": "cinder",
+          "finished_at": "2026-09-01T19:48:00Z",
+          "summary": "SUMMARY: done - the total waits for the price lookup; checkout regression test passes 20 of 20 runs; report.html in artifacts",
+          "verify": "verify exit 0",
+          "commits": 2,
+          "landing": {
+            "action": "land.merged",
+            "at": "2026-09-01T20:02:00Z",
+            "sha": "4f3a65b11c2d9e8f7a6b5c4d3e2f1a0b9c8d7e6f",
+            "number": 42,
+            "url": "https://github.com/lamplitlabs/demo-app/pull/42",
+            "verify": "verify exit 0"
+          },
+          "release": "v1.4.0",
+          "artifacts": [
+            { "name": "after-checkout.webp", "size": 6306, "modified": "2026-09-01T19:40:00Z" },
+            { "name": "before-checkout.webp", "size": 6316, "modified": "2026-09-01T19:10:00Z" },
+            { "name": "checkout-total.png", "size": 197, "modified": "2026-09-01T19:41:00Z" },
+            { "name": "report.html", "size": 7016, "modified": "2026-09-01T19:46:00Z" },
+            { "name": "report.json", "size": 949, "modified": "2026-09-01T19:45:00Z" },
+            { "name": "test-run.md", "size": 335, "modified": "2026-09-01T19:30:00Z" }
+          ],
+          "artifacts_total": 6,
+          "report": {
+            "title": "Checkout shows its total after the price lookup",
+            "summary": "The checkout read the total before the async price lookup had answered, so a slow lookup left the page showing $NaN.",
+            "status": "On pulse/cinder/job-20260901T190200Z-87e2d1; it lands with task TASK-014.",
+            "checks": [
+              "`checkout renders totals after the price lookup`: 20 of 20 runs passed (the old assertion failed 4 of 20)",
+              "`npm test`: 212 passed"
+            ],
+            "changes": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "TASK-013",
+      "project": "pulse",
+      "title": "Retry a provider call once on a dropped connection",
+      "brief": "A dropped TLS connection fails the whole run. Retry the call once with jitter and say so in the run log.",
+      "priority": 20,
+      "created_by": "iris",
+      "created_at": "2026-08-31T09:00:00Z",
+      "done_at": "2026-08-31T15:30:00Z",
+      "jobs": [
+        {
+          "id": "job-20260831T101500Z-a1b2c3",
+          "kind": "task",
+          "title": "Retry a provider call once on a dropped connection",
+          "status": "done",
+          "agent": "quartz",
+          "finished_at": "2026-08-31T13:10:00Z",
+          "summary": "SUMMARY: done - provider calls retry once on a reset connection; cargo test -p pulse-provider 118 passed",
+          "verify": "verify exit 0",
+          "commits": 1,
+          "landing": {
+            "action": "land.landed",
+            "at": "2026-08-31T13:20:00Z",
+            "sha": "9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d",
+            "number": 0,
+            "url": "",
+            "verify": "verify exit 0"
+          },
+          "release": "",
+          "artifacts": [],
+          "artifacts_total": 0,
+          "report": null
+        },
+        {
+          "id": "job-20260831T140000Z-d4e5f6",
+          "kind": "task",
+          "title": "Name the retry in the run log",
+          "status": "done",
+          "agent": "quartz",
+          "finished_at": "2026-08-31T15:20:00Z",
+          "summary": "SUMMARY: done - the run log names the retry and its wait",
+          "verify": "verify exit 1",
+          "commits": 1,
+          "landing": {
+            "action": "land.pr",
+            "at": "2026-08-31T15:25:00Z",
+            "sha": "",
+            "number": 118,
+            "url": "https://github.com/lamplitlabs/pulse/pull/118",
+            "verify": ""
+          },
+          "release": "",
+          "artifacts": [
+            { "name": "run-log.txt", "size": 2210, "modified": "2026-08-31T15:15:00Z" }
+          ],
+          "artifacts_total": 1,
+          "report": null
+        }
+      ]
+    },
+    {
+      "id": "TASK-011",
+      "project": "demo-app",
+      "title": "Document the release steps",
+      "brief": "Write down how a release is cut: the check, the changelog, the version bump, the tag.",
+      "priority": 0,
+      "created_by": "human",
+      "created_at": "2026-08-29T08:00:00Z",
+      "done_at": "2026-08-29T11:00:00Z",
+      "jobs": [
+        {
+          "id": "job-20260829T090000Z-0f9e8d",
+          "kind": "task",
+          "title": "Document the release steps",
+          "status": "done",
+          "agent": "lumen",
+          "finished_at": "2026-08-29T10:40:00Z",
+          "summary": "SUMMARY: nothing-to-do - docs/release.md already covers every step (commit 1a2b3c4)",
+          "verify": "",
+          "commits": 0,
+          "landing": null,
+          "release": "",
+          "artifacts": [],
+          "artifacts_total": 0,
+          "report": null
+        }
+      ]
+    }
+  ]
+}

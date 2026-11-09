@@ -14,7 +14,7 @@ test("four groups in the spec's order: no label, Knowledge, Projects is rendered
   );
   assert.deepEqual(
     NAV_GROUPS[1].items.map((i) => i.label),
-    ["Records", "Votes", "Memory"],
+    ["Records", "Reports", "Votes", "Memory"],
   );
   assert.deepEqual(
     NAV_GROUPS[2].items.map((i) => i.label),
@@ -50,6 +50,8 @@ test("each item matches its own route and nothing else's", () => {
   }
   assert.equal(activeItem("/records/")?.label, "Records");
   assert.equal(activeItem("/code-deliveries/")?.label, "Records", "code deliveries live under Records");
+  assert.equal(activeItem("/reports/")?.label, "Reports");
+  assert.equal(activeItem("/reports/?project=demo-app")?.label, "Reports");
   assert.equal(activeItem("/settings/")?.label, "Settings");
   assert.equal(activeItem("/project/"), undefined, "a project page lights no item");
   assert.equal(activeItem("/")?.label, "Home");

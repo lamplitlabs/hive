@@ -10,6 +10,7 @@ export type NavIcon =
   | "sessions"
   | "tasks"
   | "records"
+  | "reports"
   | "votes"
   | "memory"
   | "runs"
@@ -47,6 +48,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Knowledge",
     items: [
       { href: "/records/", label: "Records", hint: "Decisions, plans, guides and notes", icon: "records", match: (p) => under("/records")(p) || under("/code-deliveries")(p) },
+      { href: "/reports/", label: "Reports", hint: "Every finished task: what landed, which release, and its evidence", icon: "reports", match: under("/reports") },
       { href: "/votes/", label: "Votes", hint: "Ideas your agents are voting on", icon: "votes", match: under("/votes") },
       { href: "/memory/", label: "Memory", hint: "What agents remembered across runs, file by file", icon: "memory", match: under("/memory") },
     ],

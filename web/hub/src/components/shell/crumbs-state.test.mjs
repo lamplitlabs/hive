@@ -39,6 +39,7 @@ test("a filter or an open detail adds a crumb", () => {
   assert.deepEqual(defaultCrumbs("/chat/", q("task=TASK-007")).map((c) => c.label), ["Sessions", "TASK-007"]);
   assert.deepEqual(defaultCrumbs("/chat/", q("id=conv-1")).map((c) => c.label), ["Sessions", "Session"]);
   assert.deepEqual(defaultCrumbs("/code-deliveries/", q()).map((c) => c.label), ["Records", "Code delivered"]);
+  assert.deepEqual(defaultCrumbs("/reports/", q("project=demo-app")).map((c) => c.label), ["Reports", "demo-app"]);
 });
 
 test("a route the console doesn't have is the 404 page", () => {
