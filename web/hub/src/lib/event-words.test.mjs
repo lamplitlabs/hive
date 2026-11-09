@@ -293,3 +293,47 @@ test("goal and PULSE-file events say how they went", () => {
   assert.equal(eventDetailText({ action: "manifest.problems", detail: { problems: ["a: bad", "b: bad"] } }), "a: bad, b: bad");
   assert.equal(eventDetailText({ action: "manifest.problems_cleared", detail: { problems: [] } }), "");
 });
+
+// Store upgrade, record seeding, archive, machine, message and board-cleanup
+// events (pulse-store store.rs, records.rs, chat.rs, archive.rs,
+// pulse-records bundle.rs and import.rs, pulse-evolve starter.rs,
+// pulse-board remove.rs, pulse-runner pair.rs, pulse-tasks messages.rs).
+const UPKEEP = [
+  "schema.records",
+  "schema.superseded",
+  "schema.widened",
+  "store.archived",
+  "records.framework.seeded",
+  "records.framework.seed_failed",
+  "records.migrated",
+  "executor.update",
+  "message.read",
+  "post.remove.duplicates",
+];
+
+test("every store upgrade, record seeding and upkeep event has a plain-words sentence", () => {
+  for (const action of UPKEEP) {
+    assert.ok(VERB[action], action + " has a VERB entry");
+    for (const detail of [null, {}, { project: "demo-app", rows: 3, written: 2, count: 1 }]) {
+      const said = eventVerb({ action, subject: "demo-app", detail });
+      assert.ok(said.length > 0, action + " says something");
+      assert.notEqual(said, raw(action), action + " is not its raw words");
+      assert.doesNotMatch(
+        said,
+        /\b(schema|framework|seeded|seed_failed|migrated|superseded|widened|archived|executor|duplicates)\b/i,
+        action + " uses no jargon: " + said,
+      );
+    }
+  }
+});
+
+test("a machine update names the machine", () => {
+  assert.equal(eventVerb({ action: "executor.update", subject: "studio", detail: {} }), "changed the settings of the machine studio");
+  assert.equal(eventVerb({ action: "store.archived", subject: "archive", detail: {} }), "moved old history to the archive file to keep the store small");
+});
+
+test("clearing repeated posts is not read as a new post", () => {
+  assert.equal(eventVerb({ action: "post.remove.duplicates", subject: "x", detail: {} }), "removed repeated posts from the board");
+  assert.equal(eventVerb({ action: "post.remove.duplicates", subject: "x", detail: { removed: 1 } }), "removed 1 repeated post from the board");
+  assert.equal(eventVerb({ action: "post.remove.duplicates", subject: "x", detail: { removed: 3 } }), "removed 3 repeated posts from the board");
+});
