@@ -4,6 +4,71 @@ How a machine gets a newer PULSE: by rebuilding from the brain project's
 checkout (the **source** channel, [self-update](runner.md#services-and-self-update)),
 or by installing a published release (the **release** channel, this page).
 
+PULSE is released as a tagged version `vX.Y.Z` with a prebuilt `pulse`
+executable for macOS attached to a GitHub Release. The repository is
+private, so reading or downloading a release needs a GitHub account that can
+see it (`gh` signed in).
+
+## How a release is cut
+
+Two workflows in `.github/workflows/`:
+
+- **cut-release.yml** decides the version, writes it into `Cargo.toml`
+  (`[workspace.package] version`), `Cargo.lock` and `web/hub/package.json`,
+  commits `release: vX.Y.Z` on `main`, tags it and pushes. It runs every night
+  at 03:00 UTC and does nothing when `main` has not moved since the last
+  release tag. Run it by hand from the Actions tab (**Run workflow**) for a
+  release now, picking `patch`, `minor` or `major`. The nightly run bumps the
+  patch unless a pull request merged since the last tag carries the label
+  `release: minor` or `release: major`.
+- **release.yml** runs when a `vX.Y.Z` tag is pushed (cut-release starts it
+  explicitly, since a push made with the workflow token starts no workflow on
+  its own). It builds `pulse` with the console embedded on
+  `aarch64-apple-darwin` (Apple silicon) and `x86_64-apple-darwin` (Intel),
+  checks that the binary reports the tag in `pulse version`, packs each as
+  `pulse-vX.Y.Z-<target>.tar.gz`, and publishes a GitHub Release with the
+  archives, a `SHA256SUMS` file and notes listing the commits since the
+  previous tag.
+
+By hand, the same thing is:
+
+```sh
+git checkout main && git pull
+git tag -a v0.2.0 -m "PULSE v0.2.0" && git push origin v0.2.0
+gh workflow run release.yml -f tag=v0.2.0
+```
+
+The version a binary prints comes from `crates/pulse/build.rs`: an exact
+release tag at HEAD gives `vX.Y.Z`; a later commit on `main` gives
+`vX.Y.(Z+1)-0.<stamp>-<rev>`, which the update check and `pulse version`
+treat as newer than `vX.Y.Z` and older than the next release. Release tags
+must stay reachable from `main`: squashing `main` to a new root orphans them
+and every build falls back to `v0.0.0-...`.
+
+## Installing a release on a Mac by hand
+
+```sh
+mkdir -p ~/.pulse/bin && cd "$(mktemp -d)"
+gh release download --repo lamplitlabs/pulse --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+tar -xzf pulse-*.tar.gz && install -m 755 pulse-*/pulse ~/.pulse/bin/pulse
+pulse version
+```
+
+`gh release download` without a tag takes the latest release; add `vX.Y.Z`
+for a particular one. Verify the archive against `SHA256SUMS` with
+`shasum -a 256 -c SHA256SUMS --ignore-missing`. Once installed, `pulse
+update` (below) takes over. The binaries are not notarized; Gatekeeper does
+not check a binary `gh` downloads and `install` copies, but Finder may
+refuse one dragged in from a browser (`xattr -d com.apple.quarantine pulse`
+clears that).
+
+## Windows
+
+Not built yet. The runner and daemon use unix-only process, signal and file
+APIs (`std::os::unix` in ~140 places; services via launchd/systemd), so a
+Windows release means porting those first (TASK-091), not just adding a
+build target.
+
 ## The two channels: `update.channel`
 
 | Value | What happens |
@@ -51,11 +116,10 @@ folder down), plus one `SHA256SUMS` file listing every archive in
 `sha256sum` form (`<64 hex digits>  <file name>`). The targets PULSE asks
 for are `aarch64-apple-darwin` and `x86_64-apple-darwin` (and
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` on Linux). The
-binary inside must print the release's version from `pulse version --json`:
-build it with `PULSE_VERSION=vX.Y.Z cargo build --release -p pulse --locked`.
-
-The workflow that builds these lives under `.github/`, which the owner
-decides (CODEOWNERS); agents propose changes to it rather than edit it.
+binary inside must print the release's version from `pulse version --json`;
+a build at the exact tag does (`crates/pulse/build.rs`), and
+`PULSE_VERSION=vX.Y.Z cargo build --release -p pulse --locked` forces it
+elsewhere. `release.yml` above produces exactly this layout.
 
 ## `pulse update`
 

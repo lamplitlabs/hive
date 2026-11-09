@@ -83,8 +83,22 @@ Nothing else: no Python, no other agent tool to install or keep logged in.
 1. **Install.** The repository is private, so the clone needs your git
    credentials (an SSH key or a token registered with your account).
 
+   On a Mac, the quickest way is the prebuilt executable of the latest
+   release (needs the [`gh`](https://cli.github.com) CLI signed in to an
+   account that can read the repository; see [docs/release.md](docs/release.md)):
+
    ```bash
-   git clone https://github.com/manishtiwari25/pulse.git && cd pulse
+   mkdir -p ~/.pulse/bin && cd "$(mktemp -d)"
+   gh release download --repo lamplitlabs/pulse --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+   tar -xzf pulse-*.tar.gz && install -m 755 pulse-*/pulse ~/.pulse/bin/pulse
+   export PATH="$HOME/.pulse/bin:$PATH"                          # add to your shell profile
+   pulse version
+   ```
+
+   Or build from source (any platform with Rust and Node):
+
+   ```bash
+   git clone https://github.com/lamplitlabs/pulse.git && cd pulse
    cargo install --path crates/pulse --root ~/.pulse --locked   # a release build; lands ~/.pulse/bin/pulse
    export PATH="$HOME/.pulse/bin:$PATH"                          # add to your shell profile
    pulse version

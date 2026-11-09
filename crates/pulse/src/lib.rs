@@ -157,6 +157,7 @@ fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Resu
             c.out.as_mut(),
             &serde_json::json!({
                 "version": version,
+                "revision": pulse_cli::revision(),
                 "update": update,
             }),
         )?;
@@ -1124,13 +1125,19 @@ mod tests {
             .set_setting("human", pulse_cli::update::CHANNEL_SETTING, "release")
             .unwrap();
         let line = "A newer PULSE v999.0.0 is available - run: pulse update";
+        // `run` installs the build-info stamp, so `version()` is whatever the stamp says from
+        // the first command on (another test may have run one already): decide on the stamped
+        // version, not on the `dev` a bare lib test starts with.
+        pulse_cli::install_build_info(BUILD_INFO_TEXT);
         let semver = pulse_cli::update::parse_semver(&pulse_cli::version()).is_some();
+        // `settings` runs without a store (no_store) and so can never print the line;
+        // `stop` opens a writable store the way an ordinary owner command does.
         let (mut out, mut errb) = (Vec::new(), Vec::new());
-        assert_eq!(run(&["settings"], &mut out, &mut errb), 0, "{}", s(&errb));
+        assert_eq!(run(&["stop"], &mut out, &mut errb), 0, "{}", s(&errb));
         assert_eq!(s(&errb).contains(line), semver, "{:?}", s(&errb));
         // Shown once: the next command is quiet.
         errb.clear();
-        assert_eq!(run(&["settings"], &mut out, &mut errb), 0, "{}", s(&errb));
+        assert_eq!(run(&["stop"], &mut out, &mut errb), 0, "{}", s(&errb));
         assert!(!s(&errb).contains("A newer PULSE"), "{:?}", s(&errb));
         if semver {
             assert_eq!(
@@ -1142,7 +1149,7 @@ mod tests {
         store.set_meta(pulse_cli::update::PROMPTED_KEY, "").unwrap();
         errb.clear();
         assert_eq!(
-            run(&["--agent", "a1", "settings"], &mut out, &mut errb),
+            run(&["--agent", "a1", "stop"], &mut out, &mut errb),
             0,
             "{}",
             s(&errb)
