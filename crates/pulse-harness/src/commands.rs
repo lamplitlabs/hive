@@ -3822,6 +3822,7 @@ done
 "#,
         )
         .unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();

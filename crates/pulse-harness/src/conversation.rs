@@ -4379,6 +4379,8 @@ mod tests {
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
 
+    // Watches a kept process by pid (libc::kill(pid, 0)): unix only for now.
+    #[cfg(unix)]
     #[test]
     fn a_kept_background_process_wakes_the_conversation_when_it_ends() {
         let _env = pulse_testutil::env_lock();
@@ -4493,6 +4495,8 @@ mod tests {
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
     }
 
+    // Watches a kept process by pid (libc::kill(pid, 0)): unix only for now.
+    #[cfg(unix)]
     #[test]
     fn closing_a_conversation_stops_what_it_kept() {
         let _env = pulse_testutil::env_lock();

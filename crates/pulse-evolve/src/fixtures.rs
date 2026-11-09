@@ -511,10 +511,13 @@ mod tests {
             )
             .is_err()
         );
-        let alias_dir = tempfile::tempdir().unwrap();
-        let alias = alias_dir.path().join("alias");
-        std::os::unix::fs::symlink(&repo, &alias).unwrap();
-        assert!(setup(&s, &alias.join("private").display().to_string()).is_err());
+        #[cfg(unix)]
+        {
+            let alias_dir = tempfile::tempdir().unwrap();
+            let alias = alias_dir.path().join("alias");
+            std::os::unix::fs::symlink(&repo, &alias).unwrap();
+            assert!(setup(&s, &alias.join("private").display().to_string()).is_err());
+        }
         let other = test_project(&s, "second");
         assert!(
             setup(

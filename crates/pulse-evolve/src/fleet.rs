@@ -404,6 +404,8 @@ mod tests {
         assert!(list[0].paths.is_empty());
     }
 
+    // Symlinks need privileges on Windows; this one stays a unix test.
+    #[cfg(unix)]
     #[test]
     fn fleet_refuses_project_and_symlink_destinations() {
         let _serial = crate::test_helpers::serial();
