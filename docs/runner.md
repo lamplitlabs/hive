@@ -326,9 +326,12 @@ every page except chat, with the release link and a button that hides it
 until the next release (`GET /api/v1/update`). Versions compare by semver
 precedence, so a pseudo-version build after `v1.2.2` (`v1.2.3-0.<stamp>`)
 is behind `v1.2.3`, and a `dev` build is never told it is behind. A failed
-read keeps the release it last knew and logs the reason once. Nothing is
-downloaded or installed. The setting is empty by default: no check and no
-network request (crates/pulse-cli/src/update.rs,
+read keeps the release it last knew and logs the reason once. The check
+itself downloads and installs nothing; `pulse update` installs the release,
+checksum-verified, on a machine whose `update.channel` is `release`, and
+`update.channel release` also stops the source builds above
+([Releases and `pulse update`](release.md)). The setting is empty by
+default: no check and no network request (crates/pulse-cli/src/update.rs,
 crates/pulse-runner/src/update_check.rs).
 
 The owner need not wait for the drain. **Restart** (under **Settings →

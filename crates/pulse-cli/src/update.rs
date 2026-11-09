@@ -126,6 +126,21 @@ pub struct Release {
     pub version: String,
     /// The release page, when the document names one (http or https only).
     pub url: String,
+    /// The files attached to the release (GitHub `assets`), in the
+    /// document's order; empty when it names none.
+    pub assets: Vec<Asset>,
+}
+
+/// One file attached to a release: its name and where to download it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Asset {
+    pub name: String,
+    /// The browser download address (`browser_download_url`, or `url` in a
+    /// plain document).
+    pub url: String,
+    /// GitHub's API address of the asset (`url` in a GitHub answer), which
+    /// `gh api` can read on a private repository; empty otherwise.
+    pub api_url: String,
 }
 
 /// Reads the latest release out of the document `update.latest_url`
@@ -183,7 +198,229 @@ pub fn parse_release(doc: &Value) -> Result<Release, String> {
     } else {
         String::new()
     };
-    Ok(Release { version, url })
+    Ok(Release {
+        version,
+        url,
+        assets: parse_assets(doc),
+    })
+}
+
+/// The `assets` list of a release object: GitHub's (`name`,
+/// `browser_download_url`, API `url`) or a plain one (`name`, `url`).
+/// Entries without a name or an http(s) download address are left out.
+pub fn parse_assets(doc: &Value) -> Vec<Asset> {
+    let Some(list) = doc.get("assets").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let text = |item: &Value, key: &str| {
+        item.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    list.iter()
+        .filter_map(|item| {
+            let name = text(item, "name");
+            let browser = text(item, "browser_download_url");
+            let url = text(item, "url");
+            let (download, api_url) = if browser.is_empty() {
+                (url, String::new())
+            } else {
+                (browser, url)
+            };
+            let api_url = if is_web_link(&api_url) {
+                api_url
+            } else {
+                String::new()
+            };
+            (!name.is_empty() && !name.contains('/') && is_web_link(&download)).then_some(Asset {
+                name,
+                url: download,
+                api_url,
+            })
+        })
+        .collect()
+}
+
+/// The setting that says how this machine gets a newer PULSE.
+pub const CHANNEL_SETTING: &str = "update.channel";
+/// The file a release lists every archive's SHA-256 in.
+pub const CHECKSUMS_ASSET: &str = "SHA256SUMS";
+/// The `meta` row that remembers the release the once-per-release prompt
+/// last named, so every command does not repeat it.
+pub const PROMPTED_KEY: &str = "update.prompted";
+
+/// Where a newer PULSE comes from on this machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    /// The daemon rebuilds pulse from the brain's checkout (self-update).
+    Source,
+    /// `pulse update` installs a published release.
+    Release,
+}
+
+impl Channel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Channel::Source => "source",
+            Channel::Release => "release",
+        }
+    }
+}
+
+/// What `update.channel` means here: `source` and `release` say so;
+/// `auto` (or empty, or anything else) is source when a brain project is
+/// registered and cargo is on PATH - the daemon can rebuild itself - and
+/// release otherwise.
+pub fn resolve_channel(setting: &str, has_brain: bool, has_cargo: bool) -> Channel {
+    match setting.trim().to_ascii_lowercase().as_str() {
+        "source" => Channel::Source,
+        "release" => Channel::Release,
+        _ if has_brain && has_cargo => Channel::Source,
+        _ => Channel::Release,
+    }
+}
+
+/// The target triple a release archive is built for, from Rust's
+/// `std::env::consts::{ARCH, OS}`; None for a platform no release ships.
+pub fn target_for(arch: &str, os: &str) -> Option<String> {
+    let arch = match arch {
+        "aarch64" | "arm64" => "aarch64",
+        "x86_64" | "amd64" => "x86_64",
+        _ => return None,
+    };
+    let rest = match os {
+        "macos" | "darwin" => "apple-darwin",
+        "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
+        _ => return None,
+    };
+    Some(format!("{arch}-{rest}"))
+}
+
+/// The target triple of the running build.
+pub fn running_target() -> Option<String> {
+    target_for(std::env::consts::ARCH, std::env::consts::OS)
+}
+
+/// The archive name a release carries for `target`:
+/// `pulse-<version>-<target>.tar.gz`, the version with its leading `v`.
+pub fn archive_name(version: &str, target: &str) -> String {
+    let v = version.trim();
+    let v = if v.starts_with('v') || v.starts_with('V') {
+        v.to_string()
+    } else {
+        format!("v{v}")
+    };
+    format!("pulse-{v}-{target}.tar.gz")
+}
+
+/// The archive among `assets` for `target`: the exact
+/// [`archive_name`] first, else the one `pulse-*<target>*.tar.gz` (or
+/// `.tgz`) when there is exactly one. Err says what the release carries.
+pub fn pick_asset<'a>(
+    assets: &'a [Asset],
+    version: &str,
+    target: &str,
+) -> Result<&'a Asset, String> {
+    let want = archive_name(version, target);
+    if let Some(a) = assets.iter().find(|a| a.name == want) {
+        return Ok(a);
+    }
+    let close: Vec<&Asset> = assets
+        .iter()
+        .filter(|a| {
+            a.name.starts_with("pulse")
+                && a.name.contains(target)
+                && (a.name.ends_with(".tar.gz") || a.name.ends_with(".tgz"))
+        })
+        .collect();
+    if close.len() == 1 {
+        return Ok(close[0]);
+    }
+    let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+    Err(if names.is_empty() {
+        format!("release {version} has no files attached; it needs {want}")
+    } else if close.is_empty() {
+        format!(
+            "release {version} has no archive for {target} (want {want}); it carries: {}",
+            names.join(", ")
+        )
+    } else {
+        format!(
+            "release {version} has {} archives for {target}, none named {want}: {}",
+            close.len(),
+            close
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+/// Reads a `SHA256SUMS` file (`sha256sum`/`shasum -a 256` output: the hex
+/// digest, one or two spaces or ` *`, the file name) into name -> lowercase
+/// digest. A `./` or directory prefix on the name is dropped; lines that
+/// are not a 64-hex digest and a name are skipped.
+pub fn parse_checksums(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut sums = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some((digest, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let name = rest.trim_start().trim_start_matches('*').trim();
+        let name = name.rsplit('/').next().unwrap_or(name);
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) || name.is_empty() {
+            continue;
+        }
+        sums.insert(name.to_string(), digest.to_ascii_lowercase());
+    }
+    sums
+}
+
+/// Whether the archive `name` with digest `actual` (hex) matches what the
+/// release's checksums list says; Err says why not.
+pub fn check_digest(
+    sums: &std::collections::BTreeMap<String, String>,
+    name: &str,
+    actual: &str,
+) -> Result<(), String> {
+    let Some(want) = sums.get(name) else {
+        return Err(format!("{CHECKSUMS_ASSET} lists no digest for {name}"));
+    };
+    if want.eq_ignore_ascii_case(actual.trim()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name} does not match {CHECKSUMS_ASSET}: expected sha256 {want}, downloaded {}",
+            actual.trim().to_ascii_lowercase()
+        ))
+    }
+}
+
+/// The one stderr line every command prints once per release, or None:
+/// nothing newer is known, this machine follows the source channel, or the
+/// line for this release was already shown (`prompted` is the release the
+/// last prompt named).
+pub fn prompt(
+    running: &str,
+    state: &UpdateState,
+    channel: Channel,
+    prompted: &str,
+) -> Option<String> {
+    if channel != Channel::Release || !state.newer_than(running) {
+        return None;
+    }
+    if prompted.trim() == state.latest.trim() {
+        return None;
+    }
+    Some(format!(
+        "A newer PULSE {} is available - run: pulse update",
+        state.latest
+    ))
 }
 
 /// http(s) links only: the hub renders it as a link and `pulse version`
@@ -338,7 +575,8 @@ mod tests {
             parse_release(&gh).unwrap(),
             Release {
                 version: "v0.3.0".into(),
-                url: "https://github.com/o/r/releases/tag/v0.3.0".into()
+                url: "https://github.com/o/r/releases/tag/v0.3.0".into(),
+                assets: Vec::new(),
             }
         );
         let plain = json!({"version": "1.4.0", "url": "https://example.test/pulse"});
@@ -354,7 +592,8 @@ mod tests {
             parse_release(&list).unwrap(),
             Release {
                 version: "v0.4.1".into(),
-                url: "https://x.test/41".into()
+                url: "https://x.test/41".into(),
+                assets: Vec::new(),
             }
         );
         // A link that is not a web page is dropped, the version stays.
@@ -395,5 +634,154 @@ mod tests {
             UpdateState::from_json("{}").unwrap(),
             UpdateState::default()
         );
+    }
+
+    fn asset(name: &str) -> Asset {
+        Asset {
+            name: name.into(),
+            url: format!("https://dl.test/{name}"),
+            api_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn assets_come_from_github_and_plain_documents() {
+        let gh = json!({
+            "tag_name": "v0.3.0",
+            "assets": [
+                {"name": "pulse-v0.3.0-aarch64-apple-darwin.tar.gz",
+                 "url": "https://api.github.com/repos/o/r/releases/assets/7",
+                 "browser_download_url": "https://github.com/o/r/releases/download/v0.3.0/pulse-v0.3.0-aarch64-apple-darwin.tar.gz"},
+                {"name": "SHA256SUMS", "url": "https://dl.test/SHA256SUMS"},
+                {"name": "", "url": "https://dl.test/x"},
+                {"name": "../evil", "url": "https://dl.test/evil"},
+                {"name": "bad-link", "url": "file:///etc/passwd"}
+            ]
+        });
+        let r = parse_release(&gh).unwrap();
+        assert_eq!(
+            r.assets,
+            vec![
+                Asset {
+                    name: "pulse-v0.3.0-aarch64-apple-darwin.tar.gz".into(),
+                    url: "https://github.com/o/r/releases/download/v0.3.0/pulse-v0.3.0-aarch64-apple-darwin.tar.gz".into(),
+                    api_url: "https://api.github.com/repos/o/r/releases/assets/7".into(),
+                },
+                Asset {
+                    name: "SHA256SUMS".into(),
+                    url: "https://dl.test/SHA256SUMS".into(),
+                    api_url: String::new(),
+                },
+            ]
+        );
+        assert!(parse_assets(&json!({"assets": "nope"})).is_empty());
+    }
+
+    #[test]
+    fn asset_selection_follows_the_running_target() {
+        assert_eq!(
+            target_for("aarch64", "macos").as_deref(),
+            Some("aarch64-apple-darwin")
+        );
+        assert_eq!(
+            target_for("x86_64", "macos").as_deref(),
+            Some("x86_64-apple-darwin")
+        );
+        assert_eq!(
+            target_for("x86_64", "linux").as_deref(),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(target_for("riscv64", "linux"), None);
+        assert_eq!(target_for("aarch64", "freebsd"), None);
+        assert_eq!(
+            archive_name("0.3.0", "aarch64-apple-darwin"),
+            "pulse-v0.3.0-aarch64-apple-darwin.tar.gz"
+        );
+
+        let assets = vec![
+            asset("SHA256SUMS"),
+            asset("pulse-v0.3.0-x86_64-apple-darwin.tar.gz"),
+            asset("pulse-v0.3.0-aarch64-apple-darwin.tar.gz"),
+        ];
+        let arm = pick_asset(&assets, "v0.3.0", "aarch64-apple-darwin").unwrap();
+        assert_eq!(arm.name, "pulse-v0.3.0-aarch64-apple-darwin.tar.gz");
+        let intel = pick_asset(&assets, "v0.3.0", "x86_64-apple-darwin").unwrap();
+        assert_eq!(intel.name, "pulse-v0.3.0-x86_64-apple-darwin.tar.gz");
+        // An archive named differently but alone for the target is taken.
+        let odd = vec![asset("pulse-0.3.0-aarch64-apple-darwin.tgz")];
+        assert_eq!(
+            pick_asset(&odd, "v0.3.0", "aarch64-apple-darwin")
+                .unwrap()
+                .name,
+            "pulse-0.3.0-aarch64-apple-darwin.tgz"
+        );
+        let err = pick_asset(&assets, "v0.3.0", "x86_64-unknown-linux-gnu").unwrap_err();
+        assert!(
+            err.contains("no archive for x86_64-unknown-linux-gnu"),
+            "{err}"
+        );
+        assert!(
+            err.contains("pulse-v0.3.0-aarch64-apple-darwin.tar.gz"),
+            "{err}"
+        );
+        let err = pick_asset(&[], "v0.3.0", "aarch64-apple-darwin").unwrap_err();
+        assert!(err.contains("no files attached"), "{err}");
+        let two = vec![
+            asset("pulse-a-aarch64-apple-darwin.tar.gz"),
+            asset("pulse-b-aarch64-apple-darwin.tar.gz"),
+        ];
+        let err = pick_asset(&two, "v0.3.0", "aarch64-apple-darwin").unwrap_err();
+        assert!(err.contains("2 archives"), "{err}");
+    }
+
+    #[test]
+    fn checksums_parse_and_verify() {
+        let a = "a".repeat(64);
+        let b = "B".repeat(64);
+        let text = format!(
+            "{a}  pulse-v0.3.0-aarch64-apple-darwin.tar.gz\n{b} *./dist/pulse-v0.3.0-x86_64-apple-darwin.tar.gz\nnot-a-digest  x\n\n{}  short\n",
+            "c".repeat(10)
+        );
+        let sums = parse_checksums(&text);
+        assert_eq!(sums.len(), 2, "{sums:?}");
+        assert_eq!(
+            sums["pulse-v0.3.0-x86_64-apple-darwin.tar.gz"],
+            "b".repeat(64)
+        );
+        assert!(check_digest(&sums, "pulse-v0.3.0-aarch64-apple-darwin.tar.gz", &a).is_ok());
+        assert!(check_digest(&sums, "pulse-v0.3.0-x86_64-apple-darwin.tar.gz", &b).is_ok());
+        let err = check_digest(&sums, "pulse-v0.3.0-aarch64-apple-darwin.tar.gz", &b).unwrap_err();
+        assert!(err.contains("does not match SHA256SUMS"), "{err}");
+        let err = check_digest(&sums, "missing.tar.gz", &a).unwrap_err();
+        assert!(err.contains("lists no digest for missing.tar.gz"), "{err}");
+    }
+
+    #[test]
+    fn channel_defaults_to_source_only_where_the_daemon_can_build() {
+        assert_eq!(resolve_channel("", true, true), Channel::Source);
+        assert_eq!(resolve_channel("auto", true, false), Channel::Release);
+        assert_eq!(resolve_channel("auto", false, true), Channel::Release);
+        assert_eq!(resolve_channel("release", true, true), Channel::Release);
+        assert_eq!(resolve_channel(" Source ", false, false), Channel::Source);
+        assert_eq!(Channel::Release.as_str(), "release");
+    }
+
+    #[test]
+    fn prompt_shows_once_per_release_on_the_release_channel() {
+        let st = UpdateState {
+            latest: "v0.2.0".into(),
+            url: "https://x.test/v0.2.0".into(),
+            ..UpdateState::default()
+        };
+        assert_eq!(
+            prompt("v0.1.0", &st, Channel::Release, "").unwrap(),
+            "A newer PULSE v0.2.0 is available - run: pulse update"
+        );
+        // Shown for v0.1.x before: a new release prompts again.
+        assert!(prompt("v0.1.0", &st, Channel::Release, "v0.1.5").is_some());
+        assert_eq!(prompt("v0.1.0", &st, Channel::Release, "v0.2.0"), None);
+        assert_eq!(prompt("v0.1.0", &st, Channel::Source, ""), None);
+        assert_eq!(prompt("v0.2.0", &st, Channel::Release, ""), None);
+        assert_eq!(prompt("dev", &st, Channel::Release, ""), None);
     }
 }
