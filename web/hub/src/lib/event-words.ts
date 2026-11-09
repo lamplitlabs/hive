@@ -196,6 +196,23 @@ export const VERB: Record<string, string> = {
   "manifest.synced": "applied the project\u2019s PULSE files from its default branch",
   "manifest.problems": "found problems in the project\u2019s PULSE files",
   "manifest.problems_cleared": "saw the problems in the project\u2019s PULSE files fixed",
+  // Store upgrades and upkeep (pulse-store store.rs, records.rs, chat.rs,
+  // archive.rs): written by PULSE itself when a new version opens the store.
+  "schema.records": "made room in the store for records after an upgrade",
+  "schema.superseded": "set aside an old store table that an upgrade replaced",
+  "schema.widened": "rebuilt a store table to take new kinds of entries after an upgrade",
+  "store.archived": "moved old history to the archive file to keep the store small",
+  // Record seeding and migration (pulse-records bundle.rs and import.rs,
+  // pulse-evolve starter.rs).
+  "records.framework.seeded": "added PULSE\u2019s built-in records",
+  "records.framework.seed_failed": "could not add PULSE\u2019s built-in records for the project",
+  "records.migrated": "imported the project\u2019s records from its repository",
+  // pulse-board remove.rs and the runner's pair.rs: a machine's projects or
+  // address changed; pulse-tasks messages.rs: an agent read its messages;
+  // pulse-board remove.rs: repeated board posts cleared out.
+  "executor.update": "changed the settings of a machine",
+  "message.read": "read its messages",
+  "post.remove.duplicates": "removed repeated posts from the board",
 };
 
 // The tool connections and skills an event names: "added the skill
@@ -275,6 +292,11 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   const d = rec(e.detail);
   const a = e.action;
   if (a === "mention") return "was mentioned" + (str(d?.by) ? " by " + str(d?.by) : "");
+  // pulse-board remove.rs: repeated posts cleared out, not a new post.
+  if (a === "post.remove.duplicates") {
+    const n = typeof d?.removed === "number" ? d.removed : 0;
+    return n > 0 ? "removed " + n + " repeated post" + (n === 1 ? "" : "s") + " from the board" : VERB[a];
+  }
   if (a === "post" || a.startsWith("post.")) {
     const kind = a.startsWith("post.") ? a.slice(5) : str(d?.kind);
     return POSTED[kind] ?? "posted on the board";
