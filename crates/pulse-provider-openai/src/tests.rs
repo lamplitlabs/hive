@@ -4,7 +4,6 @@ use pulse_provider::http::parse_error_body;
 use pulse_provider::{Tool, provider_error, squeeze, write_private_json};
 use pulse_testutil::httptest::{Response as TestResponse, Server};
 use serde_json::json;
-use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
@@ -562,9 +561,9 @@ fn token_login_stores0600_refuses_bad_key_and_exports_stored_only() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let info = fs::metadata(p.keys.path()).unwrap();
+        let info = std::fs::metadata(p.keys.path()).unwrap();
         assert_eq!(info.permissions().mode() & 0o777, 0o600);
-        let dir = fs::metadata(p.keys.path().parent().unwrap()).unwrap();
+        let dir = std::fs::metadata(p.keys.path().parent().unwrap()).unwrap();
         assert_eq!(dir.permissions().mode() & 0o777, 0o700);
     }
     let stored = p.keys.read_stored().unwrap().unwrap();
