@@ -136,17 +136,58 @@ pub fn register_version() {
 }
 
 fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Result<()> {
+    let version = pulse_cli::version();
+    // What the daemon's daily update check last found (TASK-087), read from
+    // the store without creating or migrating it; no store, no line.
+    let update = version_update_state(&c.home);
+    let line = update
+        .as_ref()
+        .and_then(|st| pulse_cli::update::notice(&version, st));
     if c.json {
+        let update = update.map(|st| {
+            serde_json::json!({
+                "latest": st.latest,
+                "url": st.url,
+                "checked_at": st.checked_at,
+                "newer": st.newer_than(&version),
+                "notice": line,
+            })
+        });
         pulse_cli::write_json(
             c.out.as_mut(),
             &serde_json::json!({
-                "version": pulse_cli::version()
+                "version": version,
+                "update": update,
             }),
         )?;
     } else {
-        writeln!(c.out, "{}", pulse_cli::version())?;
+        writeln!(c.out, "{version}")?;
+        if let Some(line) = line {
+            writeln!(c.out, "{line}")?;
+        }
     }
     Ok(())
+}
+
+/// The update check's state in the store under `home`, opened read-only so
+/// `pulse version` never creates, migrates or writes a store.
+fn version_update_state(home: &str) -> Option<pulse_cli::update::UpdateState> {
+    if home.is_empty()
+        || !std::path::Path::new(home)
+            .join(pulse_store::STORE_NAME)
+            .exists()
+    {
+        return None;
+    }
+    let s = pulse_store::Store::open(pulse_store::Options {
+        home: home.to_string(),
+        create: false,
+        read_only: true,
+        skip_records: true,
+        now: String::new(),
+    })
+    .ok()?;
+    pulse_cli::update::stored_state(&s)
 }
 
 /// Runs the CLI for callers that lend borrowed writers (tests). Output is
@@ -583,7 +624,7 @@ mod tests {
         // `run` installs the stamp build.rs generated before it dispatches, so the command
         // prints the stamped version, and in a git checkout the stamp names the revision.
         assert!(pulse_cli::read_build_info().is_some(), "no stamp installed");
-        assert_eq!(s(&out).trim(), pulse_cli::version());
+        assert_eq!(s(&out).lines().next().unwrap_or(""), pulse_cli::version());
         if pulse_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join("../../.git")
             .exists()
@@ -957,6 +998,69 @@ mod tests {
         if home.exists() {
             panic!("worker init created a store home");
         }
+    }
+
+    #[test]
+    fn version_says_when_a_newer_release_is_known() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path().to_str().unwrap();
+        let _home = setenv("PULSE_HOME", home);
+        // No store: the version alone, and `update` is null in JSON.
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        assert_eq!(run(&["version"], &mut out, &mut errb), 0, "{}", s(&errb));
+        assert_eq!(s(&out).lines().count(), 1, "{:?}", s(&out));
+        pulse_store::Store::create(dir.path().join(pulse_store::STORE_NAME)).unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.to_string(),
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let state = pulse_cli::update::UpdateState {
+            checked_at: "2026-11-09T02:00:00Z".into(),
+            source: "https://releases.test/latest.json".into(),
+            latest: "v999.0.0".into(),
+            url: "https://releases.test/v999.0.0".into(),
+            error: String::new(),
+        };
+        store
+            .set_meta(
+                pulse_cli::update::META_KEY,
+                &serde_json::to_string(&state).unwrap(),
+            )
+            .unwrap();
+        // The check is off (no URL): an old result says nothing.
+        out.clear();
+        assert_eq!(run(&["version"], &mut out, &mut errb), 0);
+        assert_eq!(s(&out).lines().count(), 1, "{:?}", s(&out));
+        store
+            .set_setting(
+                "human",
+                pulse_cli::update::LATEST_URL_SETTING,
+                &state.source,
+            )
+            .unwrap();
+        out.clear();
+        assert_eq!(run(&["version"], &mut out, &mut errb), 0);
+        let text = s(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], pulse_cli::version());
+        if pulse_cli::update::parse_semver(&pulse_cli::version()).is_some() {
+            assert_eq!(
+                lines.get(1).copied().unwrap_or(""),
+                format!(
+                    "A newer PULSE is available: v999.0.0 (running {}) - https://releases.test/v999.0.0",
+                    pulse_cli::version()
+                )
+            );
+        }
+        out.clear();
+        assert_eq!(run(&["--json", "version"], &mut out, &mut errb), 0);
+        let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(doc["update"]["latest"], "v999.0.0");
+        assert_eq!(doc["update"]["url"], "https://releases.test/v999.0.0");
     }
 
     #[test]

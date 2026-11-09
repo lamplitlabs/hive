@@ -106,6 +106,10 @@ impl Handler {
                 self.addition_running(w, r);
                 return;
             }
+            if route == "update" {
+                self.addition_update(w, r);
+                return;
+            }
             if route == "running/restart" {
                 self.addition_running_restart(w, r);
                 return;
