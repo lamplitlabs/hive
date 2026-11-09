@@ -11,7 +11,8 @@ import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, 
 import { Markdown } from "@/components/pulse/markdown";
 import { Disclosure, Notice } from "@/components/pulse/panel";
 import { ProjectLink, When, Who } from "@/components/pulse/who";
-import { writes, type EvolveRecordRef, type JobRef, type RecordDetail, type RecordDraft } from "@/lib/api";
+import { writes, type JobRef, type RecordDetail, type RecordDraft } from "@/lib/api";
+import { draftState, type DraftState } from "./draft-state";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -29,17 +30,9 @@ const CHANGES = (p: string) => p.startsWith("records") || p.startsWith("projects
 const kindOf = (id: string): "constitution" | "evaluators" => (id.includes("evaluators") ? "evaluators" : "constitution");
 const slugOf = (id: string) => id.replace(/^EVO-(constitution|evaluators)-?/, "");
 
-// What one loop record is waiting on, from a project row or the evolution document.
-export interface DraftState {
-  id: string;
-  rev: number;
-  seeded: boolean;
-  seeded_from: string;
-  draft?: RecordDraft | null;
-  draft_job?: JobRef | null;
-}
-
-export const draftState = (r: EvolveRecordRef | null | undefined): DraftState | null => (r ? { id: r.id, rev: r.rev, seeded: r.seeded, seeded_from: r.seeded_from, draft: r.draft, draft_job: r.draft_job } : null);
+// What one loop record is waiting on (DraftState, draftState) lives in
+// draft-state.ts, pure for node --test; re-exported here for its callers.
+export { draftState, type DraftState };
 
 // "a new constitution" / "new evaluators": the thing drafted, in a sentence.
 const aNew = (what: "constitution" | "evaluators") => (what === "evaluators" ? "new evaluators" : "a new constitution");

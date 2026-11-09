@@ -7,7 +7,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import ts from "typescript";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..") + path.sep;
 
@@ -69,6 +68,11 @@ export async function load(url, context, nextLoad) {
     }
   }
   if (url.endsWith(".tsx") || (url.endsWith(".ts") && url.includes("/src/"))) {
+    // TypeScript is loaded only here, for a .tsx or a .ts that stripping
+    // cannot run: a suite that reaches plain .ts modules alone (inbox-state,
+    // job-repair) then runs in a clone without node_modules too, the way
+    // pulse evolve measure scores the hub's coverage fixtures.
+    const { default: ts } = await import("typescript");
     const source = await readFile(fileURLToPath(url), "utf8");
     const out = ts.transpileModule(source, {
       compilerOptions: {

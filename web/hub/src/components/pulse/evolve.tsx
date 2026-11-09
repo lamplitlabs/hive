@@ -10,6 +10,7 @@ import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, 
 import { DecideButtons } from "./decide-buttons";
 import { HeldoutButton } from "./heldout";
 import { evolvePlanningView } from "./evolve-planning";
+import { RECORD_WORD, gateStep, noneStep, type GateStep } from "./evolve-gate";
 import { Disclosure, Kv, Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,10 @@ import { andList, fmtDate, num, parseDate, plural, rel, sentence } from "@/lib/f
 import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
 import { projectPath, type EvolutionDoc, type EvolveFixture, type EvolveGate, type EvolveGates, type EvolveLevel, type EvolveRecordRef, type OwnerQuestion } from "@/lib/api";
+
+// The gate step logic is pure and lives in evolve-gate.ts (so node --test
+// reaches it); its callers keep importing it from here.
+export { foldSteps, gateStep, noneStep, splitAlternative, type GateKind, type GateStep } from "./evolve-gate";
 
 // The self-improvement surfaces (ADR-029 to ADR-033). Agents try small
 // changes, measure them against test cases (public fixtures) and keep only
@@ -133,8 +138,7 @@ export const seedName = (from: string) => from.split("/").pop() || from;
 // The one way a record's text changes: the owner amends it in a terminal.
 export const amendCommand = (id: string) => "pulse record amend " + id + " --body-file FILE";
 
-// The two records self-improvement reads, by what they are for.
-const RECORD_WORD = { constitution: "Constitution", evaluators: "Scoring rules" } as const;
+// What each of the two records is for (their names, RECORD_WORD, live in evolve-gate.ts).
 const RECORD_HINT = { constitution: "the rules self-improvement follows: what agents may change and how far", evaluators: "how each experiment is judged" } as const;
 const seededTitle = (from: string) => "Still the template's text" + (from ? " (copied from " + seedName(from) + ")" : "") + ". An agent drafts a version for this project for you to adopt, or you can edit it yourself.";
 const ownTitle = (r: EvolveRecordRef, what: "constitution" | "evaluators") => r.id + ", version " + num(r.rev) + (r.seeded_from ? ": started as the template's text and edited since" : ": " + RECORD_HINT[what]);
@@ -195,13 +199,6 @@ export function EvolveBadges({ g, className }: { g: EvolveGate; className?: stri
 }
 
 // ----- the starting score (baseline, ADR-031) ----------------------------------
-
-// A next step that asks nothing of the owner: "none", or "none - <what the
-// daemon does instead>". The part after the dash, when there is one.
-export const noneStep = (next: string): { none: boolean; why: string } => {
-  const m = /^none\b\s*(?:[-–:]\s*)?([^]*)$/.exec(next.trim());
-  return m ? { none: true, why: (m[1] ?? "").trim() } : { none: false, why: "" };
-};
 
 // Where the baseline stands for a project, from the row's gate fields. The
 // daemon measures it (ADR-031): a job in flight, a failure it retries after
@@ -294,114 +291,6 @@ function GateFlag({ on, what, doc }: { on: boolean; what: "constitution" | "eval
 }
 
 // ----- the inbox card ----------------------------------------------------------
-
-// The steps only the owner can take. The baseline is not one of them since
-// ADR-031: the daemon measures it, so no gate card ever asks for it.
-export type GateKind = "seed" | "constitution" | "records" | "heldout";
-
-export interface GateStep {
-  kind: GateKind;
-  label: string; // the short "what is missing" phrase ("Next step: Set up private tests")
-  slug: string;
-  slugs?: string[]; // every project one shared step serves, when the inbox folds them (the held-out set is one per machine)
-  level: EvolveLevel;
-  title: string;
-  body: string;
-  command: string; // one command, ready to paste
-  alt?: string; // the other way to the same step, when the hub names one ("or pulse record new ...")
-}
-
-// The hub writes the seed step as `seed-cmd  (template copy), or write-cmd`:
-// two commands joined by prose. Split it so each copies on its own.
-export function splitAlternative(next: string): { command: string; alt: string } {
-  const [command, alt = ""] = next.trim().split(/\s+\(template copy\),?\s+or\s+/, 2);
-  return { command: command.trim(), alt: alt.trim() };
-}
-
-const GATE_LABEL: Record<GateKind, string> = { seed: "add test cases", constitution: "write a constitution", records: "add the self-improvement rules", heldout: "set up private tests" };
-
-// Which of the loop's two records a project lacks: what the row says first
-// (null is "none"), the title the seed command names when the row is silent.
-function missingRecords(g: EvolveGate, next: string): ("constitution" | "evaluators")[] {
-  const fromRow = ([g.constitution === null ? "constitution" : "", g.evaluators === null ? "evaluators" : ""] as const).filter((x): x is "constitution" | "evaluators" => !!x);
-  return fromRow.length ? fromRow : [/--title Evaluators\b/.test(next) ? "evaluators" : "constitution"];
-}
-
-const HELDOUT_WHY = "Private tests are two test cases agents never see, so self-improvement can't tune itself to pass them.";
-
-// Which human step, if any, a project waits for. One card per project: the
-// hub's `evolve_next` names the step. A project the record seed did not reach
-// (ADR-030) gets the seeding step; an older hub still names `pulse record new
-// evolution`. The baseline gate has no card (ADR-031): with a baseline job
-// open, a failure the daemon retries, or a step that starts with `none`, the
-// row asks nothing - and an older hub's `pulse job add ... experiment` is the
-// daemon's job now, so it asks nothing either. The held-out fixtures
-// (ADR-012) are the one step left that is the owner's, and the card says so.
-export function gateStep(slug: string, g: EvolveGate | null): GateStep | null {
-  if (!g) return null;
-  const next = g.evolve_next.trim();
-  if (!next || noneStep(next).none || (!g.baseline && (g.baseline_job || g.baseline_failed_at)) || next.startsWith("pulse job add")) return null;
-  const base = { slug, level: g.evolve_level };
-  if (next.startsWith("pulse evolve seed")) {
-    const missing = missingRecords(g, next);
-    const one = missing.length === 1 ? missing[0] : undefined;
-    const { command, alt } = splitAlternative(next);
-    return {
-      ...base,
-      kind: "records",
-      label: one ? "add " + (one === "constitution" ? "a constitution" : "scoring rules") : GATE_LABEL.records,
-      title: one ? "Add " + (one === "constitution" ? "a constitution" : "scoring rules") + " for " + slug : "Add the self-improvement rules for " + slug,
-      body: "Self-improvement follows two short records: a constitution (what agents may change) and scoring rules (how a change is judged). This project has " + (one ? "no " + RECORD_WORD[one].toLowerCase() : "neither") + " yet. Copy the command and run it once in a terminal on this machine: it starts from the template, and you can make the text your own afterwards.",
-      command,
-      ...(alt ? { alt } : {}),
-    };
-  }
-  if (next.startsWith("pulse record new evolution"))
-    return {
-      ...base,
-      kind: "constitution",
-      label: GATE_LABEL.constitution,
-      title: "Write a constitution for " + slug,
-      body: "The constitution holds the rules self-improvement follows. Without one, agents only measure and never try a change. Write it in your own words, then add it with the command.",
-      command: next,
-    };
-  if (next.startsWith("pulse evolve fixture seed"))
-    return {
-      ...base,
-      kind: "seed",
-      label: GATE_LABEL.seed,
-      title: "Add starter test cases for " + slug,
-      body: "There are no test cases yet, so nothing can be measured. The starter set adds six small ones to begin with; you can add your own later.",
-      command: next,
-    };
-  if (next.startsWith("pulse evolve setup"))
-    return {
-      ...base,
-      kind: "heldout",
-      label: GATE_LABEL.heldout,
-      title: "Set up two private tests",
-      body: HELDOUT_WHY + " You write them once, PULSE keeps them outside every project, and the runner does everything else. Self-improvement for " + slug + " starts once they're in.",
-      command: next,
-    };
-  return null;
-}
-
-// The held-out set is one per machine (evolve.heldout_dir), so when several
-// projects wait for it the inbox shows one card that names them all, not one
-// card per project saying the same thing. Every other step stays per project.
-export function foldSteps(steps: GateStep[]): GateStep[] {
-  const shared = steps.filter((s) => s.kind === "heldout");
-  if (shared.length < 2) return steps;
-  const slugs = shared.map((s) => s.slug);
-  const one: GateStep = {
-    ...shared[0],
-    slugs,
-    body: HELDOUT_WHY + " You write them once and the runner does everything else. One set on this machine serves " + andList(slugs) + "; self-improvement starts once they're in.",
-  };
-  const rest = steps.filter((s) => s.kind !== "heldout");
-  const at = steps.indexOf(shared[0]);
-  return [...rest.slice(0, at), one, ...rest.slice(at)];
-}
 
 // One waiting human step as an ask card: what, where, why, the button that
 // takes it, and the way to the project's self-improvement view. The private
