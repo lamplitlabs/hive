@@ -4,41 +4,24 @@
 //! when the setting changed) and keeps what it found in the `meta` row
 //! `update`; `pulse version` and the hub's banner read it from there. An
 //! empty setting - the default - means no request at all. Nothing is
-//! downloaded or installed: the check only says that a release exists.
+//! downloaded or installed: the check only says that a release exists;
+//! `pulse update` installs it (release_update.rs). A GitHub API address a
+//! private repository refuses is read again through `gh api`.
 
 use pulse_cli::update::{
     CHECK_HOURS, LATEST_URL_SETTING, META_KEY, UpdateState, notice, parse_release,
 };
 use serde_json::Value;
 use std::sync::{LazyLock, RwLock};
-use std::time::Duration;
-
-const TIMEOUT: Duration = Duration::from_secs(20);
-const USER_AGENT: &str = "pulse-update-check";
 
 /// Fetches the release document: the URL in, the parsed JSON (or why not) out.
 pub(crate) type Fetch = fn(&str) -> Result<Value, String>;
 
-/// The fetcher the daemon uses; tests swap it for one that never leaves the process.
-static FETCH: LazyLock<RwLock<Fetch>> = LazyLock::new(|| RwLock::new(http_fetch));
-
-fn http_fetch(url: &str) -> Result<Value, String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| format!("no HTTP client: {e}"))?;
-    let resp = client
-        .get(url)
-        .header("accept", "application/json")
-        .send()
-        .map_err(|e| format!("{url}: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("{url}: HTTP {}", status.as_u16()));
-    }
-    resp.json::<Value>().map_err(|e| format!("{url}: {e}"))
-}
+/// The fetcher the daemon uses - HTTP, and `gh api` for a private GitHub
+/// repository (release_update.rs); tests swap it for one that never leaves
+/// the process.
+static FETCH: LazyLock<RwLock<Fetch>> =
+    LazyLock::new(|| RwLock::new(crate::release_update::fetch_json));
 
 #[cfg(test)]
 pub(crate) fn set_fetch(f: Fetch) -> Fetch {
