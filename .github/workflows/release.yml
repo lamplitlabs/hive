@@ -1,0 +1,132 @@
+# Build the pulse executable for macOS when a release tag is pushed and attach
+# it to a GitHub Release. The tag commit is what crates/pulse/build.rs stamps,
+# so the binary reports exactly vX.Y.Z in `pulse version`.
+#
+# Tags come from cut-release.yml (or `git tag vX.Y.Z && git push --tags` by
+# hand). Windows is not built here yet: the runner and daemon use unix-only
+# APIs (see docs/release.md).
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0 # build.rs reads tags to stamp the version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/hub/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked --bin pulse --target ${{ matrix.target }}
+      - name: Check the stamp
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          out="$(target/${{ matrix.target }}/release/pulse version)"
+          echo "$out"
+          case "$out" in *"$tag"*) ;; *) echo "binary does not report $tag" >&2; exit 1 ;; esac
+      - name: Package
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          name="pulse-$tag-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/pulse" "dist/$name/pulse"
+          cp README.md LICENSE* "dist/$name/" 2>/dev/null || true
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pulse-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          set -eu
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          rm -f *.sha256
+          ls -l
+      - name: Release notes
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          prev="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$tag" | head -1 || true)"
+          {
+            echo "## PULSE $tag"
+            echo
+            echo "Install (macOS):"
+            echo
+            echo '```sh'
+            echo "gh release download $tag --repo ${{ github.repository }} --pattern \"pulse-$tag-\$(uname -m | sed 's/arm64/aarch64/')-apple-darwin.tar.gz\""
+            echo "tar -xzf pulse-$tag-*-apple-darwin.tar.gz && install -m 755 pulse-$tag-*/pulse ~/.pulse/bin/pulse"
+            echo '```'
+            echo
+            if [ -n "$prev" ]; then
+              echo "### Changes since $prev"
+              echo
+              git log --no-merges --format='- %s' "$prev..$tag" | head -200
+            fi
+          } > notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "$tag" dist/* --title "PULSE $tag" --notes-file notes.md --repo "${{ github.repository }}"
+          fi

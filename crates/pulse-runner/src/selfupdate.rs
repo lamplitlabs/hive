@@ -555,14 +555,15 @@ fn neutral_line(rev: &str, base: &str, word: &str, changed: &[String]) -> String
     )
 }
 
-/// Whether the binary at `path` already prints `rev`'s short form as its
-/// version, the same check the install smoke test applies to a new build.
+/// Whether the binary at `path` reports `rev` as its revision, the same check
+/// the install smoke test applies to a new build. `version --json` names the
+/// revision even for a build whose version is an exact release tag.
 fn installed_binary_is(path: &str, rev: &str) -> bool {
     if path.is_empty() || rev.is_empty() {
         return false;
     }
     std::process::Command::new(path)
-        .arg("version")
+        .args(["version", "--json"])
         .output()
         .ok()
         .filter(|out| out.status.success())
@@ -630,7 +631,9 @@ pub(crate) fn build_and_install(
     if let Err(err) = crate::sign::sign_new_build(s, &new_binary) {
         return self_update_failure(s, rev, env, "sign".into(), String::new(), err);
     }
-    let version_args = vec!["version".to_string()];
+    // `--json` names the revision beside the version: a build at an exact
+    // release tag prints only `vX.Y.Z` on the plain line.
+    let version_args = vec!["version".to_string(), "--json".to_string()];
     let (version, err) = run_in(
         repo.clone(),
         Bound::Total(timeout),

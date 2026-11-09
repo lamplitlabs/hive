@@ -846,6 +846,24 @@ impl Sink for LiveSink {
     }
 }
 
+/// What a message with `n` images says once they are left out because
+/// `model` cannot see: the text the model gets (the owner's words and a
+/// line saying images were there) and the note the owner reads.
+fn left_out_images(text: &str, n: usize, model: &str) -> (String, String) {
+    let what = if n == 1 {
+        "1 image".to_string()
+    } else {
+        format!("{n} images")
+    };
+    let text = format!(
+        "{text}\n\n[The owner attached {what}; it was left out because the model {model} cannot see images. Say so if the answer depends on it.]"
+    );
+    let note = format!(
+        "{what} left out: the model {model} cannot see images, so it got the words alone. Pick a model that takes images to have them looked at."
+    );
+    (text, note)
+}
+
 fn one_line(text: &str) -> String {
     let line = text.lines().next().unwrap_or("").trim();
     if line.chars().count() > 160 {
@@ -1272,6 +1290,11 @@ impl Runtime {
     /// message queues as [`Runtime::enqueue`] does.
     fn steer(self: &Arc<Self>, message: Queued) {
         let role = message.role();
+        // Images for a model that cannot see are left out as on a turn; the
+        // note follows the owner's row. A message that ends up queued keeps
+        // its images and the turn decides.
+        let blind = self.blind_model(&message.images);
+        let mut left_out = None;
         let written = {
             let mut st = self.shared.lock();
             let steerable = matches!(st.status, Status::Running | Status::Waiting)
@@ -1285,7 +1308,15 @@ impl Runtime {
                         Some((_, extra)) => steered_extra(extra),
                         None => json!({"steered": true}),
                     };
-                    slot.push(message.text.clone(), message.images.clone());
+                    match &blind {
+                        Some(model) => {
+                            let (text, note) =
+                                left_out_images(&message.text, message.images.len(), model);
+                            slot.push(text, Vec::new());
+                            left_out = Some(note);
+                        }
+                        None => slot.push(message.text.clone(), message.images.clone()),
+                    }
                     st.steered.push(shown.clone());
                     self.shared.bump(&mut st);
                     Some((shown, extra))
@@ -1296,6 +1327,11 @@ impl Runtime {
         match written {
             Some((shown, extra)) => {
                 let _ = self.store.chat_add_message(&self.id, role, &shown, &extra);
+                if let Some(note) = left_out {
+                    let _ = self
+                        .store
+                        .chat_add_message(&self.id, "note", &note, &Value::Null);
+                }
             }
             None => self.enqueue(message),
         }
@@ -1419,6 +1455,19 @@ impl Runtime {
                 self.write_unsent();
                 return;
             }
+        };
+        // A model that cannot see gets no images: they would fail the call
+        // or vanish without a word. The owner reads a note saying so, and
+        // the model is told the images were left out.
+        let (text, images) = match self.blind_model(&images) {
+            Some(model) => {
+                let (text, note) = left_out_images(&text, images.len(), &model);
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, "note", &note, &Value::Null);
+                (text, Vec::new())
+            }
+            None => (text, images),
         };
         let message = if first {
             let row = self.store.chat_get(&self.id).ok().flatten().unwrap_or(row);
@@ -1684,6 +1733,25 @@ impl Runtime {
         {
             m.deliver_report(row, kind, &text);
         }
+    }
+
+    /// The session's model when `images` is not empty and the provider's
+    /// model list says that model cannot see (`Model.vision` false). None
+    /// when there are no images, the model takes them, or the list does
+    /// not answer or name the model: then the images go as they are.
+    fn blind_model(&self, images: &[ImageContent]) -> Option<String> {
+        if images.is_empty() {
+            return None;
+        }
+        let (provider, model) = {
+            let guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+            let s = guard.as_ref()?;
+            (s.prepared.provider.clone(), s.model.clone())
+        };
+        let cancel = CancelToken::new().with_timeout(Duration::from_secs(10));
+        let models = provider.models(&cancel).ok()?;
+        let listed = models.iter().find(|m| m.id == model)?;
+        (!listed.vision).then_some(model)
     }
 
     /// Renames the conversation after what it has become: a short title
@@ -5007,6 +5075,113 @@ mod tests {
         assert_eq!(err.to_string(), format!("session {} is archived", row.id));
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Sends one image to a conversation on the fake model `fake-1`, whose
+    /// list entry says `vision`, and returns the transcript and the user
+    /// messages the agent holds.
+    fn send_image_to_fake(
+        vision: bool,
+    ) -> (
+        Vec<pulse_store::ConversationMessage>,
+        Vec<pulse_provider::Message>,
+    ) {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        pulse_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let path = home.path().join("script.json");
+        let model = json!({
+            "id": "fake-1", "name": "Fake 1", "vendor": "fake", "chat": true,
+            "tool_calls": true, "vision": vision, "premium": 0.0, "preview": false,
+            "context_window": 128000, "max_output": 0, "default": true
+        });
+        std::fs::write(
+            &path,
+            json!({"replies": [{"content": "Hello."}, {"content": "Answered."}], "models": [model]})
+                .to_string(),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("PULSE_HARNESS_FAKE_SCRIPT", &path) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create_with("", "", "fake", "", true, "hi", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let image = ImageAttachment {
+            mime: "image/png".into(),
+            name: "".into(),
+            data: STANDARD.encode(b"\x89PNG fake bytes"),
+        };
+        m.send_with_images(
+            &row.id,
+            "what is on screen?",
+            &[],
+            std::slice::from_ref(&image),
+        )
+        .expect("send image");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let sent: Vec<pulse_provider::Message> = {
+            let rt = m.running(&row.id).expect("running");
+            let guard = rt.started.lock().unwrap();
+            let a = guard.as_ref().unwrap().agent.lock().unwrap();
+            a.messages()
+                .into_iter()
+                .filter(|m| m.role == pulse_provider::Role::User)
+                .collect()
+        };
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("PULSE_HARNESS_FAKE_SCRIPT") };
+        (msgs, sent)
+    }
+
+    #[test]
+    fn images_for_a_model_that_cannot_see_are_left_out_with_a_note() {
+        let _env = pulse_testutil::env_lock();
+        let (msgs, sent) = send_image_to_fake(false);
+        let asked = sent
+            .iter()
+            .rfind(|m| m.content.contains("what is on screen?"))
+            .expect("the owner's words reach the model");
+        assert!(asked.images.is_empty(), "no image goes to a blind model");
+        assert!(
+            asked
+                .content
+                .contains("left out because the model fake-1 cannot see images"),
+            "{}",
+            asked.content
+        );
+        let note = msgs
+            .iter()
+            .find(|m| m.role == "note" && m.content.contains("cannot see images"))
+            .expect("the owner reads a note");
+        assert!(
+            note.content.starts_with("1 image left out"),
+            "{}",
+            note.content
+        );
+        assert!(note.content.contains("fake-1"), "{}", note.content);
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(
+            user.extra["images"][0]["name"], "image-1.png",
+            "the image is still kept"
+        );
+    }
+
+    #[test]
+    fn images_for_a_model_that_can_see_reach_it() {
+        let _env = pulse_testutil::env_lock();
+        let (msgs, sent) = send_image_to_fake(true);
+        let asked = sent
+            .iter()
+            .rfind(|m| m.content.contains("what is on screen?"))
+            .expect("the owner's words reach the model");
+        assert_eq!(asked.images.len(), 1);
+        assert!(!asked.content.contains("left out"), "{}", asked.content);
+        assert!(!msgs.iter().any(|m| m.content.contains("cannot see images")));
     }
 
     #[test]

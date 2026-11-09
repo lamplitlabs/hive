@@ -564,12 +564,18 @@ impl Copilot {
         }
         let (token, base) = self.session_token(cancel, &src.token, false)?;
         let url = format!("{}/models", base.trim_end_matches('/'));
-        let res = self
-            .http
-            .get(url)
-            .headers(self.copilot_headers(&token))
-            .send()
-            .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
+        let mut get = self.http.get(url).headers(self.copilot_headers(&token));
+        if let Some(left) = request_timeout(cancel) {
+            get = get.timeout(left);
+        }
+        let res = get.send().map_err(|err| {
+            // A stall past the caller's deadline is the caller's cancel,
+            // not a network fault worth retrying.
+            if cancel.is_cancelled() {
+                return anyhow::Error::from(pulse_provider::CancelledError);
+            }
+            provider_error_new(0, "network", &err.to_string(), true).into()
+        })?;
         if !res.status().is_success() {
             return Err(self.http_provider_error(res, true).into());
         }
@@ -1817,6 +1823,17 @@ fn chat_retry_backoffs() -> Vec<Duration> {
         .clone()
 }
 
+/// What is left of the caller's deadline, so one HTTP request stops when the
+/// caller stops waiting instead of at the client's own (longer) timeout.
+/// `None` when the caller set no deadline; never zero, so reqwest still
+/// fails the request rather than waiting without a bound.
+fn request_timeout(cancel: &CancelToken) -> Option<Duration> {
+    cancel.deadline().map(|at| {
+        at.saturating_duration_since(std::time::Instant::now())
+            .max(Duration::from_millis(1))
+    })
+}
+
 fn format_duration(d: Duration) -> String {
     if d.as_secs() > 0 && d.subsec_nanos() == 0 {
         format!("{}s", d.as_secs())
@@ -2773,6 +2790,59 @@ mod tests {
         p.models(&cancel()).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         cleanup();
+    }
+
+    #[test]
+    fn models_stop_at_the_callers_deadline_when_the_api_stalls() {
+        let _serial = test_serial();
+        // The API accepts the connection and then never answers.
+        let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stalled_url = format!("http://{}", stalled.local_addr().unwrap());
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let hold = thread::spawn(move || {
+            let held: Vec<_> = stalled.incoming().take(1).collect();
+            let _ = released.recv_timeout(Duration::from_secs(10));
+            drop(held);
+        });
+        let api = stalled_url.clone();
+        let srv = Server::new(move |req| match req.path() {
+            "/copilot_internal/v2/token" => HttpResponse::json(
+                200,
+                &json!({
+                    "token": "tid=stall;exp=999;",
+                    "expires_at": (Utc::now() + ChronoDuration::hours(1)).timestamp(),
+                    "endpoints": {"api": api}
+                }),
+            ),
+            path => panic!("unexpected path {path}"),
+        });
+        let cleanup = reset_globals(&srv.url(), &srv.url(), &srv.url());
+        let p = new_test_provider(
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .as_ref(),
+            Some(env_token()),
+        );
+        let started = std::time::Instant::now();
+        let err = p
+            .models(&cancel().with_timeout(Duration::from_secs(3)))
+            .expect_err("a stalled /models must not produce a list");
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(4500),
+            "models waited {took:?} past a 3s deadline: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<pulse_provider::CancelledError>()
+                .is_some(),
+            "a missed deadline reads as cancelled, not a network fault: {err:#}"
+        );
+        cleanup();
+        drop(srv);
+        release.send(()).unwrap();
+        hold.join().unwrap();
     }
 
     #[test]
