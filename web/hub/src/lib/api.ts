@@ -1954,6 +1954,8 @@ export interface ChatShowResponse {
 
 export interface ChatCreateInput {
   text: string;
+  // Session and task ids whose summaries go in front of the first message.
+  references?: string[];
   title?: string;
   project?: string;
   auto_approve?: boolean;
@@ -2977,6 +2979,8 @@ export interface NewTaskInput {
   title: string;
   brief: string;
   priority: number;
+  // Session and task ids whose summaries go in front of the brief.
+  references?: string[];
 }
 
 export interface AmendTaskInput {

@@ -292,6 +292,13 @@ impl Handler {
         if !ok {
             return;
         }
+        let Some(refs) = crate::references::parse(w, &payload) else {
+            return;
+        };
+        let Some(text) = crate::references::with_context(w, self.store.as_deref(), &refs, &text)
+        else {
+            return;
+        };
         let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
         // A sub-conversation of `parent` (the owner starting one from the
         // parent's page) takes the parent's workspace and settings; the

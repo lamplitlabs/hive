@@ -249,6 +249,7 @@ import {
 } from "@/lib/transcript";
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
+import { ReferencePicker } from "@/components/reference-picker";
 import { cn } from "@/lib/utils";
 
 // ----- words ----------------------------------------------------------------
@@ -2068,6 +2069,7 @@ function NewConversation({
   const [reasoning, setReasoning] = useState("");
   const [auto, setAuto] = useState(true);
   const [lockdown, setLockdown] = useState(false);
+  const [references, setReferences] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const insertSpokenText = useDictation(textarea, text, setText);
@@ -2094,6 +2096,7 @@ function NewConversation({
           title: taskTitleOf(t),
           brief: t,
           priority: 10,
+          references,
         });
         toast.success(
           `Started. The ${project} lead agent is on it now and replies in the session.`,
@@ -2123,6 +2126,7 @@ function NewConversation({
         lockdown,
         model,
         reasoning,
+        references,
       });
       invalidate("chat");
       onCreated(r.conversation);
@@ -2172,6 +2176,7 @@ function NewConversation({
               autoFocus
               aria-label="What should the agent do"
             />
+            <ReferencePicker value={references} onChange={setReferences} />
             <div className="flex flex-wrap items-center gap-1.5">
               <MicButton disabled={busy} onText={insertSpokenText} />
               {STARTERS.map((s) => (
