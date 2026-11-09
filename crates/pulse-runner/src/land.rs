@@ -1451,14 +1451,26 @@ pub(crate) fn land_branch_with_registry(
     // conflicts on all of them. The commit the job's run was cloned from (`runs.base`)
     // is where the branch really forked; while it still exists and is on the branch it
     // stands in as the base, and the branch's own commits are copied onto {def} below.
+    // A caller that names no run (the daemon's landing pass) still has the job: its
+    // last run is the one that made the branch. `o.run_id` stays as given, so the
+    // work snapshot keeps reading the finished run itself.
     let mut replay_from = String::new();
-    if base.is_empty() && !o.run_id.is_empty() {
-        replay_from = crate::experiment::run_base_fork(
-            &root,
-            &branch,
-            &crate::experiment::run_base(s, &o.run_id),
-        );
-        base = replay_from.clone();
+    if base.is_empty() {
+        let run_id = if !o.run_id.is_empty() {
+            o.run_id.clone()
+        } else if !job.0.is_empty() {
+            crate::experiment::last_run_id(s, job.str("id"))
+        } else {
+            String::new()
+        };
+        if !run_id.is_empty() {
+            replay_from = crate::experiment::run_base_fork(
+                &root,
+                &branch,
+                &crate::experiment::run_base(s, &run_id),
+            );
+            base = replay_from.clone();
+        }
     }
     let files = branch_files(root.clone(), base.clone(), branch.clone());
     let slug = project.str("slug");
@@ -4189,6 +4201,79 @@ mod tests {
             0,
             "no owner question for a lockfile hold"
         );
+    }
+
+    /// The daemon's landing pass names no run in `LandOpts`; a job branch
+    /// forked before main was squashed to a new root still replays from its
+    /// job's last run base instead of conflicting on every file.
+    #[test]
+    fn daemon_landing_replays_a_job_branch_forked_before_main_was_squashed() {
+        let _serial = crate::test_helpers::serial();
+        let s = test_helpers::new_store();
+        let (project, root) = crate::test_helpers::new_repo(&s);
+        let fork = run(&root, &["git", "rev-parse", "main"]).trim().to_string();
+        let branch = "pulse/aurora/job-squashed-daemon";
+        run(&root, &["git", "switch", "-q", "-c", branch]);
+        std::fs::write(std::path::Path::new(&root).join("job.txt"), "job\n").unwrap();
+        run(&root, &["git", "add", "job.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "job change"]);
+        run(&root, &["git", "switch", "-q", "main"]);
+        // The owner squashes main to a new root commit after the job's run forked.
+        std::fs::write(std::path::Path::new(&root).join("squash.txt"), "squash\n").unwrap();
+        run(&root, &["git", "add", "squash.txt"]);
+        let tree = run(&root, &["git", "write-tree"]).trim().to_string();
+        let squashed = run(&root, &["git", "commit-tree", &tree, "-m", "Squash"])
+            .trim()
+            .to_string();
+        run(&root, &["git", "reset", "-q", "--hard", &squashed]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "add job.txt".into(),
+            "add job.txt".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', branch = ?, finished_at = ? WHERE id = ?",
+            &[&branch, &TEST_NOW, &job.str("id")],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, base) VALUES ('run-squashed-daemon', ?, 'aurora', 'proj', ?, ?, 'done', ?)",
+            &[&job.str("id"), &TEST_NOW, &TEST_NOW, &fork],
+        );
+
+        let lr = super::land_job_context(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            &project,
+            &job_row(&s, &job.str("id")),
+            "daemon",
+            TEST_NOW,
+            false,
+        );
+        assert_eq!(lr.state, "landed", "{}", lr.note);
+        assert!(
+            lr.note.contains("replayed from its run base"),
+            "{}",
+            lr.note
+        );
+        assert_eq!(run(&root, &["git", "show", "main:job.txt"]), "job\n");
+        assert_eq!(run(&root, &["git", "show", "main:squash.txt"]), "squash\n");
+        let reachable = std::process::Command::new("git")
+            .args(["-C", &root, "merge-base", "--is-ancestor", &fork, "main"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap()
+            .success();
+        assert!(!reachable, "the squashed-away history came back into main");
     }
 
     /// The hold's own command, `pulse land --branch`, runs the check with the
