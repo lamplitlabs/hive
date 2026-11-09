@@ -2151,6 +2151,21 @@ export interface RestartNowResult {
   at: string;
 }
 
+// GET /api/v1/update: what the daemon's daily update check last found
+// (update.latest_url; crates/pulse-cli/src/update.rs), compared with the
+// console's own build. `newer` is the hub's word on it; `notice` is the
+// line `pulse version` prints.
+export interface UpdatePayload {
+  enabled: boolean;
+  running: string;
+  latest: string;
+  url: string;
+  checked_at: string;
+  error: string;
+  newer: boolean;
+  notice: string | null;
+}
+
 export interface RunningPayload {
   available: boolean;
   self_update: string;

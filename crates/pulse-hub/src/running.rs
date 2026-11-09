@@ -253,6 +253,47 @@ impl Handler {
         );
     }
 
+    /// `GET /api/v1/update`: what the daemon's daily update check last
+    /// found (TASK-087), compared with this console's own build. `enabled`
+    /// is false while `update.latest_url` is empty; `newer` is true only
+    /// when the release it named outranks the running version, and `notice`
+    /// is then the line `pulse version` prints.
+    pub(crate) fn update_status(&self) -> JsonMap {
+        let running = pulse_cli::version();
+        let enabled = self.store.as_ref().is_some_and(|s| {
+            !s.setting(pulse_cli::update::LATEST_URL_SETTING, "")
+                .trim()
+                .is_empty()
+        });
+        let st = self
+            .store
+            .as_deref()
+            .and_then(pulse_cli::update::stored_state)
+            .unwrap_or_default();
+        let notice = pulse_cli::update::notice(&running, &st);
+        map_from_pairs(vec![
+            ("enabled", json!(enabled)),
+            ("running", json!(running)),
+            ("latest", json!(st.latest)),
+            ("url", json!(st.url)),
+            ("checked_at", json!(st.checked_at)),
+            ("error", json!(st.error)),
+            ("newer", json!(st.newer_than(&running))),
+            ("notice", json!(notice)),
+        ])
+    }
+
+    pub(crate) fn addition_update(
+        &self,
+        w: &mut crate::httpx::ResponseWriter,
+        r: &crate::httpx::Request,
+    ) {
+        if !crate::server::read_method(w, r) {
+            return;
+        }
+        self.respond(w, json!(self.update_status()), String::new());
+    }
+
     pub(crate) fn addition_running(
         &self,
         w: &mut crate::httpx::ResponseWriter,
@@ -466,6 +507,45 @@ mod tests {
         assert_eq!(went.load(std::sync::atomic::Ordering::SeqCst), 1);
         let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/running", "");
         assert_eq!(result["hub"]["restart_pending"], true);
+    }
+
+    #[test]
+    fn update_says_what_the_daily_check_found() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        let (status, result) = http::additions_request(h.clone(), "GET", "/api/v1/update", "");
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["enabled"], false);
+        assert_eq!(result["newer"], false);
+        assert_eq!(result["notice"], Value::Null);
+        assert_eq!(result["running"], json!(pulse_cli::version()));
+        let st = pulse_cli::update::UpdateState {
+            checked_at: "2026-11-09T02:00:00Z".into(),
+            source: "https://releases.test/latest.json".into(),
+            latest: "v999.0.0".into(),
+            url: "https://releases.test/v999.0.0".into(),
+            error: String::new(),
+        };
+        s.set_meta(
+            pulse_cli::update::META_KEY,
+            &serde_json::to_string(&st).unwrap(),
+        )
+        .unwrap();
+        // Off: an old result stays hidden.
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/update", "");
+        assert_eq!(result["latest"], "");
+        s.set_setting("human", pulse_cli::update::LATEST_URL_SETTING, &st.source)
+            .unwrap();
+        let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/update", "");
+        assert_eq!(result["enabled"], true);
+        assert_eq!(result["latest"], "v999.0.0");
+        assert_eq!(result["url"], "https://releases.test/v999.0.0");
+        assert_eq!(result["checked_at"], "2026-11-09T02:00:00Z");
+        let semver = pulse_cli::update::parse_semver(&pulse_cli::version()).is_some();
+        assert_eq!(result["newer"], semver);
+        let (status, _) = http::additions_request(h, "POST", "/api/v1/update", "{}");
+        assert_ne!(status, 200);
     }
 
     #[test]

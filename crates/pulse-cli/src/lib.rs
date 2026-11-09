@@ -7,6 +7,7 @@ pub mod limits;
 pub mod procs;
 pub mod signed;
 pub mod table;
+pub mod update;
 pub mod version;
 
 pub use cli::*;
