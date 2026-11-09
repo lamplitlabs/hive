@@ -115,6 +115,9 @@ export const hrefs = {
   record: (id: string, project?: string) => "/records/" + qs({ id, project }),
   codeDeliveries: (f: { project?: string } = {}) =>
     "/code-deliveries/" + qs({ project: f.project }),
+  // Work reports (TASK-088): every done task with its landing, release and evidence.
+  reports: (f: { project?: string } = {}) =>
+    "/reports/" + qs({ project: f.project }),
   compute: () => "/compute/",
   settings: (section?: string) => "/settings/" + (section ? "#" + section : ""),
   conversations: (id?: string) => "/chat/" + qs({ id }),

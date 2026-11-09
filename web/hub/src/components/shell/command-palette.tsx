@@ -17,6 +17,7 @@ import {
   BrainIcon,
   CalendarClockIcon,
   ChartLineIcon,
+  ClipboardCheckIcon,
   CornerDownLeftIcon,
   FolderIcon,
   HistoryIcon,
@@ -348,6 +349,13 @@ export function CommandPaletteHost() {
               onSelect={() => go(hrefs.records())}
             >
               <BookOpenIcon aria-hidden="true" className={itemIcon} /> Records
+            </CommandItem>
+            <CommandItem
+              value="page reports work reports done tasks evidence releases"
+              className={itemStyle}
+              onSelect={() => go(hrefs.reports())}
+            >
+              <ClipboardCheckIcon aria-hidden="true" className={itemIcon} /> Reports
             </CommandItem>
           </CommandGroup>
           <CommandSeparator />

@@ -2891,6 +2891,67 @@ export function codeDeliveriesPath({
   return "code-deliveries" + query({ project, limit, before });
 }
 
+// ----- work reports (GET /reports) ----------------------------------------
+// Every done task, newest first, with the jobs that carried it: each job's
+// last run (agent, SUMMARY, the check it ran), its landing (merged pull
+// request, local landing or an open pull request), the release tag that
+// carries the landed commit and the evidence in its artifacts folder.
+
+export interface WorkReportLanding {
+  action: "land.merged" | "land.landed" | "land.pr" | string;
+  at: string;
+  sha: string;
+  number: number;
+  url: string;
+  verify: string;
+}
+
+export interface WorkReportManifest {
+  title: string;
+  summary: string;
+  status: string;
+  checks: string[];
+  changes: number;
+}
+
+export interface WorkReportJob {
+  id: string;
+  kind: string;
+  title: string;
+  status: string;
+  agent: string;
+  finished_at: string;
+  summary: string;
+  verify: string;
+  commits: number;
+  landing: WorkReportLanding | null;
+  release: string;
+  artifacts: ChatArtifact[];
+  artifacts_total: number;
+  report: WorkReportManifest | null;
+}
+
+export interface WorkReport {
+  id: string;
+  project: string;
+  title: string;
+  brief: string;
+  priority: number;
+  created_by: string;
+  created_at: string;
+  done_at: string;
+  jobs: WorkReportJob[];
+}
+
+export interface WorkReportsPayload {
+  scope: { project: string; limit: number; total: number; has_more: boolean };
+  reports: WorkReport[];
+}
+
+export function workReportsPath({ project, limit }: { project?: string | null; limit?: number } = {}): string {
+  return "reports" + query({ project, limit });
+}
+
 export interface MessagesPayload {
   messages: Message[];
   lead_work?: LeadWork | null;
