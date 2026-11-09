@@ -994,11 +994,25 @@ impl Style {
 /// as `Input::Signal`, which counts as a ^C only when plain lines are read
 /// (the line editor reports its own). Dropping the guard restores the
 /// default disposition.
+#[cfg(unix)]
 struct Interrupts {
     handle: signal_hook::iterator::Handle,
     thread: Option<thread::JoinHandle<()>>,
 }
 
+/// What a ^C does: cancel the running turn, or reach the keyboard.
+fn deliver_interrupt(tx: &Sender<Input>, running: &Mutex<Option<CancelToken>>) -> bool {
+    let turn = running.lock().expect("running turn poisoned").clone();
+    match turn {
+        Some(cancel) => {
+            cancel.cancel();
+            true
+        }
+        None => tx.send(Input::Signal).is_ok(),
+    }
+}
+
+#[cfg(unix)]
 impl Interrupts {
     fn watch(tx: Sender<Input>, running: Arc<Mutex<Option<CancelToken>>>) -> Result<Self> {
         let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT])?;
@@ -1007,14 +1021,8 @@ impl Interrupts {
             .name("harness-chat-signals".into())
             .spawn(move || {
                 for _ in signals.forever() {
-                    let turn = running.lock().expect("running turn poisoned").clone();
-                    match turn {
-                        Some(cancel) => cancel.cancel(),
-                        None => {
-                            if tx.send(Input::Signal).is_err() {
-                                return;
-                            }
-                        }
+                    if !deliver_interrupt(&tx, &running) {
+                        return;
                     }
                 }
             })?;
@@ -1025,9 +1033,62 @@ impl Interrupts {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Interrupts {
     fn drop(&mut self) {
         self.handle.close();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// signal-hook has no signal iterator off unix: there SIGINT (Ctrl+C) sets a
+/// flag and a watcher thread delivers each one it sees the same way.
+#[cfg(not(unix))]
+struct Interrupts {
+    id: signal_hook::SigId,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(not(unix))]
+impl Interrupts {
+    fn watch(tx: Sender<Input>, running: Arc<Mutex<Option<CancelToken>>>) -> Result<Self> {
+        let hit = Arc::new(AtomicBool::new(false));
+        let id = signal_hook::flag::register(signal_hook::consts::SIGINT, hit.clone())?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let watch_stop = stop.clone();
+        let thread = thread::Builder::new()
+            .name("harness-chat-signals".into())
+            .spawn(move || {
+                while !watch_stop.load(Ordering::Relaxed) {
+                    if hit.swap(false, Ordering::Relaxed) && !deliver_interrupt(&tx, &running) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            });
+        let thread = match thread {
+            Ok(t) => t,
+            Err(e) => {
+                signal_hook::low_level::unregister(id);
+                return Err(e.into());
+            }
+        };
+        Ok(Self {
+            id,
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for Interrupts {
+    fn drop(&mut self) {
+        signal_hook::low_level::unregister(self.id);
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }

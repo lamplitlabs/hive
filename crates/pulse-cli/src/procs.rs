@@ -493,6 +493,14 @@ pub fn kill_tree_under_sparing(
         .collect()
 }
 
+/// SIGKILL for every member of the group at once, with no grace period and
+/// no wait: for a group whose leader has already exited or is being killed
+/// anyway (a measured command's leftovers). Off unix it does nothing yet,
+/// like the rest of the group calls.
+pub fn kill_group(pgid: i32) {
+    signal_group(pgid, Sig::Kill);
+}
+
 /// One line per killed process, for logs and observations.
 pub fn describe_killed(killed: &[KilledProc]) -> String {
     killed
