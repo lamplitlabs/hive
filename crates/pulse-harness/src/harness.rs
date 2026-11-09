@@ -7396,7 +7396,6 @@ pub(crate) fn shared_agent(agent: Agent) -> Arc<std::sync::Mutex<Agent>> {
 mod tests {
     use super::*;
     use pulse_provider::{Login, Model};
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Condvar, Mutex};
 
     #[test]
@@ -10673,10 +10672,14 @@ mod tests {
             fs::metadata(path.with_extension("json.tmp")).is_err(),
             "tmp file left behind"
         );
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         assert!(data.contains("call-1"));
     }
 
