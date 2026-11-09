@@ -949,9 +949,9 @@ pub(crate) fn restore_run_ssh(old: SshRunner) {
 /// payload on stdin, the verb's exit code and output back. `env` is the
 /// hand's own environment (its workdir, home, PATH) on top of this
 /// process's, without the brain's PULSE_JOB/PULSE_AGENT/PULSE_SESSION. The
-/// dial-out TLS channel replaces the pipe in step 2; until a setting picks
-/// this transport for an executor only the tests drive it.
-#[cfg_attr(not(test), allow(dead_code))]
+/// dial-out TLS channel replaces the pipe in step 2; `executor.transport
+/// local-hand` picks this transport for this machine's own work
+/// ([`transport_row`], [`HAND_KIND`]).
 pub(crate) fn local_hand_runner(hand: std::path::PathBuf, env: Vec<(String, String)>) -> SshRunner {
     std::sync::Arc::new(
         move |cancel: &pulse_bus::CancellationToken,
@@ -986,6 +986,137 @@ pub(crate) fn local_hand_runner(hand: std::path::PathBuf, env: Vec<(String, Stri
             Ok((out.exit_code, out.stdout, out.stderr))
         },
     )
+}
+
+/// The kind of an executor row that is this machine's own `pulse-hand`
+/// driven over a pipe (`executor.transport local-hand`): the row keeps the
+/// local executor's name, so its slots and accounting stay this machine's,
+/// and every hands verb goes to the binary instead of through sshd.
+pub(crate) const HAND_KIND: &str = "hand";
+
+/// The setting that routes this machine's own work through its `pulse-hand`.
+pub(crate) const TRANSPORT_SETTING: &str = "executor.transport";
+/// [`TRANSPORT_SETTING`]'s value for the local `pulse-hand` pipe.
+pub(crate) const TRANSPORT_LOCAL_HAND: &str = "local-hand";
+
+/// The executor row a run on `r` uses: the local executor's row turned
+/// into a [`HAND_KIND`] row when `executor.transport` is `local-hand` and
+/// the job is not one that works the store (`jobs::STORE_KINDS`: a hand has
+/// a clone, not the store). Its workdir is `PULSE_HOME/hands`. Every other
+/// row is returned unchanged.
+pub(crate) fn transport_row(s: &pulse_store::Store, r: Row, job_kind: &str) -> Row {
+    if r.str("name") != LOCAL_EXECUTOR
+        || s.setting(TRANSPORT_SETTING, "") != TRANSPORT_LOCAL_HAND
+        || crate::jobs::STORE_KINDS.contains(&job_kind)
+    {
+        return r;
+    }
+    let mut r = r;
+    r.insert("kind", json!(HAND_KIND));
+    r.insert(
+        "workdir",
+        json!(
+            std::path::Path::new(&s.home)
+                .join("hands")
+                .display()
+                .to_string()
+        ),
+    );
+    r
+}
+
+/// The `pulse-hand` binary a [`HAND_KIND`] row drives: the one installed
+/// beside this `pulse`, else the first on PATH.
+pub(crate) fn local_hand_binary() -> Option<std::path::PathBuf> {
+    let name = format!("pulse-hand{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join(&name)))
+        .filter(|p| p.is_file())
+        .or_else(|| which::which("pulse-hand").ok())
+}
+
+/// What tests put in place of the installed `pulse-hand`: the binary and
+/// the environment it runs in on top of the row's own.
+pub(crate) type HandOverride = (std::path::PathBuf, Vec<(String, String)>);
+pub(crate) static LOCAL_HAND: LazyLock<RwLock<Option<HandOverride>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Installs `hand` as the local `pulse-hand` and returns what was there.
+#[allow(dead_code)]
+pub(crate) fn set_local_hand(hand: Option<HandOverride>) -> Option<HandOverride> {
+    std::mem::replace(
+        &mut *LOCAL_HAND.write().unwrap_or_else(|e| e.into_inner()),
+        hand,
+    )
+}
+
+/// One hands verb on a [`HAND_KIND`] row: the `b64` command line the sshd
+/// forced command would get, run by the local `pulse-hand` with the row's
+/// workdir. A pipe has no `authorized_keys` to check, so the hand is told
+/// its keys are fine.
+fn hand_run(
+    cancel: &pulse_bus::CancellationToken,
+    r: &Row,
+    args: &[String],
+    stdin: &[u8],
+    timeout: Duration,
+) -> Result<(i32, String, String)> {
+    let (bin, extra) = match LOCAL_HAND.read().unwrap_or_else(|e| e.into_inner()).clone() {
+        Some(v) => v,
+        None => match local_hand_binary() {
+            Some(bin) => (bin, Vec::new()),
+            None => {
+                return Err(ExecutorUnreachable {
+                    msg: format!(
+                        "{TRANSPORT_SETTING} is {TRANSPORT_LOCAL_HAND} but no pulse-hand is installed beside pulse or on PATH (cargo build -p pulse-hand --release)"
+                    ),
+                }
+                .into());
+            }
+        },
+    };
+    let mut env = vec![
+        ("PULSE_HANDS_WORKDIR".to_string(), r.str("workdir")),
+        ("PULSE_HANDS_KEYS_OK".to_string(), "yes".to_string()),
+    ];
+    // The worker the hand runs is `pulse harness run`: this pulse, found
+    // first on the hand's PATH even when the daemon's own PATH lacks it.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    {
+        let mut dirs = vec![dir];
+        dirs.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        if let Ok(path) = std::env::join_paths(dirs) {
+            env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
+        }
+    }
+    env.extend(extra);
+    let mut payload = Vec::new();
+    for a in args {
+        payload.extend_from_slice(a.as_bytes());
+        payload.push(0);
+    }
+    let argv = vec![
+        bin.display().to_string(),
+        format!(
+            "b64 {}",
+            base64::engine::general_purpose::STANDARD.encode(payload)
+        ),
+    ];
+    match local_hand_runner(bin, env)(cancel, &argv, stdin, timeout) {
+        Err(err) if !cancel.is_cancelled() && err.to_string().contains("deadline exceeded") => {
+            let verb = args.first().map(String::as_str).unwrap_or("");
+            Err(ExecutorUnreachable {
+                msg: format!("pulse-hand {verb} timed out after {}s", timeout.as_secs()),
+            }
+            .into())
+        }
+        other => other,
+    }
 }
 
 /// Whether ssh's stderr says the session never began: the connect itself
@@ -1093,6 +1224,9 @@ pub(crate) fn ssh_run_context(
     stdin: &[u8],
     timeout: Duration,
 ) -> Result<(i32, String, String)> {
+    if r.str("kind") == HAND_KIND {
+        return hand_run(cancel, r, args, stdin, timeout);
+    }
     let argv = ssh_command(r, args)?;
     let res = run_ssh_connecting(cancel, &argv, stdin, timeout);
     match res {

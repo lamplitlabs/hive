@@ -88,6 +88,20 @@ pub(crate) trait Executor {
     ) -> Result<()>;
     fn fetch_source(&self) -> String;
     fn fetch_env(&self) -> Vec<String>;
+    /// Whether the run's accepted commits are pushed from where they were
+    /// made ([`push_from_hand`](Self::push_from_hand)) rather than by the
+    /// brain's delivery: a local `pulse-hand` (`executor.transport
+    /// local-hand`) does, every other executor does not.
+    fn pushes(&self) -> bool {
+        false
+    }
+    /// Pushes `sha` from the run's clone to `refs/heads/{head}` at `url`
+    /// with `key`, the credential the brain leased for this push (empty:
+    /// what git there already uses). Says what it did.
+    fn push_from_hand(&self, url: &str, sha: &str, head: &str, key: &[u8]) -> Result<String> {
+        let _ = (url, sha, head, key);
+        Err(anyhow!("executor {} does not push", self.name()))
+    }
     /// Removes the run's clone and whatever the agent left registered on it;
     /// returns the leftovers so the run can write them down against the agent.
     fn cleanup(&self) -> Vec<crate::tidy::Leftover>;
@@ -1017,7 +1031,44 @@ impl Executor for SshExec {
         }
         Ok(())
     }
+    fn pushes(&self) -> bool {
+        self.local.row.str("kind") == crate::executor::HAND_KIND
+    }
+    fn push_from_hand(&self, url: &str, sha: &str, head: &str, key: &[u8]) -> Result<String> {
+        let (rc, out, err) = self.call(
+            &[
+                "push".into(),
+                self.local.job.str("id"),
+                url.to_string(),
+                sha.to_string(),
+                head.to_string(),
+            ],
+            key,
+            Duration::from_secs(330),
+        )?;
+        if rc != 0 {
+            let src = if err.trim().is_empty() { out } else { err };
+            return Err(anyhow!(
+                "{}",
+                pulse_cred::redact(
+                    &format!(
+                        "push of {} to {head} from {} failed (exit {rc}): {}",
+                        crate::recipe::short(sha, 12),
+                        self.name(),
+                        tail_str(&src.split_whitespace().collect::<Vec<_>>().join(" "), 300)
+                    ),
+                    &[],
+                )
+            ));
+        }
+        Ok(out.trim().to_string())
+    }
     fn fetch_source(&self) -> String {
+        // A local pulse-hand's clone is on this machine: git reads it as a
+        // path, no sshd in between.
+        if self.pushes() {
+            return self.local.clone_dir.clone();
+        }
         match crate::executor::parse_ssh_address(&self.local.row.str("address")) {
             Ok((user, host, port)) => {
                 format!("ssh://{user}@{host}:{port}{}", self.local.clone_dir)
@@ -1026,6 +1077,9 @@ impl Executor for SshExec {
         }
     }
     fn fetch_env(&self) -> Vec<String> {
+        if self.pushes() {
+            return crate::util::git_env(&[]);
+        }
         crate::proc::env_with(
             &crate::util::git_env(&[]),
             &BTreeMap::from([(
@@ -1098,12 +1152,13 @@ pub(crate) fn make_executor(
     agent: &str,
     log: &mut RunLog,
 ) -> Result<Box<dyn Executor>> {
-    if r.str("name") == crate::executor::LOCAL_EXECUTOR || r.str("kind") == "local" {
+    let r = crate::executor::transport_row(s, r, &job.str("kind"));
+    if r.str("kind") == "local" {
         return Ok(Box::new(new_local_exec(
             r, s, home, job, project, agent, log,
         )));
     }
-    if r.str("kind") == "ssh" {
+    if r.str("kind") == "ssh" || r.str("kind") == crate::executor::HAND_KIND {
         return Ok(Box::new(new_ssh_exec(r, s, home, job, project, agent, log)));
     }
     Err(crate::util::fail(
