@@ -17,7 +17,8 @@
 # subdirectory for the same reason.
 #
 # The checks are the verify command's: `cargo fmt --all --check`, `cargo
-# clippy --workspace --all-targets -- -D warnings` and every test of
+# clippy --workspace --all-targets -- -D warnings`, the hand's isolation
+# from the brain (`scripts/check-hand-deps.sh`, ADR-070) and every test of
 # `cargo test --workspace`. Only the way the tests are run differs. Plain
 # `cargo test` runs one test binary after the other, and most tests of the
 # big crates hold a process-wide lock for their whole body (pulse-runner's
@@ -122,6 +123,13 @@ export CARGO_INCREMENTAL
 began=$(date +%s)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+# The hand links none of the brain and carries none of its brief text
+# (ADR-070 rule 1): its dependency graph, the check's own self-test on a bad
+# manifest, and the release binary a customer installs.
+sh scripts/check-hand-deps.sh deps
+sh scripts/check-hand-deps.sh self-test
+cargo build -q -p pulse-hand --release
+sh scripts/check-hand-deps.sh strings "$CARGO_TARGET_DIR/release/pulse-hand"
 
 # A check killed outright (the daemon's timeout) cannot run its trap; its
 # directory is swept by a later run once it is a day old.

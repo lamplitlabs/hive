@@ -4086,6 +4086,162 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert_eq!(ex.int("runs_done"), 1, "executor row not noted: {ex:?}");
     }
     #[test]
+    fn remote_run_through_a_local_pulse_hand() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = pulse_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let bin = crate::test_helpers::build_pulse();
+        let _stage = crate::test_helpers_staged_pulse::stage_local_pulse(&bin);
+        let s = crate::test_helpers::new_store();
+        let (proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
+            .unwrap();
+        // The recipe's env reaches the worker on the hands, as it does here.
+        crate::env::env_set(
+            &s,
+            proj,
+            crate::test_helpers::recipe_with(
+                None,
+                None,
+                None,
+                Some(&[("HANDS_GREETING", "from-the-recipe")]),
+                "",
+            ),
+            crate::util::HUMAN_AGENT.into(),
+            "store".into(),
+            "env".into(),
+        )
+        .unwrap();
+        let workroot = tempfile::tempdir().unwrap();
+        let workdir = workroot.path().join("srv");
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let fake_path = fake_path.trim_start_matches("PATH=").to_string();
+        // ADR-070 step 1: the brain leases the job to the open `pulse-hand`
+        // binary on this machine over a pipe, the hands protocol unchanged.
+        let hand = crate::test_helpers_hands::pulse_hand_binary();
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let runner = crate::executor::local_hand_runner(
+            hand,
+            vec![
+                ("PULSE_HANDS_WORKDIR".into(), workdir.display().to_string()),
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("PULSE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                ("PULSE_HANDS_KEYS_OK".into(), "yes".into()),
+                ("PATH".into(), fake_path.clone()),
+            ],
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        crate::executor::set_run_ssh({
+            let calls = std::sync::Arc::clone(&calls);
+            move |c, a, i, t| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                runner(c, a, i, t)
+            }
+        });
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "pulse@hands",
+            workdir.to_str().unwrap(),
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let (ok, note) = crate::executor::probe_executor(
+            &s,
+            "hands",
+            crate::util::HUMAN_AGENT,
+            crate::test_helpers::TEST_NOW,
+        )
+        .unwrap();
+        assert!(ok, "probe: {ok:?} {note:?}");
+        assert_eq!(
+            crate::executor::executor_row(&s, "hands").str("status"),
+            "active",
+            "probe left the executor {}",
+            crate::executor::executor_row(&s, "hands").str("status")
+        );
+        assert!(
+            crate::recipe::hands_take_recipe(&s.conn().unwrap(), "hands"),
+            "these hands answer recipe=1: {note:?}"
+        );
+        // The probe reports the hands' platform; the fake hands run here.
+        let hands = crate::executor::executor_row(&s, "hands");
+        assert_eq!(
+            (hands.str("os"), hands.str("arch")),
+            (
+                pulse_store::needs::this_os().to_string(),
+                pulse_store::needs::this_arch().to_string()
+            ),
+            "probe: {note:?}"
+        );
+        let job = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "remote".into(),
+            "say hi remotely".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        let (run, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                executor: "hands".into(),
+                worker_cmd: "sh -c 'echo SUMMARY: hi from pulse-hand $HANDS_GREETING'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(reason.is_empty(), "{reason}");
+        assert!(
+            run.str("status") == "done"
+                && run.str("executor") == "hands"
+                && run
+                    .str("summary")
+                    .contains("hi from pulse-hand from-the-recipe"),
+            "run {run:?}"
+        );
+        assert_eq!(
+            crate::jobs::job_row(&s.conn().unwrap(), job.str("id")).str("status"),
+            "done",
+            "job {}",
+            crate::jobs::job_row(&s.conn().unwrap(), job.str("id")).str("status")
+        );
+        let entries = std::fs::read_dir(&workdir)
+            .map(|rd| rd.collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            entries.is_empty(),
+            "remote job dir not cleaned: {entries:?}"
+        );
+        let ex = crate::executor::executor_row(&s, "hands");
+        assert_eq!(ex.int("runs_done"), 1, "executor row not noted: {ex:?}");
+        // probe, prepare, key, hook, brief, run, result, clean at the least:
+        // every verb went to the pulse-hand binary.
+        assert!(
+            calls.load(std::sync::atomic::Ordering::SeqCst) >= 8,
+            "pulse-hand calls: {}",
+            calls.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
+    #[test]
     fn ssh_command_wire_format() {
         let _serial = crate::test_helpers::serial();
         let mut r = crate::util::Row::new();

@@ -327,6 +327,62 @@ or unrecognized artifacts remain `differs`, even if they claim an older
 version; unavailable metadata is `unknown`. These diagnostics do not change
 the pairing approval gate or the apply policy.
 
+## The hand
+
+`pulse-hand` is the executor on its own: a second, separately built binary
+that holds only what a machine needs to run the jobs it is handed, and none
+of what decides which jobs exist (ADR-070). It answers the same
+`pulse-hands` verbs a paired machine's `pulse hands` answers - `probe`,
+`prepare` (the job's clone and branch), `key` and `hook` (the run's signing
+key and provenance trailers), `brief`, `run` (the worker, inside its budget,
+heartbeat and steps written as it goes), `result`, `count`/`dirty`/`changed`,
+`verify`, `tool`, `steps`, `clean`, and `git-upload-pack` so the brain
+fetches the branch - one verb per call, the command line in
+`SSH_ORIGINAL_COMMAND` (`b64 …` or `git-upload-pack …`) and the payload on
+stdin, exactly as behind sshd.
+
+```
+cargo build -p pulse-hand --release    # target/release/pulse-hand, about 2 MB
+PULSE_HANDS_WORKDIR=/srv/pulse target/release/pulse-hand probe
+```
+
+**What it links.** The executor pieces live in `crates/pulse-hand-core`,
+which `pulse-runner` (the brain) and `pulse-hand` both build from - the
+hands protocol (`hands.rs`), process groups and budgets (`proc.rs`,
+`procs.rs`), git helpers, the worktree tidy, the machine's nice level,
+build parallelism and hardware, the heartbeat clock, the recipe's name
+rules and the provenance hook. Nothing there plans, leads, scores or
+briefs. `scripts/check-hand-deps.sh` holds that line in the verify command:
+
+- `deps` fails when `cargo tree -p pulse-hand -e normal` lists a brain
+  crate - pulse-runner (with its lead, plan, evolve, tally, research and
+  idle modules), pulse-evolve, pulse-tally, pulse-hub, pulse-goals,
+  pulse-goals-command, pulse-ask, pulse-harness, or the brain's store and
+  board;
+- `self-test` proves `deps` fails on a scratch manifest whose hand depends
+  on a crate named pulse-hub, and passes once the line is gone;
+- `strings target/release/pulse-hand` must find none of three sentinel
+  phrases of the worker brief (`crates/pulse-runner/src/brief.rs`). The
+  `pulse-hand` crate's own test (`tests/no_brain.rs`) checks the same
+  three, and that the brief still says them.
+
+When a change to the hand needs something of the brain, move the piece into
+`pulse-hand-core` and have the brain re-export it (`pub use
+pulse_hand_core::…`), as `pulse_store::ctx`, `pulse_cli::procs` and
+`pulse_runner::hands` do now; never copy it.
+
+**How the brain reaches it.** In this first step the brain drives a
+`pulse-hand` on its own machine over a pipe: `executor::local_hand_runner`
+spawns the binary once per verb with the hand's environment (its workdir,
+its home) and `SSH_ORIGINAL_COMMAND` set, in place of `ssh`.
+`jobs::tests::remote_run_through_a_local_pulse_hand` leases one job that
+way and checks it finishes as a remote run through `pulse hands` does:
+the recipe's env reaches the worker, the run is `done` on executor `hands`,
+the job dir is cleaned and every verb went to the binary. The dial-out TLS
+channel a customer's hand will use, and the credential handed in the lease
+for pushing the branch, are the next steps of ADR-070; until then a remote
+machine keeps `pulse pair` and `pulse hands` behind sshd.
+
 ## Heartbeats and presence
 
 Every agent has a heartbeat, and an agent that stops beating is dead. A beat

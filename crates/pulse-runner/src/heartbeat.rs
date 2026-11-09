@@ -1,56 +1,12 @@
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use regex::Regex;
 use std::collections::BTreeMap;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Duration;
 
-#[allow(dead_code)]
-pub(crate) type HeartbeatTicksFn = dyn Fn(
-        std::time::Duration,
-    ) -> (
-        crossbeam_channel::Receiver<chrono::DateTime<chrono::Utc>>,
-        Box<dyn Fn() + Send + Sync>,
-    ) + Send
-    + Sync;
-#[allow(dead_code)]
-pub(crate) static HEARTBEAT_TICKS: LazyLock<RwLock<Box<HeartbeatTicksFn>>> = LazyLock::new(|| {
-    RwLock::new(Box::new(|period| {
-        // time.NewTicker: a one-slot channel that drops ticks nobody is reading; Stop ends it.
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let stopped = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stopped);
-        std::thread::spawn(move || {
-            let mut next = std::time::Instant::now() + period;
-            loop {
-                let now = std::time::Instant::now();
-                if next > now {
-                    std::thread::sleep(next - now);
-                }
-                if thread_stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                if let Err(crossbeam_channel::TrySendError::Disconnected(_)) =
-                    tx.try_send(Utc::now())
-                {
-                    break;
-                }
-                next += period;
-            }
-        });
-        (
-            rx,
-            Box::new(move || stopped.store(true, Ordering::SeqCst)) as Box<dyn Fn() + Send + Sync>,
-        )
-    }))
-});
-#[allow(dead_code)]
-pub(crate) fn set_heartbeat_ticks(f: Box<HeartbeatTicksFn>) {
-    *HEARTBEAT_TICKS.write().expect("heartbeat ticks lock") = f;
-}
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::beat::{HEARTBEAT_TICKS, HeartbeatTicksFn, set_heartbeat_ticks};
 
 #[allow(dead_code)]
 pub(crate) type HeartbeatNowFn =
@@ -65,11 +21,6 @@ pub(crate) static HEARTBEAT_NOW: LazyLock<RwLock<Box<HeartbeatNowFn>>> = LazyLoc
 pub(crate) fn set_heartbeat_now(f: Box<HeartbeatNowFn>) {
     *HEARTBEAT_NOW.write().expect("heartbeat now lock") = f;
 }
-
-#[allow(dead_code)]
-static HANDS_JOB_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").unwrap());
-#[allow(dead_code)]
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 fn heartbeat_now(s: &pulse_store::Store) -> Result<chrono::DateTime<Utc>> {
@@ -125,66 +76,10 @@ pub(crate) fn steps_capable(fields: BTreeMap<String, String>) -> bool {
     fields.get("steps").is_some_and(|v| v == "1")
 }
 
-#[allow(dead_code)]
-fn hands_session_path(
-    dir: &str,
-    session: &str,
-    prefix: &str,
-    suffix: &str,
-    what: &str,
-) -> Result<String> {
-    if !HANDS_JOB_RE.is_match(session) || session == "." || session == ".." || session.len() > 160 {
-        return Err(crate::hands::hands_die(format!("bad {what} session")));
-    }
-    Ok(Path::new(dir)
-        .join(format!("{prefix}{session}{suffix}"))
-        .display()
-        .to_string())
-}
-
-#[allow(dead_code)]
-pub(crate) fn hands_heartbeat_path(dir: String, session: String) -> anyhow::Result<String> {
-    hands_session_path(&dir, &session, "presence-", ".json", "heartbeat")
-}
-
-#[allow(dead_code)]
-pub(crate) fn hands_steps_path(dir: String, session: String) -> anyhow::Result<String> {
-    hands_session_path(&dir, &session, "harness-steps-", ".jsonl", "steps")
-}
-
-#[allow(dead_code)]
-pub(crate) fn write_hands_heartbeat(
-    path: String,
-    h: pulse_board::ExecutionHeartbeat,
-) -> anyhow::Result<()> {
-    let data = pulse_store::gojson::to_vec(&h)?;
-    let dir = Path::new(&path)
-        .parent()
-        .ok_or_else(|| anyhow!("heartbeat path has no parent"))?;
-    let tmp = dir.join(format!(
-        ".presence-{}-{}",
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::SeqCst)
-    ));
-    struct Cleanup(std::path::PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let cleanup = Cleanup(tmp.clone());
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        f.write_all(&data)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, &path)?;
-    std::mem::forget(cleanup);
-    Ok(())
-}
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::hands::{
+    hands_heartbeat_path, hands_steps_path, write_hands_heartbeat,
+};
 
 #[allow(dead_code)]
 impl crate::exec::LocalExec {
@@ -543,129 +438,6 @@ impl crate::exec::SshExec {
                 }
             }
         }
-    }
-}
-
-#[allow(dead_code)]
-impl crate::hands::Hands {
-    fn owned_job_dir(&self, job: &str) -> Result<String> {
-        if !HANDS_JOB_RE.is_match(job) || job == "." || job == ".." {
-            return Err(crate::hands::hands_die("bad job"));
-        }
-        Ok(Path::new(&self.workdir).join(job).display().to_string())
-    }
-
-    pub(crate) fn heartbeat_observer(
-        &mut self,
-        job: String,
-        env: BTreeMap<String, String>,
-    ) -> anyhow::Result<Option<crate::proc::ProcessObserver>> {
-        let generation = env
-            .get("PULSE_GENERATION")
-            .ok_or_else(|| crate::hands::hands_die("bad heartbeat generation"))?
-            .parse::<i64>()
-            .map_err(|_| crate::hands::hands_die("bad heartbeat generation"))?;
-        let id = pulse_board::ExecutionIdentity {
-            agent: env.get("PULSE_AGENT").cloned().unwrap_or_default(),
-            session: env.get("PULSE_SESSION").cloned().unwrap_or_default(),
-            run_id: env.get("PULSE_SESSION").cloned().unwrap_or_default(),
-            job_id: job.clone(),
-            generation,
-            executor: env.get("PULSE_EXECUTOR").cloned().unwrap_or_default(),
-        };
-        id.validate()?;
-        let dir = self.owned_job_dir(&job)?;
-        let path = hands_heartbeat_path(dir, id.session.clone())?;
-        let beat = Arc::new(std::sync::Mutex::new(pulse_board::ExecutionHeartbeat {
-            identity: id,
-            at: String::new(),
-            stopped_at: String::new(),
-        }));
-        let reported = Arc::new(AtomicBool::new(false));
-        let beat_for_beat = Arc::clone(&beat);
-        let reported_for_beat = Arc::clone(&reported);
-        let path_for_beat = path.clone();
-        let beat_cb = move || {
-            let mut h = beat_for_beat.lock().expect("heartbeat lock");
-            h.at = pulse_store::rfc3339_nano(Utc::now());
-            if let Err(err) = write_hands_heartbeat(path_for_beat.clone(), h.clone())
-                && !reported_for_beat.swap(true, Ordering::SeqCst)
-            {
-                let _ = err;
-            }
-        };
-        let beat_for_stop = Arc::clone(&beat);
-        let reported_for_stop = Arc::clone(&reported);
-        let stop_cb = move || {
-            let mut h = beat_for_stop.lock().expect("heartbeat lock");
-            if !h.at.is_empty() {
-                h.stopped_at = pulse_store::rfc3339_nano(Utc::now());
-                if let Err(err) = write_hands_heartbeat(path.clone(), h.clone())
-                    && !reported_for_stop.swap(true, Ordering::SeqCst)
-                {
-                    let _ = err;
-                }
-            }
-        };
-        Ok(Some(crate::proc::ProcessObserver {
-            beat: Some(Arc::new(beat_cb)),
-            stop: Some(Arc::new(stop_cb)),
-        }))
-    }
-    pub(crate) fn heartbeat(&mut self, job: String, session: String) -> anyhow::Result<()> {
-        let dir = self.owned_job_dir(&job)?;
-        let path = hands_heartbeat_path(dir, session.clone())?;
-        let mut f = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(anyhow!(crate::hands::HandsExit { code: 3 }));
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let mut data = Vec::new();
-        let mut limited = std::io::Read::take(&mut f, 4097);
-        limited.read_to_end(&mut data)?;
-        let beat: pulse_board::ExecutionHeartbeat = serde_json::from_slice(&data)
-            .map_err(|_| crate::hands::hands_die("invalid heartbeat evidence"))?;
-        if data.len() > 4096
-            || beat.validate().is_err()
-            || beat.job_id != job
-            || beat.session != session
-        {
-            return Err(crate::hands::hands_die("invalid heartbeat evidence"));
-        }
-        self.stdout.write_all(&data)?;
-        Ok(())
-    }
-    pub(crate) fn steps(
-        &mut self,
-        job: String,
-        session: String,
-        offset_text: String,
-    ) -> anyhow::Result<()> {
-        let dir = self.owned_job_dir(&job)?;
-        let path = hands_steps_path(dir, session)?;
-        let offset = offset_text
-            .parse::<u64>()
-            .map_err(|_| crate::hands::hands_die("bad steps offset"))?;
-        let mut f = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(anyhow!(crate::hands::HandsExit { code: 3 }));
-            }
-            Err(e) => return Err(e.into()),
-        };
-        f.seek(SeekFrom::Start(offset))?;
-        let mut data = Vec::new();
-        let mut limited = std::io::Read::take(&mut f, 1024 * 1024);
-        limited.read_to_end(&mut data)?;
-        if let Some(i) = data.iter().rposition(|b| *b == b'\n') {
-            data.truncate(i + 1);
-        } else {
-            data.clear();
-        }
-        self.stdout.write_all(&data)?;
-        Ok(())
     }
 }
 

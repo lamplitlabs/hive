@@ -3,16 +3,20 @@ use anyhow::{Result, anyhow};
 use base64::Engine;
 use regex::Regex;
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
-pub(crate) const HANDS_DEFAULT_WORKDIR: &str = "/srv/pulse";
+/// What a hand runner exits with when its budget runs out (`timeout`'s code).
+pub const REMOTE_EXIT_TIMEOUT: i32 = 124;
+pub const HANDS_DEFAULT_WORKDIR: &str = "/srv/pulse";
 static HANDS_JOB_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").unwrap());
 static HANDS_BRANCH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._/-]+$").unwrap());
-pub(crate) static HANDS_ENV_RE: LazyLock<Regex> =
+pub static HANDS_ENV_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(PULSE_[A-Z_]+|GIT_TERMINAL_PROMPT)=.*$").unwrap());
 /// Names the hands keep for themselves: a recipe's `env:` may set anything the
 /// hub would, but not what decides which binaries load or whose account runs.
@@ -21,14 +25,14 @@ const HANDS_OWN_ENV_PREFIXES: [&str; 3] = ["LD_", "DYLD_", "SSH_"];
 /// Whether `run` takes `K=V`: the hub's own keys, or a name a recipe's `env:`
 /// may set (the hub refused secret names and secret-shaped values before it
 /// sent them; the hands refuse the names again, cheaply).
-pub(crate) fn hands_env_allowed(kv: &str) -> bool {
+pub fn hands_env_allowed(kv: &str) -> bool {
     if HANDS_ENV_RE.is_match(kv) {
         return true;
     }
     let Some((k, _)) = kv.split_once('=') else {
         return false;
     };
-    crate::recipe::recipe_env_name_ok(k)
+    crate::names::recipe_env_name_ok(k)
         && !HANDS_OWN_ENV.contains(&k)
         && !HANDS_OWN_ENV_PREFIXES.iter().any(|p| k.starts_with(p))
 }
@@ -39,8 +43,8 @@ static HANDS_UPLOAD_RE: LazyLock<Regex> =
 static HANDS_PINNED_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"^command="[^"]*pulse-hands[^"]*",([^ ]*,)?restrict"#).unwrap());
 #[derive(Debug, Clone)]
-pub(crate) struct HandsError {
-    pub(crate) msg: String,
+pub struct HandsError {
+    pub msg: String,
 }
 impl std::fmt::Display for HandsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,12 +52,12 @@ impl std::fmt::Display for HandsError {
     }
 }
 impl std::error::Error for HandsError {}
-pub(crate) fn hands_die(msg: impl Into<String>) -> anyhow::Error {
+pub fn hands_die(msg: impl Into<String>) -> anyhow::Error {
     anyhow!(HandsError { msg: msg.into() })
 }
 #[derive(Debug, Clone)]
-pub(crate) struct HandsExit {
-    pub(crate) code: i32,
+pub struct HandsExit {
+    pub code: i32,
 }
 impl std::fmt::Display for HandsExit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,7 +67,7 @@ impl std::fmt::Display for HandsExit {
 impl std::error::Error for HandsExit {}
 /// What a hands verb's outcome means to the process that ran it: `Ok` for a
 /// verb that finished and for a `run`, `verify`, or `tool` whose command
-/// exited 0; otherwise a `pulse_cli::Error` carrying the command's own exit,
+/// exited 0; otherwise a `crate::error::Error` carrying the command's own exit,
 /// 2 after writing the refusal for a `HandsError`, 1 after writing any other
 /// error. The installed binary and the tests' helper process both go through
 /// here. The hub reads `verify … -- test -s run.key` as "the key is in place"
@@ -73,7 +77,7 @@ impl std::error::Error for HandsExit {}
 /// `exit_code` reads 0 as 1, so `verify … -- true` replayed by hand came back
 /// 1 while `exit 7` came back 7. The test double mapped the code itself and
 /// never saw the difference, which is why there is one mapping now.
-pub(crate) fn hands_outcome(res: Result<()>, stderr: &mut dyn Write) -> Result<()> {
+pub fn hands_outcome(res: Result<()>, stderr: &mut dyn Write) -> Result<()> {
     let Err(err) = res else {
         return Ok(());
     };
@@ -81,22 +85,22 @@ pub(crate) fn hands_outcome(res: Result<()>, stderr: &mut dyn Write) -> Result<(
         return if hx.code == 0 {
             Ok(())
         } else {
-            Err(pulse_cli::errorf(hx.code, "", "", "").into())
+            Err(crate::error::errorf(hx.code, "", "", "").into())
         };
     }
     if let Some(he) = err.downcast_ref::<HandsError>() {
         writeln!(stderr, "{he}")?;
-        return Err(pulse_cli::errorf(2, "", "", "").into());
+        return Err(crate::error::errorf(2, "", "", "").into());
     }
     writeln!(stderr, "{err:#}")?;
-    Err(pulse_cli::errorf(1, "", "", "").into())
+    Err(crate::error::errorf(1, "", "", "").into())
 }
-pub(crate) struct Hands {
-    pub(crate) workdir: String,
-    pub(crate) home: String,
-    pub(crate) stdin: Box<dyn Read + Send>,
-    pub(crate) stdout: Box<dyn Write + Send>,
-    pub(crate) stderr: Box<dyn Write + Send>,
+pub struct Hands {
+    pub workdir: String,
+    pub home: String,
+    pub stdin: Box<dyn Read + Send>,
+    pub stdout: Box<dyn Write + Send>,
+    pub stderr: Box<dyn Write + Send>,
 }
 impl std::fmt::Debug for Hands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -108,7 +112,7 @@ impl std::fmt::Debug for Hands {
 }
 /// The worker `run` may start: `pulse harness run …`, bare or under the
 /// recipe's pins as `mise exec <tool@version>… -- pulse harness run …`.
-pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
+pub fn hands_allowed_worker(rest: &[String]) -> bool {
     let rest = match rest {
         [mise, exec, tail @ ..] if mise == "mise" && exec == "exec" => {
             let Some(sep) = tail.iter().position(|a| a == "--") else {
@@ -117,7 +121,7 @@ pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
             if sep == 0
                 || !tail[..sep]
                     .iter()
-                    .all(|p| crate::recipe::RECIPE_TOOL_RE.is_match(p))
+                    .all(|p| crate::names::RECIPE_TOOL_RE.is_match(p))
             {
                 return false;
             }
@@ -140,7 +144,7 @@ pub(crate) fn hands_allowed_worker(rest: &[String]) -> bool {
         _ => false,
     }
 }
-pub(crate) fn new_hands<'a>(
+pub fn new_hands<'a>(
     stdin: impl Read + Send + 'a,
     stdout: impl Write + Send + 'a,
     stderr: impl Write + Send + 'a,
@@ -183,20 +187,20 @@ fn erase_write_lifetime<'a>(w: Box<dyn Write + Send + 'a>) -> Box<dyn Write + Se
     unsafe { std::mem::transmute::<Box<dyn Write + Send + 'a>, Box<dyn Write + Send>>(w) }
 }
 impl Hands {
-    pub(crate) fn job_dir(&self, job: &str) -> Result<String> {
+    pub fn job_dir(&self, job: &str) -> Result<String> {
         if !HANDS_JOB_RE.is_match(job) || job == "." || job == ".." {
             return Err(hands_die("bad job id"));
         }
         Ok(format!("{}/{}", self.workdir, job))
     }
-    pub(crate) fn clone_dir(&self, job: &str) -> Result<String> {
+    pub fn clone_dir(&self, job: &str) -> Result<String> {
         let clone = format!("{}/clone", self.job_dir(job)?);
         if !Path::new(&clone).join(".git").is_dir() {
             return Err(hands_die(format!("no clone for job {job}")));
         }
         Ok(clone)
     }
-    pub(crate) fn with_timeout(
+    pub fn with_timeout(
         &mut self,
         budget: Duration,
         dir: &str,
@@ -205,7 +209,7 @@ impl Hands {
     ) -> i32 {
         self.with_timeout_observed(budget, dir, argv, extra, None)
     }
-    pub(crate) fn with_timeout_observed(
+    pub fn with_timeout_observed(
         &mut self,
         budget: Duration,
         dir: &str,
@@ -216,7 +220,7 @@ impl Hands {
         if argv.is_empty() {
             return 127;
         }
-        let mut env = crate::exec::worker_env_with_cli_path(
+        let mut env = crate::proc::worker_env_with_cli_path(
             &crate::util::strip_hook_git_env(
                 &std::env::vars()
                     .map(|(k, v)| format!("{k}={v}"))
@@ -229,7 +233,7 @@ impl Hands {
                 && !kv.starts_with("SSH_CONNECTION=")
                 && !kv.starts_with("SSH_CLIENT=")
         });
-        let cancel = pulse_bus::CancellationToken::new();
+        let cancel = crate::ctx::CancellationToken::new();
         let grace = *HANDS_KILL_AFTER.read().unwrap();
         let out = crate::proc::run_group_observed(
             &cancel,
@@ -241,7 +245,7 @@ impl Hands {
             observer,
         );
         match out {
-            Ok(o) if o.timeout => crate::executor::REMOTE_EXIT_TIMEOUT,
+            Ok(o) if o.timeout => REMOTE_EXIT_TIMEOUT,
             Ok(o) => {
                 let _ = self.stdout.write_all(o.stdout.as_bytes());
                 let _ = self.stderr.write_all(o.stderr.as_bytes());
@@ -253,7 +257,7 @@ impl Hands {
             }
         }
     }
-    pub(crate) fn probe(&mut self) -> Result<()> {
+    pub fn probe(&mut self) -> Result<()> {
         let gitv = Command::new("git")
             .arg("--version")
             .output()
@@ -377,7 +381,7 @@ impl Hands {
         } else {
             format!(" pulse_lookup={pulse_lookup}")
         };
-        let hw = crate::daemon_load::Machine::detect();
+        let hw = crate::machine::Hardware::probed();
         let dash = |v: Vec<String>| {
             if v.is_empty() {
                 "-".into()
@@ -391,15 +395,15 @@ impl Hands {
             self.workdir,
             dash(jobs),
             dash(keys),
-            pulse_store::needs::this_os(),
-            pulse_store::needs::this_arch(),
-            dash(crate::executor::found_labels().to_vec()),
+            crate::needs::this_os(),
+            crate::needs::this_arch(),
+            dash(crate::machine::found_labels().to_vec()),
             hw.cores,
             hw.mem_mb
         )?;
         Ok(())
     }
-    pub(crate) fn prepare(&mut self, job: &str, branch: &str, agent: &str) -> Result<()> {
+    pub fn prepare(&mut self, job: &str, branch: &str, agent: &str) -> Result<()> {
         if !HANDS_JOB_RE.is_match(agent) {
             return Err(hands_die("bad agent name"));
         }
@@ -460,7 +464,7 @@ impl Hands {
         )?;
         Ok(())
     }
-    pub(crate) fn key(&mut self, job: &str, executor: &str) -> Result<()> {
+    pub fn key(&mut self, job: &str, executor: &str) -> Result<()> {
         if !HANDS_JOB_RE.is_match(executor) {
             return Err(hands_die("bad executor name"));
         }
@@ -504,7 +508,10 @@ impl Hands {
         }
         std::fs::create_dir_all(&hooks)?;
         let hook = format!("{hooks}/prepare-commit-msg");
-        std::fs::write(&hook, crate::keys::provenance_hook(&agent, job, executor))?;
+        std::fs::write(
+            &hook,
+            crate::provenance::provenance_hook(&agent, job, executor),
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -513,7 +520,7 @@ impl Hands {
         writeln!(self.stdout, "keyed")?;
         Ok(())
     }
-    pub(crate) fn hook(&mut self, job: &str) -> Result<()> {
+    pub fn hook(&mut self, job: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         let mut data = Vec::new();
         self.stdin.read_to_end(&mut data)?;
@@ -529,7 +536,7 @@ impl Hands {
         writeln!(self.stdout, "hooked")?;
         Ok(())
     }
-    pub(crate) fn brief(&mut self, job: &str) -> Result<()> {
+    pub fn brief(&mut self, job: &str) -> Result<()> {
         let dir = self.job_dir(job)?;
         if !Path::new(&dir).is_dir() {
             return Err(hands_die(format!("no job dir for {job} (prepare first)")));
@@ -539,7 +546,7 @@ impl Hands {
         std::fs::write(format!("{dir}/brief.md"), data)?;
         Ok(())
     }
-    pub(crate) fn run(&mut self, job: &str, minutes: &str, rest: &[String]) -> Result<()> {
+    pub fn run(&mut self, job: &str, minutes: &str, rest: &[String]) -> Result<()> {
         let clone = self.clone_dir(job)?;
         let mut extra = BTreeMap::new();
         let mut i = 0;
@@ -571,14 +578,14 @@ impl Hands {
             code: self.with_timeout_observed(budget, &clone, cmd, &extra, None)
         }))
     }
-    pub(crate) fn result(&mut self, job: &str) -> Result<()> {
+    pub fn result(&mut self, job: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         let data = std::fs::read(format!("{clone}/PULSE_RESULT.md"))
             .map_err(|_| anyhow!(HandsExit { code: 3 }))?;
         self.stdout.write_all(&data)?;
         Ok(())
     }
-    pub(crate) fn count(&mut self, job: &str, base: &str) -> Result<()> {
+    pub fn count(&mut self, job: &str, base: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         if !Regex::new(r"^[0-9a-f]{40,64}$").unwrap().is_match(base) {
             return Err(hands_die("bad base"));
@@ -591,7 +598,7 @@ impl Hands {
         }
         Ok(())
     }
-    pub(crate) fn dirty(&mut self, job: &str) -> Result<()> {
+    pub fn dirty(&mut self, job: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         write!(
             self.stdout,
@@ -600,7 +607,7 @@ impl Hands {
         )?;
         Ok(())
     }
-    pub(crate) fn changed(&mut self, job: &str, base: &str) -> Result<()> {
+    pub fn changed(&mut self, job: &str, base: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         if !Regex::new(r"^[0-9a-f]{40,64}$").unwrap().is_match(base) {
             return Err(hands_die("bad base"));
@@ -613,7 +620,7 @@ impl Hands {
         }
         Ok(())
     }
-    pub(crate) fn drop_result(&mut self, job: &str) -> Result<()> {
+    pub fn drop_result(&mut self, job: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         if crate::util::git(&clone, &["ls-files", "--error-unmatch", "PULSE_RESULT.md"]).ok() {
             let _ = crate::util::git(&clone, &["rm", "-q", "--cached", "PULSE_RESULT.md"]);
@@ -632,7 +639,7 @@ impl Hands {
         }
         Ok(())
     }
-    pub(crate) fn verify(&mut self, job: &str, minutes: &str, rest: &[String]) -> Result<()> {
+    pub fn verify(&mut self, job: &str, minutes: &str, rest: &[String]) -> Result<()> {
         if rest.first().map(String::as_str) != Some("--") {
             return Err(hands_die("verify needs -- before the command"));
         }
@@ -653,7 +660,7 @@ impl Hands {
     /// Answers the hub's question whether a tool a setup missed is usable
     /// now, so a re-probe does not clear an unfit mark the next setup would
     /// raise again. The check is the hub's line, run the way a setup line is.
-    pub(crate) fn tool(&mut self, check: &str) -> Result<()> {
+    pub fn tool(&mut self, check: &str) -> Result<()> {
         let workdir = self.workdir.clone();
         let _ = std::fs::create_dir_all(&workdir);
         Err(anyhow!(HandsExit {
@@ -665,7 +672,7 @@ impl Hands {
             )
         }))
     }
-    pub(crate) fn clean(&mut self, job: &str) -> Result<()> {
+    pub fn clean(&mut self, job: &str) -> Result<()> {
         let dir = self.job_dir(job)?;
         // Processes the worker left running under the job directory go first;
         // the runner's log keeps the stderr line.
@@ -682,7 +689,7 @@ impl Hands {
         std::fs::remove_dir_all(dir)?;
         Ok(())
     }
-    pub(crate) fn upload_pack(&mut self, path: &str) -> Result<()> {
+    pub fn upload_pack(&mut self, path: &str) -> Result<()> {
         let path = path.trim_matches('\'');
         if !path.starts_with(&(self.workdir.clone() + "/"))
             || !path.ends_with("/clone")
@@ -717,7 +724,7 @@ impl Hands {
         }
         Ok(())
     }
-    pub(crate) fn hands_main(&mut self, args: &[String]) -> Result<()> {
+    pub fn hands_main(&mut self, args: &[String]) -> Result<()> {
         let mut argv = args.to_vec();
         if let Ok(cmd) = std::env::var("SSH_ORIGINAL_COMMAND") {
             if cmd.is_empty() {
@@ -825,7 +832,7 @@ impl Hands {
         }
     }
 }
-pub(crate) fn hands_budget(budget: &str) -> Result<Duration> {
+pub fn hands_budget(budget: &str) -> Result<Duration> {
     let (n, secs) = if let Some(s) = budget.strip_suffix('s') {
         (
             s.parse::<u64>().map_err(|_| hands_die("bad minutes"))?,
@@ -844,8 +851,190 @@ pub(crate) fn hands_budget(budget: &str) -> Result<Duration> {
     }
     Ok(Duration::from_secs(if secs { n } else { n * 60 }))
 }
-pub(crate) static HANDS_KILL_AFTER: LazyLock<RwLock<Duration>> =
+pub static HANDS_KILL_AFTER: LazyLock<RwLock<Duration>> =
     LazyLock::new(|| RwLock::new(Duration::from_secs(30)));
+/// A heartbeat file's temporary name is unique per write.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn hands_session_path(
+    dir: &str,
+    session: &str,
+    prefix: &str,
+    suffix: &str,
+    what: &str,
+) -> Result<String> {
+    if !HANDS_JOB_RE.is_match(session) || session == "." || session == ".." || session.len() > 160 {
+        return Err(hands_die(format!("bad {what} session")));
+    }
+    Ok(Path::new(dir)
+        .join(format!("{prefix}{session}{suffix}"))
+        .display()
+        .to_string())
+}
+
+pub fn hands_heartbeat_path(dir: String, session: String) -> anyhow::Result<String> {
+    hands_session_path(&dir, &session, "presence-", ".json", "heartbeat")
+}
+
+pub fn hands_steps_path(dir: String, session: String) -> anyhow::Result<String> {
+    hands_session_path(&dir, &session, "harness-steps-", ".jsonl", "steps")
+}
+
+pub fn write_hands_heartbeat(
+    path: String,
+    h: crate::beat::ExecutionHeartbeat,
+) -> anyhow::Result<()> {
+    let data = serde_json::to_vec(&h)?;
+    let dir = Path::new(&path)
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("heartbeat path has no parent"))?;
+    let tmp = dir.join(format!(
+        ".presence-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let cleanup = Cleanup(tmp.clone());
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(&data)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &path)?;
+    std::mem::forget(cleanup);
+    Ok(())
+}
+
+impl Hands {
+    fn owned_job_dir(&self, job: &str) -> Result<String> {
+        if !HANDS_JOB_RE.is_match(job) || job == "." || job == ".." {
+            return Err(hands_die("bad job"));
+        }
+        Ok(Path::new(&self.workdir).join(job).display().to_string())
+    }
+
+    pub fn heartbeat_observer(
+        &mut self,
+        job: String,
+        env: BTreeMap<String, String>,
+    ) -> anyhow::Result<Option<crate::proc::ProcessObserver>> {
+        let generation = env
+            .get("PULSE_GENERATION")
+            .ok_or_else(|| hands_die("bad heartbeat generation"))?
+            .parse::<i64>()
+            .map_err(|_| hands_die("bad heartbeat generation"))?;
+        let id = crate::beat::ExecutionIdentity {
+            agent: env.get("PULSE_AGENT").cloned().unwrap_or_default(),
+            session: env.get("PULSE_SESSION").cloned().unwrap_or_default(),
+            run_id: env.get("PULSE_SESSION").cloned().unwrap_or_default(),
+            job_id: job.clone(),
+            generation,
+            executor: env.get("PULSE_EXECUTOR").cloned().unwrap_or_default(),
+        };
+        id.validate()?;
+        let dir = self.owned_job_dir(&job)?;
+        let path = hands_heartbeat_path(dir, id.session.clone())?;
+        let beat = Arc::new(std::sync::Mutex::new(crate::beat::ExecutionHeartbeat {
+            identity: id,
+            at: String::new(),
+            stopped_at: String::new(),
+        }));
+        let reported = Arc::new(AtomicBool::new(false));
+        let beat_for_beat = Arc::clone(&beat);
+        let reported_for_beat = Arc::clone(&reported);
+        let path_for_beat = path.clone();
+        let beat_cb = move || {
+            let mut h = beat_for_beat.lock().expect("heartbeat lock");
+            h.at = crate::util::rfc3339_nano(chrono::Utc::now());
+            if let Err(err) = write_hands_heartbeat(path_for_beat.clone(), h.clone())
+                && !reported_for_beat.swap(true, Ordering::SeqCst)
+            {
+                let _ = err;
+            }
+        };
+        let beat_for_stop = Arc::clone(&beat);
+        let reported_for_stop = Arc::clone(&reported);
+        let stop_cb = move || {
+            let mut h = beat_for_stop.lock().expect("heartbeat lock");
+            if !h.at.is_empty() {
+                h.stopped_at = crate::util::rfc3339_nano(chrono::Utc::now());
+                if let Err(err) = write_hands_heartbeat(path.clone(), h.clone())
+                    && !reported_for_stop.swap(true, Ordering::SeqCst)
+                {
+                    let _ = err;
+                }
+            }
+        };
+        Ok(Some(crate::proc::ProcessObserver {
+            beat: Some(Arc::new(beat_cb)),
+            stop: Some(Arc::new(stop_cb)),
+        }))
+    }
+    pub fn heartbeat(&mut self, job: String, session: String) -> anyhow::Result<()> {
+        let dir = self.owned_job_dir(&job)?;
+        let path = hands_heartbeat_path(dir, session.clone())?;
+        let mut f = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow::anyhow!(HandsExit { code: 3 }));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let mut data = Vec::new();
+        let mut limited = std::io::Read::take(&mut f, 4097);
+        limited.read_to_end(&mut data)?;
+        let beat: crate::beat::ExecutionHeartbeat =
+            serde_json::from_slice(&data).map_err(|_| hands_die("invalid heartbeat evidence"))?;
+        if data.len() > 4096
+            || beat.validate().is_err()
+            || beat.job_id != job
+            || beat.session != session
+        {
+            return Err(hands_die("invalid heartbeat evidence"));
+        }
+        self.stdout.write_all(&data)?;
+        Ok(())
+    }
+    pub fn steps(
+        &mut self,
+        job: String,
+        session: String,
+        offset_text: String,
+    ) -> anyhow::Result<()> {
+        let dir = self.owned_job_dir(&job)?;
+        let path = hands_steps_path(dir, session)?;
+        let offset = offset_text
+            .parse::<u64>()
+            .map_err(|_| hands_die("bad steps offset"))?;
+        let mut f = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow::anyhow!(HandsExit { code: 3 }));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        f.seek(SeekFrom::Start(offset))?;
+        let mut data = Vec::new();
+        let mut limited = std::io::Read::take(&mut f, 1024 * 1024);
+        limited.read_to_end(&mut data)?;
+        if let Some(i) = data.iter().rposition(|b| *b == b'\n') {
+            data.truncate(i + 1);
+        } else {
+            data.clear();
+        }
+        self.stdout.write_all(&data)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,11 +1060,7 @@ mod tests {
             ("command -v no-such-tool-pulse >/dev/null", 1),
         ] {
             let err = h.hands_main(&["tool".into(), check.into()]).unwrap_err();
-            assert_eq!(
-                crate::test_helpers_hands::hands_exit_code(err),
-                code,
-                "{check}"
-            );
+            assert_eq!(crate::test_helpers::hands_exit_code(err), code, "{check}");
         }
         let err = h.hands_main(&["tool".into()]).unwrap_err().to_string();
         assert!(err.contains("tool CHECK"), "{err}");
@@ -886,7 +1071,7 @@ mod tests {
         let exit_of = |res: Result<()>, stderr: &mut Vec<u8>| match hands_outcome(res, stderr) {
             Ok(()) => 0,
             Err(e) => e
-                .downcast_ref::<pulse_cli::Error>()
+                .downcast_ref::<crate::error::Error>()
                 .map(|ce| ce.exit_code())
                 .unwrap_or(-1),
         };

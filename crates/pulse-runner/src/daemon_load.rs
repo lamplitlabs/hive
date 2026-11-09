@@ -16,7 +16,19 @@
 //! hardware, and each falls back to "no pressure" where the platform has
 //! no reading.
 
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+use pulse_hand_core::machine::meminfo_field_mb;
+#[cfg(target_os = "linux")]
+use pulse_hand_core::machine::meminfo_mb;
+#[cfg(target_os = "macos")]
+use pulse_hand_core::machine::sysctl_int;
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::machine::{
+    BUILD_JOBS_VAR, build_env, build_jobs, child_nice, nice_child, renice_pid, set_build_jobs,
+    set_child_nice,
+};
 
 /// Nice level the daemon's job children run at (`setpriority`); children
 /// of children inherit it, so a worker's `npm ci` and `cargo test` yield
@@ -32,19 +44,6 @@ pub(crate) const MIN_FREE_MEM_MB: i64 = 1024;
 /// are far from busy; a line at the CPU count held the fleet all day.
 pub(crate) const DEFAULT_LOAD_PER_CPU: f64 = 2.0;
 
-/// The nice level [`nice_child`] applies; 0 until the daemon sets it, so
-/// `pulse work` and the other commands run as before.
-static CHILD_NICE_LEVEL: AtomicI32 = AtomicI32::new(0);
-
-/// The environment variable Cargo reads its `build.jobs` from; every build a
-/// child of the daemon runs (a worker's `cargo test`, the pre-commit
-/// verification, the landing verification) gets it from [`build_env`].
-pub(crate) const BUILD_JOBS_VAR: &str = "CARGO_BUILD_JOBS";
-
-/// The parallelism [`build_env`] exports; 0 until the daemon sets it, so
-/// `pulse work` and the other commands leave the environment alone.
-static BUILD_JOBS_LEVEL: AtomicI32 = AtomicI32::new(0);
-
 /// The machine every test runs on (four local runs by default).
 #[cfg(test)]
 pub(crate) const TEST_MACHINE: Machine = Machine {
@@ -52,6 +51,17 @@ pub(crate) const TEST_MACHINE: Machine = Machine {
     cores: 12,
     mem_mb: 12288,
 };
+
+/// The hands probe reports [`TEST_MACHINE`] under test, as
+/// [`Machine::detect`] does: the runner's test setup installs it.
+#[cfg(test)]
+pub(crate) fn install_test_hardware() {
+    pulse_hand_core::machine::set_hardware_override(Some(pulse_hand_core::machine::Hardware {
+        cpus: TEST_MACHINE.cpus,
+        cores: TEST_MACHINE.cores,
+        mem_mb: TEST_MACHINE.mem_mb,
+    }));
+}
 
 /// What this machine has; read once per process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,12 +90,11 @@ impl Machine {
 
     /// What the hardware says.
     pub(crate) fn read() -> Self {
-        let cpus = std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(1)
-            .max(1);
-        let cores = physical_cores().unwrap_or(cpus).clamp(1, cpus.max(1));
-        let mem_mb = total_mem_mb().unwrap_or(0).max(0);
+        let pulse_hand_core::machine::Hardware {
+            cpus,
+            cores,
+            mem_mb,
+        } = pulse_hand_core::machine::Hardware::read();
         Self {
             cpus,
             cores,
@@ -432,46 +441,6 @@ pub(crate) fn own_nice_level(setting: i64) -> i32 {
     setting.clamp(0, i64::from(MAX_NICE)) as i32
 }
 
-/// The daemon sets the nice level its job children get; [`nice_child`]
-/// applies to each child once spawned. Other commands leave it at 0.
-pub(crate) fn set_child_nice(level: i32) {
-    CHILD_NICE_LEVEL.store(level.clamp(0, 19), Ordering::SeqCst);
-}
-
-pub(crate) fn child_nice() -> i32 {
-    CHILD_NICE_LEVEL.load(Ordering::SeqCst)
-}
-
-/// The daemon sets the compile parallelism its children's builds get;
-/// [`build_env`] exports it. Re-set each pass so a changed
-/// `daemon.build_jobs` applies without a restart; 0 exports nothing.
-pub(crate) fn set_build_jobs(jobs: i32) {
-    BUILD_JOBS_LEVEL.store(jobs.max(0), Ordering::SeqCst);
-}
-
-pub(crate) fn build_jobs() -> i32 {
-    BUILD_JOBS_LEVEL.load(Ordering::SeqCst)
-}
-
-/// Adds `CARGO_BUILD_JOBS=<daemon.build_jobs>` to a child's environment
-/// (`KEY=VALUE` lines) when the daemon set a level and the environment does
-/// not carry the variable already: an owner who exports it, or a recipe
-/// that sets it, wins. Before this every `cargo test` a worker ran and every
-/// landing verification compiled on all the cores at once, four runs deep,
-/// and the laptop ran hot for most of the day; Cargo reads this variable as
-/// `build.jobs`, and a `-j` on the command line still overrides it.
-pub(crate) fn build_env(env: &mut Vec<String>) {
-    let jobs = build_jobs();
-    if jobs <= 0 {
-        return;
-    }
-    let prefix = format!("{BUILD_JOBS_VAR}=");
-    if env.iter().any(|kv| kv.starts_with(&prefix)) {
-        return;
-    }
-    env.push(format!("{prefix}{jobs}"));
-}
-
 /// Where a measurement in progress leaves its mark under the pulse home:
 /// one file per measurement, named by the process running it. The
 /// experiment lane runs inside the daemon, but `pulse land` and `pulse
@@ -542,40 +511,11 @@ fn process_alive(_pid: u32) -> bool {
     true
 }
 
-/// Puts `child`, just spawned, at the nice level the daemon set (nothing
-/// changes under `pulse work` and the other commands, which set none): the
-/// one line a spawn site adds after `spawn`, with `own_process_group` before
-/// it. Done from the parent rather than a `pre_exec` hook so the spawn stays
-/// a posix_spawn (a hook forks the whole process; `own_process_group` says
-/// what that costs); the child runs at the parent's level for the moment
-/// until the call lands. A child already gone, or one the parent may not
-/// lower further (a process cannot raise its priority back), stays as it is.
-pub(crate) fn nice_child(child: &std::process::Child) {
-    renice_pid(child.id(), child_nice());
-}
-
 /// Puts `child` at nice [`CHILD_NICE`] whatever process runs it (the
 /// self-update build, which only the daemon runs).
 pub(crate) fn low_priority(child: &std::process::Child) {
     renice_pid(child.id(), CHILD_NICE);
 }
-
-/// `setpriority` on one process (0: the calling one) with a bounded level;
-/// a failure (the process gone, or already at a higher nice, which a process
-/// cannot undo) changes nothing.
-#[cfg(unix)]
-fn renice_pid(pid: u32, level: i32) {
-    if level > 0 {
-        // SAFETY: one setpriority system call on a process id with a
-        // bounded level.
-        unsafe {
-            libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, level);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn renice_pid(_pid: u32, _level: i32) {}
 
 /// The machine's pressure right now, as the daemon sees it. Under test the
 /// pinned pressure or a calm machine, so a loaded test host never turns a
@@ -669,43 +609,6 @@ fn load1() -> Option<f64> {
     None
 }
 
-#[cfg(target_os = "macos")]
-fn sysctl_int(name: &str) -> Option<i64> {
-    let cname = std::ffi::CString::new(name).ok()?;
-    let mut buf = [0u8; 8];
-    let mut len = buf.len();
-    // SAFETY: the kernel writes at most `len` bytes into `buf` and updates `len`.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            cname.as_ptr(),
-            buf.as_mut_ptr().cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 {
-        return None;
-    }
-    match len {
-        4 => Some(i64::from(i32::from_ne_bytes(buf[..4].try_into().ok()?))),
-        8 => Some(i64::from_ne_bytes(buf)),
-        _ => None,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn physical_cores() -> Option<i32> {
-    sysctl_int("hw.physicalcpu")
-        .filter(|n| *n > 0)
-        .map(|n| n.min(i64::from(i32::MAX)) as i32)
-}
-
-#[cfg(target_os = "macos")]
-fn total_mem_mb() -> Option<i64> {
-    sysctl_int("hw.memsize").map(|b| b / (1024 * 1024))
-}
-
 // libc points at the mach2 crate for this call; the workspace does not carry
 // it for one function that libc still binds correctly.
 #[cfg(target_os = "macos")]
@@ -795,50 +698,12 @@ fn mem_pressure_level() -> Option<i64> {
 }
 
 #[cfg(target_os = "linux")]
-fn meminfo_mb(key: &str) -> Option<i64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    meminfo_field_mb(&text, key)
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn meminfo_field_mb(text: &str, key: &str) -> Option<i64> {
-    text.lines().find_map(|line| {
-        let (name, rest) = line.split_once(':')?;
-        if name.trim() != key {
-            return None;
-        }
-        let kb: i64 = rest.split_whitespace().next()?.parse().ok()?;
-        Some(kb / 1024)
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn physical_cores() -> Option<i32> {
-    None
-}
-
-#[cfg(target_os = "linux")]
-fn total_mem_mb() -> Option<i64> {
-    meminfo_mb("MemTotal")
-}
-
-#[cfg(target_os = "linux")]
 fn free_mem_mb() -> Option<i64> {
     meminfo_mb("MemAvailable")
 }
 
 #[cfg(target_os = "linux")]
 fn mem_pressure_level() -> Option<i64> {
-    None
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn physical_cores() -> Option<i32> {
-    None
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn total_mem_mb() -> Option<i64> {
     None
 }
 

@@ -11,6 +11,9 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use crate::util::Row;
+pub(crate) use pulse_hand_core::worktree::{
+    WorktreeEntry, disk_usage, parse_worktrees, same_path, size_text,
+};
 
 pub(crate) const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 pub(crate) const FINISHED_WORK_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -403,69 +406,6 @@ pub(crate) fn live_worktree(path: String) -> (String, bool) {
     (String::new(), false)
 }
 
-/// One entry of `git worktree list --porcelain`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WorktreeEntry {
-    pub path: String,
-    pub head: String,
-    /// Short branch name; empty when the worktree is detached or bare.
-    pub branch: String,
-    pub detached: bool,
-    pub bare: bool,
-    /// `Some(reason)` when locked; the reason may be empty.
-    pub locked: Option<String>,
-    pub prunable: bool,
-}
-
-/// Parses `git worktree list --porcelain`; the first entry is the main worktree.
-pub(crate) fn parse_worktrees(porcelain: &str) -> Vec<WorktreeEntry> {
-    let mut out: Vec<WorktreeEntry> = Vec::new();
-    let mut cur: Option<WorktreeEntry> = None;
-    for line in porcelain.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            out.extend(cur.take());
-            cur = Some(WorktreeEntry {
-                path: path.to_string(),
-                ..Default::default()
-            });
-            continue;
-        }
-        let Some(e) = cur.as_mut() else { continue };
-        if let Some(head) = line.strip_prefix("HEAD ") {
-            e.head = head.trim().to_string();
-        } else if let Some(branch) = line.strip_prefix("branch ") {
-            e.branch = branch
-                .trim()
-                .strip_prefix("refs/heads/")
-                .unwrap_or(branch.trim())
-                .to_string();
-        } else if line == "detached" {
-            e.detached = true;
-        } else if line == "bare" {
-            e.bare = true;
-        } else if line == "locked" {
-            e.locked = Some(String::new());
-        } else if let Some(reason) = line.strip_prefix("locked ") {
-            e.locked = Some(reason.trim().to_string());
-        } else if line == "prunable" || line.starts_with("prunable ") {
-            e.prunable = true;
-        }
-    }
-    out.extend(cur);
-    out
-}
-
-/// True when both paths name the same place on disk.
-pub(crate) fn same_path(a: &str, b: &str) -> bool {
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
-    }
-}
-
 fn first_line(text: &str) -> String {
     text.lines()
         .map(str::trim)
@@ -482,26 +422,6 @@ pub(crate) fn process_alive(pid: i32) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-pub(crate) fn disk_usage(path: String) -> i64 {
-    fn walk(path: &Path, n: &mut i64) {
-        let Ok(meta) = std::fs::symlink_metadata(path) else {
-            return;
-        };
-        if meta.is_file() {
-            *n += meta.len() as i64;
-        } else if meta.is_dir()
-            && let Ok(kids) = std::fs::read_dir(path)
-        {
-            for k in kids.flatten() {
-                walk(&k.path(), n);
-            }
-        }
-    }
-    let mut n = 0;
-    walk(Path::new(&path), &mut n);
-    n
-}
-
 pub(crate) fn round_duration(d: std::time::Duration) -> String {
     if d < Duration::from_secs(60) {
         format!("{}s", d.as_secs())
@@ -511,18 +431,6 @@ pub(crate) fn round_duration(d: std::time::Duration) -> String {
         format!("{}h", d.as_secs() / 3600)
     } else {
         format!("{}d", d.as_secs() / 86_400)
-    }
-}
-
-pub(crate) fn size_text(n: i64) -> String {
-    if n >= 1 << 30 {
-        format!("{:.1} GB", n as f64 / (1 << 30) as f64)
-    } else if n >= 1 << 20 {
-        format!("{:.1} MB", n as f64 / (1 << 20) as f64)
-    } else if n >= 1 << 10 {
-        format!("{:.0} KB", n as f64 / (1 << 10) as f64)
-    } else {
-        format!("{n} B")
     }
 }
 

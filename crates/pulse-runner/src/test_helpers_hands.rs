@@ -60,6 +60,7 @@ pub(crate) fn hands_helper_process() {
     {
         return;
     }
+    crate::daemon_load::install_test_hardware();
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut h = crate::hands::new_hands(
         Box::new(std::io::stdin()),
@@ -82,6 +83,13 @@ pub(crate) fn hands_helper_process() {
 
 pub(crate) struct RunSshGuard {
     old: Option<crate::executor::SshRunner>,
+}
+
+impl RunSshGuard {
+    /// Restores `old` (from [`crate::executor::set_run_ssh`]) when dropped.
+    pub(crate) fn new(old: crate::executor::SshRunner) -> Self {
+        Self { old: Some(old) }
+    }
 }
 
 impl Drop for RunSshGuard {
@@ -211,4 +219,35 @@ pub(crate) fn open_amendment(s: &pulse_store::Store, date: &str) -> String {
 fn hands_helper_process_entry() {
     let _serial = crate::test_helpers::serial();
     hands_helper_process();
+}
+
+/// The `pulse-hand` binary of this build (ADR-070), next to the test binary
+/// under the target directory: `cargo test --workspace` builds it with its
+/// own crate's tests. A `cargo test -p pulse-runner` alone does not, so the
+/// helper builds it then, into the same target directory.
+pub(crate) fn pulse_hand_binary() -> std::path::PathBuf {
+    let exe = std::env::current_exe().expect("current exe");
+    // target/<profile>/deps/<test binary> -> target/<profile>/pulse-hand
+    let profile_dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test binary under target/<profile>/deps")
+        .to_path_buf();
+    let hand = profile_dir.join(format!("pulse-hand{}", std::env::consts::EXE_SUFFIX));
+    if !hand.exists() {
+        let target_dir = profile_dir
+            .parent()
+            .expect("target directory")
+            .to_path_buf();
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let status = std::process::Command::new(cargo)
+            .args(["build", "-q", "-p", "pulse-hand"])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("cargo build -p pulse-hand");
+        assert!(status.success(), "cargo build -p pulse-hand failed");
+    }
+    assert!(hand.exists(), "no pulse-hand binary at {}", hand.display());
+    hand
 }

@@ -43,7 +43,7 @@ pub(crate) const SSH_CONNECT_RETRIES: u32 = 5;
 const SSH_CONNECT_PAUSE: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const SSH_CONNECT_PAUSE: Duration = Duration::from_millis(1);
-pub(crate) const REMOTE_EXIT_TIMEOUT: i32 = 124;
+pub(crate) use pulse_hand_core::hands::REMOTE_EXIT_TIMEOUT;
 pub(crate) const NATIVE_LOGIN_PROMPT: &str =
     "Reply with exactly one line and run no command: SUMMARY: ok";
 pub(crate) const LOGIN_CHECK_MINUTES: i32 = 2;
@@ -347,36 +347,7 @@ pub(crate) fn local_executor_row(s: &pulse_store::Store) -> Row {
     r
 }
 
-/// The labels a machine finds on itself, so nobody types them: `docker`
-/// when the docker client is on PATH, `xcode` when a full Xcode is the
-/// selected developer directory (the command line tools alone build no app).
-pub(crate) const FOUND_LABELS: [&str; 2] = ["docker", "xcode"];
-
-/// What this machine finds on itself (FOUND_LABELS), looked up once.
-pub(crate) fn found_labels() -> &'static [String] {
-    static FOUND: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    FOUND.get_or_init(|| {
-        if let Ok(fake) = std::env::var("PULSE_MACHINE_FOUND") {
-            return pulse_store::needs::stored(&fake);
-        }
-        let mut found = Vec::new();
-        if which::which("docker").is_ok() {
-            found.push("docker".to_string());
-        }
-        if pulse_store::needs::this_os() == "macos"
-            && std::process::Command::new("xcode-select")
-                .arg("-p")
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .is_some_and(|p| p.contains("Xcode.app"))
-        {
-            found.push("xcode".to_string());
-        }
-        found
-    })
-}
+pub(crate) use pulse_hand_core::machine::{FOUND_LABELS, found_labels};
 
 /// The labels of this machine: what it finds on itself plus the setting
 /// `machine.labels`, canonical and without repeats.
@@ -969,6 +940,52 @@ where
 #[allow(dead_code)]
 pub(crate) fn restore_run_ssh(old: SshRunner) {
     *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()) = old;
+}
+
+/// The first transport to an open hand (ADR-070 step 1): the brain drives a
+/// `pulse-hand` binary on this machine over a pipe, exactly as it drives
+/// `pulse hands` behind sshd - one verb per call, the `b64 ...` (or
+/// `git-upload-pack ...`) command line in `SSH_ORIGINAL_COMMAND`, the
+/// payload on stdin, the verb's exit code and output back. `env` is the
+/// hand's own environment (its workdir, home, PATH) on top of this
+/// process's, without the brain's PULSE_JOB/PULSE_AGENT/PULSE_SESSION. The
+/// dial-out TLS channel replaces the pipe in step 2; until a setting picks
+/// this transport for an executor only the tests drive it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn local_hand_runner(hand: std::path::PathBuf, env: Vec<(String, String)>) -> SshRunner {
+    std::sync::Arc::new(
+        move |cancel: &pulse_bus::CancellationToken,
+              argv: &[String],
+              stdin: &[u8],
+              timeout: Duration| {
+            let mut vars: BTreeMap<String, String> = std::env::vars()
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "PULSE_JOB" | "PULSE_AGENT" | "PULSE_SESSION")
+                })
+                .collect();
+            vars.extend(env.iter().cloned());
+            vars.insert(
+                "SSH_ORIGINAL_COMMAND".into(),
+                argv.last().cloned().unwrap_or_default(),
+            );
+            let environ: Vec<String> = vars.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let out = crate::proc::run_group(
+                cancel,
+                &[hand.display().to_string()],
+                "",
+                &environ,
+                stdin,
+                timeout,
+            )?;
+            if out.timeout {
+                if cancel.is_cancelled() {
+                    return Err(pulse_bus::ContextError::Canceled.into());
+                }
+                return Err(pulse_bus::ContextError::DeadlineExceeded.into());
+            }
+            Ok((out.exit_code, out.stdout, out.stderr))
+        },
+    )
 }
 
 /// Whether ssh's stderr says the session never began: the connect itself
