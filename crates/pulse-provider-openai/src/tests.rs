@@ -1278,6 +1278,9 @@ fn github_models_uses_the_catalog_and_the_token_fallbacks() {
     let llama = model(&models, "meta/llama-3.3-70b-instruct");
     assert_eq!(llama.vendor, "Meta");
     assert!(llama.tool_calls && !llama.default);
+    // Vision follows the list's input modalities: GPT-4.1 names `image`,
+    // Llama names none.
+    assert!(gpt.vision && !llama.vision && !embed.vision);
 
     // GITHUB_MODELS_TOKEN beats GH_TOKEN beats GITHUB_TOKEN.
     let p = new_test_vendor("github-models", &srv.url(), None, None);

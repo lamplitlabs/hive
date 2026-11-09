@@ -1519,6 +1519,8 @@ struct ModelCapabilities {
 struct ModelSupports {
     #[serde(default)]
     tool_calls: bool,
+    #[serde(default)]
+    vision: bool,
 }
 
 #[derive(Default, Deserialize)]
@@ -1553,6 +1555,7 @@ fn map_models(body: ModelsResponse) -> Vec<Model> {
             vendor: m.vendor,
             chat: true,
             tool_calls: m.capabilities.supports.tool_calls,
+            vision: m.capabilities.supports.vision,
             premium: m.billing.multiplier,
             preview: m.preview,
             context_window: m.capabilities.limits.max_context_window_tokens,
@@ -2745,6 +2748,7 @@ mod tests {
                     vendor: "Vendor".to_string(),
                     chat: true,
                     tool_calls: false,
+                    vision: false,
                     premium: 0.0,
                     preview: false,
                     context_window: 200,
@@ -2757,6 +2761,7 @@ mod tests {
                     vendor: "Vendor".to_string(),
                     chat: true,
                     tool_calls: true,
+                    vision: false,
                     premium: 2.0,
                     preview: true,
                     context_window: 100,
@@ -3146,6 +3151,50 @@ mod tests {
                 }]
             );
         }
+    }
+
+    #[test]
+    fn models_report_vision_only_when_the_list_says_so() {
+        // A /models fixture shaped like Copilot's: one chat model that can
+        // see, one that cannot say so (no `vision` key), one that says no.
+        let body: ModelsResponse = serde_json::from_value(json!({"data": [
+            {
+                "id": "seer",
+                "name": "Seer",
+                "vendor": "Vendor",
+                "capabilities": {"type": "chat", "supports": {"tool_calls": true, "vision": true}}
+            },
+            {
+                "id": "blind",
+                "name": "Blind",
+                "vendor": "Vendor",
+                "capabilities": {"type": "chat", "supports": {"tool_calls": true}}
+            },
+            {
+                "id": "no-eyes",
+                "name": "No Eyes",
+                "vendor": "Vendor",
+                "capabilities": {"type": "chat", "supports": {"tool_calls": false, "vision": false}}
+            }
+        ]}))
+        .unwrap();
+        let models = map_models(body);
+        let vision: Vec<(&str, bool)> = models.iter().map(|m| (m.id.as_str(), m.vision)).collect();
+        assert_eq!(
+            vision,
+            vec![("blind", false), ("no-eyes", false), ("seer", true)]
+        );
+        let seer = models.iter().find(|m| m.id == "seer").unwrap();
+        assert!(seer.tool_calls, "vision leaves tool_calls as it was");
+
+        // The flag survives the hub's JSON round trip, and a list cached
+        // before the field existed reads back as unable to see.
+        let wire = serde_json::to_value(seer).unwrap();
+        assert_eq!(wire["vision"], json!(true));
+        let mut old = wire.clone();
+        old.as_object_mut().unwrap().remove("vision");
+        let back: Model = serde_json::from_value(old).unwrap();
+        assert!(!back.vision);
     }
 
     #[allow(clippy::too_many_arguments)]

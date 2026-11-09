@@ -3190,6 +3190,7 @@ mod tests {
                 vendor: "Fake".into(),
                 chat: true,
                 tool_calls: true,
+                vision: false,
                 premium: 0.0,
                 preview: false,
                 context_window: 1000,
