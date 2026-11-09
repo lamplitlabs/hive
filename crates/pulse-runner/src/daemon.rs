@@ -1211,6 +1211,40 @@ pub(crate) fn requeue_outage_experiment(
     ))
 }
 
+/// The job id the dispatch loop's idle probe leases by: no job carries it,
+/// so `take_job_first` gives its reason and leases nothing.
+const NO_LEASE_PROBE: &str = "(no job: idle reason probe)";
+
+/// Whether a worker's lease could take a job this tick: one of an active
+/// project that is not a lead sitting (the leads lease their own), queued
+/// or with a lapsed lease the lease puts back first - and, while the daily
+/// cap is full, one of the owner's own (`OWNER_DRIVEN_SQL`). `taken` and
+/// `dry_run` count the cap as `take_job_first` does. When the store cannot
+/// say, the lease is tried.
+fn worker_lease_possible(
+    s: &pulse_store::Store,
+    now: &str,
+    taken: &[String],
+    dry_run: bool,
+) -> bool {
+    let Ok(c) = s.conn() else {
+        return true;
+    };
+    let mut sql = "SELECT COUNT(*) AS n FROM jobs j JOIN projects p ON p.slug = j.project WHERE p.status = 'active' AND j.kind != ? AND (j.status = 'queued' OR (j.status = 'leased' AND j.lease_until != '' AND j.lease_until < ?))".to_string();
+    if !dry_run {
+        let cap = crate::run::daily_cap(s);
+        if cap > 0 && crate::run::jobs_today_with(s, now, taken) >= cap {
+            sql.push_str(&format!(" AND {}", crate::jobs::OWNER_DRIVEN_SQL));
+        }
+    }
+    let lead = crate::lead::LEAD_KIND.to_string();
+    let now = now.to_string();
+    match crate::util::query_rows(&*c, &sql, &[&lead, &now]) {
+        Ok(rows) => rows.first().is_none_or(|r| r.int("n") > 0),
+        Err(_) => true,
+    }
+}
+
 fn active_queued_count(s: &pulse_store::Store) -> i32 {
     s.conn()
         .ok()
@@ -2534,6 +2568,39 @@ pub(crate) fn daemon(
                         } else {
                             if !why.is_empty() {
                                 reasons.insert(why, true);
+                            }
+                            // A lease that can take nothing (an empty queue,
+                            // or a full daily cap with none of the owner's
+                            // work queued) gets no worker: `pick_worker`
+                            // would spawn a fresh one that never runs and so
+                            // is never retired. The lease is still asked,
+                            // for a job no row carries, so the idle line
+                            // keeps its reason.
+                            if o.agent.is_empty()
+                                && !worker_lease_possible(s, &now, &taken, o.dry_run)
+                            {
+                                match crate::run::take_job_first(
+                                    s,
+                                    "",
+                                    "",
+                                    NO_LEASE_PROBE,
+                                    o.dry_run,
+                                    &now,
+                                    slot,
+                                    &taken,
+                                    &held,
+                                    fits,
+                                    work_first,
+                                ) {
+                                    Ok((_, _, why)) if !why.is_empty() => {
+                                        reasons.insert(why, true);
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        reasons.insert(crate::run::err_message(&e), true);
+                                    }
+                                }
+                                continue;
                             }
                             let worker = match crate::run::pick_worker_on(s, &o.agent, &names, slot)
                             {
@@ -6329,10 +6396,10 @@ mod tests {
         // worker and leases the second job), or the result itself ends
         // loop 1 (loop 2 retires and leases). The limit is checked only at a
         // loop's foot, so both orders stop right after the second lease and
-        // the drain retires the second worker. A third loop limit let a full
-        // idle pass plan a Daily reflect under load: `pick_worker` spawned a
-        // fresh worker for it before the daily cap (2) refused the lease,
-        // and that worker, never run, stayed active.
+        // the drain retires the second worker. A spare third loop plans a
+        // Daily reflect under load that the daily cap (2) refuses; the
+        // dispatch loop no longer spawns a worker for a lease that can take
+        // nothing (`worker_lease_possible`), so it holds either way.
         let result = daemon(
             &pulse_bus::CancellationToken::new(),
             &s,
@@ -6390,6 +6457,84 @@ mod tests {
         assert!(
             out.string()
                 .contains(&format!("retired {a}: {}", pulse_board::RETIRE_REASON)),
+            "{}",
+            out.string()
+        );
+    }
+
+    /// A tick whose lease can take nothing - here the daily cap is full and
+    /// none of the owner's work waits - spawns no worker: before, the
+    /// dispatch loop's `pick_worker` added a fresh active worker that never
+    /// ran, so the retire sweep (which needs a finished run) never retired
+    /// it. The idle line still names the cap.
+    #[test]
+    fn daemon_tick_that_leases_nothing_spawns_no_worker() {
+        let _serial = crate::test_helpers::serial();
+        pulse_bus::reset_default();
+        let s = new_store();
+        new_bare_repo(&s);
+        crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
+        crate::test_helpers_daemon::set_setting(&s, "jobs_per_day", "1");
+        crate::test_helpers_daemon::exec1(
+            &s,
+            "INSERT INTO jobs (id, project, kind, title, status, created_at, finished_at)
+             VALUES ('ran-today', 'proj', 'task', 'Ran today', 'done', ?, ?)",
+            &[&TEST_NOW, &TEST_NOW],
+        );
+        crate::test_helpers_daemon::exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status)
+             VALUES ('ran-today-run', 'ran-today', 'gone', 'proj', ?, ?, 'done')",
+            &[&TEST_NOW, &TEST_NOW],
+        );
+        crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Waits for the cap".into(),
+            "fleet work, not the owner's".into(),
+            1,
+            50,
+            "cap-test".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let workers = || {
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM agents WHERE kind = 'worker'",
+                &[],
+            )
+        };
+        assert_eq!(workers(), 0);
+        let out = OutBuf::new();
+        let result = daemon(
+            &pulse_bus::CancellationToken::new(),
+            &s,
+            DaemonOpts {
+                interval: 7,
+                max_loops: 3,
+                out: Some(out.writer()),
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                sleep: Some(std::sync::Arc::new(|_| true)),
+                ..Default::default()
+            },
+        );
+        assert_eq!(result, "done", "{}", out.string());
+        assert_eq!(workers(), 0, "a worker was spawned\n{}", out.string());
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND source = 'cap-test'",
+                &[]
+            ),
+            1,
+            "{}",
+            out.string()
+        );
+        assert!(
+            out.string().contains(crate::run::DAILY_CAP_REASON),
             "{}",
             out.string()
         );
