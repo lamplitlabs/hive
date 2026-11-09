@@ -306,8 +306,14 @@ scorer that reads coverage from Node's test runner passes
 `--experimental-test-isolation=none` with `--experimental-test-coverage`,
 because with one process per test file the merged report changes from run to
 run (the hub's `src/lib` line coverage read 81.6 to 89.1 on one tree, and
-89.1 every time without isolation). A judge-scored fixture - every
-request fixture (the `starter-*` set and your own non-metric ones) and every
+89.1 every time without isolation). The measure clone holds the tree without
+`node_modules`, so a test that imports a package (`react`, or `typescript`
+through `tsx-test-loader.mjs`) fails there and the modules only it loads count
+as uncovered: the hub's `src/components` branch coverage reads 88.7 in a
+checkout after `npm ci` and 87.9 under `pulse evolve measure`. Compare a
+coverage fixture's numbers with the measure's, not with a local run, and keep
+the logic it scores in modules a test reaches without a package import. A
+judge-scored fixture - every request fixture (the `starter-*` set and your own non-metric ones) and every
 held-out `H*` fixture, whose score depends on a model's answer - runs three
 times per measurement, each run in a fresh clone of the measured commit and a
 fresh measurement home (build caches kept), and the fixture scores the value
