@@ -5,7 +5,6 @@ use pulse_store::Store;
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
-use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -723,6 +722,12 @@ pub fn exit_text(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exit status {code}");
     }
+    signal_text(status)
+}
+
+#[cfg(unix)]
+fn signal_text(status: ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
     match status.signal() {
         Some(libc::SIGHUP) => "signal: hangup".to_string(),
         Some(libc::SIGINT) => "signal: interrupt".to_string(),
@@ -742,6 +747,13 @@ pub fn exit_text(status: ExitStatus) -> String {
         Some(n) => format!("signal: signal {n}"),
         None => status.to_string(),
     }
+}
+
+/// Off unix every exit carries a code, so this is only reached for a
+/// status the platform could not describe.
+#[cfg(not(unix))]
+fn signal_text(status: ExitStatus) -> String {
+    status.to_string()
 }
 
 pub type LogFn = Arc<dyn Fn(&str) + Send + Sync>;

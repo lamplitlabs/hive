@@ -552,7 +552,9 @@ pub fn kill_process_group(pid: i32) {
     ProcessGroup::new(pid).terminate();
 }
 
-#[cfg(test)]
+// The tests drive sh, background children and real process groups: unix
+// only until the Windows port gives them Job Object counterparts.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

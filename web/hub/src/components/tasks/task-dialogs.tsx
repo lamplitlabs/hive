@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ReferencePicker } from "@/components/reference-picker";
 import { ProjectAvatar } from "@/components/pulse/avatar";
 import { showApiError } from "@/components/pulse/confirm";
 import { Markdown } from "@/components/pulse/markdown";
@@ -78,6 +79,7 @@ function NewTaskWizard({ project, onOpenChange, onCreated, savingRef }: { projec
   const [slug, setSlug] = useState(project ?? "");
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
+  const [references, setReferences] = useState<string[]>([]);
   const [priority, setPriority] = useState("10");
   const [busy, setBusy] = useState(false);
   const projects = (org?.projects ?? []).filter((p) => p.present);
@@ -100,12 +102,13 @@ function NewTaskWizard({ project, onOpenChange, onCreated, savingRef }: { projec
     savingRef.current = true;
     const id = toast.loading("Giving the task…");
     try {
-      const r = await writes.newTask({ project: chosen, title: title.trim(), brief: brief.trim(), priority: Number(priority) });
+      const r = await writes.newTask({ project: chosen, title: title.trim(), brief: brief.trim(), priority: Number(priority), references });
       toast.success("Task given. " + sentenceCase(lead(chosen)) + " is starting on it now and replies in its chat.", { id, description: r.task.id });
       invalidate((p) => p.startsWith("tasks") || p.startsWith("events") || p.startsWith("projects/"));
       onOpenChange(false);
       setTitle("");
       setBrief("");
+      setReferences([]);
       onCreated?.(r.task);
     } catch (e) {
       toast.dismiss(id);
@@ -135,6 +138,7 @@ function NewTaskWizard({ project, onOpenChange, onCreated, savingRef }: { projec
               <p className="text-xs text-muted-foreground">One short line. It becomes the task&apos;s name.</p>
             </div>
             <BriefField id="nt-brief" value={brief} onChange={setBrief} placeholder={"What you want and why.\n\nHow you'll know it's done:\n- the check that proves it\n\nLeave alone:\n- files or behaviour that must not change"} />
+            <ReferencePicker value={references} onChange={setReferences} />
           </div>
         ) : (
           <div className="grid gap-5">

@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_ANSWER_KEYS: &[&str] = &[
@@ -81,7 +80,7 @@ pub(crate) fn fleet_root(s: &pulse_store::Store, create: bool) -> Result<String>
     }
     if create {
         fs::create_dir_all(&root)?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        crate::readonly::set_mode(Path::new(&root), 0o700)?;
     }
     Ok(root)
 }
@@ -541,7 +540,7 @@ fn remove_tree(target: &Path) -> Result<()> {
     };
     if info.is_dir() && !info.file_type().is_symlink() {
         fn chmod_dirs(path: &Path) -> Result<()> {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            crate::readonly::set_mode(path, 0o700)?;
             for entry in fs::read_dir(path)? {
                 let entry = entry?;
                 let meta = fs::symlink_metadata(entry.path())?;
@@ -615,6 +614,7 @@ mod tests {
     /// interpreter is an absolute symlink; the project ignores the venv, so
     /// it leaves before the scorer, while an untracked file the harness
     /// made - part of what is judged - stays.
+    #[cfg(unix)]
     #[test]
     fn drop_ignored_removes_setup_artifacts_but_keeps_the_harness_work() {
         let _serial = crate::test_helpers::serial();

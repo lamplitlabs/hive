@@ -1755,6 +1755,20 @@ fn run_watch(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
         filter.actions = action.split(',').map(ToString::to_string).collect();
     }
     let cancel = CancellationToken::new();
+    cancel_on_interrupt(&cancel)?;
+    watch(
+        cancel,
+        c,
+        fs.get_i64("since"),
+        filter,
+        fs.get_duration("interval"),
+        fs.get_bool("detail"),
+    )
+}
+
+/// Cancels `cancel` on SIGINT or SIGTERM so the watch ends cleanly.
+#[cfg(unix)]
+fn cancel_on_interrupt(cancel: &CancellationToken) -> Result<()> {
     let signal_cancel = cancel.clone();
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
@@ -1765,14 +1779,14 @@ fn run_watch(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Result<()> {
             signal_cancel.cancel();
         }
     });
-    watch(
-        cancel,
-        c,
-        fs.get_i64("since"),
-        filter,
-        fs.get_duration("interval"),
-        fs.get_bool("detail"),
-    )
+    Ok(())
+}
+
+/// signal-hook has no signal iterator off unix; Ctrl+C keeps its default
+/// there and ends the process, which is where a cancelled watch goes anyway.
+#[cfg(not(unix))]
+fn cancel_on_interrupt(_cancel: &CancellationToken) -> Result<()> {
+    Ok(())
 }
 
 pub fn watch(

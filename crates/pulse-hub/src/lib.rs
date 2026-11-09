@@ -65,6 +65,7 @@ pub mod privacy;
 pub mod project_goal;
 pub mod pull_requests;
 pub mod read;
+pub mod references;
 pub mod register;
 pub mod reports;
 pub mod running;

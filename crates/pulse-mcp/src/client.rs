@@ -1239,6 +1239,8 @@ mod tests {
     /// Dropping a stdio client closes the server's stdin and lets it leave
     /// on its own, so what it runs (a browser) shuts down with it; a server
     /// that ignores the close is killed after the grace.
+    // Drives /bin/sh scripts and unix process exit: unix only for now.
+    #[cfg(unix)]
     #[test]
     fn dropping_a_stdio_client_lets_the_server_exit_on_its_own_then_kills_it() {
         use std::os::unix::fs::PermissionsExt;

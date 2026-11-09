@@ -1714,6 +1714,8 @@ mod tests {
         assert!(!reminder.contains('\n'));
     }
 
+    // Symlinks need privileges on Windows; this one stays a unix test.
+    #[cfg(unix)]
     #[test]
     fn scorer_refuses_escaping_symlink() {
         let _serial = crate::test_helpers::serial();

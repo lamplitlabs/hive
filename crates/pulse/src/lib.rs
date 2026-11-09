@@ -337,6 +337,7 @@ pub fn run_streaming(
             Err(e) => return report(name, e, err),
         }
         beat_as_agent(&ctx, cmd.read_only);
+        release_prompt(&ctx, name, cmd.read_only, err);
     }
     let result = (cmd.run)(&mut ctx, &fs, &args);
     if !cmd.no_store {
@@ -400,6 +401,27 @@ fn shell_mangled_warning(flag: &str, what: &str) -> String {
     format!(
         "warning: pulse post --{flag} has {what}; the shell may have mangled it before pulse saw it\n  fix: pipe the body on stdin with a heredoc (pulse post ... <<'EOF') or pass --body-file FILE"
     )
+}
+
+/// "A newer PULSE vX is available - run: pulse update" on stderr, once per
+/// release (TASK-090): read from the store, no network. `pulse update`
+/// says it itself, and a read-only command cannot record that the line was
+/// shown, so neither prints it. It is the owner's line: a command an agent
+/// or a job runs neither prints nor uses it up. Never fails the command.
+fn release_prompt(ctx: &Context, name: &str, read_only: bool, err: &mut dyn Write) {
+    if read_only
+        || name == "update"
+        || !ctx.agent.is_empty()
+        || std::env::var("PULSE_JOB").is_ok_and(|j| !j.is_empty())
+    {
+        return;
+    }
+    let Some(s) = ctx.store.as_ref() else {
+        return;
+    };
+    if let Some(line) = pulse_runner::release_update::release_prompt(s) {
+        let _ = writeln!(err, "{line}");
+    }
 }
 
 /// Every command run as an agent is a sign of life: the agent's heartbeat is
@@ -1062,6 +1084,71 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(doc["update"]["latest"], "v999.0.0");
         assert_eq!(doc["update"]["url"], "https://releases.test/v999.0.0");
+    }
+
+    #[test]
+    fn every_command_names_a_newer_release_once() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let _agent = setenv("PULSE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path().to_str().unwrap();
+        let _home = setenv("PULSE_HOME", home);
+        pulse_store::Store::create(dir.path().join(pulse_store::STORE_NAME)).unwrap();
+        let store = pulse_store::Store::open(pulse_store::Options {
+            home: home.to_string(),
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let state = pulse_cli::update::UpdateState {
+            checked_at: "2026-11-09T02:00:00Z".into(),
+            source: "https://releases.test/latest.json".into(),
+            latest: "v999.0.0".into(),
+            url: "https://releases.test/v999.0.0".into(),
+            error: String::new(),
+        };
+        store
+            .set_meta(
+                pulse_cli::update::META_KEY,
+                &serde_json::to_string(&state).unwrap(),
+            )
+            .unwrap();
+        store
+            .set_setting(
+                "human",
+                pulse_cli::update::LATEST_URL_SETTING,
+                &state.source,
+            )
+            .unwrap();
+        store
+            .set_setting("human", pulse_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        let line = "A newer PULSE v999.0.0 is available - run: pulse update";
+        let semver = pulse_cli::update::parse_semver(&pulse_cli::version()).is_some();
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        assert_eq!(run(&["settings"], &mut out, &mut errb), 0, "{}", s(&errb));
+        assert_eq!(s(&errb).contains(line), semver, "{:?}", s(&errb));
+        // Shown once: the next command is quiet.
+        errb.clear();
+        assert_eq!(run(&["settings"], &mut out, &mut errb), 0, "{}", s(&errb));
+        assert!(!s(&errb).contains("A newer PULSE"), "{:?}", s(&errb));
+        if semver {
+            assert_eq!(
+                store.meta(pulse_cli::update::PROMPTED_KEY).unwrap().0,
+                "v999.0.0"
+            );
+        }
+        // An agent's command never prints it.
+        store.set_meta(pulse_cli::update::PROMPTED_KEY, "").unwrap();
+        errb.clear();
+        assert_eq!(
+            run(&["--agent", "a1", "settings"], &mut out, &mut errb),
+            0,
+            "{}",
+            s(&errb)
+        );
+        assert!(!s(&errb).contains("A newer PULSE"), "{:?}", s(&errb));
     }
 
     #[test]

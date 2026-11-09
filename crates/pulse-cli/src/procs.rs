@@ -5,7 +5,6 @@
 //! Everything here is best effort and bounded in time; it never signals the
 //! calling process, its parent, or anything outside the directory it is given.
 
-use nix::libc;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -89,9 +88,11 @@ impl ProcInfo {
 /// child's stderr per spawn once the system has loaded the stack logger into
 /// the process (which it does to a big long-lived one). See also
 /// [`resolve_program`] for the other way a spawn ends up forking.
+///
+/// Off unix this does nothing yet: Windows needs CREATE_NEW_PROCESS_GROUP
+/// plus a Job Object for the same guarantee (docs/windows-port.md).
 pub fn own_process_group(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0);
+    sys::own_process_group(cmd);
 }
 
 /// `program` as `Command::new` should get it: a name without a path
@@ -139,33 +140,111 @@ pub fn group_alive(pgid: i32) -> bool {
     if pgid <= 1 {
         return false;
     }
-    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), None) {
-        Ok(()) => true,
-        Err(nix::errno::Errno::ESRCH) => false,
-        // EPERM: something in the group exists but is not ours.
-        Err(_) => true,
-    }
+    sys::group_alive(pgid)
 }
 
 fn process_alive(pid: i32) -> bool {
     if pid <= 1 {
         return false;
     }
-    !matches!(
-        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
-        Err(nix::errno::Errno::ESRCH)
-    )
+    sys::process_alive(pid)
 }
 
-fn signal_group(pgid: i32, sig: nix::sys::signal::Signal) {
+/// The two signals the termination ladder sends: a polite request first,
+/// then the one that cannot be refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sig {
+    Term,
+    Kill,
+}
+
+fn signal_group(pgid: i32, sig: Sig) {
     if pgid > 1 {
-        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), sig);
+        sys::signal_group(pgid, sig);
     }
 }
 
-fn signal_process(pid: i32, sig: nix::sys::signal::Signal) {
+fn signal_process(pid: i32, sig: Sig) {
     if pid > 1 && pid != std::process::id() as i32 {
-        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig);
+        sys::signal_process(pid, sig);
+    }
+}
+
+/// The unix process-group and signal calls behind the functions above.
+#[cfg(unix)]
+mod sys {
+    use super::Sig;
+    use nix::sys::signal::{Signal, kill, killpg};
+    use nix::unistd::Pid;
+    use std::process::Command;
+
+    fn signal(sig: Sig) -> Signal {
+        match sig {
+            Sig::Term => Signal::SIGTERM,
+            Sig::Kill => Signal::SIGKILL,
+        }
+    }
+
+    pub(super) fn own_process_group(cmd: &mut Command) {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    pub(super) fn group_alive(pgid: i32) -> bool {
+        match killpg(Pid::from_raw(pgid), None) {
+            Ok(()) => true,
+            Err(nix::errno::Errno::ESRCH) => false,
+            // EPERM: something in the group exists but is not ours.
+            Err(_) => true,
+        }
+    }
+
+    pub(super) fn process_alive(pid: i32) -> bool {
+        !matches!(
+            kill(Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
+        )
+    }
+
+    pub(super) fn signal_group(pgid: i32, sig: Sig) {
+        let _ = killpg(Pid::from_raw(pgid), signal(sig));
+    }
+
+    pub(super) fn signal_process(pid: i32, sig: Sig) {
+        let _ = kill(Pid::from_raw(pid), signal(sig));
+    }
+
+    pub(super) fn parent_pid() -> i32 {
+        // SAFETY: getppid has no preconditions and cannot fail.
+        unsafe { nix::libc::getppid() }
+    }
+}
+
+/// Off unix there are no process groups or signals to send yet: nothing is
+/// grouped, no group or process reads as alive, and signals go nowhere, so
+/// callers fall back to `Child::kill` on the direct child. The Windows port
+/// replaces this with a Job Object per group (docs/windows-port.md).
+#[cfg(not(unix))]
+mod sys {
+    use super::Sig;
+    use std::process::Command;
+
+    pub(super) fn own_process_group(_cmd: &mut Command) {}
+
+    pub(super) fn group_alive(_pgid: i32) -> bool {
+        false
+    }
+
+    pub(super) fn process_alive(_pid: i32) -> bool {
+        false
+    }
+
+    pub(super) fn signal_group(_pgid: i32, _sig: Sig) {}
+
+    pub(super) fn signal_process(_pid: i32, _sig: Sig) {}
+
+    pub(super) fn parent_pid() -> i32 {
+        0
     }
 }
 
@@ -234,7 +313,7 @@ impl ProcessGroup {
             return Vec::new();
         }
         let members = self.members();
-        signal_group(self.pgid, nix::sys::signal::Signal::SIGTERM);
+        signal_group(self.pgid, Sig::Term);
         let deadline = Instant::now() + self.grace;
         while Instant::now() < deadline {
             reap();
@@ -248,7 +327,7 @@ impl ProcessGroup {
             .map(|p| p.pid)
             .filter(|pid| process_alive(*pid))
             .collect();
-        signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+        signal_group(self.pgid, Sig::Kill);
         let deadline = Instant::now() + KILL_SETTLE;
         while Instant::now() < deadline {
             reap();
@@ -346,7 +425,7 @@ pub fn processes_under(dir: &Path) -> Vec<ProcInfo> {
     }
     let dirs = dir_variants(dir);
     let me = std::process::id() as i32;
-    let parent = unsafe { libc::getppid() };
+    let parent = sys::parent_pid();
     list_processes()
         .into_iter()
         .filter(|p| p.pid > 1 && p.pid != me && p.pid != parent)
@@ -384,7 +463,7 @@ pub fn kill_tree_under_sparing(
         return Vec::new();
     }
     for p in &found {
-        signal_process(p.pid, nix::sys::signal::Signal::SIGTERM);
+        signal_process(p.pid, Sig::Term);
     }
     let deadline = Instant::now() + grace;
     let mut alive: Vec<i32> = found.iter().map(|p| p.pid).collect();
@@ -397,7 +476,7 @@ pub fn kill_tree_under_sparing(
     }
     alive.retain(|pid| process_alive(*pid));
     for pid in &alive {
-        signal_process(*pid, nix::sys::signal::Signal::SIGKILL);
+        signal_process(*pid, Sig::Kill);
     }
     if !alive.is_empty() {
         let deadline = Instant::now() + KILL_SETTLE;
@@ -412,6 +491,14 @@ pub fn kill_tree_under_sparing(
             p.killed(forced)
         })
         .collect()
+}
+
+/// SIGKILL for every member of the group at once, with no grace period and
+/// no wait: for a group whose leader has already exited or is being killed
+/// anyway (a measured command's leftovers). Off unix it does nothing yet,
+/// like the rest of the group calls.
+pub fn kill_group(pgid: i32) {
+    signal_group(pgid, Sig::Kill);
 }
 
 /// One line per killed process, for logs and observations.
@@ -598,9 +685,12 @@ mod platform {
     }
 }
 
-#[cfg(test)]
+// The tests drive /bin/sh, `ps` and real process groups: unix only until the
+// Windows port gives them Job Object counterparts.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use nix::libc;
     use std::process::Stdio;
 
     fn spawn_sh(dir: &Path, script: &str) -> std::process::Child {

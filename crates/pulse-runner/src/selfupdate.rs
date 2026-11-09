@@ -175,6 +175,19 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
     if s.setting("daemon.self_update", "") != "on" {
         return lines;
     }
+    // update.channel release: this machine installs published releases
+    // (`pulse update`), never a build of the brain's checkout.
+    if s.setting(pulse_cli::update::CHANNEL_SETTING, "auto")
+        .trim()
+        .eq_ignore_ascii_case("release")
+    {
+        say(
+            &mut st,
+            &mut lines,
+            "update.channel is release; no source build (pulse update installs releases)".into(),
+        );
+        return lines;
+    }
     if s.setting("stop", "") == "1" {
         say(&mut st, &mut lines, "stop is set; no build".into());
         return lines;
@@ -1212,6 +1225,13 @@ mod tests {
         let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
         assert!(lines.is_empty(), "off: {lines:?}");
         set_setting(&s, "daemon.self_update", "on");
+        set_setting(&s, "update.channel", "release");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(
+            lines.len() == 1 && lines[0].contains("update.channel is release; no source build"),
+            "release channel: {lines:?}"
+        );
+        set_setting(&s, "update.channel", "auto");
         let mut no_cargo = env.clone();
         no_cargo.cargo_cmd = "cargo-that-does-not-exist".into();
         let lines = tend_binary(&s, TEST_NOW.into(), no_cargo);

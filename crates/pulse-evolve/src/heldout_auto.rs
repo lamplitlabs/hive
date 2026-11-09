@@ -1053,35 +1053,40 @@ mod tests {
                 problem: String::new()
             }
         );
-        std::fs::remove_file(dir.join(crate::private::GENERATED_LEDGER)).unwrap();
-        let outside = crate::test_helpers::temp_path().join("elsewhere");
-        put_file(&outside, "H01\n", 0o600);
-        std::os::unix::fs::symlink(&outside, dir.join(crate::private::GENERATED_LEDGER)).unwrap();
-        assert_eq!(
-            crate::private::heldout_count(&s),
-            crate::private::HeldoutState {
-                count: 1,
-                pending: 1,
-                ..Default::default()
-            }
-        );
-        let err = crate::private::write_heldout(
-            &s,
-            crate::private::HeldoutWrite {
-                request: "Another sealed request.".into(),
-                judge: "starter-hardstop-publish".into(),
-                generated: true,
-                ..Default::default()
-            },
-        )
-        .expect_err("ledger link accepted");
-        assert!(err.to_string().contains("cannot write a private fixture"));
-        assert_eq!(heldout_file_state(&outside).0, "H01\n");
-        assert!(
-            heldout_file_state(dir.join("H02.request"))
-                .0
-                .contains(crate::private::TEMPLATE_MARKER)
-        );
+        // Symlinks need privileges on Windows; the link checks stay unix tests.
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(dir.join(crate::private::GENERATED_LEDGER)).unwrap();
+            let outside = crate::test_helpers::temp_path().join("elsewhere");
+            put_file(&outside, "H01\n", 0o600);
+            std::os::unix::fs::symlink(&outside, dir.join(crate::private::GENERATED_LEDGER))
+                .unwrap();
+            assert_eq!(
+                crate::private::heldout_count(&s),
+                crate::private::HeldoutState {
+                    count: 1,
+                    pending: 1,
+                    ..Default::default()
+                }
+            );
+            let err = crate::private::write_heldout(
+                &s,
+                crate::private::HeldoutWrite {
+                    request: "Another sealed request.".into(),
+                    judge: "starter-hardstop-publish".into(),
+                    generated: true,
+                    ..Default::default()
+                },
+            )
+            .expect_err("ledger link accepted");
+            assert!(err.to_string().contains("cannot write a private fixture"));
+            assert_eq!(heldout_file_state(&outside).0, "H01\n");
+            assert!(
+                heldout_file_state(dir.join("H02.request"))
+                    .0
+                    .contains(crate::private::TEMPLATE_MARKER)
+            );
+        }
     }
 
     #[test]
@@ -1442,25 +1447,13 @@ mod tests {
                 why,
             );
         }
-        let outside = crate::test_helpers::temp_path().join("elsewhere.txt");
-        put_file(&outside, "the owner's other file\n", 0o600);
-        std::fs::remove_file(dir.join("H02.request")).unwrap();
-        std::os::unix::fs::symlink(&outside, dir.join("H02.request")).unwrap();
-        refused(
-            crate::private::HeldoutWrite {
-                request: fine.into(),
-                judge: judge.into(),
-                slot: 2,
-                ..Default::default()
-            },
-            "cannot write a private fixture",
-        );
-        assert_eq!(
-            std::fs::read_to_string(&outside).unwrap(),
-            "the owner's other file\n"
-        );
-        std::fs::remove_file(dir.join("H02.request")).unwrap();
-        if std::fs::hard_link(&outside, dir.join("H02.request")).is_ok() {
+        // Symlinks need privileges on Windows and link counts are unix-only.
+        #[cfg(unix)]
+        {
+            let outside = crate::test_helpers::temp_path().join("elsewhere.txt");
+            put_file(&outside, "the owner's other file\n", 0o600);
+            std::fs::remove_file(dir.join("H02.request")).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("H02.request")).unwrap();
             refused(
                 crate::private::HeldoutWrite {
                     request: fine.into(),
@@ -1474,6 +1467,22 @@ mod tests {
                 std::fs::read_to_string(&outside).unwrap(),
                 "the owner's other file\n"
             );
+            std::fs::remove_file(dir.join("H02.request")).unwrap();
+            if std::fs::hard_link(&outside, dir.join("H02.request")).is_ok() {
+                refused(
+                    crate::private::HeldoutWrite {
+                        request: fine.into(),
+                        judge: judge.into(),
+                        slot: 2,
+                        ..Default::default()
+                    },
+                    "cannot write a private fixture",
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&outside).unwrap(),
+                    "the owner's other file\n"
+                );
+            }
         }
     }
 

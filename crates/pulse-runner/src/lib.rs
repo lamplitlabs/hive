@@ -77,6 +77,7 @@ pub mod reclaim;
 pub mod recover;
 pub mod recovery_api;
 pub mod release_age;
+pub mod release_update;
 pub mod research;
 pub(crate) mod restart;
 pub mod retention;

@@ -5,7 +5,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, FileType, Metadata};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -154,8 +153,41 @@ impl Walk {
     }
 }
 
-fn mode(meta: &Metadata) -> u32 {
+/// The unix permission bits of `meta`.
+#[cfg(unix)]
+pub(crate) fn mode(meta: &Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode()
+}
+
+/// Off unix there are no permission bits, only the read-only attribute: a
+/// writable entry reads as 0o755 (directory) or 0o644 (file), a read-only one
+/// as the same without the write bits, so freezing and fingerprinting see the
+/// one change they care about.
+#[cfg(not(unix))]
+pub(crate) fn mode(meta: &Metadata) -> u32 {
+    let full = if meta.is_dir() { 0o755 } else { 0o644 };
+    if meta.permissions().readonly() {
+        full & !0o222
+    } else {
+        full
+    }
+}
+
+/// Sets the unix permission bits of `path` to `mode`.
+#[cfg(unix)]
+pub(crate) fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+/// Off unix only the owner-write bit carries over: no write bit makes the
+/// entry read-only (`Permissions::set_readonly`), any write bit clears it.
+#[cfg(not(unix))]
+pub(crate) fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_readonly(mode & 0o222 == 0);
+    fs::set_permissions(path, perms)
 }
 
 fn file_type(meta: &Metadata) -> FileType {
@@ -213,9 +245,7 @@ pub(crate) fn freeze_tree(
             if info.file_type().is_symlink() {
                 continue;
             }
-            if let Err(e) =
-                fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode & 0o777))
-            {
+            if let Err(e) = set_mode(&path, entry.mode & 0o777) {
                 first.get_or_insert_with(|| e.into());
             }
         }
@@ -223,8 +253,7 @@ pub(crate) fn freeze_tree(
     };
     for entry in entries.iter().rev() {
         let path = root.join(&entry.name);
-        if let Err(e) = fs::set_permissions(&path, fs::Permissions::from_mode(entry.mode & !0o222))
-        {
+        if let Err(e) = set_mode(&path, entry.mode & !0o222) {
             let _ = restore();
             return Err(e.into());
         }
@@ -270,7 +299,7 @@ mod tests {
     use super::*;
 
     fn file_mode(path: &Path) -> u32 {
-        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+        mode(&fs::symlink_metadata(path).unwrap()) & 0o777
     }
 
     #[test]
@@ -282,7 +311,7 @@ mod tests {
         let built = tree.join("target/debug/deps/libpulse-1e10e1dd.rmeta");
         fs::write(&built, b"meta").unwrap();
         fs::hard_link(&built, &uplifted).unwrap();
-        fs::set_permissions(&built, fs::Permissions::from_mode(0o644)).unwrap();
+        set_mode(&built, 0o644).unwrap();
 
         let root = TreeRoot::open(&tree).unwrap();
         let restore = freeze_tree(&root).unwrap();
@@ -298,6 +327,9 @@ mod tests {
         assert_eq!(file_mode(&built), 0o644, "restored");
     }
 
+    // Link counts and dev/ino identity are unix-only (`link_key`); off unix
+    // an escaping hardlink is not detected yet (docs/windows-port.md).
+    #[cfg(unix)]
     #[test]
     fn a_hardlink_leaving_the_tree_is_a_violation() {
         let dir = crate::test_helpers::temp_path();

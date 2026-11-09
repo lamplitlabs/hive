@@ -141,6 +141,38 @@ pub(crate) fn governor_kind(hold: &str) -> &'static Kind {
     }
 }
 
+/// Whether `kind` is the load governor's hold (load or memory), which the
+/// owner's work can pass through the reservation.
+fn is_governor(kind: &Kind) -> bool {
+    kind.ask_kind == LOAD.ask_kind || kind.ask_kind == MEMORY.ask_kind
+}
+
+/// Whether the load governor's hold actually refuses the owner's next run.
+/// A load or memory hold alone no longer blocks the owner: the reservation
+/// (`daemon_load::reserve_for_owner`, docs/owner-reservation.md) lets the
+/// owner's one run start over the line. Only the kernel's critical memory
+/// pressure, or an owner-driven run already going on this machine, keeps
+/// the owner's queued work out - and only then is the hold worth a
+/// question; otherwise whatever keeps the owner's job queued is not the
+/// machine's load, and asking about it is noise.
+pub(crate) fn governor_refuses_owner(s: &pulse_store::Store) -> bool {
+    if crate::daemon_load::pressure().mem_critical {
+        return true;
+    }
+    let Ok(conn) = s.conn() else {
+        return true;
+    };
+    let row = crate::util::must_one(
+        &conn,
+        &format!(
+            "SELECT COUNT(*) AS n FROM runs r JOIN jobs j ON j.id = r.job_id WHERE r.status = 'running' AND r.executor = ? AND {}",
+            crate::jobs::OWNER_DRIVEN_SQL
+        ),
+        &[&crate::executor::LOCAL_EXECUTOR],
+    );
+    row.int("n") > 0
+}
+
 /// Whether runs are going and every one of them is the fleet's own work
 /// (none `jobs::OWNER_DRIVEN_SQL`): the slots a dispatch found all taken
 /// are then the fleet's, on this machine and on paired ones alike.
@@ -333,9 +365,23 @@ impl IdleHolds {
         at: Instant,
     ) -> Vec<String> {
         let mut lines = Vec::new();
+        // Read once per tick, and only while a governor hold stands with
+        // the owner's work queued behind it.
+        let mut refused: Option<bool> = None;
         for kind in KINDS.iter().copied() {
             let hold = holds.iter().find(|h| h.kind.ask_kind == kind.ask_kind);
+            let passable = hold.is_some()
+                && owner.queued > 0
+                && is_governor(kind)
+                && !*refused.get_or_insert_with(|| governor_refuses_owner(s));
             let state = match hold {
+                // The governor would admit the owner's run: not this
+                // hold's question (answered if one was asked).
+                Some(_) if passable => {
+                    self.since.remove(kind.ask_kind);
+                    self.waited.remove(kind.ask_kind);
+                    State::Clear
+                }
                 None => {
                     self.since.remove(kind.ask_kind);
                     self.waited.remove(kind.ask_kind);
@@ -386,6 +432,8 @@ impl IdleHolds {
                 State::Clear if was != Some(false) => {
                     let why = if hold.is_none() {
                         kind.lifted.to_string()
+                    } else if passable {
+                        "the owner's one run may start over the line again".to_string()
                     } else {
                         "the owner's work no longer waits behind it".to_string()
                     };
@@ -490,6 +538,12 @@ mod tests {
         let now = crate::test_helpers::TEST_NOW;
         let pass = Duration::from_secs(60);
         let t0 = Instant::now();
+        // The machine swapping: the owner's run is refused, so the load
+        // hold is the owner's business.
+        let _pin = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            mem_critical: true,
+            ..crate::daemon_load::CALM
+        });
         let load = [Hold::new(
             &LOAD,
             "machine saturated: load 60.0 on 12 CPUs is over the line 24",
@@ -666,6 +720,114 @@ mod tests {
     }
 
     #[test]
+    fn a_load_hold_the_owner_passes_asks_nothing_until_the_owner_is_refused() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        let b = brain(&s);
+        let now = crate::test_helpers::TEST_NOW;
+        let pass = Duration::from_secs(60);
+        let t0 = Instant::now();
+        let load = [Hold::new(
+            &LOAD,
+            "machine saturated: load 30.0 on 12 CPUs is over the line 24; one express slot stays open for the owner's work",
+        )];
+        let mem = [Hold::new(
+            &MEMORY,
+            "machine saturated: 300 MB of memory free, under the floor 1024",
+        )];
+        // A calm kernel and no owner run going here: the owner's one run
+        // may start over the line (docs/owner-reservation.md), so neither
+        // a load nor a memory hold is worth a question, however long.
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let mut holds = IdleHolds::default();
+        for (i, held) in [&load, &mem, &load].into_iter().enumerate() {
+            let lines = holds.tend(
+                &s,
+                &b,
+                held,
+                &waiting(1, 600),
+                pass,
+                now,
+                "daemon",
+                t0 + pass * (i as u32 * 2),
+            );
+            assert!(lines.is_empty(), "{lines:?}");
+        }
+        assert!(open(&s, &LOAD).is_empty() && open(&s, &MEMORY).is_empty());
+        assert!(!governor_refuses_owner(&s));
+        // The owner's one run over the line already going on this machine:
+        // the next owner job is refused, and the hold asks after a pass.
+        let job = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "task:TASK-001".into(),
+            "echo ok and report".into(),
+            1,
+            10,
+            "task:TASK-001".into(),
+            pulse_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0
+        .str("id");
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-owner', ?, 'aurora', 'proj', ?, 'running', 'local')",
+            &[&job, &now],
+        );
+        assert!(governor_refuses_owner(&s));
+        let t1 = t0 + pass * 10;
+        assert!(
+            holds
+                .tend(&s, &b, &load, &waiting(1, 600), pass, now, "daemon", t1)
+                .is_empty()
+        );
+        let lines = holds.tend(
+            &s,
+            &b,
+            &load,
+            &waiting(1, 660),
+            pass,
+            now,
+            "daemon",
+            t1 + pass,
+        );
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("machine load holds the owner's work"),
+            "{lines:?}"
+        );
+        assert_eq!(open(&s, &LOAD).len(), 1);
+        // The owner's run ends: the next one may start over the line, so
+        // the open question is answered, though the load still stands.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE runs SET status = 'done' WHERE id = 'run-owner'",
+            &[],
+        );
+        let lines = holds.tend(
+            &s,
+            &b,
+            &load,
+            &waiting(1, 720),
+            pass,
+            now,
+            "daemon",
+            t1 + pass * 2,
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "machine load lifted: the owner's one run may start over the line again; 1 owner question(s) answered"
+            ]
+        );
+        assert!(open(&s, &LOAD).is_empty());
+    }
+
+    #[test]
     fn a_restarted_daemon_keeps_a_pending_hold_open_and_answers_a_lifted_one() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
@@ -674,6 +836,11 @@ mod tests {
         let now = crate::test_helpers::TEST_NOW;
         let t0 = Instant::now();
         let pass = Duration::from_secs(60);
+        let _pin = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            free_mem_mb: Some(300),
+            mem_critical: true,
+            ..crate::daemon_load::CALM
+        });
         let mem = [Hold::new(
             &MEMORY,
             "machine saturated: 300 MB of memory free, under the floor 1024",

@@ -466,16 +466,12 @@ fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::sync::mpsc:
     rx
 }
 
-#[cfg(unix)]
+/// SIGKILL for the child's process group (`contain_process` made the child
+/// its leader), through `pulse_cli::procs` so it builds off unix too.
 fn kill_group(child: &mut std::process::Child) {
-    // SAFETY: plain libc call on the child's own process group id.
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-    }
+    pulse_cli::procs::kill_group(child.id() as i32);
 }
 
-#[cfg(not(unix))]
-fn kill_group(_child: &mut std::process::Child) {}
 pub(crate) fn git_output(
     cancel: &pulse_bus::CancellationToken,
     repo: &str,
@@ -510,13 +506,9 @@ pub(crate) fn git_raw(
 /// The measured command leads its own process group, so the whole tree it
 /// starts ends with it (`kill_group`). Set as a spawn attribute, never a
 /// `pre_exec` hook: a hook turns the spawn into a fork of the whole daemon.
-#[cfg(unix)]
 pub(crate) fn contain_process(cmd: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    cmd.process_group(0);
+    pulse_cli::procs::own_process_group(cmd);
 }
-#[cfg(not(unix))]
-pub(crate) fn contain_process(_cmd: &mut std::process::Command) {}
 
 /// Puts the just-spawned measurement at [`MEASUREMENT_NICE`] from the
 /// parent. A refusal (the parent already runs at a higher nice, or the
@@ -558,11 +550,13 @@ pub(crate) fn stop_signals() -> Vec<i32> {
 /// Turns the first SIGINT/SIGTERM into a cancel of the token while the guard lives; dropping it
 /// unregisters the handlers, restoring the default (terminating) disposition. The cancel runs on
 /// an ordinary thread fed by the signal, never inside the handler itself.
+#[cfg(unix)]
 pub(crate) struct SignalStop {
     handle: signal_hook::iterator::Handle,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(unix)]
 impl SignalStop {
     pub(crate) fn notify(cancel: &pulse_bus::CancellationToken) -> Result<Self> {
         let mut signals = signal_hook::iterator::Signals::new(stop_signals())?;
@@ -582,9 +576,68 @@ impl SignalStop {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SignalStop {
     fn drop(&mut self) {
         self.handle.close();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// signal-hook has no signal iterator off unix. There the first Ctrl+C sets
+/// a flag (signal_hook::flag) and a watcher thread turns it into the cancel;
+/// dropping the guard unregisters the handler and stops the watcher.
+#[cfg(not(unix))]
+pub(crate) struct SignalStop {
+    ids: Vec<signal_hook::SigId>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(not(unix))]
+impl SignalStop {
+    pub(crate) fn notify(cancel: &pulse_bus::CancellationToken) -> Result<Self> {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        let hit = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (cancel, watch_hit, watch_stop) = (cancel.clone(), hit.clone(), stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("evolve-signals".into())
+            .spawn(move || {
+                while !watch_stop.load(Ordering::Relaxed) {
+                    if watch_hit.load(Ordering::Relaxed) {
+                        cancel.cancel();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })?;
+        // Built before the handlers so a failed registration drops (and
+        // undoes) the ones already made, and stops the watcher.
+        let mut guard = Self {
+            ids: Vec::new(),
+            stop,
+            thread: Some(thread),
+        };
+        for sig in stop_signals() {
+            guard
+                .ids
+                .push(signal_hook::flag::register(sig, hit.clone())?);
+        }
+        Ok(guard)
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for SignalStop {
+    fn drop(&mut self) {
+        for id in self.ids.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
