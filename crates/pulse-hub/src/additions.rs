@@ -56,6 +56,7 @@ impl Handler {
             "jobs" => self.addition_jobs(w, r, parts),
             "code-deliveries" => self.addition_code_deliveries(w, r, parts),
             "kpis" => self.addition_kpis(w, r, parts),
+            "reports" => self.addition_reports(w, r, parts),
             "messages" => self.addition_messages(w, r, parts),
             "leads" => self.addition_leads(w, r, parts),
             "toolkit" => self.addition_toolkit(w, r, parts),

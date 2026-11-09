@@ -4,6 +4,7 @@
 import {
   BookOpenIcon,
   BrainIcon,
+  ClipboardCheckIcon,
   CalendarClockIcon,
   ChartLineIcon,
   HomeIcon,
@@ -25,6 +26,7 @@ export const NAV_ICON: Record<NavIcon, LucideIcon> = {
   sessions: MessageSquareIcon,
   tasks: ListTodoIcon,
   records: BookOpenIcon,
+  reports: ClipboardCheckIcon,
   votes: VoteIcon,
   memory: BrainIcon,
   runs: ScrollTextIcon,

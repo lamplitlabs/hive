@@ -7,7 +7,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The paths a typical set of open tabs subscribes to.
 const PATHS = [
   "org", "projects", "timeline", "notices", "runner", "running", "service", "settings", "cred", "heldout", "roster", "votes", "compute",
-  "tasks", "tasks?project=demo", "tasks/TASK-001", "messages?project=demo&task=TASK-001", "code-deliveries?limit=20", "jobs/failed?project=demo&limit=20", "kpis?days=14",
+  "tasks", "tasks?project=demo", "tasks/TASK-001", "messages?project=demo&task=TASK-001", "code-deliveries?limit=20", "reports?limit=100", "jobs/failed?project=demo&limit=20", "kpis?days=14",
   "records", "records?kind=adr&status=Proposed", "records/ADR-001?project=demo", "constitution?project=demo", "hygiene?limit=30", "events?limit=40",
   "harness", "harness/prompt", "harness/models", "harness/sessions?limit=50", "harness/sessions/abc", "mcp", "mcp?project=demo", "mcp/MCP-001", "mcp/options", "skills", "skills/SKILL-001",
   "projects/demo/overview", "projects/demo/project", "projects/demo/timeline", "projects/demo/threads", "projects/demo/threads/k1", "projects/demo/posts/p1",
@@ -38,7 +38,7 @@ test("harness.step is silent: it is neither queued nor does it touch any view", 
 test("each action refreshes the views it can change and nothing else", () => {
   const job = hit(touches("job.done"));
   // messages too: the task chat's "reads it next / reading / seen" line follows the lead's job.
-  for (const p of ["runner", "roster", "org", "projects", "tasks", "tasks/TASK-001", "jobs/failed?project=demo&limit=20", "code-deliveries?limit=20", "kpis?days=14", "projects/demo/overview", "messages?project=demo&task=TASK-001"]) assert.ok(job.includes(p), p);
+  for (const p of ["runner", "roster", "org", "projects", "tasks", "tasks/TASK-001", "jobs/failed?project=demo&limit=20", "code-deliveries?limit=20", "reports?limit=100", "kpis?days=14", "projects/demo/overview", "messages?project=demo&task=TASK-001"]) assert.ok(job.includes(p), p);
   for (const p of ["settings", "harness/models", "events?limit=40", "projects/demo/threads", "records"]) assert.ok(!job.includes(p), p);
 
   const post = hit(touches("post.question"));
@@ -57,7 +57,7 @@ test("each action refreshes the views it can change and nothing else", () => {
   for (const p of ["mcp", "skills"]) assert.ok(!setting.includes(p), p);
 
   const land = hit(touches("land.landed"));
-  for (const p of ["org", "projects", "code-deliveries?limit=20", "kpis?days=14", "runner", "tasks?project=demo", "projects/demo/overview", "projects/demo/timeline"]) assert.ok(land.includes(p), p);
+  for (const p of ["org", "projects", "code-deliveries?limit=20", "reports?limit=100", "kpis?days=14", "runner", "tasks?project=demo", "projects/demo/overview", "projects/demo/timeline"]) assert.ok(land.includes(p), p);
   for (const p of ["settings", "projects/demo/questions", "harness", "records"]) assert.ok(!land.includes(p), p);
   // A task moving to done is a KPI; a post is not.
   assert.ok(hit(touches("task.status")).includes("kpis?days=14"));
