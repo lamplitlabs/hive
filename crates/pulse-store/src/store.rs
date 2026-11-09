@@ -874,22 +874,7 @@ pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-/// RFC 3339 in UTC with a variable-width fraction: only the significant
-/// digits are kept and the fraction disappears entirely on whole seconds
-/// (`2026-01-02T03:04:05.5Z`, `2026-01-02T03:04:05Z`), unlike chrono's
-/// `SecondsFormat::Nanos`, which always prints nine digits.
-pub fn rfc3339_nano<Tz: chrono::TimeZone>(t: chrono::DateTime<Tz>) -> String {
-    let t = t.with_timezone(&Utc);
-    let mut s = t.format("%Y-%m-%dT%H:%M:%S").to_string();
-    let nanos = t.timestamp_subsec_nanos();
-    if nanos != 0 {
-        let frac = format!("{nanos:09}");
-        s.push('.');
-        s.push_str(frac.trim_end_matches('0'));
-    }
-    s.push('Z');
-    s
-}
+pub use pulse_hand_core::util::rfc3339_nano;
 
 pub fn resolve_home(explicit: &str) -> Result<String> {
     let mut home = if explicit.is_empty() {

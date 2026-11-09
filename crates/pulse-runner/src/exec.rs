@@ -1376,42 +1376,7 @@ pub(crate) fn local_cli_fallback(home: &str) -> String {
     }
     String::new()
 }
-pub(crate) fn worker_env_with_cli_path(
-    base: &[String],
-    extra: &BTreeMap<String, String>,
-) -> Vec<String> {
-    let Some(cli) = extra.get("PULSE_CLI").filter(|s| !s.is_empty()) else {
-        return crate::proc::env_with(base, extra);
-    };
-    let dir = std::path::Path::new(cli)
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let path = extra.get("PATH").cloned().unwrap_or_else(|| {
-        base.iter()
-            .find_map(|kv| kv.strip_prefix("PATH=").map(ToOwned::to_owned))
-            .unwrap_or_default()
-    });
-    if std::env::split_paths(&path).any(|p| p.display().to_string() == dir) {
-        return crate::proc::env_with(base, extra);
-    }
-    let mut merged = extra.clone();
-    let sep = if cfg!(windows) { ";" } else { ":" };
-    let old = extra.get("PATH").cloned().unwrap_or_else(|| {
-        base.iter()
-            .find_map(|kv| kv.strip_prefix("PATH=").map(ToOwned::to_owned))
-            .unwrap_or_default()
-    });
-    merged.insert(
-        "PATH".into(),
-        if old.is_empty() {
-            dir
-        } else {
-            format!("{dir}{sep}{old}")
-        },
-    );
-    crate::proc::env_with(base, &merged)
-}
+pub(crate) use crate::proc::worker_env_with_cli_path;
 
 #[cfg(test)]
 mod tests {

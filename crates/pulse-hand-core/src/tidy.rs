@@ -11,7 +11,7 @@ use std::path::Path;
 
 /// One thing a run left behind and what became of it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Leftover {
+pub struct Leftover {
     pub kind: String,
     pub path: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -27,12 +27,12 @@ pub(crate) struct Leftover {
 
 /// The prefix of a line `pulse hands clean` prints for every leftover it
 /// removed on an executor; the rest of the line is the JSON of a [`Leftover`].
-pub(crate) const LEFTOVER_LINE: &str = "leftover\t";
+pub const LEFTOVER_LINE: &str = "leftover\t";
 
 /// Removes every worktree the run added to `clone` (everything but the clone
 /// itself) and prunes the clone's worktree records. Returns one entry per
 /// worktree that was still on disk, removed or not; the clone goes next.
-pub(crate) fn clear_leftovers(clone: &str) -> Vec<Leftover> {
+pub fn clear_leftovers(clone: &str) -> Vec<Leftover> {
     if !Path::new(clone).join(".git").exists() {
         return Vec::new();
     }
@@ -41,11 +41,11 @@ pub(crate) fn clear_leftovers(clone: &str) -> Vec<Leftover> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for wt in crate::sweep::parse_worktrees(&list.stdout)
+    for wt in crate::worktree::parse_worktrees(&list.stdout)
         .into_iter()
         .skip(1)
     {
-        if wt.bare || wt.path.is_empty() || crate::sweep::same_path(&wt.path, clone) {
+        if wt.bare || wt.path.is_empty() || crate::worktree::same_path(&wt.path, clone) {
             continue;
         }
         if !Path::new(&wt.path).exists() {
@@ -56,7 +56,7 @@ pub(crate) fn clear_leftovers(clone: &str) -> Vec<Leftover> {
             kind: "worktree".into(),
             path: wt.path.clone(),
             branch: wt.branch.clone(),
-            bytes: crate::sweep::disk_usage(wt.path.clone()),
+            bytes: crate::worktree::disk_usage(wt.path.clone()),
             removed: false,
             note: String::new(),
         };
@@ -83,7 +83,7 @@ pub(crate) fn clear_leftovers(clone: &str) -> Vec<Leftover> {
 }
 
 /// The line `pulse hands clean` prints for one leftover.
-pub(crate) fn leftover_line(left: &Leftover) -> String {
+pub fn leftover_line(left: &Leftover) -> String {
     format!(
         "{LEFTOVER_LINE}{}",
         serde_json::to_string(left).unwrap_or_default()
@@ -91,7 +91,7 @@ pub(crate) fn leftover_line(left: &Leftover) -> String {
 }
 
 /// The leftovers an executor reported in its `clean` output.
-pub(crate) fn parse_leftover_lines(out: &str) -> Vec<Leftover> {
+pub fn parse_leftover_lines(out: &str) -> Vec<Leftover> {
     out.lines()
         .filter_map(|line| line.strip_prefix(LEFTOVER_LINE))
         .filter_map(|json| serde_json::from_str::<Leftover>(json).ok())
@@ -99,7 +99,7 @@ pub(crate) fn parse_leftover_lines(out: &str) -> Vec<Leftover> {
 }
 
 /// One line for the run log and the hub: what the agent left and what became of it.
-pub(crate) fn leftover_summary(left: &[Leftover]) -> String {
+pub fn leftover_summary(left: &[Leftover]) -> String {
     if left.is_empty() {
         return "nothing left behind".into();
     }
@@ -114,7 +114,7 @@ pub(crate) fn leftover_summary(left: &[Leftover]) -> String {
     if removed > 0 {
         text.push_str(&format!(
             "; removed {removed} ({})",
-            crate::sweep::size_text(bytes)
+            crate::worktree::size_text(bytes)
         ));
     }
     if kept > 0 {
@@ -220,7 +220,7 @@ mod tests {
         assert!(!outside.exists());
         let list = crate::util::git(&clone, &["worktree", "list", "--porcelain"]);
         assert_eq!(
-            crate::sweep::parse_worktrees(&list.stdout).len(),
+            crate::worktree::parse_worktrees(&list.stdout).len(),
             1,
             "{}",
             list.stdout

@@ -12,6 +12,7 @@ description = "PULSE: daemon, planner, workers, landing, executors, leads, compu
 pulse-board.workspace = true
 pulse-bus.workspace = true
 pulse-cli.workspace = true
+pulse-hand-core.workspace = true
 pulse-codedelivery.workspace = true
 pulse-cred.workspace = true
 pulse-evolve.workspace = true

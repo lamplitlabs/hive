@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: the SQLite store: schema, additive DDL, records, settings, events, transactions"
 
 [dependencies]
+pulse-hand-core.workspace = true
 pulse-gitenv.workspace = true
 pulse-cred.workspace = true
 anyhow.workspace = true

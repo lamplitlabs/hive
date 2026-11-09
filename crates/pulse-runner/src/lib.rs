@@ -37,7 +37,9 @@ pub(crate) mod forge;
 pub mod gcp;
 pub mod gh_auth;
 pub(crate) mod hand_watch;
-pub mod hands;
+/// The `pulse-hands` protocol lives with the executor path (pulse-hand-core,
+/// ADR-070), which the open `pulse-hand` binary is built from.
+pub use pulse_hand_core::hands;
 pub mod heartbeat;
 pub mod heldout;
 pub mod hygiene;
@@ -70,7 +72,7 @@ pub mod pipeline;
 pub mod plan;
 pub(crate) mod precondition;
 pub mod preflight;
-pub mod proc;
+pub use pulse_hand_core::proc;
 pub mod provider;
 pub mod recipe;
 pub mod reclaim;
@@ -99,7 +101,7 @@ pub mod steps_mirror;
 pub mod suggestions;
 pub mod sweep;
 pub mod tally;
-pub mod tidy;
+pub use pulse_hand_core::tidy;
 pub mod tmpspace;
 pub mod token;
 pub mod toolkit;

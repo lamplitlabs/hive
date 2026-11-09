@@ -46,13 +46,10 @@ static RECIPE_KEYS: &[&str] = &[
     "services",
     "suggested_check",
 ];
-pub(crate) static RECIPE_TOOL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9_.:-]*@[A-Za-z0-9][A-Za-z0-9_.+-]*$").unwrap());
-static RECIPE_ENV_NAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Z_][A-Z0-9_]*$").unwrap());
-static RECIPE_SECRET_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"TOKEN|SECRET|PASSWORD|PASSWD|_KEY$|_KEY_|CREDENTIAL|PRIVATE").unwrap()
-});
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::names::{
+    RECIPE_ENV_NAME_RE, RECIPE_SECRET_NAME_RE, RECIPE_TOOL_RE, recipe_env_name_ok,
+};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Recipe {
     pub version: String,
@@ -119,10 +116,6 @@ pub(crate) fn recipe_scalar(raw: &str, problems: &mut Vec<String>, where_: &str)
 }
 pub(crate) fn secret_shaped(value: &str) -> bool {
     pulse_store::secret_shaped(value)
-}
-/// A name a recipe's `env:` may set: shell-safe and not one that says secret.
-pub(crate) fn recipe_env_name_ok(name: &str) -> bool {
-    RECIPE_ENV_NAME_RE.is_match(name) && !RECIPE_SECRET_NAME_RE.is_match(name)
 }
 pub(crate) fn is_blank(s: &str) -> bool {
     s.trim().is_empty()

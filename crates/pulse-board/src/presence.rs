@@ -172,65 +172,9 @@ pub fn beat_due(s: &pulse_store::Store, name: &str) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionIdentity {
-    pub agent: String,
-    pub session: String,
-    pub run_id: String,
-    pub job_id: String,
-    pub generation: i64,
-    pub executor: String,
-}
-impl ExecutionIdentity {
-    pub fn validate(&self) -> Result<()> {
-        if !valid_name(&self.agent)
-            || self.session.is_empty()
-            || self.session != self.run_id
-            || self.job_id.is_empty()
-            || self.executor.is_empty()
-            || self.generation < 1
-            || self.run_id.len() > 160
-            || self.job_id.len() > 160
-            || self.executor.len() > 160
-        {
-            return Err(anyhow!(
-                "heartbeat needs a valid agent, run/session, job, generation and executor"
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionHeartbeat {
-    #[serde(flatten)]
-    pub identity: ExecutionIdentity,
-    #[serde(default)]
-    pub at: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub stopped_at: String,
-}
-impl std::ops::Deref for ExecutionHeartbeat {
-    type Target = ExecutionIdentity;
-    fn deref(&self) -> &Self::Target {
-        &self.identity
-    }
-}
-impl ExecutionHeartbeat {
-    pub fn validate(&self) -> Result<()> {
-        self.identity.validate()?;
-        let at = chrono::DateTime::parse_from_rfc3339(&self.at)
-            .map_err(|_| anyhow!("heartbeat has no valid observation time"))?;
-        if self.stopped_at.is_empty() {
-            return Ok(());
-        }
-        let stop = chrono::DateTime::parse_from_rfc3339(&self.stopped_at)?;
-        if stop < at {
-            return Err(anyhow!("heartbeat has no valid stop time"));
-        }
-        Ok(())
-    }
-}
+/// What a running job says about itself, and the beat that carries it: the
+/// hand writes these, the brain records them (pulse-hand-core, ADR-070).
+pub use pulse_hand_core::beat::{ExecutionHeartbeat, ExecutionIdentity};
 
 pub fn record_heartbeat(s: &pulse_store::Store, h: ExecutionHeartbeat) -> Result<bool> {
     h.validate()?;
