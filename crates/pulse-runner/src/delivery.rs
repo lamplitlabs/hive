@@ -1928,7 +1928,15 @@ pub(crate) fn propose_branch(
             "{branch} is the default branch; name a branch to propose"
         ));
     }
-    let sha = rev(&root, &format!("refs/heads/{branch}"));
+    let mut sha = rev(&root, &format!("refs/heads/{branch}"));
+    // A job branch forked before {def} was squashed to a new root shares no commit
+    // with it: proposed as it stands, the pull request would rewrite every file (or
+    // the forge refuses it). The job's own commits after its run base are copied
+    // onto {def} first, as `land_branch` does for a local landing (land.rs).
+    let replayed = replay_unrelated_job_branch(s, &slug, &root, &def, branch)?;
+    if let Some((tip, _)) = &replayed {
+        sha = tip.clone();
+    }
     let conversation = branch
         .strip_prefix("pulse/chat-")
         .filter(|id| !id.is_empty())
@@ -1964,7 +1972,7 @@ pub(crate) fn propose_branch(
             ),
         });
     }
-    deliver_proposed(
+    let mut d = deliver_proposed(
         s,
         project,
         &up,
@@ -1974,7 +1982,93 @@ pub(crate) fn propose_branch(
         next,
         top.as_ref(),
         now,
-    )
+    )?;
+    if let Some((_, note)) = replayed {
+        d.line = format!("{} ({note})", d.line);
+    }
+    Ok(d)
+}
+
+/// For `propose_branch`: when `branch` shares no history with `def` (the
+/// default branch was squashed to a new root after the branch forked) and a
+/// job made the branch, its commits after the job's last run base are copied
+/// onto `def` in a scratch worktree and the local branch is moved to the
+/// copy, so the pull request carries the job's own commits only. Returns the
+/// new tip and a note, or `None` when nothing was replayed: the branch shares
+/// history with `def`, no job or run base is known for it, or a worktree has
+/// it checked out (moving it would move that checkout). A replay that fails
+/// is an error: the branch as it stands would rewrite every file.
+fn replay_unrelated_job_branch(
+    s: &pulse_store::Store,
+    slug: &str,
+    root: &str,
+    def: &str,
+    branch: &str,
+) -> Result<Option<(String, String)>, String> {
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(60), args);
+    let def_ref = format!("refs/heads/{def}");
+    let branch_ref = format!("refs/heads/{branch}");
+    let shared = git(&["merge-base", &def_ref, &branch_ref]);
+    if !shared.stdout.trim().is_empty() || rev(root, &def_ref).is_empty() {
+        return Ok(None);
+    }
+    let job = {
+        let conn = s.conn().map_err(|e| e.to_string())?;
+        crate::util::must_one(
+            &conn,
+            "SELECT id FROM jobs WHERE project = ? AND branch = ? ORDER BY finished_at DESC",
+            &[&slug, &branch],
+        )
+        .str("id")
+    };
+    if job.is_empty() {
+        return Ok(None);
+    }
+    let run_base = crate::experiment::run_base(s, &crate::experiment::last_run_id(s, job.clone()));
+    let fork = crate::experiment::run_base_fork(root, &branch_ref, &run_base);
+    if fork.is_empty() || worktree_branches(root).iter().any(|b| b == branch) {
+        return Ok(None);
+    }
+    let old = rev(root, &branch_ref);
+    let git_dir = git(&["rev-parse", "--absolute-git-dir"])
+        .stdout
+        .trim()
+        .to_string();
+    if git_dir.is_empty() {
+        return Err(format!("{root} is not a git checkout"));
+    }
+    let wt_path = format!("{git_dir}/pulse-replay/{}", branch.replace('/', "_"));
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    let _ = std::fs::remove_dir_all(&wt_path);
+    let add = git(&["worktree", "add", "--detach", &wt_path, &def_ref]);
+    if !add.ok() {
+        return Err(format!(
+            "worktree add failed: {}",
+            crate::run::squeeze(&add.stderr, 200)
+        ));
+    }
+    let copied = crate::land::replay_from_fork(&wt_path, &fork, &branch_ref);
+    let _ = git(&["worktree", "remove", "--force", &wt_path]);
+    let short = crate::recipe::short(&fork, 12);
+    let (tip, count) = copied.map_err(|why| {
+        format!(
+            "{branch} shares no history with {def}; replaying job {job}'s commits from its run base {short} failed: {why}"
+        )
+    })?;
+    let moved = git(&["update-ref", &branch_ref, &tip, &old]);
+    if !moved.ok() {
+        return Err(format!(
+            "{branch} could not be moved onto its replay on {def}: {}",
+            crate::run::squeeze(&moved.stderr, 200)
+        ));
+    }
+    Ok(Some((
+        tip,
+        format!(
+            "{count} {} replayed from its run base {short} ({def} shares no history with it)",
+            crate::util::plural(count as i32, "commit")
+        ),
+    )))
 }
 
 /// A kept experiment's branch as a pull request, from the experiment lane:
@@ -5112,6 +5206,86 @@ mod tests {
                 .unwrap_err()
                 .contains("is not in")
         );
+    }
+
+    /// `pulse land --branch` on a job branch forked before main was squashed
+    /// to a new root: the pull request carries the job's own commit, copied
+    /// onto the squashed main from the job's run base, not the whole
+    /// pre-squash history that would rewrite every file.
+    #[test]
+    fn propose_branch_replays_a_job_branch_forked_before_main_was_squashed() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let fork = ref_of(&repo, "refs/heads/main");
+        let branch = "pulse/aurora/job-squashed-propose";
+        run(&repo, &["git", "branch", branch, "main"]);
+        commit_on(&repo, branch, "job.txt");
+        // The owner squashes main to a new root commit after the job's run forked.
+        std::fs::write(std::path::Path::new(&repo).join("squash.txt"), "squash\n").unwrap();
+        run(&repo, &["git", "add", "squash.txt"]);
+        let tree = run(&repo, &["git", "write-tree"]).trim().to_string();
+        let squashed = run(&repo, &["git", "commit-tree", &tree, "-m", "Squash"])
+            .trim()
+            .to_string();
+        run(&repo, &["git", "reset", "-q", "--hard", &squashed]);
+        run(&repo, &["git", "push", "-q", "--force", "origin", "main"]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "add job.txt".into(),
+            "add job.txt".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', branch = ?, finished_at = ? WHERE id = ?",
+            &[&branch, &TEST_NOW, &job.str("id")],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, base) VALUES ('run-squashed-propose', ?, 'aurora', 'proj', ?, ?, 'done', ?)",
+            &[&job.str("id"), &TEST_NOW, &TEST_NOW, &fork],
+        );
+
+        let d = propose_branch(&s, &proj, branch, TEST_NOW).unwrap();
+        assert_eq!((d.number, d.opened), (7, true));
+        assert!(d.line.contains("replayed from its run base"), "{}", d.line);
+        let tip = ref_of(&repo, &format!("refs/heads/{branch}"));
+        assert_eq!(bare_ref(&bare, &format!("refs/heads/{branch}")), tip);
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "rev-list", "--count", &format!("main..{tip}")]
+            )
+            .trim(),
+            "1",
+            "the job's own commit alone"
+        );
+        assert_eq!(
+            run(&repo, &["git", "rev-parse", &format!("{tip}^")]).trim(),
+            squashed,
+            "built on the squashed main"
+        );
+        assert_eq!(
+            run(&repo, &["git", "diff", "--name-only", &squashed, &tip]).trim(),
+            "job.txt"
+        );
+        let pr = last_detail(&s, "land.pr");
+        assert_eq!(pr["commits"], 1, "{pr}");
+        assert_eq!(pr["from"], squashed, "{pr}");
+        assert_eq!(gh.head_of(7), branch);
+        let again = propose_branch(&s, &proj, branch, TEST_NOW).unwrap();
+        assert_eq!((again.number, again.opened), (7, false));
+        assert!(again.line.contains("is delivered at"), "{}", again.line);
     }
 
     /// A task delivered while #7 is open: `pulse/task-<id>` is built on #7's
