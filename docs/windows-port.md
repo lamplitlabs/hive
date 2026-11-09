@@ -33,8 +33,8 @@ outside a worker's remit. Two methods were used instead:
    [Proposed CI](#proposed-ci-owner-owned)).
 
 ```sh
-sh scripts/check-not-unix.sh --leaves --all-targets   # the crates done so far
-sh scripts/check-not-unix.sh pulse-evolve pulse-harness  # the next layer
+sh scripts/check-not-unix.sh --leaves --all-targets   # the leaves
+sh scripts/check-not-unix.sh --all-targets pulse-evolve pulse-harness  # the middle layer
 ```
 
 Third-party dependencies are not expected to block the port. `rusqlite`
@@ -49,7 +49,7 @@ not, and is only a dependency of pulse-cli, pulse-hub and pulse-runner.
 | Layer | Crates | State |
 | --- | --- | --- |
 | Leaves | pulse-gitenv, pulse-cred, pulse-store, pulse-bus, pulse-cli, pulse-cred-setup, pulse-cred-command, pulse-provider, pulse-provider-{anthropic,copilot,gemini,openai,fake}, pulse-board, pulse-tasks, pulse-goals, pulse-goals-command, pulse-tally, pulse-records, pulse-codedelivery, pulse-mcp, pulse-voice, pulse-hooks, pulse-testutil | **Compile off unix**, libs and tests (`check-not-unix.sh --leaves --all-targets`, no warnings). Several only *compile*: behaviour still to port is listed below. |
-| Middle | pulse-evolve, pulse-harness | 11 errors in the emulated check (below). |
+| Middle | pulse-evolve, pulse-harness | **Compile off unix**, libs and tests (`check-not-unix.sh --all-targets pulse-evolve pulse-harness`). Off-unix warnings remain for parameters only unix code reads (`private.rs` modes, test helpers). |
 | Top | pulse-hub, pulse-runner, pulse-inspect, pulse-ask, pulse (the binary) | Not reached yet: they depend on the middle layer. pulse-runner holds most of the work. |
 
 ## Done in the first step
@@ -79,6 +79,35 @@ These changes make the leaves compile off unix. Unix code paths are unchanged.
   test drives `/bin/sh` and is `cfg(unix)`. The mcp test helpers and
   pulse-cred / pulse-provider-openai mode assertions only `chmod` on unix.
 
+## Done in the second step
+
+These changes make pulse-evolve and pulse-harness compile off unix. Unix code
+paths are unchanged.
+
+- **pulse-evolve `process.rs`**: the measured command's process group goes
+  through pulse-cli `procs` (`own_process_group`, and a new
+  `procs::kill_group` for the immediate SIGKILL of what the command left)
+  instead of its own `libc::killpg`; it follows `procs` to Job Objects.
+  `SignalStop` keeps the signal-hook iterator on unix; off unix a
+  `signal_hook::flag` and a watcher thread turn the first Ctrl+C into the
+  cancel. `setpriority` (nice) stays unix-only for now.
+- **pulse-evolve `readonly.rs`, `clones.rs`**: `readonly::mode` and
+  `readonly::set_mode` wrap the permission bits. Off unix they map to the
+  read-only attribute (`Permissions::set_readonly`): a writable entry reads
+  as 0o755/0o644, any mode without a write bit sets read-only. Freezing a
+  scored tree and making a managed clone removable need nothing more.
+  dev/ino link identity already had a stub; off unix an escaping hardlink is
+  not detected yet (volume serial + file index later).
+- **pulse-harness `chat.rs`**: `Interrupts` keeps the iterator on unix; off
+  unix a SIGINT flag and a watcher thread deliver ^C the same way (cancel the
+  running turn, else reach the keyboard).
+- **Tests**: those that create symlinks (fleet, scorer, held-out ledger and
+  request links, the venv in `drop_ignored`, the private-dir alias), count
+  hardlinks, or probe pids with `libc::kill(pid, 0)` (kept conversation
+  processes) are `cfg(unix)`; pulse-harness `localenv`'s test module is
+  `cfg(all(test, unix))` like pulse-cli `procs`, because it drives `sh` and
+  real process groups. Mode assertions in the harness tests only run on unix.
+
 ## Every unix-only site, by crate
 
 Counts are grep hits (production / test). "Gated" means the site already sits
@@ -106,8 +135,8 @@ behind `cfg(unix)` with a non-unix fallback that compiles.
 
 | Crate | Sites | What is unix-only | Windows replacement |
 | --- | --- | --- | --- |
-| pulse-evolve | 36 / 17 | `process.rs`: `process_group`, `libc::killpg`, `setpriority` (nice), SIGKILL, signal-hook iterator, `MetadataExt`; `readonly.rs`: dev/ino identity and 0o444/0o555 read-only trees; `clones.rs`, `fleet.rs`, `genome.rs`, `commands.rs`, `heldout_auto.rs`, `measure.rs`, `usage.rs`: `symlink` and modes; `private.rs`: 0600/0700 | Process code goes through pulse-cli `procs` (Job Objects) instead of its own `killpg`. Nice → `SetPriorityClass(BELOW_NORMAL_PRIORITY_CLASS)`. Identity: `GetFileInformationByHandle` (volume serial + file index) in place of dev/ino. Read-only: `Permissions::set_readonly` (file attribute) in place of mode bits. Symlinks: `std::os::windows::fs::symlink_dir/symlink_file`, which need Developer Mode or admin; fall back to directory junctions or copies. Emulated errors today: `clones.rs` (3), `process.rs` (2), `readonly.rs` (4). |
-| pulse-harness | 10 / 16 | `chat.rs`: signal-hook iterator; `conversation.rs`, `localenv.rs`: `libc::kill(pid, 0)` liveness and `ExitStatusExt`; `harness.rs`: tool scripts chmod; `buildenv.rs`: symlink; the `bash` tool runs `/bin/sh -c` | Liveness via `OpenProcess` + `GetExitCodeProcess == STILL_ACTIVE`. Ctrl handler as in pulse-tasks. **The `bash` tool is the big product question**: the model writes POSIX shell. Options are Git for Windows' `sh.exe` (closest to today) or a PowerShell tool with its own name and description. That is a decision for the owner, not a mechanical port. Emulated errors today: `chat.rs` (2). |
+| pulse-evolve | 36 / 17 | `process.rs`: `process_group`, `libc::killpg`, `setpriority` (nice), SIGKILL, signal-hook iterator, `MetadataExt`; `readonly.rs`: dev/ino identity and 0o444/0o555 read-only trees; `clones.rs`, `fleet.rs`, `genome.rs`, `commands.rs`, `heldout_auto.rs`, `measure.rs`, `usage.rs`: `symlink` and modes; `private.rs`: 0600/0700 | Process code goes through pulse-cli `procs` (Job Objects) instead of its own `killpg`. Nice → `SetPriorityClass(BELOW_NORMAL_PRIORITY_CLASS)`. Identity: `GetFileInformationByHandle` (volume serial + file index) in place of dev/ino. Read-only: `Permissions::set_readonly` (file attribute) in place of mode bits. Symlinks: `std::os::windows::fs::symlink_dir/symlink_file`, which need Developer Mode or admin; fall back to directory junctions or copies. Compiles off unix since the second step. |
+| pulse-harness | 10 / 16 | `chat.rs`: signal-hook iterator; `conversation.rs`, `localenv.rs`: `libc::kill(pid, 0)` liveness and `ExitStatusExt`; `harness.rs`: tool scripts chmod; `buildenv.rs`: symlink; the `bash` tool runs `/bin/sh -c` | Liveness via `OpenProcess` + `GetExitCodeProcess == STILL_ACTIVE`. Ctrl handler as in pulse-tasks. **The `bash` tool is the big product question**: the model writes POSIX shell. Options are Git for Windows' `sh.exe` (closest to today) or a PowerShell tool with its own name and description. That is a decision for the owner, not a mechanical port. Compiles off unix since the second step. |
 
 ### Top (after the middle)
 
@@ -156,10 +185,11 @@ keep the done layer from regressing. That is the real-target counterpart of
 
 ## Next steps
 
-1. pulse-evolve: route `process.rs` through pulse-cli `procs`, then gate
-   `readonly.rs`/`clones.rs` (11 emulated errors with pulse-harness).
-2. pulse-harness: liveness and Ctrl handler. The `bash` tool on Windows
-   needs an owner decision (Git `sh.exe` vs PowerShell).
+1. ~~pulse-evolve: route `process.rs` through pulse-cli `procs`, then gate
+   `readonly.rs`/`clones.rs`.~~ Done in the second step.
+2. pulse-harness: ~~compile (Ctrl handler)~~ done in the second step;
+   liveness (`OpenProcess`) still to port. The `bash` tool on Windows needs
+   an owner decision (Git `sh.exe` vs PowerShell).
 3. pulse-cli `procs` on Windows: Job Objects. This needs `windows-sys`, which
    is already in `Cargo.lock` transitively. Adding it as a direct dependency
    is Tier 2.
