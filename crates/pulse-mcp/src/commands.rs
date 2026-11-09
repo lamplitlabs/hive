@@ -1160,10 +1160,13 @@ done
 "#;
 
     pub(crate) fn write_script(dir: &Path, name: &str, text: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         path
     }
 
@@ -1285,10 +1288,13 @@ mod tests {
     }
 
     fn secret_file(dir: &std::path::Path, name: &str, value: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let p = dir.join(name);
         std::fs::write(&p, format!("{value}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         format!("file://{}", p.display())
     }
 

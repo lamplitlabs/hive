@@ -695,6 +695,12 @@ impl Handler {
             if !ok {
                 return;
             }
+            let Some(refs) = crate::references::parse(w, &payload) else {
+                return;
+            };
+            let Some(brief) = crate::references::with_context(w, Some(store), &refs, &brief) else {
+                return;
+            };
             let created = match pulse_tasks::new(
                 store,
                 &project,

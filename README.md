@@ -192,6 +192,7 @@ and lessons as records in the store, where the console searches them and
 | [Machines](docs/machines.md) | what runs where, pairing hands, heartbeats and presence, moving and removing projects and executors |
 | [Recovery and hygiene](docs/recovery.md) | failed jobs and recovery, lessons and peer help, asking another project, sweep and retention, self-heal, what happens while you are quiet or away |
 | [Development](docs/development.md) | building and testing PULSE itself, the crate map, upgrading from older PULSE, sharing a copy |
+| [Windows port](docs/windows-port.md) | every unix-only site per crate with its Windows replacement, what already builds off unix, and the emulated check |
 
 `docs/design/` holds design notes for work an ADR still gates.
 

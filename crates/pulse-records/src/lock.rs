@@ -28,22 +28,16 @@ pub fn lock_writes(s: &pulse_store::Store) -> Result<WriteLock> {
     })
 }
 
-#[cfg(unix)]
+/// An exclusive advisory lock on `records.lock`: flock(2) on unix,
+/// LockFileEx on Windows (both through fs2), so record writes from two
+/// processes never interleave.
 fn lock_file(file: &File) -> Result<()> {
     fs2::FileExt::lock_exclusive(file)?;
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn lock_file(_file: &File) -> Result<()> {
-    anyhow::bail!("record writes require an OS advisory lock; this build supports macOS and Linux")
-}
-
 impl Drop for WriteLock {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            let _ = fs2::FileExt::unlock(&self.file);
-        }
+        let _ = fs2::FileExt::unlock(&self.file);
     }
 }

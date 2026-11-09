@@ -567,6 +567,7 @@ mod tests {
     use crate::parse;
     use std::collections::BTreeMap;
     use std::ops::{Deref, DerefMut};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
     use tempfile::{TempDir, tempdir};
@@ -829,6 +830,9 @@ mod tests {
         assert!(err.contains("macOS"));
     }
 
+    // File references are checked by unix mode (0600) and symlink; the
+    // Windows port needs an ACL counterpart before these run there.
+    #[cfg(unix)]
     #[test]
     fn resolve_file() {
         let _serial = crate::test_helpers::serial();
@@ -877,6 +881,7 @@ mod tests {
         assert!(err.contains("not an SSH private key"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_refused_inside_worker() {
         let _serial = crate::test_helpers::serial();
@@ -894,6 +899,7 @@ mod tests {
         assert!(r.resolve(reference).unwrap_err().is::<ErrWorker>());
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_secret_accepts_tokens_inside_a_run() {
         let _serial = crate::test_helpers::serial();
@@ -933,6 +939,7 @@ mod tests {
         assert!(err.contains("resolved to nothing"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn store_token() {
         let _serial = crate::test_helpers::serial();
