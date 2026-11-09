@@ -13,6 +13,7 @@ publish = false
 [workspace.dependencies]
 # internal crates
 pulse-gitenv = { path = "crates/pulse-gitenv" }
+pulse-hand-core = { path = "crates/pulse-hand-core" }
 pulse-cred = { path = "crates/pulse-cred" }
 pulse-provider = { path = "crates/pulse-provider" }
 pulse-store = { path = "crates/pulse-store" }

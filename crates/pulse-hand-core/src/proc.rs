@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 /// workdir or clone is deleted (`LocalExec::cleanup` and the hands `clean`
 /// verb do); it never touches the calling process, its parent, or anything
 /// outside `dir`, and refuses directories too broad to be a job directory.
-pub use pulse_cli::procs::{
+pub use crate::procs::{
     DEFAULT_KILL_GRACE, KilledProc, ProcInfo, ProcessGroup, describe_killed, kill_tree_under,
     kill_tree_under_with_grace, own_process_group, processes_under, sweepable_dir,
 };
@@ -95,7 +95,7 @@ impl Reaper {
     /// and again on every heartbeat tick meanwhile.
     fn await_exit<T>(
         &self,
-        cancel: &pulse_bus::CancellationToken,
+        cancel: &crate::ctx::CancellationToken,
         started: Instant,
         budget: Duration,
         observer: Option<&ProcessObserver>,
@@ -158,17 +158,17 @@ impl Reaper {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct Outcome {
-    pub(crate) timeout: bool,
-    pub(crate) exit_code: i32,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
+pub struct Outcome {
+    pub timeout: bool,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct ProcessObserver {
-    pub(crate) beat: Option<Arc<dyn Fn() + Send + Sync>>,
-    pub(crate) stop: Option<Arc<dyn Fn() + Send + Sync>>,
+pub struct ProcessObserver {
+    pub beat: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub stop: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 impl std::fmt::Debug for ProcessObserver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -180,15 +180,15 @@ impl std::fmt::Debug for ProcessObserver {
 /// the command and its status never came), the output so far, and whether
 /// the timeout ended it.
 #[derive(Debug)]
-pub(crate) struct BoundedOutput {
-    pub(crate) status: Option<std::process::ExitStatus>,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) timed_out: bool,
+pub struct BoundedOutput {
+    pub status: Option<std::process::ExitStatus>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
 }
 
 /// How long a command ended at its timeout gets between SIGTERM and SIGKILL.
-pub(crate) const TIMEOUT_KILL_GRACE: Duration = Duration::from_secs(2);
+pub const TIMEOUT_KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// The process groups [`output_within`] has running: the group, the thread
 /// that waits on it, and what it runs. A shutdown that gives up on a thread
@@ -222,7 +222,7 @@ impl Drop for Tracked {
 /// Ends every process group `thread` is waiting on in [`output_within`]
 /// (SIGTERM, `grace`, SIGKILL) and names each one ("git ... (pid N)"). The
 /// waiting thread then sees its command exit and carries on.
-pub(crate) fn end_groups_of(thread: std::thread::ThreadId, grace: Duration) -> Vec<String> {
+pub fn end_groups_of(thread: std::thread::ThreadId, grace: Duration) -> Vec<String> {
     let groups: Vec<(i32, String)> = BOUNDED_GROUPS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -245,10 +245,7 @@ pub(crate) fn end_groups_of(thread: std::thread::ThreadId, grace: Duration) -> V
 /// never blocks past the budget it asked for. A child the command left
 /// behind that still holds the pipes delays the output by at most
 /// `OUTPUT_DRAIN`. stdin is closed, as with `output`.
-pub(crate) fn output_within(
-    cmd: &mut Command,
-    timeout: Duration,
-) -> std::io::Result<BoundedOutput> {
+pub fn output_within(cmd: &mut Command, timeout: Duration) -> std::io::Result<BoundedOutput> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -267,7 +264,7 @@ pub(crate) fn output_within(
     let (err_buf, err_done) = drain(child.stderr.take().expect("stderr piped"));
     let started = Instant::now();
     let reaper = Reaper::start(child);
-    let never = pulse_bus::CancellationToken::new();
+    let never = crate::ctx::CancellationToken::new();
     let (status, timed_out) = match reaper.await_exit::<()>(&never, started, timeout, None, None) {
         Waited::Exited(Ok(status)) => (Some(status), false),
         Waited::Exited(Err(e)) => return Err(e),
@@ -286,8 +283,8 @@ pub(crate) fn output_within(
 }
 
 /// Runs argv in its own child process group so cancellation can kill the whole tree (`killpg`).
-pub(crate) fn run_group(
-    cancel: &pulse_bus::CancellationToken,
+pub fn run_group(
+    cancel: &crate::ctx::CancellationToken,
     argv: &[String],
     dir: &str,
     env: &[String],
@@ -298,8 +295,8 @@ pub(crate) fn run_group(
 }
 
 /// Observed process execution shares the same process-group cancellation path and heartbeat callbacks.
-pub(crate) fn run_group_observed(
-    cancel: &pulse_bus::CancellationToken,
+pub fn run_group_observed(
+    cancel: &crate::ctx::CancellationToken,
     argv: &[String],
     dir: &str,
     env: &[String],
@@ -315,7 +312,7 @@ pub(crate) fn run_group_observed(
     }
     // The program is resolved here against the child's PATH so the spawn
     // stays a posix_spawn (`resolve_program` says why).
-    let mut cmd = Command::new(pulse_cli::procs::resolve_program(&argv[0], env));
+    let mut cmd = Command::new(crate::procs::resolve_program(&argv[0], env));
     cmd.args(&argv[1..]);
     if !dir.is_empty() {
         cmd.current_dir(dir);
@@ -334,7 +331,7 @@ pub(crate) fn run_group_observed(
     // it spawns ends with it, at the nice level the daemon set for its jobs.
     own_process_group(&mut cmd);
     let mut child = cmd.spawn()?;
-    crate::daemon_load::nice_child(&child);
+    crate::machine::nice_child(&child);
     if let Some(mut sin) = child.stdin.take() {
         let _ = std::thread::spawn(move || {
             use std::io::Write;
@@ -347,9 +344,9 @@ pub(crate) fn run_group_observed(
     let started = Instant::now();
     let (beats, stop_ticks) = observer
         .map(|_| {
-            (crate::heartbeat::HEARTBEAT_TICKS
+            (crate::beat::HEARTBEAT_TICKS
                 .read()
-                .expect("heartbeat ticks lock"))(pulse_board::HEARTBEAT_INTERVAL)
+                .expect("heartbeat ticks lock"))(crate::beat::HEARTBEAT_INTERVAL)
         })
         .unzip();
     let reaper = Reaper::start(child);
@@ -392,8 +389,8 @@ fn exit_code(status: std::process::ExitStatus) -> Option<i32> {
     })
 }
 
-pub(crate) fn wait_command(
-    cancel: &pulse_bus::CancellationToken,
+pub fn wait_command(
+    cancel: &crate::ctx::CancellationToken,
     cmd: &mut Command,
     budget: Duration,
     grace: Duration,
@@ -408,12 +405,12 @@ pub(crate) fn wait_command(
         Ok(c) => c,
         Err(e) => return (Some(e.into()), false, false),
     };
-    crate::daemon_load::nice_child(&child);
+    crate::machine::nice_child(&child);
     let (beats, stop_ticks) = observer
         .map(|_| {
-            (crate::heartbeat::HEARTBEAT_TICKS
+            (crate::beat::HEARTBEAT_TICKS
                 .read()
-                .expect("heartbeat ticks lock"))(pulse_board::HEARTBEAT_INTERVAL)
+                .expect("heartbeat ticks lock"))(crate::beat::HEARTBEAT_INTERVAL)
         })
         .unzip();
     let reaper = Reaper::start(child);
@@ -434,16 +431,16 @@ pub(crate) fn wait_command(
         }
     }
 }
-pub(crate) fn kill_group(pid: i32) {
+pub fn kill_group(pid: i32) {
     kill_group_after(pid, Duration::from_secs(5));
 }
 /// SIGTERM the group, wait up to `grace` for it to empty, then SIGKILL it.
-pub(crate) fn kill_group_after(pid: i32, grace: Duration) {
+pub fn kill_group_after(pid: i32, grace: Duration) {
     ProcessGroup::with_grace(pid, grace).terminate();
 }
 /// Kills what still works under a job directory and writes one log line per
 /// process; for the moment right before the directory is removed.
-pub(crate) fn sweep_job_dir(dir: &str, log: &mut dyn FnMut(String)) -> Vec<KilledProc> {
+pub fn sweep_job_dir(dir: &str, log: &mut dyn FnMut(String)) -> Vec<KilledProc> {
     let killed = kill_tree_under(Path::new(dir));
     if !killed.is_empty() {
         log(format!(
@@ -454,9 +451,9 @@ pub(crate) fn sweep_job_dir(dir: &str, log: &mut dyn FnMut(String)) -> Vec<Kille
     }
     killed
 }
-pub(crate) static KILL_AFTER: LazyLock<RwLock<Duration>> =
+pub static KILL_AFTER: LazyLock<RwLock<Duration>> =
     LazyLock::new(|| RwLock::new(Duration::from_secs(5)));
-pub(crate) fn finish(err: Option<i32>, stdout: &str, stderr: &str, timed_out: bool) -> Outcome {
+pub fn finish(err: Option<i32>, stdout: &str, stderr: &str, timed_out: bool) -> Outcome {
     Outcome {
         timeout: timed_out,
         exit_code: if timed_out { -1 } else { err.unwrap_or(0) },
@@ -464,7 +461,7 @@ pub(crate) fn finish(err: Option<i32>, stdout: &str, stderr: &str, timed_out: bo
         stderr: stderr.into(),
     }
 }
-pub(crate) fn env_with(base: &[String], extra: &BTreeMap<String, String>) -> Vec<String> {
+pub fn env_with(base: &[String], extra: &BTreeMap<String, String>) -> Vec<String> {
     if extra.is_empty() {
         return base.to_vec();
     }
@@ -480,27 +477,63 @@ pub(crate) fn env_with(base: &[String], extra: &BTreeMap<String, String>) -> Vec
     }
     out
 }
-pub(crate) fn index_byte(s: &str, c: u8) -> i32 {
+pub fn index_byte(s: &str, c: u8) -> i32 {
     s.as_bytes()
         .iter()
         .position(|b| *b == c)
         .map(|i| i as i32)
         .unwrap_or(-1)
 }
-pub(crate) fn sorted_keys(m: &BTreeMap<String, String>) -> Vec<String> {
+pub fn sorted_keys(m: &BTreeMap<String, String>) -> Vec<String> {
     m.keys().cloned().collect()
 }
-pub(crate) fn sort_strings(a: &mut [String]) {
+pub fn sort_strings(a: &mut [String]) {
     a.sort();
 }
-pub(crate) fn environ() -> Vec<String> {
+pub fn environ() -> Vec<String> {
     let mut env = crate::util::strip_hook_git_env(
         &std::env::vars()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>(),
     );
-    crate::daemon_load::build_env(&mut env);
+    crate::machine::build_env(&mut env);
     env
+}
+
+/// The worker environment with `PULSE_CLI`'s directory first on `PATH`, so
+/// the `pulse` the brain handed is the one a worker finds.
+pub fn worker_env_with_cli_path(base: &[String], extra: &BTreeMap<String, String>) -> Vec<String> {
+    let Some(cli) = extra.get("PULSE_CLI").filter(|s| !s.is_empty()) else {
+        return env_with(base, extra);
+    };
+    let dir = std::path::Path::new(cli)
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let path = extra.get("PATH").cloned().unwrap_or_else(|| {
+        base.iter()
+            .find_map(|kv| kv.strip_prefix("PATH=").map(ToOwned::to_owned))
+            .unwrap_or_default()
+    });
+    if std::env::split_paths(&path).any(|p| p.display().to_string() == dir) {
+        return env_with(base, extra);
+    }
+    let mut merged = extra.clone();
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let old = extra.get("PATH").cloned().unwrap_or_else(|| {
+        base.iter()
+            .find_map(|kv| kv.strip_prefix("PATH=").map(ToOwned::to_owned))
+            .unwrap_or_default()
+    });
+    merged.insert(
+        "PATH".into(),
+        if old.is_empty() {
+            dir
+        } else {
+            format!("{dir}{sep}{old}")
+        },
+    );
+    env_with(base, &merged)
 }
 
 #[cfg(test)]
@@ -531,7 +564,7 @@ mod process_tree_tests {
     fn run_group_ends_the_background_children_of_a_finished_command() {
         let dir = tempfile::tempdir().unwrap();
         let out = run_group(
-            &pulse_bus::CancellationToken::new(),
+            &crate::ctx::CancellationToken::new(),
             &sh("sleep 300 & echo $! > bg.pid; echo done"),
             &dir.path().display().to_string(),
             &env(),
@@ -551,7 +584,7 @@ mod process_tree_tests {
         let dir = tempfile::tempdir().unwrap();
         let start = Instant::now();
         let out = run_group(
-            &pulse_bus::CancellationToken::new(),
+            &crate::ctx::CancellationToken::new(),
             &sh("sleep 300 & echo held"),
             &dir.path().display().to_string(),
             &env(),
@@ -573,7 +606,7 @@ mod process_tree_tests {
         let dir = tempfile::tempdir().unwrap();
         let start = Instant::now();
         let out = run_group(
-            &pulse_bus::CancellationToken::new(),
+            &crate::ctx::CancellationToken::new(),
             &sh("sleep 300 & echo $! > bg.pid; sleep 300"),
             &dir.path().display().to_string(),
             &env(),
@@ -610,7 +643,7 @@ mod process_tree_tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let (err, timed_out, _) = wait_command(
-            &pulse_bus::CancellationToken::new(),
+            &crate::ctx::CancellationToken::new(),
             &mut cmd,
             Duration::from_secs(10),
             Duration::from_millis(500),

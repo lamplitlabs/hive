@@ -4,7 +4,9 @@ pub mod archive;
 pub mod chat;
 pub mod chat_ddl;
 pub mod clouds;
-pub mod ctx;
+/// Cancellation tokens and capability words live with the executor path
+/// (pulse-hand-core, ADR-070); the names stay for every caller.
+pub use pulse_hand_core::ctx;
 pub mod daily_cap;
 pub mod ddl;
 pub mod evolve_ddl;
@@ -18,7 +20,7 @@ pub mod hooks_ddl;
 pub mod kinds;
 pub mod mcp_ddl;
 pub mod mcp_servers;
-pub mod needs;
+pub use pulse_hand_core::needs;
 pub mod posts;
 pub mod projects;
 pub mod pyjson;
@@ -59,6 +61,8 @@ pub use task_source::{TASK_SOURCE_PREFIX, task_source_clause, task_source_id, ta
 pub use tasks_ddl::{COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASK_COLUMNS, TASKS_DDL};
 pub use variants::*;
 
+#[cfg(test)]
+mod needs_sql_tests;
 #[cfg(test)]
 pub(crate) mod test_helpers {
     pub(crate) fn serial() -> impl Drop {

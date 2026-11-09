@@ -1,13 +1,13 @@
 #![allow(unused_variables, dead_code, unused_imports)]
 use crate::util::Row;
 use anyhow::{Result, anyhow};
+pub(crate) use pulse_hand_core::provenance::{PROVENANCE_TRAILERS, provenance_hook};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-pub(crate) static PROVENANCE_TRAILERS: &[&str] = &["Pulse-Agent", "Pulse-Job", "Pulse-Executor"];
 pub(crate) static OWNER_PATHS: &[&str] = pulse_tally::OWNER_PATHS;
 pub(crate) fn agent_email(agent: &str) -> String {
     format!("{agent}@pulse.local")
@@ -103,23 +103,6 @@ pub(crate) fn reuse_run_key(path: &str) -> Result<String> {
 pub(crate) fn remove_run_key(path: &str) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(format!("{path}.pub"));
-}
-pub(crate) fn provenance_hook(agent: &str, job_id: &str, executor: &str) -> String {
-    let values = [agent, job_id, executor];
-    let parts = PROVENANCE_TRAILERS
-        .iter()
-        .zip(values)
-        .map(|(k, v)| {
-            format!(
-                "--trailer {}",
-                crate::util::shell_quote(&format!("{k}: {v}"))
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "#!/bin/sh\n# pulse: provenance trailers for every commit of this run (ADR-022). Local to this clone, never committed.\nexec git interpret-trailers --in-place --if-exists doNothing {parts} \"$1\"\n"
-    )
 }
 pub(crate) const PRE_COMMIT_HOOK_UNSET: &str = "unset GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE";
 /// The hook runs `check_cmd` (the project's check inside the verify lock,

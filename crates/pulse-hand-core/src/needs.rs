@@ -146,10 +146,6 @@ pub fn this_arch() -> &'static str {
 mod tests {
     use super::*;
 
-    fn caps(words: &[&str]) -> BTreeSet<String> {
-        words.iter().map(|w| w.to_string()).collect()
-    }
-
     #[test]
     fn words_are_canonical_and_bad_ones_are_named() {
         assert_eq!(
@@ -174,34 +170,6 @@ mod tests {
         assert!(met("linux", &hand));
         assert!(!met("docker", &hand));
         assert_eq!(missing("macos,xcode", &hand), ["macos", "xcode"]);
-    }
-
-    #[test]
-    fn the_sql_condition_walks_the_stored_list() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE j (id TEXT, needs TEXT NOT NULL DEFAULT '');
-             INSERT INTO j VALUES ('any', ''), ('mac', 'macos,xcode'), ('lin', 'linux'), ('dock', 'docker');",
-        )
-        .unwrap();
-        let fits = |caps: &BTreeSet<String>| -> Vec<String> {
-            let (cond, vals) = sql_fit("j.needs", caps);
-            let mut st = conn
-                .prepare(&format!("SELECT id FROM j WHERE {cond} ORDER BY id"))
-                .unwrap();
-            let refs: Vec<&dyn rusqlite::ToSql> =
-                vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            st.query_map(refs.as_slice(), |r| r.get::<_, String>(0))
-                .unwrap()
-                .map(Result::unwrap)
-                .collect()
-        };
-        assert_eq!(fits(&caps(&["macos", "arm64", "xcode"])), ["any", "mac"]);
-        assert_eq!(
-            fits(&caps(&["linux", "amd64", "docker"])),
-            ["any", "dock", "lin"]
-        );
-        assert_eq!(fits(&caps(&[])), ["any"]);
     }
 
     #[test]

@@ -9,6 +9,7 @@ publish.workspace = true
 description = "PULSE: command registry, context, errors, JSON output, help, tables"
 
 [dependencies]
+pulse-hand-core.workspace = true
 pulse-store.workspace = true
 anyhow.workspace = true
 serde.workspace = true

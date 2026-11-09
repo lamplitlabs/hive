@@ -1662,6 +1662,7 @@ dependencies = [
  "pulse-cli",
  "pulse-gitenv",
  "pulse-goals",
+ "pulse-hand-core",
  "pulse-store",
  "pulse-testutil",
  "rand 0.10.3",
@@ -1696,6 +1697,7 @@ dependencies = [
  "anyhow",
  "nix",
  "once_cell",
+ "pulse-hand-core",
  "pulse-store",
  "pulse-testutil",
  "serde",
@@ -1833,6 +1835,35 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "pulse-hand"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pulse-hand-core",
+ "tempfile",
+]
+
+[[package]]
+name = "pulse-hand-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "crossbeam-channel",
+ "libc",
+ "nix",
+ "parking_lot",
+ "pulse-gitenv",
+ "pulse-testutil",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "which",
 ]
 
 [[package]]
@@ -2127,6 +2158,7 @@ dependencies = [
  "pulse-evolve",
  "pulse-gitenv",
  "pulse-goals",
+ "pulse-hand-core",
  "pulse-harness",
  "pulse-hooks",
  "pulse-provider",
@@ -2164,6 +2196,7 @@ dependencies = [
  "parking_lot",
  "pulse-cred",
  "pulse-gitenv",
+ "pulse-hand-core",
  "pulse-testutil",
  "regex",
  "rusqlite",

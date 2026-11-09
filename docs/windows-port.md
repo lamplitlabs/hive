@@ -56,7 +56,7 @@ not, and is only a dependency of pulse-cli, pulse-hub and pulse-runner.
 
 These changes make the leaves compile off unix. Unix code paths are unchanged.
 
-- **pulse-cli `procs.rs`**: process groups and signals moved behind a
+- **pulse-cli `procs.rs`** (now `crates/pulse-hand-core/src/procs.rs`, re-exported as `pulse_cli::procs`): process groups and signals moved behind a
   private `sys` module. On unix it is the same `killpg`/`kill` through nix,
   `Command::process_group(0)` and `getppid`. Off unix it is a stub: nothing
   is grouped, nothing reads as alive, signals go nowhere. Callers then fall

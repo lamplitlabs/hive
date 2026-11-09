@@ -114,6 +114,8 @@ crates/pulse-codedelivery      code delivery signals for the tally
 crates/pulse-bus               in-process event bus, redaction, tail/bridge for other processes
 crates/pulse-hooks             store hooks (scripts, webhooks) and harness hooks (copilot, claude)
 crates/pulse-gitenv            git environment scrubbing for child git commands
+crates/pulse-hand-core         the executor path the brain and the hand share (ADR-070): the pulse-hands verbs, process groups and budgets, git helpers, worktree tidy, machine nice/build jobs/hardware, heartbeat clock; no brain code
+crates/pulse-hand              the `pulse-hand` binary a machine installs: pulse-hand-core alone (scripts/check-hand-deps.sh keeps the brain out)
 crates/pulse-provider          the model-provider contract (chat, models, status, device/token login) and its registry
 crates/pulse-provider-copilot  GitHub Copilot (device login); pulse-provider-openai every OpenAI-compatible vendor as one Vendor entry each: OpenAI, Azure OpenAI (key or Microsoft device login), OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, GitHub Models (token or GitHub device login), Ollama, LM Studio, vLLM; pulse-provider-anthropic Anthropic Claude (Messages API); pulse-provider-gemini Google Gemini (generateContent); pulse-provider-fake the scripted test provider
 crates/pulse-harness           the built-in agent harness: the bash-tool loop, limits, deny rules, trajectories, sessions and the `pulse harness` verbs

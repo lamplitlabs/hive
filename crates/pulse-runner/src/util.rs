@@ -17,6 +17,14 @@ pub(crate) const ISO_LAYOUT: &str = "%Y-%m-%dT%H:%M:%SZ";
 pub(crate) const HUMAN_AGENT: &str = pulse_store::HUMAN_AGENT;
 pub(crate) const COMMONS_SLUG: &str = pulse_store::COMMONS_SLUG;
 
+// The git, shell and text helpers live with the executor path
+// (pulse-hand-core, ADR-070) so the hand runs the very same git.
+pub(crate) use pulse_hand_core::util::{
+    GIT_FORCED_CONFIG, GitResult, file_exists, git, git_argv, git_branch, git_check, git_env,
+    git_timeout, git_timeout_env, plural, shell_join, shell_quote, split_shell, strip_hook_git_env,
+    trunc,
+};
+
 pub(crate) fn contains(list: &[String], s: &str) -> bool {
     list.iter().any(|x| x == s)
 }
@@ -99,23 +107,6 @@ pub(crate) fn sha256_text(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
 }
 
-pub(crate) fn trunc(text: &str, n: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() > n && n > 0 {
-        chars[..n - 1].iter().collect::<String>() + "~"
-    } else {
-        text.to_string()
-    }
-}
-
-pub(crate) fn plural(n: i32, word: &str) -> String {
-    if n == 1 {
-        word.into()
-    } else {
-        format!("{word}s")
-    }
-}
-
 pub(crate) fn is_inside(path: &str, root: &str) -> bool {
     let p = std::fs::canonicalize(path).or_else(|_| std::env::current_dir().map(|d| d.join(path)));
     let r = std::fs::canonicalize(root).or_else(|_| std::env::current_dir().map(|d| d.join(root)));
@@ -128,136 +119,6 @@ pub(crate) fn is_inside(path: &str, root: &str) -> bool {
 pub(crate) fn new_id(prefix: &str, now: &str) -> String {
     let b: [u8; 3] = rand::random();
     format!("{prefix}-{}-{}", stamp_of(now), hex::encode(b))
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct GitResult {
-    pub(crate) code: i32,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    #[serde(skip)]
-    pub(crate) err: Option<String>,
-}
-impl GitResult {
-    pub(crate) fn ok(&self) -> bool {
-        self.err.is_none() && self.code == 0
-    }
-}
-
-pub(crate) fn git_timeout(repo: &str, timeout: Duration, args: &[&str]) -> GitResult {
-    git_timeout_env(repo, timeout, &[], args)
-}
-
-/// Settings every git the runner spawns through [`git_timeout_env`] runs
-/// with, as `-c` pairs ahead of `-C` and the subcommand. `core.fsmonitor`
-/// is off so an owner's repo-local `core.fsmonitor = true` cannot stall
-/// PULSE on a filesystem monitor daemon that never answers its cookie
-/// (refresh_fsmonitor -> fsmonitor_ipc__send_query hung a landing's
-/// `merge --ff-only` for three hours). Command-line `-c`, not
-/// GIT_CONFIG_COUNT: the harness lockdown already exports
-/// GIT_CONFIG_COUNT/KEY_n/VALUE_n for the signing settings, and a second
-/// writer of that list would overwrite them. A caller's own `-c` comes
-/// later on the line and still wins.
-pub(crate) const GIT_FORCED_CONFIG: &[&str] = &["-c", "core.fsmonitor=false"];
-
-/// The argv (without the program) [`git_timeout_env`] runs.
-pub(crate) fn git_argv(repo: &str, args: &[&str]) -> Vec<String> {
-    let mut full: Vec<String> = GIT_FORCED_CONFIG.iter().map(|s| s.to_string()).collect();
-    if !repo.is_empty() {
-        full.extend(["-C".into(), repo.into()]);
-    }
-    full.extend(args.iter().map(|s| s.to_string()));
-    full
-}
-
-/// Runs git with the hermetic environment plus `env`, bounded by `timeout`
-/// (zero: unbounded). Past the timeout git and everything it started (hooks,
-/// helpers, an fsmonitor client) is killed by process group and the result
-/// carries `err` naming the timeout, so a caller's budget is a real one.
-pub(crate) fn git_timeout_env(
-    repo: &str,
-    timeout: Duration,
-    env: &[String],
-    args: &[&str],
-) -> GitResult {
-    let full = git_argv(repo, args);
-    let mut cmd = Command::new(pulse_gitenv::git_program());
-    cmd.args(&full);
-    // Strip the hook-exported variables that redirect this command at the
-    // repository of a concurrent pulse job's pre-commit hook (GIT_DIR,
-    // GIT_INDEX_FILE, GIT_QUARANTINE_PATH, ...). `.envs` alone does not remove
-    // an inherited variable, so without this the recipe read in
-    // pulse-inspect::recipes flaked whenever another job ran git. We remove
-    // only the redirecting vars rather than clearing the whole environment so
-    // that intentional ambient credentials (e.g. GIT_SSH_COMMAND) still apply.
-    for kv in pulse_gitenv::HOOK_VARS {
-        if let Some(var) = kv.strip_suffix('=') {
-            cmd.env_remove(var);
-        }
-    }
-    cmd.envs(git_env(env).into_iter().filter_map(|kv| {
-        kv.split_once('=')
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-    }));
-    match crate::proc::output_within(&mut cmd, timeout) {
-        Ok(o) if o.timed_out => GitResult {
-            code: o.status.and_then(|st| st.code()).unwrap_or(-1),
-            stdout: o.stdout,
-            stderr: o.stderr,
-            err: Some(format!(
-                "git {} timed out after {} in {}; killed",
-                trunc(&args.join(" "), 120),
-                pulse_cli::format_duration(timeout),
-                if repo.is_empty() { "." } else { repo }
-            )),
-        },
-        Ok(o) => GitResult {
-            code: o.status.and_then(|st| st.code()).unwrap_or(-1),
-            stdout: o.stdout,
-            stderr: o.stderr,
-            err: None,
-        },
-        Err(e) => GitResult {
-            code: -1,
-            err: Some(e.to_string()),
-            ..GitResult::default()
-        },
-    }
-}
-
-pub(crate) fn git_env(extra: &[String]) -> Vec<String> {
-    let mut e = pulse_gitenv::env();
-    e.extend_from_slice(extra);
-    e
-}
-pub(crate) fn strip_hook_git_env(env: &[String]) -> Vec<String> {
-    pulse_gitenv::strip_hook(env.to_vec())
-}
-pub(crate) fn git(repo: &str, args: &[&str]) -> GitResult {
-    git_timeout(repo, Duration::from_secs(60), args)
-}
-pub(crate) fn git_check(repo: &str, args: &[&str]) -> Result<GitResult> {
-    let r = git(repo, args);
-    if r.ok() {
-        Ok(r)
-    } else {
-        Err(anyhow!(
-            "git {} failed in {}: {}",
-            args.join(" "),
-            repo,
-            r.stderr.trim()
-        ))
-    }
-}
-pub(crate) fn git_branch(repo: &str) -> String {
-    git_timeout(
-        repo,
-        Duration::from_secs(10),
-        &["rev-parse", "--abbrev-ref", "HEAD"],
-    )
-    .stdout
-    .trim()
-    .to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -431,87 +292,11 @@ pub(crate) fn json_map(text: &str) -> BTreeMap<String, Value> {
 pub(crate) fn py_json<T: serde::Serialize>(v: T) -> String {
     pulse_store::py_json(v).unwrap_or_default()
 }
-pub(crate) fn file_exists(path: &str) -> bool {
-    Path::new(path).exists()
-}
 pub(crate) fn read_file(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 pub(crate) fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_default()
-}
-static SAFE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9@%+=:,./_-]+$").unwrap());
-pub(crate) fn shell_quote(s: &str) -> String {
-    if s.is_empty() {
-        "''".into()
-    } else if SAFE.is_match(s) {
-        s.into()
-    } else {
-        format!("'{}'", s.replace('\'', "'\"'\"'"))
-    }
-}
-pub(crate) fn shell_join(args: &[String]) -> String {
-    args.iter()
-        .map(|a| shell_quote(a))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-pub(crate) fn split_shell(s: &str) -> Vec<String> {
-    shlex_split(s)
-}
-fn shlex_split(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_word = false;
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i] as char;
-        match c {
-            '\'' => {
-                in_word = true;
-                i += 1;
-                while i < b.len() && b[i] as char != '\'' {
-                    cur.push(b[i] as char);
-                    i += 1;
-                }
-            }
-            '"' => {
-                in_word = true;
-                i += 1;
-                while i < b.len() && b[i] as char != '"' {
-                    if b[i] as char == '\\'
-                        && i + 1 < b.len()
-                        && "\"\\$`\n".contains(b[i + 1] as char)
-                    {
-                        i += 1;
-                    }
-                    cur.push(b[i] as char);
-                    i += 1;
-                }
-            }
-            '\\' if i + 1 < b.len() => {
-                in_word = true;
-                i += 1;
-                cur.push(b[i] as char)
-            }
-            ' ' | '\t' | '\n' => {
-                if in_word {
-                    out.push(std::mem::take(&mut cur));
-                    in_word = false;
-                }
-            }
-            _ => {
-                in_word = true;
-                cur.push(c)
-            }
-        }
-        i += 1;
-    }
-    if in_word {
-        out.push(cur)
-    }
-    out
 }
 pub(crate) fn setting_int(s: &pulse_store::Store, key: &str) -> i32 {
     s.setting_int(key) as i32

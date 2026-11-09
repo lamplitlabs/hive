@@ -46,6 +46,8 @@ pub(crate) fn test_main_setup() {
         // register() installs the command table, the compute providers and the task hooks
         // the tests rely on.
         crate::commands::register();
+        // The hands probe reports the fixed test machine, as Machine::detect does.
+        crate::daemon_load::install_test_hardware();
         // The pre-commit hook runs this suite from inside `git commit`, where git exports GIT_INDEX_FILE and
         // friends; tests that drive git in temp repositories must not inherit the committing repo's index.
         for (k, _) in std::env::vars().collect::<Vec<_>>() {

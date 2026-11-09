@@ -4,7 +4,9 @@ pub mod cli;
 pub mod flags;
 pub mod help;
 pub mod limits;
-pub mod procs;
+/// Process groups and the straggler sweep live with the executor path
+/// (pulse-hand-core, ADR-070); the name stays for every caller.
+pub use pulse_hand_core::procs;
 pub mod signed;
 pub mod table;
 pub mod update;
