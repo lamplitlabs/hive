@@ -37,6 +37,8 @@ export interface Groupable {
 }
 
 export const waitsOnYou = (r: Pick<Groupable, "kind" | "status">) => r.kind === "adr" && r.status === "Proposed";
+// The name decide-record.tsx and the inbox (inbox-state.ts) know it by.
+export const awaitsDecision = waitsOnYou;
 
 const when = (r: Groupable) => r.updated_at || r.date || "";
 export const byUpdated = <T extends Groupable>(a: T, b: T) => (when(a) < when(b) ? 1 : when(a) > when(b) ? -1 : 0);

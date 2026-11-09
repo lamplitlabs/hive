@@ -12,6 +12,7 @@ import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, 
 import { ProjectLink, When } from "@/components/pulse/who";
 import { tierWord } from "@/lib/words";
 import { writes, type RecordDecision, type RecordRow } from "@/lib/api";
+import { awaitsDecision } from "./records-state";
 import { invalidate } from "@/lib/use-api";
 import { sentence } from "@/lib/format";
 
@@ -52,7 +53,8 @@ const TEXT: Record<RecordDecision, { verb: string; title: string; doing: string;
 
 const CHANGES = (p: string) => p.startsWith("records") || p === "org" || p.startsWith("events");
 
-export const awaitsDecision = (r: RecordRow) => r.kind === "adr" && r.status === "Proposed";
+// Whether a record waits on the owner's decision; pure, in records-state.ts.
+export { awaitsDecision };
 
 function DecisionIcon({ action, className }: { action: RecordDecision; className?: string }) {
   if (action === "accept") return <CheckIcon className={className} />;
