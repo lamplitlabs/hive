@@ -157,9 +157,25 @@
       "value": ""
     },
     {
+      "choices": [
+        "auto",
+        "source",
+        "release"
+      ],
+      "default": "auto",
+      "description": "how this machine gets a newer PULSE. source: the daemon rebuilds pulse from the brain project's checkout after a landing (daemon.self_update); release: pulse update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise",
+      "kind": "choice",
+      "min": null,
+      "name": "update.channel",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "auto"
+    },
+    {
       "choices": null,
       "default": "",
-      "description": "where the daemon looks, at most once a day, for the latest PULSE release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, pulse version and the console say so with the release link. Nothing is downloaded or installed. Empty (the default): no check and no network",
+      "description": "where the daemon looks, at most once a day, for the latest PULSE release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, pulse version and the console say so with the release link. The check downloads and installs nothing; pulse update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network",
       "kind": "text",
       "min": null,
       "name": "update.latest_url",
