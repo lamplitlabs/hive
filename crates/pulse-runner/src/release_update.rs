@@ -448,6 +448,221 @@ pub(crate) fn channel(s: &pulse_store::Store) -> Channel {
     )
 }
 
+/// The `meta` row that holds what the console's "Update now" (TASK-093,
+/// POST /api/v1/update/apply) is doing or last did.
+pub const APPLY_KEY: &str = "update.apply";
+
+/// Set while this process installs a release for the console, so a second
+/// click is refused and a stored `installing` left by a hub that stopped
+/// mid-install reads as failed.
+static APPLYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the console's "Update now" is doing or last did: `state` is `idle`
+/// (never asked), `installing`, `installed` (the release is in place; the
+/// daemon and the hub restart on it once their runs in flight end),
+/// `current` (the release document named nothing newer) or `failed`
+/// (`error` says why; nothing was swapped in).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ApplyState {
+    pub state: String,
+    /// When it started (`installing`) or ended.
+    pub at: String,
+    pub actor: String,
+    /// The version that ran when the install started.
+    pub from: String,
+    /// The release being installed, or the one the document named.
+    pub latest: String,
+    pub error: String,
+}
+
+/// The console's apply state from the meta row; `idle` when there is none.
+/// A stored `installing` no thread of this process runs any more (the hub
+/// stopped mid-install) reads as `failed`.
+pub fn apply_state(s: &pulse_store::Store) -> ApplyState {
+    let mut st = match s.meta(APPLY_KEY) {
+        Ok((raw, true)) => serde_json::from_str::<ApplyState>(&raw).unwrap_or_default(),
+        _ => ApplyState::default(),
+    };
+    if st.state.is_empty() {
+        st.state = "idle".into();
+    }
+    if st.state == "installing" && !APPLYING.load(std::sync::atomic::Ordering::SeqCst) {
+        st.state = "failed".into();
+        st.error = "the console stopped while it was installing; pulse version says which build is in place. Try again.".into();
+    }
+    st
+}
+
+/// Where `update.channel` points on this machine (`auto` resolved).
+pub fn update_channel(s: &pulse_store::Store) -> Channel {
+    channel(s)
+}
+
+/// Why the console's "Update now" did not start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyRefusal {
+    /// `update.latest_url` is empty: PULSE does not know where releases are.
+    NoSource,
+    /// `update.channel` resolves to source: the daemon rebuilds from the
+    /// brain's checkout instead.
+    SourceChannel,
+    /// No release is built for this platform.
+    NoTarget,
+    /// An install is already running.
+    Busy,
+    /// The install thread could not start.
+    Spawn(String),
+}
+
+impl std::fmt::Display for ApplyRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyRefusal::NoSource => write!(
+                f,
+                "{LATEST_URL_SETTING} is empty, so PULSE does not know where its releases are"
+            ),
+            ApplyRefusal::SourceChannel => write!(
+                f,
+                "update.channel resolves to source here: the daemon rebuilds pulse from the brain project's checkout after each landing"
+            ),
+            ApplyRefusal::NoTarget => write!(
+                f,
+                "no release is built for {}-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            ),
+            ApplyRefusal::Busy => write!(f, "an update is already being installed"),
+            ApplyRefusal::Spawn(e) => write!(f, "could not start the install: {e}"),
+        }
+    }
+}
+
+/// The binary an apply replaces and the version it runs; tests name a
+/// scratch binary and a fixed version instead of this process's own.
+#[derive(Debug, Clone)]
+pub struct ApplyTarget {
+    pub binary: String,
+    pub running: String,
+}
+
+impl ApplyTarget {
+    pub fn this_process() -> Self {
+        Self {
+            binary: crate::service::pulse_binary(),
+            running: pulse_cli::version(),
+        }
+    }
+}
+
+/// The console's "Update now" (TASK-093): checks what `pulse update` checks
+/// (a release source, the release channel, a target), records `installing`
+/// in the `update.apply` meta row and runs [`install`] on a thread of its
+/// own - downloads take minutes - which records how it ended. The handle
+/// is for tests; the hub lets the thread run.
+pub fn start_apply(
+    s: &pulse_store::Store,
+    actor: &str,
+    target: ApplyTarget,
+) -> std::result::Result<std::thread::JoinHandle<ApplyState>, ApplyRefusal> {
+    use std::sync::atomic::Ordering;
+    let url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
+    if url.is_empty() {
+        return Err(ApplyRefusal::NoSource);
+    }
+    if channel(s) == Channel::Source {
+        return Err(ApplyRefusal::SourceChannel);
+    }
+    let triple = pulse_cli::update::running_target().ok_or(ApplyRefusal::NoTarget)?;
+    if APPLYING.swap(true, Ordering::SeqCst) {
+        return Err(ApplyRefusal::Busy);
+    }
+    let started = ApplyState {
+        state: "installing".into(),
+        at: s.now(),
+        actor: actor.to_string(),
+        from: target.running.clone(),
+        latest: pulse_cli::update::stored_state(s)
+            .map(|st| st.latest)
+            .unwrap_or_default(),
+        error: String::new(),
+    };
+    let _ = s.set_meta(
+        APPLY_KEY,
+        &serde_json::to_string(&started).unwrap_or_default(),
+    );
+    let env = UpdateEnv {
+        url,
+        running: target.running,
+        target: triple,
+        binary: target.binary,
+        actor: actor.to_string(),
+        fetch_json,
+        fetch_asset,
+    };
+    let store = s.clone();
+    let begun = started.clone();
+    let spawned = std::thread::Builder::new()
+        .name("pulse-update-apply".into())
+        .spawn(move || {
+            let st = finish_apply(&store, &env, begun);
+            APPLYING.store(false, Ordering::SeqCst);
+            st
+        });
+    spawned.map_err(|e| {
+        let failed = ApplyState {
+            state: "failed".into(),
+            at: s.now(),
+            error: format!("could not start the install: {e}"),
+            ..started
+        };
+        let _ = s.set_meta(
+            APPLY_KEY,
+            &serde_json::to_string(&failed).unwrap_or_default(),
+        );
+        APPLYING.store(false, Ordering::SeqCst);
+        ApplyRefusal::Spawn(e.to_string())
+    })
+}
+
+/// Runs the install and writes how it ended into the meta row (before the
+/// caller clears [`APPLYING`], so a reader never sees a stale `installing`).
+fn finish_apply(s: &pulse_store::Store, env: &UpdateEnv, started: ApplyState) -> ApplyState {
+    let result = install(s, env);
+    let mut st = ApplyState {
+        at: s.now(),
+        ..started
+    };
+    match result {
+        Ok(Outcome::Installed { latest, .. }) => {
+            st.state = "installed".into();
+            let _ = s.set_meta(pulse_cli::update::PROMPTED_KEY, &latest);
+            st.latest = latest;
+        }
+        Ok(Outcome::Current { latest }) => {
+            st.state = "current".into();
+            st.latest = latest;
+        }
+        Ok(Outcome::Available { latest, .. }) => {
+            st.state = "failed".into();
+            st.error = format!("{latest} was found but not installed");
+            st.latest = latest;
+        }
+        Err(e) => {
+            st.state = "failed".into();
+            st.error = format!("{e:#}");
+        }
+    }
+    let _ = s.set_meta(APPLY_KEY, &serde_json::to_string(&st).unwrap_or_default());
+    st
+}
+
+/// The lowercase hex SHA-256 of `bytes`, the digest SHA256SUMS lists (for
+/// callers building release fixtures without a hashing crate of their own).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
 /// The line every command prints on stderr once per release (TASK-090),
 /// from the stored state with no network: None when nothing newer is
 /// known, this machine follows the source channel, or the line for this
@@ -874,5 +1089,44 @@ mod tests {
             }
         );
         assert_eq!(*ASKED.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn apply_refuses_without_a_source_or_on_source_and_a_stale_install_reads_failed() {
+        let _serial = serial();
+        let s = new_store();
+        let target = ApplyTarget {
+            binary: "/nonexistent/pulse".into(),
+            running: "v0.1.0".into(),
+        };
+        assert_eq!(apply_state(&s).state, "idle");
+        assert_eq!(
+            start_apply(&s, "human", target.clone()).err(),
+            Some(ApplyRefusal::NoSource)
+        );
+        s.set_setting(
+            "human",
+            LATEST_URL_SETTING,
+            "https://releases.test/latest.json",
+        )
+        .unwrap();
+        s.set_setting("human", pulse_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        assert_eq!(
+            start_apply(&s, "human", target).err(),
+            Some(ApplyRefusal::SourceChannel)
+        );
+        assert_eq!(apply_state(&s).state, "idle");
+        // A hub that stopped mid-install left `installing` behind.
+        let left = ApplyState {
+            state: "installing".into(),
+            at: s.now(),
+            ..ApplyState::default()
+        };
+        s.set_meta(APPLY_KEY, &serde_json::to_string(&left).unwrap())
+            .unwrap();
+        let st = apply_state(&s);
+        assert_eq!(st.state, "failed");
+        assert!(st.error.contains("stopped"), "{st:?}");
     }
 }
