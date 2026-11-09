@@ -157,6 +157,7 @@ fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Resu
             c.out.as_mut(),
             &serde_json::json!({
                 "version": version,
+                "revision": pulse_cli::revision(),
                 "update": update,
             }),
         )?;

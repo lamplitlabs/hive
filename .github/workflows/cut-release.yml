@@ -1,0 +1,83 @@
+# Cut a release: bump the workspace version, commit, tag vX.Y.Z and push.
+# The tag push starts release.yml, which builds and publishes the binaries.
+#
+# Runs nightly and releases only when main moved since the last release tag;
+# run it by hand (workflow_dispatch) for a release now, choosing the bump.
+# A merged pull request labelled `release: minor` or `release: major` since
+# the last tag raises the bump for the nightly run.
+name: cut-release
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version component to bump"
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  cut:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Decide the version
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          last="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --merged HEAD --sort=-v:refname | head -1 || true)"
+          if [ -n "$last" ] && [ "$(git rev-parse "$last^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            echo "main has not moved since $last"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          bump="${{ inputs.bump }}"
+          if [ -z "$bump" ]; then
+            bump=patch
+            if [ -n "$last" ]; then
+              for sha in $(git log --merges --format=%H "$last..HEAD"); do
+                labels="$(gh pr list --state merged --search "$sha" --json labels -q '.[].labels[].name' 2>/dev/null || true)"
+                case "$labels" in *"release: major"*) bump=major ;; *"release: minor"*) [ "$bump" = major ] || bump=minor ;; esac
+              done
+            fi
+          fi
+          cur="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          base="${last#v}"; [ -n "$base" ] || base="$cur"
+          IFS=. read -r M m p <<< "$base"
+          case "$bump" in
+            major) M=$((M+1)); m=0; p=0 ;;
+            minor) m=$((m+1)); p=0 ;;
+            *) p=$((p+1)) ;;
+          esac
+          echo "version=$M.$m.$p" >> "$GITHUB_OUTPUT"
+          echo "bump $bump: $last -> v$M.$m.$p"
+      - name: Bump, commit, tag, push
+        if: steps.v.outputs.skip != '1'
+        run: |
+          set -eu
+          v="${{ steps.v.outputs.version }}"
+          sed -i -E "0,/^version = \".*\"/s//version = \"$v\"/" Cargo.toml
+          sed -i -E "0,/\"version\": \".*\"/s//\"version\": \"$v\"/" web/hub/package.json
+          cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace
+          git config user.name "pulse-release[bot]"
+          git config user.email "pulse-release[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock web/hub/package.json
+          git commit -m "release: v$v"
+          git tag -a "v$v" -m "PULSE v$v"
+          git push origin HEAD:main "v$v"
+      # A tag pushed with the workflow token starts no other workflow, so
+      # start the build explicitly.
+      - name: Start the build
+        if: steps.v.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --repo "${{ github.repository }}" -f "tag=v${{ steps.v.outputs.version }}"
