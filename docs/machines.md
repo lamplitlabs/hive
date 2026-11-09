@@ -102,6 +102,7 @@ same job within the minute.
 ```bash
 pulse settings set machine.labels gpu,android          # what this machine offers, beyond its OS and chip and what it finds
 pulse settings set machine.reserve on                  # this machine takes only the jobs that need something it offers
+pulse settings set executor.transport local-hand      # this machine's jobs go to its pulse-hand, which pushes their branch
 pulse executor add gpu-box --ssh pulse@gpu-box --workdir /srv/pulse --labels gpu
 pulse executor label gpu-box +cuda                     # add a word; -word removes one; a plain list replaces yours
 pulse executor reserve gpu-box                         # keep it for the jobs that need it; --off to release
@@ -378,9 +379,36 @@ its home) and `SSH_ORIGINAL_COMMAND` set, in place of `ssh`.
 `jobs::tests::remote_run_through_a_local_pulse_hand` leases one job that
 way and checks it finishes as a remote run through `pulse hands` does:
 the recipe's env reaches the worker, the run is `done` on executor `hands`,
-the job dir is cleaned and every verb went to the binary. The dial-out TLS
-channel a customer's hand will use, and the credential handed in the lease
-for pushing the branch, are the next steps of ADR-070; until then a remote
+the job dir is cleaned and every verb went to the binary.
+
+**Routing this machine's work through it.** `pulse settings set
+executor.transport local-hand` sends this machine's own jobs to the
+`pulse-hand` installed beside `pulse` (or the first on PATH) instead of a
+clone under the pulse home. The run keeps the `local` executor's name and
+slots; the hand makes its clone in `PULSE_HOME/hands`, runs the worker
+there, and the brain fetches the commits from that path. Jobs that work
+the store (lead, review, suggestion review) stay local, since a hand has
+a clone and no store. `executor.transport local` (the default) puts things
+back.
+
+**The push, with a leased credential.** Once the brain's identity check
+accepts the commits (ADR-022), it resolves `push.credential` itself, as
+for its own pushes (ADR-041 D4: never inside a run), and hands the key to
+the hand on the stdin of one `push JOB URL SHA BRANCH` verb. The hand
+writes it beside the clone with mode 0600, pushes the job's `pulse/`
+branch to the upstream with `ssh -i` that key (`--force-with-lease` on an
+absent branch: it never moves a branch the remote already holds), and
+removes the key whatever the push did. An unset `push.credential` pushes
+with what git on the hand already uses. The run log says `pushed … with
+the leased push credential`, a `hand.push` event records it, and a push
+that fails is left to the delivery pass, which pushes the same branch
+from the checkout. Hands that answer `push=1` in their probe take the
+verb. `jobs::tests::a_job_leased_to_a_local_pulse_hand_pushes_with_the_leased_credential`
+proves the path end to end.
+
+The dial-out TLS channel a customer's hand will use, and moving the lease
+path, the pairing protocol helpers and `LocalExec` themselves into
+`pulse-hand-core`, are the next steps of ADR-070; until then a remote
 machine keeps `pulse pair` and `pulse hands` behind sshd.
 
 ## Heartbeats and presence

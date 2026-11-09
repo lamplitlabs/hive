@@ -234,7 +234,11 @@ pub(crate) fn pulse_hand_binary() -> std::path::PathBuf {
         .expect("test binary under target/<profile>/deps")
         .to_path_buf();
     let hand = profile_dir.join(format!("pulse-hand{}", std::env::consts::EXE_SUFFIX));
-    if !hand.exists() {
+    // Built once per test process, never taken as found: a target dir shared
+    // between trees (the verify's) can hold a pulse-hand from another tree
+    // that lacks this one's verbs. A fresh binary makes it a no-op.
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    BUILT.call_once(|| {
         let target_dir = profile_dir
             .parent()
             .expect("target directory")
@@ -247,7 +251,7 @@ pub(crate) fn pulse_hand_binary() -> std::path::PathBuf {
             .status()
             .expect("cargo build -p pulse-hand");
         assert!(status.success(), "cargo build -p pulse-hand failed");
-    }
+    });
     assert!(hand.exists(), "no pulse-hand binary at {}", hand.display());
     hand
 }
