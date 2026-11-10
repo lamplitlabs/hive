@@ -143,7 +143,20 @@ starting with the product as its user sees it, weighted by what the board
 accepted, and keep to the product focuses while the day's operating-layer cap
 is reached. The console's Votes page, `pulse queue` (`not planned: <gate>`) and
 `pulse status` (`planner <slug>: N eligible, M plannable (...)`) show the same
-gate for the same card, so a ballot that "does nothing" always says why. A job
+gate for the same card, so a ballot that "does nothing" always says why. The
+console's **Self-improvement** tab adds the **funnel**: the project's
+`evolution` payload carries a `funnel` object - `posted`, `checked` (cards
+naming a `check:`), `needs_votes`, `eligible`, `plannable`, `held` (the gated
+cards grouped by a short gate label, biggest group first), `in_flight`,
+`blocked`, `carded`, `built`, `tried`, `rejected`, `expired`, `closed`, the
+two settings that shape it (`require_check`, `check_skips_quorum`) and
+`alerts` - and the tab draws the stages as a row of counts with the held
+groups under them. An alert names the stage where the funnel stopped: `held`
+(every agreed card is gated, nothing to plan), `votes` (cards wait for votes
+and none is agreed), `empty` (no suggestion posted yet), `settled` (every
+suggestion is built, tried, rejected or expired and nothing new waits) or
+`blocked` (an open suggestion job sits blocked); while a card is plannable or
+a job is in flight only `blocked` can show. A job
 that ran marks the suggestion `built` or `tried`; a `blocked` job holds only
 its own card. **Amendments** carry a `text_hash`; a vote counts only when it
 read the same text. Passed amendments are written into the project's
