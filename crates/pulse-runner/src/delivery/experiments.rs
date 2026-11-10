@@ -245,7 +245,7 @@ fn close_superseded(
 
 /// Deletes `head` on the upstream, leasing on `sha` (the head the pass
 /// judged: a push made since keeps the branch), and its tracking ref.
-fn delete_remote_branch(
+pub(super) fn delete_remote_branch(
     s: &pulse_store::Store,
     root: &str,
     up: &Upstream,
