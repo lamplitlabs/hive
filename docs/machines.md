@@ -340,7 +340,8 @@ of what decides which jobs exist (ADR-070). It answers the same
 `prepare` (the job's clone and branch), `key` and `hook` (the run's signing
 key and provenance trailers), `brief`, `run` (the worker, inside its budget,
 heartbeat and steps written as it goes), `result`, `count`/`dirty`/`changed`,
-`verify`, `tool`, `steps`, `clean`, and `git-upload-pack` so the brain
+`verify`, `tool`, `heartbeat` and `steps` (the run's presence snapshot and
+its harness steps by offset), `clean`, and `git-upload-pack` so the brain
 fetches the branch - one verb per call, the command line in
 `SSH_ORIGINAL_COMMAND` (`b64 …` or `git-upload-pack …`) and the payload on
 stdin, exactly as behind sshd.

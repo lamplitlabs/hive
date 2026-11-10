@@ -997,7 +997,14 @@ impl Hands {
                 need(1, "git-upload-pack PATH")?;
                 self.upload_pack(&rest[0])
             }
-            "heartbeat" | "steps" => Err(hands_die(format!("verb not allowed: {verb}"))),
+            "heartbeat" => {
+                need(2, "heartbeat JOB SESSION")?;
+                self.heartbeat(rest[0].clone(), rest[1].clone())
+            }
+            "steps" => {
+                need(3, "steps JOB SESSION OFFSET")?;
+                self.steps(rest[0].clone(), rest[1].clone(), rest[2].clone())
+            }
             _ => Err(hands_die(format!("verb not allowed: {verb}"))),
         }
     }
@@ -1234,6 +1241,98 @@ mod tests {
         }
         let err = h.hands_main(&["tool".into()]).unwrap_err().to_string();
         assert!(err.contains("tool CHECK"), "{err}");
+    }
+
+    /// `probe` says `heartbeat=1 steps=1`, and the brain then calls these two
+    /// verbs (heartbeat.rs, steps_mirror.rs) through the same dispatch every
+    /// other verb takes; a refusal there leaves a remote job with no presence
+    /// and no live steps.
+    #[test]
+    fn hands_main_answers_the_heartbeat_and_steps_verbs_it_advertises() {
+        let _serial = crate::test_helpers::serial();
+        let workdir = tempfile::tempdir().unwrap();
+        let dir = workdir.path().join("job-live");
+        std::fs::create_dir_all(&dir).unwrap();
+        let wd = workdir.path().display().to_string();
+        #[derive(Clone, Default)]
+        struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let with_out = |buf: &Buf| -> Hands {
+            let mut h = make_hands(&wd, "");
+            h.stdout = Box::new(buf.clone());
+            h
+        };
+        let text = |buf: &Buf| String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let code_of = |args: &[&str]| -> i32 {
+            let mut h = make_hands(&wd, "");
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            match h.hands_main(&args) {
+                Ok(()) => 0,
+                Err(e) => crate::test_helpers::hands_exit_code(e),
+            }
+        };
+        // Nothing written yet: exit 3, the "not yet" the brain waits through.
+        assert_eq!(code_of(&["heartbeat", "job-live", "run-live"]), 3);
+        assert_eq!(code_of(&["steps", "job-live", "run-live", "0"]), 3);
+        // A wrong argument count is a usage error, not a refusal.
+        for (args, usage) in [
+            (&["heartbeat", "job-live"][..], "heartbeat JOB SESSION"),
+            (
+                &["steps", "job-live", "run-live"][..],
+                "steps JOB SESSION OFFSET",
+            ),
+        ] {
+            let mut h = make_hands(&wd, "");
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let err = h.hands_main(&args).unwrap_err().to_string();
+            assert!(err.contains(usage), "{err}");
+        }
+
+        let id = crate::beat::ExecutionIdentity {
+            agent: "live".into(),
+            session: "run-live".into(),
+            run_id: "run-live".into(),
+            job_id: "job-live".into(),
+            generation: 2,
+            executor: "hands".into(),
+        };
+        let beat = hands_heartbeat_path(dir.display().to_string(), id.session.clone()).unwrap();
+        write_hands_heartbeat(
+            beat,
+            crate::beat::ExecutionHeartbeat {
+                identity: id.clone(),
+                at: "2026-11-10T03:00:00Z".into(),
+                stopped_at: String::new(),
+            },
+        )
+        .unwrap();
+        let buf = Buf::default();
+        with_out(&buf)
+            .hands_main(&["heartbeat".into(), "job-live".into(), "run-live".into()])
+            .unwrap();
+        let got: crate::beat::ExecutionHeartbeat = serde_json::from_str(&text(&buf)).unwrap();
+        assert_eq!(got.identity, id);
+
+        let steps = hands_steps_path(dir.display().to_string(), "run-live".into()).unwrap();
+        std::fs::write(&steps, "{\"event\":\"begin\"}\npart").unwrap();
+        let buf = Buf::default();
+        with_out(&buf)
+            .hands_main(&[
+                "steps".into(),
+                "job-live".into(),
+                "run-live".into(),
+                "0".into(),
+            ])
+            .unwrap();
+        assert_eq!(text(&buf), "{\"event\":\"begin\"}\n");
     }
 
     #[test]
