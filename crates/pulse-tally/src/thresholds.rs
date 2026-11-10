@@ -21,6 +21,9 @@ pub struct Thresholds {
     pub stop_present: bool,
     #[serde(skip)]
     pub constitution: String,
+    /// A card that names a check needs no quorum (evolve.check_skips_quorum).
+    #[serde(default)]
+    pub check_skips_quorum: bool,
 }
 
 static AMEND_QUORUM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9]+").unwrap());
@@ -48,6 +51,7 @@ pub fn load_thresholds(s: &pulse_store::Store, project: &str, override_: Thresho
         }
         protected = table_row(&text, "Not amendable by vote").unwrap_or_default();
     }
+    th.check_skips_quorum = s.setting_bool(pulse_store::EVOLVE_CHECK_SKIPS_QUORUM);
     if th.quorum == 0 {
         th.quorum = s.setting_int("quorum") as i32;
     }
