@@ -5801,7 +5801,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
     // TASK-038's shape: the task already sat in review when the job queued
     // from the owner's answer died, so no status moved and the chat's last
     // word stayed "queued". The daemon tells the owner once, with the
-    // choices; a review the lead chose with nothing failed is left alone.
+    // choices; a review the lead chose with nothing failed keeps its status
+    // and its own question, and gets the hold choices once (a hold without
+    // answers to pick is given them, so the owner has something to answer).
     #[test]
     fn a_job_that_fails_under_a_standing_review_is_told_once() {
         let _serial = crate::test_helpers::serial();
@@ -5875,9 +5877,12 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let early = run("Vision 0", &format!("task:{}", task.id), "failed");
         hive_tasks::set_status(&s, &task.id, "in_progress", "daemon").unwrap();
         hive_tasks::set_status(&s, &task.id, "review", "daemon").unwrap();
+        // The id carries its time the way the store stamps one, so the
+        // chat's order by id is its order in time (the hold rule reads the
+        // last word by id).
         crate::util::exec1(
             &*s.conn().unwrap(),
-            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('MSG-queued-1', 'proj', ?, 'proj-lead', 'Queued job 1 of 2.', '2026-09-06T08:30:00Z', '[\"proj-lead\"]')",
+            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('MSG-20260906T083000Z-1', 'proj', ?, 'proj-lead', 'Queued job 1 of 2.', '2026-09-06T08:30:00Z', '[\"proj-lead\"]')",
             &[&task.id],
         );
         let late = run("Vision 1/2", &format!("task:{}:vision", task.id), "failed");
@@ -5927,11 +5932,21 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "daemon".into(),
         );
         assert_eq!(asks(&task.id).len(), 1);
-        // The lead's deliberate stop keeps its own question and its status.
+        // The lead's deliberate stop keeps its status and its own question;
+        // the daemon adds the answers to pick once, quoting that question,
+        // and not again on the next tick.
         assert_eq!(hive_tasks::get(&s, &chosen.id).unwrap().0.status, "review");
-        assert!(asks(&chosen.id).is_empty());
+        let chosen_asks = asks(&chosen.id);
+        assert_eq!(chosen_asks.len(), 1, "{chosen_asks:?}");
+        assert!(
+            chosen_asks[0].body.contains("waits for your decision")
+                && chosen_asks[0].body.contains("Which name?"),
+            "{}",
+            chosen_asks[0].body
+        );
         let chosen_msgs = hive_tasks::messages(&s, "proj", &chosen.id, "", "").unwrap();
-        assert_eq!(chosen_msgs.len(), 1, "{chosen_msgs:?}");
+        assert_eq!(chosen_msgs.len(), 2, "{chosen_msgs:?}");
+        assert_eq!(chosen_msgs[0].body, "Which name?");
     }
 
     #[test]
