@@ -14,6 +14,22 @@ struct StatusContent: Equatable {
     var actions: [Action] = []
     /// The end of a log, shown in the console's mono face.
     var logTail: String?
+    /// The join screen's fields (ADR-070 step 2): the brain and the code.
+    var form: JoinFields?
+}
+
+/// The join screen's two fields and the line under them.
+struct JoinFields: Equatable {
+    var brain: String
+    var code: String
+    /// What happened or what is missing; red when `bad`.
+    var message: String?
+    var bad = false
+    /// False while the join runs.
+    var editable = true
+    /// The first-launch screen of a Mac with no PULSE of its own: no Cancel,
+    /// and it goes away once a PULSE answers.
+    var firstLaunch = false
 }
 
 /// The console's brand mark (web/hub/src/components/shell/pulse-mark.tsx):
@@ -76,7 +92,14 @@ final class StatusView: NSView {
     private let buttons = NSStackView()
     private let logScroll = NSScrollView()
     private let logText = NSTextView()
+    private let form = NSStackView()
+    private let brainField = NSTextField()
+    private let codeField = NSTextField()
+    private let formMessage = NSTextField(wrappingLabelWithString: "")
     private var content: StatusContent?
+
+    /// What is typed in the join fields now.
+    var typed: (brain: String, code: String) { (brainField.stringValue, codeField.stringValue) }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -119,7 +142,8 @@ final class StatusView: NSView {
         logScroll.drawsBackground = true
         logScroll.backgroundColor = Palette.card
 
-        let column = NSStackView(views: [mark, spinner, titleLabel, detailLabel, buttons, logScroll])
+        setUpForm()
+        let column = NSStackView(views: [mark, spinner, titleLabel, detailLabel, form, buttons, logScroll])
         column.orientation = .vertical
         column.alignment = .centerX
         column.spacing = 14
@@ -141,6 +165,7 @@ final class StatusView: NSView {
             detailLabel.widthAnchor.constraint(equalTo: column.widthAnchor),
             logScroll.widthAnchor.constraint(equalTo: column.widthAnchor),
             logScroll.heightAnchor.constraint(equalToConstant: 150),
+            form.widthAnchor.constraint(equalTo: column.widthAnchor),
         ])
         column.setHuggingPriority(.required, for: .vertical)
     }
@@ -166,9 +191,74 @@ final class StatusView: NSView {
         return super.hitTest(point) ?? self
     }
 
+    private func setUpForm() {
+        func label(_ text: String) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = Fonts.text(13, weight: .semibold)
+            label.textColor = Palette.ink
+            return label
+        }
+        func style(_ field: NSTextField, _ placeholder: String, _ name: String) {
+            field.font = Fonts.text(14)
+            field.placeholderString = placeholder
+            field.bezelStyle = .roundedBezel
+            field.controlSize = .large
+            field.lineBreakMode = .byTruncatingTail
+            field.usesSingleLineMode = true
+            field.setAccessibilityLabel(name)
+            field.target = self
+            field.action = #selector(fieldReturned(_:))
+        }
+        style(brainField, "https://pulse.example.com", "Brain address")
+        style(codeField, "six words, like amber river cobalt maple orbit lantern", "Join code")
+        brainField.identifier = NSUserInterfaceItemIdentifier("join-brain-field")
+        codeField.identifier = NSUserInterfaceItemIdentifier("join-code-field")
+        formMessage.font = Fonts.text(13)
+        formMessage.isSelectable = true
+        let rows: [NSView] = [label("Brain"), brainField, label("Join code"), codeField, formMessage]
+        rows.forEach(form.addArrangedSubview)
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 6
+        form.setCustomSpacing(14, after: brainField)
+        form.setCustomSpacing(10, after: codeField)
+        for view in [brainField, codeField, formMessage] {
+            view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true
+        }
+        form.isHidden = true
+    }
+
+    /// Return in a field: the brain moves on to the code; the code joins.
+    @objc private func fieldReturned(_ sender: NSTextField) {
+        if sender === brainField, codeField.stringValue.isEmpty {
+            window?.makeFirstResponder(codeField)
+        } else if content?.form?.editable == true, let primary = content?.actions.first(where: \.primary) {
+            onAction?(primary.id)
+        }
+    }
+
     func show(_ next: StatusContent) {
         guard next != content else { return }
+        let previous = content?.form
         content = next
+        if let fields = next.form {
+            if previous == nil || previous?.brain != fields.brain { brainField.stringValue = fields.brain }
+            if previous == nil || previous?.code != fields.code { codeField.stringValue = fields.code }
+            brainField.isEnabled = fields.editable
+            codeField.isEnabled = fields.editable
+            formMessage.stringValue = fields.message ?? ""
+            formMessage.textColor = fields.bad ? Palette.bad : Palette.muted
+            formMessage.isHidden = (fields.message ?? "").isEmpty
+            form.isHidden = false
+            if previous == nil {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.form.isHidden else { return }
+                    self.window?.makeFirstResponder(self.brainField.stringValue.isEmpty ? self.brainField : self.codeField)
+                }
+            }
+        } else {
+            form.isHidden = true
+        }
         titleLabel.stringValue = next.title
         detailLabel.attributedStringValue = Self.detail(next.detail)
         detailLabel.alignment = .center
@@ -178,6 +268,7 @@ final class StatusView: NSView {
         for action in next.actions {
             let button = NSButton(title: action.title, target: self, action: #selector(clicked(_:)))
             button.identifier = NSUserInterfaceItemIdentifier(action.id)
+            button.isEnabled = next.form?.editable ?? true
             button.bezelStyle = .rounded
             button.controlSize = .large
             button.font = Fonts.text(13, weight: action.primary ? .semibold : .regular)

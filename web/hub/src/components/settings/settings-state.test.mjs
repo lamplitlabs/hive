@@ -10,6 +10,7 @@ test("groupIcon names a lucide icon per settings group", () => {
   assert.equal(groupIcon("notify"), "Bell");
   assert.equal(groupIcon("credential"), "KeyRound");
   assert.equal(groupIcon("compute"), "Cloud");
+  assert.equal(groupIcon("git"), "GitBranch");
   assert.equal(groupIcon("stop"), "ShieldAlert");
   assert.equal(groupIcon("nonsense"), "SlidersHorizontal");
 });

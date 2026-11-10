@@ -3126,6 +3126,30 @@ export interface Compute {
   executors: Executor[];
   caps: ComputeCaps;
   pairings?: Pairing[];
+  // Machines that dial in (ADR-070 step 2): one row per enrolled device key,
+  // newest first. `executor` is the executors row (kind "dial") it works as;
+  // `last_seen_at` is the hand's last call; a revoked device keeps its row.
+  devices?: HandDevice[];
+}
+
+export interface HandDevice {
+  id: string;
+  executor: string;
+  created_at: string;
+  created_by: string;
+  last_seen_at: string;
+  revoked_at: string;
+  revoked_by: string;
+}
+
+// POST machines/join-codes: a six-word code good for `minutes` and one join,
+// and the line to run on the machine (`pulse-hand join --brain URL CODE`).
+export interface JoinCode {
+  code: string;
+  expires_at: string;
+  minutes: number;
+  brain: string;
+  command: string;
 }
 
 // What "Add machine" sends. `pair` is `pulse pair ADMIN --name NAME`: the hub
@@ -3940,6 +3964,11 @@ export const writes = {
       "compute/executors",
       input,
     ),
+  // A machine that dials in: a join code for `pulse-hand join`, and revoking
+  // the device key a hand enrolled with (its next call is refused).
+  joinCode: () => post<JoinCode>("machines/join-codes", {}),
+  revokeDevice: (device: string) =>
+    post<{ device: string }>("machines/devices/" + enc(device) + "/revoke", {}),
   dismissPairing: (name: string) =>
     post<{ dismissed: string }>(
       "compute/pairings/" + enc(name) + "/dismiss",
