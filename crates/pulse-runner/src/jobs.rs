@@ -6091,13 +6091,15 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         // The owner's task: queued, in progress, in review before this rule
         // existed; the lead's "queued" (08:30) is the chat's last word, and
         // the job it names died at 09:00 (the store's clock stands at 10:00,
-        // so the ask the daemon writes postdates the failure).
+        // so the ask the daemon writes postdates the failure). Its id has the
+        // store's MSG-<stamp>-<n> shape: the lead reads a task's last word
+        // by id, so a made-up id would sort after every real one.
         let early = run("Vision 0", &format!("task:{}", task.id), "failed");
         pulse_tasks::set_status(&s, &task.id, "in_progress", "daemon").unwrap();
         pulse_tasks::set_status(&s, &task.id, "review", "daemon").unwrap();
         crate::util::exec1(
             &*s.conn().unwrap(),
-            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('MSG-queued-1', 'proj', ?, 'proj-lead', 'Queued job 1 of 2.', '2026-09-06T08:30:00Z', '[\"proj-lead\"]')",
+            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('MSG-20260906T083000Z-1', 'proj', ?, 'proj-lead', 'Queued job 1 of 2.', '2026-09-06T08:30:00Z', '[\"proj-lead\"]')",
             &[&task.id],
         );
         let late = run("Vision 1/2", &format!("task:{}:vision", task.id), "failed");
@@ -6147,11 +6149,21 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "daemon".into(),
         );
         assert_eq!(asks(&task.id).len(), 1);
-        // The lead's deliberate stop keeps its own question and its status.
+        // The lead's deliberate stop keeps its status and its own question;
+        // with nothing failed it is a hold, and a hold whose last word has
+        // nothing to tap gets the hold choices once (8720ad10), never the
+        // failure ask.
         assert_eq!(pulse_tasks::get(&s, &chosen.id).unwrap().0.status, "review");
-        assert!(asks(&chosen.id).is_empty());
+        let held = asks(&chosen.id);
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert!(held[0].body.contains("Which name?"), "{}", held[0].body);
+        assert!(
+            !held[0].body.contains("tries at it failed"),
+            "{}",
+            held[0].body
+        );
         let chosen_msgs = pulse_tasks::messages(&s, "proj", &chosen.id, "", "").unwrap();
-        assert_eq!(chosen_msgs.len(), 1, "{chosen_msgs:?}");
+        assert_eq!(chosen_msgs.len(), 2, "{chosen_msgs:?}");
     }
 
     #[test]
