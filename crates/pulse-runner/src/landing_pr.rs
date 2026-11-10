@@ -291,6 +291,25 @@ pub(crate) fn retarget_pull_request(
     .map(|_| ())
 }
 
+/// Closes pull request `number` unmerged with `comment` on it, saying why
+/// (`gh pr close N --comment C`). The branch is left alone: the caller
+/// deletes it with a lease on the head it judged, so a push made since is
+/// never lost.
+pub(crate) fn close_pull_request(
+    root: &str,
+    repo: &str,
+    number: i64,
+    comment: &str,
+) -> Result<(), String> {
+    gh(
+        root,
+        repo,
+        &["pr", "close", &number.to_string(), "--comment", comment],
+        Duration::from_secs(60),
+    )
+    .map(|_| ())
+}
+
 /// The fields `pr list` and `pr view` are asked for: the state and head of
 /// each pull request, and what stands between an open one and its merge.
 pub(crate) const PR_FIELDS: &str = "number,state,mergedAt,url,headRefName,headRefOid,isDraft,mergeable,mergeStateStatus,statusCheckRollup";

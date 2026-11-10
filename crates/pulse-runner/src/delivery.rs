@@ -69,6 +69,8 @@ use serde_json::{Value, json};
 use crate::forge::Upstream;
 use crate::util::Row;
 
+mod experiments;
+
 pub(crate) const ACTOR: &str = "daemon";
 
 /// Pull requests opened per project per pass at most: GitHub's secondary
@@ -657,9 +659,15 @@ impl Base {
 /// Whether a pull request takes part in the stack: every kind but a
 /// conversation's (`pulse/chat-<id>`), whose branch the hub keeps checked
 /// out in a worktree of its own - nothing may rebuild it, and nothing is
-/// built on it.
+/// built on it - and an experiment's (`evolve/<id>`), which is measured on
+/// the default branch alone: built on another pull request it would carry
+/// that one's commits, and a pull request merged into a pull request
+/// strands its change when the one below is closed or squashed
+/// (`experiments.rs`).
 fn stacks(pr: &Value) -> bool {
-    field(pr, "conversation").is_empty() && !field(pr, "head").starts_with("pulse/chat-")
+    field(pr, "conversation").is_empty()
+        && !field(pr, "head").starts_with("pulse/chat-")
+        && !experiments::is_experiment(pr)
 }
 
 /// The top of the project's stack, as its newest `land.pr`: the open pull
@@ -1837,7 +1845,11 @@ fn deliver_proposed(
 ) -> Result<Delivered, String> {
     let root = project.str("path");
     let def = crate::baseline::default_branch(project.clone());
-    let top = if conversation.is_some() { None } else { top };
+    let top = if conversation.is_some() || branch.starts_with("evolve/") {
+        None
+    } else {
+        top
+    };
     let (base, sha) = stacked_tip(s, &root, up, branch, sha, &next, top)?;
     let sha = sha.as_str();
     let subject = crate::util::git_timeout(
@@ -1942,7 +1954,7 @@ pub(crate) fn propose_branch(
         .filter(|id| !id.is_empty())
         .map(str::to_string);
     let conn = s.conn().map_err(|e| e.to_string())?;
-    let top = if conversation.is_some() {
+    let top = if conversation.is_some() || branch.starts_with("evolve/") {
         None
     } else {
         stack_top(&conn, &slug)
@@ -2094,8 +2106,10 @@ pub(crate) fn deliver_experiment(
     if sha.is_empty() {
         return Err(format!("branch {branch} is not in {root}"));
     }
+    // An experiment is based on the default branch, never on another open
+    // pull request: its pull request neither stacks nor is stacked on.
+    let top: Option<Value> = None;
     let conn = s.conn().map_err(|e| e.to_string())?;
-    let top = stack_top(&conn, &slug);
     let next = next_for(
         &conn,
         &root,
@@ -2267,7 +2281,20 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
                 lines.push(settle_closed(s, project, &pr, &state, now));
                 lines.extend(retarget_stacked(s, project, &up, &pr, &listed, true, now));
             }
-            "OPEN" => lines.extend(follow_open(s, project, &up, &pr, &state, now)),
+            "OPEN" => {
+                // An experiment's pull request whose change is on the
+                // default branch already, or that sat open too long, is
+                // settled here; the rest are followed as any other.
+                if experiments::is_experiment(&pr) {
+                    let (settled, l) =
+                        experiments::tend_open(s, project, &up, &pr, &state, &listed, now);
+                    lines.extend(l);
+                    if settled {
+                        continue;
+                    }
+                }
+                lines.extend(follow_open(s, project, &up, &pr, &state, now))
+            }
             _ => {}
         }
     }
@@ -2344,6 +2371,57 @@ fn followed(
     .is_empty()
 }
 
+/// Records a pull request's head that took its base in and was pushed
+/// (`merge_base_into_head`): `land.pr-refreshed`, and a `land.pr` naming
+/// the new tip, so the next push of the work leases on what the pull
+/// request holds.
+#[allow(clippy::too_many_arguments)]
+fn record_refreshed(
+    s: &pulse_store::Store,
+    project: &Row,
+    pr: &Value,
+    head: &str,
+    head_sha: &str,
+    tip: &str,
+    base: &str,
+    now: &str,
+) {
+    let slug = project.str("slug");
+    let root = project.str("path");
+    let kind = kind_of(pr);
+    let number = number_of(pr);
+    event(
+        s,
+        now,
+        "land.pr-refreshed",
+        &slug,
+        json!({"project": slug, "kind": kind, "number": number, "head": head,
+            "head_sha": head_sha, "new_sha": tip, "base": base}),
+    );
+    let commits = crate::util::git_timeout(
+        &root,
+        Duration::from_secs(30),
+        &["rev-list", "--count", &format!("{head_sha}..{tip}")],
+    )
+    .stdout
+    .trim()
+    .parse::<i64>()
+    .unwrap_or(1);
+    let mut detail = pr.clone();
+    for (k, v) in [
+        ("project", json!(slug)),
+        ("kind", json!(kind)),
+        ("from", json!(head_sha)),
+        ("to", json!(tip)),
+        ("commits", json!(commits)),
+        ("opened", json!(false)),
+        ("refreshed", json!(true)),
+    ] {
+        detail[k] = v;
+    }
+    event(s, now, "land.pr", &slug, detail);
+}
+
 /// How a pull request's head took its base.
 enum Refreshed {
     /// The merge was clean and is on the pull request now, at this sha.
@@ -2385,36 +2463,7 @@ fn refresh_pr_branch(
     let line = format!("{kind} pr {slug}: #{number} conflicts with {base} at {short}");
     match merge_base_into_head(s, &root, up, &head, &st.head_sha, base) {
         Ok(Refreshed::Pushed(tip)) => {
-            event(
-                s,
-                now,
-                "land.pr-refreshed",
-                &slug,
-                json!({"project": slug, "kind": kind, "number": number, "head": head,
-                    "head_sha": st.head_sha, "new_sha": tip, "base": base}),
-            );
-            let commits = crate::util::git_timeout(
-                &root,
-                Duration::from_secs(30),
-                &["rev-list", "--count", &format!("{}..{tip}", st.head_sha)],
-            )
-            .stdout
-            .trim()
-            .parse::<i64>()
-            .unwrap_or(1);
-            let mut detail = pr.clone();
-            for (k, v) in [
-                ("project", json!(slug)),
-                ("kind", json!(kind)),
-                ("from", json!(st.head_sha)),
-                ("to", json!(tip)),
-                ("commits", json!(commits)),
-                ("opened", json!(false)),
-                ("refreshed", json!(true)),
-            ] {
-                detail[k] = v;
-            }
-            event(s, now, "land.pr", &slug, detail);
+            record_refreshed(s, project, pr, &head, &st.head_sha, &tip, base, now);
             format!(
                 "{line}; {base} merged in and pushed, head now {}",
                 crate::recipe::short(&tip, 12)
