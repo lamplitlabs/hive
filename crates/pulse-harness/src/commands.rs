@@ -4718,8 +4718,16 @@ done
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_str().unwrap();
         // The run's tool is still going when the runner asks for a hold.
+        // The command leaves a marker once it runs, and the hold waits for
+        // it: a hold that lands while the session is `running` but before
+        // the first model call ends the run with no tool round, and the
+        // resumed run's report then reads as evidence-free and is bounced.
+        let marker = dir.path().join("tool-started");
         set_fake_provider(CommandFakeProvider::scripted(vec![
-            call("bash", json!({"command": "echo started; sleep 30"})),
+            call(
+                "bash",
+                json!({"command": "echo started; : > tool-started; sleep 30"}),
+            ),
             say("SUMMARY: never reached"),
         ]));
         let asked = {
@@ -4727,7 +4735,8 @@ done
             thread::spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(20);
                 while Instant::now() < deadline {
-                    if let Ok(Some(h)) = st.harness_session_head("run-held-1")
+                    if marker.exists()
+                        && let Ok(Some(h)) = st.harness_session_head("run-held-1")
                         && h.status == "running"
                     {
                         return st.request_harness_hold_for_run("run-held-1").unwrap();

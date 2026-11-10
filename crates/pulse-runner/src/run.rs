@@ -1151,7 +1151,9 @@ pub(crate) fn run_job(
         ));
     }
     let root = project.str("path");
-    if !Path::new(&root).join(".git").exists() {
+    // A brain without code (`brain.code none`) may hold no checkout of the
+    // project at all; its runs work in an empty workspace.
+    if !Path::new(&root).join(".git").exists() && !crate::jobs::brain_code_none(s) {
         return Err(cli_err(
             2,
             format!(
@@ -2090,6 +2092,15 @@ pub(crate) fn run_job(
                     commits,
                     ex.owner_paths_touched(&base).join(", ")
                 );
+            } else if let Some(why) =
+                crate::card_proof::card_unproven(s, &job, &base, &log, &|cmd: &str| {
+                    ex.verify(&cancel, cmd, minutes)
+                })
+            {
+                // A job from a voted card lands only on its card's proof:
+                // the check red on the default branch, green with the change.
+                status = "failed".into();
+                summary = format!("{commits} commit(s) but {why}; nothing landed");
             } else {
                 let mut ok = true;
                 let mut check_tool = String::new();
@@ -3772,31 +3783,59 @@ fn push_from_hand(
         .stdout
         .trim()
         .to_string();
-    let key = match crate::forge::push_credential_key(s) {
-        Ok(k) => k,
-        Err(why) => {
-            return format!(
-                "hand push skipped: push.credential could not be read ({why}); the delivery pass pushes {branch}"
+    // A GitHub App installation token for this one repository is leased
+    // first (ADR-070 step 3): the hand pushes it over https through a
+    // credential helper beside its clone; else `push.credential`'s key.
+    let mut via = "the leased push credential";
+    let mut url = up.url.clone();
+    let mut key = Vec::new();
+    match crate::gitapp::token_for_url(s, &up.url) {
+        Some(Ok((repo, token))) => {
+            key = pulse_hand_core::gitcred::token_lease(token.secret());
+            url = crate::gitapp::https_url(&repo);
+            via = "the leased GitHub App token";
+        }
+        Some(Err(why)) => {
+            let _ = s.event(
+                agent,
+                "gitapp.fallback",
+                branch,
+                json!({"why": pulse_cred::redact(&crate::executor::redact_tokens(&why), &[])}),
             );
         }
-    };
+        None => {}
+    }
+    if key.is_empty() {
+        key = match crate::forge::push_credential_key(s) {
+            Ok(k) => k,
+            Err(why) => {
+                return format!(
+                    "hand push skipped: push.credential could not be read ({why}); the delivery pass pushes {branch}"
+                );
+            }
+        };
+    }
     let leased = !key.is_empty();
-    let (line, ok) = match ex.push_from_hand(&up.url, &sha, branch, &key) {
+    let (line, ok) = match ex.push_from_hand(&url, &sha, branch, &key) {
         Ok(out) => (
             format!(
-                "{} pushed {branch} to {}{}: {out}",
+                "{} pushed {branch} to {}{}: {}",
                 ex.name(),
                 up.name(),
                 if leased {
-                    " with the leased push credential"
+                    format!(" with {via}")
                 } else {
-                    ""
-                }
+                    String::new()
+                },
+                crate::executor::redact_tokens(&out)
             ),
             true,
         ),
         Err(e) => (
-            format!("hand push failed, the delivery pass pushes {branch}: {e}"),
+            format!(
+                "hand push failed, the delivery pass pushes {branch}: {}",
+                crate::executor::redact_tokens(&e.to_string())
+            ),
             false,
         ),
     };
@@ -3807,7 +3846,7 @@ fn push_from_hand(
             agent,
             if ok { "hand.push" } else { "hand.push_failed" },
             branch,
-            json!({"executor": ex.name(), "sha": sha, "remote": up.name(), "leased": leased}),
+            json!({"executor": ex.name(), "sha": sha, "remote": up.name(), "leased": leased, "via": if leased { via } else { "" }}),
         );
     }
     line
@@ -6345,6 +6384,9 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = pulse_testutil::env_lock();
         let s = new_store();
+        // The card names a check; with check-skips-quorum on it would be
+        // eligible at once and never reach a ballot, which this test needs.
+        set_setting(&s, pulse_store::EVOLVE_CHECK_SKIPS_QUORUM, "off");
         new_bare_repo(&s);
         join(&s, "aurora");
         join(&s, "alice");

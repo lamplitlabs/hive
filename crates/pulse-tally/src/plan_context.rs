@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
-use crate::card_class::{CARD_CLASS_OPERATING_LAYER, CARD_CLASS_PRODUCT, card_class};
+use crate::card_class::{
+    CARD_CLASS_OPERATING_LAYER, CARD_CLASS_PRODUCT, card_about_loop, card_class,
+};
 use crate::gate::GATE_DUPLICATE;
+use crate::gate::GATE_LOOP_CAP;
 use crate::gate::GATE_OPERATING_LAYER_CAP;
 use crate::gate::plan_gate_with;
 use crate::tally::{Suggestion, TallyResult, duplicate_map, load_post};
@@ -16,6 +19,50 @@ pub struct PlanContext {
     /// product card is plannable: voted operating-layer cards fill the idle
     /// slots instead of waiting for tomorrow.
     pub operating_layer_filled: bool,
+    /// Improve jobs and experiments made today from cards that change the
+    /// loop itself, against `plan.loop_per_day` (0: no cap). Never lifted.
+    pub loop_today: i32,
+    pub loop_cap: i32,
+}
+
+/// The loop cap's part of a plan context: `plan.loop_per_day` and the
+/// improve jobs and experiments made today from cards about the loop itself
+/// ([`card_about_loop`]), each card once however often it was retried. The
+/// experiment planner gates with this part alone: the operating-layer cap
+/// never held experiments.
+pub fn loop_context(s: &pulse_store::Store, project: &str, now: &str) -> PlanContext {
+    let mut ctx = PlanContext {
+        loop_cap: s.setting_int(pulse_store::PLAN_LOOP_PER_DAY) as i32,
+        ..PlanContext::default()
+    };
+    if ctx.loop_cap <= 0 || project.is_empty() || now.len() < 10 {
+        return ctx;
+    }
+    let Ok(conn) = s.conn() else {
+        return ctx;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT j.source, COALESCE(p.summary, ''), COALESCE(p.body, '') FROM jobs j \
+		JOIN posts p ON p.id = substr(j.source, ?) \
+		WHERE j.project = ? AND j.kind IN ('improve', 'experiment') AND j.source LIKE 'suggestion:%' AND j.created_at LIKE ?",
+    ) else {
+        return ctx;
+    };
+    let rows = stmt.query_map(
+        rusqlite::params![
+            "suggestion:".len() as i64 + 1,
+            project,
+            format!("{}%", &now[..10])
+        ],
+        |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+    );
+    if let Ok(rows) = rows {
+        ctx.loop_today = rows
+            .flatten()
+            .filter(|(summary, body)| card_about_loop(summary, body))
+            .count() as i32;
+    }
+    ctx
 }
 
 pub fn plan_context_for(
@@ -26,7 +73,7 @@ pub fn plan_context_for(
 ) -> PlanContext {
     let mut ctx = PlanContext {
         operating_layer_cap: s.setting_int("plan.operating_layer_per_day") as i32,
-        ..PlanContext::default()
+        ..loop_context(s, project, now)
     };
     ctx.operating_layer_cap_set = ctx.operating_layer_cap > 0;
     if let Some(res) = res {
@@ -99,6 +146,12 @@ pub fn duplicate_gate(id: &str) -> String {
 pub fn operating_layer_cap_gate(today: i32, cap: i32) -> String {
     format!(
         "{GATE_OPERATING_LAYER_CAP}: {today} of {cap} today; product cards go first (plan.operating_layer_per_day)"
+    )
+}
+
+pub fn loop_cap_gate(today: i32, cap: i32) -> String {
+    format!(
+        "{GATE_LOOP_CAP}: {today} of {cap} today change the loop's own code; the projects' defects go first (plan.loop_per_day)"
     )
 }
 

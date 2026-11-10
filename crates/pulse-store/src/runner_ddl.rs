@@ -78,6 +78,68 @@ pub const RUNNER_DDL: &[&str] = &[
     // of reading each done job's row (brief included) to find none.
     r####"CREATE INDEX IF NOT EXISTS jobs_project_status_branch ON jobs (project, status, branch)"####,
     r####"CREATE INDEX IF NOT EXISTS agents_status_active ON agents (status, last_active_at DESC)"####,
+    // ADR-070 step 2: a hand enrols once with a join code and then dials
+    // out. The code is kept as its SHA-256 only, valid ten minutes, used
+    // once (`used_at`, `device`).
+    r####"CREATE TABLE IF NOT EXISTS hand_join_codes (
+  code_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  used_at TEXT NOT NULL DEFAULT '',
+  device TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (code_hash)
+)"####,
+    // The device registry: one row per enrolled hand, its public key (an
+    // OpenSSH ed25519 key line), the `executors` row (kind `dial`) it works
+    // as, and when it last dialled in. Revoking sets `revoked_at` and drops
+    // the key, so the hand's next connect is refused.
+    r####"CREATE TABLE IF NOT EXISTS hand_devices (
+  id TEXT NOT NULL,
+  executor TEXT NOT NULL,
+  public_key TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT '',
+  last_seen_at TEXT NOT NULL DEFAULT '',
+  revoked_at TEXT NOT NULL DEFAULT '',
+  revoked_by TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (id)
+)"####,
+    // A connect is a signed answer to a nonce the brain handed out: each
+    // nonce answers once and lapses after two minutes.
+    r####"CREATE TABLE IF NOT EXISTS hand_nonces (
+  nonce TEXT NOT NULL,
+  device TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (nonce)
+)"####,
+    // A connected hand's session: the bearer token's SHA-256.
+    r####"CREATE TABLE IF NOT EXISTS hand_sessions (
+  token_hash TEXT NOT NULL,
+  device TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (token_hash)
+)"####,
+    // The dial channel's mailbox: the brain queues one hands verb per row,
+    // the hand's long poll takes it, runs it and posts the outcome back.
+    // The hub and the daemon are two processes on one store, so the
+    // mailbox is a table.
+    r####"CREATE TABLE IF NOT EXISTS hand_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device TEXT NOT NULL,
+  args TEXT NOT NULL,
+  stdin BLOB NOT NULL DEFAULT x'',
+  timeout_secs INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'queued',
+  created_at TEXT NOT NULL,
+  taken_at TEXT NOT NULL DEFAULT '',
+  done_at TEXT NOT NULL DEFAULT '',
+  rc INTEGER NOT NULL DEFAULT 0,
+  stdout BLOB NOT NULL DEFAULT x'',
+  stderr BLOB NOT NULL DEFAULT x''
+)"####,
+    r####"CREATE INDEX IF NOT EXISTS hand_calls_device_status ON hand_calls (device, status, id)"####,
 ];
 use crate::Column;
 pub const RUNNER_COLUMNS: &[Column] = &[

@@ -222,8 +222,11 @@ daemon's log). `pulse executor probe NAME` does the same at once.
 
 ### Adding a machine from the console
 
-The Machines page's **Add machine** button is the same three commands behind
-one route, `POST /api/v1/compute/executors`, told apart by `mode`:
+The Machines page's **Add a machine** button offers four ways. The first,
+**Run one command on it**, issues a join code for a machine that dials in
+([Enrolling a hand](#enrolling-a-hand)). The other three are the shell's
+commands behind one route, `POST /api/v1/compute/executors`, told apart by
+`mode`:
 
 - `pair` (the default; `{"mode": "pair", "name": "gpu-box", "admin":
   "ubuntu@10.0.0.9", "workdir": "/srv/pulse", "workers": 1, "projects": "*",
@@ -412,9 +415,103 @@ from the checkout. Hands that answer `push=1` in their probe take the
 verb. `jobs::tests::a_job_leased_to_a_local_pulse_hand_pushes_with_the_leased_credential`
 proves the path end to end.
 
-The dial-out TLS channel a customer's hand will use is the next step of
-ADR-070; until then a remote machine keeps `pulse pair` and `pulse hands`
-behind sshd.
+With a GitHub App configured ([Credentials](landing.md#one-git-login-for-every-machine-a-github-app-adr-070-step-3))
+and an upstream on its host, the lease is an installation token for the
+job's one repository instead of a key: the brain mints it, the hand
+installs a credential helper beside the clone that answers only for that
+host, pushes over https, and removes the helper whatever the push did. The
+run log says `pushed … with the leased GitHub App token` and the
+`hand.push` event's `via` names it; a token GitHub will not mint falls
+back to the key path above. `jobs::tests::a_job_leased_to_a_local_pulse_hand_pushes_with_the_app_token`
+proves it against a git server that accepts nothing but that token.
+
+A remote machine can now enrol itself and dial in (next section); `pulse
+pair` and `pulse hands` behind sshd stay as the by-hand path for a machine
+you would rather prepare yourself.
+
+## Enrolling a hand
+
+A machine with `pulse-hand` installed joins the brain once and then calls
+out to it for work: no open port, no sshd drop-in, no `authorized_keys`, no
+key from the brain (ADR-070 step 2). On the Machines page, **Add a
+machine** -> **Run one command on it** -> **Get a join code** shows a
+six-word code and the line to run on the machine:
+
+```
+pulse-hand join --brain https://pulse.example.com amber-river-cobalt-maple-orbit-lantern
+pulse-hand dial          # keep it running (a launchd or systemd service)
+```
+
+`join [--brain URL] [--name NAME] [--labels a,b] [--workers N] [--workdir
+DIR] CODE` makes an ed25519 device key in the hand's own directory
+(`PULSE_HAND_HOME`, default `~/.pulse-hand`, mode 0700; the private key
+0600) and sends only its public half, with the code and the machine's facts
+(os, arch, labels, workers, workdir), to `POST /api/v1/hands/join`. The
+brain URL comes from `--brain`, else `PULSE_BRAIN`. The brain answers with
+a device id and the executor the machine works as - a row of kind `dial`,
+named after the machine unless `--name` says otherwise - and the hand keeps
+both in `device.json` beside the key.
+
+**Join codes.** `POST /api/v1/machines/join-codes` (an owner write, same
+origin like every console write) issues one: six words, good for 10 minutes
+and one join. The brain keeps only its SHA-256 (`hand_join_codes`); a
+lapsed, spent or wrong code answers 403 and enrols nothing. The answer
+carries `code`, `expires_at`, `minutes`, `brain` (the URL the browser
+reached the hub on) and `command`, the line above. The wizard watches
+`GET /api/v1/compute`'s `devices` and says when the machine has joined.
+
+**The dial channel.** `pulse-hand dial` asks for a nonce
+(`POST /api/v1/hands/nonce`, good for 2 minutes and one use), signs it with
+the device key (`ssh-keygen -Y sign`, namespace `pulse-hand`, so no other
+signature of that key can connect) and trades the signature for a session
+token (`/hands/connect`, 12 hours). A tampered signature, a used or lapsed
+nonce and a revoked device are refused. The first connect puts the `dial`
+executor into rotation (it is `drained` until then; a drain by the owner
+stays). From then on it long-polls `/hands/poll` (25 seconds at most per
+call) and posts each outcome to `/hands/result`. Every `pulse-hands` verb
+the brain would send over ssh is queued in that device's mailbox
+(`hand_calls`) and run by the hand's own `pulse-hand` exactly as sshd's
+forced command would. The lease and report semantics, and the executor code,
+are the ssh path's. The branch comes back as a git bundle (the `bundle JOB
+BASE` verb) instead of `git-upload-pack`. A hand that has not polled for
+90 seconds is not connected, so a verb for it is refused at once as
+unreachable instead of waiting. HTTP goes through the system `curl`: the
+hand carries no HTTP stack, and TLS is whatever fronts the hub.
+
+**Revoke.** A dial machine's card on the Machines page shows its last call
+and a **Revoke** button (`POST /api/v1/machines/devices/<device or
+executor>/revoke`): the brain drops the key and its sessions and removes
+the executor; the hand's next call is refused, and coming back takes a new
+code. Events: `hand.join_code`, `hand.join`, `hand.connect` (`hand.connect_refused`
+with the reason), `hand.revoke`.
+
+`dial::end_to_end::a_pulse_hand_joins_a_brain_and_completes_a_job_over_the_dial_channel`
+(pulse-runner) proves the path: a real `pulse-hand` joins a test brain with
+a code, dials, and one job runs on it and lands as a remote run. The join-code
+and handshake tests sit beside it, and `hands::tests` in pulse-hub cover the
+routes.
+
+## A brain without code: `brain.code none`
+
+A brain that should never hold a team's code - the hosted brain of ADR-070
+rule 6 (`deploy/Dockerfile`), or any machine whose review needs that -
+sets `pulse settings set brain.code none`. This machine's own slot then
+leases only the `lead` and `reflect` jobs. Those run in an empty
+workspace and plan from the board, the task text and what the hands
+report. Every job that needs the code - tasks, improvements, reviews,
+measurement, check and watch scripts - stays queued for a paired hand,
+which keeps its own clone. `pulse run` of such a job is refused,
+`executor.transport local-hand` included, since a local hand clones onto
+this disk too. The source self-update stands down; `daemon.self_update
+release` installs releases instead ([release.md](release.md)). What this
+promises, and the test that holds it, is in [security.md](security.md).
+
+Two things a code-less brain does not do yet. Its hands still reach it
+through `pulse pair` over SSH, because the dial-in channel is ADR-070
+step 2. And landing merges in a worktree of the registered checkout, so
+with no checkout the lander holds a finished branch (`land.held`, reason
+`brain-code-none`: "brain.code is none") without making a worktree, and the
+branch waits for a pull request merged through the forge.
 
 ## Heartbeats and presence
 
