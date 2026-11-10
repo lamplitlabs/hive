@@ -74,10 +74,29 @@ async function readJson<T>(r: Response): Promise<T> {
 
 export const enc = encodeURIComponent;
 
+// Through the hosted front (ADR-070 step 5) every write must carry the
+// member's passkey signature; lib/passkey.ts installs the signer when the
+// console is served off this machine (installPasskeySigner). On this
+// machine none is installed and a write goes out as it always did.
+export type WriteSigner = (
+  href: string,
+  init: RequestInit,
+) => Promise<RequestInit>;
+let writeSigner: WriteSigner | null = null;
+
+export function setWriteSigner(s: WriteSigner | null) {
+  writeSigner = s;
+}
+
+export async function sendApi(path: string, init?: RequestInit): Promise<Response> {
+  const href = apiHref(path);
+  const base: RequestInit = { cache: "no-store", ...init };
+  const signed = writeSigner ? await writeSigner(href, base) : base;
+  return fetch(href, signed);
+}
+
 export function api<T>(path: string, init?: RequestInit): Promise<T> {
-  return fetch(apiHref(path), { cache: "no-store", ...init }).then((r) =>
-    readJson<T>(r),
-  );
+  return sendApi(path, init).then((r) => readJson<T>(r));
 }
 
 export function apiHref(path: string): string {
@@ -2043,8 +2062,8 @@ export async function chatUpload(
   id: string,
   file: File,
 ): Promise<ChatAttachment> {
-  const r = await fetch(
-    apiHref("chat/" + enc(id) + "/upload" + query({ name: file.name })),
+  const r = await sendApi(
+    "chat/" + enc(id) + "/upload" + query({ name: file.name }),
     {
       method: "POST",
       body: file,
@@ -2063,8 +2082,8 @@ export async function voiceTranscribe(
   pcm: Uint8Array,
   language = "",
 ): Promise<Transcript> {
-  const r = await fetch(
-    apiHref("voice/transcribe" + (language ? query({ language }) : "")),
+  const r = await sendApi(
+    "voice/transcribe" + (language ? query({ language }) : ""),
     {
       method: "POST",
       headers: { "Content-Type": "audio/pcm" },
