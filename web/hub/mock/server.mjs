@@ -73,6 +73,11 @@ const state = {
   // and /lockdown), laid over the fixtures when they are served: the hub
   // keeps these on the row; here they live only until the mock restarts.
   chatFlips: {},
+  // Settings → Secrets (crates/pulse-hub/src/secrets_api.rs): names only.
+  secrets: [
+    { name: "GITHUB_TOKEN", created_by: "human", created_at: "2026-11-08T09:12:00Z", updated_by: "human", updated_at: "2026-11-08T09:12:00Z", sealed_bytes: 56 },
+    { name: "NPM_TOKEN", created_by: "human", created_at: "2026-11-09T16:40:00Z", updated_by: "human", updated_at: "2026-11-10T08:05:00Z", sealed_bytes: 52 },
+  ],
   serviceInstalled: false,
   // The microphone's speech model: a pretend download that advances while
   // polled, so the composer's setup dialog can be exercised offline.
@@ -1485,6 +1490,22 @@ async function handle(req, res) {
     // the text; both answer with the file as GET memory lists it.
     if (segs[0] === "memory" && segs.length <= 2) {
       return memoryWrite(res, segs, body);
+    }
+    // Secrets: a write keeps the name and drops the value; remove by name.
+    if (segs[0] === "secrets" && segs.length === 1) {
+      const name = String(body.name || "").trim();
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(name) || !body.value)
+        return fail(res, 400, "`" + name + "` is not a secret name", "The vault takes an upper-case name and a value.", "Correct the name or value and save again.");
+      const now = new Date().toISOString();
+      const old = state.secrets.find((x) => x.name === name);
+      const entry = { name, created_by: old?.created_by || "human", created_at: old?.created_at || now, updated_by: "human", updated_at: now, sealed_bytes: String(body.value).length + 16 };
+      state.secrets = [...state.secrets.filter((x) => x.name !== name), entry].sort((a, b) => a.name.localeCompare(b.name));
+      return send(res, 201, { secret: entry });
+    }
+    if (segs[0] === "secrets" && segs.length === 3 && segs[2] === "remove") {
+      const had = state.secrets.some((x) => x.name === segs[1]);
+      state.secrets = state.secrets.filter((x) => x.name !== segs[1]);
+      return had ? send(res, 200, { removed: segs[1] }) : fail(res, 404, "No secret " + segs[1], "The team vault holds no secret by that name.", "Pick a name from the list.");
     }
     // The Chat page's two switches on a conversation: Auto (approve tools
     // without asking) and Lockdown (sandbox). The hub flips the row and the
@@ -4494,6 +4515,9 @@ async function handle(req, res) {
   }
   if (segs[0] === "memory" && segs.length === 1) {
     return send(res, 200, memoryView());
+  }
+  if (segs[0] === "secrets" && segs.length === 1) {
+    return send(res, 200, { secrets: state.secrets, max_bytes: 65536 });
   }
   if (segs[0] === "skills") {
     if (segs.length === 1)

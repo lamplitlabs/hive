@@ -9,6 +9,7 @@ import { SectionHeading } from "@/components/pulse/item-card";
 import { PageHeader } from "@/components/pulse/page-header";
 import { EmptyState, ErrorNotice, Notice, SkeletonPage } from "@/components/pulse/panel";
 import { AppearanceSection } from "@/components/settings/appearance-section";
+import { SecretsSection } from "@/components/settings/secrets";
 import { RunningStrip } from "@/components/settings/running";
 import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
 import { CredentialRow } from "@/components/settings/credential";
@@ -184,6 +185,7 @@ const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "general", title: "General", icon: iconOf("general") },
   { id: "appearance", title: "Appearance", icon: iconOf("appearance") },
   { id: "harness", title: "Harness", icon: iconOf("harness") },
+  { id: "secrets", title: "Secrets", icon: iconOf("secrets") },
   { id: "runner", title: "Limits", icon: iconOf("runner") },
   { id: "compute", title: "Machines", icon: iconOf("compute") },
   { id: "evolve", title: "Self-improvement", icon: iconOf("evolve") },
@@ -206,6 +208,7 @@ const useHash = () => useSyncExternalStore(subscribeHash, () => window.location.
 // settings (matched like every other row): the card's headings and words.
 // The same for the Notifications card, which keeps its choices in this
 // browser rather than in PULSE's settings.
+const SECRETS_WORDS = "secrets secret vault team vault api key keys token tokens password env environment variable recipe";
 const NOTIFY_WORDS = "notifications notify notification alerts alert sound chime bell desktop browser mac question waits for you finished done reply";
 // Appearance is browser-only (no setting rows), so a search reaches it by its words.
 const APPEARANCE_WORDS = "appearance theme dark light system mode density compact comfortable font geist readable atkinson text size larger default look colours colors";
@@ -498,6 +501,7 @@ export default function SettingsPage() {
   const harnessHits = harnessRows.filter(match).length;
   const harnessShown = !needle || harnessHits > 0 || HARNESS_WORDS.includes(needle);
   const notifyShown = !needle || NOTIFY_WORDS.includes(needle);
+  const secretsShown = !needle || SECRETS_WORDS.includes(needle);
   const appearanceShown = !needle || APPEARANCE_WORDS.includes(needle);
   // The kill switch has its own card at the top, so it leaves the Limits section.
   const killShown = !!stop && (match(stop) || "pause stop kill switch emergency brake resume".includes(needle));
@@ -507,9 +511,9 @@ export default function SettingsPage() {
   const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0) + harnessHits;
   const hits: Record<string, number> = { ...Object.fromEntries(shown.map((x) => [x.g.id, x.rows.length])), harness: harnessHits };
   const generalHit = killShown || notifyShown || appearanceShown || !!hits.owner;
-  const present = new Set<string>(["general", "appearance", "harness", ...groups.map((x) => x.g.id)]);
+  const present = new Set<string>(["general", "appearance", "harness", "secrets", ...groups.map((x) => x.g.id)]);
   const navItems = NAV.filter((n) => present.has(n.id)).map((n) => {
-    const hit = !needle || (n.id === "general" ? generalHit : n.id === "appearance" ? appearanceShown : n.id === "harness" ? harnessShown : !!hits[n.id]);
+    const hit = !needle || (n.id === "general" ? generalHit : n.id === "appearance" ? appearanceShown : n.id === "harness" ? harnessShown : n.id === "secrets" ? secretsShown : !!hits[n.id]);
     const count = needle && hit ? (n.id === "general" ? (killShown ? 1 : 0) + (hits.owner ?? 0) : hits[n.id]) : undefined;
     return { ...n, hit, count: count || undefined };
   });
@@ -517,7 +521,7 @@ export default function SettingsPage() {
   const page = present.has(pageOf(hash)) ? pageOf(hash) : "general";
   const show = (id: string) => !!needle || pageOf(id) === page;
   // While searching every section with a hit shows, in page order.
-  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
+  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", secretsShown ? "secrets" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
   // Appearance lives on the General page (#appearance scrolls to its card) but
   // has its own nav item, so the marker names it rather than General.
   const navOf = (id: string) => (id === "appearance" ? id : pageOf(id));
@@ -673,9 +677,15 @@ export default function SettingsPage() {
             </Section>
           ) : null}
 
+          {secretsShown && show("secrets") ? (
+            <Section id="secrets" title="Secrets" note="API keys and tokens your team's jobs need, kept sealed in one vault. A job gets only the names its project's recipe lists, for that run.">
+              <SecretsSection canEdit={d.can_edit} />
+            </Section>
+          ) : null}
+
           {shown.filter((x) => x.g.id !== "owner" && show(x.g.id)).map(groupSection)}
 
-          {needle && !matched && !harnessShown && !notifyShown && !appearanceShown ? (
+          {needle && !matched && !harnessShown && !notifyShown && !appearanceShown && !secretsShown ? (
             <EmptyState
               icon={<SearchIcon className="size-[18px]" />}
               title={<>No setting matches &ldquo;{find.trim()}&rdquo;</>}

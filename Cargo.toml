@@ -61,6 +61,11 @@ tabwriter = "1.4"
 indexmap = { version = "2.14", features = ["serde"] }
 # the repository's own PULSE file (.pulse/pulse.yaml): pure Rust, no panics on bad input
 serde-saphyr = { version = "2.0", default-features = false, features = ["deserialize"] }
+# the team secret vault (ADR-070 rule 4): ChaCha20-Poly1305, X25519 and
+# HKDF-SHA256 from aws-lc-rs, already built for rustls (no new package);
+# zeroize wipes plaintext after a run
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+zeroize = "1.9"
 # ids, hashing, encoding
 uuid = { version = "1.26", features = ["v4"] }
 sha2 = "0.11"

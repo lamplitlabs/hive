@@ -69,6 +69,7 @@ pub mod references;
 pub mod register;
 pub mod reports;
 pub mod running;
+pub mod secrets_api;
 pub mod server;
 pub mod service;
 pub mod store_views;

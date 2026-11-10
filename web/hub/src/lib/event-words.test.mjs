@@ -235,6 +235,12 @@ test("every tool connection, skill, record, project and agent event has a plain-
 const OWNER = [
   "cred.set",
   "cred.clear",
+  "secret.key",
+  "secret.set",
+  "secret.removed",
+  "secret.granted",
+  "secret.refused",
+  "secret.read",
   "chat.wake",
   "chat.finish",
   "goal.amend",

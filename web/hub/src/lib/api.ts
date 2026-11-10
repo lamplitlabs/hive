@@ -3455,6 +3455,24 @@ export interface SkillInput {
 
 export type SkillPatch = Partial<SkillInput>;
 
+// ----- Secrets: the team secret vault (`/api/v1/secrets`, ADR-070 rule 4) --
+// Names, who set each and when; never a value. A write sends the value once
+// and the brain seals it in memory (crates/pulse-hub/src/secrets_api.rs).
+
+export interface SecretEntry {
+  name: string;
+  created_by: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+  sealed_bytes: number; // bytes of the sealed value, not of the secret
+}
+
+export interface SecretsPayload {
+  secrets: SecretEntry[];
+  max_bytes: number;
+}
+
 // ----- Memory: what agents remembered across runs (`/api/v1/memory`) -------
 // One Markdown file of dated bullets per project under ~/.pulse/memory/, one
 // for the owner that every project reads, one shared by chats without a
@@ -3988,6 +4006,11 @@ export const writes = {
     patch<{ skill: Skill }>("skills/" + enc(id), input),
   setSkillStatus: (id: string, status: McpStatus) =>
     post<{ skill: Skill }>("skills/" + enc(id) + "/status", { status }),
+  // Secrets: the same writes `pulse secret set` / `pulse secret rm` make.
+  setSecret: (name: string, value: string) =>
+    post<{ secret: SecretEntry }>("secrets", { name, value }),
+  removeSecret: (name: string) =>
+    post<{ removed: string }>("secrets/" + enc(name) + "/remove", {}),
   // Memory: the same writes an agent's `memory remember` / `memory forget` make.
   rememberMemory: (input: MemoryWrite) =>
     post<MemoryWritten>("memory", input),

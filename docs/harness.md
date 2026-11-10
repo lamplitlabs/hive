@@ -439,6 +439,51 @@ A read-only run's budget notice asks for the report without the commit, a
 helper started by a read-only run is read-only too, and the fenced
 `edit` block is refused like the tool.
 
+### Team secrets (the vault)
+
+A job that needs an API key or token gets it from the team vault (ADR-070
+rule 4, step 4), never from a file in its clone. The brain keeps the
+vault in its store: the `secrets` table holds only ciphertext
+(ChaCha20-Poly1305 under one team data key, a fresh nonce per write and the
+name bound as associated data). The data key is stored wrapped, once per
+holder: X25519 to the holder's key, then HKDF-SHA256 and ChaCha20-Poly1305.
+Today the brain is the only holder. Its key is a mode-0600 file in the
+brain's private directory, outside the store. The step 2 device registry
+adds a holder per paired device.
+
+- `printf %s "$TOKEN" | pulse secret set NAME` seals a value. The value
+  comes on stdin only. It is refused from a terminal and from inside a job,
+  so it never sits in shell history or a run log. `pulse secret list
+  [--json]` shows names, who set them and when, never values. `pulse
+  secret rm NAME` removes one. A name is an environment variable name, and
+  a value is at most 64 KiB. The hub's Settings → Secrets panel does the
+  same over `/api/v1/secrets`. It lists names, seals a new value and
+  removes one, and it never answers a value.
+- A project's environment recipe declares the names its jobs may have:
+  `secrets: [DEPLOY_TOKEN, SENTRY_DSN]` beside `env:`. A recipe never holds
+  a value.
+- When a job runs, the brain grants every name the recipe declares and
+  records `secret.granted`. A brief line `Secrets: A, B` asks for names.
+  Each asked name the recipe does not declare (or that is not a valid
+  name) is refused with the reason, and the refusal is recorded as
+  `secret.refused`. The refusal is logged as `secret NAME refused: ...`,
+  and the run carries on without that name.
+- On the brain's own executor (LocalExec), the granted values are opened
+  in memory and handed to the worker process as environment variables for
+  that run only, with one `secret.read` event per name. They are wiped when
+  the worker ends. Every value is replaced by `[secret NAME]` in the run
+  log and in the parsed result before either is stored. Events carry names,
+  never values. Setting and removing a value record `secret.set` and
+  `secret.removed`.
+- Remote hands cannot open the vault yet. A project whose recipe declares
+  `secrets:` is marked unfit on them ("needs vault secrets, which only the
+  brain opens yet"), so its jobs run on the brain.
+
+Not built yet (TASK-097): a hand opening the team key with its own device
+key (needs step 2's registry), provider logins as reserved vault names,
+and `vault://NAME` references for MCP and cloud credentials. The vault adds
+no setting.
+
 ## Budgets, context and compaction
 
 ### Reasoning effort and prompt caching

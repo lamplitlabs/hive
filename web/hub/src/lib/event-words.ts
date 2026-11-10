@@ -178,6 +178,14 @@ export const VERB: Record<string, string> = {
   // pulse-cred-setup setup.rs: the push credential (push.credential).
   "cred.set": "saved the credential PULSE pushes with",
   "cred.clear": "removed the credential PULSE pushes with",
+  // pulse-store vault.rs and pulse-runner secrets.rs: the team secret vault
+  // (ADR-070 rule 4). Names only; a value is never in an event.
+  "secret.key": "created the team's vault key",
+  "secret.set": "saved a secret in the team vault",
+  "secret.removed": "removed a secret from the team vault",
+  "secret.granted": "gave a job the vault secrets its project declares",
+  "secret.refused": "kept vault secrets from a job",
+  "secret.read": "opened a vault secret for a job",
   // pulse-harness conversation.rs WAKE_ACTION/FINISH_ACTION: a message for a
   // conversation (`pulse chat wake`), its pull request merged.
   "chat.wake": "woke a conversation with a message",
