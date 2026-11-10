@@ -119,40 +119,11 @@ pub(crate) trait Executor {
         self.cleanup()
     }
 }
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RunLog(Arc<Mutex<Vec<String>>>);
-impl RunLog {
-    pub(crate) fn add(&self, line: impl Into<String>) {
-        self.0.lock().expect("run log").push(line.into())
-    }
-    pub(crate) fn put(&self, line: &str) {
-        self.0.lock().expect("run log").push(line.into())
-    }
-    pub(crate) fn text(&self) -> String {
-        self.0
-            .lock()
-            .expect("run log")
-            .iter()
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
-impl Write for RunLog {
-    fn write(&mut self, p: &[u8]) -> std::io::Result<usize> {
-        for line in String::from_utf8_lossy(p)
-            .trim_end_matches('\n')
-            .split('\n')
-        {
-            self.put(line);
-        }
-        Ok(p.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+// The run's log, the clone's preparation, the worker's run and the
+// clone's cleanup live with the executor path (pulse-hand-core, ADR-070
+// step 1d); LocalExec feeds them plain values from its rows.
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::local::{RunLog, preflight_run_key, worker_dirs};
 pub(crate) fn tail_str(s: &str, n: usize) -> String {
     crate::executor::tail(s, n)
 }
@@ -308,74 +279,18 @@ impl Executor for LocalExec {
         worker_dirs(&self.home)
     }
     fn prepare(&mut self, cancel: &pulse_bus::CancellationToken) -> Result<String> {
-        preflight_run_key(&self.key)?;
-        if let Some(base) = self.resume_base.take() {
-            if Path::new(&self.clone_dir).join(".git").exists() {
-                // The held run's clone, edits and commits included; strays
-                // its worker left go, the identity is set for this run.
-                crate::proc::sweep_job_dir(&self.clone_dir, &mut |line| self.log.add(line));
-                crate::keys::configure_clone_identity(
-                    &self.clone_dir,
-                    &self.agent,
-                    &self.key,
-                    &crate::keys::provenance_hook(&self.agent, &self.job.str("id"), &self.name()),
-                )?;
-                self.log.add(format!(
-                    "clone kept from the held run (base {})",
-                    crate::recipe::short(&base, 12)
-                ));
-                return Ok(base);
-            }
-            self.log
-                .add("the held run's clone is gone; cloning anew".to_string());
-        }
-        // A clone left by an earlier attempt goes, with whatever still runs in it.
-        if Path::new(&self.clone_dir).exists() {
-            crate::proc::sweep_job_dir(&self.clone_dir, &mut |line| self.log.add(line));
-            let _ =
-                crate::retention::discard_dir(Path::new(&self.home), Path::new(&self.clone_dir));
-        }
-        let mut args = vec![
-            "git".to_string(),
-            "clone".to_string(),
-            "-q".to_string(),
-            "--no-tags".to_string(),
-        ];
-        let branch = self.branch_to_clone();
-        if !branch.is_empty() {
-            args.extend(["-b".to_string(), branch]);
-        }
-        args.extend([self.root.clone(), self.clone_dir.clone()]);
-        let out = crate::proc::run_group(
-            cancel,
-            &args,
-            "",
-            &crate::util::git_env(&[]),
-            &[],
-            Duration::from_secs(300),
-        )?;
-        self.log.add(format!(
-            "$ git clone -q --no-tags\n{}{}",
-            out.stdout, out.stderr
-        ));
-        if out.exit_code != 0 {
-            return Err(
-                crate::util::fail(1, format!("clone failed: {}", out.stderr.trim())).into(),
-            );
-        }
-        let _ = crate::util::git(&self.clone_dir, &["remote", "remove", "origin"]);
-        crate::keys::configure_clone_identity(
-            &self.clone_dir,
-            &self.agent,
-            &self.key,
-            &crate::keys::provenance_hook(&self.agent, &self.job.str("id"), &self.name()),
-        )?;
-        Ok(
-            crate::util::git_check(&self.clone_dir, &["rev-parse", "HEAD"])?
-                .stdout
-                .trim()
-                .to_string(),
-        )
+        let prep = pulse_hand_core::local::ClonePrep {
+            home: self.home.clone(),
+            root: self.root.clone(),
+            clone_dir: self.clone_dir.clone(),
+            branch: self.branch_to_clone(),
+            key: self.key.clone(),
+            agent: self.agent.clone(),
+            job_id: self.job.str("id"),
+            executor: self.name(),
+            resume_base: self.resume_base.take(),
+        };
+        pulse_hand_core::local::prepare_clone(cancel, &prep, &self.log)
     }
     fn run_worker(
         &mut self,
@@ -384,44 +299,20 @@ impl Executor for LocalExec {
         env: &BTreeMap<String, String>,
         minutes: i32,
     ) -> Result<Outcome> {
-        preflight_run_key(&self.key)?;
-        let worker_env = worker_env_with_cli_path(&crate::proc::environ(), env);
-        let tmp = crate::tmpspace::worker_tmp_dir(&worker_env);
-        std::fs::create_dir_all(&tmp).map_err(|e| {
-            crate::util::fail(
-                1,
-                format!(
-                    "setup-error: worker TMPDIR {tmp} cannot be made ({e}); the worker was not started so no work is lost"
-                ),
-            )
-        })?;
-        crate::tmpspace::preflight_tmp_space(&tmp, crate::tmpspace::MIN_TMP_SPACE)?;
-        self.begun = true;
-        let budget = if minutes <= 0 {
-            Duration::from_secs(1)
-        } else {
-            Duration::from_secs(minutes as u64 * 60)
-        };
-        let id = self.execution(env.clone());
-        let observer = self.observer(id);
-        let out = crate::proc::run_group_observed(
-            cancel,
+        // The clone and key are copied out: the observer closure below
+        // borrows the executor mutably while the run borrows these.
+        let (clone_dir, key) = (self.clone_dir.clone(), self.key.clone());
+        let run = pulse_hand_core::local::WorkerRun {
+            clone_dir: &clone_dir,
+            key: &key,
             cmd,
-            &self.clone_dir,
-            &worker_env,
-            &[],
-            budget,
-            observer.as_ref(),
-        )
-        .map_err(|e| {
-            let exec_err = e.to_string().to_lowercase();
-            crate::util::fail(
-                1,
-                format!(
-                    "worker command not found: {}: {exec_err}",
-                    cmd.first().cloned().unwrap_or_default()
-                ),
-            )
+            env,
+            minutes,
+        };
+        let out = pulse_hand_core::local::run_worker(cancel, &run, || {
+            self.begun = true;
+            let id = self.execution(env.clone());
+            self.observer(id)
         })?;
         self.last_out = Some(out.stdout.clone());
         Ok(out)
@@ -555,35 +446,23 @@ impl Executor for LocalExec {
         crate::util::git_env(&[])
     }
     fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
-        // Servers and watchers the worker left behind go before their
-        // directory does; the directory itself is renamed into the trash in
-        // an instant and deleted later by the low-priority remover.
-        crate::proc::sweep_job_dir(&self.clone_dir, &mut |line| self.log.add(line));
-        let left = crate::tidy::clear_leftovers(&self.clone_dir);
-        let home = Path::new(&self.home);
-        let _ = crate::retention::discard_dir(home, Path::new(&self.clone_dir));
-        let _ = crate::retention::discard_dir(home, Path::new(&self.run_tmp_dir()));
-        crate::retention::empty_trash_later(home);
-        crate::keys::remove_run_key(&self.key);
-        left
+        pulse_hand_core::local::cleanup_clone(
+            &pulse_hand_core::local::CloneCleanup {
+                home: self.home.clone(),
+                clone_dir: self.clone_dir.clone(),
+                run_tmp_dir: self.run_tmp_dir(),
+                key: self.key.clone(),
+            },
+            &self.log,
+        )
     }
     fn set_resume(&mut self, base: &str) {
         self.resume_base = Some(base.to_string());
     }
     fn hold(&self) -> Vec<crate::tidy::Leftover> {
-        // Only the strays go: the clone with the worker's edits and commits,
-        // its temp dir and the signing key its commits carry stay for the
-        // run that carries on, which must sign with the same key.
-        crate::proc::sweep_job_dir(&self.clone_dir, &mut |line| self.log.add(line));
+        pulse_hand_core::local::hold_clone(&self.clone_dir, &self.log);
         Vec::new()
     }
-}
-pub(crate) fn preflight_run_key(path: &str) -> Result<()> {
-    let meta = std::fs::metadata(path).map_err(|e| crate::util::fail(1, format!("setup-error: the run's signing key {path} is missing ({e}); the worker was not started so no work is lost (ADR-022)")))?;
-    if meta.len() == 0 {
-        return Err(crate::util::fail(1, format!("setup-error: the run's signing key {path} is empty; the worker was not started so no work is lost (ADR-022)")).into());
-    }
-    Ok(())
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SshExec {
@@ -1170,26 +1049,6 @@ pub(crate) fn make_executor(
         ),
     )
     .into())
-}
-pub(crate) fn worker_dirs(home: &str) -> Vec<String> {
-    let mut dirs = vec![home.to_string()];
-    if let Some(parent) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.display().to_string()))
-    {
-        dirs.push(parent);
-    }
-    dirs.push(std::env::temp_dir().display().to_string());
-    if Path::new("/tmp").is_dir() {
-        dirs.push("/tmp".into());
-    }
-    let mut out = Vec::new();
-    for d in dirs {
-        if !out.contains(&d) {
-            out.push(d);
-        }
-    }
-    out
 }
 /// Points the harness worker at the held run's trajectory: it carries that
 /// conversation on and opens with the brief as its continuation message.
