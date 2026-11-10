@@ -334,12 +334,14 @@ pub(crate) fn retarget_pull_request(
 /// deletes it with a lease on the head it judged, so a push made since is
 /// never lost.
 pub(crate) fn close_pull_request(
+    s: &pulse_store::Store,
     root: &str,
     repo: &str,
     number: i64,
     comment: &str,
 ) -> Result<(), String> {
     gh(
+        s,
         root,
         repo,
         &["pr", "close", &number.to_string(), "--comment", comment],
