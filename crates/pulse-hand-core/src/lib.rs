@@ -12,6 +12,7 @@ pub mod beat;
 pub mod ctx;
 pub mod error;
 pub mod hands;
+pub mod local;
 pub mod machine;
 pub mod names;
 pub mod needs;

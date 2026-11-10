@@ -2,6 +2,12 @@
 use crate::util::Row;
 use anyhow::{Result, anyhow};
 pub(crate) use pulse_hand_core::provenance::{PROVENANCE_TRAILERS, provenance_hook};
+// The clone's signing identity is set by the executor path (pulse-hand-core,
+// ADR-070 step 1d) so the hand configures it the very same way.
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::local::{
+    agent_email, configure_clone_identity, git_config_quote, git_config_section, remove_run_key,
+};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -9,9 +15,6 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 pub(crate) static OWNER_PATHS: &[&str] = pulse_tally::OWNER_PATHS;
-pub(crate) fn agent_email(agent: &str) -> String {
-    format!("{agent}@pulse.local")
-}
 pub(crate) fn make_run_key(path: &str, agent: &str, run_id: &str) -> Result<String> {
     let pub_path = format!("{path}.pub");
     let _ = std::fs::remove_file(path);
@@ -99,10 +102,6 @@ pub(crate) fn reuse_run_key(path: &str) -> Result<String> {
         .into());
     }
     Ok(fields.join(" "))
-}
-pub(crate) fn remove_run_key(path: &str) {
-    let _ = std::fs::remove_file(path);
-    let _ = std::fs::remove_file(format!("{path}.pub"));
 }
 pub(crate) const PRE_COMMIT_HOOK_UNSET: &str = "unset GIT_INDEX_FILE GIT_PREFIX GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE";
 /// The hook runs `check_cmd` (the project's check inside the verify lock,
@@ -212,52 +211,6 @@ if [ -n \"$tree\" ]; then
 fi"
     );
 }
-pub(crate) fn configure_clone_identity(
-    clone: &str,
-    agent: &str,
-    key_path: &str,
-    hook_text: &str,
-) -> Result<()> {
-    if !crate::util::file_exists(key_path) {
-        return Err(crate::util::fail(1, format!("the run's signing key {key_path} does not exist; refusing to configure user.signingkey (ADR-022)")).into());
-    }
-    let hooks = Path::new(clone).join(".git").join("hooks");
-    let mut identity = String::new();
-    for (key, value) in [
-        ("user.name", agent.to_string()),
-        ("user.email", agent_email(agent)),
-        ("gpg.format", "ssh".to_string()),
-        ("gpg.ssh.program", "ssh-keygen".to_string()),
-        ("user.signingkey", key_path.to_string()),
-        ("commit.gpgsign", "true".to_string()),
-        ("tag.gpgsign", "false".to_string()),
-        ("core.hooksPath", hooks.display().to_string()),
-    ] {
-        let leaf = key.rsplit_once('.').map(|(_, x)| x).unwrap_or(key);
-        let _ = writeln!(
-            identity,
-            "{}\t{} = {}",
-            git_config_section(key),
-            leaf,
-            git_config_quote(&value)
-        );
-    }
-    let identity_path = Path::new(clone).join(".git").join("pulse-identity");
-    std::fs::write(&identity_path, identity)?;
-    crate::util::git_check(
-        clone,
-        &[
-            "config",
-            "include.path",
-            &identity_path.display().to_string(),
-        ],
-    )?;
-    std::fs::create_dir_all(&hooks)?;
-    let hook = hooks.join("prepare-commit-msg");
-    std::fs::write(&hook, hook_text)?;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
-    Ok(())
-}
 pub(crate) fn write_pre_commit_hook(clone: &str, script: &str) -> Result<()> {
     let hook = Path::new(clone)
         .join(".git")
@@ -266,22 +219,6 @@ pub(crate) fn write_pre_commit_hook(clone: &str, script: &str) -> Result<()> {
     std::fs::write(&hook, script)?;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
-}
-pub(crate) fn git_config_section(key: &str) -> String {
-    let (section, rest) = key.split_once('.').unwrap_or((key, ""));
-    if let Some((sub, _)) = rest.rsplit_once('.') {
-        format!("[{} {}]\n", section, git_config_quote(sub))
-    } else {
-        format!("[{section}]\n")
-    }
-}
-pub(crate) fn git_config_quote(v: &str) -> String {
-    format!(
-        "\"{}\"",
-        v.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-    )
 }
 pub fn signers_line(agent: &str, pubkey: &str) -> String {
     format!("{} namespaces=\"git\" {}\n", agent_email(agent), pubkey)
