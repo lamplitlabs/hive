@@ -12,6 +12,7 @@ use crate::settings::{default_settings, setting_names};
 use crate::tasks_ddl::{
     COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASK_COLUMNS, TASKS_DDL,
 };
+use crate::vault_ddl::VAULT_DDL;
 use anyhow::{Context, Result, anyhow};
 use chrono::{SecondsFormat, Utc};
 use regex::Regex;
@@ -1013,6 +1014,8 @@ pub fn additive_ddl() -> Vec<&'static [&'static str]> {
         HARNESS_DDL,
         MCP_DDL,
         CHAT_DDL,
+        VAULT_DDL,
+        crate::members::MEMBERS_DDL,
     ]
 }
 pub fn additive_columns() -> Vec<Column> {

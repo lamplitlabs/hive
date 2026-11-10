@@ -428,6 +428,13 @@ pub(crate) fn executor_rows(s: &pulse_store::Store, include_local: bool) -> Vec<
         "SELECT * FROM executors WHERE status != 'removed' ORDER BY name",
         &[],
     );
+    let rows = rows
+        .into_iter()
+        .map(|mut r| {
+            crate::dial::mark_row(s, &mut r);
+            r
+        })
+        .collect::<Vec<_>>();
     if include_local {
         let mut out = vec![local_executor_row(s)];
         out.extend(rows);
@@ -442,11 +449,13 @@ pub(crate) fn executor_row(s: &pulse_store::Store, name: &str) -> Row {
         return local_executor_row(s);
     }
     let conn = s.conn().unwrap();
-    must_one(
+    let mut r = must_one(
         &conn,
         "SELECT * FROM executors WHERE name = ? AND status != 'removed'",
         &[&name],
-    )
+    );
+    crate::dial::mark_row(s, &mut r);
+    r
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -826,6 +835,9 @@ pub(crate) fn ssh_run_context(
 ) -> Result<(i32, String, String)> {
     if r.str("kind") == HAND_KIND {
         return hand_run(cancel, r, args, stdin, timeout);
+    }
+    if r.str("kind") == crate::dial::DIAL_KIND {
+        return crate::dial::dial_run(cancel, r, args, stdin, timeout);
     }
     let argv = ssh_command(r, args)?;
     let res = run_ssh_connecting(cancel, &argv, stdin, timeout);

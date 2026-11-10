@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "pulse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-ask",
@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-ask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-board",
@@ -1652,7 +1652,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-board"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-bus"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "nix",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-codedelivery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-store",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-cred"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "hex",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-cred-command"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-cli",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-cred-setup"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-cred",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-evolve"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-gitenv"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pulse-testutil",
  "tempfile",
@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-goals"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-goals-command"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-board",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-hand"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-hand-core",
@@ -1848,9 +1848,10 @@ dependencies = [
 
 [[package]]
 name = "pulse-hand-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
+ "aws-lc-rs",
  "base64 0.23.1",
  "chrono",
  "crossbeam-channel",
@@ -1864,11 +1865,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "which",
+ "zeroize",
 ]
 
 [[package]]
 name = "pulse-harness"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1903,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-hooks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1928,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-hub"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1979,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-inspect"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2003,7 +2005,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2024,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-provider"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2043,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-provider-anthropic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2058,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-provider-copilot"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2076,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-provider-fake"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-provider",
@@ -2089,7 +2091,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-provider-gemini"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "pulse-provider",
@@ -2103,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-provider-openai"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2119,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-records"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2137,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-runner"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -2186,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2208,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-tally"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2229,7 +2231,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-tasks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2251,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-testutil"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -2264,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-voice"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "flate2",

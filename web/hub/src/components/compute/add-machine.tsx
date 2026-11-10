@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeftIcon, ArrowRightIcon, CheckCircle2Icon, CircleAlertIcon, CloudIcon, FolderIcon, KeyRoundIcon, LayersIcon, Loader2Icon, PlusIcon, ServerIcon, StethoscopeIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, CheckCircle2Icon, CircleAlertIcon, CloudIcon, FolderIcon, KeyRoundIcon, LayersIcon, Loader2Icon, PlugZapIcon, PlusIcon, RefreshCwIcon, ServerIcon, StethoscopeIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,16 +13,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { showApiError } from "@/components/pulse/confirm";
 import { Disclosure, Notice } from "@/components/pulse/panel";
 import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, type WizardStep } from "@/components/pulse/stepper";
+import { CopyButton } from "@/components/pulse/evolve";
 import { Mono } from "@/components/pulse/who";
 import { hrefs } from "@/lib/nav";
-import { errorText, writes, type AddMachineInput, type Compute, type ComputeCaps, type ComputeRequest, type MachineAdded, type Pairing, type ProjectsPayload } from "@/lib/api";
+import { errorText, writes, type AddMachineInput, type Compute, type ComputeCaps, type ComputeRequest, type JoinCode, type MachineAdded, type Pairing, type ProjectsPayload } from "@/lib/api";
 import { rel } from "@/lib/format";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 // Adding a machine from the console, as a few short steps instead of a
-// form full of ssh words. The three ways the shell offers:
+// form full of ssh words. The four ways the shell offers:
 //
+// - Run one command on it (ADR-070 step 2, the default): the hub issues a
+//   six-word join code good for ten minutes and one join, and shows the
+//   `pulse-hand join` line to run on the machine. The hand makes its own
+//   device key, enrols with the code and from then on dials out to the
+//   brain - no open port, no sshd, no key from the brain. The step watches
+//   the devices list and says when the machine has joined.
 // - Set it up for me (`pulse pair admin@host --name NAME`): the hub reaches
 //   an admin account over ssh, creates the pulse user, installs the hands,
 //   registers and probes the machine. "Check the machine" first runs the
@@ -85,10 +92,14 @@ export function AddMachineDialog({ open, onOpenChange, caps }: { open: boolean; 
   );
 }
 
-type Mode = "pair" | "register" | "request";
-type Step = "where" | "reach" | "use" | "details" | "review" | "done";
+type Mode = "join" | "pair" | "register" | "request";
+type Step = "where" | "code" | "reach" | "use" | "details" | "review" | "done";
 
 const STEPS: Record<Mode, WizardStep[]> = {
+  join: [
+    { id: "where", label: "Where" },
+    { id: "code", label: "Join code" },
+  ],
   pair: [
     { id: "where", label: "Where" },
     { id: "reach", label: "Reach it" },
@@ -109,6 +120,7 @@ const STEPS: Record<Mode, WizardStep[]> = {
 };
 
 const MODE_WORDS: Record<Mode, { title: string; icon: React.ComponentType<{ className?: string }>; blurb: string }> = {
+  join: { title: "Run one command on it", icon: PlugZapIcon, blurb: "Any Mac or Linux computer with pulse-hand installed. You run one line there; it calls PULSE from then on, so it needs no open port and no ssh." },
   pair: { title: "Set it up for me", icon: KeyRoundIcon, blurb: "A Linux computer you can reach over ssh with an admin account. PULSE installs what it needs and checks it." },
   register: { title: "It's already set up", icon: ServerIcon, blurb: "Someone installed PULSE's hands and a pulse user that answers ssh. PULSE adds it and checks it." },
   request: { title: "Rent one from the cloud", icon: CloudIcon, blurb: "Your cloud provider starts a machine for a few hours, the way an agent asks for one." },
@@ -136,7 +148,7 @@ const PROVIDER_NAME: Record<string, string> = { azure: "Azure", aws: "AWS", gcp:
 
 function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: () => void; lockRef: React.RefObject<boolean> }) {
   const provider = caps?.provider || "";
-  const [mode, setMode] = useState<Mode>("pair");
+  const [mode, setMode] = useState<Mode>("join");
   const [step, setStep] = useState<Step>("where");
   const [reach, setReach] = useState(0);
   // Reach it
@@ -164,13 +176,20 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const [run, setRun] = useState<{ started: string; name: string } | null>(null);
   const [checkError, setCheckError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Join: the code the hub issued and the error when it would not.
+  const [code, setCode] = useState<JoinCode | null>(null);
+  const [codeError, setCodeError] = useState("");
   const [done, setDone] = useState<{ kind: "pair" } | { kind: "register"; r: MachineAdded } | { kind: "request"; r: ComputeRequest } | null>(null);
   const body = useRef<HTMLDivElement>(null);
 
   const projectsQ = useApi<ProjectsPayload>("projects", { refresh: 60000 });
   const active = (projectsQ.data?.projects ?? []).filter((p) => p.status === "active" && p.slug !== "commons");
   const watching = !!(check || run);
-  const compute = useApi<Compute>(watching ? "compute" : null, { refresh: 1500 });
+  const compute = useApi<Compute>(watching || (step === "code" && !!code) ? "compute" : null, { refresh: watching ? 1500 : 3000 });
+  // The machine that joined with this code: a device enrolled after it was issued.
+  // The brain's own clock decides: issued = expires_at less the minutes it is good for.
+  const issuedMs = code ? Date.parse(code.expires_at) - code.minutes * 60000 : NaN;
+  const joined = code ? compute.data?.devices?.find((d) => !d.revoked_at && Date.parse(d.created_at) >= issuedMs) : undefined;
   const pairingOf = (w: { started: string; name: string } | null): Pairing | undefined => (w ? compute.data?.pairings?.find((p) => p.name === w.name && p.started === w.started) : undefined);
   const checked = pairingOf(check);
   const running = pairingOf(run);
@@ -206,6 +225,21 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
     projects: onlySome ? projects.join(",") : "",
     labels: offers.join(","),
   });
+
+  // A fresh join code: the old one, if any, simply lapses.
+  const getCode = async () => {
+    setCodeError("");
+    setBusy(true);
+    try {
+      setCode(await writes.joinCode());
+      go("code");
+    } catch (e) {
+      const t = errorText(e);
+      setCodeError([t.error, t.why, t.fix].filter(Boolean).join(" "));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // Check the machine: the pairing as a dry run, nothing on it changes.
   const startCheck = async () => {
@@ -253,6 +287,10 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const title =
     step === "where"
       ? "Add a machine"
+      : step === "code"
+        ? joined
+          ? "Machine joined"
+          : "Run this on the machine"
       : step === "reach"
         ? mode === "pair"
           ? "How PULSE reaches it"
@@ -277,6 +315,10 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const description =
     step === "where"
       ? "Another computer your agents can run on. Pick how you have it."
+      : step === "code"
+        ? joined
+          ? "It holds its own key now and calls PULSE for work. It starts taking work after its first call."
+          : "In a terminal on the computer you are adding. The code works once, for " + (code?.minutes ?? 10) + " minutes."
       : step === "reach"
         ? mode === "pair"
           ? "An account with passwordless sudo that this computer can ssh to. Check the machine first: it shows what PULSE would do, and changes nothing."
@@ -300,11 +342,18 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   let next: React.ReactNode = null;
   let why = "";
   if (step === "where")
-    next = (
-      <Button onClick={() => go(mode === "request" ? "details" : "reach")} disabled={mode === "request" && !provider}>
-        Continue <ArrowRightIcon />
-      </Button>
-    );
+    next =
+      mode === "join" ? (
+        <Button onClick={() => void getCode()} disabled={busy}>
+          {busy ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
+          Get a join code
+        </Button>
+      ) : (
+        <Button onClick={() => go(mode === "request" ? "details" : "reach")} disabled={mode === "request" && !provider}>
+          Continue <ArrowRightIcon />
+        </Button>
+      );
+  else if (step === "code") next = <Button onClick={close}>{joined ? "Done" : "Close"}</Button>;
   else if (step === "reach") {
     why = !addressOk ? "Enter the address as user@host." : !nameOk ? "Give it a name." : mode === "pair" && !checked ? "Checking first is recommended." : "";
     next = (
@@ -342,7 +391,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
       <WizardBody bodyRef={body}>
         {step === "where" ? (
           <div role="radiogroup" aria-label="How you have it" className="grid gap-2.5">
-            {(["pair", "register", "request"] as const).map((m) => (
+            {(["join", "pair", "register", "request"] as const).map((m) => (
               <ChoiceCard
                 key={m}
                 selected={mode === m}
@@ -352,11 +401,12 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                 }}
                 icon={MODE_WORDS[m].icon}
                 title={MODE_WORDS[m].title}
-                badge={m === "pair" ? <Badge variant="outline">Most common</Badge> : m === "request" && provider ? <Badge variant="outline">{providerName}</Badge> : null}
+                badge={m === "join" ? <Badge variant="outline">Recommended</Badge> : m === "request" && provider ? <Badge variant="outline">{providerName}</Badge> : null}
               >
                 {MODE_WORDS[m].blurb}
               </ChoiceCard>
             ))}
+            {mode === "join" && codeError ? <Notice tone="bad">{codeError}</Notice> : null}
             {mode === "request" && !provider ? (
               <Notice tone="info">
                 No cloud provider is set up yet.{" "}
@@ -368,6 +418,8 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
             ) : null}
           </div>
         ) : null}
+
+        {step === "code" && code ? <JoinCodeView code={code} joined={joined?.executor} busy={busy} onAgain={() => void getCode()} /> : null}
 
         {step === "reach" ? (
           <div className="grid gap-4">
@@ -653,6 +705,57 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
         right={next}
       />
     </>
+  );
+}
+
+// The join step: the line to run, the code by itself for the Mac app, how
+// long it is good for, and - once the hand has enrolled - which machine it is.
+function JoinCodeView({ code, joined, busy, onAgain }: { code: JoinCode; joined?: string; busy: boolean; onAgain: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, []);
+  const left = Math.max(0, Math.ceil((Date.parse(code.expires_at) - now) / 60000));
+  if (joined)
+    return (
+      <Notice tone="ok">
+        <span className="font-medium">{joined}</span> joined. It shows under All machines, where you can revoke its key.
+      </Notice>
+    );
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-1.5">
+        <Label>On the machine</Label>
+        <div className="flex items-start gap-2 rounded-lg border bg-muted/40 px-3 py-2.5">
+          <code className="min-w-0 flex-1 font-mono text-[13px] leading-relaxed break-all" aria-label="Join command">
+            {code.command}
+          </code>
+          <CopyButton text={code.command} size="xs" variant="outline" />
+        </div>
+        <p className="text-[13px] text-muted-foreground">It makes the machine&apos;s own key, joins with the code and then keeps calling PULSE for work. Leave it running, or start it as a service.</p>
+      </div>
+      <div className="grid gap-1.5">
+        <Label>Join code</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Mono className="rounded-md border px-2 py-1 text-sm">{code.code}</Mono>
+          <CopyButton text={code.code} size="xs" variant="ghost" label="Copy code" />
+        </div>
+        <p className="text-[13px] text-muted-foreground">For the Mac app&apos;s first screen. {left > 0 ? "Good for " + left + (left === 1 ? " more minute" : " more minutes") + ", one join." : "It has lapsed."}</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-[13px] text-muted-foreground">
+        {left > 0 ? (
+          <span className="inline-flex items-center gap-1.5">
+            <Loader2Icon className="size-3.5 animate-spin" /> Waiting for the machine to join…
+          </span>
+        ) : (
+          <span>The code lapsed before a machine joined.</span>
+        )}
+        <Button variant="ghost" size="sm" onClick={onAgain} disabled={busy} className="ml-auto">
+          <RefreshCwIcon /> New code
+        </Button>
+      </div>
+    </div>
   );
 }
 

@@ -310,7 +310,7 @@ pub(crate) fn sync_default_from_upstream(
         return None;
     }
     memo_now(&fetch_key);
-    let (env, cleanup, why) = push_credential_env(s, root.clone());
+    let (env, cleanup, why) = remote_credential_env(s, root.clone(), &up.url);
     if !why.is_empty() {
         return Some(format!("{slug}: fetch of {} skipped: {why}", up.name()));
     }
@@ -470,6 +470,60 @@ pub(crate) fn push_credential_env(
     };
     let env = vec![format!("GIT_SSH_COMMAND={}", material.ssh_command)];
     (env, Box::new(move |_, _| material.cleanup()), String::new())
+}
+
+/// The environment a brain-side fetch or push of `url` runs with: the
+/// GitHub App's installation token for that one repository through a
+/// credential helper that lives until the cleanup is called (ADR-070
+/// step 3), when an App is configured and `url` is on its host; else
+/// `push_credential_env`, today's path. A token that cannot be minted is
+/// written down as `gitapp.fallback` (the reason, never a secret) and the
+/// command falls back to `push.credential` and this machine's logins.
+#[allow(clippy::type_complexity)]
+pub(crate) fn remote_credential_env(
+    s: &pulse_store::Store,
+    root: String,
+    url: &str,
+) -> (
+    Vec<String>,
+    Box<dyn Fn(&str, &[serde_json::Value]) + Send + Sync>,
+    String,
+) {
+    match crate::gitapp::token_for_url(s, url) {
+        None => {}
+        Some(Ok((repo, token))) => match crate::gitapp::helper_env(s, &token, &repo) {
+            Ok((helper, env)) => {
+                let helper = Mutex::new(Some(helper));
+                return (
+                    env,
+                    Box::new(move |_, _| {
+                        helper.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    }),
+                    String::new(),
+                );
+            }
+            Err(why) => app_fallback(s, &repo, &why),
+        },
+        Some(Err(why)) => {
+            let repo = crate::gitapp::app_remote(url)
+                .map(|(_, r)| r)
+                .unwrap_or_default();
+            app_fallback(s, &repo, &why);
+        }
+    }
+    push_credential_env(s, root)
+}
+
+fn app_fallback(s: &pulse_store::Store, repo: &str, why: &str) {
+    let _ = s.event(
+        "daemon",
+        "gitapp.fallback",
+        repo,
+        serde_json::json!({
+            "repo": repo,
+            "why": pulse_cred::redact(&crate::executor::redact_tokens(why), &[]),
+        }),
+    );
 }
 
 /// The push credential leased to a hand for one push (ADR-070 step 1b):

@@ -82,7 +82,7 @@ public struct PulseSetup: Equatable, Sendable {
         return env
     }
 
-    static func fallbackPath(userHome: String?) -> String {
+    public static func fallbackPath(userHome: String?) -> String {
         var dirs: [String] = []
         if let home = userHome, !home.isEmpty {
             dirs += ["\(home)/.pulse/bin", "\(home)/.cargo/bin", "\(home)/.local/bin"]
