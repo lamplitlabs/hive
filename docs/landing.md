@@ -109,8 +109,15 @@ pull request (`pulse/chat-<id>`) is never stacked and never stacked on: the
 hub keeps its branch checked out in a worktree of its own, so nothing is
 merged into it and nothing is built on it. It targets the default branch
 whatever is open, and the next pull request of another kind goes on the
-task or job pull request below it. A `pulse review`'s fix goes onto the pull
-request it fixes, wherever that stands.
+task or job pull request below it. An experiment's pull request
+(`evolve/<id>`, kind `experiment`, and any `evolve/` branch proposed by hand)
+stays out of the stack the same way: the experiment was measured on the
+default branch, so its branch goes out based on the default branch, never
+on another open pull request, and nothing is built on it - a pull request
+merged into a pull request strands its change when the one below is closed
+or squashed ([Experiment pull requests](#experiment-pull-requests)). A
+`pulse review`'s fix goes onto the pull request it fixes, wherever that
+stands.
 
 A worker may build on the stack itself: a follow-up task whose brief names
 the sibling's branch and commit (TASK-078 on TASK-077's, 2026-11-05) puts
@@ -169,6 +176,34 @@ a stacked pull request and name the one that must merge first; `pulse
 review list` shows `stacked on #7` on its line. Nothing you merge yourself
 by hand needs a different order: merge the bottom and the pass moves the
 rest down within a pass.
+
+## Experiment pull requests
+
+Each pass looks after an experiment's open pull request
+(`crates/pulse-runner/src/delivery/experiments.rs`) on top of what any open
+pull request gets:
+
+- **Its change is on the default branch already** - landed by a squash, a
+  cherry-pick, another pull request, or a merge the forge did not record as
+  this one's: merging the head would change nothing (`git merge-tree` of the
+  default branch and the head gives the default branch's own tree; after
+  the default branch was squashed to a new root, from the base the pull
+  request was delivered on). The pass closes it with a comment naming the
+  commit that holds its change (`gh pr close <n> --comment`; the commit with
+  the same patch when there is one, else the newest that touched its files),
+  records `land.pr-closed` with `reason` `superseded` and `superseded_by`,
+  moves any pull request built on it onto its base, and deletes its branch
+  on the remote (`--force-with-lease` on the head it judged, so a push made
+  since keeps it) and in the checkout.
+- **Open three days with no push** (`STALE_DAYS`, from its newest
+  `land.pr`): one based on the default branch that lacks the default
+  branch's tip takes it in and is pushed (`land.pr-refreshed`, as for a
+  conflict), which restarts the clock; one that does not merge cleanly, or
+  that stands on another pull request, is closed with a comment saying why
+  (`land.pr-closed`, `reason` `stale`). Its branch stays on the remote, and
+  the experiment can be planned again on the default branch.
+
+A forge or push failure leaves no event and is tried again next pass.
 
 ## Polling and bookkeeping
 
@@ -332,7 +367,7 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr-checks` | checks failed on an open pull request's head; the origin was told | `project`, `kind`, `number`, `head`, `head_sha`, `base`, `checks` (the failing names) |
 | `land.merged` | the poll found the pull request merged | `project`, `kind`, `number`, `url`, `head`, `base`, `jobs`, `merged_at`, the same ids |
 | `land.evidence` | the pass after a merge read which files the pull request changed: the merge commit on the default branch against its first parent, or the pull request's base against its head when the history no longer holds that merge; the Code delivered report counts source changes from it | `project`, `number`, `merged_seq` (the `land.merged` it completes), `sha`, `code_delivery`, `work` |
-| `land.pr-closed` | the poll found it closed unmerged | the same, without `merged_at` |
+| `land.pr-closed` | the poll found it closed unmerged, or the pass closed an experiment's pull request | the same, without `merged_at`; when the pass closed it, `reason` (`superseded`: its change is on the default branch, in `superseded_by`; `stale`: no push for three days and it could not be brought up to date) and `head_sha` |
 | `land.pr-rebuilt` | a pull request stacked on one closed unmerged was rebuilt on the new base without the closed one's commits, force-pushed and retargeted | `project`, `kind`, `number`, `url`, `head`, `old_base`, `base` (the new one), `from` (the head before), `to` (the new head), `commits` (its own), `dropped` (`number` of the closed pull request, `commits` it took with it); the matching `land.pr` carries `rebuilt` true and `retargeted_from`. A rebuild that conflicts is a `land.pr-held` with `closed`, `base` and `files` instead |
 | `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
 | `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |

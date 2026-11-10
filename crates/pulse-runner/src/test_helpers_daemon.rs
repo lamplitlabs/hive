@@ -813,6 +813,12 @@ impl FakeGh {
             .to_string()
     }
 
+    /// The comment `pr close N --comment` left on pull request `n`; empty
+    /// when it was not closed that way.
+    pub(crate) fn close_comment_of(&self, n: i64) -> String {
+        std::fs::read_to_string(self.dir.join(format!("comment-{n}"))).unwrap_or_default()
+    }
+
     /// The base pull request `n` targets: as `pr create` was given it, or
     /// as the last `pr edit --base` moved it.
     pub(crate) fn base_of(&self, n: i64) -> String {
@@ -895,6 +901,13 @@ case "$1 $2 $3" in
   "pr view "*)
     [ -e "$d/state/$3" ] || {{ echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }}
     pr_json "$3" ;;
+  "pr close "*)
+    [ -e "$d/state/$3" ] || {{ echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }}
+    echo CLOSED > "$d/state/$3"
+    c=""; prev=""
+    for a in "$@"; do [ "$prev" = "--comment" ] && c="$a"; prev="$a"; done
+    printf '%s' "$c" > "$d/comment-$3"
+    echo "Closed pull request #$3" ;;
   *) echo "unexpected gh $*" >&2; exit 2 ;;
 esac
 "#,
