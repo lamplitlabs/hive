@@ -141,8 +141,13 @@ request that targeted its head onto its own base (`gh pr edit <n> --base`;
 the default branch when the merged one was the bottom) and writes a fresh
 `land.pr` for each with the new `base`, `stack_on` for the new one below or
 absent, `opened` false and `retargeted_from` naming the old base; a forge
-failure leaves no event and the next pass tries again. GitHub moves a pull
-request itself when the branch below is deleted; PULSE does not count on it.
+failure leaves no event and the next pass tries again. The merge below
+keeps its branch on the upstream while a pull request is based on it
+(`review.merged` names them in `branch_kept_for`): GitHub closes, and never
+reopens, the pull requests whose base branch an API merge with
+`--delete-branch` deletes - #170 was lost that way when #168 merged. Once
+the pass has moved every pull request off it, it deletes that branch,
+leased on the merged head (`<head> deleted on origin` in the log).
 A pull request below that is closed unmerged leaves its commits in the one
 above, and moving that one down would carry the rejected work into the
 base through its merge; so the pass rebuilds it instead: the branch as the
@@ -1279,6 +1284,66 @@ world](board.md#connecting-the-outside-world-pulse-mcp)). Only the owner runs `p
 cred token|set|clear` or sets `push.credential`; agents may read `pulse cred
 status`. Rolling back is `pulse cred clear` (ADR-037's behaviour
 returns at once), then revoke the service account and the deploy key.
+
+### One git login for every machine: a GitHub App (ADR-070 step 3)
+
+A push key belongs to one machine. A GitHub App is logged in to once, on the
+web, and every git command PULSE runs inherits it through a token that lasts
+an hour and opens one repository - no key and no personal access token stays
+on any machine. Three settings name it, all in Settings → **Git**:
+
+- `git.github_app.app_id` - the number on the App's settings page;
+- `git.github_app.installation_id` - the number at the end of its installation
+  page (`github.com/settings/installations/N`, or the organization's);
+- `git.github_app.private_key_ref` - where the App's private key (the `.pem`
+  GitHub downloads) lives: `op://`, `keychain://` or `file://`, as for
+  `push.credential`. Only the reference is stored; only the brain reads the
+  key (ADR-041 D4 refuses it inside a job).
+
+The owner's steps, once:
+
+1. On GitHub, **Settings → Developer settings → GitHub Apps → New GitHub App**
+   (Settings → Git → *Register a GitHub App* opens the page). Give it a name,
+   any homepage, no webhook, and the repository permissions **Contents: Read
+   and write**, **Pull requests: Read and write** and **Metadata: Read**
+   (add **Actions: Read** and **Checks: Read** for the pipeline reads).
+2. Note its **App ID**, then **Generate a private key** and keep the
+   downloaded `.pem` where a reference can reach it (a 1Password item, a
+   Keychain item, or a 0600 file).
+3. **Install App** on your account or organization and pick the repositories
+   PULSE works on; the installation page's url ends in the installation id.
+4. Fill in the three settings. Settings → Git then shows the installation's
+   account and the repositories it covers (asked of the App API through
+   `GET /api/v1/git-app`), and *Add or remove repositories* opens GitHub's
+   install page for the App.
+
+For one repository the brain signs a ten-minute App JWT (RS256, with the
+`openssl` command; the key reaches it on stdin), exchanges it at
+`POST /app/installations/{id}/access_tokens` for a token scoped to that
+repository alone, and keeps the token in memory until five minutes before it
+expires, so it is minted again after 55 minutes. The token then goes where
+the push key went, as a lease that lives as long as one command:
+
+- the daemon's own fetches and pushes of a remote on the App's host (an
+  `https`, `ssh` or `git@host:` url) run with a credential helper installed
+  for that call under `$PULSE_HOME/tmp/gitcred` and removed afterwards; an
+  ssh remote is sent over https for the call (`url.*.insteadOf`), so the
+  configured remote never changes;
+- `gh` for pull requests and reviews gets it as `GH_TOKEN` and runs as the App
+  before any remembered login is tried;
+- a hand gets it on the stdin of its `push` verb and installs the same helper
+  for the push (see [Machines](machines.md)).
+
+When the App is not configured, or the remote is on another host, nothing
+changes: `push.credential` and then the machine's own logins are used as
+above. When it is configured but GitHub refuses the exchange (a revoked key,
+an installation that lost the repository), the call falls back to the same
+path, a `gitapp.fallback` event names the repository and GitHub's words, and
+Settings → Git shows the error. Neither the token nor the key appears in a log
+line, an event or an error. `pulse executor login --with-token` stays in place
+for now; the App is preferred when it is set. Not yet on the App: the
+pipeline's CI reads (they keep the remembered `gh` logins) and hands that dial
+in from another machine (ADR-070 step 2).
 
 Where this runs: the daemon is a launchd agent on macOS and a `systemd
 --user` service on Linux, and the credential behaves the same on both - the

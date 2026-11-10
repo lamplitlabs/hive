@@ -42,6 +42,18 @@ swift test --package-path "$here" >&2
 say "== build"
 "$here/scripts/build.sh" >/dev/null
 
+# The join screen's step against a stub brain, with the pulse-hand the app
+# carries (HandJoinTests ran with a stand-in above): a wrong code shows the
+# brain's 403, a good one writes device.json. A pulse-hand from before
+# `pulse-hand join` (ADR-070 step 2) is skipped, not failed.
+helper="$app/Contents/Helpers/pulse-hand"
+if [ -x "$helper" ] && "$helper" --help 2>&1 | grep -q 'pulse-hand join'; then
+  say "== join with the bundled pulse-hand"
+  PULSE_HAND_BIN="$helper" swift test --package-path "$here" --filter HandJoinTests >&2
+else
+  say "== join with the bundled pulse-hand: skipped (no pulse-hand with join in the app)"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   say "== run: skipped (no node for the mock console)"
   exit 0

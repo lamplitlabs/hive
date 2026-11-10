@@ -37,6 +37,10 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
     private var loadFailed = false
     /// The native screen covers the page (set at once; the fade only follows).
     private var covering = false
+    /// The join screen (ADR-070 step 2), while it shows: what is typed and what happened.
+    private var joinForm: JoinFields?
+    /// A join that finished: the screen that says so, until Done.
+    private var joinDone: StatusContent?
     private var crashes: [Date] = []
     /// New windows the page asked for recently (window.open, target=_blank).
     private var popups: [Date] = []
@@ -235,6 +239,30 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
     // MARK: - The console's state
 
     private func render(_ state: HubState) {
+        // The join screen stays until the owner is done with it; the console
+        // behind it keeps its address so Done can show it at once.
+        if joinForm?.firstLaunch == true {
+            // Try Again keeps what was typed while it looks; a PULSE that
+            // answers (installed, or chosen) shows its console instead.
+            switch state {
+            case .connecting, .reconnecting: break
+            case .problem where Self.noPulse(state): break
+            default: joinForm = nil
+            }
+        }
+        if var fields = joinForm, !fields.firstLaunch, Self.noPulse(state) {
+            // No PULSE here after all: the join screen is the first-launch one.
+            fields.firstLaunch = true
+            joinForm = fields
+            renderJoin()
+        }
+        if joinForm != nil || joinDone != nil {
+            if case .ready(let url) = state {
+                policy = LinkPolicy(console: url)
+                beside.policy = policy
+            }
+            return
+        }
         switch state {
         case .ready(let url):
             let moved = policy.map { $0.console != url } ?? false
@@ -252,7 +280,18 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
                 showStatus(.busy(words))
             }
         case .problem(let problem):
-            showStatus(StatusContent(problem: problem, logTail: app.logTail(problem.log)))
+            let hand = Self.noPulse(state) ? app.handSetup : nil
+            if let hand, let device = hand.device() {
+                // A Mac that only works for a brain has no PULSE of its own to start.
+                showStatus(.handOnly(device, agentLog: hand.dialLog.path))
+            } else if hand?.binary != nil {
+                // First launch with no PULSE here: join a brain (ADR-070 step 2).
+                joinForm = JoinFields(brain: "", code: "", firstLaunch: true)
+                renderJoin()
+                return
+            } else {
+                showStatus(StatusContent(problem: problem, logTail: app.logTail(problem.log)))
+            }
         }
         updateTitle()
     }
@@ -309,8 +348,84 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         case "choose-folder": app.chooseFirstProject(for: window)
         case "open-log": app.openCurrentLog()
         case "restart-service": app.restartConsoleService()
+        case "join": showJoin()
+        case "join-submit": submitJoin()
+        case "join-cancel", "join-done": endJoin()
+        case "open-brain": app.openBrain()
         default: break
         }
+    }
+
+    // MARK: - Joining a brain (ADR-070 step 2)
+
+    /// PULSE → Join a Brain…: the join screen over whatever the window shows.
+    @objc func joinBrain(_ sender: Any?) {
+        showJoin()
+    }
+
+    /// Shows the join screen; a brain this Mac joined before is filled in.
+    func showJoin(brain: String = "", code: String = "") {
+        joinDone = nil
+        let known = brain.isEmpty ? (app.handSetup.device()?.brain ?? "") : brain
+        let first = Self.noPulse(app.supervisor.state) && app.handSetup.device() == nil
+        joinForm = JoinFields(brain: known, code: code, firstLaunch: first)
+        renderJoin()
+    }
+
+    private static func noPulse(_ state: HubState) -> Bool {
+        if case .problem(let problem) = state, case .pulseMissing = problem.kind { return true }
+        return false
+    }
+
+    private func renderJoin() {
+        if let joinDone {
+            showStatus(joinDone)
+        } else if let joinForm {
+            showStatus(.join(joinForm))
+        }
+    }
+
+    /// Join: read the fields, run `pulse-hand join`, then keep `pulse-hand
+    /// dial` running under launchd (AppDelegate.joinBrain).
+    func submitJoin() {
+        guard var fields = joinForm, fields.editable else { return }
+        let typed = status.typed
+        fields.brain = typed.brain
+        fields.code = typed.code
+        switch JoinInput.parse(brain: typed.brain, code: typed.code) {
+        case .failure(let problem):
+            fields.message = problem.words
+            fields.bad = true
+            joinForm = fields
+            renderJoin()
+        case .success(let input):
+            fields.message = "Joining \(input.brain.host ?? input.brain.absoluteString)…"
+            fields.bad = false
+            fields.editable = false
+            joinForm = fields
+            renderJoin()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let (outcome, agentProblem) = await self.app.joinBrain(input)
+                guard self.joinForm != nil else { return }
+                if case .joined(let device) = outcome {
+                    self.joinForm = nil
+                    self.joinDone = .joined(device, agentProblem: agentProblem, agentLog: self.app.handSetup.dialLog.path)
+                } else {
+                    fields.message = outcome.words
+                    fields.bad = true
+                    fields.editable = true
+                    self.joinForm = fields
+                }
+                self.renderJoin()
+            }
+        }
+    }
+
+    private func endJoin() {
+        joinForm = nil
+        joinDone = nil
+        render(app.supervisor.state)
     }
 
     private func updateTitle() {
@@ -1044,7 +1159,7 @@ extension StatusContent {
         case .pulseMissing:
             actions = [retry, Action(title: "Choose pulse…", id: "choose-binary")]
         case .firstProject:
-            actions = [Action(title: "Choose a Folder…", id: "choose-folder", primary: true)]
+            actions = [Action(title: "Choose a Folder…", id: "choose-folder", primary: true), Action(title: "Join a Brain…", id: "join")]
         case .serviceDown:
             actions = [retry, Action(title: "Restart the Console", id: "restart-service"), Action(title: "Open Log", id: "open-log")]
         case .portBusy, .hubStopped:
@@ -1052,5 +1167,53 @@ extension StatusContent {
         case .unreachable:
             actions = [retry]
         }
+    }
+}
+
+// The join screen and what follows it (ADR-070 step 2; docs/mac-app.md).
+extension StatusContent {
+    static func join(_ fields: JoinFields) -> StatusContent {
+        var detail = "This Mac becomes one of the brain's machines: it runs the jobs the brain hands it and dials out to it, with no open port. On the brain's Machines page choose Add a machine → Run one command on it, then type the brain's address and the six-word join code here."
+        if fields.firstLaunch {
+            detail += " To run PULSE itself on this Mac instead, install pulse (`cargo install --path crates/pulse --root ~/.pulse --locked`) and choose Try Again."
+        }
+        var content = StatusContent(title: "Join a PULSE brain", detail: detail, busy: !fields.editable)
+        content.form = fields
+        content.actions = [Action(title: "Join", id: "join-submit", primary: true)]
+        content.actions += fields.firstLaunch
+            ? [Action(title: "Try Again", id: "retry"), Action(title: "Choose pulse…", id: "choose-binary")]
+            : [Action(title: "Cancel", id: "join-cancel")]
+        return content
+    }
+
+    static func joined(_ device: HandDevice, agentProblem: String?, agentLog: String) -> StatusContent {
+        let host = URL(string: device.brain)?.host ?? device.brain
+        var detail = "It works as `\(device.executor)` and runs its jobs under `\(HandSetup.tilde(device.workdir))`."
+        if let agentProblem {
+            detail += " It could not keep `pulse-hand dial` running by itself (\(agentProblem)); run `pulse-hand dial` in Terminal until that is fixed."
+        } else {
+            detail += " `pulse-hand dial` keeps calling the brain in the background, at login too (the launchd agent `pulse.hand`; its log is `\(HandSetup.tilde(agentLog))`)."
+        }
+        var content = StatusContent(title: "This Mac joined \(host)", detail: detail)
+        content.actions = [
+            Action(title: "Done", id: "join-done", primary: true),
+            Action(title: "Open the Brain", id: "open-brain"),
+        ]
+        return content
+    }
+
+    /// No PULSE of its own, but a hand of a brain: say that, not "not installed".
+    static func handOnly(_ device: HandDevice, agentLog: String) -> StatusContent {
+        let host = URL(string: device.brain)?.host ?? device.brain
+        var content = StatusContent(
+            title: "This Mac works for \(host)",
+            detail: "It joined as `\(device.executor)`: the brain hands it jobs over `pulse-hand dial`, which launchd keeps running (`pulse.hand`; log `\(HandSetup.tilde(agentLog))`). The console is the brain's own page. There is no PULSE of its own on this Mac to show here."
+        )
+        content.actions = [
+            Action(title: "Open the Brain", id: "open-brain", primary: true),
+            Action(title: "Join Another Brain…", id: "join"),
+            Action(title: "Try Again", id: "retry"),
+        ]
+        return content
     }
 }

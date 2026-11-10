@@ -1190,6 +1190,7 @@ fn deliver_work(
     let (number, url, opened) = match &work.open {
         Some(d) => (number_of(d), field_of(d, "url"), false),
         None => match crate::landing_pr::open_pull_request(
+            s,
             &root,
             &up.repo,
             &work.head,
@@ -1198,6 +1199,7 @@ fn deliver_work(
             Some((n, u)) => (n, u, false),
             None => {
                 let (n, u) = crate::landing_pr::create_pull_request(
+                    s,
                     &root,
                     &up.repo,
                     &work.head,
@@ -1266,7 +1268,7 @@ fn push_rev(
     head: &str,
     lease: Option<&str>,
 ) -> Result<(), String> {
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
+    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
     if !why.is_empty() {
         return Err(why);
     }
@@ -1593,7 +1595,7 @@ fn fetch_head(
     head: &str,
 ) -> Result<String, String> {
     let tracking = format!("refs/remotes/{}/{head}", up.remote);
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
+    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
     if !why.is_empty() {
         return Err(why);
     }
@@ -2253,7 +2255,7 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         )];
     };
     let mut lines = Vec::new();
-    let listed = match crate::landing_pr::list_prs(&root, &up.repo) {
+    let listed = match crate::landing_pr::list_prs(s, &root, &up.repo) {
         Ok(l) => l,
         Err(e) => {
             lines.push(format!("{slug}: {e}"));
@@ -2264,7 +2266,7 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         let number = number_of(&pr);
         let state = match listed.get(&number) {
             Some(st) => st.clone(),
-            None => match crate::landing_pr::view_pr(&root, &up.repo, number) {
+            None => match crate::landing_pr::view_pr(s, &root, &up.repo, number) {
                 Ok(st) => st,
                 Err(e) => {
                     lines.push(format!("{slug}: pull request #{number}: {e}"));
@@ -2275,7 +2277,11 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         match state.state.as_str() {
             "MERGED" => {
                 lines.push(settle_merged(s, project, &pr, &state, now));
+                let stacked = stacked_on_head(s, &slug, &pr);
                 lines.extend(retarget_stacked(s, project, &up, &pr, &listed, false, now));
+                if stacked {
+                    lines.extend(delete_kept_head(s, project, &up, &pr, &state));
+                }
             }
             "CLOSED" => {
                 lines.push(settle_closed(s, project, &pr, &state, now));
@@ -2743,8 +2749,9 @@ fn note_conversation_closed(
 /// each open pull request whose `base` is the settled head is retargeted
 /// on the forge (`gh pr edit --base`) and gets a fresh `land.pr` with the
 /// new base (`retargeted_from` names the old one), so delivery and the
-/// reviewer see where it stands; the forge may move them itself when it
-/// deletes a merged branch, PULSE does not count on it. Closed unmerged:
+/// reviewer see where it stands; the merge kept the settled head on the
+/// upstream for them, and [`delete_kept_head`] deletes it once they moved.
+/// Closed unmerged:
 /// the pull requests above hold the closed one's commits in their history,
 /// and retargeting them would carry the rejected work into the base
 /// through the next merge, so each is rebuilt instead
@@ -2824,7 +2831,7 @@ fn retarget_stacked(
         if listed.get(&n).is_some_and(|st| st.state != "OPEN") {
             continue;
         }
-        if let Err(e) = crate::landing_pr::retarget_pull_request(&root, &up.repo, n, &base) {
+        if let Err(e) = crate::landing_pr::retarget_pull_request(s, &root, &up.repo, n, &base) {
             lines.push(format!(
                 "{kind} pr {slug}: #{n} not retargeted from {head} to {base}: {e}"
             ));
@@ -2845,6 +2852,57 @@ fn retarget_stacked(
         ));
     }
     lines
+}
+
+/// Whether an open pull request other than `pr` is based on `pr`'s head.
+fn stacked_on_head(s: &pulse_store::Store, slug: &str, pr: &Value) -> bool {
+    let head = field(pr, "head");
+    let n = number_of(pr);
+    !head.is_empty()
+        && s.conn().is_ok_and(|c| {
+            open_prs(&c, slug)
+                .iter()
+                .any(|o| number_of(o) != n && field(o, "base") == head)
+        })
+}
+
+/// Deletes a merged pull request's head on the upstream once no open pull
+/// request is based on it any more. The merge kept it while some were
+/// (`review::merge`: GitHub closes, never retargets, the pull requests
+/// whose base branch an API call deletes, and a closed one never reopens);
+/// [`retarget_stacked`] has just moved them. Leased on the merged head: a
+/// push made since keeps the branch. One that is still based on it (its
+/// retarget failed) keeps it until a later pass moves it.
+fn delete_kept_head(
+    s: &pulse_store::Store,
+    project: &Row,
+    up: &Upstream,
+    pr: &Value,
+    st: &crate::landing_pr::PrState,
+) -> Vec<String> {
+    let slug = project.str("slug");
+    let head = field_of(pr, "head");
+    if stacked_on_head(s, &slug, pr) {
+        return vec![format!(
+            "pr {slug}: {head} kept on {}: a pull request is still based on it",
+            up.remote
+        )];
+    }
+    let sha = if st.head_sha.is_empty() {
+        field_of(pr, "to")
+    } else {
+        st.head_sha.clone()
+    };
+    if sha.is_empty() {
+        return Vec::new();
+    }
+    let root = project.str("path");
+    vec![
+        match experiments::delete_remote_branch(s, &root, up, &head, &sha) {
+            Ok(()) => format!("pr {slug}: {head} deleted on {}", up.remote),
+            Err(e) => format!("pr {slug}: {head} not deleted on {}: {e}", up.remote),
+        },
+    ]
 }
 
 /// The pull request closed unmerged whose commits the stack above must
@@ -2958,7 +3016,13 @@ fn rebuild_stacked(
             match rebuild_branch(s, &root, up, &head, &onto) {
                 Ok(built) => {
                     let retargeted = if retarget {
-                        crate::landing_pr::retarget_pull_request(&root, &up.repo, n, &onto.branch)
+                        crate::landing_pr::retarget_pull_request(
+                            s,
+                            &root,
+                            &up.repo,
+                            n,
+                            &onto.branch,
+                        )
                     } else {
                         Ok(())
                     };
@@ -5417,6 +5481,23 @@ mod tests {
             gh.calls()
         );
         assert_eq!(gh.base_of(8), "main");
+        // The merge kept #7's branch for #8 (deleting a base closes the pull
+        // requests on it); with #8 moved, it goes, and #8 stays open.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == &format!("pr proj: {first_branch} deleted on origin")),
+            "{lines:?}"
+        );
+        let gone = std::process::Command::new("git")
+            .args(["--git-dir", &bare, "rev-parse", "-q", "--verify"])
+            .arg(format!("refs/heads/{first_branch}"))
+            .output()
+            .unwrap();
+        assert!(
+            !gone.status.success(),
+            "{first_branch} is still on the upstream"
+        );
         let pr = last_detail(&s, "land.pr");
         assert_eq!(pr["number"], 8);
         assert_eq!(pr["task"], second);

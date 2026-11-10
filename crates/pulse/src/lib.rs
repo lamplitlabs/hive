@@ -1210,6 +1210,40 @@ mod tests {
         }
     }
 
+    /// `pulse init --store-only` creates the store and registers nothing:
+    /// a hosted brain's image (deploy/entrypoint.sh) starts from it with no
+    /// checkout, then sets `brain.code none`; a project flag beside it is
+    /// refused.
+    #[test]
+    fn init_store_only_creates_the_store_and_registers_no_project() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("PULSE_JOB", "");
+        let _agent = setenv("PULSE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("pulse");
+        let _home = setenv("PULSE_HOME", home.to_str().unwrap());
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run(&["init", "--store-only"], &mut out, &mut errb);
+        assert_eq!(code, 0, "stdout {:?}, stderr {:?}", s(&out), s(&errb));
+        assert!(home.join(pulse_store::STORE_NAME).is_file());
+        assert!(s(&out).starts_with("store: "), "{}", s(&out));
+        for args in [
+            vec!["settings", "set", "brain.code", "none"],
+            vec!["settings", "set", "daemon.self_update", "release"],
+        ] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run(&args, &mut out, &mut errb);
+            assert_eq!(code, 0, "{args:?}: {:?} {:?}", s(&out), s(&errb));
+        }
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        assert_eq!(run(&["projects"], &mut out, &mut errb), 0, "{}", s(&errb));
+        assert!(!s(&out).contains("brain"), "no project: {}", s(&out));
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run(&["init", "--store-only", "--brain"], &mut out, &mut errb);
+        assert_eq!(code, 2, "stdout {:?}, stderr {:?}", s(&out), s(&errb));
+        assert!(s(&errb).contains("registers no project"), "{}", s(&errb));
+    }
+
     #[test]
     fn settings_store_actions() {
         let _serial = crate::test_helpers::serial();

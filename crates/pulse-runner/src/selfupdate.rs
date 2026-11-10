@@ -87,6 +87,9 @@ pub(crate) struct SelfUpdateState {
     /// not against this one, so a later landing that does touch an input
     /// is built with everything since.
     pub(crate) neutral_rev: String,
+    /// When `daemon.self_update release` last read the release document
+    /// (store clock); empty before the first read.
+    pub(crate) release_checked_at: String,
 }
 
 /// How long the build waits for queued work the restart would refuse to
@@ -120,6 +123,14 @@ pub(crate) struct SelfUpdateEnv {
     /// per pass, empty when there is none. The owner's work is not in it:
     /// the restart starts it in any window.
     pub refused_queued: String,
+    /// The running build's version, for `daemon.self_update release`;
+    /// empty means this process's (`pulse_cli::version`).
+    #[serde(default)]
+    pub version: String,
+    /// The target triple whose release archive `release` mode installs;
+    /// empty means this machine's (`pulse_cli::update::running_target`).
+    #[serde(default)]
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -149,6 +160,185 @@ pub(crate) fn update_pending() -> bool {
     st.inflight || st.lane_wait || st.build_wait
 }
 
+/// `daemon.self_update release` (ADR-070 rule 1): the daemon installs the
+/// newer published release `update.latest_url` names instead of building
+/// from the brain's checkout - a hosted brain holds no PULSE source.
+pub(crate) const RELEASE_MODE: &str = "release";
+
+/// How often `release` mode reads the release document: hourly, so a hosted
+/// brain is on a new release within the hour without polling the forge on
+/// every pass.
+pub(crate) const RELEASE_CHECK_MINUTES: f64 = 60.0;
+
+/// One pass of `daemon.self_update release`: once [`RELEASE_CHECK_MINUTES`]
+/// have passed since the last read (and `daemon.self_update_retry_minutes`
+/// since a failure), installs the newer release on a thread the way `pulse
+/// update` does (release_update.rs: SHA256SUMS, signed, smoke-tested, the
+/// old binary kept as `<binary>.prev`). The changed binary restarts the
+/// daemon after its runs in flight, as a source build does. Cargo is never
+/// run and the brain project is never read.
+fn tend_release(
+    s: &pulse_store::Store,
+    now: &str,
+    env: SelfUpdateEnv,
+    st: &mut SelfUpdateState,
+    lines: &mut Vec<String>,
+) {
+    let mut say = |st: &mut SelfUpdateState, reason: String| {
+        if reason != st.last_skip {
+            st.last_skip = reason.clone();
+            lines.push(format!("self-update: {reason}"));
+        }
+    };
+    if s.setting("stop", "") == "1" {
+        say(st, "stop is set; no release installed".into());
+        return;
+    }
+    if !st.installed.is_empty() {
+        say(
+            st,
+            format!(
+                "release {} is installed at {}; restarting onto it after the runs in flight",
+                st.installed, env.binary
+            ),
+        );
+        return;
+    }
+    let url = s
+        .setting(pulse_cli::update::LATEST_URL_SETTING, "")
+        .trim()
+        .to_string();
+    if url.is_empty() {
+        say(
+            st,
+            format!(
+                "daemon.self_update is release but {} is empty; nothing to install from",
+                pulse_cli::update::LATEST_URL_SETTING
+            ),
+        );
+        return;
+    }
+    let target = if env.target.is_empty() {
+        pulse_cli::update::running_target().unwrap_or_default()
+    } else {
+        env.target.clone()
+    };
+    if target.is_empty() {
+        say(
+            st,
+            "no release is published for this platform; nothing to install".into(),
+        );
+        return;
+    }
+    let after = |since: &str, minutes: f64| {
+        since.is_empty()
+            || crate::util::must_iso(now)
+                >= crate::util::must_iso(&crate::util::plus_minutes(since, minutes))
+    };
+    if !st.last_failure_at.is_empty() {
+        let retry = s.setting_int("daemon.self_update_retry_minutes");
+        let retry = if retry < 1 { 60 } else { retry };
+        if !after(&st.last_failure_at, retry as f64) {
+            return;
+        }
+    } else if !after(&st.release_checked_at, RELEASE_CHECK_MINUTES) {
+        return;
+    }
+    st.release_checked_at = now.to_string();
+    st.inflight = true;
+    let running = if env.version.is_empty() {
+        pulse_cli::version()
+    } else {
+        env.version.clone()
+    };
+    let update = crate::release_update::UpdateEnv {
+        url,
+        running: running.clone(),
+        target,
+        binary: env.binary.clone(),
+        actor: env.actor.clone(),
+        fetch_json: crate::release_update::fetch_json,
+        fetch_asset: crate::release_update::fetch_asset,
+    };
+    let s2 = s.clone();
+    std::thread::spawn(move || {
+        let (line, installed, failed) = install_release(&s2, &update, &env, &running);
+        let mut st = SELF_UPDATE_STATE
+            .write()
+            .expect("self-update state poisoned");
+        st.inflight = false;
+        if !line.is_empty() && line != st.last_skip {
+            st.last_skip = line.clone();
+            st.lines.push(line);
+        }
+        if let Some(version) = installed {
+            st.installed = version;
+            st.last_failure_at.clear();
+        } else if failed {
+            st.last_failure_at = s2.now();
+        } else {
+            st.last_failure_at.clear();
+        }
+    });
+}
+
+/// Installs the release (`release_update::install`) and says how it went:
+/// the line, the version installed, and whether it failed.
+fn install_release(
+    s: &pulse_store::Store,
+    update: &crate::release_update::UpdateEnv,
+    env: &SelfUpdateEnv,
+    running: &str,
+) -> (String, Option<String>, bool) {
+    match crate::release_update::install(s, update) {
+        Ok(crate::release_update::Outcome::Installed { latest, prev, .. }) => {
+            let detail = serde_json::json!({
+                "mode": RELEASE_MODE,
+                "from": running,
+                "to": latest,
+                "binary": env.binary,
+                "inflight": env.inflight,
+            });
+            let _ = pulse_bus::emit(s, &env.actor, SELF_UPDATE_EVENT, "pulse", detail);
+            let summary = format!(
+                "pulse release {latest} installed: restarts after {} run(s) in flight",
+                env.inflight
+            );
+            let body = format!(
+                "`daemon.self_update` is `release`: the daemon read `{}`, found {latest} newer than the running {running}, downloaded it, checked it against the release's SHA256SUMS, smoke-tested it, kept the running binary as `{prev}` and installed the new one at {}. Nothing was built from source.\n\nThe daemon and the hub restart on the changed file: the daemon after the {} run(s) in flight, the hub within a minute. Roll back with `mv {prev} {}`; `pulse settings set daemon.self_update off` stops these installs (ADR-070 rule 1).\n",
+                update.url, env.binary, env.inflight, env.binary,
+            );
+            let _ = self_update_finding(s, env.actor.clone(), summary, body);
+            (
+                format!(
+                    "self-update: installed release {latest} at {} (was {running}); restarting after the runs in flight",
+                    env.binary
+                ),
+                Some(latest),
+                false,
+            )
+        }
+        Ok(crate::release_update::Outcome::Current { latest }) => (
+            format!("self-update: release {latest} is the latest; {running} stays"),
+            None,
+            false,
+        ),
+        Ok(crate::release_update::Outcome::Available { latest, .. }) => (
+            format!("self-update: release {latest} is available but was not installed"),
+            None,
+            true,
+        ),
+        Err(err) => (
+            format!(
+                "self-update: release not installed: {}",
+                crate::run::err_message(&err)
+            ),
+            None,
+            true,
+        ),
+    }
+}
+
 /// One daemon pass over the brain's HEAD: reads the state and the settings,
 /// reads the checkout ([`Checkout`]) and, once HEAD is due, the machine
 /// ([`Bench`]), climbs the ladder ([`gate`]) and applies what it decides -
@@ -172,7 +362,23 @@ pub(crate) fn tend_binary(s: &pulse_store::Store, now: String, env: SelfUpdateEn
             lines.push(format!("self-update: {reason}"));
         }
     };
-    if s.setting("daemon.self_update", "") != "on" {
+    let mode = s.setting("daemon.self_update", "");
+    if mode == RELEASE_MODE {
+        tend_release(s, &now, env, &mut st, &mut lines);
+        return lines;
+    }
+    if mode != "on" {
+        return lines;
+    }
+    // brain.code none: this machine holds no source, the brain's included,
+    // so it never builds one; `release` mode installs published binaries.
+    if crate::jobs::brain_code_none(s) {
+        say(
+            &mut st,
+            &mut lines,
+            "brain.code is none; no source build (daemon.self_update release installs releases)"
+                .into(),
+        );
         return lines;
     }
     // update.channel release: this machine installs published releases
