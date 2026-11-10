@@ -41,6 +41,7 @@ pub(crate) mod hand_watch;
 /// The `pulse-hands` protocol lives with the executor path (pulse-hand-core,
 /// ADR-070), which the open `pulse-hand` binary is built from.
 pub use pulse_hand_core::hands;
+pub mod dial;
 pub mod heartbeat;
 pub mod heldout;
 pub mod hygiene;

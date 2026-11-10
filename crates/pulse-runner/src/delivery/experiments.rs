@@ -207,7 +207,7 @@ fn close_superseded(
          Merging this pull request would change nothing, so it is closed and the branch `{head}` deleted."
     );
     let line = format!("experiment pr {slug}: #{number}");
-    if let Err(e) = crate::landing_pr::close_pull_request(&root, &up.repo, number, &comment) {
+    if let Err(e) = crate::landing_pr::close_pull_request(s, &root, &up.repo, number, &comment) {
         return vec![format!(
             "{line} is on {def} already in {} but was not closed: {e}",
             crate::recipe::short(by, 12)
@@ -365,7 +365,7 @@ fn tend_stale(
         "Closed by PULSE: this experiment's pull request has had no push for {days} days and {why}. \
          The branch `{head}` stays on the remote; the experiment can be planned again on `{def}`."
     );
-    if let Err(e) = crate::landing_pr::close_pull_request(&root, &up.repo, number, &comment) {
+    if let Err(e) = crate::landing_pr::close_pull_request(s, &root, &up.repo, number, &comment) {
         return (false, vec![format!("{line}; not closed: {e}")]);
     }
     let mut detail = settle_detail(
@@ -423,6 +423,7 @@ mod tests {
         run(repo, &["git", "push", "-q", bare, &branch]);
         let tip = ref_of(repo, &format!("refs/heads/{branch}"));
         let (number, url) = crate::landing_pr::create_pull_request(
+            s,
             repo,
             "",
             &branch,
