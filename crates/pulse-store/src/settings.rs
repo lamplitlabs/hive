@@ -255,7 +255,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","brain.code"=>"clone","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","git.github_app.app_id"=>"","git.github_app.installation_id"=>"","git.github_app.private_key_ref"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","brain.code"=>"clone","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","git.github_app.app_id"=>"","git.github_app.installation_id"=>"","git.github_app.private_key_ref"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","hub.allow_remote"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -319,6 +319,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "backup.keep"=>("count",Some(0),[],None,"copies of this machine's store kept at a directory or Azure destination, the newest first; older ones are removed after each backup; 0 keeps every copy"),
         "backup.subscription"=>("text",None,[],None,"the Azure subscription (name or id) that holds the az:// account in backup.to, when it is not the az CLI's default one: every az call a backup makes (keys list, upload, list, delete) carries it as --subscription, so the key is found and the login's token is cut for that tenant. Empty: the CLI's default subscription"),
         "update.channel"=>("choice",None,["auto","source","release"],None,"how this machine gets a newer PULSE. source: the daemon rebuilds pulse from the brain project's checkout after a landing (daemon.self_update); release: pulse update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise"),
+        "hub.allow_remote"=>("text",None,[],None,"the hosted front's origin (https://team.example.com) the console may be reached through from anywhere (ADR-070 rule 5): pulse hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only"),
         "update.latest_url"=>("text",None,[],None,"where the daemon looks, at most once a day, for the latest PULSE release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, pulse version and the console say so with the release link. The check downloads and installs nothing; pulse update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network"),
         "daemon.nice"=>("count",Some(0),[],None,"nice level the daemon's own process runs at from startup (setpriority), under the owner's foreground work at 0 and over its job children at 10, so planning, sweeps and landing passes yield to what the owner is doing while the loop still comes before the fleet's builds; 0 leaves the level the service started it at"),
         "daemon.build_jobs"=>("count",Some(0),[],None,"parallel compile jobs a build the daemon causes may use: exported as CARGO_BUILD_JOBS to its job children, their pre-commit verification and the landing verification when the environment does not set it, and passed as -j to the self-update build; 0 is half the physical cores, so no single build takes the whole machine"),
@@ -663,6 +664,46 @@ pub fn majority(value: &str) -> Result<(i64, i64)> {
     Ok((n, d))
 }
 
+/// `hub.allow_remote`: empty or `off` turns it off; otherwise an https
+/// origin - scheme, host and an optional port, nothing more - lower-cased,
+/// with a trailing slash dropped.
+fn allow_remote_origin(text: &str) -> Result<String> {
+    if text.is_empty() || text.eq_ignore_ascii_case("off") {
+        return Ok(String::new());
+    }
+    let refuse = || {
+        input_err(format!(
+            "hub.allow_remote takes the hosted front's https origin, such as https://team.example.com, or empty to keep the console 127.0.0.1-only; not {}",
+            py_repr(text)
+        ))
+    };
+    let lower = text.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .ok_or_else(refuse)?
+        .trim_end_matches('/');
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (rest, None),
+    };
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if !host.contains('.') || !host.split('.').all(label_ok) {
+        return Err(refuse());
+    }
+    if let Some(p) = port
+        && !p.parse::<u16>().is_ok_and(|n| n > 0)
+    {
+        return Err(refuse());
+    }
+    Ok(format!("https://{rest}"))
+}
+
 pub fn validate_setting(name: &str, value: &str) -> Result<String> {
     if AUTOMATIC_SETTINGS.contains(&name) {
         return Err(input_err(format!(
@@ -756,6 +797,9 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
             )));
         }
         return Ok(text.to_string());
+    }
+    if name == "hub.allow_remote" {
+        return allow_remote_origin(text);
     }
     if name == "update.latest_url" {
         let url = text.to_string();
@@ -1126,6 +1170,20 @@ impl Store {
         );
         matches!(row, Ok((ref v, ref by)) if v==OWNER_AWAY && human_actor(by))
     }
+    /// The front's origin when the owner set `hub.allow_remote` (ADR-070
+    /// rule 5); None while it is empty or an agent was the last to set it,
+    /// so no agent can open the console to the front.
+    pub fn hub_allow_remote(&self) -> Option<String> {
+        let conn = self.conn().ok()?;
+        let (value, by): (String, String) = conn
+            .query_row(
+                "SELECT value, updated_by FROM settings WHERE name = 'hub.allow_remote'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()?;
+        (!value.is_empty() && human_actor(&by)).then_some(value)
+    }
     pub fn settings(&self) -> Result<BTreeMap<String, String>> {
         let rows = self.setting_rows()?;
         Ok(rows.into_iter().map(|r| (r.name, r.value)).collect())
@@ -1185,6 +1243,62 @@ mod tests {
         assert!(!s.owner_away());
         assert_eq!(compute_size_setting("moon"), "compute.azure.vm_size");
         assert!(secret_shaped("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn hub_allow_remote_takes_an_https_origin_and_counts_only_from_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(default_setting("hub.allow_remote"), "");
+        assert!(daemon_setting_names().contains(&"hub.allow_remote".to_string()));
+        for (given, want) in [
+            ("", ""),
+            ("off", ""),
+            (" https://Team.Example.com/ ", "https://team.example.com"),
+            (
+                "https://pulse.example.co.uk:8443",
+                "https://pulse.example.co.uk:8443",
+            ),
+        ] {
+            assert_eq!(
+                validate_setting("hub.allow_remote", given).unwrap(),
+                want,
+                "{given}"
+            );
+        }
+        for bad in [
+            "http://team.example.com",
+            "https://team.example.com/path",
+            "https://user@team.example.com",
+            "https://localhost",
+            "https://team.example.com:0",
+            "https://-bad.example.com",
+            "team.example.com",
+        ] {
+            let err = validate_setting("hub.allow_remote", bad)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("https origin"), "{bad}: {err}");
+        }
+        unsafe { std::env::set_var("PULSE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(s.hub_allow_remote(), None);
+        s.set_setting("cinder", "hub.allow_remote", "https://team.example.com")
+            .unwrap();
+        assert_eq!(s.hub_allow_remote(), None, "an agent cannot open the hub");
+        s.set_setting("human", "hub.allow_remote", "https://team.example.com")
+            .unwrap();
+        assert_eq!(
+            s.hub_allow_remote().as_deref(),
+            Some("https://team.example.com")
+        );
+        s.set_setting("human", "hub.allow_remote", "").unwrap();
+        assert_eq!(s.hub_allow_remote(), None);
     }
 
     #[test]

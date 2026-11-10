@@ -99,6 +99,7 @@ const DAEMON_CLUSTERS: Cluster[] = [
   { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes", "update.latest_url"] },
   { title: "Project code", keys: ["brain.code"] },
   { title: "Staying awake", keys: ["daemon.keep_awake"] },
+  { title: "Reaching the console from anywhere", keys: ["hub.allow_remote"] },
   { title: "What this machine offers", keys: ["machine.labels", "machine.reserve"] },
   { title: "Failed work", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
   { title: "Cleanup and disk space", keys: ["daemon.sweep", "daemon.min_free_mb", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.chat_worktree_keep_days", "daemon.sweep_keep_days", "daemon.log_keep_days", "daemon.log_max_mb", "daemon.transcript_keep_days", "daemon.artifact_keep_days", "daemon.sweep_runners", "daemon.runner_keep_days", "daemon.vacuum_free_mb", "daemon.archive_days", "daemon.build_cache", "daemon.build_cache_keep_days", "hygiene.cargo_target", "hygiene.cargo_target_hours"] },

@@ -760,6 +760,68 @@ is away](recovery.md#when-the-owner-is-away)). Secret-shaped values are stored b
 never echoed; the held-out evaluator directory is owner-private and is masked
 in every agent-facing view and event.
 
+### Reaching the console from anywhere
+
+The console listens on 127.0.0.1 and nowhere else; `pulse hub --host`
+refuses any other address. Other machines and phones reach it through the
+team's hosted **front** (ADR-070 rule 5), which signs members in on the web
+and relays their requests to this machine. The brain does not trust the
+front: every write that comes through it must carry a member's passkey
+signature, and the brain checks that signature itself.
+
+What this machine does today:
+
+1. **Open it.** Set **Settings → Reaching the console from anywhere →
+   `hub.allow_remote`** to the front's origin, such as
+   `https://team.example.com` (`pulse settings set hub.allow_remote
+   https://team.example.com`). It counts only when you set it. A value an
+   agent wrote is ignored, so no agent can open the console. Clear it to
+   close the console to the front at once.
+2. **Give the relay a port.** `pulse hub --front-port 8766` also listens
+   on `127.0.0.1:8766` for the front's relay. The serving output adds a
+   `Front relay on ...` line that says whether the relay is open. Every
+   request on that listener is treated as remote, whatever `Host` it names:
+   - while `hub.allow_remote` is empty, every request gets 403;
+   - reads pass;
+   - routes that only work on this machine (folders, credentials,
+     held-out fixtures, job repair) refuse it.
+3. **Register the members' passkeys.** `GET /api/v1/members` lists them.
+   `POST /api/v1/members` with `X-Pulse-Members: yes` and
+   `{credential_id, member, name, role, public_key}` registers or
+   replaces one. `public_key` is the passkey's ES256 SubjectPublicKeyInfo
+   in base64url, and `role` is `owner` or `member`.
+   `DELETE /api/v1/members/<credential_id>` revokes one. These member
+   routes work on this machine like any other write; through the front
+   they also need an owner's passkey.
+4. **Sign every write.** The browser asks for a nonce with
+   `GET /api/v1/nonce`, which answers only while `hub.allow_remote` is set.
+   A nonce lasts five minutes and can be spent once. The browser then
+   signs the challenge
+   `SHA-256("pulse-write-v1\n" + nonce + "\n" + METHOD + " " + path?query + "\n" + body)`
+   with `navigator.credentials.get` (the front's host as `rpId`,
+   `userVerification: "required"`). It sends the write with the nonce in
+   `X-Pulse-Nonce` and the assertion, base64url, in
+   `X-Pulse-Passkey-Credential`, `X-Pulse-Passkey-Authenticator`,
+   `X-Pulse-Passkey-Client-Data` and `X-Pulse-Passkey-Signature`. Before
+   the write reaches its route, the brain checks:
+   - the type, challenge and origin in the client data;
+   - the front's RP ID hash;
+   - the user-present and user-verified flags;
+   - that the signature counter moved forward;
+   - the ES256 signature under the member's key.
+
+   Only after these checks does it spend the nonce and record the counter.
+   An unsigned write, a spent or made-up nonce, another key, another body
+   or a counter that did not move gets 403 with the reason. Settings and
+   members changes need a member whose role is `owner`.
+
+Not built yet: the hosted front itself. That means the web login (Clerk),
+team = organization, the members sync from it, the enrolment relay, and
+serving the console at `https://<team>.<domain>`. It waits on your choice
+of domain, hosting and Clerk account. Until it exists, nothing outside
+this machine reaches the relay port. See [security](security.md) for the
+model.
+
 ### Notifications
 
 **Settings → Notifications** (`/settings/#notify`) has three switches, all

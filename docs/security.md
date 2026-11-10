@@ -120,8 +120,69 @@ target, says so, and keeps the binary its image carries.
 
 ## The console
 
-The hub binds to loopback only. Until `hub.allow_remote` exists (ADR-070
-step 5), a hosted brain runs on the host's network
+### Loopback only
+
+The console (`pulse hub`) binds 127.0.0.1 and refuses any other `--host`.
+The HTTP layer also refuses a listener that is not on loopback.
+
+On that listener, every write must pass two checks:
+
+- The **same-origin guard**: the browser's `Origin` must name this hub, and
+  a request the browser marks `Sec-Fetch-Site: cross-site` is refused.
+- An **explicit confirmation header**, for example `X-Pulse-Settings: yes`,
+  `X-Pulse-Decide: yes` or `X-Pulse-Members: yes`.
+
+Some routes also refuse any `Host` that is not this machine. These are
+folders, credentials, held-out fixtures and job repair. This protects them
+against DNS rebinding.
+
+### Reaching the console through the front (`hub.allow_remote`)
+
+Other machines reach the console only through the team's hosted front. The
+front signs members in on the web and relays bytes to the brain. The brain
+does not trust it.
+
+- **Owner-only switch.** `hub.allow_remote` holds the front's `https://`
+  origin. It counts only when the owner set it. A value an agent wrote is
+  ignored. Empty is the default and means this machine only.
+- **A separate listener.** `pulse hub --front-port N` opens a second
+  listener, also on 127.0.0.1, for the relay. Every request on it is
+  marked as coming through the front. Request headers cannot change that,
+  so a forged `Host: 127.0.0.1` does not unlock the loopback-only routes.
+  While `hub.allow_remote` is empty, every request on that listener gets 403.
+  A browser `Origin` other than the front's also gets 403.
+- **Passkey-signed writes.** Each write through the front carries a
+  WebAuthn assertion from a registered member's passkey. The passkey signs
+  over a nonce the brain issued (`GET /api/v1/nonce`: five minutes,
+  spendable once, a bounded number outstanding at a time). The signed
+  challenge binds the write's method, path and exact body. The brain
+  verifies the assertion itself (`pulse_runner::webauthn`, ES256 on P-256)
+  and checks:
+  - the type, challenge and origin in the client data;
+  - the RP ID hash of the front's host;
+  - the user-present and user-verified flags;
+  - that the signature counter moved forward;
+  - the signature under the member's registered key.
+
+  It then spends the nonce and records the counter in one step each, so a
+  replayed write is refused. A wrong key, another body or path, an
+  unregistered or revoked passkey, or a missing signature all get 403.
+- **Roles.** A member is `owner` or `member`. Settings and members changes
+  through the front need an owner's passkey.
+- **What is stored.** The `members` table holds each passkey's credential
+  id, holder, display name, role, public key and counter. The
+  `write_nonces` table holds the outstanding nonces. No private key,
+  session token or password is ever stored. Registering and revoking a
+  member is recorded as an event (`member.added`, `member.revoked`).
+
+What the front can and cannot do: it can deny service, and it can see the
+pages it relays. It cannot change anything on the brain, because it cannot
+produce a member's passkey signature. It cannot reuse a write it saw,
+because the nonce is spent and the counter has moved.
+
+### A hosted brain before the front exists
+
+Until the hosted front is built, a hosted brain runs on the host's network
 (`network_mode: host`). Its console is on the host's
 `127.0.0.1:PULSE_HUB_PORT`, reached over an SSH tunnel:
 
@@ -130,6 +191,16 @@ ssh -L 8765:127.0.0.1:8765 brain-host    # then open http://127.0.0.1:8765
 ```
 
 Writes keep the same-origin guard they have on a laptop.
+
+### Agents
+
+Agents run as the enrolled user, under the constitution's hard stops and
+rule 8's owner-only paths. They cannot open the console to the front, since
+their `hub.allow_remote` is ignored. They cannot write the owner's
+presence or other owner-only settings either. Credentials are never resolved
+inside a job (ADR-041 D4). In lockdown, a conversation's commands run in a
+sandbox: no network except localhost, writes only inside the worktree and
+caches, and credential directories unreadable.
 
 ## Not yet in place (later steps of ADR-070)
 
@@ -141,7 +212,16 @@ them until their step lands and this page says so:
 - **GitHub App installation tokens** (step 3) instead of a member's own
   token on the brain.
 - **The team secret vault** (step 4).
-- **Passkey-signed writes and `hub.allow_remote`** (step 5).
+- **The hosted front** (the rest of step 5). The brain side - nonces,
+  passkey-signed writes the brain verifies, the `members` table and
+  `hub.allow_remote` - is built (see [The console](#the-console)). Still to
+  build, and waiting on choices only the owner can make (the domain, the
+  hosting and the Clerk account): the front itself, with its web login
+  (Clerk) and team = organization; syncing members into the `members`
+  table from the organization; passkey registration in the browser; the
+  device enrolment relay; serving the console at `https://<team>.<domain>`.
+  Until then, nothing outside this machine reaches the relay port. See
+  [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere).
 - **Landing without a checkout.** The lander merges in a worktree of the
   project's registered checkout. A brain with `brain.code none` has none,
   so it holds every finished branch instead (`land.held`, reason

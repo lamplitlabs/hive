@@ -230,6 +230,11 @@ impl Handler {
 }
 
 pub(crate) fn loopback_host(r: &crate::httpx::Request) -> bool {
+    // The front's relay can send any Host it likes; its requests are never
+    // this machine's (ADR-070 rule 5).
+    if r.via_front {
+        return false;
+    }
     let mut host = r.host();
     if let Some(stripped) = host.strip_prefix('[')
         && let Some(end) = stripped.find(']')
