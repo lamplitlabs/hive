@@ -76,6 +76,7 @@ pub use pulse_hand_core::proc;
 pub mod provider;
 pub mod recipe;
 pub mod reclaim;
+pub(crate) mod records_sync;
 pub mod recover;
 pub mod recovery_api;
 pub mod release_age;
