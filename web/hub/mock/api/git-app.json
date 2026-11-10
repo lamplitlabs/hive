@@ -1,0 +1,24 @@
+{
+  "available": true,
+  "configured": true,
+  "app_id": "1048576",
+  "installation_id": "52428800",
+  "private_key_ref": "op://Private/pulse-github-app/private-key",
+  "app": {
+    "slug": "pulse-for-amistio",
+    "name": "PULSE for Amistio",
+    "html_url": "https://github.com/apps/pulse-for-amistio"
+  },
+  "install_url": "https://github.com/apps/pulse-for-amistio/installations/new",
+  "account": {
+    "login": "amistio",
+    "type": "Organization"
+  },
+  "repository_selection": "selected",
+  "repositories": [
+    "amistio/amistio-template",
+    "amistio/eszett",
+    "amistio/distillery"
+  ],
+  "error": ""
+}

@@ -151,6 +151,35 @@ pulse update [--check] [--json]
 On the `source` channel `pulse update` refuses to install and says how to
 switch; `pulse update --check` still reports.
 
+## `daemon.self_update release`: a machine without source
+
+A hosted brain ([security.md](security.md)) holds no PULSE source, so the
+source self-update has nothing to build. `pulse settings set
+daemon.self_update release` makes the daemon do what `pulse update` does,
+on its own:
+
+- once an hour it reads the document `update.latest_url` names (an empty
+  setting says so once and does nothing);
+- when a newer release exists, it installs it exactly as above: the archive
+  for the running target, its `SHA256SUMS` line, signed, smoke-tested,
+  swapped in with the old binary kept as `pulse.prev`;
+- it restarts after its runs in flight, the same way the source
+  self-update does (exit 3; the service or `deploy/entrypoint.sh` starts it
+  again). A failed install leaves the running binary alone, says why in the
+  daemon's log and is tried again after `daemon.self_update_retry_minutes`.
+
+It never runs `cargo` and never reads the brain's checkout, and it works
+whatever `update.channel` says. With `brain.code none` the source mode
+(`on`) stands down and points here. The test is
+`release_update::tests::self_update_release_mode_installs_the_release_and_never_runs_cargo`
+in `crates/pulse-runner`.
+
+**A Linux brain needs a Linux archive.** The release workflow attaches
+macOS archives today. Until it also builds `x86_64-unknown-linux-gnu`
+(and `aarch64-unknown-linux-gnu`), a hosted brain finds no archive for its
+target, says so, and keeps the binary its image was built with. Rebuild
+the image (`deploy/brain.sh build vX.Y.Z`) to update it in the meantime.
+
 ## The once-per-release line
 
 On the `release` channel, when the stored check knows a newer release, the

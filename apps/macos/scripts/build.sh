@@ -14,6 +14,12 @@
 #   apps/macos/scripts/build.sh --universal  one binary for Apple silicon and Intel
 #   apps/macos/scripts/build.sh --debug      a debug build (faster, with assertions)
 #
+# PULSE.app carries pulse-hand (Contents/Helpers/pulse-hand) for its join
+# screen (docs/mac-app.md "Joining a brain"): PULSE_HAND_BIN=<path> bundles
+# that binary, else build.sh runs `cargo build --release -p pulse-hand`;
+# with no cargo (or --universal without PULSE_HAND_BIN) the app has none and
+# its join screen says so.
+#
 # Distribution outside this Mac needs a Developer ID certificate:
 #   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" apps/macos/scripts/build.sh --dmg
 #   NOTARY_PROFILE=<notarytool keychain profile> ...      also notarizes and staples the disk image
@@ -65,6 +71,24 @@ bin_dir=$(swift build --package-path "$here" -c "$configuration" --product PULSE
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Fonts"
 cp "$bin_dir/PULSE" "$app/Contents/MacOS/PULSE"
+
+# pulse-hand for the join screen (ADR-070 step 2).
+hand="${PULSE_HAND_BIN:-}"
+if [ -z "$hand" ] && [ "$universal" = 0 ] && command -v cargo >/dev/null 2>&1; then
+  say "Building pulse-hand"
+  if cargo build --manifest-path "$repo/Cargo.toml" --release --locked -p pulse-hand >&2; then
+    hand="${CARGO_TARGET_DIR:-$repo/target}/release/pulse-hand"
+  else
+    say "build.sh: cargo could not build pulse-hand; the app's join screen will say there is none"
+  fi
+fi
+if [ -n "$hand" ]; then
+  [ -x "$hand" ] || { say "build.sh: PULSE_HAND_BIN $hand is not a program"; exit 1; }
+  mkdir -p "$app/Contents/Helpers"
+  cp "$hand" "$app/Contents/Helpers/pulse-hand"
+else
+  say "build.sh: no pulse-hand bundled (set PULSE_HAND_BIN, or install cargo)"
+fi
 # The linker adds a search path into the Xcode that built it; the app only
 # uses the Swift runtime macOS ships in /usr/lib/swift. A universal binary
 # lists each path once per slice; one deletion removes it from every slice.
@@ -152,6 +176,16 @@ entitlements="$here/Resources/PULSE.entitlements"
 plutil -lint "$entitlements" >/dev/null
 
 # Ad hoc by default: no certificate, and a requirement every build meets.
+# The helper first: the app's signature seals it as nested code.
+helper="$app/Contents/Helpers/pulse-hand"
+if [ -f "$helper" ]; then
+  if [ -n "${SIGN_IDENTITY:-}" ]; then
+    codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp --identifier "$bundle_id.hand" "$helper"
+  else
+    codesign --force --sign - --identifier "$bundle_id.hand" \
+      --requirements "=designated => identifier \"$bundle_id.hand\"" --options runtime "$helper"
+  fi
+fi
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp --entitlements "$entitlements" "$app"
 else

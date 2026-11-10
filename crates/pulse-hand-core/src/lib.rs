@@ -10,7 +10,9 @@
 
 pub mod beat;
 pub mod ctx;
+pub mod dial;
 pub mod error;
+pub mod gitcred;
 pub mod hands;
 pub mod local;
 pub mod machine;

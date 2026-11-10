@@ -16,6 +16,7 @@ static SIGNAL_RE: LazyLock<Regex> = LazyLock::new(|| {
 pub const OWNER_PATHS: &[&str] = pulse_store::OWNER_PATHS;
 
 pub const GATE_NET_VOTES: &str = "net votes <= 0: the planner takes score > 0 only";
+pub const GATE_NO_CHECK: &str = "names no check: a card needs `Signal: check:<command>` that fails on the default branch and passes with its change (evolve.require_check)";
 pub const GATE_OWNER: &str = "addressed to the owner; not a worker job";
 pub const GATE_NO_EVIDENCE: &str =
     "without evidence: no Signal: line names an existing file, post, job, record or check";
@@ -25,6 +26,7 @@ pub const GATE_UNLANDED: &str =
     "Signal path is absent from the default branch (only on an unlanded branch); waits for landing";
 pub const GATE_DUPLICATE: &str = "duplicate of";
 pub const GATE_OPERATING_LAYER_CAP: &str = "operating-layer cap";
+pub const GATE_LOOP_CAP: &str = "loop cap";
 pub const GATE_NO_OP_CHECK: &str =
     "check selects no test: its `go test -run` regex matches nothing in `go test -list`";
 pub const GATE_FILE_GONE: &str = "File: names a path whose whole tree is gone from the checkout; the card predates a move or removal";
@@ -731,8 +733,14 @@ pub fn plan_gate_with(
     {
         return duplicate_gate(dup);
     }
-    if sg.score <= 0 {
+    // A card that names a check needs no votes when the check decides
+    // (evolve.check_skips_quorum): only a net-down vote holds it.
+    let check_decides = sg.checked && s.setting_bool(pulse_store::EVOLVE_CHECK_SKIPS_QUORUM);
+    if sg.score < 0 || (sg.score == 0 && !check_decides) {
         return GATE_NET_VOTES.into();
+    }
+    if !sg.checked && s.setting_bool(pulse_store::EVOLVE_REQUIRE_CHECK) {
+        return GATE_NO_CHECK.into();
     }
     let mut summary = sg.summary.as_str();
     let mut body = "";
@@ -795,6 +803,12 @@ pub fn plan_gate_with(
         if run_check_is_no_op(project_path, summary, body) {
             return GATE_NO_OP_CHECK.into();
         }
+    }
+    if ctx.loop_cap > 0
+        && ctx.loop_today >= ctx.loop_cap
+        && crate::card_class::card_about_loop(summary, body)
+    {
+        return crate::plan_context::loop_cap_gate(ctx.loop_today, ctx.loop_cap);
     }
     if ctx.operating_layer_cap_set
         && !ctx.operating_layer_filled

@@ -15,6 +15,7 @@ pub mod brief;
 pub mod buildcache;
 pub mod bulk;
 pub mod capacity;
+pub(crate) mod card_proof;
 pub mod checkout;
 pub mod commands;
 pub mod compute;
@@ -36,10 +37,12 @@ pub mod failure;
 pub(crate) mod forge;
 pub mod gcp;
 pub mod gh_auth;
+pub mod gitapp;
 pub(crate) mod hand_watch;
 /// The `pulse-hands` protocol lives with the executor path (pulse-hand-core,
 /// ADR-070), which the open `pulse-hand` binary is built from.
 pub use pulse_hand_core::hands;
+pub mod dial;
 pub mod heartbeat;
 pub mod heldout;
 pub mod hygiene;
@@ -76,6 +79,7 @@ pub use pulse_hand_core::proc;
 pub mod provider;
 pub mod recipe;
 pub mod reclaim;
+pub(crate) mod records_sync;
 pub mod recover;
 pub mod recovery_api;
 pub mod release_age;

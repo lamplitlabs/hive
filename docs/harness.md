@@ -730,6 +730,15 @@ Commands or native paths that would leave the clone (`git push`, changing
 told why and continues. Native actions reuse the same deny rules as shell so
 the two paths cannot drift. The macOS filesystem root `/private/`, which
 `/tmp` and `/var` resolve to, is not a credential path.
+A run never holds a git login either. With a GitHub App configured
+(Settings → Git, [Credentials](landing.md#credentials)), the brain mints a
+one-hour installation token for the job's one repository after the run
+has ended and its commits passed the identity check; the hand that pushes
+installs a credential helper for that one push, outside the worktree
+(under the pulse home, wired in through `GIT_CONFIG_*` variables, never
+`.git/config`), and removes it when the push returns. The token is in no
+log line, no event and no file the worker can commit
+(`jobs::tests::a_job_leased_to_a_local_pulse_hand_pushes_with_the_app_token`).
 
 Exit codes tell the runner what happened without parsing prose: `0` the
 model submitted; `1` a limit (`step_limit`, `time_limit`, `cost_limit`,

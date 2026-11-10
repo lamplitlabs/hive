@@ -231,37 +231,7 @@ pub const CARD_NEEDED: &str = "Suggestion needs an experiment card";
 /// both trees, not a project check name: pulse-evolve cannot reach the
 /// project's recipe checks, so a card writes the command the check runs.
 pub fn card_check_of(text: &str) -> String {
-    let fields = card_fields(text);
-    if let Some(direct) = fields.get("check") {
-        let direct = direct.trim().trim_matches('`').trim();
-        if !direct.is_empty() {
-            return direct.to_string();
-        }
-    }
-    for key in ["signal", "hypothesis"] {
-        let Some(value) = fields.get(key) else {
-            continue;
-        };
-        // `- **Signal:** `check:...`` leaves the bold markers on the value.
-        let value = value.trim_start_matches(['*', ' ', '\t', '`']);
-        let lower = value.to_lowercase();
-        let Some(i) = lower.find("check:") else {
-            continue;
-        };
-        if key == "signal" && i != 0 {
-            continue;
-        }
-        let rest = value[i + "check:".len()..].trim_start();
-        let command = match rest.strip_prefix('`') {
-            Some(quoted) => quoted.split('`').next().unwrap_or(""),
-            None => rest,
-        };
-        let command = command.trim().trim_end_matches(['.', ';', '`']).trim();
-        if !command.is_empty() {
-            return command.to_string();
-        }
-    }
-    String::new()
+    pulse_tally::card_check_of(text)
 }
 
 /// A card the loop refuses to act on as written - a credential-shaped value in

@@ -1992,6 +1992,10 @@ pub(crate) fn daemon(
                         say(&o, line);
                     }
                     stages.mark("manifest");
+                    for line in crate::records_sync::tend_records(s, &slug, &now, &actor) {
+                        say(&o, line);
+                    }
+                    stages.mark("records");
                     for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);
@@ -3528,6 +3532,98 @@ mod tests {
         } else {
             "old-fake-binary".into()
         }
+    }
+
+    /// `brain.code none` (ADR-070 rule 6): after a full pass the brain's
+    /// work dir holds no checkout of the project. The reflection, which
+    /// plans from the board, ran in an empty workspace; the task, which
+    /// needs the code, still waits for a hand.
+    #[test]
+    fn brain_code_none_leaves_no_project_checkout_after_a_pass() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(pulse_store::HUMAN_AGENT, "brain.code", "none")
+            .unwrap();
+        let add = |kind: &str, title: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                kind.into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                pulse_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+        };
+        let task = add("task", "Needs the code");
+        let reflect = add(crate::suggestions::REVIEW_KIND, "Plans from the board");
+        let seen = tempfile::tempdir().unwrap();
+        let listing = seen.path().join("listing.txt");
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: format!(
+                    "sh -c {}",
+                    crate::util::shell_quote(&format!(
+                        "ls -A > {}; echo SUMMARY: planned",
+                        crate::util::shell_quote(&listing.display().to_string())
+                    ))
+                ),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM runs WHERE job_id = ? AND status = 'done'",
+                &[&reflect.str("id")]
+            ),
+            1,
+            "the reflection runs on the brain\n{out}"
+        );
+        let status = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT status FROM jobs WHERE id = ?",
+            &[&task.str("id")],
+        )
+        .str("status");
+        assert_eq!(status, "queued", "the task waits for a hand\n{out}");
+        // The worker's workspace held nothing of the project.
+        let seen_files = std::fs::read_to_string(&listing).unwrap();
+        assert_eq!(seen_files.trim(), ".git", "{seen_files}\n{out}");
+        // No checkout of the project anywhere under the work dir.
+        fn readmes(dir: &std::path::Path, found: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() && !p.is_symlink() {
+                    readmes(&p, found);
+                } else if p.file_name().is_some_and(|n| n == "README.md") {
+                    found.push(p.display().to_string());
+                }
+            }
+        }
+        let mut found = Vec::new();
+        readmes(&std::path::Path::new(&s.home).join("work"), &mut found);
+        assert!(found.is_empty(), "checkouts under work: {found:?}\n{out}");
+        // A run asked for by hand is refused the same way.
+        let err = crate::exec::make_executor(
+            crate::executor::executor_row(&s, crate::executor::LOCAL_EXECUTOR),
+            &s,
+            &s.home,
+            task.clone(),
+            crate::board::project_by_slug(&s.conn().unwrap(), "proj".into()),
+            "aurora",
+            &mut crate::exec::RunLog::default(),
+        )
+        .err()
+        .expect("a task is refused on a brain without code");
+        assert!(err.to_string().contains("brain.code is none"), "{err}");
     }
 
     #[test]

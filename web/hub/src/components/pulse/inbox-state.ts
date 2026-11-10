@@ -66,6 +66,28 @@ export interface InboxSources {
   harness?: Loaded<HarnessStatus>;
 }
 
+// Where each source comes from: the hub API path useInboxSources (inbox.ts)
+// reads it at and how often it re-reads it (ms; none means useApi's default).
+// Kept here, beside the count, so node --test sees which route feeds which
+// kind; the hook layer only calls useApi with these. A path shared with
+// another screen shares useApi's cache, so it is written exactly as there.
+export interface InboxSourcePath {
+  path: string;
+  refresh?: number;
+}
+
+export const INBOX_SOURCE_PATHS: Readonly<Record<keyof InboxSources, InboxSourcePath>> = {
+  org: { path: "org" },
+  proposed: { path: "records?kind=adr&status=Proposed", refresh: 60000 },
+  reg: { path: "projects", refresh: 60000 },
+  compute: { path: "compute" },
+  suggested: { path: "tasks/suggested?status=owner", refresh: 60000 },
+  runner: { path: "runner" },
+  service: { path: "service", refresh: 60000 },
+  settings: { path: "settings" },
+  harness: { path: "harness", refresh: 60000 },
+};
+
 const sum = (items: Omit<InboxItems, "total">) => items.decisions.length + items.proposals.length + items.questions.length + items.compute.length + items.work.length + items.drafts.length + items.steps.length + (items.machine ? 1 : 0) + (items.provider ? 1 : 0);
 
 export function buildInbox(q: InboxSources): Inbox {

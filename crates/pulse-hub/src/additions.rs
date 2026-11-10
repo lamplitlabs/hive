@@ -62,6 +62,7 @@ impl Handler {
             "toolkit" => self.addition_toolkit(w, r, parts),
             "compute" => self.addition_compute(w, r, parts),
             "clouds" => self.addition_clouds(w, r, parts),
+            "git-app" => self.addition_git_app(w, r, parts),
             "projects" => return self.addition_projects(w, r, parts),
             "folders" => self.addition_folders(w, r, parts),
             "heldout" => self.addition_heldout(w, r, parts),
@@ -76,6 +77,8 @@ impl Handler {
             "skills" => self.addition_skills(w, r, parts),
             "service" => self.addition_service(w, r, parts),
             "voice" => self.addition_voice(w, r, parts),
+            "machines" => self.addition_machines(w, r, parts),
+            "hands" => self.addition_hands(w, r, parts),
             _ => return false,
         }
         true
@@ -643,10 +646,14 @@ impl Handler {
                 return;
             }
         };
+        // Machines that dial in (ADR-070 step 2): enrolled devices with
+        // their last-seen time, for the revoke button and the "dials in"
+        // line; a store from before the tables exist lists none.
+        let devices = pulse_runner::dial::devices(store).unwrap_or_default();
         write_json(
             w,
             200,
-            json!({"requests": requests, "executors": executors, "caps": caps, "pairings": self.pairings_json()}),
+            json!({"requests": requests, "executors": executors, "caps": caps, "pairings": self.pairings_json(), "devices": devices}),
         );
     }
 

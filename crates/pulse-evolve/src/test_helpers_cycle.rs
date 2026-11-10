@@ -108,6 +108,10 @@ pub(crate) fn cycle_ready() -> pulse_store::Store {
     }
     s.set_setting("human", "evolve.loop", "1")
         .expect("enable loop");
+    // Fixture-measured cards without a check: the card-proof gate
+    // (evolve.require_check) is off here.
+    s.set_setting("human", pulse_store::EVOLVE_REQUIRE_CHECK, "off")
+        .expect("card proof off");
     s
 }
 
