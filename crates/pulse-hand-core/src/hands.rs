@@ -662,6 +662,25 @@ impl Hands {
             }
         }
         let mut env = Vec::new();
+        // A GitHub App installation token (ADR-070 step 3) goes into a
+        // credential helper beside the clone, never into it, for this push
+        // alone; the helper is removed when the push returns.
+        let _helper = match crate::gitcred::token_from_lease(&key) {
+            Some(token) => {
+                let Some(host) = crate::gitcred::http_host(url) else {
+                    return Err(hands_die("push: a leased token needs an https url"));
+                };
+                let helper = crate::gitcred::Helper::install(Path::new(&dir), &host, &token)
+                    .map_err(|e| hands_die(e.to_string()))?;
+                env.extend(helper.env(&[]));
+                key.clear();
+                Some(helper)
+            }
+            None if key.starts_with(crate::gitcred::TOKEN_LEASE_PREFIX.as_bytes()) => {
+                return Err(hands_die("push: the leased token is not a token"));
+            }
+            None => None,
+        };
         let _key_file = if key.is_empty() {
             None
         } else {
@@ -1338,6 +1357,83 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", origin.display());
         assert!(h.push(job, &url, again.trim(), "pulse/a/job").is_err());
+    }
+
+    /// ADR-070 step 3: a lease that carries a GitHub App installation
+    /// token pushes over https through a credential helper the hand writes
+    /// beside the clone for that one push and removes after it; the token
+    /// is in no output and no file of the clone.
+    #[test]
+    fn hands_push_with_a_leased_app_token_uses_a_helper_and_removes_it() {
+        let _serial = crate::test_helpers::serial();
+        if !pulse_testutil::githttp::available() {
+            return;
+        }
+        let job = "job-20261110T000000Z-push02";
+        let token = "ghs_handLeaseToken42";
+        let workdir = tempfile::tempdir().unwrap();
+        let clone = workdir.path().join(job).join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        let run = |args: &[&str]| crate::test_helpers::run(&clone, args);
+        run(&["git", "init", "-q", "-b", "main"]);
+        run(&["git", "commit", "-q", "--allow-empty", "-m", "work"]);
+        let sha = run(&["git", "rev-parse", "HEAD"]).trim().to_string();
+        let served = tempfile::tempdir().unwrap();
+        let bare = served.path().join("o").join("r.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        crate::test_helpers::run(&bare, &["git", "init", "-q", "--bare"]);
+        use base64::Engine;
+        let auth = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"))
+        );
+        let srv = pulse_testutil::githttp::Server::new(served.path(), &auth);
+        let url = format!("{}/o/r.git", srv.url());
+        let wd = workdir.path().display().to_string();
+        let lease = String::from_utf8(crate::gitcred::token_lease(token)).unwrap();
+
+        // A token is for an https url only.
+        let mut h = make_hands(&wd, &lease);
+        let err = h
+            .push(job, "ssh://example.invalid/o/r.git", &sha, "pulse/a/job")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("https url"), "{err}");
+        let mut h = make_hands(&wd, "github-app-token bad token");
+        let err = h
+            .push(job, &url, &sha, "pulse/a/job")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not a token") && !err.contains("bad token"),
+            "{err}"
+        );
+
+        let mut h = make_hands(&wd, &lease);
+        h.push(job, &url, &sha, "pulse/a/job").unwrap();
+        let pushed = crate::util::git(
+            bare.to_str().unwrap(),
+            &["rev-parse", "refs/heads/pulse/a/job"],
+        );
+        assert_eq!(pushed.stdout.trim(), sha, "{}", pushed.stderr);
+        assert!(
+            srv.seen().contains(&auth),
+            "the token never reached the server"
+        );
+        let left: Vec<_> = std::fs::read_dir(workdir.path().join(job))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            left,
+            vec!["clone".to_string()],
+            "the helper outlived the push"
+        );
+        let config = std::fs::read_to_string(clone.join(".git").join("config")).unwrap();
+        assert!(
+            !config.contains(token) && !config.contains("credential"),
+            "{config}"
+        );
     }
 
     #[test]

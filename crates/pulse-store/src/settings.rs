@@ -253,7 +253,7 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","git.github_app.app_id"=>"","git.github_app.installation_id"=>"","git.github_app.private_key_ref"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -321,6 +321,9 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "daemon.build_jobs"=>("count",Some(0),[],None,"parallel compile jobs a build the daemon causes may use: exported as CARGO_BUILD_JOBS to its job children, their pre-commit verification and the landing verification when the environment does not set it, and passed as -j to the self-update build; 0 is half the physical cores, so no single build takes the whole machine"),
         "daemon.keep_awake"=>("choice",None,["off","on","always"],None,"on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say. A paused or stopped daemon holds nothing, and closing a laptop's lid still sleeps a Mac without an external display. Each tick the daemon also notices when the machine slept anyway (the wall clock jumped while the loop waited) and says for how long"),
         "push.credential"=>("reference",None,[],None,"where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)"),
+        "git.github_app.app_id"=>("identifier",None,[],None,"the numeric App ID of the GitHub App PULSE reads and writes repositories as (ADR-070 step 3), from the App's settings page on GitHub; with git.github_app.installation_id and git.github_app.private_key_ref set, the brain mints a one-hour installation token scoped to the one repository a job needs, hands it to the run through a git credential helper that lives as long as the run, and pushes and opens pull requests with it before it tries this machine's own logins. Empty: no App, git and gh use what this machine is logged in to"),
+        "git.github_app.installation_id"=>("identifier",None,[],None,"the numeric id of the GitHub App's installation on your account or organization (the number at the end of github.com/settings/installations/N); the brain exchanges the App's signed JWT for tokens of this installation. Empty: no App"),
+        "git.github_app.private_key_ref"=>("reference",None,[],None,"where the GitHub App's private key (the .pem GitHub downloads once) lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD (1Password), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). Only the brain reads it, for the seconds it takes to sign a ten-minute JWT; jobs never see it, only the one-hour repository tokens it buys. Empty: no App"),
     }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
@@ -732,6 +735,17 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
             )));
         }
         return Ok(name_text);
+    }
+    if name == "git.github_app.app_id" || name == "git.github_app.installation_id" {
+        // GitHub numbers its Apps and installations; anything else would
+        // only fail later, at the first token exchange.
+        if !text.is_empty() && (text.len() > 20 || !text.bytes().all(|b| b.is_ascii_digit())) {
+            return Err(input_err(format!(
+                "{name} takes the number GitHub shows for it, such as 123456, or empty for no App; not {}",
+                py_repr(text)
+            )));
+        }
+        return Ok(text.to_string());
     }
     if name == "update.latest_url" {
         let url = text.to_string();
@@ -1591,6 +1605,55 @@ mod go_settings_tests {
         );
         s.set_setting("human", "push.credential", "").unwrap();
         assert_eq!(s.setting("push.credential", ""), "");
+    }
+
+    #[test]
+    fn github_app_settings_take_numbers_and_a_key_reference_only() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-11-10T10:00:00Z");
+        for name in [
+            "git.github_app.app_id",
+            "git.github_app.installation_id",
+            "git.github_app.private_key_ref",
+        ] {
+            assert_eq!(s.setting(name, ""), "", "{name} defaults to empty");
+            assert_eq!(DAEMON_SETTINGS[name], "", "{name} defaults to empty");
+            assert!(extra_setting_names().contains(&name.to_string()));
+        }
+        s.set_setting("human", "git.github_app.app_id", " 123456 ")
+            .unwrap();
+        assert_eq!(s.setting("git.github_app.app_id", ""), "123456");
+        assert!(
+            s.set_setting("human", "git.github_app.installation_id", "my-org")
+                .unwrap_err()
+                .to_string()
+                .contains("takes the number GitHub shows")
+        );
+        s.set_setting("human", "git.github_app.installation_id", "987")
+            .unwrap();
+        assert!(
+            s.set_setting(
+                "human",
+                "git.github_app.private_key_ref",
+                "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("never the key itself")
+        );
+        s.set_setting(
+            "human",
+            "git.github_app.private_key_ref",
+            "file:///etc/pulse/app.pem",
+        )
+        .unwrap();
+        assert_eq!(
+            s.setting("git.github_app.private_key_ref", ""),
+            "file:///etc/pulse/app.pem"
+        );
+        s.set_setting("human", "git.github_app.app_id", "").unwrap();
+        assert_eq!(s.setting("git.github_app.app_id", ""), "");
     }
 
     #[test]

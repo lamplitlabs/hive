@@ -36,6 +36,7 @@ pub mod failure;
 pub(crate) mod forge;
 pub mod gcp;
 pub mod gh_auth;
+pub mod gitapp;
 pub(crate) mod hand_watch;
 /// The `pulse-hands` protocol lives with the executor path (pulse-hand-core,
 /// ADR-070), which the open `pulse-hand` binary is built from.

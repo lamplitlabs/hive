@@ -42,6 +42,9 @@ const LABELS: Record<string, string> = {
   "backup.subscription": "Azure subscription of the backup account",
   "verify.lock": "Run checks one at a time",
   "push.credential": "Push key",
+  "git.github_app.app_id": "GitHub App ID",
+  "git.github_app.installation_id": "GitHub App installation",
+  "git.github_app.private_key_ref": "GitHub App key",
   quorum: "Votes a suggestion needs",
   expiry_days: "Close a suggestion after (days)",
   stale_days: "A quiet thread goes stale after (days)",
@@ -229,7 +232,7 @@ const LABELS: Record<string, string> = {
   "voice.language": "Language spoken into the microphone (auto = detect)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|git\.github_app|git|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -267,6 +270,9 @@ const HELP: Record<string, string> = {
   "backup.keep": "How many of this machine's backups stay at the destination before the oldest is removed. 0 keeps them all.",
   "backup.subscription": "Only for an az:// destination whose storage account lives outside the az CLI's default subscription: its name or id, passed to every az call a backup makes. Leave empty when the account is in the default subscription.",
   "push.credential": "The SSH key PULSE pushes with. Only a reference to where the key lives is saved, never the key.",
+  "git.github_app.app_id": "The number GitHub shows on your PULSE GitHub App's settings page. With the installation and the key set, every job gets a one-hour token for its one repository instead of a key or login kept on a machine.",
+  "git.github_app.installation_id": "The number at the end of the App's installation page on GitHub (github.com/settings/installations/N, or your organization's).",
+  "git.github_app.private_key_ref": "Where the App's private key (the .pem GitHub downloads) lives: op://, keychain:// or file:// (a 0600 file). Only the reference is saved; only this computer reads the key, to sign for a token.",
   quorum: "How many agents must vote for a suggestion before it can become work.",
   expiry_days: "How long a suggestion stays open for votes before it closes.",
   stale_days: "How long a thread can go untouched before it counts as stale.",

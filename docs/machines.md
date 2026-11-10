@@ -412,6 +412,16 @@ from the checkout. Hands that answer `push=1` in their probe take the
 verb. `jobs::tests::a_job_leased_to_a_local_pulse_hand_pushes_with_the_leased_credential`
 proves the path end to end.
 
+With a GitHub App configured ([Credentials](landing.md#one-git-login-for-every-machine-a-github-app-adr-070-step-3))
+and an upstream on its host, the lease is an installation token for the
+job's one repository instead of a key: the brain mints it, the hand
+installs a credential helper beside the clone that answers only for that
+host, pushes over https, and removes the helper whatever the push did. The
+run log says `pushed … with the leased GitHub App token` and the
+`hand.push` event's `via` names it; a token GitHub will not mint falls
+back to the key path above. `jobs::tests::a_job_leased_to_a_local_pulse_hand_pushes_with_the_app_token`
+proves it against a git server that accepts nothing but that token.
+
 The dial-out TLS channel a customer's hand will use is the next step of
 ADR-070; until then a remote machine keeps `pulse pair` and `pulse hands`
 behind sshd.
