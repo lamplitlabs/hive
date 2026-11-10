@@ -643,6 +643,9 @@ pub(crate) fn experiment_candidates(
     let mut seen = seen;
     let mut closed = closed;
     let project_path = s.project(project)?.map(|p| p.path).unwrap_or_default();
+    // The loop cap holds experiments too: a card that changes the loop's own
+    // code waits once the day's `plan.loop_per_day` is spent.
+    let loop_ctx = hive_tally::loop_context(s, project, &s.now());
     for suggestion in crate::card::ordered_suggestions(s, result, status.product_scope.allowed) {
         if seen
             .as_ref()
@@ -650,7 +653,17 @@ pub(crate) fn experiment_candidates(
         {
             continue;
         }
-        if require_positive_score && suggestion.score <= 0 {
+        // A card that names a check is tried without votes when the check
+        // decides (evolve.check_skips_quorum); a card that names none is no
+        // experiment at all when cards must prove themselves.
+        let check_decides =
+            suggestion.checked && s.setting_bool(hive_store::EVOLVE_CHECK_SKIPS_QUORUM);
+        if require_positive_score
+            && (suggestion.score < 0 || (suggestion.score == 0 && !check_decides))
+        {
+            continue;
+        }
+        if !suggestion.checked && s.setting_bool(hive_store::EVOLVE_REQUIRE_CHECK) {
             continue;
         }
         let conn = s.conn()?;
@@ -678,7 +691,9 @@ pub(crate) fn experiment_candidates(
             job_status: String::new(),
             ..suggestion.clone()
         };
-        if !hive_tally::plan_gate(s, &project_path, &ungated, Some(&p)).is_empty() {
+        if !hive_tally::plan_gate_with(s, loop_ctx.clone(), &project_path, &ungated, Some(&p))
+            .is_empty()
+        {
             if let Some(m) = seen.as_deref_mut() {
                 m.insert(suggestion.id.clone(), true);
             }

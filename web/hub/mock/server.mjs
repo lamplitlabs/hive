@@ -17,6 +17,7 @@ import { createCodeDeliveryMock } from "./code-deliveries.mjs";
 import { createReportsMock } from "./reports.mjs";
 import { createKpisMock } from "./kpis.mjs";
 import { createAutomationsMock } from "./automations.mjs";
+import { funnelOf } from "./funnel.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 // The job artifact folders under root/jobs/<id>/artifacts, read on demand.
@@ -658,11 +659,12 @@ function heldoutGates() {
 }
 // The evolution payload with the counts the mock holds: the gates' held-out
 // chip, the loop KPI and, for a project whose step was the held-out one, the
-// level, reason and next step - so the panel moves after a write too.
-function evolutionView(slug, d) {
+// level, reason and next step - so the panel moves after a write too. The
+// funnel is derived from the project's suggestion rows (funnel.mjs).
+function evolutionView(slug, d, suggestions = []) {
   const h = state.heldout;
   const p = state.projects.find((x) => x.slug === slug);
-  const out = { ...d };
+  const out = { ...d, funnel: funnelOf(suggestions) };
   // ADR-046: the record refs on the registry row move with the console's adopt / discard / draft-job writes; the documents follow them.
   for (const what of ["constitution", "evaluators"]) {
     const doc = d[what];
@@ -4119,7 +4121,15 @@ async function handle(req, res) {
         "no fixture for " + url.pathname,
         "add mock/api/" + segs.join("/") + ".json",
       );
-    return send(res, 200, evolutionView(segs[1], d));
+    return send(
+      res,
+      200,
+      evolutionView(
+        segs[1],
+        d,
+        (await fixture("projects/" + segs[1] + "/suggestions")) || [],
+      ),
+    );
   }
   // Role leads (`hive lead`): the seats on a project, what Hive suggests
   // from the project's own signals, and the built-in roles for the gallery.

@@ -2090,6 +2090,15 @@ pub(crate) fn run_job(
                     commits,
                     ex.owner_paths_touched(&base).join(", ")
                 );
+            } else if let Some(why) =
+                crate::card_proof::card_unproven(s, &job, &base, &log, &|cmd: &str| {
+                    ex.verify(&cancel, cmd, minutes)
+                })
+            {
+                // A job from a voted card lands only on its card's proof:
+                // the check red on the default branch, green with the change.
+                status = "failed".into();
+                summary = format!("{commits} commit(s) but {why}; nothing landed");
             } else {
                 let mut ok = true;
                 let mut check_tool = String::new();
@@ -6345,6 +6354,9 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         let _guard = hive_testutil::env_lock();
         let s = new_store();
+        // The card names a check; with check-skips-quorum on it would be
+        // eligible at once and never reach a ballot, which this test needs.
+        set_setting(&s, hive_store::EVOLVE_CHECK_SKIPS_QUORUM, "off");
         new_bare_repo(&s);
         join(&s, "aurora");
         join(&s, "alice");

@@ -161,6 +161,10 @@ pub(crate) fn new_store() -> TestStore {
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.research_minutes", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_factor", "1");
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
+    // The fixture cards of these tests name no check: the card-proof gate
+    // (evolve.require_check, default on) is off here, and the tests of that
+    // gate - card_proof, the briefs, the idle line - turn it on themselves.
+    let _ = s.set_setting(util::HUMAN_AGENT, hive_store::EVOLVE_REQUIRE_CHECK, "off");
     // The disk admission, the executor probe and the verify disk prelude read
     // this machine's real free space; a host under the 10 GiB default floor
     // would otherwise fail or stall unrelated tests. Tests that want the

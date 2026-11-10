@@ -105,6 +105,10 @@ pub(crate) fn cycle_ready() -> hive_store::Store {
         crate::test_helpers::join_test_agent(&s, name);
     }
     s.set_setting("human", "evolve.loop", "1").unwrap();
+    // These tests model the fixture-measured path: their cards name no
+    // check, so the card-proof gate (evolve.require_check, default on) is off.
+    s.set_setting("human", hive_store::EVOLVE_REQUIRE_CHECK, "off")
+        .unwrap();
     s
 }
 

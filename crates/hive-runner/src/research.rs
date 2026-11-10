@@ -83,7 +83,123 @@ pub(crate) static RESEARCH_FOCUSES: &[ResearchFocus] = &[
         product: false,
         findings_only: false,
     },
+    ResearchFocus {
+        name: "defects",
+        title: "what failed this week",
+        look: "Start from what failed, not from what could be better. The project's failed jobs of the last week are listed below (`hive jobs --project {slug} --all --json` carries every job's result). Then run each check the project declares (`hive env show --project {slug}` lists them) twice on the default branch: a test that fails, or passes once and fails once, is a defect. Read the crashes, panics and stack traces in that output and in the logs, and walk the product's main path for an error its user meets. Choose the one defect you can reproduce in the clone and keep the command that shows it failing - a new test that fails today is the best reproduction. A failure that Hive or the machine caused rather than this project's code (a lost remote, a missing tool, a task that does not apply to this repository) is a `FINDING: shared:` line or a `Class: hive` card for the brain, not a card here; a defect you cannot reproduce is a `FINDING:`, not a card.",
+        card: "the one product file where the defect lives and the one fix; Signal is `check:` the reproduction you ran, which fails on the default branch today and passes once the fix is in",
+        product: true,
+        findings_only: false,
+    },
 ];
+
+/// How far back the `defects` focus looks for failed jobs.
+const DEFECTS_WINDOW_HOURS: f64 = 24.0 * 7.0;
+/// The failed jobs one `defects` brief lists.
+const DEFECTS_LISTED: usize = 10;
+
+/// The project's failed and blocked worker jobs of the last week, newest
+/// first - research, ballots, reflects and leads aside, since their failures
+/// are the loop's and not the project's.
+fn failed_jobs(s: &hive_store::Store, slug: &str, now: &str, since: &str) -> Vec<Row> {
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let week = plus_hours(now, -DEFECTS_WINDOW_HOURS);
+    must_rows(
+        &conn,
+        "SELECT id, kind, title, result, finished_at FROM jobs \
+         WHERE project = ? AND status IN ('failed', 'blocked') AND kind NOT IN ('reflect', 'ballot', 'lead') \
+           AND finished_at >= ? AND finished_at > ? ORDER BY finished_at DESC, id DESC",
+        &[&slug, &week, &since],
+    )
+}
+
+/// The newest research job's focus, or empty.
+fn last_research_focus(s: &hive_store::Store, slug: &str) -> String {
+    let Ok(conn) = s.conn() else {
+        return String::new();
+    };
+    let title = must_one(
+        &conn,
+        "SELECT title FROM jobs WHERE project = ? AND kind = 'reflect' AND source LIKE ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        &[&slug, &format!("{RESEARCH_SOURCE_PREFIX}{slug}:%")],
+    )
+    .str("title");
+    focus_of_title(&title).unwrap_or_default().to_string()
+}
+
+/// Failed jobs that finished since the project's last `defects` research
+/// began (within the week): the failures no research run has looked at yet.
+fn fresh_failures(s: &hive_store::Store, slug: &str, now: &str) -> usize {
+    let Ok(conn) = s.conn() else {
+        return 0;
+    };
+    let last = must_one(
+        &conn,
+        "SELECT MAX(created_at) AS at FROM jobs WHERE project = ? AND kind = 'reflect' AND source LIKE ? AND title LIKE 'Research (defects)%'",
+        &[&slug, &format!("{RESEARCH_SOURCE_PREFIX}{slug}:%")],
+    )
+    .str("at");
+    failed_jobs(s, slug, now, &last).len()
+}
+
+/// A retried job's title without its `Retry <job id>: ` prefix, so the
+/// listing names each failing piece of work once.
+fn without_retry(title: &str) -> &str {
+    title
+        .strip_prefix("Retry ")
+        .and_then(|rest| rest.split_once(": "))
+        .filter(|(id, _)| id.starts_with("job-"))
+        .map_or(title, |(_, rest)| rest)
+}
+
+/// What the `defects` focus adds to its brief: the week's failed jobs by id
+/// with what each said, one line per piece of work however often it was
+/// retried.
+fn failed_jobs_look(s: &hive_store::Store, slug: &str, now: &str) -> String {
+    let jobs = failed_jobs(s, slug, now, "");
+    if jobs.is_empty() {
+        return "\n\nNo job of this project failed in the last week: start from the checks, run twice, and the product's main path.".into();
+    }
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut order = Vec::new();
+    for j in &jobs {
+        let title = without_retry(&j.str("title")).to_string();
+        let n = seen.entry(title.clone()).or_insert(0);
+        if *n == 0 {
+            order.push((title, j));
+        }
+        *n += 1;
+    }
+    let listed = order
+        .iter()
+        .take(DEFECTS_LISTED)
+        .map(|(title, j)| {
+            let times = match seen.get(title).copied().unwrap_or(1) {
+                1 => String::new(),
+                n => format!(", failed {n} times"),
+            };
+            format!(
+                "- `{}` {}{times}: {} - {}",
+                j.str("id"),
+                j.str("kind"),
+                trunc(title, 90),
+                trunc(&j.str("result").replace('\n', " "), 220)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let more = order.len().saturating_sub(DEFECTS_LISTED);
+    let more = if more > 0 {
+        format!(
+            "\n\n{more} more failed piece(s) of work are in `hive jobs --project {slug} --all`."
+        )
+    } else {
+        String::new()
+    };
+    format!("\n\nThe project's failed jobs of the last week, newest first:\n\n{listed}{more}")
+}
 
 /// The focus of the project's next research job. The focuses take turns,
 /// counted by the research jobs the project has had, but a focus whose
@@ -105,6 +221,15 @@ pub(crate) fn next_focus(s: &hive_store::Store, slug: &str, now: &str, ever: i32
         .copied()
         .filter(|f| !cap_reached || f.product)
         .collect();
+    // Failures nobody has looked at go first: the `defects` focus takes the
+    // turn while the project has failed jobs newer than its last defects run,
+    // every other turn at most, so the rest of the rotation still comes round.
+    if let Some(defects) = candidates.iter().find(|f| f.name == "defects")
+        && last_research_focus(s, slug) != defects.name
+        && fresh_failures(s, slug, now) > 0
+    {
+        return *defects;
+    }
     let weights = focus_weights(s, slug, now, &candidates);
     candidates[weighted_turn(&weights, ever.max(0) as usize)]
 }
@@ -497,7 +622,7 @@ pub(crate) fn plan_shared_board(
     let brief = format!(
         "Shared board triage: {n} post(s) on the shared board (`hive board --project {c}`) are open - the wishes about Hive and the lessons every project's workers left for the brain, which no ballot votes on. Work through the oldest below{more}:\n\n{listed}\n\n\
 For each, read it (`hive show ID`) and the code it names in this repository, then:\n\
-- promote a wish still worth doing: one `SUGGESTION:` card in your report (`File:` the file here that implements it; `Signal:` the commons post id), and close the commons post with `hive post result --project {c} --on ID --resolution promoted --area A --thread T --summary '...' --body '...'` naming the card;\n\
+- promote a wish still worth doing: one `SUGGESTION:` card in your report (`File:` the file here that implements it; `Signal: check:<command>` that fails on the default branch today and passes once the wish is done; the commons post id in its Hypothesis), and close the commons post with `hive post result --project {c} --on ID --resolution promoted --area A --thread T --summary '...' --body '...'` naming the card;\n\
 - decline one that is not worth it, already done or not Hive's to change: `--resolution declined` with the reason;\n\
 - close a post that repeats another open one as `declined` with `duplicate of <id>` in its summary, and judge the group once;\n\
 - a finding this repository could enforce (a check, a default, a brief) is a card too; one that is only knowledge is closed `declined` saying where it is recorded.\n\n\
@@ -542,10 +667,12 @@ pub(crate) fn shared_board_look(s: &hive_store::Store, slug: &str) -> String {
 }
 
 pub(crate) fn research_brief(s: &hive_store::Store, slug: String, focus: ResearchFocus) -> String {
-    let shared = if focus.name == "board" {
-        shared_board_look(s, &slug)
-    } else {
-        String::new()
+    let require_check = s.setting_bool(hive_store::EVOLVE_REQUIRE_CHECK);
+    let brain = s.brain().ok().flatten().is_some_and(|b| b.slug == slug);
+    let shared = match focus.name {
+        "board" => shared_board_look(s, &slug),
+        "defects" => failed_jobs_look(s, &slug, &s.now()),
+        _ => String::new(),
     };
     let leave = if focus.findings_only {
         format!(
@@ -554,8 +681,26 @@ pub(crate) fn research_brief(s: &hive_store::Store, slug: String, focus: Researc
         )
     } else {
         format!(
-            "Post one to three `SUGGESTION:` cards, each one variable a worker could change in one job and measure with the project's own checks, the fields on the one line separated by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>; Hypothesis: <which check moves, and how>; Tier: 0|1; Signal: <path in the clone | post id | check:COMMAND>`, where a `check:` is the shell command the measurement runs on both trees (`check:cargo test -p app parser`), never a check's name or prose, which fails on both and leaves the hypothesis unmeasured. For this focus a good product card names {}. A card whose File: is a test, fixture, CI or tooling path is operating-layer whatever it declares, and operating-layer improve jobs are capped by plan.operating_layer_per_day.",
-            focus.card
+            "Post one to three `SUGGESTION:` cards, each one variable a worker could change in one job and measure with the project's own checks, the fields on the one line separated by `;`: `Class: operating-layer|product; File: <one repository-relative file>; Variable: <the one change>; Hypothesis: <which check moves, and how>; Tier: 0|1; Signal: {signal}`, where a `check:` is the shell command the measurement runs on both trees (`check:cargo test -p app parser::rejects_empty -- --exact`), never a check's name or prose, which fails on both and leaves the hypothesis unmeasured.{proof} For this focus a good product card names {}. A card whose File: is a test, fixture, CI or tooling path is operating-layer whatever it declares, and operating-layer improve jobs are capped by plan.operating_layer_per_day.{loop_note}",
+            focus.card,
+            loop_note = if brain && setting_int(s, hive_store::PLAN_LOOP_PER_DAY) > 0 {
+                format!(
+                    " A card that changes the self-improvement loop itself - crates/hive-evolve, crates/hive-tally, or the runner's research, ballot, planning, experiment and brief code - is planned at most {} a day (plan.loop_per_day), never more: prefer the defect a user or a worker hit.",
+                    setting_int(s, hive_store::PLAN_LOOP_PER_DAY)
+                )
+            } else {
+                String::new()
+            },
+            signal = if require_check {
+                "check:<command that fails on the default branch today and passes once the change is in>"
+            } else {
+                "<path in the clone | post id | check:COMMAND>"
+            },
+            proof = if require_check {
+                " The check is the card's proof: it must fail on the default branch now - run it there and see it fail - and pass with the change; a test the change adds counts (it does not exist yet, so it fails). A card without such a check is never planned (evolve.require_check), and one whose check already passes lands nothing."
+            } else {
+                ""
+            },
         )
     };
     format!(
@@ -658,14 +803,15 @@ mod tests {
         assert_eq!(RESEARCH_FOCUSES[1].name, "code");
         assert_eq!(RESEARCH_FOCUSES[2].name, "purpose");
         let names: Vec<&str> = RESEARCH_FOCUSES.iter().map(|f| f.name).collect();
-        assert_eq!(names.len(), 8, "{names:?}");
+        assert_eq!(names.len(), 9, "{names:?}");
         assert!(!names.contains(&"deps"), "{names:?}");
+        assert_eq!(names[8], "defects", "{names:?}");
         let product: Vec<&str> = RESEARCH_FOCUSES
             .iter()
             .filter(|f| f.product)
             .map(|f| f.name)
             .collect();
-        assert_eq!(product, ["product", "code", "purpose", "docs"]);
+        assert_eq!(product, ["product", "code", "purpose", "docs", "defects"]);
         let s = new_store();
         let brief = research_brief(&s, "proj".into(), RESEARCH_FOCUSES[2]);
         for want in [
@@ -879,8 +1025,10 @@ mod tests {
         )
         .expect("improve job");
         assert_eq!(next_focus(&s, "proj", TEST_NOW, 3).name, "docs");
-        assert_eq!(next_focus(&s, "proj", TEST_NOW, 4).name, "product");
-        assert_eq!(next_focus(&s, "proj", TEST_NOW, 6).name, "purpose");
+        // The five product focuses (product, code, purpose, docs, defects)
+        // then cycle on their own.
+        assert_eq!(next_focus(&s, "proj", TEST_NOW, 4).name, "defects");
+        assert_eq!(next_focus(&s, "proj", TEST_NOW, 6).name, "code");
         // No cap: every focus takes its turn.
         s.set_setting(hive_store::HUMAN_AGENT, "plan.operating_layer_per_day", "0")
             .unwrap();

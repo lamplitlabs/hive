@@ -329,6 +329,10 @@ exec sh -c "$last"
 pub(crate) fn evolve_plan_ready(s: &hive_store::Store) {
     set_setting(s, "evolve.loop", "1");
     set_setting(s, "quorum", "2");
+    // The fake experiments' cards are fixture-measured and name no check:
+    // the card-proof gate (evolve.require_check, default on) is off here, and
+    // the tests of that gate turn it on themselves.
+    set_setting(s, hive_store::EVOLVE_REQUIRE_CHECK, "off");
     let constitution = "# Constitution\n\n## Editable scope\n| File class | Paths | Stage | Autonomy |\n| --- | --- | --- | --- |\n| operating | `README.md` | 2 | standing |\n\n## Immutable paths\n| Path | Why |\n| --- | --- |\n| `docs/evolution/**` | owner-owned |\n";
     for (slug, body) in [
         ("constitution", constitution),

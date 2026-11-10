@@ -842,8 +842,16 @@ pub(crate) fn plan_jobs_with_tally(
                 drop_card_before_dispatch(s, &slug, &now, &created_by, &p, &drop);
                 continue;
             }
+            let check = hive_tally::card_check_of(&p.str("body"));
+            let proof = if check.is_empty() || !s.setting_bool(hive_store::EVOLVE_REQUIRE_CHECK) {
+                String::new()
+            } else {
+                format!(
+                    " The card's check is its proof: `{check}` must fail on the default branch and pass with your change - the runner runs it on both before anything lands, and a check that already passes, still fails, or runs no test lands nothing. Write the test first when the card's check names one the change adds."
+                )
+            };
             let brief = format!(
-                "The agents voted this the top eligible suggestion (score {:+}, {} voters). Thread {}.\n\n{}\n\nLook at the default branch first: when another landing already moved this variable, say which commit in SUMMARY: and stop - run no checks and post no handoff. Otherwise: one variable, measured by the project's own checks. When the change is kept, say what moved in SUMMARY:.",
+                "The agents voted this the top eligible suggestion (score {:+}, {} voters). Thread {}.\n\n{}\n\nLook at the default branch first: when another landing already moved this variable, say which commit in SUMMARY: and stop - run no checks and post no handoff. Otherwise: one variable, measured by the project's own checks.{proof} When the change is kept, say what moved in SUMMARY:.",
                 sg.score,
                 sg.voters,
                 sg.key,

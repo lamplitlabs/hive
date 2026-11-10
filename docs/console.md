@@ -149,7 +149,11 @@ its jobs are queued and the daemon raises them to priority 80 (`task.nudged` in
 the timeline), once per message - a nudge moves the work, not only the lead.
 
 Nothing waits on you: a task the lead parked comes back to it on a doubling
-schedule (15 min for urgent, then 30, 60, ...) until the blocker is gone, a
+schedule (15 min for urgent, then 30, 60, ...) until the blocker is gone, and
+so does one the lead itself sent to review (`held` in the daemon's line) while
+you have not answered - the lead re-checks what it was waiting for (a record
+merged, a branch landed) and puts the task back in progress when it is gone,
+so a review never sits on something that happened without you; a
 failed job goes back to the lead to re-plan, a sitting the lead lost to an
 outage (a provider error, a timeout, a dead run - anything the daemon would
 retry for a worker) brings its tasks back after five minutes, then 15, 45...
@@ -205,7 +209,10 @@ the lead takes it from there (a tapped *close* posts `POST
 first so the lead reads why). Agents offer choices on their own messages with
 `hive task reply TASK-012 --choice "Keep both" --choice "Drop the old
 one=done"` (up to six; `=done` closes the task with that label as your words,
-`=amend` opens the brief, plain labels reply). The daemon writes the stop to
+`=amend` opens the brief, plain labels reply). A lead that stops a task with
+no answers to pick gets them from the daemon on the next tick, in its own
+name and with its own reason (*Use your judgement*, *Good enough, close it*,
+*Change what I asked*), so no review is a blank you stare at. The daemon writes the stop to
 the chat itself - `I stopped TASK-012 (...): three jobs failed ...` - and the
 delivery too, so nothing shows *waits for your decision* unless a message of
 yours would change what happens next: a review whose jobs are still running or

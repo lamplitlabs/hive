@@ -112,6 +112,7 @@ pub(crate) fn suggestion_idle_part_with_tally(
     let mut duplicates = 0;
     let mut file_stale = 0;
     let mut no_op_check = 0;
+    let mut no_check = 0;
     // Any other hold, by its reason: the line says what holds a card rather
     // than calling every hold missing evidence.
     let mut other: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -150,6 +151,8 @@ pub(crate) fn suggestion_idle_part_with_tally(
                     owner_paths += 1;
                 } else if gate == hive_tally::GATE_UNLANDED {
                     unlanded += 1;
+                } else if gate == hive_tally::GATE_NO_CHECK {
+                    no_check += 1;
                 } else if gate == hive_tally::GATE_NO_EVIDENCE {
                     no_evidence += 1;
                 } else if gate == hive_tally::GATE_FILE_STALE {
@@ -191,6 +194,9 @@ pub(crate) fn suggestion_idle_part_with_tally(
     }
     if owner > 0 {
         held.push(format!("{owner} for the owner"));
+    }
+    if no_check > 0 {
+        held.push(format!("{no_check} name no check"));
     }
     if no_evidence > 0 {
         held.push(format!("{no_evidence} without evidence"));

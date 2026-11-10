@@ -192,6 +192,9 @@ pub struct Suggestion {
     pub job: String,
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub job_status: String,
+    /// The card names a check that can prove it (`Signal: check:<command>`).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub checked: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +318,8 @@ struct SuggInfo {
     date: String,
     summary: String,
     session: String,
+    /// The card names a check (card_class::card_check_of).
+    checked: bool,
 }
 #[derive(Clone, Default)]
 struct SVoteInfo {
@@ -501,6 +506,7 @@ fn new_tally(
                     date: r.date.clone(),
                     summary: r.summary.clone(),
                     session: r.session.clone(),
+                    checked: crate::card_class::card_has_check(&r.body),
                 },
             );
         }
@@ -648,6 +654,11 @@ impl Tally {
                 self.built[sid].clone()
             } else if voters >= self.params.quorum && up > down {
                 "eligible".into()
+            } else if self.params.check_skips_quorum && s.checked && up >= down {
+                // A card that names a check is tried without quorum: the
+                // check decides, and only a net-down vote stops it (the
+                // `rejected` arm below, which `up >= down` already excludes).
+                "eligible".into()
             } else if voters >= self.params.quorum && up < down {
                 "rejected".into()
             } else if voters == 0 && age > self.params.expiry_days {
@@ -667,6 +678,7 @@ impl Tally {
                 agent: s.agent.clone(),
                 summary: s.summary.clone(),
                 session: s.session.clone(),
+                checked: s.checked,
                 ..Suggestion::default()
             };
             if let Some(j) = self.open.get(sid)

@@ -257,15 +257,60 @@ fn check_result(
         command.current_dir(cwd);
     }
     match command.output() {
-        Ok(output) => (
-            output.status.success(),
-            String::from_utf8_lossy(&output.stdout).to_string(),
-        ),
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut passed = output.status.success();
+            if passed && ran_no_test(&format!("{stdout}\n{stderr}")) {
+                let _ = writeln!(
+                    err,
+                    "the check ran no test: its test runner selected nothing"
+                );
+                passed = false;
+            }
+            (passed, stdout)
+        }
         Err(e) => {
             let _ = writeln!(err, "check failed to start: {e}");
             (false, String::new())
         }
     }
+}
+
+/// Whether a test runner's output says it selected no test. A check that
+/// passes by running nothing proves nothing: the test a change adds does not
+/// exist on main, and `cargo test the_new_test` there runs zero tests and
+/// exits 0 - scored as a pass, the card could never show red on main turning
+/// green on its branch. Cargo (every binary's `test result` with nothing
+/// passed or failed), go (`no tests to run`), jest (`No tests found`), pytest
+/// (`no tests ran`, `collected 0 items`) and node's runner (`# tests 0`).
+pub fn ran_no_test(output: &str) -> bool {
+    let text = strip_ansi(output);
+    let mut results = 0;
+    let mut ran = 0;
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("test result: ") else {
+            continue;
+        };
+        results += 1;
+        let count = |word: &str| {
+            rest.split(';')
+                .find_map(|part| part.trim().strip_suffix(word))
+                .and_then(|n| n.split_whitespace().last())
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        ran += count(" passed") + count(" failed");
+    }
+    if results > 0 {
+        return ran == 0;
+    }
+    let lower = text.to_lowercase();
+    lower.contains("no tests to run")
+        || lower.contains("no tests found")
+        || lower.contains("no tests ran")
+        || lower.contains("collected 0 items")
+        || text.lines().any(|l| l.trim() == "# tests 0")
 }
 
 /// Stdout that is one integer and nothing else.
@@ -369,6 +414,44 @@ mod tests {
         assert_eq!(out, "score: 0.0000\n");
         assert!(err.starts_with("check failed to start:"), "{err}");
         assert!(run_check_score_in(&mut Vec::new(), &mut Vec::new(), &[], None, None).is_err());
+    }
+
+    #[test]
+    fn a_check_that_runs_no_test_fails_on_its_tree() {
+        // cargo, one binary filtered to nothing, another running none either
+        assert!(ran_no_test(
+            "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n\nrunning 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+        ));
+        // ... but one binary that ran the test is a real run, red or green.
+        assert!(!ran_no_test(
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+        ));
+        assert!(!ran_no_test(
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored"
+        ));
+        for none in [
+            "ok  \texample.com/x\t0.002s [no tests to run]",
+            "No tests found, exiting with code 0",
+            "============ no tests ran in 0.01s ============",
+            "collected 0 items",
+            "TAP version 13\n# tests 0\n# pass 0",
+        ] {
+            assert!(ran_no_test(none), "{none}");
+        }
+        assert!(!ran_no_test("# tests 4\n# pass 4"));
+        assert!(!ran_no_test("all good"));
+        // Scored: the empty run fails, so a test the change adds reads red on main.
+        let (out, err) = checked(
+            &[
+                "sh",
+                "-c",
+                "echo 'running 0 tests'; echo 'test result: ok. 0 passed; 0 failed; 0 ignored'",
+            ],
+            None,
+            None,
+        );
+        assert_eq!(out, "score: 0.0000\n");
+        assert!(err.starts_with("the check ran no test"), "{err}");
     }
 
     #[test]

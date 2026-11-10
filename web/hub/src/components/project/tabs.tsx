@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ReplyIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
+import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, FunnelIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ReplyIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,7 @@ import { GOAL_ANCHOR, GoalEditor } from "@/components/project/goal";
 import { LeadsPanel } from "@/components/project/leads";
 import { MachinesPanel } from "@/components/project/machines";
 import { healthLines, topThreads } from "@/components/project/project-state";
+import { alertTone, funnelLine, funnelStages, heldGroups, ruleLine, settledLine } from "@/components/project/funnel-state";
 import { AGENTS_DECIDED_HINT, AGENTS_DECIDED_SUMMARY, settledLabel, splitQuestions, waitingNote, whoSettled } from "@/components/project/tabs-state";
 import { ToolkitPanel } from "@/components/project/toolkit";
 import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/hive/panel";
@@ -46,7 +47,7 @@ import { cn } from "@/lib/utils";
 import { num, plural, rel, sentence } from "@/lib/format";
 import { agentName, statusWord, threadName } from "@/lib/words";
 import { codeDeliveryKpiState } from "@/lib/code-deliveries";
-import { codeDeliveriesPath, type CodeDeliveriesPayload, isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectGoalPayload, type ProjectInfo, type ProjectNeeds, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
+import { codeDeliveriesPath, type CodeDeliveriesPayload, isBaselineRow, projectPath, RECORD_KINDS, TASK_STATUSES, type Amendment, type Compute, type Constitution, type Evolution, type EvolutionArchiveRow, type EvolutionFunnel, type MessagesPayload, type Notices, type Overview, type OwnerQuestion, type ProjectGoalPayload, type ProjectInfo, type ProjectNeeds, type Proposal, type RecordRow, type RecordsPayload, type Suggestion, type Task, type TasksPayload, type ThreadRow, type Timeline } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";
 
 function Wait<T>({ q, rows = 5, children }: { q: Loaded<T>; rows?: number; children: (d: T) => React.ReactNode }) {
@@ -980,10 +981,11 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
             </Terminal>
           </EmptyState>
         );
-        // The empty state is the whole tab only when there is nothing else: with the setup step showing, that step is the one call to action.
-        if (!present && !gated) return empty;
+        // The empty state is the whole tab only when there is nothing else: with the setup step or the funnel showing, that is the one call to action.
+        if (!present && !gated && !e.funnel) return empty;
         return (
           <div className="grid gap-6">
+            {e.funnel ? <FunnelPanel f={e.funnel} slug={slug} /> : null}
             {gated ? <SelfImprovementPanel gates={e.gates} error={e.gates_error} fixtures={fixtures} docs={docs} canDecide={canDecide} /> : null}
             {!present ? null : (
               <>
@@ -1073,6 +1075,49 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
         );
       }}
     </Wait>
+  );
+}
+
+// How the project's suggestions move from the board to a landed change: the
+// stall alerts first (the backend words them), the stages as a strip, then
+// what holds the agreed ones, what settled and the rule a suggestion follows.
+// The suggested tile opens the board's suggestions; the in-progress tile the
+// project's work.
+function FunnelPanel({ f, slug }: { f: EvolutionFunnel; slug: string }) {
+  const stages = funnelStages(f);
+  const held = heldGroups(f.held);
+  const settled = settledLine(f);
+  const tileHref: Record<string, string | undefined> = {
+    posted: hrefs.project(slug, "suggestions"),
+    in_flight: hrefs.project(slug, "work"),
+  };
+  const tileTone = (key: string): "neutral" | "warn" | "ok" => (key === "in_flight" && f.blocked > 0 ? "warn" : key === "built" && f.built > 0 ? "ok" : "neutral");
+  return (
+    <Panel title="From suggestion to change" icon={FunnelIcon} actions={<span>{funnelLine(f)}</span>}>
+      <div className="grid gap-4">
+        {f.alerts?.length ? (
+          <div className="grid gap-2">
+            {f.alerts.map((a, i) => (
+              <Notice key={a.code + i} tone={alertTone(a.code)}>
+                {a.text}
+              </Notice>
+            ))}
+          </div>
+        ) : null}
+        <KpiGrid className={cn("mb-0 grid-cols-2 sm:grid-cols-3", stages.length > 6 ? "md:grid-cols-7" : "md:grid-cols-6")}>
+          {stages.map((s) => (
+            <Kpi key={s.key} n={s.n} label={s.label} sub={s.sub} href={tileHref[s.key]} tone={tileTone(s.key)} />
+          ))}
+        </KpiGrid>
+        <Kv
+          rows={[
+            ["Held", held || "—"],
+            ["Settled", settled || "—"],
+            ["Rule", ruleLine(f)],
+          ]}
+        />
+      </div>
+    </Panel>
   );
 }
 

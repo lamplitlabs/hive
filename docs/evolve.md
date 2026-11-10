@@ -11,6 +11,7 @@ old value.
 This page covers the evolve settings that [Democracy and
 self-improvement](self-improvement.md) does not explain. The loop itself, and
 `evolve.loop`, `evolve.limits`, `evolve.tolerance`, `evolve.land_neutral`,
+`evolve.require_check`, `evolve.check_skips_quorum`,
 `evolve.experiments_in_flight`, `evolve.heldout`, `evolve.measure_parallel`,
 `evolve.flat_cycles`, `evolve.heal`, `evolve.flat_wait_hours`,
 `evolve.baseline_ttl_hours`, `evolve.parent_rate`, `evolve.outcome_hours`,

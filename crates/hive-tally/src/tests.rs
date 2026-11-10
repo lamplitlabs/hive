@@ -255,6 +255,11 @@ pub(crate) mod test_fixture {
             now: FIXTURE_NOW.into(),
         })
         .expect("open store");
+        // The fixture's cards model every other gate; most name no check, so
+        // the card-proof gate (evolve.require_check, default on) is off here.
+        // The tests of that gate turn it on themselves.
+        st.set_setting("test", hive_store::EVOLVE_REQUIRE_CHECK, "off")
+            .expect("card proof off");
         let f = Fixture {
             home,
             repo,
@@ -1619,6 +1624,243 @@ fn operating_layer_cap_gate() {
         ),
         ""
     );
+}
+
+/// With `evolve.require_check` on, a card that names no check is held
+/// `names no check` whatever else it carries, and a card whose Signal is a
+/// `check:` command passes that gate; off, both pass.
+#[test]
+fn plan_gate_holds_a_card_without_a_check_when_the_card_must_prove_itself() {
+    let _serial = crate::test_helpers::serial();
+    let mut f = test_fixture::new_fixture(true);
+    let unchecked = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "7",
+        "runner-plain/model",
+        "no-check",
+        "Shorter OAuth error text",
+        "Class: product\nFile: src/oauth.go\nVariable: callback copy\nHypothesis: user sees a shorter error",
+        "",
+        &["up", "up"],
+    );
+    let checked = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "8",
+        "runner-plain/model",
+        "with-check",
+        "OAuth error text is localized",
+        "Class: product\nFile: src/oauth.go\nVariable: callback copy\nHypothesis: the new test fails on main\nSignal: check:go test ./src -run TestOAuthErrorLocalized",
+        "",
+        &["up", "up"],
+    );
+    let gate_of = |f: &test_fixture::Fixture, id: &str| {
+        let res = compute(
+            &f.st,
+            "fixture",
+            "",
+            Thresholds {
+                now: FIXTURE_NOW.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sg = res
+            .suggestions
+            .iter()
+            .find(|sg| sg.id == id)
+            .unwrap()
+            .clone();
+        let post = res.posts.iter().find(|p| p.id == id).unwrap();
+        plan_gate(&f.st, &res.repo, &sg, Some(post))
+    };
+    assert_eq!(gate_of(&f, &unchecked), "");
+    assert_eq!(gate_of(&f, &checked), "");
+    f.st.set_setting("test", hive_store::EVOLVE_REQUIRE_CHECK, "on")
+        .unwrap();
+    assert_eq!(gate_of(&f, &unchecked), GATE_NO_CHECK);
+    assert_eq!(gate_of(&f, &checked), "");
+}
+
+/// With `evolve.check_skips_quorum` on, a card that names a check is
+/// eligible on one up-vote, or none; a card without a check still waits for
+/// its votes, and a checked card voted net down is rejected, not tried.
+#[test]
+fn a_card_with_a_check_is_eligible_before_quorum_unless_voted_down() {
+    let _serial = crate::test_helpers::serial();
+    let mut f = test_fixture::new_fixture(true);
+    let checked_body = "Class: product\nFile: src/oauth.go\nVariable: callback copy\nHypothesis: the new test fails on main\nSignal: check:go test ./src -run TestOAuthErrorLocalized";
+    let one_vote = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "7",
+        "runner-plain/model",
+        "checked-one-vote",
+        "Checked card with one vote",
+        checked_body,
+        "",
+        &["up"],
+    );
+    let no_vote = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "8",
+        "runner-plain/model",
+        "checked-no-vote",
+        "Checked card nobody voted on",
+        checked_body,
+        "",
+        &[],
+    );
+    let voted_down = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "9",
+        "runner-plain/model",
+        "checked-down",
+        "Checked card the board turned down",
+        checked_body,
+        "",
+        &["down", "down"],
+    );
+    let unchecked = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "6",
+        "runner-plain/model",
+        "unchecked-one-vote",
+        "Card without a check and one vote",
+        "Class: product\nFile: src/oauth.go\nVariable: callback copy\nHypothesis: shorter text",
+        "",
+        &["up"],
+    );
+    let statuses = |f: &test_fixture::Fixture| -> BTreeMap<String, String> {
+        compute(
+            &f.st,
+            "fixture",
+            "",
+            Thresholds {
+                now: FIXTURE_NOW.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .suggestions
+        .iter()
+        .map(|sg| (sg.id.clone(), sg.status.clone()))
+        .collect()
+    };
+    let got = statuses(&f);
+    assert_eq!(got[&one_vote], "eligible");
+    assert_eq!(got[&no_vote], "eligible");
+    assert_eq!(got[&voted_down], "rejected");
+    assert_eq!(got[&unchecked], "needs votes");
+    f.st.set_setting("test", hive_store::EVOLVE_CHECK_SKIPS_QUORUM, "off")
+        .unwrap();
+    let got = statuses(&f);
+    assert_eq!(got[&one_vote], "needs votes");
+    assert_eq!(got[&no_vote], "needs votes");
+    assert_eq!(got[&voted_down], "rejected");
+    assert_eq!(got[&unchecked], "needs votes");
+}
+
+/// `plan.loop_per_day` caps the cards that change the loop's own code
+/// (hive-evolve, hive-tally, the runner's planning files): once today's
+/// jobs from such cards reach the cap the next one is held `loop cap`, a
+/// product card beside it is not, and the cap is never lifted by an empty
+/// product queue. 0 turns it off.
+#[test]
+fn loop_cap_holds_cards_about_the_loop_itself() {
+    let _serial = crate::test_helpers::serial();
+    let mut f = test_fixture::new_fixture(true);
+    f.st.set_setting("test", hive_store::PLAN_LOOP_PER_DAY, "1")
+        .unwrap();
+    for dir in ["crates/hive-tally/src", "crates/hive-runner/src", "src"] {
+        fs::create_dir_all(f.repo.join(dir)).unwrap();
+    }
+    fs::write(
+        f.repo.join("crates/hive-tally/src/gate.rs"),
+        "fn gate() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        f.repo.join("crates/hive-runner/src/plan.rs"),
+        "fn plan() {}\n",
+    )
+    .unwrap();
+    fs::write(f.repo.join("src/oauth.go"), "package src\n").unwrap();
+    let mut p = test_fixture::FPost::new(
+        "suggestion",
+        "evolution",
+        "counted",
+        "runner-counted/model",
+        "2026-09-09T08:00:00Z",
+        "Widen the tally gate",
+        "s-counted",
+    );
+    p.body =
+        "Class: operating-layer\nFile: crates/hive-tally/src/gate.rs\nVariable: plan gate".into();
+    let counted = f.post(p);
+    let about_loop = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "7",
+        "runner-plain/model",
+        "loop-card",
+        "Planner takes the second card too",
+        "Class: operating-layer\nFile: crates/hive-runner/src/plan.rs\nVariable: planner pick\nHypothesis: two cards a pass\nSignal: check:cargo test -p hive-runner --lib plan::tests::second_card",
+        "",
+        &["up", "up"],
+    );
+    let product = test_fixture::add_eligible_suggestion(
+        &mut f,
+        "8",
+        "runner-plain/model",
+        "product-card",
+        "Localized OAuth error",
+        "Class: product\nFile: src/oauth.go\nVariable: callback copy\nHypothesis: user sees a localized error\nSignal: check:go test ./src -run TestOAuthErrorLocalized",
+        "",
+        &["up", "up"],
+    );
+    {
+        let conn = f.st.conn().unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, brief, source, status, created_at) VALUES ('J-loop', 'fixture', 'improve', 'counted', '', ?, 'queued', ?)",
+            params![format!("suggestion:{counted}"), FIXTURE_NOW],
+        )
+        .unwrap();
+    }
+    let gate_of = |f: &test_fixture::Fixture, now: &str, id: &str| {
+        let res = compute(
+            &f.st,
+            "fixture",
+            "",
+            Thresholds {
+                now: FIXTURE_NOW.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sg = res
+            .suggestions
+            .iter()
+            .find(|sg| sg.id == id)
+            .unwrap()
+            .clone();
+        let post = res.posts.iter().find(|p| p.id == id).unwrap();
+        plan_gate_with(
+            &f.st,
+            plan_context_for(&f.st, "fixture", now, Some(&res)),
+            &res.repo,
+            &sg,
+            Some(post),
+        )
+    };
+    assert_eq!(
+        gate_of(&f, FIXTURE_NOW, &about_loop),
+        crate::plan_context::loop_cap_gate(1, 1)
+    );
+    assert_eq!(gate_of(&f, FIXTURE_NOW, &product), "");
+    // A new day starts the count again.
+    assert_eq!(gate_of(&f, "2026-09-11T00:00:01Z", &about_loop), "");
+    // 0 turns the cap off.
+    f.st.set_setting("test", hive_store::PLAN_LOOP_PER_DAY, "0")
+        .unwrap();
+    assert_eq!(gate_of(&f, FIXTURE_NOW, &about_loop), "");
 }
 
 #[test]
