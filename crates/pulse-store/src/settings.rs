@@ -219,7 +219,7 @@ pub static COMPUTE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::ne
     m
 });
 pub static EVOLVE_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.land_neutral"=>"on","evolve.experiments_in_flight"=>"2","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.heal"=>"on","evolve.flat_wait_hours"=>"24","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","evolve.mode"=>"fixtures","evolve.canary_share"=>"20","evolve.canaries_per_island"=>"3","evolve.keep_days"=>"7","evolve.guard_margin"=>"10","evolve.min_trials"=>"40","evolve.promote_confidence"=>"0.95","evolve.replay_set"=>"20","evolve.trigger_failures"=>"5","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
+    || map! {"evolve.loop"=>"0","evolve.limits"=>"none","evolve.tolerance"=>"0.02","evolve.land_neutral"=>"on","evolve.experiments_in_flight"=>"2","evolve.require_check"=>"on","evolve.check_skips_quorum"=>"on","evolve.heldout_dir"=>"","evolve.heldout"=>"auto","evolve.draft_hours"=>"24","evolve.measure_parallel"=>"4","evolve.flat_cycles"=>"6","evolve.heal"=>"on","evolve.flat_wait_hours"=>"24","evolve.baseline_ttl_hours"=>"24","evolve.parent_rate"=>"0.5","evolve.outcome_hours"=>"24","evolve.mode"=>"fixtures","evolve.canary_share"=>"20","evolve.canaries_per_island"=>"3","evolve.keep_days"=>"7","evolve.guard_margin"=>"10","evolve.min_trials"=>"40","evolve.promote_confidence"=>"0.95","evolve.replay_set"=>"20","evolve.trigger_failures"=>"5","lane.retry_minutes"=>"20","lane.short_retry_minutes"=>"2","baseline.retry_hours"=>"6",},
 );
 pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -232,6 +232,8 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "evolve.measure_parallel"=>("count",Some(0),[],None,"fixtures one measurement may run at once; 0 or 1 keeps fixture measurement sequential. Each fixture's build gets the cores divided by this (CARGO_BUILD_JOBS) and every measurement process runs at nice 10"),
         "evolve.flat_cycles"=>("count",Some(0),[],None,"experiment cycles in a row that all tie (variant score = baseline score) before the loop pauses with one owner question on the project's evolution/loop-gate thread; a fixture enabled since, or an answer or decision on that question, lets it run again; at least 2, and 0 turns the gate off"),
         "evolve.land_neutral"=>("choice",None,["on","off"],None,"on: an experiment that measured as a tie - no fixture moved past evolve.tolerance either way - lands like an improvement, without the credit an improvement earns; off: only an improvement lands, and a tie is archived neutral with its branch dropped. A variant that was never measured, or regressed, never lands"),
+        "evolve.require_check"=>("choice",None,["on","off"],None,"on: a card must name a check - `Signal: check:<command>` - that fails on the default branch today and passes once its change is in; a card without one is held and never becomes an experiment or an improve job, and an experiment lands only when its check turned from failing to passing (or the fixtures improved) with no fixture regressed, so a tie never lands whatever evolve.land_neutral says; off: a card needs no check and ties follow evolve.land_neutral"),
+        "evolve.check_skips_quorum"=>("choice",None,["on","off"],None,"on: a card that names a check needs no votes to be tried - the check decides - and a net-down vote still rejects it; off: every card waits for quorum (`quorum` distinct voters, more up than down)"),
         "evolve.experiments_in_flight"=>("count",Some(1),[],Some(8.0),"how many experiments one project may have in flight at once; each measures on clones of its own against the same baseline, so more in flight tries more voted cards a day for more of the machine"),
         "evolve.heal"=>("choice",None,["on","off"],None,"on: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - derives metric fixtures from the project's own tree (test declarations, TODO markers) and re-arms a derived fixture whose count reached its scale - and posts what it did as a finding on evolution/loop-gate; off: the gate waits for the owner alone"),
         "evolve.flat_wait_hours"=>("count",Some(0),[],None,"hours the flat-fixture gate's owner question may stay unanswered before the planner reviews it itself (an answer post in the loop's name that lets the project run evolve.flat_cycles more cycles; it asks again after that many more tied cycles); 0 waits for the owner"),
@@ -324,7 +326,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","plan.operating_layer_fill"=>"on","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10","schedule.script_timeout_minutes"=>"20","schedule.scripts_per_tick"=>"2","manifest.load"=>"on","lead.suggest_days"=>"30","toolkit.suggest_days"=>"30","goal.review_days"=>"7",},
+    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","plan.operating_layer_fill"=>"on","plan.loop_per_day"=>"1","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10","schedule.script_timeout_minutes"=>"20","schedule.scripts_per_tick"=>"2","manifest.load"=>"on","lead.suggest_days"=>"30","toolkit.suggest_days"=>"30","goal.review_days"=>"7",},
 );
 pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -337,6 +339,7 @@ pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|
         "lead.ballot_hours"=>("count",Some(1),[],None,"hours a card may wait below the vote quorum before the planner seeds a ballot job, at most one per project per that many hours, and only when nothing else is queued"),
         "lead.ballot_cap"=>("count",Some(1),[],None,"maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first"),
         "plan.operating_layer_per_day"=>("count",Some(0),[],None,"operating-layer improve jobs the planner may create from suggestion cards for one project per UTC day; product cards are unaffected and are planned first; 0 turns this cap off"),
+        "plan.loop_per_day"=>("count",Some(0),[],None,"improve jobs and experiments the planner may make for one project per UTC day from cards that change PULSE's own self-improvement loop - crates/pulse-evolve, crates/pulse-tally and the runner's research, ballot, planning, experiment and brief code - so the loop spends its slots on the projects' defects rather than on itself; never lifted, whatever else waits; 0 turns this cap off"),
         "plan.operating_layer_fill"=>("choice",None,["on","off"],None,"on: once the day's operating-layer cap is reached, voted operating-layer cards are still planned while no product card of the project passes the plan gates, so idle workers do the voted work instead of waiting for tomorrow; the cap holds again the moment a product card competes. off: the cap holds whatever competes"),
         "schedule.min_minutes"=>("count",Some(5),[],None,"the shortest cadence a schedule may have (`pulse schedule add --every`); a standing job that runs more often than this is a loop, not a schedule"),
         "schedule.max_per_project"=>("count",Some(0),[],None,"active or paused schedules one project may hold at once; 0 turns the cap off"),
@@ -474,6 +477,12 @@ fn incumbent_rule(name: &str) -> Option<SettingRule> {
 pub const UI_REPORT: &str = "landing.ui_report";
 /// Whether a measured tie lands (evolve.land_neutral).
 pub const EVOLVE_LAND_NEUTRAL: &str = "evolve.land_neutral";
+/// Cards a project may have planned per day that change the loop itself.
+pub const PLAN_LOOP_PER_DAY: &str = "plan.loop_per_day";
+/// Whether a card must name a check that turns from failing to passing.
+pub const EVOLVE_REQUIRE_CHECK: &str = "evolve.require_check";
+/// Whether a card that names a check skips the vote quorum.
+pub const EVOLVE_CHECK_SKIPS_QUORUM: &str = "evolve.check_skips_quorum";
 /// How many experiments one project may have in flight.
 pub const EVOLVE_EXPERIMENTS_IN_FLIGHT: &str = "evolve.experiments_in_flight";
 /// The per-project form of `landing.ui_report`: `landing.ui_report.<slug>`

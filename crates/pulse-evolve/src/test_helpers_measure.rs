@@ -83,6 +83,10 @@ pub(crate) fn cycle_ready() -> pulse_store::Store {
         crate::test_helpers::join_test_agent(&s, name);
     }
     s.set_setting("human", "evolve.loop", "1").unwrap();
+    // Fixture-measured cards without a check: the card-proof gate
+    // (evolve.require_check) is off here.
+    s.set_setting("human", pulse_store::EVOLVE_REQUIRE_CHECK, "off")
+        .unwrap();
     s
 }
 

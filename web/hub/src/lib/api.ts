@@ -2476,6 +2476,47 @@ export interface Evolution {
   gates?: EvolveGates | null;
   gates_error?: string;
   fixtures?: EvolveFixture[] | null;
+  // The funnel from suggestion to change (counts by stage, what holds the
+  // agreed ones, stall alerts). Absent on an older hub.
+  funnel?: EvolutionFunnel | null;
+}
+
+// Agreed suggestions a gate holds back, grouped by the gate's short label
+// ("names no check", "net votes", "for the owner", ...), biggest first.
+export interface EvolutionFunnelHeld {
+  gate: string;
+  count: number;
+}
+
+// A stall the backend noticed and worded: nothing is ready to plan and the
+// code says why ("held", "votes", "empty", "settled") or jobs are "blocked".
+export interface EvolutionFunnelAlert {
+  code: "held" | "votes" | "empty" | "settled" | "blocked" | string;
+  count: number;
+  text: string;
+}
+
+// How a project's suggestions move from the board to a landed change: how
+// many were posted, agreed, are ready for the planner, in flight and built,
+// and what stopped the rest. Empty `alerts` means the funnel moves.
+export interface EvolutionFunnel {
+  posted: number; // suggestions the board knows, open and closed
+  checked: number; // of them, cards naming a check (`Signal: check:<command>`)
+  needs_votes: number; // status "needs votes"
+  eligible: number; // status "eligible" (agreed)
+  plannable: number; // eligible with no gate: the planner may take them now
+  held: EvolutionFunnelHeld[]; // eligible but gated, by short gate label
+  in_flight: number; // an open improve/experiment job (queued, leased or blocked)
+  blocked: number; // of those, blocked
+  carded: number; // a card job finished (status "carded")
+  built: number; // an improve job finished and changed something ("built")
+  tried: number; // tried and gave up ("tried")
+  rejected: number;
+  expired: number;
+  closed: number;
+  require_check: boolean; // setting evolve.require_check
+  check_skips_quorum: boolean; // setting evolve.check_skips_quorum
+  alerts: EvolutionFunnelAlert[];
 }
 
 // Every gate between a project and its self-improvement loop, as the hub
