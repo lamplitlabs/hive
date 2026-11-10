@@ -132,7 +132,7 @@ export const VERB: Record<string, string> = {
   // a project's tasks into jobs.
   "lead.run": "asked a lead to plan now",
   "lead.seated": "gave a project a lead",
-  "task.followup": "followed up on a task whose job failed",
+  "task.followup": "followed up on a task whose job failed or that its lead held",
   "task.lead": "handed a task to its lead to plan",
   "task.nudged": "moved a task\u2019s jobs up the queue because you asked about it",
   // Suggested work (pulse-tasks suggestions.rs): a task an agent proposes
