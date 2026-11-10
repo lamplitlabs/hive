@@ -252,7 +252,7 @@ fn delete_remote_branch(
     head: &str,
     sha: &str,
 ) -> Result<(), String> {
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
+    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
     if !why.is_empty() {
         return Err(why);
     }
