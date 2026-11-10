@@ -469,6 +469,10 @@ pub(crate) struct SshExec {
     pub(crate) local: LocalExec,
     pub(crate) job_dir: String,
     pub(crate) bundle: String,
+    /// The commit `prepare` reported: a hand that dials in (ADR-070 step 2)
+    /// sends its commits back as a bundle past it.
+    #[serde(default)]
+    pub(crate) base: String,
 }
 static SHA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{40,64}$").unwrap());
 
@@ -502,11 +506,53 @@ pub(crate) fn new_ssh_exec(
             .join(format!("{}.bundle", job.str("id")))
             .display()
             .to_string(),
+        base: String::new(),
     }
 }
 impl SshExec {
     pub(crate) fn name(&self) -> String {
         self.local.name()
+    }
+    /// Asks a dial hand for the clone's commits past the base (`bundle`
+    /// verb) and writes them to `<bundle>.result`, the path git fetches.
+    /// A failure is logged and leaves no file, so the fetch says so.
+    fn dial_result_bundle(&self) -> String {
+        use base64::Engine;
+        let path = format!("{}.result", self.bundle);
+        let _ = std::fs::remove_file(&path);
+        match self.call(
+            &["bundle".into(), self.local.job.str("id"), self.base.clone()],
+            &[],
+            Duration::from_secs(600),
+        ) {
+            Ok((0, out, _)) => match base64::engine::general_purpose::STANDARD.decode(out.trim()) {
+                Ok(data) if !data.is_empty() => {
+                    if let Some(dir) = std::path::Path::new(&path).parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    if let Err(e) = std::fs::write(&path, data) {
+                        self.local
+                            .log
+                            .add(format!("result bundle not written: {e}"));
+                    }
+                }
+                Ok(_) => self
+                    .local
+                    .log
+                    .add("the hand reported no commits past the base"),
+                Err(e) => self.local.log.add(format!("result bundle unreadable: {e}")),
+            },
+            Ok((rc, out, err)) => self.local.log.add(format!(
+                "bundle on {} failed (exit {rc}): {}",
+                self.name(),
+                tail_str(if err.trim().is_empty() { &out } else { &err }, 300)
+            )),
+            Err(e) => self
+                .local
+                .log
+                .add(format!("bundle on {} failed: {e}", self.name())),
+        }
+        path
     }
     pub(crate) fn call(
         &self,
@@ -689,6 +735,7 @@ impl Executor for SshExec {
             .into());
         }
         self.preflight_remote_run_key("after upload")?;
+        self.base = base.clone();
         Ok(base)
     }
     fn run_worker(
@@ -948,6 +995,11 @@ impl Executor for SshExec {
         if self.pushes() {
             return self.local.clone_dir.clone();
         }
+        // A hand that dials in has no sshd to fetch from: its commits come
+        // back as a bundle past the base, which git fetches as a file.
+        if self.local.row.str("kind") == crate::dial::DIAL_KIND {
+            return self.dial_result_bundle();
+        }
         match crate::executor::parse_ssh_address(&self.local.row.str("address")) {
             Ok((user, host, port)) => {
                 format!("ssh://{user}@{host}:{port}{}", self.local.clone_dir)
@@ -973,6 +1025,7 @@ impl Executor for SshExec {
     }
     fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
         let _ = std::fs::remove_file(&self.bundle);
+        let _ = std::fs::remove_file(format!("{}.result", self.bundle));
         crate::keys::remove_run_key(&self.local.key);
         match self.call(
             &["clean".into(), self.local.job.str("id")],
@@ -1037,7 +1090,10 @@ pub(crate) fn make_executor(
             r, s, home, job, project, agent, log,
         )));
     }
-    if r.str("kind") == "ssh" || r.str("kind") == crate::executor::HAND_KIND {
+    if r.str("kind") == "ssh"
+        || r.str("kind") == crate::executor::HAND_KIND
+        || r.str("kind") == crate::dial::DIAL_KIND
+    {
         return Ok(Box::new(new_ssh_exec(r, s, home, job, project, agent, log)));
     }
     Err(crate::util::fail(
@@ -2671,6 +2727,7 @@ mod tests {
             local,
             job_dir: dir.path().display().to_string(),
             bundle: String::new(),
+            base: String::new(),
         };
         let old = crate::executor::run_ssh_hook();
         crate::executor::set_run_ssh(fake_pulse_missing_ssh);
@@ -2751,6 +2808,7 @@ mod tests {
             },
             job_dir: dir.path().display().to_string(),
             bundle: String::new(),
+            base: String::new(),
         };
         let old = crate::executor::run_ssh_hook();
         crate::executor::set_run_ssh(fake_hand_ssh);

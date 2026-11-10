@@ -607,6 +607,44 @@ impl Hands {
         )?;
         Ok(())
     }
+    /// Prints, base64, a git bundle of the job's clone `HEAD` past `base`
+    /// (ADR-070 step 2): a hand that dials out has no sshd for the brain's
+    /// `git fetch ssh://`, so its commits come back in the answer to this
+    /// verb. `HEAD` at `base` (no commits) prints nothing.
+    pub fn bundle(&mut self, job: &str, base: &str) -> Result<()> {
+        let clone = self.clone_dir(job)?;
+        if !Regex::new(r"^[0-9a-f]{40,64}$").unwrap().is_match(base) {
+            return Err(hands_die("bad base"));
+        }
+        let head = crate::util::git(&clone, &["rev-parse", "HEAD"]);
+        if !head.ok() {
+            write!(self.stderr, "{}", head.stderr)?;
+            return Err(anyhow!(HandsExit { code: head.code }));
+        }
+        if head.stdout.trim() == base {
+            return Ok(());
+        }
+        let file = format!("{clone}/../result.bundle");
+        let r = crate::util::git_timeout(
+            &clone,
+            Duration::from_secs(300),
+            &["bundle", "create", "-q", &file, "HEAD", &format!("^{base}")],
+        );
+        if !r.ok() {
+            let _ = std::fs::remove_file(&file);
+            write!(self.stderr, "{}", r.stderr)?;
+            return Err(anyhow!(HandsExit { code: r.code }));
+        }
+        let data = std::fs::read(&file);
+        let _ = std::fs::remove_file(&file);
+        let data = data.map_err(|e| hands_die(e.to_string()))?;
+        write!(
+            self.stdout,
+            "{}",
+            base64::engine::general_purpose::STANDARD.encode(data)
+        )?;
+        Ok(())
+    }
     pub fn changed(&mut self, job: &str, base: &str) -> Result<()> {
         let clone = self.clone_dir(job)?;
         if !Regex::new(r"^[0-9a-f]{40,64}$").unwrap().is_match(base) {
@@ -950,6 +988,10 @@ impl Hands {
             "clean" => {
                 need(1, "clean JOB")?;
                 self.clean(&rest[0])
+            }
+            "bundle" => {
+                need(2, "bundle JOB BASE")?;
+                self.bundle(&rest[0], &rest[1])
             }
             "git-upload-pack" => {
                 need(1, "git-upload-pack PATH")?;

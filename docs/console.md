@@ -677,7 +677,13 @@ Every machine that runs agents (`/compute/`), with what it offers (`macos arm64
 xcode docker`; *Reserved* when it is kept for the work that needs it,
 [Machines: what runs where](machines.md#machines-what-runs-where); this machine's card
 links to the setting that changes its words), and agents' requests for more
-machines (size, hours, why). Approve or deny; approved requests are provisioned
+machines (size, hours, why). **Add a machine** starts with **Run one
+command on it**: a six-word join code, good for ten minutes and one join, and
+the `pulse-hand join` line to copy to the machine. The step says when the
+machine has joined. A machine that dials in shows its last call and a
+**Revoke** button that drops its key ([Enrolling a
+hand](machines.md#enrolling-a-hand)). The other ways pair a machine over
+ssh, add one prepared by hand, or rent one. Approve or deny; approved requests are provisioned
 by the configured provider (`compute.provider`: `azure`, `aws`, `gcp`, or
 `multipass` for a VM on the hub machine itself; `pulse compute providers` lists
 them) inside the caps you set. Every provider works through its own CLI logged

@@ -58,6 +58,13 @@ export const VERB: Record<string, string> = {
   "executor.add": "added a machine",
   "executor.remove": "removed a machine",
   "executor.removed": "removed a machine",
+  // dial.rs (ADR-070 step 2): a machine that dials in - its join code, its
+  // join, each connect (or a refused one) and its key revoked.
+  "hand.join_code": "issued a join code for a machine",
+  "hand.join": "joined as a machine",
+  "hand.connect": "connected a machine",
+  "hand.connect_refused": "refused a machine's connection",
+  "hand.revoke": "revoked a machine",
   "task.created": "created a task",
   "task.amended": "changed a task",
   "task.cancelled": "cancelled a task",
@@ -260,7 +267,7 @@ export const scalar = (v: unknown) => (typeof v === "string" || typeof v === "nu
 
 // The author a post id ends with: "20260901T203300Z-cinder" -> "cinder".
 const postAuthor = (id: string) => id.replace(/^\d{8}T\d{6}Z-?/, "");
-const isMachine = (a: string) => a.startsWith("executor.");
+const isMachine = (a: string) => a.startsWith("executor.") || a === "hand.join" || a === "hand.connect" || a === "hand.revoke";
 
 // A duration in words, from milliseconds: "40 seconds", "3 minutes",
 // "1 hour 5 minutes".
