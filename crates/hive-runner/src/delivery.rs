@@ -70,6 +70,7 @@ use crate::forge::Upstream;
 use crate::util::Row;
 
 mod experiments;
+mod merge_check;
 
 pub(crate) const ACTOR: &str = "daemon";
 
@@ -834,6 +835,8 @@ fn take_in(root: &str, branch: &str, sha: &str, base: &Base) -> Result<String, S
 #[derive(Debug)]
 enum TaskFault {
     Conflict(Box<Conflict>),
+    /// Merged without a conflict, but the merged tree does not compile.
+    Broken(Box<merge_check::Broken>),
     Other(String),
 }
 
@@ -882,6 +885,9 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
             Ok(line) => lines.push(line),
             Err(TaskFault::Conflict(c)) => {
                 lines.push(rebase_or_hold(s, project, rt, &key, *c, now))
+            }
+            Err(TaskFault::Broken(b)) => {
+                lines.push(merge_check::fix_or_hold(s, project, rt, &key, *b, now))
             }
             Err(TaskFault::Other(note)) => {
                 hold(s, now, &slug, json!({"task": task, "work": key}), &note);
@@ -1388,11 +1394,15 @@ fn deliver_task(
         ));
     }
     let mut result: Result<(), TaskFault> = Ok(());
+    // The job branches this pass merged, as indices into `branches`.
+    let mut merged_jobs: Vec<usize> = Vec::new();
+    let mut skipped = String::new();
     for (rev, what, which) in &merges {
         let contained = in_wt(&["merge-base", "--is-ancestor", rev, "HEAD"]);
         if contained.ok() {
             continue;
         }
+        merged_jobs.extend(*which);
         let m = in_wt(&[
             "-c",
             "user.name=Hive",
@@ -1432,9 +1442,49 @@ fn deliver_task(
         }
     }
     let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
+    // Every side passed its own check; a merged tree none of them had -
+    // not the base's, not a branch's - is code nobody compiled
+    // (merge_check.rs).
+    if result.is_ok() && !merged_jobs.is_empty() {
+        let tree = |r: &str| {
+            in_wt(&["rev-parse", &format!("{r}^{{tree}}")])
+                .stdout
+                .trim()
+                .to_string()
+        };
+        let merged_tree = tree("HEAD");
+        let new_tree = std::iter::once(&start)
+            .chain(merges.iter().map(|(rev, _, _)| rev))
+            .all(|rev| tree(rev) != merged_tree);
+        if new_tree {
+            match merge_check::check_merged_tree(s, &project.str("slug"), &root, &def, &wt_path) {
+                merge_check::Checked::Broken(errors) => {
+                    result = Err(TaskFault::Broken(Box::new(merge_check::Broken {
+                        merged: merged_jobs
+                            .iter()
+                            .map(|&i| {
+                                (
+                                    branches[i].0.clone(),
+                                    branches[i].1.clone(),
+                                    shas[i].clone(),
+                                )
+                            })
+                            .collect(),
+                        tip: tip.clone(),
+                        errors,
+                        base: base.clone(),
+                    })));
+                }
+                merge_check::Checked::Skipped(why) if !why.is_empty() => {
+                    skipped = format!(" (merge check skipped: {why})");
+                }
+                _ => {}
+            }
+        }
+    }
     let _ = git(&["worktree", "remove", "--force", &wt_path]);
     result?;
-    Ok(deliver_work(
+    let delivered = deliver_work(
         s,
         project,
         up,
@@ -1453,7 +1503,8 @@ fn deliver_task(
         },
         now,
     )?
-    .line)
+    .line;
+    Ok(format!("{delivered}{skipped}"))
 }
 
 /// How many times a task's conflicting branch is handed to a job before the
@@ -5094,6 +5145,284 @@ mod tests {
             last_detail(&s, "land.pr")["jobs"].as_array().map(Vec::len),
             Some(2)
         );
+    }
+
+    /// A `cargo` on PATH for the merged-tree check (merge_check.rs): it
+    /// logs each call, and "does not compile" when the tree holds two or
+    /// more `hive_worker_*.txt` files - two job branches that are green
+    /// alone and broken together. With `mode` set to `registry` it fails
+    /// before compiling anything, as an unreachable registry does.
+    struct FakeCargo {
+        dir: tempfile::TempDir,
+        _path: hive_testutil::SetenvGuard,
+    }
+
+    impl FakeCargo {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("fake cargo dir");
+            let d = dir.path().display().to_string();
+            let script = format!(
+                r#"#!/bin/sh
+echo "$CARGO_TARGET_DIR|$HIVE_HUB_SKIP_BUILD|$*" >> '{d}/cargo.log'
+if [ "$(cat '{d}/mode' 2>/dev/null)" = registry ]; then
+  echo "error: failed to get \`serde\` as a dependency of package \`app\`" >&2
+  exit 101
+fi
+n=$(ls hive_worker_*.txt 2>/dev/null | wc -l)
+if [ "$n" -ge 2 ]; then
+  echo "src/lib.rs:3:5: error[E0061]: this function takes 2 arguments but 1 argument was supplied" >&2
+  echo "error: could not compile \`app\` (lib) due to 1 previous error" >&2
+  exit 101
+fi
+exit 0
+"#
+            );
+            let path = dir.path().join("cargo");
+            std::fs::write(&path, script).expect("fake cargo");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod cargo");
+            }
+            let guard = hive_testutil::setenv(
+                "PATH",
+                format!("{d}:{}", std::env::var("PATH").unwrap_or_default()),
+            );
+            FakeCargo { dir, _path: guard }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("cargo.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn mode(&self, mode: &str) {
+            std::fs::write(self.dir.path().join("mode"), mode).expect("cargo mode");
+        }
+    }
+
+    /// The fixture project made a Cargo workspace, on main and upstream.
+    fn cargo_project(repo: &str) {
+        commit_on(repo, "main", "Cargo.toml");
+        run(repo, &["git", "push", "-q", "origin", "main"]);
+    }
+
+    /// Two job branches of a task that merge without a conflict but do
+    /// not compile together (pulse/task-TASK-096 at 770cf7ea) are not
+    /// pushed: a fix job on the task takes both, `land.merge-broken` says
+    /// so, and once it is done the pull request opens from its branch. A
+    /// second broken merge of the same task is held for the owner.
+    #[test]
+    fn a_task_whose_merged_branches_do_not_compile_gets_a_fix_job_once_then_held() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let cargo = FakeCargo::new();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        cargo_project(&repo);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let a = job_row_by_branch(&s, "hive/worker/a");
+        let b = job_row_by_branch(&s, "hive/worker/b");
+
+        // The task merges its branches in job order; both jobs share a
+        // creation second here, so the order is the ids'.
+        let mut order = [(a.clone(), "hive/worker/a"), (b.clone(), "hive/worker/b")];
+        order.sort();
+        let names = format!("{}, {}", order[0].1, order[1].1);
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "task pr proj {task}: {names} merge onto main without a conflict but do not compile together: src/lib.rs:3:5: error[E0061]"
+            )) && l.contains("makes them compile together")),
+            "{lines:?}"
+        );
+        assert!(gh.calls().is_empty(), "no pull request: {:?}", gh.calls());
+        assert!(
+            rev(&bare, &format!("refs/heads/{}", task_branch(&task))).is_empty(),
+            "the broken task branch is not pushed"
+        );
+        let calls = cargo.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let lane = std::path::Path::new(&s.home).join("cache/cargo-target/proj/0");
+        assert_eq!(
+            calls[0],
+            format!(
+                "{}|1|check --workspace --all-targets --message-format=short",
+                lane.display()
+            ),
+            "a build-cache lane, the console's bundle skipped"
+        );
+        assert_eq!(events(&s, "land.pr-held"), 0);
+        assert_eq!(events(&s, "land.rebase"), 0);
+        let broken = last_detail(&s, "land.merge-broken");
+        assert_eq!(broken["task"], task);
+        assert_eq!(broken["base"], "main");
+        assert_eq!(broken["jobs"], json!([order[0].0, order[1].0]));
+        assert_eq!(broken["branches"], json!([order[0].1, order[1].1]));
+        assert_eq!(
+            broken["errors"],
+            json!([
+                "src/lib.rs:3:5: error[E0061]: this function takes 2 arguments but 1 argument was supplied",
+                "error: could not compile `app` (lib) due to 1 previous error"
+            ])
+        );
+        let follow_up = broken["follow_up"].as_str().unwrap().to_string();
+        let fu = job_row(&s, &follow_up);
+        assert_eq!(fu.str("status"), "queued");
+        assert_eq!(fu.str("kind"), "task");
+        assert_eq!(fu.str("source"), format!("task:{task}"));
+        assert!(
+            fu.str("title")
+                .starts_with(&format!("Make {names} compile together:")),
+            "{}",
+            fu.str("title")
+        );
+        let brief = fu.str("brief");
+        assert!(
+            brief.contains("merged together onto `main` they do not compile"),
+            "{brief}"
+        );
+        assert!(brief.contains("error[E0061]"), "{brief}");
+        assert!(brief.contains("- `hive/worker/a` (job "), "{brief}");
+        for j in [&a, &b] {
+            assert_eq!(
+                job_row(&s, j).str("branch"),
+                "",
+                "the fix job takes the branch"
+            );
+            assert!(
+                job_row(&s, j)
+                    .str("result")
+                    .contains(&format!("job {follow_up} makes them compile together"))
+            );
+        }
+        assert_eq!(status(&s, &task), "in_progress");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM messages WHERE task_id = ? AND body LIKE '%do not compile together%'",
+                &[&task]
+            ),
+            1
+        );
+        // The fix job is queued: the task waits for it.
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+
+        // The fix job finishes on one branch cut from main: its tree is
+        // its own, already checked by its run, and the pull request opens.
+        run(&repo, &["git", "branch", "hive/worker/fixed", "main"]);
+        commit_on(&repo, "hive/worker/fixed", "hive_worker_fixed.txt");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = 'hive/worker/fixed' WHERE id = ?",
+            &[&TEST_NOW, &follow_up],
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        assert_eq!(
+            cargo.calls().len(),
+            1,
+            "one branch onto main is not a new tree"
+        );
+        assert_eq!(
+            jobs_of(&last_detail(&s, "land.pr")),
+            vec![follow_up.clone()]
+        );
+
+        // A later job of the task breaks the merged tree again: held, the
+        // fix job that ran named.
+        let c = push_branch(&s, &proj, &repo, "hive/worker/c");
+        exec1(
+            &s,
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{task}"), &c.str("id")],
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!("task pr proj {task}: held:"))
+                && l.contains(&format!(
+                    "job {follow_up} already made the task's branches compile together once, so this one is for you"
+                ))),
+            "{lines:?}"
+        );
+        assert_eq!(cargo.calls().len(), 2);
+        assert_eq!(events(&s, "land.merge-broken"), 1);
+        assert_eq!(events(&s, "land.pr-held"), 1);
+        assert_eq!(job_row(&s, &c.str("id")).str("branch"), "hive/worker/c");
+        // Held until the work changes.
+        assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
+        assert_eq!(cargo.calls().len(), 2);
+    }
+
+    /// The check never holds work it could not judge: a cargo that fails
+    /// before compiling (a registry out of reach) lets the pull request
+    /// open and says the check was skipped; `landing.merge_check` off runs
+    /// nothing; a project without a Cargo.toml is never checked.
+    #[test]
+    fn a_merge_check_that_cannot_judge_or_is_off_never_holds_the_task() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let cargo = FakeCargo::new();
+
+        // No Cargo.toml: nothing to compile.
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        assert!(cargo.calls().is_empty(), "{:?}", cargo.calls());
+
+        // Off: the pull request opens from what merges, and nothing says
+        // the check was skipped.
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        cargo_project(&repo);
+        set_setting(&s, merge_check::SETTING, "off");
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.ends_with(&format!("{task}: #7 opened https://github.com/o/r/pull/7"))),
+            "{lines:?}"
+        );
+        assert!(cargo.calls().is_empty(), "{:?}", cargo.calls());
+        assert_eq!(events(&s, "land.merge-broken"), 0);
+
+        // Cargo fails before compiling: skipped, said, and delivered.
+        cargo.mode("registry");
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        cargo_project(&repo);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains(&format!("{task}: #"))
+                && l.contains("(merge check skipped: cargo check --workspace --all-targets --message-format=short failed before compiling anything (exit 101): error: failed to get")),
+            "{lines:?}"
+        );
+        assert_eq!(cargo.calls().len(), 1);
+        assert_eq!(events(&s, "land.merge-broken"), 0);
+        assert_eq!(events(&s, "land.pr-held"), 0);
     }
 
     /// A job branch that conflicts with the default branch goes to a rebase

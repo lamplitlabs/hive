@@ -83,6 +83,7 @@ export const VERB: Record<string, string> = {
   "land.pr-held": "held back a pull request until the work changes",
   "land.pr-refreshed": "brought a pull request up to date with main",
   "land.pr-rebuilt": "rebuilt a pull request without the commits of the one it built on, which was closed",
+  "land.merge-broken": "found a task's finished work does not compile once merged and asked a worker to fix it",
   "land.rebase": "asked a worker to redo finished work that no longer fits on main",
   "land.merged": "saw a pull request merged",
   "land.evidence": "read which files a merged pull request changed",
@@ -387,6 +388,10 @@ export function eventDetailText(e: Pick<StoreEvent, "action" | "detail">): strin
   if (a === "land.pr-conflict" || a === "land.rebase") {
     const files = names(o.files);
     if (files.length) return "Both changed " + firstFive(files);
+  }
+  if (a === "land.merge-broken") {
+    const errors = names(o.errors);
+    if (errors.length) return "First error: " + errors[0];
   }
   if (a === "review.failed" && str(o.error)) return str(o.error);
   if (a === "project.hook_failed" && str(o.error)) return str(o.error);

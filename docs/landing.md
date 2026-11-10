@@ -375,6 +375,7 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr-closed` | the poll found it closed unmerged, or the pass closed an experiment's pull request | the same, without `merged_at`; when the pass closed it, `reason` (`superseded`: its change is on the default branch, in `superseded_by`; `stale`: no push for three days and it could not be brought up to date) and `head_sha` |
 | `land.pr-rebuilt` | a pull request stacked on one closed unmerged was rebuilt on the new base without the closed one's commits, force-pushed and retargeted | `project`, `kind`, `number`, `url`, `head`, `old_base`, `base` (the new one), `from` (the head before), `to` (the new head), `commits` (its own), `dropped` (`number` of the closed pull request, `commits` it took with it); the matching `land.pr` carries `rebuilt` true and `retargeted_from`. A rebuild that conflicts is a `land.pr-held` with `closed`, `base` and `files` instead |
 | `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
+| `land.merge-broken` | a task's job branches merged onto its base without a conflict, but the merged tree does not compile (`landing.merge_check`), and a job was queued to make them compile together | `project`, `task`, `tip` (the merged commit that failed), `base`, `jobs`, `branches` (the job branches merged this pass), `errors` (cargo's error lines, at most 20), `follow_up` (the fix job) |
 | `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |
 | `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not |
 | `land.sync-skipped` | the local default branch was left behind the upstream because the checkout is dirty and `landing.auto_stash` is off | `project`, `branch`, `upstream`, `behind`, `why`; at most once an hour per project |
@@ -413,6 +414,26 @@ do not clear by themselves:
   conflict on the same task is held with the note naming the branch, the
   files and the rebase job that already ran: the work itself is at odds with
   what landed, and that is yours to settle.
+- **A task's branches merge but do not compile together**: each job's
+  branch passed its own check in its own clone, yet one of them changed a
+  signature or moved a name the other still uses, and git merges the two
+  without a conflict. With `landing.merge_check` on (the default), a Cargo
+  project's task branch is compiled once its branches are merged
+  (`cargo check --workspace --all-targets`, in the throwaway worktree, into
+  a free lane of the project's build cache, the default branch's recipe
+  pinning the toolchain) whenever the merge made a tree none of the merged
+  sides had. A tree that does not compile is not pushed: the pass queues a
+  `task` job on the same task - "Make `<branches>` compile together:
+  `<task title>`", with cargo's error lines and the jobs' own accounts in
+  the brief - records `land.merge-broken`, tells the task's conversation,
+  and the merged jobs keep their results but lose their branches, so the
+  pull request opens from the fix job's branch. A second broken merge on
+  the same task is held for you. Before this, such a branch reached the
+  forge and every job started on it - a rebase, a follow-up - failed its
+  pre-commit check on code it never touched (`pulse/task-TASK-096` at
+  770cf7ea, 2026-11-10). A check that cannot run (cargo missing, a
+  registry out of reach, past its 20 minutes) never holds the work; the
+  delivery line says it was skipped.
 - **The push was refused**: a credential that cannot be resolved
   ([Credentials](#credentials)), a branch protection, a network that is down.
   The note carries git's words with secrets removed.
