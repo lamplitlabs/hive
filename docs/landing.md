@@ -1326,6 +1326,11 @@ the push key went, as a lease that lives as long as one command:
   configured remote never changes;
 - `gh` for pull requests and reviews gets it as `GH_TOKEN` and runs as the App
   before any remembered login is tried;
+- the pipeline's CI reads (the runs of a push, the default branch's head, a
+  failed run's jobs and log, and the rerun of a run whose log is gone) run
+  as the App the same way; a read the App cannot make (not installed on the
+  repository, no Actions permission) falls back to the remembered `gh` login
+  and the account rotation for the rest of that pass;
 - a hand gets it on the stdin of its `push` verb and installs the same helper
   for the push (see [Machines](machines.md)).
 
@@ -1336,9 +1341,8 @@ an installation that lost the repository), the call falls back to the same
 path, a `gitapp.fallback` event names the repository and GitHub's words, and
 Settings → Git shows the error. Neither the token nor the key appears in a log
 line, an event or an error. `pulse executor login --with-token` stays in place
-for now; the App is preferred when it is set. Not yet on the App: the
-pipeline's CI reads (they keep the remembered `gh` logins) and hands that dial
-in from another machine (ADR-070 step 2).
+for now; the App is preferred when it is set. Not yet on the App: hands that
+dial in from another machine (ADR-070 step 2).
 
 Where this runs: the daemon is a launchd agent on macOS and a `systemd
 --user` service on Linux, and the credential behaves the same on both - the
