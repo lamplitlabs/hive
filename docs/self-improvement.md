@@ -5,7 +5,13 @@
 Suggestions collect votes. `quorum` voters (default 2; the author's and
 same-session votes do not count) decide a suggestion: more ups than downs makes
 it *eligible*, more downs than ups makes it terminal `rejected`, and a tie
-stays `needs votes` until one more voter decides. Eligible is a ballot state,
+stays `needs votes` until one more voter decides. **A card that names a check
+skips the quorum** (`evolve.check_skips_quorum`, default `on`): a card whose
+`Signal:` reads `check:<command>` is eligible with one up-vote or none, since
+its check decides whether its change lands (the card proof below); only a
+quorum voting it net down still stops it as `rejected`. Voting is then the
+quick filter it should be - duplicates, scope, owner-only work - and the
+check is the judge. `off` makes every card wait for its votes. Eligible is a ballot state,
 not a job: every tick the daemon takes each project's eligible suggestions that
 pass the gates, best first, and queues one worker job per card (source
 `suggestion:<id>`), reusing an in-memory planner snapshot while the project's
@@ -98,7 +104,21 @@ there longer than `expiry_days` is closed with `resolution: owner-only` - the
 owner queues it by hand or lets it go; a card whose `File:` names only paths
 whose whole top-level tree is gone from the checkout (written before a port, a
 rename or a removal) is held as `names gone paths` - a card that adds a file,
-however deep, under a tree that exists is fine; then the operating-layer cap
+however deep, under a tree that exists is fine; a card that **names no check**
+is held as `names no check` while `evolve.require_check` is on (the card proof
+below; it is checked right after the net-votes gate, so a card without a check
+never reaches the planner however it was voted - the idle lead's brief tells
+the lead to post the card again with a `Signal: check:<command>` and resolve
+the old thread `superseded`, or to drop it); then the **loop cap**: a card
+that changes PULSE's own self-improvement loop - `crates/pulse-evolve`,
+`crates/pulse-tally`, or the runner's research, ballot, planning, experiment,
+brief and card-proof files - is planned at most `plan.loop_per_day` times per
+project per UTC day (default 1, `0` = off; improve jobs and experiments
+count alike, each card once), the gate reading `loop cap: N of M today change
+the loop's own code; the projects' defects go first (plan.loop_per_day)`, and
+unlike the operating-layer cap it is never lifted by an empty product queue -
+the loop spends its slots on the projects' defects rather than on itself;
+then the operating-layer cap
 above. The evolution loop's experiment planner applies the same gates before it
 picks a card, so a voted card the runner holds is never run as an experiment
 either; it also skips a card whose `File:` the project's constitution closes
@@ -380,6 +400,47 @@ name: the project's recipe checks live with the runner, out of the
 measurement's reach, so `check:cargo test -p demo` must spell the command. A
 card that names a check can win on a tie (the keep rule below), and the worker
 brief asks every card for one.
+
+### The card proof: red on main, green with the change
+
+With `evolve.require_check` on (the default since 2026-11-10) the check is
+more than a fixture: it is the card's proof. The check must **fail on the
+default branch today and pass once the change is in** - a test the change adds
+counts, since it does not exist yet - and a card without a check is held
+`names no check` and never becomes an experiment or an improve job. The
+research brief says so when it asks for cards (`Signal: check:<command that
+fails on the default branch today and passes once the change is in>`), the
+shared-board triage brief asks the same of a promoted wish, and an improve
+job's brief names its card's check as the proof the runner will take. Then,
+when the job's commits are in, the runner runs the check on the default
+branch and on the branch before anything lands (`card_proof.rs`): the job
+fails with `nothing landed` when the check already passes on the default
+branch (there was nothing to prove; a check that ran no test there - a
+filter that matched nothing because the test did not exist yet - counts as
+failing, which is how a new test proves itself), still fails with the
+change, or, for a check that prints a count, did not make the count fall; the
+summary says which. An experiment from such a card lands only when its
+`card-check` fixture turned from failing to passing (or the other fixtures
+improved) with no fixture regressed: a tie means the check did not turn, and
+it does not land whatever `evolve.land_neutral` says. The fixtures saw almost
+none of the changes the loop made (76 of 85 experiments tied by 2026-11-08),
+so the card's own check is the measurement that moves. `pulse settings set
+evolve.require_check off` restores the older rule: cards without a check
+become work judged by the project's own checks, and ties follow
+`evolve.land_neutral`.
+
+### The defects focus
+
+The research rotation has a `defects` focus (*what failed this week*) that
+starts from what broke rather than from what could be better: the brief
+lists the project's failed jobs of the last week with their summaries, asks
+the worker to run each check the project declares, to read the crash and
+flake reports on the board, and to write cards for the defects a user or a
+worker hit - each with a check that fails today. It takes the turn
+whenever the project has failed jobs newer than its last `defects` run,
+every other turn at most so the rest of the rotation still comes round; the
+brain's research brief also carries the loop cap
+above, so a card about the loop itself yields to a project's defect.
 
 ## Fleet
 

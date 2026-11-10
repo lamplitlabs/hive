@@ -1984,6 +1984,10 @@ mod tests {
     fn suggestion_rows_carry_jobs_and_plan_gates() {
         let _serial = crate::test_helpers::serial();
         let s = http::additions_store(false);
+        // These suggestions name no check; the rows' shape is under test, not
+        // the card-proof gate (evolve.require_check).
+        s.set_setting("human", pulse_store::EVOLVE_REQUIRE_CHECK, "off")
+            .unwrap();
         let repo = repo();
         let project = pulse_board::add_project(
             &s,
