@@ -1384,6 +1384,42 @@
     },
     {
       "choices": null,
+      "default": "",
+      "description": "the numeric App ID of the GitHub App PULSE reads and writes repositories as (ADR-070 step 3), from the App's settings page on GitHub; with git.github_app.installation_id and git.github_app.private_key_ref set, the brain mints a one-hour installation token scoped to the one repository a job needs, hands it to the run through a git credential helper that lives as long as the run, and pushes and opens pull requests with it before it tries this machine's own logins. Empty: no App, git and gh use what this machine is logged in to",
+      "kind": "identifier",
+      "min": null,
+      "name": "git.github_app.app_id",
+      "secret": false,
+      "updated_at": "2026-11-09T18:02:11Z",
+      "updated_by": "owner",
+      "value": "1048576"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "the numeric id of the GitHub App's installation on your account or organization (the number at the end of github.com/settings/installations/N); the brain exchanges the App's signed JWT for tokens of this installation. Empty: no App",
+      "kind": "identifier",
+      "min": null,
+      "name": "git.github_app.installation_id",
+      "secret": false,
+      "updated_at": "2026-11-09T18:02:11Z",
+      "updated_by": "owner",
+      "value": "52428800"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "where the GitHub App's private key (the .pem GitHub downloads once) lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD (1Password), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). Only the brain reads it, for the seconds it takes to sign a ten-minute JWT; jobs never see it, only the one-hour repository tokens it buys. Empty: no App",
+      "kind": "reference",
+      "min": null,
+      "name": "git.github_app.private_key_ref",
+      "secret": false,
+      "updated_at": "2026-11-09T18:02:11Z",
+      "updated_by": "owner",
+      "value": "op://Private/pulse-github-app/private-key"
+    },
+    {
+      "choices": null,
       "default": "10",
       "description": "maximum number of below-quorum cards a single ballot job asks a worker to vote on; closest-to-quorum cards are listed first",
       "kind": "count",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
+import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, GitBranchIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import { AppearanceSection } from "@/components/settings/appearance-section";
 import { RunningStrip } from "@/components/settings/running";
 import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
 import { CredentialRow } from "@/components/settings/credential";
+import { GitAppStrip } from "@/components/settings/git-app";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { NotificationsCard } from "@/components/settings/notifications";
 import { PauseCard, SettingRow, setShowKeys, useShowKeys } from "@/components/settings/setting-row";
@@ -37,6 +38,7 @@ const ICONS: Record<GroupIcon, Icon> = {
   Cloud: CloudIcon,
   ShieldAlert: ShieldAlertIcon,
   Gauge: GaugeIcon,
+  GitBranch: GitBranchIcon,
   Server: ServerIcon,
   Sparkles: SparklesIcon,
   Plug: PlugIcon,
@@ -71,7 +73,7 @@ interface Group {
 // notifications, the harness, then the caps (Limits), machines, self-improvement, this machine
 // and the advanced provider addresses. Keys the store knows that no section
 // claims fall into "Other", so a new cap the runner learns never disappears
-// from the owner's view. Anchors (#stop #owner #notify #harness #runner #compute
+// from the owner's view. Anchors (#stop #owner #notify #harness #runner #compute #git
 // #evolve #daemon #provider #other) are linked from other pages.
 const RUNNER_CLUSTERS: Cluster[] = [
   { title: "How much work runs", keys: ["stop", "capacity", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
@@ -130,6 +132,14 @@ const GROUPS: Group[] = [
     strip: (canEdit) => <CloudSetup canEdit={canEdit} />,
   },
   {
+    id: "git",
+    title: "Git",
+    note: "How jobs push and open pull requests. With a GitHub App, each job gets a one-hour token for its one repository; without one, git and gh use this computer's own logins.",
+    keys: ["git.github_app.app_id", "git.github_app.installation_id", "git.github_app.private_key_ref"],
+    match: (n) => n.startsWith("git."),
+    strip: () => <GitAppStrip />,
+  },
+  {
     id: "evolve",
     title: "Self-improvement",
     note: "Experiments where agents try changes and keep the ones that score better on tests. Your private tests stay hidden from agents.",
@@ -186,6 +196,7 @@ const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "harness", title: "Harness", icon: iconOf("harness") },
   { id: "runner", title: "Limits", icon: iconOf("runner") },
   { id: "compute", title: "Machines", icon: iconOf("compute") },
+  { id: "git", title: "Git", icon: iconOf("git") },
   { id: "evolve", title: "Self-improvement", icon: iconOf("evolve") },
   { id: "daemon", title: "This machine", icon: iconOf("daemon") },
   { id: "provider", title: "Provider addresses", icon: iconOf("provider") },

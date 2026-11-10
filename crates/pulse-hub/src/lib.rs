@@ -50,6 +50,7 @@ pub mod decisions;
 pub mod doc;
 pub mod evolution;
 pub mod folders;
+pub mod git_app;
 pub mod harness;
 pub mod heldout;
 pub mod httpx;

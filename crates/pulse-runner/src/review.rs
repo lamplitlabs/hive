@@ -337,12 +337,7 @@ pub(crate) fn gh(
         args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
     );
     let remembered = s.meta(&gh_meta_key(slug)).map(|m| m.0).unwrap_or_default();
-    let run_as = |user: &str| -> Result<String, String> {
-        let env = if user.is_empty() {
-            crate::proc::environ()
-        } else {
-            crate::gh_auth::env_as(user)?
-        };
+    let run_env = |env: Vec<String>| -> Result<String, String> {
         let out = crate::proc::run_group(
             &pulse_bus::CancellationToken::new(),
             &argv,
@@ -366,6 +361,23 @@ pub(crate) fn gh(
         }
         Ok(out.stdout)
     };
+    let run_as = |user: &str| -> Result<String, String> {
+        let env = if user.is_empty() {
+            crate::proc::environ()
+        } else {
+            crate::gh_auth::env_as(user)?
+        };
+        run_env(env)
+    };
+    // The GitHub App's token for this repository first (ADR-070 step 3);
+    // a call it cannot make falls back to the machine's logins.
+    if let Some(Ok(env)) = crate::gitapp::gh_env(s, repo) {
+        match run_env(env) {
+            Ok(out) => return Ok(out),
+            Err(e) if !account_failed(&e) => return Err(e),
+            Err(_) => {}
+        }
+    }
     let first = match run_as(&remembered) {
         Ok(out) => return Ok(out),
         Err(e) if !account_failed(&e) => return Err(e),
@@ -1546,7 +1558,7 @@ pub(crate) fn checkout_into(
                 short(&view.head_sha)
             ));
         }
-        let (env, cleanup, why) = crate::forge::push_credential_env(s, root.clone());
+        let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.clone(), &url);
         if !why.is_empty() {
             return Err(why);
         }

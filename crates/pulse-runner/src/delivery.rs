@@ -1182,6 +1182,7 @@ fn deliver_work(
     let (number, url, opened) = match &work.open {
         Some(d) => (number_of(d), field_of(d, "url"), false),
         None => match crate::landing_pr::open_pull_request(
+            s,
             &root,
             &up.repo,
             &work.head,
@@ -1190,6 +1191,7 @@ fn deliver_work(
             Some((n, u)) => (n, u, false),
             None => {
                 let (n, u) = crate::landing_pr::create_pull_request(
+                    s,
                     &root,
                     &up.repo,
                     &work.head,
@@ -1258,7 +1260,7 @@ fn push_rev(
     head: &str,
     lease: Option<&str>,
 ) -> Result<(), String> {
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
+    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
     if !why.is_empty() {
         return Err(why);
     }
@@ -1585,7 +1587,7 @@ fn fetch_head(
     head: &str,
 ) -> Result<String, String> {
     let tracking = format!("refs/remotes/{}/{head}", up.remote);
-    let (env, cleanup, why) = crate::forge::push_credential_env(s, root.to_string());
+    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
     if !why.is_empty() {
         return Err(why);
     }
@@ -2239,7 +2241,7 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         )];
     };
     let mut lines = Vec::new();
-    let listed = match crate::landing_pr::list_prs(&root, &up.repo) {
+    let listed = match crate::landing_pr::list_prs(s, &root, &up.repo) {
         Ok(l) => l,
         Err(e) => {
             lines.push(format!("{slug}: {e}"));
@@ -2250,7 +2252,7 @@ fn poll_open(s: &pulse_store::Store, project: &Row, now: &str) -> Vec<String> {
         let number = number_of(&pr);
         let state = match listed.get(&number) {
             Some(st) => st.clone(),
-            None => match crate::landing_pr::view_pr(&root, &up.repo, number) {
+            None => match crate::landing_pr::view_pr(s, &root, &up.repo, number) {
                 Ok(st) => st,
                 Err(e) => {
                     lines.push(format!("{slug}: pull request #{number}: {e}"));
@@ -2775,7 +2777,7 @@ fn retarget_stacked(
         if listed.get(&n).is_some_and(|st| st.state != "OPEN") {
             continue;
         }
-        if let Err(e) = crate::landing_pr::retarget_pull_request(&root, &up.repo, n, &base) {
+        if let Err(e) = crate::landing_pr::retarget_pull_request(s, &root, &up.repo, n, &base) {
             lines.push(format!(
                 "{kind} pr {slug}: #{n} not retargeted from {head} to {base}: {e}"
             ));
@@ -2909,7 +2911,13 @@ fn rebuild_stacked(
             match rebuild_branch(s, &root, up, &head, &onto) {
                 Ok(built) => {
                     let retargeted = if retarget {
-                        crate::landing_pr::retarget_pull_request(&root, &up.repo, n, &onto.branch)
+                        crate::landing_pr::retarget_pull_request(
+                            s,
+                            &root,
+                            &up.repo,
+                            n,
+                            &onto.branch,
+                        )
                     } else {
                         Ok(())
                     };
