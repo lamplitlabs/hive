@@ -1015,6 +1015,7 @@ pub fn additive_ddl() -> Vec<&'static [&'static str]> {
         MCP_DDL,
         CHAT_DDL,
         VAULT_DDL,
+        crate::members::MEMBERS_DDL,
     ]
 }
 pub fn additive_columns() -> Vec<Column> {

@@ -69,6 +69,7 @@ pub mod manifest;
 pub mod multipass;
 pub mod onboard;
 pub mod owner_wait;
+pub mod p256;
 pub mod pair;
 pub mod pair_inspect;
 pub mod pipeline;
@@ -115,6 +116,7 @@ pub(crate) mod update_check;
 pub mod util;
 pub mod verify_lock;
 pub mod verify_memo;
+pub mod webauthn;
 pub mod work_report;
 pub(crate) mod yield_lane;
 

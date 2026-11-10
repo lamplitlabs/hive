@@ -185,6 +185,18 @@
       "value": "https://api.github.com/repos/lamplitlabs/pulse/releases/latest"
     },
     {
+      "choices": null,
+      "default": "",
+      "description": "the hosted front's origin (https://team.example.com) the console may be reached through from anywhere (ADR-070 rule 5): pulse hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only",
+      "kind": "text",
+      "min": null,
+      "name": "hub.allow_remote",
+      "secret": false,
+      "updated_at": "2026-09-09T10:00:00Z",
+      "updated_by": "init",
+      "value": ""
+    },
+    {
       "choices": [
         "off",
         "on"
