@@ -358,6 +358,18 @@ diff-scoped score is per card, so the cached project baseline never serves it:
 those fixtures are measured again on the base in the same scope inside the same
 cycle, and the whole-tree numbers stay for the project-level report. A diff
 with no changed file exports the base alone and the scorers see the whole tree.
+A `CMD` that ignores the list still gets the base's count as its scale, so a
+whole-tree percentage loses its reach in an experiment: the hub's components
+branch coverage reads 87.9 on the base, the scale becomes 175.8, and a card that
+lifts it by a whole point moves that fixture by 0.006 - B-093 to B-099 all tied
+under `evolve.tolerance` 0.02 with such moves. Count something that
+belongs to files (uncovered lines and branches, error messages, unworded
+events) and add it up over the listed files only, as
+`behaviour-hub-untested-logic` does with the lcov report of the hub's
+`node --test` run (a changed `X.test.mjs` counts for the `X.ts` it pins): a card
+that tests the module it touches drops that count from, say, 7 to 0 and scores
+1.0 against the base's 0.5, which at weight 2 of a total near 35 moves the
+composite by about 0.029 on its own.
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
