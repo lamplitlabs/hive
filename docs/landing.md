@@ -141,8 +141,13 @@ request that targeted its head onto its own base (`gh pr edit <n> --base`;
 the default branch when the merged one was the bottom) and writes a fresh
 `land.pr` for each with the new `base`, `stack_on` for the new one below or
 absent, `opened` false and `retargeted_from` naming the old base; a forge
-failure leaves no event and the next pass tries again. GitHub moves a pull
-request itself when the branch below is deleted; PULSE does not count on it.
+failure leaves no event and the next pass tries again. The merge below
+keeps its branch on the upstream while a pull request is based on it
+(`review.merged` names them in `branch_kept_for`): GitHub closes, and never
+reopens, the pull requests whose base branch an API merge with
+`--delete-branch` deletes - #170 was lost that way when #168 merged. Once
+the pass has moved every pull request off it, it deletes that branch,
+leased on the merged head (`<head> deleted on origin` in the log).
 A pull request below that is closed unmerged leaves its commits in the one
 above, and moving that one down would carry the rejected work into the
 base through its merge; so the pass rebuilds it instead: the branch as the
