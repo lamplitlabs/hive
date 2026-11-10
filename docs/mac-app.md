@@ -187,4 +187,7 @@ loses the console in the middle of a reload and has to come back on its own,
 then clicks a web link that must open in the browser panel beside the console
 (never the default browser) and puts the panel away. Between the build and
 that run, the join tests run again with the app's bundled `hive-hand`
-against the stub brain.
+against the stub brain. The mock serves the console's static export, so on a
+fresh clone without `web/hub/out` the check runs `npm run build` in `web/hub`
+first (or, without `node_modules`, stops and says to run it) instead of timing
+out on the way to Tasks.
