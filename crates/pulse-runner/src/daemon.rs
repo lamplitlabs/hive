@@ -1992,6 +1992,10 @@ pub(crate) fn daemon(
                         say(&o, line);
                     }
                     stages.mark("manifest");
+                    for line in crate::records_sync::tend_records(s, &slug, &now, &actor) {
+                        say(&o, line);
+                    }
+                    stages.mark("records");
                     for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);
