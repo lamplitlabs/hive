@@ -3,7 +3,6 @@ use crate::util::{
     setting_int, slugify, trunc,
 };
 use anyhow::{Result, anyhow};
-use base64::Engine;
 use regex::Regex;
 use rusqlite::ToSql;
 use serde::{Deserialize, Serialize};
@@ -23,24 +22,8 @@ pub(crate) const UNREACHABLE_AFTER: i32 = 3;
 /// active ones only; a blip of seconds retired a machine until a human ran
 /// `pulse executor probe`.
 pub(crate) const UNREACHABLE_BACKOFF_MAX_MINS: i32 = 30;
-pub(crate) const SSH_EXIT_UNREACH: i32 = 255;
-/// How many more times a session that never began is tried, and the first
-/// pause between tries (doubled each time: 2, 4, 8, 16, 32 s, a minute in
-/// all). Measured 2026-11-05: the hub's carrier-grade NAT refused bursts of
-/// fresh ssh connections for 1 to 14 s at a time; one refusal between the
-/// inspection and the apply failed CR-063's pairing and released a machine
-/// that had just booted, as CR-055..059 went before it, and three in a row
-/// retired hands-cr-062. The burst after a daemon restart is longer: the
-/// shared connection's master dies with the daemon and every probe, lead
-/// and worker the new daemon starts opens a fresh connection at once, which
-/// the NAT refused for 30 to 55 s after the 03:12, 06:14 and 07:03 restarts
-/// that day; four tries (30 s) ran out inside it and failed the lead's task
-/// three times on a healthy hands-cr-062, so the fifth try carries the
-/// window past a minute. A connect that fails runs nothing on the far side,
-/// so trying it again repeats no work.
-pub(crate) const SSH_CONNECT_RETRIES: u32 = 5;
 #[cfg(not(test))]
-const SSH_CONNECT_PAUSE: Duration = Duration::from_secs(2);
+const SSH_CONNECT_PAUSE: Duration = pulse_hand_core::transport::SSH_CONNECT_PAUSE;
 #[cfg(test)]
 const SSH_CONNECT_PAUSE: Duration = Duration::from_millis(1);
 pub(crate) use pulse_hand_core::hands::REMOTE_EXIT_TIMEOUT;
@@ -58,97 +41,12 @@ pub(crate) static LOGIN_BACKOFF_MINS: [i32; 2] = [15, 360];
 /// tab or a pair whose first probe met a still-booting host needs no human probe; a hand drained
 /// after errors or by the owner still does.
 pub(crate) const NEVER_ACTIVE_SQL: &str = "(status = 'drained' AND NOT EXISTS (SELECT 1 FROM events e WHERE e.action = 'executor.drained' AND e.subject = executors.name AND e.at >= executors.created_at))";
-static SSH_OPTIONS: &[&str] = &[
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=15",
-    "-o",
-    "ClearAllForwardings=yes",
-];
-/// Seconds a shared connection stays open past its last session; the
-/// daemon's five-minute tick keeps a machine in use inside it.
-const SSH_SHARED_PERSIST_SECONDS: u32 = 600;
-/// The longest socket path a shared connection is given; a unix socket path
-/// is bound at 104 bytes on macOS, and ssh's `%C` hash takes 40 of them.
-const SSH_SOCKET_DIR_MAX: usize = 60;
-
-/// The directory of the shared connections' sockets, `PULSE_HOME/ssh`,
-/// made on the way; None when no home resolves or the path would be too
-/// long for a socket, in which case every session connects on its own.
-pub(crate) fn ssh_socket_dir() -> Option<String> {
-    let home = pulse_store::resolve_home("").ok()?;
-    let dir = format!("{}/ssh", home.trim_end_matches('/'));
-    if dir.len() > SSH_SOCKET_DIR_MAX {
-        return None;
-    }
-    std::fs::create_dir_all(&dir).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
-    Some(dir)
-}
-
-/// Removes the shared connections' sockets, for a daemon that starts: a
-/// master from before a reboot is gone and its socket would turn every
-/// session to that machine into a single connection with a warning until
-/// someone deleted it; a master that still runs ends itself once idle.
-pub(crate) fn ssh_sockets_reset() -> usize {
-    let Some(dir) = ssh_socket_dir() else {
-        return 0;
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter(|e| std::fs::remove_file(e.path()).is_ok())
-        .count()
-}
-
-/// The options every ssh command line to a machine starts with. Every
-/// session to one address (user, host, port) shares one connection: the
-/// first opens a master that stays [`SSH_SHARED_PERSIST_SECONDS`] past its
-/// last session, the rest attach through its socket under
-/// [`ssh_socket_dir`]; a session whose master cannot be reached connects
-/// on its own, as before. Measured 2026-11-05 on the hub: of twenty fresh
-/// connects to hands-cr-064 in 77 s, the carrier-grade NAT the hub sits
-/// behind answered eighteen with a reset before the packet left its
-/// network (a capture on the machine saw one SYN arrive and sent no
-/// reset), and the refusals went on for four minutes after a pairing's
-/// twenty-odd short sessions, while the connection that was up kept
-/// working. One connection per machine is what the NAT allows for; a
-/// probe, a job start, a steps mirror and a fetch then cost no connect at
-/// all.
-pub(crate) fn ssh_options() -> Vec<String> {
-    let mut opts: Vec<String> = SSH_OPTIONS.iter().map(|s| s.to_string()).collect();
-    if let Some(dir) = ssh_socket_dir() {
-        opts.extend(
-            [
-                "ControlMaster=auto".to_string(),
-                format!("ControlPersist={SSH_SHARED_PERSIST_SECONDS}"),
-                format!("ControlPath={dir}/%C"),
-                "ServerAliveInterval=30".to_string(),
-                "ServerAliveCountMax=3".to_string(),
-            ]
-            .into_iter()
-            .flat_map(|o| ["-o".to_string(), o]),
-        );
-    }
-    opts
-}
 static LOGIN_FAULT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(^|\n)not logged in:|not_logged_in|re-?authenticat|not logged in|authenticat|unauthori[sz]ed|\b401\b|Copilot Requests|log ?in").unwrap()
 });
 static TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(github_pat_|gho_|ghu_|ghp_|ghs_|ghr_)[A-Za-z0-9_]+").unwrap());
 static JOB_DIR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9._-]+$").unwrap());
-static SSH_ADDRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::([0-9]{1,5}))?$")
-        .unwrap()
-});
 static EXPIRY_DATE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\d{4}-\d{2}-\d{2})").unwrap());
 /// The closing line of a harness run that spent a budget of its own, with the
@@ -159,17 +57,6 @@ static STOPPED_AFTER_CALLS_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-
-#[derive(Debug, Clone)]
-pub struct ExecutorUnreachable {
-    pub msg: String,
-}
-impl std::fmt::Display for ExecutorUnreachable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.msg)
-    }
-}
-impl std::error::Error for ExecutorUnreachable {}
 
 #[derive(Debug, Clone)]
 pub struct ExecutorFault {
@@ -241,37 +128,6 @@ pub(crate) fn cut(s: &str, n: usize) -> String {
     } else {
         s.to_string()
     }
-}
-
-pub(crate) fn tail(s: &str, n: usize) -> String {
-    let chars = s.chars().collect::<Vec<_>>();
-    if chars.len() > n {
-        chars[chars.len() - n..].iter().collect()
-    } else {
-        s.to_string()
-    }
-}
-
-pub(crate) fn parse_ssh_address(text: &str) -> Result<(String, String, i32)> {
-    let trimmed = text.trim();
-    let Some(caps) = SSH_ADDRESS_RE.captures(trimmed) else {
-        return Err(fail(
-            2,
-            format!(
-                "ssh address must be user@host[:port], got {}",
-                py_repr(text)
-            ),
-        )
-        .into());
-    };
-    let port = caps
-        .get(3)
-        .map(|m| m.as_str().parse::<i32>().unwrap_or(22))
-        .unwrap_or(22);
-    if port <= 0 || port >= 65536 {
-        return Err(fail(2, format!("ssh port out of range in {}", py_repr(text))).into());
-    }
-    Ok((caps[1].to_string(), caps[2].to_string(), port))
 }
 
 pub(crate) fn normalize_projects(text: &str) -> String {
@@ -873,131 +729,52 @@ pub(crate) fn note_executor_run(
     );
 }
 
+/// The ssh command line for one hands verb on executor row `r`
+/// ([`pulse_hand_core::transport::ssh_command`] at its address).
 pub(crate) fn ssh_command(r: &Row, args: &[String]) -> Result<Vec<String>> {
-    let (user, host, port) = parse_ssh_address(&r.str("address"))?;
-    let mut payload = Vec::new();
-    for a in args {
-        payload.extend_from_slice(a.as_bytes());
-        payload.push(0);
-    }
-    let mut cmd = vec!["ssh".to_string()];
-    cmd.extend(ssh_options());
-    cmd.extend([
-        "-p".to_string(),
-        port.to_string(),
-        format!("{user}@{host}"),
-        format!(
-            "b64 {}",
-            base64::engine::general_purpose::STANDARD.encode(payload)
-        ),
-    ]);
-    Ok(cmd)
+    pulse_hand_core::transport::ssh_command(&r.str("address"), args)
 }
 
-/// The ssh runner tests swap for a fake. Tests install closures that
-/// capture state, so the hook is a shared trait object rather than a
-/// plain fn pointer.
-pub(crate) type SshRunner = std::sync::Arc<
-    dyn Fn(
-            &pulse_bus::CancellationToken,
-            &[String],
-            &[u8],
-            Duration,
-        ) -> Result<(i32, String, String)>
-        + Send
-        + Sync,
->;
-pub(crate) static RUN_SSH: LazyLock<RwLock<SshRunner>> =
-    LazyLock::new(|| RwLock::new(std::sync::Arc::new(run_process)));
+// The lease path lives in the hand's core (ADR-070 step 1c); the brain
+// drives a hand through these.
+pub use pulse_hand_core::transport::ExecutorUnreachable;
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::transport::{
+    HAND_KIND, HandOverride, LOCAL_HAND, RUN_SSH, SSH_CONNECT_RETRIES, SSH_EXIT_UNREACH,
+    SSH_OPTIONS, SSH_SHARED_PERSIST_SECONDS, SSH_SOCKET_DIR_MAX, SshRunner, TRANSPORT_LOCAL_HAND,
+    TRANSPORT_SETTING, local_hand_binary, local_hand_runner, parse_probe, parse_ssh_address,
+    restore_run_ssh, run_process, run_ssh_hook, set_local_hand, set_run_ssh, ssh_connect_failed,
+    ssh_options, ssh_socket_dir, ssh_sockets_reset, tail,
+};
 
-/// run_ssh_hook returns the current `runSSH` implementation.
-pub(crate) fn run_ssh_hook() -> SshRunner {
-    RUN_SSH.read().unwrap_or_else(|e| e.into_inner()).clone()
+/// One hands verb on a [`HAND_KIND`] row: [`pulse_hand_core::transport::hand_run`]
+/// with the row's workdir.
+fn hand_run(
+    cancel: &pulse_bus::CancellationToken,
+    r: &Row,
+    args: &[String],
+    stdin: &[u8],
+    timeout: Duration,
+) -> Result<(i32, String, String)> {
+    pulse_hand_core::transport::hand_run(cancel, &r.str("workdir"), args, stdin, timeout)
 }
 
-/// set_run_ssh installs `f` as `runSSH` and returns the previous hook so a
-/// test can restore it.
-#[allow(dead_code)]
-pub(crate) fn set_run_ssh<F>(f: F) -> SshRunner
-where
-    F: Fn(
-            &pulse_bus::CancellationToken,
-            &[String],
-            &[u8],
-            Duration,
-        ) -> Result<(i32, String, String)>
-        + Send
-        + Sync
-        + 'static,
-{
-    std::mem::replace(
-        &mut *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()),
-        std::sync::Arc::new(f),
+/// [`pulse_hand_core::transport::run_ssh_connecting`] with this build's
+/// first pause (a millisecond under test).
+pub(crate) fn run_ssh_connecting(
+    cancel: &pulse_bus::CancellationToken,
+    argv: &[String],
+    stdin: &[u8],
+    timeout: Duration,
+) -> Result<(i32, String, String)> {
+    pulse_hand_core::transport::run_ssh_connecting_paused(
+        cancel,
+        argv,
+        stdin,
+        timeout,
+        SSH_CONNECT_PAUSE,
     )
 }
-
-/// restore_run_ssh puts a hook returned by [`set_run_ssh`] or [`run_ssh_hook`] back.
-#[allow(dead_code)]
-pub(crate) fn restore_run_ssh(old: SshRunner) {
-    *RUN_SSH.write().unwrap_or_else(|e| e.into_inner()) = old;
-}
-
-/// The first transport to an open hand (ADR-070 step 1): the brain drives a
-/// `pulse-hand` binary on this machine over a pipe, exactly as it drives
-/// `pulse hands` behind sshd - one verb per call, the `b64 ...` (or
-/// `git-upload-pack ...`) command line in `SSH_ORIGINAL_COMMAND`, the
-/// payload on stdin, the verb's exit code and output back. `env` is the
-/// hand's own environment (its workdir, home, PATH) on top of this
-/// process's, without the brain's PULSE_JOB/PULSE_AGENT/PULSE_SESSION. The
-/// dial-out TLS channel replaces the pipe in step 2; `executor.transport
-/// local-hand` picks this transport for this machine's own work
-/// ([`transport_row`], [`HAND_KIND`]).
-pub(crate) fn local_hand_runner(hand: std::path::PathBuf, env: Vec<(String, String)>) -> SshRunner {
-    std::sync::Arc::new(
-        move |cancel: &pulse_bus::CancellationToken,
-              argv: &[String],
-              stdin: &[u8],
-              timeout: Duration| {
-            let mut vars: BTreeMap<String, String> = std::env::vars()
-                .filter(|(k, _)| {
-                    !matches!(k.as_str(), "PULSE_JOB" | "PULSE_AGENT" | "PULSE_SESSION")
-                })
-                .collect();
-            vars.extend(env.iter().cloned());
-            vars.insert(
-                "SSH_ORIGINAL_COMMAND".into(),
-                argv.last().cloned().unwrap_or_default(),
-            );
-            let environ: Vec<String> = vars.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
-            let out = crate::proc::run_group(
-                cancel,
-                &[hand.display().to_string()],
-                "",
-                &environ,
-                stdin,
-                timeout,
-            )?;
-            if out.timeout {
-                if cancel.is_cancelled() {
-                    return Err(pulse_bus::ContextError::Canceled.into());
-                }
-                return Err(pulse_bus::ContextError::DeadlineExceeded.into());
-            }
-            Ok((out.exit_code, out.stdout, out.stderr))
-        },
-    )
-}
-
-/// The kind of an executor row that is this machine's own `pulse-hand`
-/// driven over a pipe (`executor.transport local-hand`): the row keeps the
-/// local executor's name, so its slots and accounting stay this machine's,
-/// and every hands verb goes to the binary instead of through sshd.
-pub(crate) const HAND_KIND: &str = "hand";
-
-/// The setting that routes this machine's own work through its `pulse-hand`.
-pub(crate) const TRANSPORT_SETTING: &str = "executor.transport";
-/// [`TRANSPORT_SETTING`]'s value for the local `pulse-hand` pipe.
-pub(crate) const TRANSPORT_LOCAL_HAND: &str = "local-hand";
 
 /// The executor row a run on `r` uses: the local executor's row turned
 /// into a [`HAND_KIND`] row when `executor.transport` is `local-hand` and
@@ -1023,183 +800,6 @@ pub(crate) fn transport_row(s: &pulse_store::Store, r: Row, job_kind: &str) -> R
         ),
     );
     r
-}
-
-/// The `pulse-hand` binary a [`HAND_KIND`] row drives: the one installed
-/// beside this `pulse`, else the first on PATH.
-pub(crate) fn local_hand_binary() -> Option<std::path::PathBuf> {
-    let name = format!("pulse-hand{}", std::env::consts::EXE_SUFFIX);
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join(&name)))
-        .filter(|p| p.is_file())
-        .or_else(|| which::which("pulse-hand").ok())
-}
-
-/// What tests put in place of the installed `pulse-hand`: the binary and
-/// the environment it runs in on top of the row's own.
-pub(crate) type HandOverride = (std::path::PathBuf, Vec<(String, String)>);
-pub(crate) static LOCAL_HAND: LazyLock<RwLock<Option<HandOverride>>> =
-    LazyLock::new(|| RwLock::new(None));
-
-/// Installs `hand` as the local `pulse-hand` and returns what was there.
-#[allow(dead_code)]
-pub(crate) fn set_local_hand(hand: Option<HandOverride>) -> Option<HandOverride> {
-    std::mem::replace(
-        &mut *LOCAL_HAND.write().unwrap_or_else(|e| e.into_inner()),
-        hand,
-    )
-}
-
-/// One hands verb on a [`HAND_KIND`] row: the `b64` command line the sshd
-/// forced command would get, run by the local `pulse-hand` with the row's
-/// workdir. A pipe has no `authorized_keys` to check, so the hand is told
-/// its keys are fine.
-fn hand_run(
-    cancel: &pulse_bus::CancellationToken,
-    r: &Row,
-    args: &[String],
-    stdin: &[u8],
-    timeout: Duration,
-) -> Result<(i32, String, String)> {
-    let (bin, extra) = match LOCAL_HAND.read().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(v) => v,
-        None => match local_hand_binary() {
-            Some(bin) => (bin, Vec::new()),
-            None => {
-                return Err(ExecutorUnreachable {
-                    msg: format!(
-                        "{TRANSPORT_SETTING} is {TRANSPORT_LOCAL_HAND} but no pulse-hand is installed beside pulse or on PATH (cargo build -p pulse-hand --release)"
-                    ),
-                }
-                .into());
-            }
-        },
-    };
-    let mut env = vec![
-        ("PULSE_HANDS_WORKDIR".to_string(), r.str("workdir")),
-        ("PULSE_HANDS_KEYS_OK".to_string(), "yes".to_string()),
-    ];
-    // The worker the hand runs is `pulse harness run`: this pulse, found
-    // first on the hand's PATH even when the daemon's own PATH lacks it.
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
-    {
-        let mut dirs = vec![dir];
-        dirs.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
-        if let Ok(path) = std::env::join_paths(dirs) {
-            env.push(("PATH".to_string(), path.to_string_lossy().into_owned()));
-        }
-    }
-    env.extend(extra);
-    let mut payload = Vec::new();
-    for a in args {
-        payload.extend_from_slice(a.as_bytes());
-        payload.push(0);
-    }
-    let argv = vec![
-        bin.display().to_string(),
-        format!(
-            "b64 {}",
-            base64::engine::general_purpose::STANDARD.encode(payload)
-        ),
-    ];
-    match local_hand_runner(bin, env)(cancel, &argv, stdin, timeout) {
-        Err(err) if !cancel.is_cancelled() && err.to_string().contains("deadline exceeded") => {
-            let verb = args.first().map(String::as_str).unwrap_or("");
-            Err(ExecutorUnreachable {
-                msg: format!("pulse-hand {verb} timed out after {}s", timeout.as_secs()),
-            }
-            .into())
-        }
-        other => other,
-    }
-}
-
-/// Whether ssh's stderr says the session never began: the connect itself
-/// failed (refused, timed out, no route, network unreachable), the
-/// banner exchange was cut before any authentication, or the shared
-/// connection's master took the session request and could not serve it
-/// (the master's connection died under it, or the machine's sshd has its
-/// ten sessions per connection open, which a later try finds freed).
-/// Everything after that (a host key change, a refused key, the remote
-/// command's own exit) is a different failure that a second try would
-/// only repeat.
-pub(crate) fn ssh_connect_failed(err_text: &str) -> bool {
-    [
-        "ssh: connect to host ",
-        "kex_exchange_identification:",
-        "ssh_exchange_identification:",
-        "banner exchange",
-        "mux_client_request_session:",
-        "mux_client_hello_exchange:",
-        "mux_client_read_exactly:",
-        "mux_client_request_alive:",
-    ]
-    .iter()
-    .any(|mark| err_text.contains(mark))
-}
-
-/// Runs an ssh command line through the hook, trying again while the
-/// session cannot begin ([`ssh_connect_failed`]): up to
-/// [`SSH_CONNECT_RETRIES`] more tries with a doubling pause, which a cancel
-/// cuts short. Returns the last try's result unchanged, so the callers'
-/// exit-255 handling reads as before.
-pub(crate) fn run_ssh_connecting(
-    cancel: &pulse_bus::CancellationToken,
-    argv: &[String],
-    stdin: &[u8],
-    timeout: Duration,
-) -> Result<(i32, String, String)> {
-    let runner = run_ssh_hook();
-    let mut pause = SSH_CONNECT_PAUSE;
-    let mut tries = 0;
-    loop {
-        let res = runner(cancel, argv, stdin, timeout);
-        let again = matches!(
-            &res,
-            Ok((rc, _, err_text)) if *rc == SSH_EXIT_UNREACH && ssh_connect_failed(err_text)
-        ) && tries < SSH_CONNECT_RETRIES
-            && !cancel.is_cancelled();
-        if !again {
-            return res;
-        }
-        tries += 1;
-        let _ = cancel.done().recv_timeout(pause);
-        pause *= 2;
-    }
-}
-
-pub(crate) fn run_process(
-    cancel: &pulse_bus::CancellationToken,
-    argv: &[String],
-    stdin: &[u8],
-    timeout: Duration,
-) -> Result<(i32, String, String)> {
-    let out =
-        match crate::proc::run_group(cancel, argv, "", &crate::proc::environ(), stdin, timeout) {
-            Ok(o) => o,
-            Err(e) => {
-                if e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|ioe| ioe.kind() == std::io::ErrorKind::NotFound)
-                {
-                    return Err(
-                        std::io::Error::new(std::io::ErrorKind::NotFound, "not found").into(),
-                    );
-                }
-                return Err(e);
-            }
-        };
-    if out.timeout {
-        if cancel.is_cancelled() {
-            return Err(pulse_bus::ContextError::Canceled.into());
-        }
-        return Err(pulse_bus::ContextError::DeadlineExceeded.into());
-    }
-    Ok((out.exit_code, out.stdout, out.stderr))
 }
 
 pub(crate) fn ssh_run(
@@ -2082,16 +1682,6 @@ fn record_caps(s: &pulse_store::Store, r: &Row, fields: &BTreeMap<String, String
             );
         }
     }
-}
-
-pub(crate) fn parse_probe(text: &str) -> BTreeMap<String, String> {
-    let mut fields = BTreeMap::new();
-    for tok in text.split_whitespace() {
-        if let Some((k, v)) = tok.split_once('=') {
-            fields.insert(k.trim().to_string(), v.trim().to_string());
-        }
-    }
-    fields
 }
 
 /// The local executor is this machine: no ssh, no hands. Its probe answers what a hand's

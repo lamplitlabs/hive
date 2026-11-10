@@ -15,10 +15,14 @@ pub mod hands;
 pub mod machine;
 pub mod names;
 pub mod needs;
+pub mod pair;
 pub mod proc;
 pub mod procs;
 pub mod provenance;
 pub mod tidy;
+pub mod tmpspace;
+pub mod transport;
+pub mod trash;
 pub mod util;
 pub mod worktree;
 

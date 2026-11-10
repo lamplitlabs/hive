@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use anyhow::anyhow;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -10,12 +9,13 @@ use std::process::Command;
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 
-pub(crate) const PAIR_DROPIN_PATH: &str = "/etc/ssh/sshd_config.d/60-pulse-hands.conf";
-pub(crate) const PAIR_HANDS_PATH: &str = "/usr/local/bin/pulse-hands";
-pub(crate) const PAIR_PULSE_PATH: &str = "/usr/local/bin/pulse";
-pub(crate) static STEP_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^step=([A-Za-z0-9_-]+)[ \t]+result=([A-Za-z0-9_-]+)").unwrap()
-});
+// The pairing protocol's fixed parts live in the hand's core (ADR-070 step 1c).
+#[allow(unused_imports)]
+pub(crate) use pulse_hand_core::pair::{
+    PAIR_DROPIN_PATH, PAIR_HANDS_PATH, PAIR_PULSE_PATH, STEP_RE, go_arch_for,
+    pair_authorized_key_line, pair_commit_script, pair_dropin_text, pair_parse_inspection,
+    pair_step_results, pair_tail, pair_undo_script, valid_name, wrap_base64,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SshBlock {
@@ -80,56 +80,6 @@ pub(crate) fn set_hands_source_root(root: String) {
     *HANDS_SOURCE_ROOT
         .write()
         .expect("hands_source_root poisoned") = root;
-}
-
-pub(crate) fn valid_name(name: String) -> bool {
-    static RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*$").unwrap());
-    RE.is_match(&name)
-}
-
-pub(crate) fn pair_dropin_text() -> String {
-    [
-        "# The hands' user gets exactly what its authorized_keys line allows and nothing else.",
-        "# The hub runs every session to these hands over one shared connection, so the",
-        "# sessions it has open at once (a job, its steps mirror, a probe) share this bound.",
-        "Match User pulse",
-        "    PasswordAuthentication no",
-        "    AllowAgentForwarding no",
-        "    AllowTcpForwarding no",
-        "    X11Forwarding no",
-        "    PermitTTY no",
-        "    PermitTunnel no",
-        "    MaxSessions 64",
-        "",
-    ]
-    .join("\n")
-}
-
-pub(crate) fn pair_authorized_key_line(workdir: String, pubkey: String) -> String {
-    format!(
-        "command=\"PULSE_HANDS_WORKDIR={} {} hands\",restrict {}",
-        workdir,
-        PAIR_HANDS_PATH,
-        pubkey.trim()
-    )
-}
-
-pub(crate) fn pair_parse_inspection(text: String) -> (BTreeMap<String, String>, Vec<String>) {
-    let mut fields = BTreeMap::new();
-    let mut hostkeys = Vec::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("hostkey ") {
-            hostkeys.push(rest.trim().to_string());
-        } else if let Some((k, v)) = line.split_once('=') {
-            fields.insert(k.trim().to_string(), v.trim().to_string());
-        }
-    }
-    (fields, hostkeys)
-}
-
-pub(crate) fn pair_tail(text: String) -> String {
-    crate::executor::tail(&text.split_whitespace().collect::<Vec<_>>().join(" "), 500)
 }
 
 pub(crate) fn pair_refuse(format: String, args: &[serde_json::Value]) -> anyhow::Result<()> {
@@ -523,39 +473,6 @@ fi
     )
 }
 
-pub(crate) fn wrap_base64(data: Vec<u8>) -> String {
-    let enc = base64::engine::general_purpose::STANDARD.encode(data);
-    enc.as_bytes()
-        .chunks(76)
-        .map(|c| String::from_utf8_lossy(c).to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub(crate) fn pair_undo_script() -> String {
-    format!(
-        "#!/bin/sh\nset -eu\nDROPIN={}\nif [ -f \"$DROPIN.prev\" ]; then\n  mv -f \"$DROPIN.prev\" \"$DROPIN\"\nelse\n  rm -f \"$DROPIN\"\nfi\nsystemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd\nprintf 'step=dropin result=restored-or-removed\\n'\n",
-        crate::util::shell_quote(PAIR_DROPIN_PATH)
-    )
-}
-
-pub(crate) fn pair_commit_script() -> String {
-    format!(
-        "#!/bin/sh\nset -eu\nrm -f {}.prev\nprintf 'step=dropin-prev result=removed\\n'\n",
-        crate::util::shell_quote(PAIR_DROPIN_PATH)
-    )
-}
-
-pub(crate) fn pair_step_results(text: String) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for line in text.lines() {
-        if let Some(c) = STEP_RE.captures(line.trim()) {
-            out.insert(c[1].to_string(), c[2].to_string());
-        }
-    }
-    out
-}
-
 pub(crate) fn pair_ensure_hub_key(
     hub_home: String,
     lines: &mut Vec<String>,
@@ -912,14 +829,6 @@ pub(crate) fn pair_refusals_from_inspection(insp: BTreeMap<String, String>) -> V
         )];
     }
     Vec::new()
-}
-
-pub(crate) fn go_arch_for(uname: String) -> String {
-    match uname.as_str() {
-        "x86_64" | "amd64" => "amd64".into(),
-        "aarch64" | "arm64" => "arm64".into(),
-        _ => String::new(),
-    }
 }
 
 pub(crate) fn module_root() -> String {
