@@ -43,7 +43,12 @@ const SKIP_ENV: &str = "HIVE_HUB_SKIP_BUILD";
 const PLACEHOLDER: &str = "<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\"><title>Hive console</title></head>\n<body><p>The Hive console was not built: install Node.js 22+ and rebuild <code>hive</code>.</p></body>\n</html>\n";
 
 fn main() {
-    let hub = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/hub");
+    // Read the manifest dir when the script runs, not when it is compiled:
+    // a shared CARGO_TARGET_DIR reuses this script's binary across clones,
+    // and a path baked in by `env!` would point npm at whichever clone built
+    // it first (often one already removed).
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let hub = Path::new(&manifest).join("../../web/hub");
     // A declared path that does not exist would make cargo rerun the script
     // on every build, so only the inputs that are there are declared.
     for input in INPUTS {
