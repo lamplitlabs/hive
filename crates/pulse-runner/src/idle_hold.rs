@@ -147,30 +147,40 @@ fn is_governor(kind: &Kind) -> bool {
     kind.ask_kind == LOAD.ask_kind || kind.ask_kind == MEMORY.ask_kind
 }
 
+/// This machine as the load governor saw it on one tick, after the
+/// dispatch: the limits and pressure the dispatch read, the local runs in
+/// flight, the experiment lane's measurements, the slots kept for a
+/// self-update build, and the owner-driven runs among the local ones.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GovernorTick {
+    pub(crate) limits: crate::daemon_load::Limits,
+    pub(crate) pressure: crate::daemon_load::Pressure,
+    pub(crate) running: usize,
+    pub(crate) measuring: usize,
+    pub(crate) reserved: usize,
+    pub(crate) owner_running: usize,
+}
+
 /// Whether the load governor's hold actually refuses the owner's next run.
 /// A load or memory hold alone no longer blocks the owner: the reservation
 /// (`daemon_load::reserve_for_owner`, docs/owner-reservation.md) lets the
-/// owner's one run start over the line. Only the kernel's critical memory
-/// pressure, or an owner-driven run already going on this machine, keeps
-/// the owner's queued work out - and only then is the hold worth a
-/// question; otherwise whatever keeps the owner's job queued is not the
-/// machine's load, and asking about it is noise.
-pub(crate) fn governor_refuses_owner(s: &pulse_store::Store) -> bool {
-    if crate::daemon_load::pressure().mem_critical {
-        return true;
-    }
-    let Ok(conn) = s.conn() else {
-        return true;
-    };
-    let row = crate::util::must_one(
-        &conn,
-        &format!(
-            "SELECT COUNT(*) AS n FROM runs r JOIN jobs j ON j.id = r.job_id WHERE r.status = 'running' AND r.executor = ? AND {}",
-            crate::jobs::OWNER_DRIVEN_SQL
-        ),
-        &[&crate::executor::LOCAL_EXECUTOR],
-    );
-    row.int("n") > 0
+/// owner's one run start over the line, and under a soft hold the express
+/// slot takes a second while the cap - halved under the kernel's memory
+/// warning - has room. The answer is the governor's own
+/// (`daemon_load::owner_refusal`, the one the yield asks too) on the tick's
+/// real counts, so the owner is asked only about a hold the dispatch would
+/// not let the owner's work through; otherwise whatever keeps the owner's
+/// job queued is not the machine's load, and asking about it is noise.
+pub(crate) fn governor_refuses_owner(tick: &GovernorTick) -> bool {
+    crate::daemon_load::owner_refusal(
+        &tick.limits,
+        &tick.pressure,
+        tick.running,
+        tick.measuring,
+        tick.reserved,
+        tick.owner_running,
+    )
+    .is_some()
 }
 
 /// Whether runs are going and every one of them is the fleet's own work
@@ -349,15 +359,17 @@ pub(crate) struct IdleHolds {
 }
 
 impl IdleHolds {
-    /// One tick: `holds` are what the dispatch saw, `owner` the owner's work
-    /// still queued after it, `pass` one planning pass. Asks and answers on
-    /// the brain project and returns the lines to log.
+    /// One tick: `holds` are what the dispatch saw, `governor` the machine
+    /// as the governor saw it, `owner` the owner's work still queued after
+    /// it, `pass` one planning pass. Asks and answers on the brain project
+    /// and returns the lines to log.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn tend(
         &mut self,
         s: &pulse_store::Store,
         brain: &Row,
         holds: &[Hold],
+        governor: &GovernorTick,
         owner: &OwnerWait,
         pass: Duration,
         now: &str,
@@ -365,7 +377,7 @@ impl IdleHolds {
         at: Instant,
     ) -> Vec<String> {
         let mut lines = Vec::new();
-        // Read once per tick, and only while a governor hold stands with
+        // Asked once per tick, and only while a governor hold stands with
         // the owner's work queued behind it.
         let mut refused: Option<bool> = None;
         for kind in KINDS.iter().copied() {
@@ -373,7 +385,7 @@ impl IdleHolds {
             let passable = hold.is_some()
                 && owner.queued > 0
                 && is_governor(kind)
-                && !*refused.get_or_insert_with(|| governor_refuses_owner(s));
+                && !*refused.get_or_insert_with(|| governor_refuses_owner(governor));
             let state = match hold {
                 // The governor would admit the owner's run: not this
                 // hold's question (answered if one was asked).
@@ -529,6 +541,39 @@ mod tests {
         crate::hygiene::open_daemon_questions_of_kind(s, "proj", kind.ask_kind)
     }
 
+    /// A machine of four slots (load line 24 on 12 CPUs, memory floor
+    /// 1024 MB) under `pressure`, with `running` local runs in flight,
+    /// `owner_running` of them the owner's.
+    fn governor(
+        pressure: crate::daemon_load::Pressure,
+        running: usize,
+        owner_running: usize,
+    ) -> GovernorTick {
+        GovernorTick {
+            limits: crate::daemon_load::Limits {
+                max_jobs: 4,
+                max_load: 24.0,
+                cpus: 12,
+                min_free_mem_mb: 1024,
+                own_nice: 0,
+                build_jobs: 6,
+                source: "test",
+            },
+            pressure,
+            running,
+            measuring: 0,
+            reserved: 0,
+            owner_running,
+        }
+    }
+
+    fn critical() -> crate::daemon_load::Pressure {
+        crate::daemon_load::Pressure {
+            mem_critical: true,
+            ..crate::daemon_load::CALM
+        }
+    }
+
     #[test]
     fn a_hold_asks_once_after_one_pass_and_answers_when_it_lifts() {
         let _serial = crate::test_helpers::serial();
@@ -540,17 +585,24 @@ mod tests {
         let t0 = Instant::now();
         // The machine swapping: the owner's run is refused, so the load
         // hold is the owner's business.
-        let _pin = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
-            mem_critical: true,
-            ..crate::daemon_load::CALM
-        });
+        let gov = governor(critical(), 1, 0);
         let load = [Hold::new(
             &LOAD,
             "machine saturated: load 60.0 on 12 CPUs is over the line 24",
         )];
         let mut holds = IdleHolds::default();
         // The first tick of the hold: inside one pass, nothing said.
-        let lines = holds.tend(&s, &b, &load, &waiting(1, 120), pass, now, "daemon", t0);
+        let lines = holds.tend(
+            &s,
+            &b,
+            &load,
+            &gov,
+            &waiting(1, 120),
+            pass,
+            now,
+            "daemon",
+            t0,
+        );
         assert!(lines.is_empty(), "{lines:?}");
         assert!(open(&s, &LOAD).is_empty());
         // Past a pass but the owner's work seen for the first time: it may
@@ -560,6 +612,7 @@ mod tests {
             &s,
             &b,
             &load,
+            &gov,
             &waiting(1, 600),
             Duration::ZERO,
             now,
@@ -569,7 +622,17 @@ mod tests {
         assert!(lines.is_empty(), "{lines:?}");
         // One pass later, the owner's job still queued: one question.
         let t1 = t0 + pass;
-        let lines = holds.tend(&s, &b, &load, &waiting(1, 180), pass, now, "daemon", t1);
+        let lines = holds.tend(
+            &s,
+            &b,
+            &load,
+            &gov,
+            &waiting(1, 180),
+            pass,
+            now,
+            "daemon",
+            t1,
+        );
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(
             lines[0].starts_with("machine load holds the owner's work: 1 owner job(s) queued")
@@ -585,6 +648,7 @@ mod tests {
             &s,
             &b,
             &load,
+            &gov,
             &waiting(2, 240),
             pass,
             now,
@@ -598,6 +662,7 @@ mod tests {
             &s,
             &b,
             &[],
+            &gov,
             &waiting(2, 300),
             pass,
             now,
@@ -615,6 +680,7 @@ mod tests {
             &s,
             &b,
             &[],
+            &gov,
             &waiting(2, 300),
             pass,
             now,
@@ -632,6 +698,7 @@ mod tests {
         let b = brain(&s);
         let now = crate::test_helpers::TEST_NOW;
         let t0 = Instant::now();
+        let gov = governor(crate::daemon_load::CALM, 0, 0);
         let mut holds = IdleHolds::default();
         let disk = [Hold::new(
             &DISK_FLOOR,
@@ -644,6 +711,7 @@ mod tests {
                     &s,
                     &b,
                     &disk,
+                    &gov,
                     &waiting(0, 0),
                     Duration::ZERO,
                     now,
@@ -659,6 +727,7 @@ mod tests {
                     &s,
                     &b,
                     &disk,
+                    &gov,
                     &waiting(1, 60),
                     Duration::ZERO,
                     now,
@@ -672,6 +741,7 @@ mod tests {
             &s,
             &b,
             &disk,
+            &gov,
             &waiting(1, DISK_FLOOR.owner_wait_minutes * 60),
             Duration::ZERO,
             now,
@@ -685,6 +755,7 @@ mod tests {
             &s,
             &b,
             &disk,
+            &gov,
             &waiting(0, 0),
             Duration::ZERO,
             now,
@@ -705,6 +776,7 @@ mod tests {
                 &s,
                 &Row::default(),
                 &bulk,
+                &gov,
                 &waiting(1, 0),
                 Duration::ZERO,
                 now,
@@ -736,16 +808,29 @@ mod tests {
             &MEMORY,
             "machine saturated: 300 MB of memory free, under the floor 1024",
         )];
-        // A calm kernel and no owner run going here: the owner's one run
-        // may start over the line (docs/owner-reservation.md), so neither
-        // a load nor a memory hold is worth a question, however long.
-        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        // No owner run going here: the owner's one run may start over the
+        // line (docs/owner-reservation.md), so neither a load nor a memory
+        // hold is worth a question, however long.
+        let loaded = crate::daemon_load::Pressure {
+            load1: Some(30.0),
+            ..crate::daemon_load::CALM
+        };
+        let short = crate::daemon_load::Pressure {
+            free_mem_mb: Some(300),
+            ..crate::daemon_load::CALM
+        };
         let mut holds = IdleHolds::default();
-        for (i, held) in [&load, &mem, &load].into_iter().enumerate() {
+        for (i, (held, pressure)) in [(&load, loaded), (&mem, short), (&load, loaded)]
+            .into_iter()
+            .enumerate()
+        {
+            let gov = governor(pressure, 4, 0);
+            assert!(!governor_refuses_owner(&gov));
             let lines = holds.tend(
                 &s,
                 &b,
                 held,
+                &gov,
                 &waiting(1, 600),
                 pass,
                 now,
@@ -755,40 +840,36 @@ mod tests {
             assert!(lines.is_empty(), "{lines:?}");
         }
         assert!(open(&s, &LOAD).is_empty() && open(&s, &MEMORY).is_empty());
-        assert!(!governor_refuses_owner(&s));
-        // The owner's one run over the line already going on this machine:
-        // the next owner job is refused, and the hold asks after a pass.
-        let job = crate::jobs::add_job(
-            &s,
-            "proj".into(),
-            "task".into(),
-            "task:TASK-001".into(),
-            "echo ok and report".into(),
-            1,
-            10,
-            "task:TASK-001".into(),
-            pulse_store::HUMAN_AGENT.into(),
-            false,
-        )
-        .unwrap()
-        .0
-        .str("id");
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-owner', ?, 'aurora', 'proj', ?, 'running', 'local')",
-            &[&job, &now],
-        );
-        assert!(governor_refuses_owner(&s));
+        // The load past twice the line, and the owner's one run over it
+        // already going on this machine: the governor refuses the next
+        // owner job, and the hold asks after a pass.
+        let swamped = crate::daemon_load::Pressure {
+            load1: Some(60.0),
+            ..crate::daemon_load::CALM
+        };
+        let gov = governor(swamped, 4, 1);
+        assert!(governor_refuses_owner(&gov));
         let t1 = t0 + pass * 10;
         assert!(
             holds
-                .tend(&s, &b, &load, &waiting(1, 600), pass, now, "daemon", t1)
+                .tend(
+                    &s,
+                    &b,
+                    &load,
+                    &gov,
+                    &waiting(1, 600),
+                    pass,
+                    now,
+                    "daemon",
+                    t1
+                )
                 .is_empty()
         );
         let lines = holds.tend(
             &s,
             &b,
             &load,
+            &gov,
             &waiting(1, 660),
             pass,
             now,
@@ -803,15 +884,11 @@ mod tests {
         assert_eq!(open(&s, &LOAD).len(), 1);
         // The owner's run ends: the next one may start over the line, so
         // the open question is answered, though the load still stands.
-        crate::util::exec1(
-            &*s.conn().unwrap(),
-            "UPDATE runs SET status = 'done' WHERE id = 'run-owner'",
-            &[],
-        );
         let lines = holds.tend(
             &s,
             &b,
             &load,
+            &governor(swamped, 3, 0),
             &waiting(1, 720),
             pass,
             now,
@@ -828,6 +905,72 @@ mod tests {
     }
 
     #[test]
+    fn a_load_hold_under_the_memory_warning_with_the_halved_cap_half_taken_asks_nothing() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        let b = brain(&s);
+        let now = crate::test_helpers::TEST_NOW;
+        let pass = Duration::from_secs(60);
+        let t0 = Instant::now();
+        let load = [Hold::new(
+            &LOAD,
+            "machine saturated: load 30.0 on 12 CPUs is over the line 24; one express slot stays open for the owner's work",
+        )];
+        // The kernel's warning halves the four slots to two; the load is
+        // over the line but under twice it, a soft hold. One local run is
+        // going - the owner's own - so the halved cap is half taken and the
+        // dispatch's express slot takes the owner's next run beside it.
+        let warned = crate::daemon_load::Pressure {
+            load1: Some(30.0),
+            mem_warning: true,
+            ..crate::daemon_load::CALM
+        };
+        let gov = governor(warned, 1, 1);
+        let dispatch = crate::daemon_load::decide(&gov.limits, &warned, 1, 0, 0, 1);
+        assert!(dispatch.hold.is_some() && dispatch.express, "{dispatch:?}");
+        assert!(!governor_refuses_owner(&gov));
+        let mut holds = IdleHolds::default();
+        for i in 0..4u32 {
+            let lines = holds.tend(
+                &s,
+                &b,
+                &load,
+                &gov,
+                &waiting(1, 600 + i64::from(i) * 60),
+                pass,
+                now,
+                "daemon",
+                t0 + pass * i,
+            );
+            assert!(lines.is_empty(), "{lines:?}");
+        }
+        assert!(open(&s, &LOAD).is_empty());
+        // The halved cap full beside the owner's run in flight: the
+        // dispatch keeps the owner out, and the hold asks after a pass.
+        let full = governor(warned, 3, 1);
+        assert!(!crate::daemon_load::decide(&full.limits, &warned, 3, 0, 0, 1).express);
+        assert!(governor_refuses_owner(&full));
+        let t1 = t0 + pass * 10;
+        let mut asked = Vec::new();
+        for i in 0..2u32 {
+            asked.extend(holds.tend(
+                &s,
+                &b,
+                &load,
+                &full,
+                &waiting(1, 1200 + i64::from(i) * 60),
+                pass,
+                now,
+                "daemon",
+                t1 + pass * i,
+            ));
+        }
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(open(&s, &LOAD).len(), 1);
+    }
+
+    #[test]
     fn a_restarted_daemon_keeps_a_pending_hold_open_and_answers_a_lifted_one() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
@@ -836,11 +979,14 @@ mod tests {
         let now = crate::test_helpers::TEST_NOW;
         let t0 = Instant::now();
         let pass = Duration::from_secs(60);
-        let _pin = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
-            free_mem_mb: Some(300),
-            mem_critical: true,
-            ..crate::daemon_load::CALM
-        });
+        let gov = governor(
+            crate::daemon_load::Pressure {
+                free_mem_mb: Some(300),
+                ..critical()
+            },
+            1,
+            0,
+        );
         let mem = [Hold::new(
             &MEMORY,
             "machine saturated: 300 MB of memory free, under the floor 1024",
@@ -851,6 +997,7 @@ mod tests {
                 &s,
                 &b,
                 &mem,
+                &gov,
                 &waiting(1, 600),
                 Duration::ZERO,
                 now,
@@ -864,13 +1011,23 @@ mod tests {
         let mut second = IdleHolds::default();
         assert!(
             second
-                .tend(&s, &b, &mem, &waiting(1, 600), pass, now, "daemon", t0)
+                .tend(
+                    &s,
+                    &b,
+                    &mem,
+                    &gov,
+                    &waiting(1, 600),
+                    pass,
+                    now,
+                    "daemon",
+                    t0
+                )
                 .is_empty()
         );
         assert_eq!(open(&s, &MEMORY).len(), 1);
         // A new daemon that finds the hold gone answers it.
         let mut third = IdleHolds::default();
-        let lines = third.tend(&s, &b, &[], &waiting(1, 600), pass, now, "daemon", t0);
+        let lines = third.tend(&s, &b, &[], &gov, &waiting(1, 600), pass, now, "daemon", t0);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(open(&s, &MEMORY).is_empty());
         assert_eq!(

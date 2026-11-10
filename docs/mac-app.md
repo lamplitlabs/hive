@@ -15,7 +15,9 @@ open -a PULSE
 It needs Xcode or the command line tools (Swift 6) to build and macOS 13.3 or
 later to run. It runs the `pulse` you installed (`~/.pulse/bin/pulse`, or the
 one the `pulse.hub` service names) and never carries a copy of its own, so
-self-update keeps the console current exactly as before.
+self-update keeps the console current exactly as before. It does carry
+`pulse-hand` (`Contents/Helpers/pulse-hand`) for one job: [joining a
+brain](#joining-a-brain) as one of its machines.
 
 What the app does on its own:
 
@@ -85,6 +87,8 @@ io.github.manishtiwari25.pulse <key> <value>`):
 | `PulseBinary` | another `pulse` (the *not installed* screen offers the same choice) |
 | `HubURL` | a console to show instead, never started or stopped by the app (the mock on 8787, say) |
 | `HubPort` | the port for a console the app starts itself (a service's console stays on its own port) |
+| `PulseHandHome` | another home for the hand (`device.json`, keys, work folder), as PULSE_HAND_HOME; `~/.pulse-hand` by default |
+| `PulseHandBinary` | another `pulse-hand` than the one inside the app |
 | `DeveloperExtras` | `-bool YES` lets Safari's Develop menu inspect the app's pages |
 
 The app keeps its own copy of the console's browser storage (theme, view
@@ -114,6 +118,55 @@ says why instead. A copy run outside PULSE.app
 notes on the page. The request's parsing (and the rule that a click only
 opens a console path) is `PulseKit/Notify.swift`, tested in `NotifyTests`.
 
+## Joining a brain
+
+A Mac that should work for a PULSE running somewhere else (a team's brain,
+[ADR-070](decisions/ADR-070-web-first-pulse-hosted-brain-open-hand.md)) needs no `pulse` of its own. When the app finds no
+`pulse` on this Mac its first screen is **Join a PULSE brain**: on the brain's
+**Machines** page choose **Add a machine → Run one command on it**, then type
+the brain's address and the six-word join code. The code can be typed with
+spaces, dashes or any case, and pasting the page's whole command
+(`pulse-hand join --brain https://… word-word-…`) fills in both fields. **Try
+Again** looks for `pulse` again (keeping what you typed) and **Choose pulse…**
+points at one; a Mac that has PULSE reaches the same form through **PULSE →
+Join a Brain…**.
+
+**Join** runs the bundled `pulse-hand join --brain URL CODE` with
+`PULSE_HAND_HOME` set (`~/.pulse-hand` unless `PulseHandHome` says otherwise)
+and `PULSE_HAND_JOIN_ONLY=1`, so it enrols and returns instead of dialling in
+itself - the same `/api/v1/hands/join` call the command line makes, with the
+same device keys. A code the brain refuses keeps the form open with the
+brain's own words under it in red (a code it never issued: *That join code is
+not one this brain issued…*; a used or expired one says so), and no
+`device.json` is written (the hand's keys stay for the next try). A good code leaves `device.json` in the hand's home and the screen
+says **This Mac joined <brain>**, with the name it works under and its work
+folder.
+
+Then the app keeps `pulse-hand dial` running: it copies the hand to
+`<hand home>/bin/pulse-hand` (so moving or updating PULSE.app does not pull
+it from under launchd) and installs the launchd agent `pulse.hand`
+(`~/Library/LaunchAgents/pulse.hand.plist`: run at load and at login, kept
+alive unless the brain released the machine - `dial`'s exit 3 - and its log
+in `<hand home>/dial.log`), loaded with `launchctl bootout` + `bootstrap`. A
+relaunch of a joined Mac shows **This Mac works for <brain>** with **Open the
+Brain**, **Join Another Brain…** and **Try Again**. To leave a brain, remove
+the machine on its Machines page; `launchctl bootout gui/$(id -u)/pulse.hand`
+and deleting the plist stop the agent here.
+
+`build.sh` puts the hand in the app: `PULSE_HAND_BIN=<path>` bundles that
+binary, otherwise it runs `cargo build --release -p pulse-hand` (a
+`--universal` build needs `PULSE_HAND_BIN` pointing at a universal hand), and
+signs it with the app. The parsing, the hand lookup, the join call and the
+agent's plist are `PulseKit/HandJoin.swift`, tested in `HandJoinTests`: a stub
+brain on a free port answers the join, a wrong code must show the 403's
+message and write nothing, a good one must write `device.json`, and the
+agent's plist and launchctl calls go through a fake launchctl. The tests use a
+stand-in hand script; `PULSE_HAND_BIN=<real pulse-hand> swift test --filter
+HandJoinTests` runs them against the real one, which `check.sh` does with the
+hand bundled in the app when that hand knows `join`.
+
+## Building and checking
+
 `build.sh` signs ad hoc with a requirement every build meets (`designated =>
 identifier "io.github.manishtiwari25.pulse"`), the idea pulse's own signature
 follows (ADR-035), so macOS keeps the app's answers across rebuilds, and it
@@ -132,4 +185,6 @@ windows, a handover, a console that keeps stopping, quitting), a release
 build, and a run of the built app against the mock console that goes to Tasks,
 loses the console in the middle of a reload and has to come back on its own,
 then clicks a web link that must open in the browser panel beside the console
-(never the default browser) and puts the panel away.
+(never the default browser) and puts the panel away. Between the build and
+that run, the join tests run again with the app's bundled `pulse-hand`
+against the stub brain.

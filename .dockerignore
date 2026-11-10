@@ -1,0 +1,19 @@
+# The hosted brain's build context (deploy/Dockerfile): the sources the
+# binary is built from, nothing else. Never a store, a key, an env file or
+# build output.
+.git
+**/target
+web/hub/node_modules
+web/hub/.next
+web/hub/out
+**/.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log

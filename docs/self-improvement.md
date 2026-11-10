@@ -5,7 +5,13 @@
 Suggestions collect votes. `quorum` voters (default 2; the author's and
 same-session votes do not count) decide a suggestion: more ups than downs makes
 it *eligible*, more downs than ups makes it terminal `rejected`, and a tie
-stays `needs votes` until one more voter decides. Eligible is a ballot state,
+stays `needs votes` until one more voter decides. **A card that names a check
+skips the quorum** (`evolve.check_skips_quorum`, default `on`): a card whose
+`Signal:` reads `check:<command>` is eligible with one up-vote or none, since
+its check decides whether its change lands (the card proof below); only a
+quorum voting it net down still stops it as `rejected`. Voting is then the
+quick filter it should be - duplicates, scope, owner-only work - and the
+check is the judge. `off` makes every card wait for its votes. Eligible is a ballot state,
 not a job: every tick the daemon takes each project's eligible suggestions that
 pass the gates, best first, and queues one worker job per card (source
 `suggestion:<id>`), reusing an in-memory planner snapshot while the project's
@@ -98,7 +104,21 @@ there longer than `expiry_days` is closed with `resolution: owner-only` - the
 owner queues it by hand or lets it go; a card whose `File:` names only paths
 whose whole top-level tree is gone from the checkout (written before a port, a
 rename or a removal) is held as `names gone paths` - a card that adds a file,
-however deep, under a tree that exists is fine; then the operating-layer cap
+however deep, under a tree that exists is fine; a card that **names no check**
+is held as `names no check` while `evolve.require_check` is on (the card proof
+below; it is checked right after the net-votes gate, so a card without a check
+never reaches the planner however it was voted - the idle lead's brief tells
+the lead to post the card again with a `Signal: check:<command>` and resolve
+the old thread `superseded`, or to drop it); then the **loop cap**: a card
+that changes PULSE's own self-improvement loop - `crates/pulse-evolve`,
+`crates/pulse-tally`, or the runner's research, ballot, planning, experiment,
+brief and card-proof files - is planned at most `plan.loop_per_day` times per
+project per UTC day (default 1, `0` = off; improve jobs and experiments
+count alike, each card once), the gate reading `loop cap: N of M today change
+the loop's own code; the projects' defects go first (plan.loop_per_day)`, and
+unlike the operating-layer cap it is never lifted by an empty product queue -
+the loop spends its slots on the projects' defects rather than on itself;
+then the operating-layer cap
 above. The evolution loop's experiment planner applies the same gates before it
 picks a card, so a voted card the runner holds is never run as an experiment
 either; it also skips a card whose `File:` the project's constitution closes
@@ -123,7 +143,20 @@ starting with the product as its user sees it, weighted by what the board
 accepted, and keep to the product focuses while the day's operating-layer cap
 is reached. The console's Votes page, `pulse queue` (`not planned: <gate>`) and
 `pulse status` (`planner <slug>: N eligible, M plannable (...)`) show the same
-gate for the same card, so a ballot that "does nothing" always says why. A job
+gate for the same card, so a ballot that "does nothing" always says why. The
+console's **Self-improvement** tab adds the **funnel**: the project's
+`evolution` payload carries a `funnel` object - `posted`, `checked` (cards
+naming a `check:`), `needs_votes`, `eligible`, `plannable`, `held` (the gated
+cards grouped by a short gate label, biggest group first), `in_flight`,
+`blocked`, `carded`, `built`, `tried`, `rejected`, `expired`, `closed`, the
+two settings that shape it (`require_check`, `check_skips_quorum`) and
+`alerts` - and the tab draws the stages as a row of counts with the held
+groups under them. An alert names the stage where the funnel stopped: `held`
+(every agreed card is gated, nothing to plan), `votes` (cards wait for votes
+and none is agreed), `empty` (no suggestion posted yet), `settled` (every
+suggestion is built, tried, rejected or expired and nothing new waits) or
+`blocked` (an open suggestion job sits blocked); while a card is plannable or
+a job is in flight only `blocked` can show. A job
 that ran marks the suggestion `built` or `tried`; a `blocked` job holds only
 its own card. **Amendments** carry a `text_hash`; a vote counts only when it
 read the same text. Passed amendments are written into the project's
@@ -358,6 +391,18 @@ diff-scoped score is per card, so the cached project baseline never serves it:
 those fixtures are measured again on the base in the same scope inside the same
 cycle, and the whole-tree numbers stay for the project-level report. A diff
 with no changed file exports the base alone and the scorers see the whole tree.
+A `CMD` that ignores the list still gets the base's count as its scale, so a
+whole-tree percentage loses its reach in an experiment: the hub's components
+branch coverage reads 87.9 on the base, the scale becomes 175.8, and a card that
+lifts it by a whole point moves that fixture by 0.006 - B-093 to B-099 all tied
+under `evolve.tolerance` 0.02 with such moves. Count something that
+belongs to files (uncovered lines and branches, error messages, unworded
+events) and add it up over the listed files only, as
+`behaviour-hub-untested-logic` does with the lcov report of the hub's
+`node --test` run (a changed `X.test.mjs` counts for the `X.ts` it pins): a card
+that tests the module it touches drops that count from, say, 7 to 0 and scores
+1.0 against the base's 0.5, which at weight 2 of a total near 35 moves the
+composite by about 0.029 on its own.
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
@@ -380,6 +425,47 @@ name: the project's recipe checks live with the runner, out of the
 measurement's reach, so `check:cargo test -p demo` must spell the command. A
 card that names a check can win on a tie (the keep rule below), and the worker
 brief asks every card for one.
+
+### The card proof: red on main, green with the change
+
+With `evolve.require_check` on (the default since 2026-11-10) the check is
+more than a fixture: it is the card's proof. The check must **fail on the
+default branch today and pass once the change is in** - a test the change adds
+counts, since it does not exist yet - and a card without a check is held
+`names no check` and never becomes an experiment or an improve job. The
+research brief says so when it asks for cards (`Signal: check:<command that
+fails on the default branch today and passes once the change is in>`), the
+shared-board triage brief asks the same of a promoted wish, and an improve
+job's brief names its card's check as the proof the runner will take. Then,
+when the job's commits are in, the runner runs the check on the default
+branch and on the branch before anything lands (`card_proof.rs`): the job
+fails with `nothing landed` when the check already passes on the default
+branch (there was nothing to prove; a check that ran no test there - a
+filter that matched nothing because the test did not exist yet - counts as
+failing, which is how a new test proves itself), still fails with the
+change, or, for a check that prints a count, did not make the count fall; the
+summary says which. An experiment from such a card lands only when its
+`card-check` fixture turned from failing to passing (or the other fixtures
+improved) with no fixture regressed: a tie means the check did not turn, and
+it does not land whatever `evolve.land_neutral` says. The fixtures saw almost
+none of the changes the loop made (76 of 85 experiments tied by 2026-11-08),
+so the card's own check is the measurement that moves. `pulse settings set
+evolve.require_check off` restores the older rule: cards without a check
+become work judged by the project's own checks, and ties follow
+`evolve.land_neutral`.
+
+### The defects focus
+
+The research rotation has a `defects` focus (*what failed this week*) that
+starts from what broke rather than from what could be better: the brief
+lists the project's failed jobs of the last week with their summaries, asks
+the worker to run each check the project declares, to read the crash and
+flake reports on the board, and to write cards for the defects a user or a
+worker hit - each with a check that fails today. It takes the turn
+whenever the project has failed jobs newer than its last `defects` run,
+every other turn at most so the rest of the rotation still comes round; the
+brain's research brief also carries the loop cap
+above, so a card about the loop itself yields to a project's defect.
 
 ## Fleet
 
@@ -697,6 +783,7 @@ record, read with `pulse record show WF-evolve`.
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `review.merge` | `auto` | `auto`: the review job merges a pull request no complexity reason holds back; `ask`: every pull request is handed to you with the reviewer's findings under **Needs your review**, and the reviewer merges nothing ([The reviewer](review.md)). |
+| `git.github_app.app_id`, `git.github_app.installation_id`, `git.github_app.private_key_ref` | empty | A GitHub App every git command PULSE runs inherits (ADR-070 step 3): its id, its installation's id, and where its private key lives (`op://`, `keychain://`, `file://`; only the brain reads it). With all three set, pushes, fetches and `gh` on a repository the App covers use a one-hour token for that one repository - a hand gets it for its one push - and fall back to `push.credential` and this machine's logins when GitHub will not mint one ([Credentials](landing.md#one-git-login-for-every-machine-a-github-app-adr-070-step-3)). |
 | `review.max_files` | `20` files | A pull request that changes more files than this goes to you instead of merging; generated paths (`web/hub/out/**`, lockfiles, `dist/`, `out/`, `target/`, minified files) are not counted. |
 | `review.max_lines` | `600` lines | A pull request that adds and deletes more lines than this together goes to you instead of merging; the same paths are left out of the count. |
 | `landing.base_red_retry_minutes` | `10` minutes | How long a project's held work waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
@@ -707,6 +794,8 @@ record, read with `pulse record show WF-evolve`.
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `pulse executor label`. |
 | `executor.transport` | `local` | `local`: this machine runs its own jobs in a clone under the pulse home. `local-hand`: it leases them to the `pulse-hand` installed beside `pulse` over a pipe (ADR-070 step 1b). The hand clones in `PULSE_HOME/hands`, runs the worker there and, once the commits pass the identity check, pushes the job's branch with the key `push.credential` names, handed to it for that one push. Lead, review and suggestion-review jobs stay local, and a failed hand push is left to the delivery pass ([Machines](machines.md)). |
+| `brain.code` | `clone` | Whether this machine keeps a copy of the projects' code (ADR-070 rule 6). `clone`: every run here clones the project, as always. `none`: no checkout of any project on this machine - it leases only the `lead` and `reflect` jobs, which plan from the board in an empty workspace; every other job, check script and the source self-update wait for a hand, and `pulse run` of such a job is refused. The hosted brain sets it ([Security notes](security.md)). |
+| `daemon.self_update` | `on` | `on`: the daemon rebuilds pulse from the brain project's checkout after a landing touches the binary's sources ([Self-update](runner.md#services-and-self-update)); `release`: it installs the newer published release `update.latest_url` names instead, checked hourly, with no source and no cargo on the machine ([Releases](release.md#daemonself_update-release-a-machine-without-source)); `off` leaves pulse alone. |
 | `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `pulse executor reserve NAME`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
 | `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
@@ -759,6 +848,12 @@ record, read with `pulse record show WF-evolve`.
 | `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`pulse toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `pulse goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
+| `hub.allow_remote` | empty (this machine only) | The team front's `https://` origin (ADR-070 rule 5). While set, the hub's front relay listener (`pulse hub --front-port N`, 127.0.0.1 only) serves reads and accepts a write only when a registered member's passkey signed it over a nonce from `GET /api/v1/nonce`; empty closes the relay (403). Counts only when the owner set it - an agent's value is ignored. See [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere) and [security](security.md). |
+
+The team secret vault (ADR-070 step 4) adds no setting. What a job may be
+granted is the project's recipe `secrets:` list, and values are set with
+`pulse secret set` or the hub's Settings → Secrets panel. See
+[Team secrets](harness.md#team-secrets-the-vault).
 
 The drafting, held-out directory and variant-loop gates (`evolve.draft_hours`,
 `evolve.heldout_dir`, `evolve.canary_share` and the rest) are listed with

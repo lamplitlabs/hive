@@ -14,6 +14,12 @@ pub(crate) struct TestServer {
 
 impl TestServer {
     pub(crate) fn start(handler: HandlerFn) -> Self {
+        Self::start_on(handler, false)
+    }
+
+    /// Serves `handler` like the hub's front relay listener when
+    /// `via_front` is set (ADR-070 rule 5).
+    pub(crate) fn start_on(handler: HandlerFn, via_front: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let url = format!(
             "http://{}",
@@ -21,7 +27,8 @@ impl TestServer {
         );
         let ctx = CancellationToken::new();
         let server_ctx = ctx.clone();
-        let join = thread::spawn(move || httpx::serve(&server_ctx, listener, handler));
+        let join =
+            thread::spawn(move || httpx::serve_on(&server_ctx, listener, handler, via_front));
         Self {
             url,
             ctx,

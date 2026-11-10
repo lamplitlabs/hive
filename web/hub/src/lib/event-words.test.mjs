@@ -101,6 +101,9 @@ test("the earlier sentences still read the same", () => {
   assert.equal(eventVerb({ action: "post.claim", subject: "", detail: {} }), "picked up a thread");
   assert.equal(eventVerb({ action: "decide", subject: "20260901T203300Z-cinder", detail: { answer: "yes" } }), "said yes to cinder\u2019s proposal");
   assert.equal(eventVerb({ action: "executor.add", subject: "mac-mini", detail: {} }), "added the machine mac-mini");
+  assert.equal(eventVerb({ action: "hand.revoke", subject: "studio-mac", detail: {} }), "revoked the machine studio-mac");
+  assert.equal(eventVerb({ action: "hand.connect", subject: "studio-mac", detail: {} }), "connected the machine studio-mac");
+  assert.equal(eventVerb({ action: "hand.join_code", subject: "", detail: {} }), "issued a join code for a machine");
   assert.equal(eventVerb({ action: "agent.retire", subject: "cinder", detail: {} }), "retired the worker cinder after its run");
   assert.equal(eventVerb({ action: "land.landed", subject: "", detail: {} }), "merged finished work");
 });
@@ -235,6 +238,12 @@ test("every tool connection, skill, record, project and agent event has a plain-
 const OWNER = [
   "cred.set",
   "cred.clear",
+  "secret.key",
+  "secret.set",
+  "secret.removed",
+  "secret.granted",
+  "secret.refused",
+  "secret.read",
   "chat.wake",
   "chat.finish",
   "goal.amend",

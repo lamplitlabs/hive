@@ -325,7 +325,7 @@ async function capture() {
     const task002Focus = await get("tasks/TASK-002");
     write("roster", rosterScenarios(await get("roster"), frozen, true, taskWorkFocus(task002Focus, frozen)));
     if (rosterOnly) return;
-    for (const route of ["activity", "compute", "events", "executors", "health", "hygiene", "messages", "notices", "org", "clouds", "proposals", "questions", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
+    for (const route of ["activity", "compute", "events", "executors", "git-app", "health", "hygiene", "messages", "notices", "org", "clouds", "proposals", "questions", "runner", "running", "settings", "timeline", "votes"]) write(route, await get(route));
     write("constitution", await get("constitution?project=pulse"));
     for (const route of ["mcp", "mcp/options", "skills"]) write(route, await get(route));
     const records = write("records", await get("records"));

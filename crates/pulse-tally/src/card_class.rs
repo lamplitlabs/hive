@@ -34,6 +34,52 @@ pub(crate) fn card_fields(body: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// The check a card names, or empty. A `Check:` line (the brief carries one)
+/// wins; else a `Signal:` line whose value starts with `check:`; else a
+/// `Hypothesis:` line that contains `check:`. The command is what follows
+/// `check:` - a backtick-quoted span when there is one, else the rest of the
+/// line. It is a shell command the measurement runs from the tree root on
+/// both trees, not a project check name. The planner, the tally and the
+/// experiment (pulse-evolve) all read a card's check here.
+pub fn card_check_of(text: &str) -> String {
+    let fields = card_fields(text);
+    if let Some(direct) = fields.get("check") {
+        let direct = direct.trim().trim_matches('`').trim();
+        if !direct.is_empty() {
+            return direct.to_string();
+        }
+    }
+    for key in ["signal", "hypothesis"] {
+        let Some(value) = fields.get(key) else {
+            continue;
+        };
+        // `- **Signal:** `check:...`` leaves the bold markers on the value.
+        let value = value.trim_start_matches(['*', ' ', '\t', '`']);
+        let lower = value.to_lowercase();
+        let Some(i) = lower.find("check:") else {
+            continue;
+        };
+        if key == "signal" && i != 0 {
+            continue;
+        }
+        let rest = value[i + "check:".len()..].trim_start();
+        let command = match rest.strip_prefix('`') {
+            Some(quoted) => quoted.split('`').next().unwrap_or(""),
+            None => rest,
+        };
+        let command = command.trim().trim_end_matches(['.', ';', '`']).trim();
+        if !command.is_empty() {
+            return command.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Whether a card names a check ([`card_check_of`]).
+pub fn card_has_check(text: &str) -> bool {
+    !card_check_of(text).is_empty()
+}
+
 pub(crate) fn first_card_text(items: &[String]) -> String {
     items
         .iter()
@@ -169,6 +215,51 @@ static OPERATING_LAYER_DIRS: &[&str] = &[
     "docs/prompts/",
     "docs/skills/",
 ];
+
+/// PULSE's own self-improvement loop: research, ballots, the tally, the
+/// planner and its gates, experiments, measurement and the briefs. A card
+/// that changes it is the loop working on itself.
+static LOOP_DIRS: &[&str] = &["crates/pulse-evolve/", "crates/pulse-tally/"];
+static LOOP_RUNNER_FILES: &[&str] = &[
+    "brief.rs",
+    "card_proof.rs",
+    "evolve_plan.rs",
+    "experiment.rs",
+    "idle.rs",
+    "idle_hold.rs",
+    "idle_log.rs",
+    "lead.rs",
+    "lead_cli.rs",
+    "lead_roles.rs",
+    "plan.rs",
+    "research.rs",
+    "suggestions.rs",
+    "tally.rs",
+];
+
+/// Whether a path is the self-improvement loop's own code ([`LOOP_DIRS`],
+/// [`LOOP_RUNNER_FILES`]): cards that change it are capped by
+/// `plan.loop_per_day`.
+pub fn is_loop_path(path: &str) -> bool {
+    let p = normalize_card_path(path);
+    LOOP_DIRS.iter().any(|d| p.starts_with(d))
+        || p.strip_prefix("crates/pulse-runner/src/")
+            .is_some_and(|f| LOOP_RUNNER_FILES.contains(&f))
+}
+
+/// Whether a card changes the loop itself: its File: (or, without one, the
+/// one path it mentions) is loop code ([`is_loop_path`]).
+pub fn card_about_loop(summary: &str, body: &str) -> bool {
+    let fields = card_fields(body);
+    let mut paths = card_paths(&first_card_text(&[
+        fields.get("file").cloned().unwrap_or_default(),
+        fields.get("path").cloned().unwrap_or_default(),
+    ]));
+    if paths.is_empty() {
+        paths = sole_mentioned_path(&format!("{summary}\n{body}"));
+    }
+    paths.iter().any(|p| is_loop_path(p))
+}
 
 pub fn is_operating_layer_path(path: &str) -> bool {
     let p = normalize_card_path(path);
