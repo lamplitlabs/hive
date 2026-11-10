@@ -1445,6 +1445,18 @@ async function handle(req, res) {
   // The update banner's "Update now" (TASK-093): POST update/apply starts an
   // install that ends a few seconds later; GET update follows it. MOCK_UPDATE_CHANNEL=source
   // shows the refusal; MOCK_UPDATE_FAIL=1 a failed install.
+  // The front's passkey pages (ADR-070 step 5): POST members/nonce hands out
+  // a one-use nonce, GET members lists members and their passkeys (no keys).
+  // The mock checks no signature; crates/pulse-hub/src/front.rs does.
+  if (segs[0] === "members" && segs.length <= 2) {
+    if (segs.length === 2 && segs[1] === "nonce") {
+      if (req.method !== "POST") return fail(res, 405, "method not allowed", "Only POST hands out a nonce.", "Send POST /api/v1/members/nonce.");
+      const nonce = "mock-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+      return send(res, 200, { nonce, expires_at: new Date(Date.now() + 5 * 60_000).toISOString() });
+    }
+    if (segs.length === 1 && req.method === "GET") return send(res, 200, await fixture("members"));
+    return fail(res, 404, "not found", "no route " + url.pathname, "use members or members/nonce");
+  }
   if (segs[0] === "update" && segs.length <= 2) {
     const base = await fixture("update");
     const channel = process.env.MOCK_UPDATE_CHANNEL || base.channel || "release";
@@ -2726,6 +2738,39 @@ async function handle(req, res) {
       }
       return send(res, 200, preview);
     }
+    // Machines that dial in (ADR-070 step 2): a six-word join code good for
+    // ten minutes and one join; the mock "enrols" a hand a few seconds later
+    // so the wizard's wait turns into "joined". Revoke drops the key and the
+    // machine like the brain does.
+    if (segs[0] === "machines" && segs[1] === "join-codes" && segs.length === 2) {
+      state.compute.devices ??= [];
+      const words = ["amber", "river", "cobalt", "maple", "orbit", "lantern", "harbor", "willow", "quartz", "meadow"];
+      const code = Array.from({ length: 6 }, (_, i) => words[(Date.now() + i * 7) % words.length]).join("-");
+      const at = new Date();
+      const expires = new Date(at.getTime() + 10 * 60000).toISOString().replace(/\.\d+Z$/, "Z");
+      const host = req.headers.host || "localhost:8787";
+      if (process.env.MOCK_JOIN !== "off")
+        setTimeout(() => {
+          const n = state.compute.devices.length + 1;
+          const name = "studio-mac" + (n > 1 ? "-" + n : "");
+          const stamp = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+          state.compute.executors.push({ name, kind: "dial", address: "", workdir: "~/.pulse-hand/work", workers: 2, projects: "*", status: "drained", created_at: stamp, created_by: "dev-" + n, errors: 0, backoff_minutes: 0, last_probe_at: "", next_probe_at: "", probe_note: "", runs_done: 0, runs_failed: 0, offers: "macos arm64" });
+          state.compute.devices.unshift({ id: "dev-" + n, executor: name, created_at: stamp, created_by: "join", last_seen_at: stamp, revoked_at: "", revoked_by: "" });
+          emit("human", "hand.join", name, { device: "dev-" + n });
+        }, 4000);
+      return send(res, 200, { code, expires_at: expires, minutes: 10, brain: "http://" + host, command: "pulse-hand join --brain http://" + host + " " + code });
+    }
+    if (segs[0] === "machines" && segs[1] === "devices" && segs.length === 4 && segs[3] === "revoke") {
+      const d = (state.compute.devices ?? []).find((x) => x.id === segs[2] || x.executor === segs[2]);
+      if (!d) return fail(res, 404, "No device " + segs[2], "No machine that dials in has this id or name.", "Refresh the machines list.");
+      if (!d.revoked_at) {
+        d.revoked_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        d.revoked_by = "human";
+        state.compute.executors = state.compute.executors.filter((e) => e.name !== d.executor);
+        emit("human", "hand.revoke", d.executor, { device: d.id });
+      }
+      return send(res, 200, { device: d.id });
+    }
     // Add machine (POST compute/executors): pair runs "on the hub" for a few
     // seconds and lands its report under pairings; register adds a drained
     // row and, when asked, "probes" it; request behaves like an agent's.
@@ -3801,7 +3846,7 @@ async function handle(req, res) {
       405,
       "no such write",
       req.method + " " + url.pathname + " is not an owner action",
-      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat/<id>/auto|lockdown, memory, memory/forget, voice/setup|transcribe|unload, voice/model (DELETE)",
+      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, machines/join-codes, machines/devices/<id>/revoke, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat/<id>/auto|lockdown, memory, memory/forget, voice/setup|transcribe|unload, voice/model (DELETE)",
     );
   }
 
@@ -4555,6 +4600,15 @@ async function handle(req, res) {
       "no fixture for " + url.pathname,
       "add mock/api/" + segs.join("/") + ".json",
     );
+  // The runner lists every machine with its live counts: machines that dial
+  // in (joined or revoked through the mock) follow the compute state.
+  if (segs[0] === "runner" && segs.length === 1 && Array.isArray(d.executors)) {
+    const dial = (state.compute.executors ?? []).filter((e) => e.kind === "dial");
+    return send(res, 200, {
+      ...d,
+      executors: [...d.executors.filter((e) => e.kind !== "dial"), ...dial.map((e) => ({ ...e, running: e.running ?? 0, free: e.status === "active" ? e.workers : 0 }))],
+    });
+  }
   if (segs[0] === "chat" && segs.length === 1 && Array.isArray(d.conversations))
     return send(res, 200, {
       ...d,

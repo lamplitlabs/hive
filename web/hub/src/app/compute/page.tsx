@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { CheckCircle2Icon } from "lucide-react";
 import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
-import { MachineCard } from "@/components/compute/machine";
+import { MachineCard, RevokeDeviceButton } from "@/components/compute/machine";
 import { ThisMachineCard } from "@/components/compute/this-machine";
 import { CapsPanel, ComputeRequestCard, ComputeRequestListRow, ComputeRequestRow } from "@/components/compute/compute";
 import { HygienePanel } from "@/components/pulse/hygiene";
@@ -120,15 +120,18 @@ export default function ComputePage() {
               ) : null}
               {executors.length ? (
                 <CardGrid cols={3}>
-                  {executors.map((e) => (
+                  {executors.map((e) => {
+                    // A machine that dials in shows its key's last call and gets Revoke instead of Remove (ADR-070 step 2).
+                    const device = e.kind === "dial" ? c.devices?.find((d) => d.executor === e.name) : undefined;
                     // The local executor is this machine and a removed row is already gone: neither gets Remove.
-                    <MachineCard key={e.name} e={e} provider={c.caps.provider} host={org.data?.host} action={e.name !== "local" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined} />
-                  ))}
+                    const action = device && !device.revoked_at ? <RevokeDeviceButton device={device} name={e.name} /> : e.name !== "local" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined;
+                    return <MachineCard key={e.name} e={e} provider={c.caps.provider} host={org.data?.host} device={device} action={action} />;
+                  })}
                 </CardGrid>
               ) : null}
             </div>
           ) : (
-            <EmptyState action={<AddMachineButton caps={c.caps} />}>No other machine yet. Add one and PULSE sets it up over ssh, or approve an agent&apos;s request. It starts taking work after its first check passes.</EmptyState>
+            <EmptyState action={<AddMachineButton caps={c.caps} />}>No other machine yet. Add one with a join code, have PULSE set it up over ssh, or approve an agent&apos;s request. It starts taking work after its first check passes.</EmptyState>
           )}
         </section>
 

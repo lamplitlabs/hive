@@ -42,6 +42,9 @@ const LABELS: Record<string, string> = {
   "backup.subscription": "Azure subscription of the backup account",
   "verify.lock": "Run checks one at a time",
   "push.credential": "Push key",
+  "git.github_app.app_id": "GitHub App ID",
+  "git.github_app.installation_id": "GitHub App installation",
+  "git.github_app.private_key_ref": "GitHub App key",
   quorum: "Votes a suggestion needs",
   expiry_days: "Close a suggestion after (days)",
   stale_days: "A quiet thread goes stale after (days)",
@@ -129,6 +132,7 @@ const LABELS: Record<string, string> = {
   "lane.retry_minutes": "Retry a failed experiment after (minutes)",
   "lane.short_retry_minutes": "Retry a brief experiment failure after (minutes)",
   "daemon.self_update": "Update PULSE by itself",
+  "brain.code": "Project code on this machine",
   "daemon.self_update_retry_minutes": "Try a failed update again after (minutes)",
   "daemon.self_update_settle_minutes": "Wait before updating after a change (minutes, 0 = at once)",
   "daemon.restart_drain_minutes": "Let runs finish before a restart (minutes)",
@@ -229,7 +233,7 @@ const LABELS: Record<string, string> = {
   "voice.language": "Language spoken into the microphone (auto = detect)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|git\.github_app|git|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -267,6 +271,9 @@ const HELP: Record<string, string> = {
   "backup.keep": "How many of this machine's backups stay at the destination before the oldest is removed. 0 keeps them all.",
   "backup.subscription": "Only for an az:// destination whose storage account lives outside the az CLI's default subscription: its name or id, passed to every az call a backup makes. Leave empty when the account is in the default subscription.",
   "push.credential": "The SSH key PULSE pushes with. Only a reference to where the key lives is saved, never the key.",
+  "git.github_app.app_id": "The number GitHub shows on your PULSE GitHub App's settings page. With the installation and the key set, every job gets a one-hour token for its one repository instead of a key or login kept on a machine.",
+  "git.github_app.installation_id": "The number at the end of the App's installation page on GitHub (github.com/settings/installations/N, or your organization's).",
+  "git.github_app.private_key_ref": "Where the App's private key (the .pem GitHub downloads) lives: op://, keychain:// or file:// (a 0600 file). Only the reference is saved; only this computer reads the key, to sign for a token.",
   quorum: "How many agents must vote for a suggestion before it can become work.",
   expiry_days: "How long a suggestion stays open for votes before it closes.",
   stale_days: "How long a thread can go untouched before it counts as stale.",
@@ -316,7 +323,8 @@ const HELP: Record<string, string> = {
   "evolve.promote_confidence": "How sure PULSE must be that a candidate does better before it adopts it, as a fraction (0.95 is 95%).",
   "evolve.replay_set": "How many past jobs a new candidate re-runs in throwaway copies before it may try real work. 0 skips this step.",
   "evolve.trigger_failures": "How many jobs on one project must fail for the same reason within a week before PULSE proposes a candidate to fix it.",
-  "daemon.self_update": "Whether PULSE rebuilds and restarts itself when its own source changes. Runs in progress finish first.",
+  "daemon.self_update": "Whether PULSE updates and restarts itself. On, it rebuilds from its own source after each change there. From releases, it installs each newer published release after checking it against the release's checksums, and never builds anything: the choice for a hosted brain, which holds no PULSE source. Runs in progress finish first.",
+  "brain.code": "Clone, this machine copies a project to run its jobs, its check scripts and its merges. None, no project code is ever copied here: this machine only plans, from the board, the task text and what the hands report, and every job that needs the code waits for a hand. The choice for a hosted brain (docs/security.md).",
   "machine.labels": "Words a project can ask for in its .pulse/pulse.yaml (needs:) and this machine then counts as offering, comma-separated: gpu, android, a tool's name. Its system (macos, linux), chip (arm64, amd64), and xcode and docker are found on their own; the Machines page shows the whole list.",
   "executor.transport": "Local, this machine runs its own jobs the way it always has. Local hand, it hands them to the pulse-hand program installed beside PULSE: the hand works in its own folder and, once the commits pass the identity check, pushes the job's branch with the push key PULSE lends it for that one push. Planning and review jobs stay local.",
   "machine.reserve": "On, this machine takes only the jobs that need something it offers, such as a project that needs a Mac with Xcode, and leaves the rest of the queue to the other machines. Off, it takes any job it can run.",

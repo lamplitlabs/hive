@@ -2,7 +2,9 @@
 
 The console is where the owner lives: every page below is a view of the
 store, and every button calls the same helper the matching `pulse` command
-does. It binds to `127.0.0.1` only. Page URLs without a trailing slash,
+does. It binds to `127.0.0.1` only; a team reaches it from elsewhere only
+through its front, with passkey-signed writes (see
+[Passkey sign-in through the team's front](#passkey-sign-in-through-the-teams-front)). Page URLs without a trailing slash,
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
 
@@ -677,7 +679,13 @@ Every machine that runs agents (`/compute/`), with what it offers (`macos arm64
 xcode docker`; *Reserved* when it is kept for the work that needs it,
 [Machines: what runs where](machines.md#machines-what-runs-where); this machine's card
 links to the setting that changes its words), and agents' requests for more
-machines (size, hours, why). Approve or deny; approved requests are provisioned
+machines (size, hours, why). **Add a machine** starts with **Run one
+command on it**: a six-word join code, good for ten minutes and one join, and
+the `pulse-hand join` line to copy to the machine. The step says when the
+machine has joined. A machine that dials in shows its last call and a
+**Revoke** button that drops its key ([Enrolling a
+hand](machines.md#enrolling-a-hand)). The other ways pair a machine over
+ssh, add one prepared by hand, or rent one. Approve or deny; approved requests are provisioned
 by the configured provider (`compute.provider`: `azure`, `aws`, `gcp`, or
 `multipass` for a VM on the hub machine itself; `pulse compute providers` lists
 them) inside the caps you set. Every provider works through its own CLI logged
@@ -971,3 +979,81 @@ apply equally to cards and tables. Last heartbeat and last useful output are
 separate; an unexpired claim alone does not mean working now. Each card and
 `pulse agents` show what an agent is doing now: the job it holds, the thread it
 claimed and the executor it runs on.
+
+## Passkey sign-in through the team's front
+
+ADR-070 step 5. Through the hosted **front**, a team member uses the same
+console as the owner does on `127.0.0.1`, and the front still cannot act for
+anyone. Every write (POST, PUT, PATCH, DELETE) that comes through the front
+carries the member's **passkey** signature. The brain checks that signature
+before it writes anything. A console opened on this machine (`localhost`,
+`127.0.0.1`, `::1`) never signs and keeps the same-origin write guard.
+
+There are two pages for this:
+
+- **Passkey** (`/passkey/`): **Sign in with passkey** asks the browser
+  (`navigator.credentials.get()`) for one of the team's passkeys. It then
+  says whether the brain knows that passkey (the member's name), whether the
+  passkey belongs to a member who was removed, or whether the brain has never
+  seen it. After sign-in, each write first fetches a one-use nonce from the
+  brain, then asks the authenticator to sign, then sends the request with
+  the `X-Pulse-Passkey` header. **Sign out** forgets the passkey in this
+  browser. Nothing secret is stored there: only the credential id and the
+  member's name are kept.
+- **Register a passkey** (`/passkey/register/`): the member types their
+  member name and makes a passkey on this device. Only ES256 (P-256) keys
+  are accepted, because that is the only kind the brain checks. The page
+  prints the line for the owner to run on the brain:
+
+  ```bash
+  pulse member passkey add MEMBER --credential CREDENTIAL_ID --public-key KEY
+  ```
+
+  `KEY` is the base64url of the 65-byte uncompressed P-256 point. The
+  private key never leaves the member's authenticator, and the front never
+  sees it.
+
+### What the brain checks
+
+The page and the brain share this format. It lives in one module,
+`web/hub/src/lib/passkey-state.ts`, so a change on the brain's side
+(`crates/pulse-hub/src/front.rs`) costs one edit there.
+
+| Step | Wire |
+| --- | --- |
+| Nonce | `POST /api/v1/members/nonce`, answer `{"nonce": "..."}`. This is the one write that is not signed. |
+| Bytes signed | `pulse-write` `\n` nonce `\n` METHOD `\n` path with query `\n` exact body bytes |
+| Challenge | SHA-256 of those bytes, passed to `navigator.credentials.get()` |
+| Header | `X-Pulse-Passkey`: base64url of the JSON `{v: 1, nonce, credential, authenticator_data, client_data_json, signature}`, each field base64url |
+| Refused | a reused or made-up nonce, a changed body, an unknown key, a removed member |
+
+Uploads and voice recordings are signed over their raw bytes. JSON writes
+are signed over the exact string that is sent.
+
+### Owner steps
+
+The pages are code only. The owner sets up the parts that cost money or
+need an account. None of these steps can be done by a worker:
+
+1. **Domain.** Pick the address the team will open, for example
+   `console.example.com`. Passkeys are tied to that domain (the WebAuthn
+   relying party), so a passkey made on one domain does not work on another.
+   Pick the domain before members register.
+2. **Hosting.** Run the front on that domain over HTTPS. Browsers only offer
+   passkeys on a secure origin. The front relays requests to the team's
+   brain. It serves this console's static export (`web/hub/out/`) and passes
+   `/api/v1/*` through unchanged, including the `X-Pulse-Passkey` header and
+   the exact request body.
+3. **Clerk account.** Members log in to the front with Clerk (ADR-070
+   rule 7). Create the Clerk application and its production instance on the
+   front's domain; the `clerk-new-application` skill walks through it. Clerk
+   decides who may reach the front. The passkey decides what that person may
+   change on the brain.
+4. **Turn on remote access on the brain.** `hub.allow_remote` is owner-only
+   and empty by default. While it is empty the brain only listens on this
+   machine. Set it to the front's address, in **Settings** or with
+   `pulse settings set hub.allow_remote <origin>`.
+5. **Add each member's passkey.** The member opens **Register a passkey**
+   through the front and sends the printed line to the owner. The owner runs
+   that line on the brain. After that, the member's **Sign in with passkey**
+   shows their name, and their writes go through.

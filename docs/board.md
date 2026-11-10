@@ -1120,7 +1120,7 @@ pulse record amend ADR-019 --body-file adr-v2.md --note "added rollback"
 pulse record accept ADR-019 --words 'Approved because ...'   # or Accept in the console's For you inbox
 pulse record deliver ADR-019 delivered
 pulse record lead-time --project my-app       # proposed-to-delivered days
-pulse migrate --records --repo . --ref HEAD    # import a repository's committed Markdown records once
+pulse migrate --records --repo . --ref HEAD    # import a repository's committed Markdown records by hand
 pulse seed apply                               # write the framework's bundled records a store lacks (ADR-038)
 pulse export --db ~/pulse-backup.sqlite        # a copy outside every project
 pulse backup --to az://myaccount/pulse-backups  # a gzip copy off this machine (see Backups of the store)
@@ -1135,6 +1135,23 @@ whole, front matter included, and a file whose front matter has a `pulse:`
 block with a `role:` word also makes a `role` record (the block's other
 keys are its front matter, the file's body its text). `pulse seed export`
 bundles the pack kinds with the framework's.
+
+Merged decision records reach the store by themselves: on each pass the
+daemon reads `docs/decisions` on every project's default branch and, when
+that folder's tree differs from the one it last imported, imports it the
+way `pulse migrate --records` does. A new file becomes a record with the
+status it was committed with, and an ADR whose committed `status:` is
+`Accepted` is marked accepted in the store - merging it is the owner's
+acceptance, so tasks held "pending the ADR" see it on the lead's next
+pass. A store status is only ever moved up from draft or proposed: a
+record the store holds as accepted, superseded or rejected keeps that
+status whatever the file says. The tree imported last is remembered in a
+`records.synced` event per project (`tree`, `commit`, `imported`,
+`accepted`), so a pass on an unchanged tree writes nothing; the daemon log
+says `records <slug>: docs/decisions at main@<commit>: N imported,
+accepted ADR-NNN` when it did something. `pulse migrate --records` stays
+the manual way, for the other record folders and for a ref that is not
+the default branch.
 
 For a human-run quarterly prune, `pulse record show WF-prune` holds the script.
 It counts local `pulse/*` branches before deletion and saves the count as an
