@@ -144,4 +144,9 @@ them until their step lands and this page says so:
 - **Passkey-signed writes and `hub.allow_remote`** (step 5).
 - **Landing without a checkout.** The lander merges in a worktree of the
   project's registered checkout. A brain with `brain.code none` has none,
-  so landing there waits on merging through the forge.
+  so it holds every finished branch instead (`land.held`, reason
+  `brain-code-none`, the note says "brain.code is none") and never makes a
+  worktree under `PULSE_HOME/work`; the branch waits for its pull request to
+  be merged through the forge. Merging that pull request from the brain
+  itself is not built yet. Test:
+  `land::tests::brain_code_none_holds_a_finished_branch_without_a_worktree`.

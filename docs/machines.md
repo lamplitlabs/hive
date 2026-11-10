@@ -509,8 +509,9 @@ promises, and the test that holds it, is in [security.md](security.md).
 Two things a code-less brain does not do yet. Its hands still reach it
 through `pulse pair` over SSH, because the dial-in channel is ADR-070
 step 2. And landing merges in a worktree of the registered checkout, so
-with no checkout a branch waits for a pull request merged through the
-forge.
+with no checkout the lander holds a finished branch (`land.held`, reason
+`brain-code-none`: "brain.code is none") without making a worktree, and the
+branch waits for a pull request merged through the forge.
 
 ## Heartbeats and presence
 
