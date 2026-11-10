@@ -95,6 +95,7 @@ pub mod run;
 pub mod runners;
 pub mod schedule;
 pub mod schedule_script;
+pub(crate) mod secrets;
 pub mod security;
 pub mod selfupdate;
 pub mod service;

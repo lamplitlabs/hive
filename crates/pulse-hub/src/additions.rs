@@ -74,6 +74,7 @@ impl Handler {
             "hygiene" => self.addition_hygiene(w, r, parts),
             "mcp" => self.addition_mcp(w, r, parts),
             "memory" => self.addition_memory(w, r, parts),
+            "secrets" => self.addition_secrets(w, r, parts),
             "skills" => self.addition_skills(w, r, parts),
             "service" => self.addition_service(w, r, parts),
             "voice" => self.addition_voice(w, r, parts),

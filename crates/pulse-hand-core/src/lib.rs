@@ -27,6 +27,7 @@ pub mod tmpspace;
 pub mod transport;
 pub mod trash;
 pub mod util;
+pub mod vault;
 pub mod worktree;
 
 pub use ctx::{CancellationToken, ContextError};

@@ -18,6 +18,7 @@ const GROUP_ICON: Record<string, GroupIcon> = {
   notifications: "Bell",
   credential: "KeyRound",
   credentials: "KeyRound",
+  secrets: "KeyRound",
   cloud: "Cloud",
   compute: "Cloud",
   stop: "ShieldAlert",

@@ -33,6 +33,8 @@ pub mod store;
 pub mod task_source;
 pub mod tasks_ddl;
 pub mod variants;
+pub mod vault;
+pub mod vault_ddl;
 
 pub use archive::*;
 pub use chat::*;
@@ -50,6 +52,7 @@ pub use mcp_ddl::MCP_DDL;
 pub use mcp_servers::*;
 pub use posts::*;
 pub use projects::*;
+pub use pulse_hand_core::vault::Zeroizing;
 pub use pyjson::*;
 pub use records::*;
 pub use records_ddl::{RECORDS_DDL, RECORDS_VERSION};
@@ -60,6 +63,8 @@ pub use store::*;
 pub use task_source::{TASK_SOURCE_PREFIX, task_source_clause, task_source_id, task_source_params};
 pub use tasks_ddl::{COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASK_COLUMNS, TASKS_DDL};
 pub use variants::*;
+pub use vault::{VAULT_KEY_FILE, VAULT_MAX_VALUE, VaultEntry, VaultHolder, brain_holder};
+pub use vault_ddl::VAULT_DDL;
 
 #[cfg(test)]
 mod needs_sql_tests;
