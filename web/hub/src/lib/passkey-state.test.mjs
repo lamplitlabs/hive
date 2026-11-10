@@ -227,3 +227,12 @@ test("the nonce reply, the stored sign-in and the browser's refusals", () => {
   assert.match(passkeySupport({ hasCredentials: true, hasPublicKeyCredential: true, secureContext: false }).why, /secure page/);
   assert.match(passkeySupport({ hasCredentials: false, hasPublicKeyCredential: false, secureContext: true }).why, /cannot use passkeys/);
 });
+
+test("the passkey pages say when they cannot or need not sign", async () => {
+  const { passkeyPageNote } = await import("./passkey-state.ts");
+  const ok = { ok: true, why: "" };
+  assert.equal(passkeyPageNote("acme.pulse.example", ok), null);
+  assert.equal(passkeyPageNote("localhost", ok).tone, "info");
+  assert.match(passkeyPageNote("127.0.0.1", ok).text, /not signed/);
+  assert.deepEqual(passkeyPageNote("acme.pulse.example", { ok: false, why: "no passkeys" }), { tone: "warn", text: "no passkeys" });
+});

@@ -407,3 +407,19 @@ export function passkeySupport(env: {
     return { ok: false, why: "This browser cannot use passkeys. Use a current Safari, Chrome, Edge or Firefox." };
   return { ok: true, why: "" };
 }
+
+// The note at the top of the passkey pages: why the page cannot work here,
+// or that on this machine nothing is signed (the loopback console keeps the
+// same-origin guard), or nothing at all through the front.
+export function passkeyPageNote(
+  hostname: string,
+  support: { ok: boolean; why: string },
+): { tone: "info" | "warn"; text: string } | null {
+  if (!signingRequired(hostname))
+    return {
+      tone: "info",
+      text: "You are on the brain's own machine, so your changes here are not signed. These pages are for the console reached through the front, at your team's address.",
+    };
+  if (!support.ok) return { tone: "warn", text: support.why };
+  return null;
+}
