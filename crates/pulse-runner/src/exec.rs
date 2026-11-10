@@ -149,6 +149,49 @@ pub(crate) struct LocalExec {
     /// The base of the held run whose clone this run carries on in.
     #[serde(default)]
     pub(crate) resume_base: Option<String>,
+    /// `brain.code none` (ADR-070 rule 6): the run gets an empty workspace
+    /// instead of a clone of the project ([`prepare_no_code_workspace`]).
+    #[serde(default)]
+    pub(crate) no_code: bool,
+}
+
+/// Prepares the workspace of a run on a brain without code (`brain.code
+/// none`): an empty repository with one empty commit (the run's base, so
+/// the commit count, the dirty check and the hooks work as in a clone) and
+/// the run's identity, and not one file of the project. Returns the base.
+pub(crate) fn prepare_no_code_workspace(
+    home: &str,
+    dir: &str,
+    agent: &str,
+    key: &str,
+    hook: &str,
+) -> Result<String> {
+    if Path::new(dir).exists() {
+        let _ = pulse_hand_core::trash::discard_dir(Path::new(home), Path::new(dir));
+    }
+    std::fs::create_dir_all(dir)?;
+    crate::util::git_check(dir, &["init", "-q", "-b", "main"])?;
+    crate::util::git_check(
+        dir,
+        &[
+            "-c",
+            "user.name=pulse",
+            "-c",
+            "user.email=pulse@pulse.local",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "workspace (brain.code none: no project checkout on this machine)",
+        ],
+    )?;
+    pulse_hand_core::local::configure_clone_identity(dir, agent, key, hook)?;
+    Ok(crate::util::git_check(dir, &["rev-parse", "HEAD"])?
+        .stdout
+        .trim()
+        .to_string())
 }
 
 /// True when the recipe's `CARGO_TARGET_DIR` points outside the clone: that
@@ -279,6 +322,22 @@ impl Executor for LocalExec {
         worker_dirs(&self.home)
     }
     fn prepare(&mut self, cancel: &pulse_bus::CancellationToken) -> Result<String> {
+        if self.no_code {
+            self.log.add(
+                "brain.code is none: an empty workspace, no checkout of the project".to_string(),
+            );
+            return prepare_no_code_workspace(
+                &self.home,
+                &self.clone_dir,
+                &self.agent,
+                &self.key,
+                &pulse_hand_core::provenance::provenance_hook(
+                    &self.agent,
+                    &self.job.str("id"),
+                    &self.name(),
+                ),
+            );
+        }
         let prep = pulse_hand_core::local::ClonePrep {
             home: self.home.clone(),
             root: self.root.clone(),
@@ -1084,11 +1143,28 @@ pub(crate) fn make_executor(
     agent: &str,
     log: &mut RunLog,
 ) -> Result<Box<dyn Executor>> {
+    // `brain.code none` (ADR-070 rule 6): no run here clones the project.
+    // The lease already keeps the other kinds off this machine; a job run
+    // by hand (`pulse run --job`) is refused the same way.
+    if crate::jobs::needs_code_here(s, &r.str("name"), &job.str("kind")) {
+        return Err(crate::util::fail(
+            2,
+            format!(
+                "brain.code is none: this machine holds no project code, so the {} job {} runs on a hand, not on {}",
+                job.str("kind"),
+                job.str("id"),
+                r.str("name")
+            ),
+        )
+        .into());
+    }
+    let no_code =
+        r.str("name") == crate::executor::LOCAL_EXECUTOR && crate::jobs::brain_code_none(s);
     let r = crate::executor::transport_row(s, r, &job.str("kind"));
     if r.str("kind") == "local" {
-        return Ok(Box::new(new_local_exec(
-            r, s, home, job, project, agent, log,
-        )));
+        let mut ex = new_local_exec(r, s, home, job, project, agent, log);
+        ex.no_code = no_code;
+        return Ok(Box::new(ex));
     }
     if r.str("kind") == "ssh"
         || r.str("kind") == crate::executor::HAND_KIND

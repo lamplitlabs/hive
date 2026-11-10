@@ -41,6 +41,15 @@ pub(crate) fn run_due(
     if due.is_empty() {
         return Vec::new();
     }
+    // `brain.code none` (ADR-070 rule 6): a script runs in a worktree of
+    // the project, which a brain without code does not make.
+    if crate::jobs::brain_code_none(s) {
+        return vec![format!(
+            "schedules: {} check/watch script{}{HOLD_MARK}brain.code is none: no project worktree on this machine",
+            due.len(),
+            if due.len() == 1 { "" } else { "s" }
+        )];
+    }
     let limits = crate::daemon_load::limits(s, &crate::daemon_load::Machine::detect(), 0);
     if let Some(why) = crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure()) {
         return vec![format!(

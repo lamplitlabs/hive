@@ -491,6 +491,27 @@ a code, dials, and one job runs on it and lands as a remote run. The join-code
 and handshake tests sit beside it, and `hands::tests` in pulse-hub cover the
 routes.
 
+## A brain without code: `brain.code none`
+
+A brain that should never hold a team's code - the hosted brain of ADR-070
+rule 6 (`deploy/Dockerfile`), or any machine whose review needs that -
+sets `pulse settings set brain.code none`. This machine's own slot then
+leases only the `lead` and `reflect` jobs. Those run in an empty
+workspace and plan from the board, the task text and what the hands
+report. Every job that needs the code - tasks, improvements, reviews,
+measurement, check and watch scripts - stays queued for a paired hand,
+which keeps its own clone. `pulse run` of such a job is refused,
+`executor.transport local-hand` included, since a local hand clones onto
+this disk too. The source self-update stands down; `daemon.self_update
+release` installs releases instead ([release.md](release.md)). What this
+promises, and the test that holds it, is in [security.md](security.md).
+
+Two things a code-less brain does not do yet. Its hands still reach it
+through `pulse pair` over SSH, because the dial-in channel is ADR-070
+step 2. And landing merges in a worktree of the registered checkout, so
+with no checkout a branch waits for a pull request merged through the
+forge.
+
 ## Heartbeats and presence
 
 Every agent has a heartbeat, and an agent that stops beating is dead. A beat

@@ -181,6 +181,49 @@ pub(crate) const STORE_KINDS: &[&str] = &[
     crate::suggestions::REVIEW_KIND,
 ];
 
+/// The setting that says whether the brain holds project code (ADR-070
+/// rule 6): `clone` (the default) clones a project for every run here;
+/// `none` keeps every checkout off this machine - it runs only
+/// [`NO_CODE_KINDS`], in an empty workspace, and the rest waits for a hand.
+pub(crate) const BRAIN_CODE_SETTING: &str = "brain.code";
+/// [`BRAIN_CODE_SETTING`]'s value for a brain without code.
+pub(crate) const BRAIN_CODE_NONE: &str = "none";
+
+/// The kinds a brain without code still runs itself: the project lead and
+/// the reflection plan from the board, the task text and what the hands
+/// report, never from a checkout. A review checks out the pull request and
+/// runs the check, so with `brain.code none` it waits for a hand like the
+/// work does.
+pub(crate) const NO_CODE_KINDS: &[&str] =
+    &[crate::lead::LEAD_KIND, crate::suggestions::REVIEW_KIND];
+
+/// Whether `brain.code` is `none` on this machine.
+pub(crate) fn brain_code_none(s: &pulse_store::Store) -> bool {
+    s.setting(BRAIN_CODE_SETTING, "clone")
+        .trim()
+        .eq_ignore_ascii_case(BRAIN_CODE_NONE)
+}
+
+/// The jobs a run on `executor` would need a checkout of the project for
+/// while `brain.code` is `none`: every run on this machine (the local
+/// executor, whatever `executor.transport` says - a local `pulse-hand`
+/// clones onto this machine's disk too) except [`NO_CODE_KINDS`]. A hand
+/// elsewhere holds its own clone and is never limited.
+pub(crate) fn needs_code_here(s: &pulse_store::Store, executor: &str, kind: &str) -> bool {
+    (executor.is_empty() || executor == crate::executor::LOCAL_EXECUTOR)
+        && brain_code_none(s)
+        && !NO_CODE_KINDS.contains(&kind)
+}
+
+/// [`NO_CODE_KINDS`] as a SQL list for `kind IN (...)`.
+fn no_code_kinds_sql() -> String {
+    NO_CODE_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// [`STORE_KINDS`] as a SQL list for `kind NOT IN (...)`.
 pub(crate) fn store_kinds_sql() -> String {
     STORE_KINDS
@@ -651,6 +694,14 @@ pub(crate) fn lease_job(
                 crate::executor::LOCAL_EXECUTOR
             ));
             sql.push_str(&format!(" AND j.kind NOT IN ({})", store_kinds_sql()));
+        }
+        // `brain.code none` (ADR-070 rule 6): this machine clones no
+        // project, so it takes only the kinds that plan from the board; the
+        // rest waits for a hand.
+        if (o.executor.is_empty() || o.executor == crate::executor::LOCAL_EXECUTOR)
+            && brain_code_none(s)
+        {
+            sql.push_str(&format!(" AND j.kind IN ({})", no_code_kinds_sql()));
         }
         // The work this agent holds first - its clone and conversation carry
         // on only under it; then the owner's work; then the jobs that need

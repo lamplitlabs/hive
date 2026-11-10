@@ -33,6 +33,12 @@ pub(crate) fn reset_self_update() {
 
 pub(crate) struct ResetSelfUpdateGuard;
 
+/// Resets the self-update state now and again when the guard drops.
+pub(crate) fn reset_guard() -> ResetSelfUpdateGuard {
+    reset_self_update();
+    ResetSelfUpdateGuard
+}
+
 impl Drop for ResetSelfUpdateGuard {
     fn drop(&mut self) {
         reset_self_update();
@@ -134,6 +140,8 @@ pub(crate) fn self_update_fixture() -> (
             local_inflight: 0,
             governor: None,
             refused_queued: String::new(),
+            version: String::new(),
+            target: String::new(),
         },
         SelfUpdateFixtureGuards {
             _env: guards,

@@ -1151,7 +1151,9 @@ pub(crate) fn run_job(
         ));
     }
     let root = project.str("path");
-    if !Path::new(&root).join(".git").exists() {
+    // A brain without code (`brain.code none`) may hold no checkout of the
+    // project at all; its runs work in an empty workspace.
+    if !Path::new(&root).join(".git").exists() && !crate::jobs::brain_code_none(s) {
         return Err(cli_err(
             2,
             format!(
