@@ -9,7 +9,7 @@
     "executor": "vm-seven",
     "provider": "copilot",
     "model": "gpt-5.5",
-    "cwd": "/home/owner/.pulse/work/job-auth-fixture",
+    "cwd": "/home/owner/.hive/work/job-auth-fixture",
     "status": "provider_error",
     "exit_status": "provider_error",
     "submission": "",
@@ -22,7 +22,7 @@
     "started_at": "2026-09-11T03:10:00Z",
     "updated_at": "2026-09-11T03:18:00Z",
     "ended_at": "2026-09-11T03:18:00Z",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json",
+    "trajectory": "/home/owner/.hive/harness/run-20260911-004.json",
     "cancel_requested_at": ""
   },
   "steps": [

@@ -5,7 +5,7 @@
 // page already holds; nothing here fetches. Kept free of `@/` imports so
 // `node --test` can load it (home-state.test.mjs).
 import type { ComputeRequest, KpiDay, OwnerQuestion, ProjectCardData, Proposal, RecordRow, WorkSuggestion } from "../../lib/api";
-import type { GateStep } from "../pulse/evolve";
+import type { GateStep } from "../hive/evolve";
 import type { DraftState } from "../records/draft-panel";
 
 // ----- header ---------------------------------------------------------------
@@ -96,7 +96,7 @@ export function attentionRows(
       text: "Runner is paused: nothing new starts",
       action: "Resume",
       fix: { kind: "resume", enabled: daemon.canResume },
-      why: daemon.canResume ? "" : "To resume, open PULSE on the machine that runs it.",
+      why: daemon.canResume ? "" : "To resume, open Hive on the machine that runs it.",
     });
   } else if (daemon.label === "silent") {
     rows.push({
@@ -123,15 +123,15 @@ export function attentionRows(
       text: "Runner status is unknown",
       action: "Runner controls",
       fix: { kind: "link", href: hrefs.settings("daemon") },
-      why: "PULSE can't read the runner's state.",
+      why: "Hive can't read the runner's state.",
     });
   } else if (daemon.setup === "finish" || daemon.setup === "install") {
     // The runner works, but stops when the terminal closes: the machine's own step.
     rows.push({
       id: "service",
       tone: "warning",
-      text: daemon.setup === "finish" ? "The console isn't a background service yet" : "PULSE stops when you close its terminal",
-      action: daemon.setup === "finish" ? "Finish setup" : "Keep PULSE running",
+      text: daemon.setup === "finish" ? "The console isn't a background service yet" : "Hive stops when you close its terminal",
+      action: daemon.setup === "finish" ? "Finish setup" : "Keep Hive running",
       fix: { kind: "service", action: daemon.setup },
       why: "",
     });
@@ -212,7 +212,7 @@ export function runnerKeptRunning(d: AttentionDaemon): boolean {
   return d.label === "running" || d.label === "alive" || d.label === "checking";
 }
 
-// The fix behind the "Keep PULSE running" step: resume a paused runner,
+// The fix behind the "Keep Hive running" step: resume a paused runner,
 // run the service step the machine needs, else the runner's settings.
 export function runningFix(d: AttentionDaemon, settingsHref: (section?: string) => string): AttentionFix {
   if (d.pause === "on") return { kind: "resume", enabled: d.canResume };
@@ -236,13 +236,13 @@ export function setupSteps(s: SetupSnapshot): SetupStep[] {
     {
       id: "project",
       title: "Add a project",
-      note: projectDone ? (s.projects === 1 ? "1 project" : s.projects.toLocaleString("en-US") + " projects") : "Point PULSE at a repository on this Mac",
+      note: projectDone ? (s.projects === 1 ? "1 project" : s.projects.toLocaleString("en-US") + " projects") : "Point Hive at a repository on this Mac",
       done: projectDone,
       action: "Add project",
     },
     {
       id: "running",
-      title: "Keep PULSE running",
+      title: "Keep Hive running",
       note: runningDone ? "The runner is on" : s.daemon.pause === "on" ? "You paused the runner" : s.daemon.setup === "finish" ? "The console isn't a background service yet" : "Run it in the background so it starts with the machine",
       done: runningDone,
       action: s.daemon.pause === "on" ? "Resume" : s.daemon.setup === "finish" ? "Finish setup" : s.daemon.setup === "start" ? "Start runner" : "Keep running",
@@ -258,7 +258,7 @@ export interface HomeDraft {
   r: DraftState;
 }
 
-// A gate step a project waits at (components/pulse/evolve.tsx GateStep).
+// A gate step a project waits at (components/hive/evolve.tsx GateStep).
 export type HomeStep = GateStep;
 
 export interface HomeInboxItems {
@@ -409,7 +409,7 @@ export interface ProjectLine {
   text: string;
   // Marigold when something waits on the owner; "bad" when the project is broken; else quiet.
   tone: "you" | "bad" | "neutral";
-  // The project still runs on the goal PULSE wrote for it: the row shows a
+  // The project still runs on the goal Hive wrote for it: the row shows a
   // "Set goal" link to the project's goal (what the old banner did).
   setGoal?: boolean;
 }

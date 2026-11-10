@@ -5,8 +5,8 @@ import { ArrowDownRightIcon, ArrowUpRightIcon, ChevronDownIcon, MinusIcon, Trend
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Sparkline } from "@/components/pulse/charts";
-import { EmptyState, ErrorNotice, Kpi, KpiGrid, Panel, SkeletonRows } from "@/components/pulse/panel";
+import { Sparkline } from "@/components/hive/charts";
+import { EmptyState, ErrorNotice, Kpi, KpiGrid, Panel, SkeletonRows } from "@/components/hive/panel";
 import { KPI_RANGE_DAYS, KPI_RANGE_LABEL, KPI_RANGES, costText, kpiAutonomyLine, kpiChartRows, kpiFigure, kpiPath, kpiSummaryLine, kpiTokensFigure, kpiTrend, kpiWindow, kpisEmpty, perDayText, tokensText, type KpiChartRow, type KpiDirection, type KpiFigure, type KpiKey, type KpiRange, type KpiTrend } from "@/lib/kpis";
 import { hrefs } from "@/lib/nav";
 import { num } from "@/lib/format";
@@ -18,8 +18,8 @@ type Lens = "work" | "spend" | "autonomy";
 const LENS_LABEL: Record<Lens, string> = { work: "Work", spend: "Spend", autonomy: "Autonomy" };
 const tooltipStyle = { background: "var(--popover)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "0.5rem 0.75rem", color: "var(--popover-foreground)", fontSize: 12, boxShadow: "var(--sh-pop)" };
 const axisTick = { fill: "var(--muted-foreground)", fontSize: 12 };
-const STORAGE = "pulse.home.kpis.range";
-const CHART_STORAGE = "pulse.home.kpis.chart";
+const STORAGE = "hive.home.kpis.range";
+const CHART_STORAGE = "hive.home.kpis.chart";
 
 // The series the chart draws, in a fixed colour slot each (globals.css).
 type BarSeries = { key: Exclude<keyof KpiChartRow, "day" | "label" | "tokens" | "cost">; name: string; color: string };
@@ -211,9 +211,9 @@ export function KpisPanel({ project, height = 200, range: forced }: { project?: 
         <Kpi n={tokensText(tokens.total)} label="Tokens" href={hrefs.harness()} spark={spark(tokens.spark)} sub={cellSub(tokens, "up-bad", range, tokens.total > 0 ? tokensText(figures.prompt_tokens.total) + " in · " + tokensText(figures.completion_tokens.total) + " out" : "")} />
         {priced ? <Kpi n={costText(figures.cost.total)} label="Spent" href={hrefs.harness()} spark={spark(figures.cost.spark)} sub={cellSub(figures.cost, "up-bad", range, "")} /> : null}
       </KpiGrid>
-      <section aria-labelledby="pulse-home-kpis-alone" className="mt-4 min-w-0">
+      <section aria-labelledby="hive-home-kpis-alone" className="mt-4 min-w-0">
         <div className="mb-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <h3 id="pulse-home-kpis-alone" className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">On its own</h3>
+          <h3 id="hive-home-kpis-alone" className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">On its own</h3>
           <p className="min-w-0 text-xs text-muted-foreground anywhere">{kpiAutonomyLine(p, range)}</p>
         </div>
         <KpiGrid className="mb-0 rounded-xl">
@@ -225,13 +225,13 @@ export function KpisPanel({ project, height = 200, range: forced }: { project?: 
         </KpiGrid>
       </section>
       <div className="mt-3 flex justify-end">
-        <Button type="button" variant="ghost" size="sm" onClick={() => setChart(!chart)} aria-expanded={chart} aria-controls="pulse-home-kpis-chart" className="text-muted-foreground">
+        <Button type="button" variant="ghost" size="sm" onClick={() => setChart(!chart)} aria-expanded={chart} aria-controls="hive-home-kpis-chart" className="text-muted-foreground">
           {chart ? "Hide the chart" : "Show the chart"}
           <ChevronDownIcon className={"size-4 transition-transform motion-reduce:transition-none " + (chart ? "rotate-180" : "")} aria-hidden />
         </Button>
       </div>
       {chart ? (
-      <div id="pulse-home-kpis-chart" style={{ height }} className="mt-1 min-w-0" role="img" aria-label={caption}>
+      <div id="hive-home-kpis-chart" style={{ height }} className="mt-1 min-w-0" role="img" aria-label={caption}>
         <ResponsiveContainer width="100%" height="100%">
           {bars ? (
             <BarChart data={rows} margin={{ top: 8, right: 8, left: -16, bottom: 0 }} barCategoryGap="28%">

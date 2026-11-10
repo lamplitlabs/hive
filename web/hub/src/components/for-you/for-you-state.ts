@@ -3,7 +3,7 @@
 // typed lists into rows grouped by kind, filtered by project and ordered by
 // urgency then recency, so node --test can check it without React.
 
-import type { Kind } from "../pulse/kind-tile-state";
+import type { Kind } from "../hive/kind-tile-state";
 
 export type ForYouSection =
   | "decisions"

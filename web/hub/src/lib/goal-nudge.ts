@@ -8,7 +8,7 @@ import type { ProjectCardData } from "./api";
 // One key per project. "dismissed" hides the note until the storage is
 // cleared or the goal becomes the owner's, when the key is removed again so
 // a later reset to the default shows the note once more.
-export const GOAL_NUDGE_PREFIX = "pulse.goal-nudge.";
+export const GOAL_NUDGE_PREFIX = "hive.goal-nudge.";
 export const GOAL_NUDGE_DISMISSED = "dismissed";
 
 export const goalNudgeKey = (slug: string) => GOAL_NUDGE_PREFIX + slug;
@@ -65,4 +65,4 @@ export function dismissGoalNudge(storage: NudgeStorage, slug: string): void {
 
 // What follows the project's name in the note: the project runs on a
 // generated goal, and why setting one matters.
-export const GOAL_NUDGE_WHY = "runs on a generated goal, one PULSE wrote for it. Set your own, so its agents plan, vote and research toward what you want.";
+export const GOAL_NUDGE_WHY = "runs on a generated goal, one Hive wrote for it. Set your own, so its agents plan, vote and research toward what you want.";

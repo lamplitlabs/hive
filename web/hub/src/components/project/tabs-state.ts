@@ -1,7 +1,7 @@
 // The For you tab's pure logic: which questions wait for the owner and which
 // the agents settle themselves, and the words the agents-decided audit uses.
 // No React and no "@/" imports, so node --test covers it
-// (tabs-state.test.mjs) in a clone without node_modules too, the way pulse
+// (tabs-state.test.mjs) in a clone without node_modules too, the way hive
 // evolve measure scores the hub's coverage fixtures. tabs.tsx renders it.
 
 import type { OwnerQuestion } from "../../lib/api";
@@ -45,6 +45,6 @@ export function settledLabel(q: Pick<OwnerQuestion, "decider" | "summary">): str
 // The note beside "Waiting for you": a hub that cannot decide says where to
 // answer; otherwise how many questions the agents are settling, or nothing.
 export function waitingNote(canDecide: boolean, agentsDecided: number): string | undefined {
-  if (!canDecide) return "To answer, open PULSE on the machine that runs it.";
+  if (!canDecide) return "To answer, open Hive on the machine that runs it.";
   return agentsDecided ? plural(agentsDecided, "question") + " the agents are deciding themselves." : undefined;
 }

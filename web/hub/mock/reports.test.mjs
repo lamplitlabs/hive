@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { createReportsMock } from "./reports.mjs";
 
 const fixture = JSON.parse(await readFile(new URL("./api/reports.json", import.meta.url), "utf8"));
-const mock = createReportsMock(fixture, ["demo-app", "pulse", "demo-lib"]);
+const mock = createReportsMock(fixture, ["demo-app", "hive", "demo-lib"]);
 const q = (s = "") => new URLSearchParams(s);
 
 test("mock reports list done tasks newest first in the route's shape", () => {
@@ -22,7 +22,7 @@ test("the fixture's evidence names files the job artifacts mock serves", async (
 });
 
 test("mock reports filter by project, page by limit and validate like the real route", () => {
-  assert.deepEqual(mock.read(q("project=pulse")).body.reports.map((t) => t.id), ["TASK-013"]);
+  assert.deepEqual(mock.read(q("project=hive")).body.reports.map((t) => t.id), ["TASK-013"]);
   const one = mock.read(q("limit=1")).body;
   assert.equal(one.reports.length, 1);
   assert.equal(one.scope.has_more, true);

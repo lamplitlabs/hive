@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { showApiError } from "@/components/pulse/confirm";
-import { Disclosure, Panel } from "@/components/pulse/panel";
-import { Mono, ToneBadge } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { Disclosure, Panel } from "@/components/hive/panel";
+import { Mono, ToneBadge } from "@/components/hive/who";
 import { writes, type ProjectNeeds, type ProjectNeedsMachine } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -20,10 +20,10 @@ import { statusWord } from "@/lib/words";
 
 // Where a project's jobs run. A project says what kind of machine its work
 // needs in a few words - macos and xcode for an iOS app, linux and gpu for a
-// model - and PULSE hands each job only to a machine that offers every
+// model - and Hive hands each job only to a machine that offers every
 // word; the rest of the fleet takes the other projects' work. This panel
 // shows those words, which paired machines fit, and lets the owner change
-// them (`pulse init PATH --needs ...`, or `needs:` in the manifest). Queued
+// them (`hive init PATH --needs ...`, or `needs:` in the manifest). Queued
 // jobs follow a change; a running one keeps its machine.
 
 export const refreshNeeds = (slug: string) => invalidate((p) => p === "projects/" + encodeURIComponent(slug) + "/needs" || p === "projects" || p === "org" || p.startsWith("org?"));
@@ -68,7 +68,7 @@ export function MachinesPanel({ slug, canDecide = true }: { slug: string; canDec
           <p className="text-sm leading-relaxed anywhere">
             {words.length === 0 ? (
               <>
-                <span className="font-medium">Any machine.</span> <span className="text-muted-foreground">This project&apos;s jobs run wherever a worker is free. Say what they need - an operating system, a chip, a tool - and PULSE keeps them to machines that have it.</span>
+                <span className="font-medium">Any machine.</span> <span className="text-muted-foreground">This project&apos;s jobs run wherever a worker is free. Say what they need - an operating system, a chip, a tool - and Hive keeps them to machines that have it.</span>
               </>
             ) : (
               <>
@@ -106,7 +106,7 @@ export function MachinesPanel({ slug, canDecide = true }: { slug: string; canDec
           )}
           <Disclosure summary="Prefer the terminal?">
             <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">
-              From a shell: <Mono>{"pulse init " + slug + " --needs " + (words.length ? words.join(",") : "macos,xcode")}</Mono>, or <Mono>needs:</Mono> in the repository&apos;s <Mono>.pulse/pulse.yaml</Mono>.
+              From a shell: <Mono>{"hive init " + slug + " --needs " + (words.length ? words.join(",") : "macos,xcode")}</Mono>, or <Mono>needs:</Mono> in the repository&apos;s <Mono>.hive/hive.yaml</Mono>.
             </p>
           </Disclosure>
         </div>

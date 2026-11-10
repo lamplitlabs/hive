@@ -7,8 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { OwnerAvatar } from "@/components/pulse/avatar";
-import { showApiError } from "@/components/pulse/confirm";
+import { OwnerAvatar } from "@/components/hive/avatar";
+import { showApiError } from "@/components/hive/confirm";
 import { writes, type Org } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
@@ -41,7 +41,7 @@ export function PresenceSwitch({ className, size = "sm" }: { className?: string;
       invalidatePresence();
     } catch (e) {
       toast.dismiss(id);
-      showApiError(e, "PULSE couldn't change your presence. Try again, or change it in Settings.");
+      showApiError(e, "Hive couldn't change your presence. Try again, or change it in Settings.");
     } finally {
       setBusy(false);
     }

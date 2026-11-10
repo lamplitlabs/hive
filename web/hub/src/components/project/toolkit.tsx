@@ -5,11 +5,11 @@ import { useState } from "react";
 import { BookOpenIcon, ExternalLinkIcon, KeyRoundIcon, Loader2Icon, PenLineIcon, PlugZapIcon, PlusIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { showApiError } from "@/components/pulse/confirm";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { LogoTile } from "@/components/pulse/logo";
-import { Disclosure, Panel } from "@/components/pulse/panel";
-import { Mono, ToneBadge } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { LogoTile } from "@/components/hive/logo";
+import { Disclosure, Panel } from "@/components/hive/panel";
+import { Mono, ToneBadge } from "@/components/hive/who";
 import { McpServerDialog, refreshMcp } from "@/components/connections/mcp-dialogs";
 import { SkillDialog, refreshSkills } from "@/components/connections/skill-dialogs";
 import { writes, type McpAuth, type McpOptions, type McpTransport, type SkillSuggestion, type ToolSuggestion, type ToolkitPayload } from "@/lib/api";
@@ -22,8 +22,8 @@ import { invalidate, useApi } from "@/lib/use-api";
 // tool connection (an MCP server) for a service its manifests name, a skill
 // drafted from its shape (how to set it up, check its UI, ship a release).
 // One row each with the service's mark; a click picks, the detail under the
-// list says what it is and why, and one more click adds it the way `pulse
-// mcp add` or `pulse skill add` would. A tool that needs a secret opens the form instead, filled in,
+// list says what it is and why, and one more click adds it the way `hive
+// mcp add` or `hive skill add` would. A tool that needs a secret opens the form instead, filled in,
 // so the owner adds the secret reference. The daemon asks about the same
 // things on the board, one at a time; a yes there adds it too.
 
@@ -46,24 +46,24 @@ export function ToolkitPanel({ slug, canDecide = true }: { slug: string; canDeci
       ) : count === 0 ? (
         <div className="grid gap-2">
           <p className="text-sm leading-relaxed text-muted-foreground">
-            {slug} has the tools and skills its shape asks for. PULSE reads the checkout again as it changes - a new dependency, a compose file, a UI - and suggests what fits here and on the board.
+            {slug} has the tools and skills its shape asks for. Hive reads the checkout again as it changes - a new dependency, a compose file, a UI - and suggests what fits here and on the board.
           </p>
           <p className="text-[13px] leading-relaxed text-muted-foreground">
             Everything connected is on the{" "}
             <Link href={hrefs.connections({ project: slug })} className="underline decoration-foreground/25 underline-offset-4 hover:decoration-foreground/60">
               Connections
             </Link>{" "}
-            page. From a shell: <Mono>{"pulse toolkit --project " + slug}</Mono>.
+            page. From a shell: <Mono>{"hive toolkit --project " + slug}</Mono>.
           </p>
         </div>
       ) : (
         <div className="grid gap-3">
           <p className="text-sm leading-relaxed text-muted-foreground">
-            From what {slug} shows - its manifests, files and remote - PULSE suggests {count === 1 ? "one thing" : num(count) + " things"} agents could use. Pick a row to read why.
+            From what {slug} shows - its manifests, files and remote - Hive suggests {count === 1 ? "one thing" : num(count) + " things"} agents could use. Pick a row to read why.
           </p>
           <ToolkitGallery project={slug} tools={tools} skills={skills} canDecide={canDecide} />
           <p className="text-[13px] leading-relaxed text-muted-foreground">
-            From a shell: <Mono>{"pulse toolkit --project " + slug}</Mono> shows the same, <Mono>{"pulse toolkit add tool|skill NAME --project " + slug}</Mono> adds one. The daemon asks about these on the board too, one at a time; a yes there adds it, a declined thread rests for a month.
+            From a shell: <Mono>{"hive toolkit --project " + slug}</Mono> shows the same, <Mono>{"hive toolkit add tool|skill NAME --project " + slug}</Mono> adds one. The daemon asks about these on the board too, one at a time; a yes there adds it, a declined thread rests for a month.
           </p>
         </div>
       )}
@@ -182,7 +182,7 @@ function toolForm(t: ToolSuggestion): Partial<McpForm> {
     url: t.url,
     auth: t.auth as McpAuth,
     auth_header: t.auth_header,
-    note: t.about + " Suggested by pulse toolkit for " + t.project + ".",
+    note: t.about + " Suggested by hive toolkit for " + t.project + ".",
   };
 }
 

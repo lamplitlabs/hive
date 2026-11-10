@@ -9,8 +9,8 @@
         "commit": "6d2f1c9a8b7e4f3a2c1d0e9f8a7b6c5d4e3f2a1b"
       },
       "file": {
-        "path": ".pulse/pulse.yaml",
-        "text": "# What PULSE runs for demo-app without being asked.\n# Newer automations live one per file under .pulse/automations/.\nschedules:\n  - name: weekly-tidy\n    title: Weekly tidy\n    every: 1w\n    at: \"06:00\"\n    kind: clean\n    brief: Remove merged branches and stale worktrees; list what you kept and why.\n    paused: true\n",
+        "path": ".hive/hive.yaml",
+        "text": "# What Hive runs for demo-app without being asked.\n# Newer automations live one per file under .hive/automations/.\nschedules:\n  - name: weekly-tidy\n    title: Weekly tidy\n    every: 1w\n    at: \"06:00\"\n    kind: clean\n    brief: Remove merged branches and stale worktrees; list what you kept and why.\n    paused: true\n",
         "entries": [
           {
             "name": "weekly-tidy",
@@ -26,10 +26,10 @@
         "problems": []
       },
       "automations": {
-        "dir": ".pulse/automations",
+        "dir": ".hive/automations",
         "files": [
           {
-            "path": ".pulse/automations/docs-sweep.yaml",
+            "path": ".hive/automations/docs-sweep.yaml",
             "name": "docs-sweep",
             "text": "title: Docs sweep\nevry: 1w\nat: \"05:00\"\nbrief: Find pages of docs/ that name a flag or a command which no longer exists.\n",
             "entry": {
@@ -53,7 +53,7 @@
             ]
           },
           {
-            "path": ".pulse/automations/nightly-audit.yaml",
+            "path": ".hive/automations/nightly-audit.yaml",
             "name": "nightly-audit",
             "text": "title: Nightly dependency audit\nevery: 1d\nat: \"02:00\"\nbrief: |-\n  Audit the dependencies for known advisories and unused entries.\n  Open a task for anything that needs a human.\n",
             "entry": {
@@ -75,7 +75,7 @@
             "problems": []
           },
           {
-            "path": ".pulse/automations/site-check.yaml",
+            "path": ".hive/automations/site-check.yaml",
             "name": "site-check",
             "text": "title: Site is up\nevery: 30m\nkind: check\nscript: scripts/check-site.sh\ntier: 0\n",
             "entry": {
@@ -99,11 +99,11 @@
         ]
       },
       "applied": {
-        "path": ".pulse/pulse.yaml",
+        "path": ".hive/hive.yaml",
         "files": [
-          ".pulse/automations/docs-sweep.yaml",
-          ".pulse/automations/nightly-audit.yaml",
-          ".pulse/automations/site-check.yaml"
+          ".hive/automations/docs-sweep.yaml",
+          ".hive/automations/nightly-audit.yaml",
+          ".hive/automations/site-check.yaml"
         ],
         "commit": "6d2f1c9a8b7e4f3a2c1d0e9f8a7b6c5d4e3f2a1b",
         "at": "2026-09-01T09:10:00Z",
@@ -143,11 +143,11 @@
           "fails": 0,
           "agent": "",
           "skill": "",
-          "origin": "repo:.pulse/automations/nightly-audit.yaml#nightly-audit",
+          "origin": "repo:.hive/automations/nightly-audit.yaml#nightly-audit",
           "every": "1d",
           "every_words": "every day at 02:00 UTC",
           "origin_name": "nightly-audit",
-          "origin_path": ".pulse/automations/nightly-audit.yaml"
+          "origin_path": ".hive/automations/nightly-audit.yaml"
         },
         {
           "id": "SCHED-002",
@@ -178,11 +178,11 @@
           "fails": 2,
           "agent": "",
           "skill": "",
-          "origin": "repo:.pulse/automations/site-check.yaml#site-check",
+          "origin": "repo:.hive/automations/site-check.yaml#site-check",
           "every": "30m",
           "every_words": "every 30 minutes",
           "origin_name": "site-check",
-          "origin_path": ".pulse/automations/site-check.yaml"
+          "origin_path": ".hive/automations/site-check.yaml"
         },
         {
           "id": "SCHED-003",
@@ -200,7 +200,7 @@
           "last_job": "JOB-0361",
           "runs": 2,
           "max_runs": 0,
-          "note": "paused by .pulse/pulse.yaml",
+          "note": "paused by .hive/hive.yaml",
           "created_by": "daemon",
           "created_at": "2026-08-18T09:00:00Z",
           "updated_at": "2026-08-31T09:10:00Z",
@@ -213,11 +213,11 @@
           "fails": 0,
           "agent": "",
           "skill": "",
-          "origin": "repo:.pulse/pulse.yaml#weekly-tidy",
+          "origin": "repo:.hive/hive.yaml#weekly-tidy",
           "every": "1w",
           "every_words": "every week at 06:00 UTC",
           "origin_name": "weekly-tidy",
-          "origin_path": ".pulse/pulse.yaml"
+          "origin_path": ".hive/hive.yaml"
         },
         {
           "id": "SCHED-004",
@@ -305,7 +305,7 @@
       },
       "file": null,
       "automations": {
-        "dir": ".pulse/automations",
+        "dir": ".hive/automations",
         "files": []
       },
       "applied": null,
@@ -366,7 +366,7 @@
       "title": "Make check `scripts/check-site.sh` pass: Site is up",
       "status": "running",
       "agent": "cinder",
-      "branch": "pulse/job-0402",
+      "branch": "hive/job-0402",
       "project": "demo-app",
       "tier": 0,
       "priority": 0,
@@ -382,7 +382,7 @@
       "title": "Make check `scripts/check-site.sh` pass: Site is up",
       "status": "done",
       "agent": "quartz",
-      "branch": "pulse/job-0377",
+      "branch": "hive/job-0377",
       "project": "demo-app",
       "tier": 0,
       "priority": 0,
@@ -399,7 +399,7 @@
       "title": "Weekly dependency bump",
       "status": "done",
       "agent": "iris",
-      "branch": "pulse/job-0410",
+      "branch": "hive/job-0410",
       "project": "demo-app",
       "tier": 1,
       "priority": 0,
@@ -418,7 +418,7 @@
         "at": "2026-08-18T09:00:00Z",
         "actor": "daemon",
         "what": "added",
-        "origin": "repo:.pulse/automations/site-check.yaml#site-check"
+        "origin": "repo:.hive/automations/site-check.yaml#site-check"
       },
       {
         "seq": 1002,
@@ -577,7 +577,7 @@
         "actor": "daemon",
         "what": "updated",
         "changed": ["every"],
-        "origin": "repo:.pulse/automations/site-check.yaml#site-check"
+        "origin": "repo:.hive/automations/site-check.yaml#site-check"
       },
       {
         "seq": 1018,

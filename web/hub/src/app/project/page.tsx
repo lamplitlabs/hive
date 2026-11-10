@@ -8,14 +8,14 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { PageTitle, EmptyState, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
-import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { BrandLogo } from "@/components/pulse/logo";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Avatar, Mono, When } from "@/components/pulse/who";
-import { CommonsLine, ProjectCard } from "@/components/pulse/cards";
+import { PageTitle, EmptyState, SkeletonPage, SkeletonRows } from "@/components/hive/panel";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { BrandLogo } from "@/components/hive/logo";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Avatar, Mono, When } from "@/components/hive/who";
+import { CommonsLine, ProjectCard } from "@/components/hive/cards";
 import { PostSheet, ThreadSheet } from "@/components/board/sheets";
 import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { AddProjectButton, MoveDialog, RemoveDialog, RenameDialog, RestoreButton } from "@/components/project/project-dialogs";
@@ -25,8 +25,8 @@ import { hrefs, PROJECT_TABS, resolveProjectTab, type ProjectCanonicalTab } from
 import { allProjects, projectPath, registeredProjects, type Org, type Overview, type ProjectInfo, type ProjectsPayload, type RegisteredProject, type TasksPayload } from "@/lib/api";
 import { failedJobsPath, type FailedJobsPage } from "@/lib/job-repair";
 import { useApi, useNow } from "@/lib/use-api";
-import { useInbox } from "@/components/pulse/inbox";
-import { gateStep } from "@/components/pulse/evolve";
+import { useInbox } from "@/components/hive/inbox";
+import { gateStep } from "@/components/hive/evolve";
 import { num } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ArchiveIcon, FolderOpenIcon } from "lucide-react";
@@ -148,7 +148,7 @@ function ProjectScreen() {
     const inactive = (reg.data?.projects ?? []).filter((p) => p.status !== "active");
     return (
       <>
-        <PageTitle icon={FolderOpenIcon} sub="Every project PULSE works on. Open one to give its lead agent a task, answer what waits for you and follow its board." actions={<AddProjectButton onRegistered={(r) => setParams({ slug: r.project.slug })} />}>
+        <PageTitle icon={FolderOpenIcon} sub="Every project Hive works on. Open one to give its lead agent a task, answer what waits for you and follow its board." actions={<AddProjectButton onRegistered={(r) => setParams({ slug: r.project.slug })} />}>
           Projects
         </PageTitle>
         {!org.data && org.loading ? (
@@ -169,7 +169,7 @@ function ProjectScreen() {
             {commons ? <CommonsLine c={commons} /> : null}
             {inactive.length ? (
               <section aria-label="Removed projects">
-                <SectionHeading icon={ArchiveIcon} count={inactive.length} note="PULSE no longer works on these. Their posts and history are kept, and you can bring one back.">
+                <SectionHeading icon={ArchiveIcon} count={inactive.length} note="Hive no longer works on these. Their posts and history are kept, and you can bring one back.">
                   Removed projects
                 </SectionHeading>
                 <CardGrid cols={3}>
@@ -199,7 +199,7 @@ function ProjectScreen() {
   const counts: Partial<Record<ProjectCanonicalTab, number>> = card ? { "for-you": forYou, work: openTasks, board: card.threads_open } : {};
   const removed = () => setParams({ slug: null, tab: null, sub: null, thread: null, post: null, task: null });
 
-  // A slug PULSE doesn't know (an old link, a typo, a removed project): say
+  // A slug Hive doesn't know (an old link, a typo, a removed project): say
   // so and offer the way back, instead of six tabs that each fail to load.
   if (!card && !isCommons && org.data) {
     const gone = (reg.data?.projects ?? []).some((p) => p.slug === slug);
@@ -207,7 +207,7 @@ function ProjectScreen() {
       <>
         <PageTitle icon={FolderOpenIcon}>Project not found</PageTitle>
         <EmptyState
-          title={"PULSE doesn't know a project called " + slug}
+          title={"Hive doesn't know a project called " + slug}
           action={
             <Button asChild variant="outline" size="sm">
               <Link href="/project/">All projects</Link>
@@ -256,7 +256,7 @@ function ProjectScreen() {
                   <span>The shared board is for work that touches more than one project. Agents from every project post, ask and vote here.</span>
                 ) : card && !card.present ? (
                   <span className="anywhere">
-                    Its folder <Mono>{card.path}</Mono> is not on this disk, so agents cannot work on it. If it moved or was cloned again, point PULSE to the new folder.
+                    Its folder <Mono>{card.path}</Mono> is not on this disk, so agents cannot work on it. If it moved or was cloned again, point Hive to the new folder.
                   </span>
                 ) : chip ? (
                   <RepoChip chip={chip} head={info.data?.head} />
@@ -300,7 +300,7 @@ function ProjectScreen() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button onClick={() => setNewTask(true)} disabled={!card.present} title={card.present ? undefined : "Point PULSE to the project's folder first."}>
+              <Button onClick={() => setNewTask(true)} disabled={!card.present} title={card.present ? undefined : "Point Hive to the project's folder first."}>
                 <PlusIcon /> New task
               </Button>
             </div>
@@ -518,7 +518,7 @@ function HistoryTab({ slug, value, onValueChange }: { slug: string; value: Histo
   );
 }
 
-// One removed project: PULSE no longer works on it, its history is kept,
+// One removed project: Hive no longer works on it, its history is kept,
 // and Restore brings it back.
 function InactivePick({ p, onRestored }: { p: RegisteredProject; onRestored: (slug: string) => void }) {
   return (
@@ -532,7 +532,7 @@ function InactivePick({ p, onRestored }: { p: RegisteredProject; onRestored: (sl
         <Mono className="text-muted-foreground">{p.path}</Mono>
       </ItemCardMeta>
       <ItemCardActions>
-        <span className="text-[13px] text-muted-foreground">{p.present ? "Restoring adds it back from the same folder." : "Put the folder back first; PULSE can't restore it without it."}</span>
+        <span className="text-[13px] text-muted-foreground">{p.present ? "Restoring adds it back from the same folder." : "Put the folder back first; Hive can't restore it without it."}</span>
         <span className="sm:ml-auto">
           <RestoreButton slug={p.slug} onRestored={(r) => onRestored(r.project.slug)} />
         </span>

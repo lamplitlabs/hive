@@ -3,9 +3,9 @@
 import { ThemeProvider } from "next-themes";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
-import { HeldoutHost } from "@/components/pulse/heldout";
+import { HeldoutHost } from "@/components/hive/heldout";
 
-const toastOffset = { bottom: "var(--pulse-toast-bottom)" };
+const toastOffset = { bottom: "var(--hive-toast-bottom)" };
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -20,7 +20,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         position="bottom-right"
         closeButton
         richColors
-        className="toaster group [--pulse-toast-bottom:calc(5rem+env(safe-area-inset-bottom))] lg:[--pulse-toast-bottom:2rem]"
+        className="toaster group [--hive-toast-bottom:calc(5rem+env(safe-area-inset-bottom))] lg:[--hive-toast-bottom:2rem]"
         offset={toastOffset}
         mobileOffset={toastOffset}
       />

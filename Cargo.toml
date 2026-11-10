@@ -12,37 +12,37 @@ publish = false
 
 [workspace.dependencies]
 # internal crates
-pulse-gitenv = { path = "crates/pulse-gitenv" }
-pulse-hand-core = { path = "crates/pulse-hand-core" }
-pulse-cred = { path = "crates/pulse-cred" }
-pulse-provider = { path = "crates/pulse-provider" }
-pulse-store = { path = "crates/pulse-store" }
-pulse-cli = { path = "crates/pulse-cli" }
-pulse-bus = { path = "crates/pulse-bus" }
-pulse-testutil = { path = "crates/pulse-testutil" }
-pulse-provider-copilot = { path = "crates/pulse-provider-copilot" }
-pulse-provider-fake = { path = "crates/pulse-provider-fake" }
-pulse-provider-openai = { path = "crates/pulse-provider-openai" }
-pulse-provider-anthropic = { path = "crates/pulse-provider-anthropic" }
-pulse-provider-gemini = { path = "crates/pulse-provider-gemini" }
-pulse-records = { path = "crates/pulse-records" }
-pulse-goals = { path = "crates/pulse-goals" }
-pulse-cred-setup = { path = "crates/pulse-cred-setup" }
-pulse-board = { path = "crates/pulse-board" }
-pulse-cred-command = { path = "crates/pulse-cred-command" }
-pulse-harness = { path = "crates/pulse-harness" }
-pulse-tally = { path = "crates/pulse-tally" }
-pulse-tasks = { path = "crates/pulse-tasks" }
-pulse-goals-command = { path = "crates/pulse-goals-command" }
-pulse-ask = { path = "crates/pulse-ask" }
-pulse-codedelivery = { path = "crates/pulse-codedelivery" }
-pulse-evolve = { path = "crates/pulse-evolve" }
-pulse-hooks = { path = "crates/pulse-hooks" }
-pulse-mcp = { path = "crates/pulse-mcp" }
-pulse-runner = { path = "crates/pulse-runner" }
-pulse-inspect = { path = "crates/pulse-inspect" }
-pulse-hub = { path = "crates/pulse-hub" }
-pulse-voice = { path = "crates/pulse-voice" }
+hive-gitenv = { path = "crates/hive-gitenv" }
+hive-hand-core = { path = "crates/hive-hand-core" }
+hive-cred = { path = "crates/hive-cred" }
+hive-provider = { path = "crates/hive-provider" }
+hive-store = { path = "crates/hive-store" }
+hive-cli = { path = "crates/hive-cli" }
+hive-bus = { path = "crates/hive-bus" }
+hive-testutil = { path = "crates/hive-testutil" }
+hive-provider-copilot = { path = "crates/hive-provider-copilot" }
+hive-provider-fake = { path = "crates/hive-provider-fake" }
+hive-provider-openai = { path = "crates/hive-provider-openai" }
+hive-provider-anthropic = { path = "crates/hive-provider-anthropic" }
+hive-provider-gemini = { path = "crates/hive-provider-gemini" }
+hive-records = { path = "crates/hive-records" }
+hive-goals = { path = "crates/hive-goals" }
+hive-cred-setup = { path = "crates/hive-cred-setup" }
+hive-board = { path = "crates/hive-board" }
+hive-cred-command = { path = "crates/hive-cred-command" }
+hive-harness = { path = "crates/hive-harness" }
+hive-tally = { path = "crates/hive-tally" }
+hive-tasks = { path = "crates/hive-tasks" }
+hive-goals-command = { path = "crates/hive-goals-command" }
+hive-ask = { path = "crates/hive-ask" }
+hive-codedelivery = { path = "crates/hive-codedelivery" }
+hive-evolve = { path = "crates/hive-evolve" }
+hive-hooks = { path = "crates/hive-hooks" }
+hive-mcp = { path = "crates/hive-mcp" }
+hive-runner = { path = "crates/hive-runner" }
+hive-inspect = { path = "crates/hive-inspect" }
+hive-hub = { path = "crates/hive-hub" }
+hive-voice = { path = "crates/hive-voice" }
 
 # errors
 anyhow = "1.0"
@@ -59,7 +59,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 regex = "1.13"
 tabwriter = "1.4"
 indexmap = { version = "2.14", features = ["serde"] }
-# the repository's own PULSE file (.pulse/pulse.yaml): pure Rust, no panics on bad input
+# the repository's own Hive file (.hive/hive.yaml): pure Rust, no panics on bad input
 serde-saphyr = { version = "2.0", default-features = false, features = ["deserialize"] }
 # ids, hashing, encoding
 uuid = { version = "1.26", features = ["v4"] }
@@ -74,7 +74,7 @@ rand = "0.10"
 libc = "0.2"
 nix = { version = "0.31", features = ["signal", "process", "fs", "user", "hostname", "term"] }
 signal-hook = "0.4"
-# line editing and history for `pulse harness chat`
+# line editing and history for `hive harness chat`
 rustyline = { version = "18.0", default-features = false, features = ["with-file-history"] }
 which = "8.0"
 walkdir = "2.5"
@@ -105,11 +105,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "blo
 rust-embed = { version = "8.12", features = ["debug-embed"] }
 mime_guess = "2.0"
 # speech to text for the hub's microphone button: NVIDIA Nemotron ASR
-# through ONNX Runtime, which `pulse-voice` downloads at run time and loads
+# through ONNX Runtime, which `hive-voice` downloads at run time and loads
 # dynamically (no native library at build time). Pinned to the release that
-# the runtime version in crates/pulse-voice/src/catalogue.rs was tested with.
+# the runtime version in crates/hive-voice/src/catalogue.rs was tested with.
 parakeet-rs = { version = "=0.4.3", default-features = false, features = ["load-dynamic"] }
-# WAV decoding for the voice routes and `pulse voice transcribe` (already in
+# WAV decoding for the voice routes and `hive voice transcribe` (already in
 # parakeet-rs's tree).
 hound = "3.5"
 # test
@@ -119,14 +119,14 @@ tempfile = "3.27"
 opt-level = 3
 # Thin LTO over 16 codegen units, not fat over one: the daemon rebuilds this
 # profile after every landing on the brain's main (selfupdate.rs), and the
-# fat link of the `pulse` binary alone took 186 s of a 246 s one-crate
+# fat link of the `hive` binary alone took 186 s of a 246 s one-crate
 # rebuild on a 12-core machine at -j6 (the daemon's half-core setting). Thin
 # brings that rebuild to 77 s and a from-scratch one to 142 s, for a binary
 # 38 MB instead of 31; the daemon's time goes to its children and the store,
 # not to its own code, so the smaller binary was buying nothing measured.
 lto = "thin"
 codegen-units = 16
-# Keep unwinding: pulse-runner's daemon, compute and landing workers supervise
+# Keep unwinding: hive-runner's daemon, compute and landing workers supervise
 # their ticks with catch_unwind/resume_unwind; abort would turn a caught panic
 # into a process exit.
 panic = "unwind"
@@ -142,6 +142,6 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
-# Dependencies carry no debuginfo. This is also what the PULSE verify command
+# Dependencies carry no debuginfo. This is also what the Hive verify command
 # builds with (CARGO_PROFILE_DEV_DEBUG=0), so both share one set of artifacts.
 debug = false

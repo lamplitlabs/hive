@@ -5,13 +5,13 @@ screen - the owner should not have to build the branch to see it. The agent
 shows it instead: a picture of each changed screen as it was before the
 change and one as it is after, a "Was" and a "Now" line for each, the checks
 it ran and where the work stands, on one page the hub serves beside the job
-or the session. PULSE builds that page itself (`pulse report`), so every
+or the session. Hive builds that page itself (`hive report`), so every
 agent's report reads the same, and `landing.ui_report` decides what a change
 without one costs.
 
 Every other piece of work gets a report too: once a job or a session is
-done, PULSE builds the same page from what it knows of the work (see
-[PULSE's report](#pulses-report-for-every-job-and-session)), and the console
+done, Hive builds the same page from what it knows of the work (see
+[Hive's report](#hives-report-for-every-job-and-session)), and the console
 shows it to the owner by itself.
 
 ## What the agent does
@@ -21,15 +21,15 @@ ask for it in this order:
 
 1. **Before** changing a screen, picture it as it is: run the project's dev
    server or test harness and save `before-<screen>.png` in
-   `$PULSE_ARTIFACTS` at 1440x900, plus 390x844 for a screen people open on
+   `$HIVE_ARTIFACTS` at 1440x900, plus 390x844 for a screen people open on
    a phone, plus the dark theme when the change touches colour.
 2. **After** the change, the same screens the same way as
    `after-<screen>.png`.
-3. **`report.json`** beside them, then **`pulse report`**, which builds
+3. **`report.json`** beside them, then **`hive report`**, which builds
    `report.html` there and names anything missing; the agent runs it until
    it names nothing and names `report.html` in its summary.
 
-`pulse report --example` prints the manifest's shape:
+`hive report --example` prints the manifest's shape:
 
 ```json
 {
@@ -59,7 +59,7 @@ A change names one pair (`before`, `after`) and any number of labelled
 serves no subfolders), and they are read by their first bytes: PNG, JPEG,
 WebP, GIF or AVIF. A field the manifest does not know is an error that names
 it. Two pictures that are byte for byte the same are shown with a note that
-the screen did not change. `pulse report --check` says what the report shows
+the screen did not change. `hive report --check` says what the report shows
 without writing the page, `--dir` points it at another folder, and `--json`
 prints the result for a script. The command needs no store, so it runs on a
 remote hand too.
@@ -72,7 +72,7 @@ shows it full size; going back returns to the page.
 ## What a change without one costs
 
 `landing.ui_report` (default `require`) is set for the machine, and for one
-project with `landing.ui_report.<slug>` (`pulse settings set
+project with `landing.ui_report.<slug>` (`hive settings set
 landing.ui_report.web warn`); forgetting a project removes its setting. A
 change counts as having a face when the branch touches a `.tsx`, `.jsx`,
 `.vue`, `.svelte`, `.astro`, `.html` or stylesheet file, an Android layout,
@@ -86,19 +86,19 @@ shows the change when at least one pair has both pictures in the folder.
 | A worker that finished without one | gets one more turn of its session, for the report alone (up to 20 minutes; its branch is already taken, so nothing it commits then lands) | - | - |
 | A local landing (no upstream) | holds the branch, looks again every 30 minutes and lands it once the report shows the change; you are asked once | lands, and the landing post says it has no report | lands |
 | A pull request | is yours to merge: the review's reasons name the missing report ([The complexity rule](review.md#the-complexity-rule)) | the reviewer merges it as usual | the reviewer merges it as usual |
-| A session's branch | its pull request waits: the session is woken once with what to do, and the pull request opens when the report shows the change, or after an hour for you to merge; `pulse land --branch` from the session's agent says the same and proposes nothing | opens as usual | opens as usual |
+| A session's branch | its pull request waits: the session is woken once with what to do, and the pull request opens when the report shows the change, or after an hour for you to merge; `hive land --branch` from the session's agent says the same and proposes nothing | opens as usual | opens as usual |
 
 Where nothing can be shown, nothing waits: a job that ran on a remote hand
 (no folder the hub serves; its summary describes the screen instead), an
 experiment's `evolve/` branch, a branch you land or propose by hand
-(`pulse land --project <slug> --branch <branch>` from your own shell), and an
+(`hive land --project <slug> --branch <branch>` from your own shell), and an
 archived session.
 
-## PULSE's report for every job and session
+## Hive's report for every job and session
 
-`report.html` in the work's folder is PULSE's page of the whole piece of
-work, built by the hub (`crates/pulse-runner/src/work_report.rs`, the page in
-`crates/pulse-harness/src/report.rs` `build_full`):
+`report.html` in the work's folder is Hive's page of the whole piece of
+work, built by the hub (`crates/hive-runner/src/work_report.rs`, the page in
+`crates/hive-harness/src/report.rs` `build_full`):
 
 - **Where it stands**, first and in words: merged as pull request #N, landed
   on the default branch, in review, held and why, done with nothing landed,
@@ -111,7 +111,7 @@ work, built by the hub (`crates/pulse-runner/src/work_report.rs`, the page in
 - **The before/after pairs** of `report.json`, as above, and **every other
   picture** in the folder under Screenshots.
 - **What changed**: the commits - a job's are the ones that carry its
-  `Pulse-Job:` trailer, so the list holds after the branch is gone; a
+  `Hive-Job:` trailer, so the list holds after the branch is gone; a
   session's come from its branch or its pull request's merge - and the files
   they changed with the lines added and removed.
 - **The checks**: the agent's, and the verify step the landing ran.
@@ -121,7 +121,7 @@ work, built by the hub (`crates/pulse-runner/src/work_report.rs`, the page in
 The hub builds the page the first time a finished job's folder or a finished
 session is listed without one, and again each time the page is opened, so it
 says where the work stands now rather than where it stood. An agent's own
-`pulse report` writes the same file without PULSE's part; the next opening
+`hive report` writes the same file without Hive's part; the next opening
 puts it back.
 
 ## Where the owner sees it
@@ -144,6 +144,6 @@ puts it back.
 - The page itself lists the files of the job's or the session's folder like
   any other artifact, so it also opens on the canvas.
 
-The folder is `PULSE_HOME/work/jobs/<job>/artifacts` for a job and
-`PULSE_HOME/work/chat/<id>/artifacts` for a session; a job's folder is kept
+The folder is `HIVE_HOME/work/jobs/<job>/artifacts` for a job and
+`HIVE_HOME/work/chat/<id>/artifacts` for a session; a job's folder is kept
 `daemon.artifact_keep_days` after the job finishes.

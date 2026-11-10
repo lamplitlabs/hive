@@ -10,7 +10,7 @@
 // next-themes sets the theme, so a reload never shows the wide sidebar for a
 // frame and then folds it.
 
-export const SIDEBAR_KEY = "pulse.sidebar";
+export const SIDEBAR_KEY = "hive.sidebar";
 export const SIDEBAR_COLLAPSED = "collapsed";
 export const SIDEBAR_CLASS = "sidebar-collapsed";
 

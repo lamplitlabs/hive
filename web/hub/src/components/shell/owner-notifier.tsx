@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { buildInbox, useInboxSources } from "@/components/pulse/inbox";
+import { buildInbox, useInboxSources } from "@/components/hive/inbox";
 import type { ChatListResponse } from "@/lib/api";
 import {
   CHIME_GAIN,
@@ -29,7 +29,7 @@ import { load, useApi } from "@/lib/use-api";
 
 // The owner's notifications: mounted once in the shell, it watches what the
 // "For you" count watches plus the chat list, and tells the owner - a note on
-// the page while it is in front, the browser's notification (or PULSE.app's
+// the page while it is in front, the browser's notification (or Hive.app's
 // Mac notification) behind - with a chime. What counts, what is new and the
 // wording live in lib/owner-notify.ts; this file owns the browser.
 //
@@ -83,9 +83,9 @@ export function setNotifyPrefs(next: NotifyPrefs) {
   listeners.forEach((l) => l());
 }
 
-// ----- PULSE.app ------------------------------------------------------------
+// ----- Hive.app ------------------------------------------------------------
 
-// PULSE.app (apps/macos) registers this handler for the console's own page:
+// Hive.app (apps/macos) registers this handler for the console's own page:
 // it posts Mac notifications and answers what macOS allows. A browser has none.
 interface AppHandler {
   postMessage(message: unknown): unknown;
@@ -94,7 +94,7 @@ interface AppHandler {
 export function appNotifier(): AppHandler | null {
   if (typeof window === "undefined") return null;
   const w = window as unknown as { webkit?: { messageHandlers?: Record<string, AppHandler | undefined> } };
-  return w.webkit?.messageHandlers?.pulseNotify ?? null;
+  return w.webkit?.messageHandlers?.hiveNotify ?? null;
 }
 
 // The app's answer: WebKit returns a promise for a handler that replies.
@@ -107,9 +107,9 @@ function toApp(app: AppHandler, message: Record<string, unknown>): Promise<unkno
 }
 
 // What may notify here: the browser's Notification.permission, or what macOS
-// allows PULSE.app ("granted", "denied" or "default" for not asked yet).
+// allows Hive.app ("granted", "denied" or "default" for not asked yet).
 // `ask` asks the owner when nobody asked yet; call it from a click.
-// What macOS lets PULSE.app do, as the app last said.
+// What macOS lets Hive.app do, as the app last said.
 let appPermission = "default";
 
 export async function notifyPermission(ask: boolean): Promise<string> {
@@ -193,7 +193,7 @@ function watching(): { chat?: string; task?: string } | null {
 function exclusive(run: () => void) {
   const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
   if (!locks) return run();
-  void locks.request("pulse.notify", async () => run()).catch(() => undefined);
+  void locks.request("hive.notify", async () => run()).catch(() => undefined);
 }
 
 export function OwnerNotifier() {
@@ -227,7 +227,7 @@ export function OwnerNotifier() {
     live.current = { prefs, router };
   }, [prefs, router]);
 
-  // What PULSE.app may do, asked once notifications are on and again
+  // What Hive.app may do, asked once notifications are on and again
   // whenever the owner comes back (they may have changed it in System Settings).
   useEffect(() => {
     if (!on || !appNotifier()) return;

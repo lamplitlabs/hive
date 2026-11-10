@@ -8,10 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { MicButton, useDictation } from "@/components/chat/mic";
-import { showApiError } from "@/components/pulse/confirm";
-import { Markdown } from "@/components/pulse/markdown";
-import { EmptyState } from "@/components/pulse/panel";
-import { Avatar, ToneBadge, When } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { Markdown } from "@/components/hive/markdown";
+import { EmptyState } from "@/components/hive/panel";
+import { Avatar, ToneBadge, When } from "@/components/hive/who";
 import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
 import { JobEvidence, JobReportLink } from "@/components/chat/job-evidence";
 import { cn } from "@/lib/utils";
@@ -22,7 +22,7 @@ import { invalidate, useNow } from "@/lib/use-api";
 import { Ago } from "@/components/tasks/task-work";
 import { isOwner, isReport, taskMessageLine, taskMessageState } from "@/lib/task-message-status";
 
-const SEEN_KEY = "pulse.chat.seen";
+const SEEN_KEY = "hive.chat.seen";
 
 function readSeen(): Record<string, string> {
   try {

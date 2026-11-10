@@ -3,9 +3,9 @@
 # with their own maintainers.
 #
 # Control-plane records (decisions, plans, constitution, evaluators, board)
-# live in the PULSE store, not in the tree; the loop's immutable paths are the
+# live in the Hive store, not in the tree; the loop's immutable paths are the
 # store schema, the web console, and this folder.
 
-/crates/pulse-store/                 @manishtiwari25
+/crates/hive-store/                 @manishtiwari25
 /web/hub/                            @manishtiwari25
 /.github/                            @manishtiwari25

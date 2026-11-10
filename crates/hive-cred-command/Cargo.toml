@@ -1,0 +1,23 @@
+[package]
+name = "hive-cred-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: the hive cred command"
+
+[dependencies]
+hive-cli.workspace = true
+hive-cred.workspace = true
+hive-cred-setup.workspace = true
+hive-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true
+rusqlite.workspace = true

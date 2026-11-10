@@ -49,19 +49,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { DataTable, type Column } from "@/components/pulse/data-table";
-import { FilterChip } from "@/components/pulse/filter-chip";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { BrandLogo, logoFor } from "@/components/pulse/logo";
-import { Markdown } from "@/components/pulse/markdown";
-import { PageHeader } from "@/components/pulse/page-header";
-import { Disclosure, EmptyState, ErrorNotice, Kv, Notice, SkeletonRows } from "@/components/pulse/panel";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
-import { StatusBadge, StatusIcon } from "@/components/pulse/status-badge";
-import { Avatar, When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { DataTable, type Column } from "@/components/hive/data-table";
+import { FilterChip } from "@/components/hive/filter-chip";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { BrandLogo, logoFor } from "@/components/hive/logo";
+import { Markdown } from "@/components/hive/markdown";
+import { PageHeader } from "@/components/hive/page-header";
+import { Disclosure, EmptyState, ErrorNotice, Kv, Notice, SkeletonRows } from "@/components/hive/panel";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { SidePanel, useOpenItem } from "@/components/hive/side-panel";
+import { StatusBadge, StatusIcon } from "@/components/hive/status-badge";
+import { Avatar, When } from "@/components/hive/who";
 import type { HarnessModel, HarnessModelsResponse, HarnessSession, HarnessSessionResponse, HarnessSessionStatus, HarnessSessionsResponse, HarnessStep, JobArtifactsResponse, ProjectsPayload } from "@/lib/api";
 import { api, apiHref, enc, errorText, jobArtifactHref, jobArtifactsPath, projectLabel, query, writes } from "@/lib/api";
 import { hasReportPage, REPORT_PAGE, REPORT_WORD as SEE_REPORT, reportTip } from "@/components/chat/job-evidence-state";
@@ -141,11 +141,11 @@ function endSentence(session: HarnessSession, fallback: string): string {
     case "provider_error":
       return "Stopped early: the model provider returned an error.";
     case "not_logged_in":
-      return "Stopped early: PULSE is not signed in to the model provider.";
+      return "Stopped early: Hive is not signed in to the model provider.";
     case "cancelled":
       return "Cancelled before it finished.";
     case "lost":
-      return "PULSE lost track of this run before it ended.";
+      return "Hive lost track of this run before it ended.";
     default:
       return fallback ? fallback.charAt(0).toUpperCase() + fallback.slice(1) : "Ended.";
   }
@@ -283,7 +283,7 @@ export const STEP_LABEL: Record<string, string> = {
   task: "Worked the task board",
   hook: "Ran one of your hooks",
   observation: "What came back",
-  note: "Note from PULSE",
+  note: "Note from Hive",
   error: "Something went wrong",
   exit: "How it ended",
 };
@@ -643,7 +643,7 @@ function LiveRuns({ rows, models, selected, onOpen, onDone }: { rows: HarnessSes
         {rows.map((r) => (
           <ListRow
             key={r.id}
-            lead={r.agent ? <Avatar seed={r.agent} size={28} /> : <ProjectAvatar slug={r.project || "pulse"} size={20} />}
+            lead={r.agent ? <Avatar seed={r.agent} size={28} /> : <ProjectAvatar slug={r.project || "hive"} size={20} />}
             title={r.job_title || r.job_id}
             // On a phone the meta line keeps what fits one thumb's width -
             // project, steps and the time so far (the row's time column is
@@ -1069,7 +1069,7 @@ function RunPanel({ id, models, projects, onClose }: { id: string | null; models
             ? "Run " + id
             : undefined
       }
-      lead={s ? <ProjectAvatar slug={s.project || "pulse"} name={project?.name} size={20} /> : undefined}
+      lead={s ? <ProjectAvatar slug={s.project || "hive"} name={project?.name} size={20} /> : undefined}
       actions={
         d ? (
           <>
@@ -1230,7 +1230,7 @@ export function HarnessPageClient() {
       </div>
       {sessions.error && !sessions.data ? (
         <ErrorNotice error={sessions.error} onRetry={() => void sessions.reload()}>
-          {"The list of runs didn't load (" + sessions.error + "). Check that PULSE is running, then try again."}
+          {"The list of runs didn't load (" + sessions.error + "). Check that Hive is running, then try again."}
         </ErrorNotice>
       ) : null}
       {!sessions.data ? (
@@ -1307,7 +1307,7 @@ export function HarnessPageClient() {
   );
 }
 
-// The run's job left a before/after report (`pulse report`): an icon in the
+// The run's job left a before/after report (`hive report`): an icon in the
 // panel's actions opens it in a new tab. A job the hub does not know, or a
 // folder without the page, shows nothing.
 function RunReportButton({ jobId }: { jobId: string }) {

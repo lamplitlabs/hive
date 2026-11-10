@@ -120,11 +120,11 @@ test("see-all names the count only when more wait than the column shows", () => 
 });
 
 test("an item's project falls back to the brain for board-wide proposals and questions", () => {
-  assert.equal(itemProject({ kind: "proposal", key: "", at: "", p: { id: "p" } }, "pulse"), "pulse");
-  assert.equal(itemProject({ kind: "proposal", key: "", at: "", p: { id: "p", slug: "demo" } }, "pulse"), "demo");
-  assert.equal(itemProject({ kind: "question", key: "", at: "", q: { id: "q", slug: "" } }, "pulse"), "pulse");
-  assert.equal(itemProject({ kind: "decision", key: "", at: "", r: { id: "ADR-1", project: "demo" } }, "pulse"), "demo");
-  assert.equal(itemProject({ kind: "step", key: "", at: "", step: { kind: "k", slug: "demo", title: "", label: "" } }, "pulse"), "demo");
+  assert.equal(itemProject({ kind: "proposal", key: "", at: "", p: { id: "p" } }, "hive"), "hive");
+  assert.equal(itemProject({ kind: "proposal", key: "", at: "", p: { id: "p", slug: "demo" } }, "hive"), "demo");
+  assert.equal(itemProject({ kind: "question", key: "", at: "", q: { id: "q", slug: "" } }, "hive"), "hive");
+  assert.equal(itemProject({ kind: "decision", key: "", at: "", r: { id: "ADR-1", project: "demo" } }, "hive"), "demo");
+  assert.equal(itemProject({ kind: "step", key: "", at: "", step: { kind: "k", slug: "demo", title: "", label: "" } }, "hive"), "demo");
 });
 
 test("a project's line says what waits, else what is wrong, else when it last moved", () => {

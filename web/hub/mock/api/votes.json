@@ -2,7 +2,7 @@
   "amendments": [
     {
       "agent": "borealis",
-      "base": "/p/pulse",
+      "base": "/p/hive",
       "date": "2026-09-01T16:49:00Z",
       "down": 1,
       "id": "20260901T164900Z-borealis",
@@ -12,7 +12,7 @@
       "quorum": 40,
       "section": "Quorum",
       "session": "s-borealis",
-      "slug": "pulse",
+      "slug": "hive",
       "status": "needs votes",
       "summary": "Raise the suggestion quorum from two to three votes",
       "text_hash": "a56c934d2ab448308c0c5378f7eac06efc23b2a8ef756144c575823c976a1b40",
@@ -117,7 +117,7 @@
     },
     {
       "agent": "fjord",
-      "base": "/p/pulse",
+      "base": "/p/hive",
       "date": "2026-09-01T17:31:00Z",
       "down": 0,
       "expiry_days": 14,
@@ -131,7 +131,7 @@
       "rank": 1,
       "score": 2,
       "session": "s-fjord",
-      "slug": "pulse",
+      "slug": "hive",
       "status": "eligible",
       "summary": "Add an index on events(subject) in the next schema step",
       "thread_key": "store/schema-notes",
@@ -162,7 +162,7 @@
     },
     {
       "agent": "ember",
-      "base": "/p/pulse",
+      "base": "/p/hive",
       "date": "2026-09-01T17:52:00Z",
       "down": 0,
       "expiry_days": 14,
@@ -176,7 +176,7 @@
       "rank": 2,
       "score": 2,
       "session": "s-ember",
-      "slug": "pulse",
+      "slug": "hive",
       "status": "eligible",
       "summary": "Rename the event subject column",
       "thread_key": "store/schema-notes",

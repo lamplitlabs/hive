@@ -9,7 +9,7 @@ import type { Runner } from "./api";
 
 export const CAP_WARNING_TAIL = "no new run starts until midnight UTC. Set 0 for no cap.";
 
-// Mirrors daily_cap in crates/pulse-runner/src/run.rs: empty, 0, none, off
+// Mirrors daily_cap in crates/hive-runner/src/run.rs: empty, 0, none, off
 // and unlimited mean no cap; a non-negative whole number is the cap. Anything
 // else (which the store refuses to save anyway) is null, so nothing warns on
 // a half-typed value.

@@ -3,7 +3,7 @@
     {
       "agent": "",
       "attempts": 0,
-      "branch": "pulse/cinder/job-20260901T190200Z-87e2d1",
+      "branch": "hive/cinder/job-20260901T190200Z-87e2d1",
       "brief": "Cover the race where the test reads the total before the async price lookup has updated the page.",
       "created_at": "2026-09-01T19:02:00Z",
       "created_by": "demo-app-lead",

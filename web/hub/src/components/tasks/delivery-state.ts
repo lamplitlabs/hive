@@ -1,5 +1,5 @@
 // Where a task's code stands, as one line: each task gets one pull request
-// (branch pulse/task-<id>) that the reviewer agent reads; it merges the
+// (branch hive/task-<id>) that the reviewer agent reads; it merges the
 // simple ones itself and hands the rest to the owner, who presses Merge.
 // Older work can still carry the landing states (landed, pushed, pr, asked,
 // waiting). Pure, so node --test can check it.

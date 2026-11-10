@@ -8,17 +8,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DataTable } from "@/components/pulse/data-table";
-import { FilterChip } from "@/components/pulse/filter-chip";
-import { RowSkeleton } from "@/components/pulse/list-row";
-import { PageHeader } from "@/components/pulse/page-header";
-import { EmptyState, ErrorNotice, SkeletonPage } from "@/components/pulse/panel";
-import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
-import { useViewMode } from "@/components/pulse/view-toggle";
+import { DataTable } from "@/components/hive/data-table";
+import { FilterChip } from "@/components/hive/filter-chip";
+import { RowSkeleton } from "@/components/hive/list-row";
+import { PageHeader } from "@/components/hive/page-header";
+import { EmptyState, ErrorNotice, SkeletonPage } from "@/components/hive/panel";
+import { SidePanel, useOpenItem } from "@/components/hive/side-panel";
+import { useViewMode } from "@/components/hive/view-toggle";
 import { RECORD_COLUMNS, RecordBody, RecordCards, RecordGroups, TIER_KINDS, kindLabel, kindWord } from "@/components/records/records";
 import { OWNER_KINDS, waitsOnYou } from "@/components/records/records-state";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { kindFor } from "@/components/pulse/kind-tile-state";
+import { KindTile } from "@/components/hive/kind-tile";
+import { kindFor } from "@/components/hive/kind-tile-state";
 import { awaitsDecision } from "@/components/records/decide-record";
 import { projectLabel, registeredProjects, RECORD_KINDS, type Org, type RecordsPayload } from "@/lib/api";
 import { plural, sentence } from "@/lib/format";
@@ -150,7 +150,7 @@ function RecordsScreen() {
               <FilterChip
                 active={showFramework && !kind}
                 count={q.data ? frameworkCount : undefined}
-                title={showFramework ? "Hide the guides PULSE comes with" : "Show the guides PULSE comes with: workflows, skills, prompts, templates and more"}
+                title={showFramework ? "Hide the guides Hive comes with" : "Show the guides Hive comes with: workflows, skills, prompts, templates and more"}
                 onClick={() => setParams(showFramework ? { fw: null, kind: kind && !OWNER_KINDS.includes(kind) ? null : kind } : { fw: "1" })}
               >
                 Built-in guides

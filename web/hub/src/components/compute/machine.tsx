@@ -6,11 +6,11 @@ import { AlertTriangleIcon, GitMergeIcon, ServerIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { LogoTile } from "@/components/pulse/logo";
-import { Disclosure, EmptyState, Kv, Notice, Panel, SkeletonRows } from "@/components/pulse/panel";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { LogoTile } from "@/components/hive/logo";
+import { Disclosure, EmptyState, Kv, Notice, Panel, SkeletonRows } from "@/components/hive/panel";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { When } from "@/components/hive/who";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, statusTone, type Tone } from "@/lib/format";
 import { statusWord } from "@/lib/words";
@@ -147,7 +147,7 @@ type Row = [React.ReactNode, React.ReactNode];
 
 const sentence = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
-// The `pulse status` hygiene line ("last sweep <at>: removed …; held branch 3,
+// The `hive status` hygiene line ("last sweep <at>: removed …; held branch 3,
 // worktree 1") in words: how much is kept and when the last cleanup ran.
 function hygieneLeftovers(h: string | undefined, now: number): { count: number; text: string } {
   if (!h) return { count: 0, text: "Nothing left behind" };
@@ -233,7 +233,7 @@ export function ExecutorRow({ e, action }: { e: Executor; action?: React.ReactNo
           <span className={cn("font-medium", tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : tone === "you" ? "text-you-ink" : "text-foreground/80")}>{statusWord(e.status)}</span>
           <span>{slots}</span>
           {projects ? <span className="anywhere">{"Only " + projects}</span> : null}
-          {offers && offers !== "-" ? <span className="anywhere" title="What this machine offers; a project asks for these words in its .pulse/pulse.yaml needs:">{"Offers " + offers.split(" ").join(", ")}</span> : null}
+          {offers && offers !== "-" ? <span className="anywhere" title="What this machine offers; a project asks for these words in its .hive/hive.yaml needs:">{"Offers " + offers.split(" ").join(", ")}</span> : null}
           {reserved ? <span className="text-foreground/80" title="Takes only the jobs that need something it offers">Reserved for the work that needs it</span> : null}
           {e.kind === "local" ? (
             <Link href={hrefs.settings("daemon")} className="underline decoration-foreground/25 underline-offset-4 hover:decoration-foreground/60" title="Settings → This machine: what it offers, and whether it is reserved for the work that needs it">
@@ -293,7 +293,7 @@ export function MachineCard({ e, provider, host, action, className }: { e: Execu
       </div>
       <Meter label="Slots" pct={slots.pct} text={slots.text} title={slots.total ? plural(slots.used, "slot") + " in use of " + slots.total : "This machine has no agent slots"} />
       {labels.length || reserved ? (
-        <ul className="flex min-w-0 flex-wrap gap-1" aria-label="Offers" title="What this machine offers; a project asks for these words in its .pulse/pulse.yaml needs:">
+        <ul className="flex min-w-0 flex-wrap gap-1" aria-label="Offers" title="What this machine offers; a project asks for these words in its .hive/hive.yaml needs:">
           {labels.map((l) => (
             <li key={l}>
               <Badge variant="secondary" shape="chip">

@@ -8,10 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { showApiError } from "@/components/pulse/confirm";
-import { Panel } from "@/components/pulse/panel";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Mono, When } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { Panel } from "@/components/hive/panel";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Mono, When } from "@/components/hive/who";
 import { RoleMascot } from "@/components/project/lead-mascots";
 import { writes, type Lead, type LeadGap, type LeadInput, type LeadRole, type LeadsPayload } from "@/lib/api";
 import { num, plural } from "@/lib/format";
@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 
 // The seats on a project: one lead per concern (the twelve built-in roles,
 // or a word of the owner's), each sitting at its cadence under its brief.
-// The panel lists who sits, offers the seats PULSE suggests from what the
+// The panel lists who sits, offers the seats Hive suggests from what the
 // project shows, and opens a gallery of the rest - one illustrated card per
 // role - where a click picks a seat and one more seats it. The last card
 // takes a role of the owner's own: a word, a title, a brief, a cadence.
@@ -87,7 +87,7 @@ export function LeadsPanel({ slug, canDecide = true }: { slug: string; canDecide
           )}
           {suggestions.length ? (
             <div className="grid gap-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">PULSE suggests</p>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Hive suggests</p>
               {suggestions.map((g) => (
                 <GapRow key={g.role} gap={g} busy={busy === "seat:" + g.role} canDecide={canDecide} onSeat={() => seat({ project: slug, role: g.role }, g.title)} />
               ))}
@@ -106,7 +106,7 @@ export function LeadsPanel({ slug, canDecide = true }: { slug: string; canDecide
             />
           ) : (
             <p className="text-[13px] leading-relaxed text-muted-foreground">
-              From a shell: <Mono>{"pulse lead add --project " + slug + " --role <role>"}</Mono>
+              From a shell: <Mono>{"hive lead add --project " + slug + " --role <role>"}</Mono>
               {" - a built-in role by its name, or a word of your own with "}
               <Mono>{"--title '…' --brief '…'"}</Mono>.
             </p>
@@ -309,7 +309,7 @@ function SeatGallery({ slug, roles, suggested, busy, onClose, onSeat }: { slug: 
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[13px] text-muted-foreground">
-              The same as <Mono>{"pulse lead add --project " + slug + " --role " + (wordOk ? word.trim() : "<word>") + " --title '…' --brief '…' --every " + every}</Mono>
+              The same as <Mono>{"hive lead add --project " + slug + " --role " + (wordOk ? word.trim() : "<word>") + " --title '…' --brief '…' --every " + every}</Mono>
             </p>
             <Button size="sm" type="submit" disabled={busy || !customOk}>
               {busy ? <Loader2Icon className="animate-spin" /> : <CheckIcon />} {title.trim() || word.trim() ? "Seat the " + customTitle.toLowerCase() : "Seat this lead"}
@@ -341,7 +341,7 @@ function RoleCard({ index, role, title, every, picked, suggested, custom, onPick
             <CheckIcon className="size-3" />
           </span>
         ) : suggested ? (
-          <span className="absolute top-2 right-2 flex size-5 items-center justify-center rounded-full bg-you text-you-ink" title="PULSE suggests this seat" aria-label="Suggested">
+          <span className="absolute top-2 right-2 flex size-5 items-center justify-center rounded-full bg-you text-you-ink" title="Hive suggests this seat" aria-label="Suggested">
             <SparklesIcon className="size-3" />
           </span>
         ) : custom ? (

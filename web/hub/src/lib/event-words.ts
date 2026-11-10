@@ -2,7 +2,7 @@
 // as after the actor's name ("daemon found pull request #41 conflicts with
 // main"), and the second line some events carry. Pure: no React and no
 // runtime imports, so node --test can load it (the -state.ts pattern);
-// components/pulse/live-feed.tsx renders it. The few sentences that need the
+// components/hive/live-feed.tsx renders it. The few sentences that need the
 // setting labels or the status words stay there.
 import type { StoreEvent } from "./api";
 
@@ -46,7 +46,7 @@ export const VERB: Record<string, string> = {
   "job.done": "finished a job",
   "job.failed": "stopped a job that failed",
   "job.cancelled": "cancelled a job",
-  // pulse-board jobs.rs and the runner's recover.rs: a job that ended badly
+  // hive-board jobs.rs and the runner's recover.rs: a job that ended badly
   // was tried again; the outcome picks the sentence (RECOVERED).
   "job.recover": "picked up a job that ended badly",
   // yield_lane.rs: a fleet run held so your own queued job gets its place.
@@ -101,7 +101,7 @@ export const VERB: Record<string, string> = {
   "daemon.slow-stage": "took longer than planned on one step of its pass",
   // awake.rs: the computer slept; runs in flight lost that time.
   "daemon.slept": "noticed the computer was asleep",
-  // The self-improvement loop (pulse-evolve): a fixture is one measurement
+  // The self-improvement loop (hive-evolve): a fixture is one measurement
   // the loop scores every experiment with.
   "evolution.archived": "recorded the result of an improvement experiment",
   "evolution.feedback": "asked an agent to reflect on a finished improvement experiment",
@@ -120,7 +120,7 @@ export const VERB: Record<string, string> = {
   "evolution.records.seed_failed": "could not write the improvement loop\u2019s rules and evaluators",
   "evolution.fleet.prepared": "prepared workspaces for an improvement experiment",
   "evolution.fleet.cleaned": "cleared away an improvement experiment\u2019s workspaces",
-  // Schedules (pulse-tasks schedules.rs): a repeating job, check or watch.
+  // Schedules (hive-tasks schedules.rs): a repeating job, check or watch.
   "schedule.added": "added a schedule",
   "schedule.updated": "changed a schedule",
   "schedule.ended": "finished a schedule after its last run",
@@ -128,21 +128,21 @@ export const VERB: Record<string, string> = {
   "schedule.ran": "ran a scheduled check",
   "schedule.run": "asked a schedule to run now",
   "schedule.red": "saw a scheduled check start failing",
-  // Leads (pulse-tasks leads.rs, pulse-runner lead.rs): the agent that plans
+  // Leads (hive-tasks leads.rs, hive-runner lead.rs): the agent that plans
   // a project's tasks into jobs.
   "lead.run": "asked a lead to plan now",
   "lead.seated": "gave a project a lead",
   "task.followup": "followed up on a task whose job failed",
   "task.lead": "handed a task to its lead to plan",
   "task.nudged": "moved a task\u2019s jobs up the queue because you asked about it",
-  // Suggested work (pulse-tasks suggestions.rs): a task an agent proposes
+  // Suggested work (hive-tasks suggestions.rs): a task an agent proposes
   // and another agent reviews.
   "suggestion.new": "suggested a task",
   "suggestion.review": "reviewed a suggested task",
   "suggestion.reviewing": "started reviewing a suggested task",
   "suggestion.unreviewed": "put a suggested task back for another review",
   "suggestion.withdrawn": "withdrew a suggested task",
-  // Tool connections (pulse-store mcp_servers.rs, pulse-hub mcp.rs): an MCP
+  // Tool connections (hive-store mcp_servers.rs, hive-hub mcp.rs): an MCP
   // server the agents call. The event's `name` replaces "a tool connection"
   // (TOOL_OR_SKILL).
   "mcp.added": "added a tool connection",
@@ -152,64 +152,64 @@ export const VERB: Record<string, string> = {
   "mcp.checked": "checked a tool connection",
   "mcp.signed_in": "signed in to a tool connection",
   "mcp.signed_out": "signed out of a tool connection",
-  // Skills (pulse-store skills.rs): instructions every worker reads before
+  // Skills (hive-store skills.rs): instructions every worker reads before
   // the work they cover.
   "skill.added": "added a skill",
   "skill.updated": "changed a skill",
   "skill.enabled": "switched on a skill",
   "skill.disabled": "switched off a skill",
-  // Records (pulse-store records.rs, pulse-records drafts, the runner's
-  // auto_adopt.rs, pulse-board projects.rs).
+  // Records (hive-store records.rs, hive-records drafts, the runner's
+  // auto_adopt.rs, hive-board projects.rs).
   "record.status": "changed a record\u2019s status",
   "record.draft": "drafted a change to a record for you to adopt",
   "record.auto_adopted": "adopted a drafted record change while you were away",
   "record.imported": "imported a record from the project\u2019s files",
-  // Projects (pulse-board projects.rs, pulse-store forget.rs, pulse-hub
+  // Projects (hive-board projects.rs, hive-store forget.rs, hive-hub
   // lifecycle.rs).
   "project.moved": "moved the project to a new folder",
   "project.renamed": "renamed the project",
   "project.forgotten": "forgot the project and everything kept about it",
   "project.hook_failed": "could not finish setting up the project",
-  // Agents (pulse-board agents.rs): the actor is the agent itself, except
+  // Agents (hive-board agents.rs): the actor is the agent itself, except
   // for a prune, whose subject is the agent let go.
   "agent.join": "joined as a new agent",
   "agent.resume": "came back for another session",
   "agent.prune": "let go of an agent that had done nothing useful for a while",
-  // pulse-cred-setup setup.rs: the push credential (push.credential).
-  "cred.set": "saved the credential PULSE pushes with",
-  "cred.clear": "removed the credential PULSE pushes with",
-  // pulse-harness conversation.rs WAKE_ACTION/FINISH_ACTION: a message for a
-  // conversation (`pulse chat wake`), its pull request merged.
+  // hive-cred-setup setup.rs: the push credential (push.credential).
+  "cred.set": "saved the credential Hive pushes with",
+  "cred.clear": "removed the credential Hive pushes with",
+  // hive-harness conversation.rs WAKE_ACTION/FINISH_ACTION: a message for a
+  // conversation (`hive chat wake`), its pull request merged.
   "chat.wake": "woke a conversation with a message",
   "chat.finish": "finished a conversation whose pull request was merged",
-  // pulse-goals review.rs AMEND_ACTION: a decided goal proposal applied.
+  // hive-goals review.rs AMEND_ACTION: a decided goal proposal applied.
   "goal.amend": "set the project\u2019s goal from an accepted proposal",
-  // pulse-tally amend.rs: a voted amendment written into the rules.
+  // hive-tally amend.rs: a voted amendment written into the rules.
   "constitution.amended": "changed the project\u2019s rules after a vote",
-  // pulse-hooks hooks.rs: a script or web address run on an event.
+  // hive-hooks hooks.rs: a script or web address run on an event.
   "hook.added": "added a hook that runs when something happens",
-  // pulse-store store.rs: a setting PULSE dropped is removed on upgrade.
-  "setting.retired": "removed a setting PULSE no longer uses",
-  // The project's own PULSE files (.pulse/automations, .pulse/pulse.yaml,
-  // skill folders) read off the default branch: pulse-tasks manifest.rs and
+  // hive-store store.rs: a setting Hive dropped is removed on upgrade.
+  "setting.retired": "removed a setting Hive no longer uses",
+  // The project's own Hive files (.hive/automations, .hive/hive.yaml,
+  // skill folders) read off the default branch: hive-tasks manifest.rs and
   // the runner's manifest.rs.
-  "manifest.synced": "applied the project\u2019s PULSE files from its default branch",
-  "manifest.problems": "found problems in the project\u2019s PULSE files",
-  "manifest.problems_cleared": "saw the problems in the project\u2019s PULSE files fixed",
-  // Store upgrades and upkeep (pulse-store store.rs, records.rs, chat.rs,
-  // archive.rs): written by PULSE itself when a new version opens the store.
+  "manifest.synced": "applied the project\u2019s Hive files from its default branch",
+  "manifest.problems": "found problems in the project\u2019s Hive files",
+  "manifest.problems_cleared": "saw the problems in the project\u2019s Hive files fixed",
+  // Store upgrades and upkeep (hive-store store.rs, records.rs, chat.rs,
+  // archive.rs): written by Hive itself when a new version opens the store.
   "schema.records": "made room in the store for records after an upgrade",
   "schema.superseded": "set aside an old store table that an upgrade replaced",
   "schema.widened": "rebuilt a store table to take new kinds of entries after an upgrade",
   "store.archived": "moved old history to the archive file to keep the store small",
-  // Record seeding and migration (pulse-records bundle.rs and import.rs,
-  // pulse-evolve starter.rs).
-  "records.framework.seeded": "added PULSE\u2019s built-in records",
-  "records.framework.seed_failed": "could not add PULSE\u2019s built-in records for the project",
+  // Record seeding and migration (hive-records bundle.rs and import.rs,
+  // hive-evolve starter.rs).
+  "records.framework.seeded": "added Hive\u2019s built-in records",
+  "records.framework.seed_failed": "could not add Hive\u2019s built-in records for the project",
   "records.migrated": "imported the project\u2019s records from its repository",
-  // pulse-board remove.rs and the runner's pair.rs: a machine's projects or
-  // address changed; pulse-tasks messages.rs: an agent read its messages;
-  // pulse-board remove.rs: repeated board posts cleared out.
+  // hive-board remove.rs and the runner's pair.rs: a machine's projects or
+  // address changed; hive-tasks messages.rs: an agent read its messages;
+  // hive-board remove.rs: repeated board posts cleared out.
   "executor.update": "changed the settings of a machine",
   "message.read": "read its messages",
   "post.remove.duplicates": "removed repeated posts from the board",
@@ -238,7 +238,7 @@ const ARCHIVED: Record<string, string> = {
 const FAILING = new Set(["red", "broken"]);
 const PASSING = new Set(["green", "ok"]);
 
-// job.recover's outcomes (recover.rs, pulse-board jobs.rs).
+// job.recover's outcomes (recover.rs, hive-board jobs.rs).
 const RECOVERED: Record<string, string> = {
   retried: "tried a job again",
   replanned: "planned a job again from the start",
@@ -292,7 +292,7 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   const d = rec(e.detail);
   const a = e.action;
   if (a === "mention") return "was mentioned" + (str(d?.by) ? " by " + str(d?.by) : "");
-  // pulse-board remove.rs: repeated posts cleared out, not a new post.
+  // hive-board remove.rs: repeated posts cleared out, not a new post.
   if (a === "post.remove.duplicates") {
     const n = typeof d?.removed === "number" ? d.removed : 0;
     return n > 0 ? "removed " + n + " repeated post" + (n === 1 ? "" : "s") + " from the board" : VERB[a];

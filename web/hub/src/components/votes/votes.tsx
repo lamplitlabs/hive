@@ -6,15 +6,15 @@ import { CircleSlashIcon, ExternalLinkIcon, VoteIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { ListRow, ListRows, RowSkeleton } from "@/components/pulse/list-row";
-import { PageHeader } from "@/components/pulse/page-header";
-import { EmptyState, ErrorNotice, Kv } from "@/components/pulse/panel";
-import { SidePanel, useDesktop, useOpenItem } from "@/components/pulse/side-panel";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { KindTile } from "@/components/hive/kind-tile";
+import { ListRow, ListRows, RowSkeleton } from "@/components/hive/list-row";
+import { PageHeader } from "@/components/hive/page-header";
+import { EmptyState, ErrorNotice, Kv } from "@/components/hive/panel";
+import { SidePanel, useDesktop, useOpenItem } from "@/components/hive/side-panel";
 import { useCrumbs } from "@/components/shell/crumbs";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Avatar, PostLink, ThreadLink, VoteBadge, When } from "@/components/pulse/who";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Avatar, PostLink, ThreadLink, VoteBadge, When } from "@/components/hive/who";
 import { nextStep, TONE_ICON, uncountedText, voteBadge, whoName } from "@/components/board/vote-cards";
 import type { Amendment, Suggestion, Vote, Votes } from "@/lib/api";
 import { expiresAt, num, plural, sentence, span } from "@/lib/format";
@@ -360,7 +360,7 @@ function VoteDetail({ row, now }: { row: Row; now: number }) {
   }
   return (
     <div className="grid min-w-0 gap-5">
-      <p className="prose-pulse max-w-[68ch] text-sm leading-relaxed anywhere">{row.kind === "suggestion" ? row.s.summary : row.a.summary}</p>
+      <p className="prose-hive max-w-[68ch] text-sm leading-relaxed anywhere">{row.kind === "suggestion" ? row.s.summary : row.a.summary}</p>
       {lead}
       <Kv rows={facts} />
       <section aria-label="Arguments" className="min-w-0">

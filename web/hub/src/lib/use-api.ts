@@ -249,8 +249,8 @@ function handleFrame(frame: string) {
   }
 }
 
-// The hub names its build on the event stream (`X-Pulse-Version`). When a
-// tab that was opened on one build reconnects to another - PULSE updated
+// The hub names its build on the event stream (`X-Hive-Version`). When a
+// tab that was opened on one build reconnects to another - Hive updated
 // itself, or the owner installed a new binary - the pages it holds are
 // stale, so it reloads itself; a tab with words half-typed waits until the
 // box is left.
@@ -292,7 +292,7 @@ async function readStream(signal: AbortSignal) {
   try {
     const r = await fetch("/api/v1/events/stream" + (live.lastId ? "?since=" + live.lastId : ""), { signal, headers: { accept: "text/event-stream" }, cache: "no-store" });
     if (!r.ok || !r.body) throw new Error("stream " + r.status);
-    noteServerVersion(r.headers.get("x-pulse-version"));
+    noteServerVersion(r.headers.get("x-hive-version"));
     setState("live");
     stopPolling();
     retryMs = 1000;

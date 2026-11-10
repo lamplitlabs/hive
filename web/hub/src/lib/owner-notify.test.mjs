@@ -38,7 +38,7 @@ const look = (input, seen, prefs = ON, extra = {}) => planNotices({ items: notif
 
 test("everything the For-you count counts is something that waits", () => {
   const items = notifyItems({
-    brain: "pulse",
+    brain: "hive",
     decisions: [{ id: "ADR-007", project: "demo", title: "Use SQLite" }],
     proposals: [{ id: "p1", summary: "Raise the cap", slug: "" }],
     questions: [question("q1"), question("q2", { stop: true })],
@@ -50,8 +50,8 @@ test("everything the For-you count counts is something that waits", () => {
   assert.deepEqual(items.map((i) => i.kind), ["decision", "proposal", "question", "question", "draft", "step", "compute", "work"]);
   assert.ok(items.every((i) => i.group === "waits"));
   assert.equal(items[0].href, "/records/?id=ADR-007&project=demo");
-  assert.equal(items[1].href, "/project/?slug=pulse&tab=for-you", "a post without a slug belongs to the brain");
-  assert.match(items[1].body, /\(pulse\)$/);
+  assert.equal(items[1].href, "/project/?slug=hive&tab=for-you", "a post without a slug belongs to the brain");
+  assert.match(items[1].body, /\(hive\)$/);
   assert.equal(items[2].title, "Question from granite");
   assert.equal(items[3].title, "Self-improvement stopped: your review");
   assert.equal(items[4].body, "New evaluators for demo, drafted by iris");
@@ -172,7 +172,7 @@ test("more than a few at once become one summary", () => {
   assert.match(n.body, /and 2 more$/);
 
   const mixed = look({ ...ALL, questions: qs.slice(0, 2), chat: { conversations: [conv("c", { turns: 2 }), conv("d", { turns: 2 })], tasks: [] } }, primed);
-  assert.equal(mixed.notices[0].title, "4 updates from PULSE");
+  assert.equal(mixed.notices[0].title, "4 updates from Hive");
   assert.equal(mixed.notices[0].href, "/");
   const chats = look({ ...ALL, chat: { conversations: ["a", "b", "c", "d"].map((id) => conv(id, { turns: 2 })), tasks: [] } }, primed);
   assert.equal(chats.notices[0].title, "4 things finished");

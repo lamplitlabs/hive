@@ -24,7 +24,7 @@
     "kind": "adr",
     "number": 3,
     "path": "",
-    "project": "pulse",
+    "project": "hive",
     "slug": "the-console-is-the-owner-s-only-surface",
     "status": "Draft",
     "tags": [],

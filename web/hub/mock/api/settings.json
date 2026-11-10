@@ -95,7 +95,7 @@
         "off"
       ],
       "default": "on",
-      "description": "on: the daemon reads each project's own PULSE file, .pulse/pulse.yaml on the default branch, and the SKILL.md folders beside it (.pulse/skills, .claude/skills, .github/skills, .agents/skills) whenever a commit changes them: the schedules the file names are added, updated, paused and ended in the store (pulse schedule list shows them with their origin), the skills join the project's pulse skill registry, and what the file gets wrong is a problem on the project board, never a stopped schedule; off: the files are left to the native harness, which still offers the skill folders to the model",
+      "description": "on: the daemon reads each project's own Hive file, .hive/hive.yaml on the default branch, and the SKILL.md folders beside it (.hive/skills, .claude/skills, .github/skills, .agents/skills) whenever a commit changes them: the schedules the file names are added, updated, paused and ended in the store (hive schedule list shows them with their origin), the skills join the project's hive skill registry, and what the file gets wrong is a problem on the project board, never a stopped schedule; off: the files are left to the native harness, which still offers the skill folders to the model",
       "kind": "choice",
       "min": null,
       "name": "manifest.load",
@@ -147,7 +147,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "what this machine offers beyond its OS and architecture, as words a project or job can need (pulse.yaml needs:, pulse job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name",
+      "description": "what this machine offers beyond its OS and architecture, as words a project or job can need (hive.yaml needs:, hive job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name",
       "kind": "text",
       "min": null,
       "name": "machine.labels",
@@ -163,7 +163,7 @@
         "release"
       ],
       "default": "auto",
-      "description": "how this machine gets a newer PULSE. source: the daemon rebuilds pulse from the brain project's checkout after a landing (daemon.self_update); release: pulse update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise",
+      "description": "how this machine gets a newer Hive. source: the daemon rebuilds hive from the brain project's checkout after a landing (daemon.self_update); release: hive update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise",
       "kind": "choice",
       "min": null,
       "name": "update.channel",
@@ -175,7 +175,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "where the daemon looks, at most once a day, for the latest PULSE release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, pulse version and the console say so with the release link. The check downloads and installs nothing; pulse update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network",
+      "description": "where the daemon looks, at most once a day, for the latest Hive release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, hive version and the console say so with the release link. The check downloads and installs nothing; hive update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network",
       "kind": "text",
       "min": null,
       "name": "update.latest_url",
@@ -220,7 +220,7 @@
         "vllm"
       ],
       "default": "copilot",
-      "description": "the model provider of the native harness; copilot signs in with GitHub; the others take an API key - pasted in the console's Harness card or read by pulse harness login --provider <name> --with-token - or borrow it from the environment; ollama, lmstudio and vllm need none; the login lives on this machine, never in the store",
+      "description": "the model provider of the native harness; copilot signs in with GitHub; the others take an API key - pasted in the console's Harness card or read by hive harness login --provider <name> --with-token - or borrow it from the environment; ollama, lmstudio and vllm need none; the login lives on this machine, never in the store",
       "kind": "choice",
       "min": null,
       "name": "provider",
@@ -571,7 +571,7 @@
         "1"
       ],
       "default": "0",
-      "description": "the kill switch: 1 stops the runner after the runs in flight finish (pulse stop / pulse start)",
+      "description": "the kill switch: 1 stops the runner after the runs in flight finish (hive stop / hive start)",
       "kind": "switch",
       "min": null,
       "name": "stop",
@@ -670,7 +670,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "security group id the instances get; empty means a group named pulse-hands that allows ssh in, created when missing",
+      "description": "security group id the instances get; empty means a group named hive-hands that allows ssh in, created when missing",
       "kind": "identifier",
       "min": null,
       "name": "compute.aws.security_group",
@@ -745,7 +745,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "where the service principal's secret lives, as a reference and never the secret itself: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. PULSE never reads it; the console fills it into the az login --service-principal command you run on this machine",
+      "description": "where the service principal's secret lives, as a reference and never the secret itself: op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH. Hive never reads it; the console fills it into the az login --service-principal command you run on this machine",
       "kind": "reference",
       "min": null,
       "name": "compute.azure.client_secret",
@@ -776,7 +776,7 @@
       "secret": false,
       "updated_at": "2026-09-01T10:52:00Z",
       "updated_by": "human",
-      "value": "pulse-hands"
+      "value": "hive-hands"
     },
     {
       "choices": null,
@@ -841,7 +841,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "VPC network the instances join; empty means default. A firewall rule pulse-hands-ssh (tcp 22 to the tag pulse-hands) is created on it when missing",
+      "description": "VPC network the instances join; empty means default. A firewall rule hive-hands-ssh (tcp 22 to the tag hive-hands) is created on it when missing",
       "kind": "identifier",
       "min": null,
       "name": "compute.gcp.network",
@@ -942,7 +942,7 @@
     {
       "choices": null,
       "default": "24",
-      "description": "hours a retired VM stays stopped before the daemon deletes it; starting it again at the provider (the finding names the command) and `pulse executor activate NAME` within them keep it",
+      "description": "hours a retired VM stays stopped before the daemon deletes it; starting it again at the provider (the finding names the command) and `hive executor activate NAME` within them keep it",
       "kind": "count",
       "min": 1,
       "name": "compute.retire_grace_hours",
@@ -957,7 +957,7 @@
         "1"
       ],
       "default": "1",
-      "description": "1: the daemon places the executor token (pulse executor token) on a drained executor whose login is refused, once per drain; 0: it leaves the login to you (ADR-034)",
+      "description": "1: the daemon places the executor token (hive executor token) on a drained executor whose login is refused, once per drain; 0: it leaves the login to you (ADR-034)",
       "kind": "switch",
       "min": null,
       "name": "compute.self_heal",
@@ -1038,7 +1038,7 @@
         "1"
       ],
       "default": "0",
-      "description": "1: pulse evolve cycle may run experiments; 0: the loop is off (STOP is the stop setting)",
+      "description": "1: hive evolve cycle may run experiments; 0: the loop is off (STOP is the stop setting)",
       "kind": "switch",
       "min": null,
       "name": "evolve.loop",
@@ -1188,7 +1188,7 @@
         "off"
       ],
       "default": "on",
-      "description": "on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `pulse job retry` (ADR-036)",
+      "description": "on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `hive job retry` (ADR-036)",
       "kind": "choice",
       "min": null,
       "name": "daemon.recover",
@@ -1227,7 +1227,7 @@
         "off"
       ],
       "default": "on",
-      "description": "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
+      "description": "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
       "kind": "choice",
       "min": null,
       "name": "daemon.self_update",
@@ -1254,7 +1254,7 @@
         "off"
       ],
       "default": "on",
-      "description": "on: every ten minutes the daemon removes what runs, landings and agents left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under PULSE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, pulse/* or evolve/* branches no job will land (saved as a patch first), and worktrees a project checkout lists whose work is on the default branch (its merged branch goes with it) or that sat untouched for daemon.sweep_branch_days (the branch stays); a run in flight, a branch waiting to land, a locked worktree, uncommitted changes and the owner's own files are never touched. off: `pulse sweep` by hand",
+      "description": "on: every ten minutes the daemon removes what runs, landings and agents left on this machine and nothing holds any more - clones, keys and bundles of finished jobs under HIVE_HOME/work, landing worktrees whose process is gone, holding refs, run logs and patches past daemon.sweep_keep_days, hive/* or evolve/* branches no job will land (saved as a patch first), and worktrees a project checkout lists whose work is on the default branch (its merged branch goes with it) or that sat untouched for daemon.sweep_branch_days (the branch stays); a run in flight, a branch waiting to land, a locked worktree, uncommitted changes and the owner's own files are never touched. off: `hive sweep` by hand",
       "kind": "choice",
       "min": null,
       "name": "daemon.sweep",
@@ -1266,7 +1266,7 @@
     {
       "choices": null,
       "default": "7",
-      "description": "days since its last commit before a pulse/* or evolve/* branch that no job will land is removed, its commits saved under PULSE_HOME/patches first unless they are already on the default branch; also the days a clean worktree of a project with commits not on the default branch sits untouched before the worktree alone goes (its branch stays; a detached HEAD is saved as a patch first)",
+      "description": "days since its last commit before a hive/* or evolve/* branch that no job will land is removed, its commits saved under HIVE_HOME/patches first unless they are already on the default branch; also the days a clean worktree of a project with commits not on the default branch sits untouched before the worktree alone goes (its branch stays; a detached HEAD is saved as a patch first)",
       "kind": "count",
       "min": 0,
       "name": "daemon.sweep_branch_days",
@@ -1290,7 +1290,7 @@
     {
       "choices": null,
       "default": "3",
-      "description": "days a hub conversation stays closed or archived before the sweep removes its clean checkout under PULSE_HOME/work/chat/<id> to give the disk back; its branch, artifacts and attachments stay, and the owner's next message there checks the branch out again (and the project reinstalls its dependencies); a dirty checkout, or a closed one whose branch has commits not on the default branch, is held; 0 keeps every conversation checkout",
+      "description": "days a hub conversation stays closed or archived before the sweep removes its clean checkout under HIVE_HOME/work/chat/<id> to give the disk back; its branch, artifacts and attachments stay, and the owner's next message there checks the branch out again (and the project reinstalls its dependencies); a dirty checkout, or a closed one whose branch has commits not on the default branch, is held; 0 keeps every conversation checkout",
       "kind": "count",
       "min": 0,
       "name": "daemon.chat_worktree_keep_days",
@@ -1314,7 +1314,7 @@
     {
       "choices": null,
       "default": "30",
-      "description": "days a finished job's artifacts folder (PULSE_HOME/work/jobs/<job>/artifacts: the screenshots and reports its worker left for the owner, shown in the hub beside the job) is kept after the job finishes before the sweep removes it; an empty folder of a finished job goes at once, a folder of a job the store does not know goes after daemon.sweep_keep_days; 0 keeps every folder",
+      "description": "days a finished job's artifacts folder (HIVE_HOME/work/jobs/<job>/artifacts: the screenshots and reports its worker left for the owner, shown in the hub beside the job) is kept after the job finishes before the sweep removes it; an empty folder of a finished job goes at once, a folder of a job the store does not know goes after daemon.sweep_keep_days; 0 keeps every folder",
       "kind": "count",
       "min": 0,
       "name": "daemon.artifact_keep_days",
@@ -1330,7 +1330,7 @@
         "pr"
       ],
       "default": "off",
-      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. pr: the daemon pushes the default branch to the pulse/landed branch on the upstream instead and keeps one pull request open from it (gh, logged in as the user the daemon runs as), so every landing waits for your merge on the forge; a conflict with the upstream shows on the pull request. off: you push - or ask for a pull request from a task's sheet or with pulse land --pr (ADR-037)",
+      "description": "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of hive status and the hub. pr: the daemon pushes the default branch to the hive/landed branch on the upstream instead and keeps one pull request open from it (gh, logged in as the user the daemon runs as), so every landing waits for your merge on the forge; a conflict with the upstream shows on the pull request. off: you push - or ask for a pull request from a task's sheet or with hive land --pr (ADR-037)",
       "kind": "choice",
       "min": null,
       "name": "landing.push",
@@ -1361,7 +1361,7 @@
         "off"
       ],
       "default": "require",
-      "description": "require: a change that touches a screen (a page, a view, a stylesheet) reaches the default branch only with its before/after report - report.html, which pulse report builds from report.json and the screenshots in the agent's artifacts folder; a worker that finished without one gets one more turn to make it, a local landing waits for it, a pull request without one is the owner's to merge and a session is asked for it before its pull request opens; warn: the change lands without one and the landing says so; off: no report is asked for (a screenshot is still welcome); landing.ui_report.<project slug> sets it for one project",
+      "description": "require: a change that touches a screen (a page, a view, a stylesheet) reaches the default branch only with its before/after report - report.html, which hive report builds from report.json and the screenshots in the agent's artifacts folder; a worker that finished without one gets one more turn to make it, a local landing waits for it, a pull request without one is the owner's to merge and a session is asked for it before its pull request opens; warn: the change lands without one and the landing says so; off: no report is asked for (a screenshot is still welcome); landing.ui_report.<project slug> sets it for one project",
       "kind": "choice",
       "min": null,
       "name": "landing.ui_report",
@@ -1373,7 +1373,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)",
+      "description": "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `hive cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `hive cred set`, which probes the remote first (ADR-041)",
       "kind": "reference",
       "min": null,
       "name": "push.credential",
@@ -1547,7 +1547,7 @@
         "nemotron-speech-streaming-en-0.6b"
       ],
       "default": "nemotron-3.5-asr-streaming-0.6b",
-      "description": "the speech model the hub's microphone transcribes with, run on this machine through ONNX Runtime (no audio leaves it): nemotron-3.5-asr-streaming-0.6b understands 25+ languages and picks the one spoken (or takes voice.language); nemotron-speech-streaming-en-0.6b is English only and a little lighter. Either is about 2.5 GB, fetched once into PULSE_HOME/voice by the microphone's first use or `pulse voice setup`",
+      "description": "the speech model the hub's microphone transcribes with, run on this machine through ONNX Runtime (no audio leaves it): nemotron-3.5-asr-streaming-0.6b understands 25+ languages and picks the one spoken (or takes voice.language); nemotron-speech-streaming-en-0.6b is English only and a little lighter. Either is about 2.5 GB, fetched once into HIVE_HOME/voice by the microphone's first use or `hive voice setup`",
       "kind": "choice",
       "min": null,
       "name": "voice.model",

@@ -1,6 +1,6 @@
 // Evidence links for a record (cinder-3): the jobs and board posts a record's
 // text names are the trail an owner otherwise follows by hand with
-// `pulse record show <id>` plus a board search. Pure so the node test can pin
+// `hive record show <id>` plus a board search. Pure so the node test can pin
 // the extraction; the records sheet renders the result as links.
 
 export interface EvidenceLink {

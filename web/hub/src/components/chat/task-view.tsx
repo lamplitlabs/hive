@@ -42,17 +42,17 @@ import {
   taskMoodOf,
 } from "@/components/chat/task-groups";
 import { mergeSteps } from "@/components/harness/harness";
-import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import { Markdown } from "@/components/pulse/markdown";
-import { PulseMascot } from "@/components/pulse/mascots";
+import { ConfirmDialog, showApiError } from "@/components/hive/confirm";
+import { Markdown } from "@/components/hive/markdown";
+import { HiveMascot } from "@/components/hive/mascots";
 import {
   Disclosure,
   ErrorNotice,
   Kv,
   Notice,
   SkeletonRows,
-} from "@/components/pulse/panel";
-import { Avatar, Mono, ProjectLink, When } from "@/components/pulse/who";
+} from "@/components/hive/panel";
+import { Avatar, Mono, ProjectLink, When } from "@/components/hive/who";
 import { TaskActivityPane } from "@/components/tasks/task-activity";
 import {
   CancelTaskDialog,
@@ -219,7 +219,7 @@ function TaskBody({
     initial: [makeTab("steps"), makeTab("brief")],
   });
   // A done task shows its report: the step that did the work opens on its
-  // page in the canvas (PULSE builds it), on the way in and the moment the
+  // page in the canvas (Hive builds it), on the way in and the moment the
   // task is done.
   const reportStep = t.status === "done" ? reportJob(d.jobs) : undefined;
   const reportTab = reportStep ? jobEvidenceTab(reportStep) : null;
@@ -306,7 +306,7 @@ function TaskBody({
         )}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-          <PulseMascot
+          <HiveMascot
             mood={mood.pip}
             size={44}
             className={cn("shrink-0", working && "float")}
@@ -455,7 +455,7 @@ function TaskBody({
         <Notice tone="info">
           {t.status === "done"
             ? "This task is done" +
-              (reportTab ? ", and PULSE wrote its report" : "") +
+              (reportTab ? ", and Hive wrote its report" : "") +
               ". The session stays here to read; give a new task to carry on."
             : "This task was cancelled. The session stays here to read; give a new task to carry on."}
           {reportTab && reportStep ? (

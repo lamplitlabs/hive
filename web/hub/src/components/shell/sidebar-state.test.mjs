@@ -26,7 +26,7 @@ test("the sidebar starts open and only the one stored word collapses it", () => 
 test("collapsing writes the key and opening removes it, so open and untouched read the same", () => {
   const storage = memory();
   writeSidebarCollapsed(storage, true);
-  assert.deepEqual(storage.keys(), ["pulse.sidebar"]);
+  assert.deepEqual(storage.keys(), ["hive.sidebar"]);
   assert.equal(readSidebarCollapsed(storage), true);
   writeSidebarCollapsed(storage, false);
   assert.deepEqual(storage.keys(), []);

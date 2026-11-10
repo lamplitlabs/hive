@@ -1,6 +1,6 @@
 // Well-known tools (MCP servers) the Add a tool wizard offers as a start,
 // with everything but the secret filled in. The list mirrors the toolkit's
-// catalogue in crates/pulse-runner/src/toolkit/tools.rs (the hub's GET
+// catalogue in crates/hive-runner/src/toolkit/tools.rs (the hub's GET
 // toolkit lists only the names and words of that catalogue, so the details
 // that start a server live here too); a project's own suggestions from GET
 // toolkit come first and win over a preset of the same name. No React and

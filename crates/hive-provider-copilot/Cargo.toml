@@ -1,0 +1,25 @@
+[package]
+name = "hive-provider-copilot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: GitHub Copilot model provider"
+
+[dependencies]
+hive-store.workspace = true
+hive-provider.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
+chrono.workspace = true
+regex.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true

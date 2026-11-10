@@ -66,11 +66,11 @@ export function rosterScenarios(rows, at, returned = true, focus = null) {
     current_task: "", current_task_title: "", current_project: "", current_source: "",
     ...observation("pruned"),
   });
-  // A worker retired the moment its run ended (pulse_board::RETIRE_REASON):
+  // A worker retired the moment its run ended (hive_board::RETIRE_REASON):
   // workers are not kept idle, so its row stays in History under "Retired".
   result.push({
     agent: "basalt", name: "basalt", names: ["basalt"], kind: "worker", status: "pruned", agent_status: "pruned",
-    runner: "pulse", model: "gpt-6-astra", session: "", sessions: ["run-basalt"], session_count: 1,
+    runner: "hive", model: "gpt-6-astra", session: "", sessions: ["run-basalt"], session_count: 1,
     jobs_done: 1, jobs_failed: 0, posts: 1, store_posts: 1, votes: 0, claims: 0, questions: 0, answers: 0,
     first_seen: "2026-09-06T08:00:00Z", last_seen: "2026-09-06T08:40:00Z", last_useful_at: "2026-09-06T08:40:00Z",
     pruned_at: "2026-09-06T08:41:00Z", pruned_reason: "retired after its run; workers are not kept idle",

@@ -1,6 +1,6 @@
 {
   "on": true,
-  "dir": "~/.pulse/memory",
+  "dir": "~/.hive/memory",
   "limits": { "text": 600, "file": 65536 },
   "total": 11,
   "files": [
@@ -9,7 +9,7 @@
       "kind": "user",
       "project": "",
       "scope": "user",
-      "path": "~/.pulse/memory/user.md",
+      "path": "~/.hive/memory/user.md",
       "exists": true,
       "size": 412,
       "updated_at": "2026-09-05T16:40:00Z",
@@ -36,15 +36,15 @@
       "kind": "conversations",
       "project": "",
       "scope": "project",
-      "path": "~/.pulse/memory/conversations.md",
+      "path": "~/.hive/memory/conversations.md",
       "exists": true,
       "size": 180,
       "updated_at": "2026-09-04T09:12:00Z",
       "entries": [
         {
           "day": "2026-09-04",
-          "text": "Screenshots for the owner go in $PULSE_ARTIFACTS; the hub shows that folder beside the chat.",
-          "line": "[2026-09-04] Screenshots for the owner go in $PULSE_ARTIFACTS; the hub shows that folder beside the chat."
+          "text": "Screenshots for the owner go in $HIVE_ARTIFACTS; the hub shows that folder beside the chat.",
+          "line": "[2026-09-04] Screenshots for the owner go in $HIVE_ARTIFACTS; the hub shows that folder beside the chat."
         }
       ]
     },
@@ -53,7 +53,7 @@
       "kind": "project",
       "project": "demo-app",
       "scope": "project",
-      "path": "~/.pulse/memory/demo-app.md",
+      "path": "~/.hive/memory/demo-app.md",
       "exists": true,
       "size": 1290,
       "updated_at": "2026-09-06T21:05:00Z",
@@ -95,18 +95,18 @@
       "kind": "project",
       "project": "demo-lib",
       "scope": "project",
-      "path": "~/.pulse/memory/demo-lib.md",
+      "path": "~/.hive/memory/demo-lib.md",
       "exists": false,
       "size": 0,
       "updated_at": "",
       "entries": []
     },
     {
-      "key": "pulse",
+      "key": "hive",
       "kind": "project",
-      "project": "pulse",
+      "project": "hive",
       "scope": "project",
-      "path": "~/.pulse/memory/pulse.md",
+      "path": "~/.hive/memory/hive.md",
       "exists": false,
       "size": 0,
       "updated_at": "",
@@ -117,7 +117,7 @@
       "kind": "project",
       "project": "",
       "scope": "project",
-      "path": "~/.pulse/memory/old-shop.md",
+      "path": "~/.hive/memory/old-shop.md",
       "exists": true,
       "size": 96,
       "updated_at": "2026-07-14T08:00:00Z",

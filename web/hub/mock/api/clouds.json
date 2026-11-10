@@ -15,7 +15,7 @@
             "help": "An absolute path, or one starting with ~/.",
             "kind": "identifier",
             "label": "Folder",
-            "placeholder": "/Volumes/Backup/pulse",
+            "placeholder": "/Volumes/Backup/hive",
             "required": true,
             "setting": "path"
           }
@@ -50,7 +50,7 @@
             "help": "The blob container; it must exist.",
             "kind": "identifier",
             "label": "Container",
-            "placeholder": "pulse-backups",
+            "placeholder": "hive-backups",
             "required": true,
             "setting": "container"
           },
@@ -76,7 +76,7 @@
             "help": "Must name {file}.",
             "kind": "identifier",
             "label": "Command",
-            "placeholder": "rclone copy {file} remote:pulse",
+            "placeholder": "rclone copy {file} remote:hive",
             "required": true,
             "setting": "command"
           }
@@ -94,14 +94,14 @@
     {
       "auth": [
         {
-          "blurb": "Sign in once in a browser with your own account (OAuth). The az CLI keeps the sign-in on this machine; PULSE uses it as it is.",
+          "blurb": "Sign in once in a browser with your own account (OAuth). The az CLI keeps the sign-in on this machine; Hive uses it as it is.",
           "fields": [],
           "id": "login",
           "label": "Your Azure account",
           "sign_in": "az login"
         },
         {
-          "blurb": "An app registration with a role on the resource group only. PULSE keeps its tenant and client id and where its secret lives - never the secret - and refuses to work while az is signed in as anyone else.",
+          "blurb": "An app registration with a role on the resource group only. Hive keeps its tenant and client id and where its secret lives - never the secret - and refuses to work while az is signed in as anyone else.",
           "fields": [
             {
               "help": "The Microsoft Entra tenant id (or domain) the app belongs to.",
@@ -120,7 +120,7 @@
               "setting": "compute.azure.client_id"
             },
             {
-              "help": "A reference to the client secret in 1Password (op://), the macOS Keychain (keychain://) or a 0600 file (file://). PULSE stores the reference and never reads the secret.",
+              "help": "A reference to the client secret in 1Password (op://), the macOS Keychain (keychain://) or a 0600 file (file://). Hive stores the reference and never reads the secret.",
               "kind": "reference",
               "label": "Where the secret lives",
               "placeholder": "op://VAULT/ITEM/FIELD",
@@ -150,7 +150,7 @@
           "help": "The resource group that holds the machines; created in the region below when missing.",
           "kind": "identifier",
           "label": "Resource group",
-          "placeholder": "pulse-hands",
+          "placeholder": "hive-hands",
           "required": true,
           "setting": "compute.azure.resource_group"
         },
@@ -188,7 +188,7 @@
         "compute.azure.client_secret": "",
         "compute.azure.image": "Ubuntu2404",
         "compute.azure.location": "westeurope",
-        "compute.azure.resource_group": "pulse-hands",
+        "compute.azure.resource_group": "hive-hands",
         "compute.azure.subscription": "demo-subscription",
         "compute.azure.tenant": "",
         "compute.azure.vm_size": "Standard_B2ms"
@@ -197,7 +197,7 @@
     {
       "auth": [
         {
-          "blurb": "aws configure or aws sso login on this machine; PULSE uses the profile named below, or the default one.",
+          "blurb": "aws configure or aws sso login on this machine; Hive uses the profile named below, or the default one.",
           "fields": [],
           "id": "login",
           "label": "An AWS CLI profile",
@@ -250,7 +250,7 @@
           "setting": "compute.aws.subnet"
         },
         {
-          "help": "The security group id. Empty: one named pulse-hands, made when missing.",
+          "help": "The security group id. Empty: one named hive-hands, made when missing.",
           "kind": "identifier",
           "label": "Security group",
           "placeholder": "",

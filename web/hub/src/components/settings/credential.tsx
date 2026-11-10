@@ -10,16 +10,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import { Notice } from "@/components/pulse/panel";
-import { Mono, ToneBadge, When } from "@/components/pulse/who";
+import { ConfirmDialog, showApiError } from "@/components/hive/confirm";
+import { Notice } from "@/components/hive/panel";
+import { Mono, ToneBadge, When } from "@/components/hive/who";
 import { RowHead, SettingRow } from "@/components/settings/setting-row";
 import { ApiError, writes, type CredItem, type CredPayload, type CredProbe, type CredProvider, type CredReport, type CredSetResult, type CredVault, type Setting } from "@/lib/api";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 // The daemon's push key from the console (ADR-042). The row shows the state
-// `pulse cred status` prints - which provider, which item, the fingerprint -
+// `hive cred status` prints - which provider, which item, the fingerprint -
 // never the key; the picker walks the owner from a provider to a reference,
 // tests it against every project's remote and saves only when they answer.
 // A 1Password service-account token is typed once here and posted once; the
@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 const refreshAfterWrite = () => invalidate((p) => p === "cred" || p.startsWith("settings") || p.startsWith("events") || p.startsWith("runner") || p.startsWith("org"));
 
-// What a reference names, for the row: "pulse push key in PULSE", "pulse-push / deploy", "~/.pulse/secrets/push_key".
+// What a reference names, for the row: "hive push key in Hive", "hive-push / deploy", "~/.hive/secrets/push_key".
 function describe(reference: string, providers: CredProvider[]): { provider: string; item: string } {
   const [scheme, rest = ""] = reference.split("://", 2);
   const title = providers.find((p) => p.id === scheme)?.title ?? scheme;
@@ -74,11 +74,11 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
               <span className="font-medium">{named.item}</span> <span className="text-muted-foreground">in {named.provider}</span>
             </span>
             {report?.fingerprint ? <span className="font-mono text-xs text-muted-foreground anywhere" title="The key's fingerprint">{report.fingerprint}</span> : null}
-            {pushOff ? <span className="basis-full text-[13px] text-muted-foreground">Push after merging is off, so PULSE doesn&apos;t use this key yet.</span> : null}
+            {pushOff ? <span className="basis-full text-[13px] text-muted-foreground">Push after merging is off, so Hive doesn&apos;t use this key yet.</span> : null}
           </div>
         ) : (
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground anywhere">
-            Not set. PULSE pushes with the git sign-in this machine already has{pushOff ? "" : ", after every merge"}. Choose a separate key so pushing never needs you.
+            Not set. Hive pushes with the git sign-in this machine already has{pushOff ? "" : ", after every merge"}. Choose a separate key so pushing never needs you.
           </p>
         )}
       </RowHead>
@@ -100,7 +100,7 @@ export function CredentialRow({ s, canEdit }: { s: Setting; canEdit: boolean }) 
           setRemoving(o);
         }}
         title="Remove the push key?"
-        description={<>PULSE goes back to pushing with the git sign-in this machine already has. The key itself isn&apos;t touched: PULSE only forgets where it lives (<Mono>{report?.reference}</Mono>).</>}
+        description={<>Hive goes back to pushing with the git sign-in this machine already has. The key itself isn&apos;t touched: Hive only forgets where it lives (<Mono>{report?.reference}</Mono>).</>}
         action="Remove"
         destructive
         success="Push key removed."
@@ -203,8 +203,8 @@ function PickerBody({ payload, close }: { payload: CredPayload; close: () => voi
         </div>
         <DialogDescription>
           {step.kind === "done"
-            ? "PULSE saved where the key lives. The key stays there and is on disk only for the few seconds of a push."
-            : "Tell PULSE where the key lives. The key itself is never copied here. Before saving, PULSE checks that every project's remote accepts it."}
+            ? "Hive saved where the key lives. The key stays there and is on disk only for the few seconds of a push."
+            : "Tell Hive where the key lives. The key itself is never copied here. Before saving, Hive checks that every project's remote accepts it."}
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 px-5 py-4">
@@ -355,7 +355,7 @@ function OpStep({ report, onReport, reference, onReference }: { report: CredRepo
     return (
       <div className="grid gap-3">
         <Notice tone="info">
-          PULSE reads the key through a 1Password <b>service account</b>, so nobody has to approve anything at push time. Create one in 1Password (Developer, then Service Accounts) with read access to the vault that holds the key, and paste its token here once. This machine keeps it{report.token !== "none" ? "" : " in its keychain or a private file"} and the console never shows it again.
+          Hive reads the key through a 1Password <b>service account</b>, so nobody has to approve anything at push time. Create one in 1Password (Developer, then Service Accounts) with read access to the vault that holds the key, and paste its token here once. This machine keeps it{report.token !== "none" ? "" : " in its keychain or a private file"} and the console never shows it again.
         </Notice>
         <div className="grid gap-1.5">
           <Label htmlFor="cred-token">Service-account token</Label>
@@ -483,7 +483,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
       const r = await writes.credGenerate(replace);
       setGenerated(r.generated);
       update("path", r.generated.path);
-      toast.success(r.generated.existed ? "PULSE already has a key. Here it is." : "PULSE made a new key of its own.");
+      toast.success(r.generated.existed ? "Hive already has a key. Here it is." : "Hive made a new key of its own.");
     } catch (e) {
       showApiError(e, "No key was made");
     } finally {
@@ -507,7 +507,7 @@ function FieldsStep({ provider, reference, onReference }: { provider: CredProvid
       {provider.generate ? (
         <div className="grid gap-2 rounded-lg border bg-muted/40 px-3.5 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-medium">No key yet? Let PULSE make one.</span>
+            <span className="text-sm font-medium">No key yet? Let Hive make one.</span>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void generate(false)}>
               {busy ? <Loader2Icon className="animate-spin" /> : <KeyRoundIcon />} {generated ? "Show it again" : "Generate a key"}
             </Button>
@@ -602,7 +602,7 @@ function DoneStep({ result, report }: { result: CredSetResult; report: CredRepor
       <PublicKey publicKey={result.public_key} fingerprint={result.fingerprint} />
       {pushOff ? (
         <Notice tone="info">
-          <b>Push after merging</b> is off, so PULSE merges but doesn&apos;t push. Set it to push the main branch (the row above this one) to use the key.
+          <b>Push after merging</b> is off, so Hive merges but doesn&apos;t push. Set it to push the main branch (the row above this one) to use the key.
         </Notice>
       ) : null}
     </div>

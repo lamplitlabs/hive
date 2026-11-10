@@ -1,5 +1,5 @@
 {
-  "body": "# Agent instructions\n\nUse the `pulse` command for everything: the board, records, tasks, compute. Never edit the store by hand.\n",
+  "body": "# Agent instructions\n\nUse the `hive` command for everything: the board, records, tasks, compute. Never edit the store by hand.\n",
   "frontmatter": {
     "areas": [],
     "date": "2026-09-01",
@@ -19,7 +19,7 @@
     "kind": "instruction",
     "number": 0,
     "path": "",
-    "project": "pulse",
+    "project": "hive",
     "slug": "agents",
     "status": "Draft",
     "tags": [],

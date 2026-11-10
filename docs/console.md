@@ -1,7 +1,7 @@
 # The console (for the owner)
 
 The console is where the owner lives: every page below is a view of the
-store, and every button calls the same helper the matching `pulse` command
+store, and every button calls the same helper the matching `hive` command
 does. It binds to `127.0.0.1` only. Page URLs without a trailing slash,
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
@@ -9,33 +9,33 @@ losing query parameters.
 ## Starting the console
 
 ```bash
-pulse hub                                      # the console opens at http://127.0.0.1:8765
+hive hub                                      # the console opens at http://127.0.0.1:8765
 ```
 
 On a Mac the same console also comes in a window of its own: see
 [The Mac app](mac-app.md#the-mac-app).
 
 Everything else happens in the console. **Add project** registers a checkout
-and queues its onboarding (`pulse init --name my-app --verify 'npm test'` in
+and queues its onboarding (`hive init --name my-app --verify 'npm test'` in
 the checkout is the same step from a terminal). Home's **Runner** status (the
 console's word for the daemon) links to **Runner controls** under **Details for
-this machine**. **Keep PULSE running** previews and installs the daemon and
+this machine**. **Keep Hive running** previews and installs the daemon and
 console as user services (launchd / systemd --user) so neither dies with a
 terminal; **Start the runner** loads an existing, unloaded service. **Finish
 service setup** completes a partial installation when the daemon is managed but
-the console service is missing or unloaded. The `pulse hub` you started hands over
-to the service's at the same address (`pulse service
+the console service is missing or unloaded. The `hive hub` you started hands over
+to the service's at the same address (`hive service
 install` in a terminal does the same). A fresh copy carries the framework's
 records inside the binary, so nothing has to be imported first (see
-[Share PULSE](development.md#share-pulse)). How the services, self-update, restart drain
+[Share Hive](development.md#share-hive)). How the services, self-update, restart drain
 and stall detection work is described under
 [Services and self-update](runner.md#services-and-self-update).
 
 Then sign in once: **Settings → Harness → Sign in with GitHub** shows a code,
 you enter it on github.com, and every worker on this machine runs with that
-login from then on (`pulse harness login` is the same flow in a terminal).
+login from then on (`hive harness login` is the same flow in a terminal).
 The account needs a GitHub Copilot seat or plan; the card says so when it
-does not, and `pulse status` carries the same `harness` line.
+does not, and `hive status` carries the same `harness` line.
 
 ## Home
 
@@ -66,11 +66,11 @@ day from the harness sessions (the **Runs** page), the jobs table, the
 ### For you
 
 Everything waiting on the owner in one place: proposed decisions (ADRs) to
-accept, defer or decline with your own words - the same `pulse record accept`
+accept, defer or decline with your own words - the same `hive record accept`
 the terminal runs, recorded as `human` with the words in the record's
 history - plus board proposals, compute requests and the questions only you can
 answer: posts an agent marked `--for-owner` and the evolution loop's "Evolution
-stopped; owner review needed" stops, each a card with Yes / No (`pulse decide
+stopped; owner review needed" stops, each a card with Yes / No (`hive decide
 <post> yes|no --words '...'` from the terminal). Stops come first; a decision
 clears the planner's failed-gate and owner-review stops on the daemon's next
 tick, and a yes clears an instruction-shaped stop too. The same cards sit on
@@ -92,7 +92,7 @@ alternative. An owner-written fixture is never overwritten or renewed by generat
 ## Projects
 
 Add a checkout as a project (the same registration, recipe import and
-onboarding job as `pulse init`), typing its path or browsing the machine's
+onboarding job as `hive init`), typing its path or browsing the machine's
 folders with checkouts and registered projects marked; rename one from the
 project page's menu (`POST /api/v1/projects/<slug>/rename` with `{"name":
 ...}` - the display name the console shows, while the slug in every link, job
@@ -100,16 +100,16 @@ and post stays); point one at the folder it now lives in (**Change folder…** i
 the same menu, or the **Point to its folder** button a project **Missing on
 disk** shows in its place - a folder moved, a disk swapped, a clone made again;
 `POST /api/v1/projects/<slug>/move` with `{"path": ..., "force"?: bool}`, the
-same as `pulse move SLUG PATH [--force]`: the slug, tasks, posts and history
+same as `hive move SLUG PATH [--force]`: the slug, tasks, posts and history
 stay, a folder that is no checkout or another project's is refused, and a
 checkout of a different repository is refused until **Use this folder anyway**,
 which also adopts its remote); remove one after a preview of what deactivates,
 and restore a removed one from the picker. A checkout the runner made
-itself - a worker clone under `PULSE_HOME/work`, a fleet clone or measurement
-root under `PULSE_HOME/fleet`, a worktree under `PULSE_HOME/worktrees` - is
+itself - a worker clone under `HIVE_HOME/work`, a fleet clone or measurement
+root under `HIVE_HOME/fleet`, a worktree under `HIVE_HOME/worktrees` - is
 refused: those come and go with jobs, and a project
 is the checkout they are cloned from. Adding a path that is already a project
-refreshes it instead of duplicating it: a name given with it (`pulse init PATH
+refreshes it instead of duplicating it: a name given with it (`hive init PATH
 --name N` from a terminal) renames the project, while its slug - what posts,
 jobs and records point at - stays. The brain is never removable from the
 console.
@@ -119,11 +119,11 @@ whether it is still the seeded text), enabled fixtures, baseline (measured by
 the daemon, "measuring" while its job runs), the level the loop may reach - and
 the project page lists its fixtures. Open a project's **Overview → Project
 goal** to give every agent the same direction. **Edit goal** sets your outcome;
-without one, PULSE supplies a project-derived default. Until you set one, the
+without one, Hive supplies a project-derived default. Until you set one, the
 Home page's **Needs attention** list says so - *runs on a generated
 goal* - with a link straight to that panel, since the lead plans, votes and
 researches toward whatever goal is there; × puts the note away for that
-project, and it returns if the goal is ever reset to the default. `pulse goal
+project, and it returns if the goal is ever reset to the default. `hive goal
 set --project my-app --text '...'` sets it from a terminal.
 
 ## Tasks
@@ -188,7 +188,7 @@ message stands and the lead's choices stay live. The lead reads the reports in
 its next brief under *Your workers reported back*, never as your words, and a
 report alone wakes nobody: the daemon opens the pull request once every step
 is done, the reviewer reads it, and a failed step reaches the lead the way it
-always did. (`pulse task show` and `pulse msg list` tag a report with its job.)
+always did. (`hive task show` and `hive msg list` tag a report with its job.)
 
 `review` means the lead could not finish without you - the conversation says
 why - and the lead's brief tells it that your answer, however short (`use your
@@ -203,7 +203,7 @@ returns the task to *in progress*, the only backward move a task can make, and
 the lead takes it from there (a tapped *close* posts `POST
 /api/v1/tasks/<id>/status` `{status, words?}`, the words reaching the chat
 first so the lead reads why). Agents offer choices on their own messages with
-`pulse task reply TASK-012 --choice "Keep both" --choice "Drop the old
+`hive task reply TASK-012 --choice "Keep both" --choice "Drop the old
 one=done"` (up to six; `=done` closes the task with that label as your words,
 `=amend` opens the brief, plain labels reply). The daemon writes the stop to
 the chat itself - `I stopped TASK-012 (...): three jobs failed ...` - and the
@@ -265,7 +265,7 @@ made it and where its review stands; a verdict the reviewer would not make for
 you (*Your call*) joins **For you** with Accept and Decline, Accept making the
 task on the spot. You can suggest work yourself from the same panel - an agent
 reviews it the same way - and withdraw a suggestion of yours while it waits.
-See [Suggested work](board.md#suggested-work-pulse-task-suggest).
+See [Suggested work](board.md#suggested-work-hive-task-suggest).
 
 ## Sessions
 
@@ -327,7 +327,7 @@ The list is one list, grouped by state - **Needs your review** (a pull request
 the reviewer handed to you, with its reasons and the **Merge** button; these
 stay at the very top), **Working** (running or waiting on you), **In review**
 (nobody at it, and its work is on its way through a pull request: a task's
-once its jobs are done, a session's once its `pulse/chat-<id>` branch
+once its jobs are done, a session's once its `hive/chat-<id>` branch
 holds commits the default branch lacks - before the pull request is opened,
 while it is open or being reviewed, while changes are made and while a merge
 you asked for runs; the row moves to *Finished* or *Open* the moment the pull
@@ -422,8 +422,8 @@ An open session is three columns on a desktop - the list, the transcript,
 and the **canvas** - and on a phone the canvas sits under the message box; the
 open session fits the window - the transcript scrolls inside its card, the
 message box stays on screen, the list and the canvas scroll on their own - and
-a page left open across a PULSE update reloads itself when it reconnects to the
-new hub (the stream names its build in an `X-Pulse-Version` header), so no tab
+a page left open across a Hive update reloads itself when it reconnects to the
+new hub (the stream names its build in an `X-Hive-Version` header), so no tab
 keeps showing the old page.
 
 The canvas is a strip of tabs the way the Copilot app opens things beside its
@@ -494,11 +494,11 @@ middle of what you typed. The speech runs on this machine - NVIDIA's Nemotron
 streaming ASR, the open model Copilot ships for dictation, through ONNX
 Runtime inside the hub process - so no audio leaves the computer and no
 provider is involved. The first press opens a dialog that fetches what the
-model needs into `~/.pulse/voice` (ONNX Runtime 1.31.1 for this platform and
+model needs into `~/.hive/voice` (ONNX Runtime 1.31.1 for this platform and
 the model, about 2.5 GB, every file checked against a pinned SHA-256, resumed
 if interrupted, **Stop** keeps the parts) and shows the progress bar; a
-terminal does the same with `pulse voice setup`, and `pulse voice status`,
-`pulse voice transcribe FILE.wav` and `pulse voice remove [--all]` read,
+terminal does the same with `hive voice setup`, and `hive voice status`,
+`hive voice transcribe FILE.wav` and `hive voice remove [--all]` read,
 test and free it. Two models to choose from, in the dialog or with the
 `voice.model` setting: `nemotron-3.5-asr-streaming-0.6b` (default) hears
 25+ languages and picks the one spoken, or is told with `voice.language`
@@ -516,10 +516,10 @@ the memory, `DELETE /voice/model?id=…` (or `all=1`) the disk. The microphone
 needs the hub on `127.0.0.1`, `localhost` or https - browsers give no
 microphone to a plain http page on another host.
 
-Pick a project and the agent works in its own worktree on a `pulse/chat-<id>`
+Pick a project and the agent works in its own worktree on a `hive/chat-<id>`
 branch of that project's default branch, so your checkout stays clean. A Cargo
 project builds the way the daemon's own runs do: into one shared target per
-project, `~/.pulse/cache/cargo-target/<slug>/chat` (the worktree's `target/` is
+project, `~/.hive/cache/cargo-target/<slug>/chat` (the worktree's `target/` is
 a link to it), with `CARGO_BUILD_JOBS` at `daemon.build_jobs` (else half the
 CPUs), no debug info and no incremental caches - before this one session's
 `cargo test` wrote a 5.9 GB `target/` of its own on every core and, with the
@@ -538,7 +538,7 @@ opens the whole diff as a tab: old and new line numbers, a sticky header per
 file, files over 400 lines folded until you open them; the transcript and the
 message box never move, so you read and keep talking, and the list reloads
 itself when the branch moves. **Open PR for review** asks the agent to run the
-check and then `pulse land --project <slug> --branch pulse/chat-<id>`: the
+check and then `hive land --project <slug> --branch hive/chat-<id>`: the
 branch is pushed and a pull request opened against the upstream default
 branch, and nothing is merged locally. A session's branch left alone for
 ten minutes after its last commit is proposed the same way by the daemon's
@@ -549,25 +549,25 @@ branch from the upstream.
 
 Leave the project on **Let the agent decide** and the agent starts in a scratch
 folder with the list of your projects and their goals in its brief, reads
-around, and attaches the one the work belongs to by itself with `pulse session
+around, and attaches the one the work belongs to by itself with `hive session
 attach <slug>` - the move takes effect after that turn, the transcript carries
 over, and the session carries on in the worktree without being asked; one
 that spans several projects attaches each in turn. Sessions with no
-project share one memory file, `~/.pulse/memory/conversations.md`, so what one
+project share one memory file, `~/.hive/memory/conversations.md`, so what one
 learns the next one knows (a session on a project uses that project's
 memory, as its jobs do), and every brief tells the agent that the owner's words
-are PULSE's own - RSI, lead, board, ballot, evolve, land - and to look a word
-up before asking what it means: `pulse ask --all "..."` answers from the shared
-board of every project, `pulse guide` explains how PULSE works, `pulse lead
-list` names the standing leads, `pulse board --project <slug>` reads one
+are Hive's own - RSI, lead, board, ballot, evolve, land - and to look a word
+up before asking what it means: `hive ask --all "..."` answers from the shared
+board of every project, `hive guide` explains how Hive works, `hive lead
+list` names the standing leads, `hive board --project <slug>` reads one
 project's board.
 
 Files the agent saves for you - a screenshot, a report, an HTML page - go to a
-folder it knows as `$PULSE_ARTIFACTS` and appear under **Artifacts** as a list;
+folder it knows as `$HIVE_ARTIFACTS` and appear under **Artifacts** as a list;
 pick one and it opens as a tab on the canvas - images at their size, Markdown
 rendered, text as text, HTML and PDF in a frame, anything else as a download
 (every tab has **Download** too). Every finished session and job has a
-report PULSE builds ([Before/after reports](reports.md)): where the work
+report Hive builds ([Before/after reports](reports.md)): where the work
 stands, who did it, its commits and files, the checks and the screenshots.
 A finished session and a done task open it on the canvas by themselves, the
 "finished" line links it, and **See the report** above the list opens it in a
@@ -588,22 +588,22 @@ provider then refuses every request with it: *Invalid JSON format in tool call
 arguments*) is repaired as it loads, and a running session repairs its own
 history on that refusal and sends the request again, saying so in a note.
 **Archive** puts a session away for good (no message reopens it) and
-leaves its branch and folder where they are; `pulse remove project <slug>
+leaves its branch and folder where they are; `hive remove project <slug>
 --forget` drops its rows with the project's.
 
 When the hub restarts (a new build, the service), a turn it stopped on the
-way down carries on by itself once it is back (*PULSE is back after the
+way down carries on by itself once it is back (*Hive is back after the
 update and carries this turn on by itself*), and so do the messages that
 were still on their way to the agent then - the owner's next words, a
 parent's steering of its sub-session: each is kept with what the agent would
 have read, and passed on after the carried-on turn (*... then passes on the
 message that waited for it*). A turn cut by a crash rather than a clean stop,
-or a waiting message PULSE cannot pass on as it was (one with pictures), is
+or a waiting message Hive cannot pass on as it was (one with pictures), is
 left for you: the page says to send it again. A session that is stopped and
 waits on you this way reads **Stopped by a restart**.
 
-Everything is yours to script: `pulse session list [--all]`, `pulse session show
-<id>` and `pulse session wake [--id <id>] <message>` (`pulse chat` is the same command) print or do what the page shows, and `/api/v1/chat` (`GET` for the
+Everything is yours to script: `hive session list [--all]`, `hive session show
+<id>` and `hive session wake [--id <id>] <message>` (`hive chat` is the same command) print or do what the page shows, and `/api/v1/chat` (`GET` for the
 list - `conversations`, and `tasks` with each task's thread summed up and one
 entry per job with its latest harness session, the tasks in progress plus a
 week of finished ones, every one with `?all=1` - `POST` to start (`parent` with
@@ -637,9 +637,9 @@ its turn, the process keeps running inside the hub, and when it ends a note
 with its exit code and last output starts the next turn (closing or archiving
 the session stops what it kept; a hub restart ends it with a note saying
 so). Anything the agent cannot hold - a script it wrote, a cron job, a hook at
-the end of a pipeline, a job on another machine - says "I am done" with `pulse
+the end of a pipeline, a job on another machine - says "I am done" with `hive
 session wake "what ended and how"`: the session's id comes from
-`$PULSE_CONVERSATION` (set in every shell the agent starts) or `--id`, the
+`$HIVE_CONVERSATION` (set in every shell the agent starts) or `--id`, the
 command publishes a `chat.wake` event on the bus, and the hub turns it into a
 turn of that session (a wake sent while no hub runs is delivered when the
 next one starts; the hub keeps its place in `chat.wake.cursor`). The transcript
@@ -679,28 +679,28 @@ xcode docker`; *Reserved* when it is kept for the work that needs it,
 links to the setting that changes its words), and agents' requests for more
 machines (size, hours, why). Approve or deny; approved requests are provisioned
 by the configured provider (`compute.provider`: `azure`, `aws`, `gcp`, or
-`multipass` for a VM on the hub machine itself; `pulse compute providers` lists
+`multipass` for a VM on the hub machine itself; `hive compute providers` lists
 them) inside the caps you set. Every provider works through its own CLI logged
 in as the daemon's user (`az login`, `aws configure`, `gcloud auth login`, a
-running `multipassd`) - PULSE stores no cloud credential - boots Ubuntu 24.04
+running `multipassd`) - Hive stores no cloud credential - boots Ubuntu 24.04
 with the same cloud-init, learns the machine's ssh host key over a channel the
 provider vouches for before the first connection, and tags what it makes
-`pulse=hands` with the request id. Nothing is bought before the daemon has a
-linux `pulse` binary for the size's architecture to pair the machine with
-(`PULSE_HANDS_BINARY`, a `pulse-linux-amd64`/`-arm64` beside the hub's binary,
+`hive=hands` with the request id. Nothing is bought before the daemon has a
+linux `hive` binary for the size's architecture to pair the machine with
+(`HIVE_HANDS_BINARY`, a `hive-linux-amd64`/`-arm64` beside the hub's binary,
 or a cross-build from the brain project's checkout - `rustup target add
 x86_64-unknown-linux-musl`, plus `cargo-zigbuild` and `zig` on macOS), nor
-while there is no login source for the machine (`pulse executor token
+while there is no login source for the machine (`hive executor token
 --with-token`, or the brain's own harness sign-in): the request is held, not
 failed, and the hold is explained once a day. Once the machine answers, the
-daemon waits for cloud-init, pairs it as `pulse pair` would (the machine has
+daemon waits for cloud-init, pairs it as `hive pair` would (the machine has
 no Copilot login yet, so a probe that lacks only that leaves the hand paired
 and waiting rather than failing it), places the login over the admin session,
 and probes again; the hand is `active` and the request `ready` when that
 probe passes. Every step reaches the daemon log as `compute CR-NNN: ...` and
 the request's card on this page carries the latest one while it runs. A
 request that fails after that point carries the reason the way the daemon
-saw it - the probe's note (`under 10 GiB free on /srv/pulse`), the step that
+saw it - the probe's note (`under 10 GiB free on /srv/hive`), the step that
 failed - on its card and in the finding, releases what it created first (on
 Azure the VM and its public IP, VNet and NSG), and removes the executor row
 the pairing registered together with the `~/.ssh/config` blocks and
@@ -711,15 +711,15 @@ cannot leave one billing - and removes the `hands-cr-NNN` executors older
 daemons left behind once their machine is released. A request that failed before a machine was ready
 gives its hours back to the day's `compute.max_hours_per_day`: nothing was
 bought, so the retry that fixes the cause is not held by the attempt that found
-it. Each executor row offers the same preview-then-remove as `pulse remove
+it. Each executor row offers the same preview-then-remove as `hive remove
 executor`.
 
 **Add machine** on the same
 page takes a machine in without the terminal, three ways: *Pair* does what
-`pulse pair` does from an admin account on a Linux machine - the console
+`hive pair` does from an admin account on a Linux machine - the console
 answers at once, the pairing runs on the hub, and its report sits above the
 machines until you dismiss it; *Register* adds a machine you prepared by
-hand (`pulse executor add`, with a probe when asked); *Ask the cloud* makes
+hand (`hive executor add`, with a probe when asked); *Ask the cloud* makes
 a compute request in your name, approved on the spot
 ([Adding a machine from the console](machines.md#adding-a-machine-from-the-console)).
 
@@ -729,8 +729,8 @@ Runner caps, board rules, amendment quorum, the models the runs get
 (`worker_model` for the work that changes code - task, improve and experiment
 jobs; `light_model` for the rest - the lead, answers, ballots, reflects,
 onboarding, the sealed held-out call and the login check - which means
-`worker_model` while empty, so a cheaper model can take the routine: `pulse
-settings set worker_model claude-fable-5.1` and `pulse settings set light_model
+`worker_model` while empty, so a cheaper model can take the routine: `hive
+settings set worker_model claude-fable-5.1` and `hive settings set light_model
 claude-sonnet-5`; `measure_model` for the loop's fixture measurements,
 `worker_model` while empty, so the evaluator can be pinned while the worker
 changes; and the reasoning effort each of those asks for - `worker_reasoning`,
@@ -774,7 +774,7 @@ page and the chime, and the card says how to allow it. More than three things
 at once become one notification ("5 things wait for you").
 
 The choices and what has been told live in this browser's localStorage
-(`pulse.notify`, `pulse.notify.seen`), not in PULSE's settings: another
+(`hive.notify`, `hive.notify.seen`), not in Hive's settings: another
 browser, or another person on the console, decides for itself, and nothing
 reaches agents. Each thing notifies once - by its id (a question's post, a
 conversation's pending question, a task's latest lead message, a
@@ -792,19 +792,19 @@ Mac notifications.
 
 The standing jobs of every project on one page (`/automations/`): the ones
 each project keeps in its repository, one file per automation under
-[`.pulse/automations/`](board.md#the-projects-own-files-pulse) (and the older
-`schedules:` list of `.pulse/pulse.yaml`, still read), and the ones set by
-hand (`pulse schedule add`, or a lead), grouped by project under the
+[`.hive/automations/`](board.md#the-projects-own-files-hive) (and the older
+`schedules:` list of `.hive/hive.yaml`, still read), and the ones set by
+hand (`hive schedule add`, or a lead), grouped by project under the
 repository's state - the folder, how many files it holds, the list file when
 there is one, the default branch, when the daemon last applied them and any
 problem it wrote down. The folder's files come first, one line each: the file
 name, its state (*live*, *paused*, *held* with the problem beside it, or
 *pending* until the daemon's next pass), the cadence, the kind and the skill
 or script, with **Edit**. Below them a card per schedule shows the cadence,
-the kind, where it is kept (*in .pulse/automations/NAME.yaml*, *in
-.pulse/pulse.yaml* with its `#name`, or *set by you* / *set by AGENT*), the
+the kind, where it is kept (*in .hive/automations/NAME.yaml*, *in
+.hive/hive.yaml* with its `#name`, or *set by you* / *set by AGENT*), the
 next start, the runs so far, the last run and the last job; a check or
-watch whose script sits outside `.pulse/` carries a *script outside .pulse*
+watch whose script sits outside `.hive/` carries a *script outside .hive*
 mark and the path it belongs at. **History** opens what happened to the
 automation, newest first: each run of its script with the exit code, how
 long it took and the state it left (green or red, quiet or broken), the
@@ -813,7 +813,7 @@ turn of state with the finding posted, and every change by hand or by the
 file (added, changed and what changed, paused with its note, resumed, ended,
 run now) - with the last output in full at the top and the jobs it queued
 below; **Older** pages back through the rest. **Run now**, **Pause**,
-**Resume** and **End** are the `pulse schedule` verbs, in your name. What
+**Resume** and **End** are the `hive schedule` verbs, in your name. What
 the daemon said about a skill folder is the Skills page's business and does
 not show here.
 
@@ -823,12 +823,12 @@ script), a title that proposes the `name` - lowercase, digits and dashes;
 the file is named after it and it must be unique in the project - a cadence
 from the presets or typed (`45m`, `3d`), the clock for a cadence of whole
 days, the brief and an optional skill - or the script, which lives under
-`.pulse/` (`.pulse/automations/<name>.sh` is proposed; an edit may keep a
+`.hive/` (`.hive/automations/<name>.sh` is proposed; an edit may keep a
 script that already runs from outside), and the kind of job a
 red run queues - and under **More** the tier, the priority, the custom
 agent, how many times it runs and whether it starts paused. The preview
 beside the form is the file exactly as it will sit at
-`.pulse/automations/<name>.yaml` (or the item exactly as it will sit under
+`.hive/automations/<name>.yaml` (or the item exactly as it will sit under
 `schedules:`, when you edit one the list keeps), built and checked by the
 hub with the code the daemon applies the files with: the cadence, the kind,
 a script that exists on the default branch, a skill that is enabled for the
@@ -840,7 +840,7 @@ copy of the folder is clean and otherwise the commit is made against the
 branch itself with no working copy touched; nothing is pushed, the commit
 travels with your next push - and applies it at once with the daemon's
 sync, so the schedule is there in the same breath. **Keep in the store**
-sets it by hand, as `pulse schedule add` would, for a job that should not
+sets it by hand, as `hive schedule add` would, for a job that should not
 travel with the code. **Edit** on a repository-kept automation rewrites its
 file (or its list item) in place and commits; a new name moves the file in
 the same commit, and the old schedule ends as a new one starts; on a
@@ -881,7 +881,7 @@ provider's priced cost where the provider reports one (`runs.prompt_tokens`,
 `runs.completion_tokens`, `runs.cost`; the run log says
 `cost: 1500 prompt + 100 completion tokens, 0.04 (provider units)` and the
 `run.finish` event carries the same numbers). A task's **Work** feed shows
-each run's tokens and cost on its chapter line, and `pulse status` adds a
+each run's tokens and cost on its chapter line, and `hive status` adds a
 `cost today` row per job kind, the dearest kind first, beside an `outcomes`
 row counting how the day's runs were classified (`code` from the worker's
 `SUMMARY:` outcome code, `text` from the regex fallback, `none` without a
@@ -893,7 +893,7 @@ cost today task 12 runs, 4.1M prompt + 58.2k completion tokens, cost 3.10
 outcomes   10 code, 31 text, 1 none today (code = the worker's SUMMARY outcome code, text = regex fallback)
 ```
 
-`pulse status --json` carries both as `cost_today` and `outcomes_today`. No
+`hive status --json` carries both as `cost_today` and `outcomes_today`. No
 kind is capped or ranked by cost yet.
 
 Every worker run (`/harness/`) as the harness saw it: which job, agent, machine
@@ -949,11 +949,11 @@ clears when the tab closes. Asking changes nothing: the store gets one `ask`
 event (question length, model, how long it took - never the words). The answer
 comes from the model `ask.model` names, or the light model, or the main model
 when both are empty; **Settings → Harness → Models** has the picker (a fast
-model keeps answers under a few seconds), and `pulse settings set ask.model
+model keeps answers under a few seconds), and `hive settings set ask.model
 claude-haiku-5.5` is the terminal way. With no model signed in, or when the
 model is too slow or fails, the panel says so and shows the matching facts
 instead - the same lines the model would have read - so the box always answers.
-`pulse ask "what is blocked?" --project my-app` is the same from a terminal
+`hive ask "what is blocked?" --project my-app` is the same from a terminal
 (`--all` for every project, `--no-model` for the facts alone, `--json` for the
 answer with its sources), and `POST /api/v1/ask` with `{"project": "my-app",
 "question": "..."}` serves other tools; `GET /api/v1/ask` tells which model
@@ -969,5 +969,5 @@ the tick its run ended, since workers are not kept idle;
 **All** restores the whole roster. Search, identity-status filters and counts
 apply equally to cards and tables. Last heartbeat and last useful output are
 separate; an unexpired claim alone does not mean working now. Each card and
-`pulse agents` show what an agent is doing now: the job it holds, the thread it
+`hive agents` show what an agent is doing now: the job it holds, the thread it
 claimed and the executor it runs on.

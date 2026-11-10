@@ -382,7 +382,7 @@ export function CommandPaletteHost() {
               <PlugIcon aria-hidden="true" className={itemIcon} /> Connections
             </CommandItem>
             <CommandItem
-              value="page automations schedules standing jobs pulse.yaml"
+              value="page automations schedules standing jobs hive.yaml"
               className={itemStyle}
               onSelect={() => go(hrefs.automations())}
             >

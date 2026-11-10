@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { ChevronRightIcon, CpuIcon } from "lucide-react";
-import { daemonControlState, daemonHeadline } from "@/components/pulse/daemon-control-state";
-import { BrandLogo, logoFor } from "@/components/pulse/logo";
+import { daemonControlState, daemonHeadline } from "@/components/hive/daemon-control-state";
+import { BrandLogo, logoFor } from "@/components/hive/logo";
 import type { HarnessStatus, Runner, ServicePayload, SettingsPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { providerInfo } from "@/lib/providers";

@@ -1,7 +1,7 @@
-// PULSE pick helper - Pick & Polish for the hub's Browser tab.
+// Hive pick helper - Pick & Polish for the hub's Browser tab.
 //
 // A dev page includes this script (<script src="http://HUB/pick.js"></script>,
-// in development only); when the PULSE hub shows the page in its Browser tab
+// in development only); when the Hive hub shows the page in its Browser tab
 // and you press Pick, the hub asks this script to start picking, you hover
 // and click an element, and the script sends the hub what it is - tag, id,
 // classes, text, a CSS path, nearest React components, its box - so the hub
@@ -114,10 +114,10 @@
   function ensureOverlay() {
     if (overlay) return;
     overlay = document.createElement("div");
-    overlay.setAttribute("data-pulse-pick", "overlay");
+    overlay.setAttribute("data-hive-pick", "overlay");
     overlay.style.cssText = "position:fixed;z-index:2147483646;pointer-events:none;border:2px solid #0f8f8a;background:rgba(15,143,138,.12);border-radius:4px;box-shadow:0 0 0 1px rgba(255,255,255,.7);transition:all 60ms ease-out;display:none";
     label = document.createElement("div");
-    label.setAttribute("data-pulse-pick", "label");
+    label.setAttribute("data-hive-pick", "label");
     label.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;color:#fff;background:#0f8f8a;padding:2px 6px;border-radius:4px;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis;display:none";
     document.documentElement.appendChild(overlay);
     document.documentElement.appendChild(label);
@@ -151,7 +151,7 @@
 
   function targetAt(e) {
     var el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el || el.getAttribute("data-pulse-pick")) return null;
+    if (!el || el.getAttribute("data-hive-pick")) return null;
     if (el === document.documentElement || el === document.body) return null;
     return el;
   }
@@ -177,14 +177,14 @@
     swallow(e);
     var el = targetAt(e) || current;
     if (!el) return;
-    send({ type: "pulse-pick-picked", url: location.href, title: document.title, element: describe(el) });
+    send({ type: "hive-pick-picked", url: location.href, title: document.title, element: describe(el) });
     stop();
   }
 
   function onKey(e) {
     if (e.key === "Escape") {
       swallow(e);
-      send({ type: "pulse-pick-cancel" });
+      send({ type: "hive-pick-cancel" });
       stop();
     }
   }
@@ -221,13 +221,13 @@
 
   window.addEventListener("message", function (e) {
     var d = e.data;
-    if (!d || typeof d !== "object" || d.type !== "pulse-pick") return;
+    if (!d || typeof d !== "object" || d.type !== "hive-pick") return;
     if (e.source !== window.parent) return;
     // The first word from the hub names it; later ones must come from the same place.
     if (hub && e.origin !== hub) return;
     if (!hub) {
       hub = e.origin;
-      send({ type: "pulse-pick-hello", url: location.href, title: document.title });
+      send({ type: "hive-pick-hello", url: location.href, title: document.title });
     }
     if (d.on) start();
     else stop();
@@ -237,7 +237,7 @@
   // SPA move, so the address bar follows. The hub's origin is only known
   // after it speaks; before that the broadcast goes to the parent as-is.
   function hello() {
-    var msg = { type: "pulse-pick-hello", url: location.href, title: document.title };
+    var msg = { type: "hive-pick-hello", url: location.href, title: document.title };
     window.parent.postMessage(msg, hub || "*");
   }
   hello();

@@ -98,12 +98,12 @@ export function defaultCrumbs(pathname: string, search: URLSearchParams, project
   return crumbs;
 }
 
-// The phone's title: the last crumb, or the document title minus " · PULSE".
+// The phone's title: the last crumb, or the document title minus " · Hive".
 export function phoneTitle(crumbs: Crumb[], documentTitle: string): string {
   const last = crumbs[crumbs.length - 1];
   if (last?.label) return last.label;
-  const t = (documentTitle || "").replace(/\s*·\s*PULSE\s*$/, "").trim();
-  return t || "PULSE";
+  const t = (documentTitle || "").replace(/\s*·\s*Hive\s*$/, "").trim();
+  return t || "Hive";
 }
 
 // Where the phone's back arrow goes: the previous crumb that has a link.

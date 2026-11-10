@@ -10,7 +10,7 @@
       "executor": "",
       "provider": "copilot",
       "model": "claude-sonnet-4.5",
-      "cwd": "/home/owner/.pulse/work/job-429-retry",
+      "cwd": "/home/owner/.hive/work/job-429-retry",
       "status": "running",
       "exit_status": "",
       "submission": "",
@@ -23,7 +23,7 @@
       "started_at": "2026-09-11T06:58:00Z",
       "updated_at": "2026-09-11T07:26:02Z",
       "ended_at": "",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-001.json",
+      "trajectory": "/home/owner/.hive/harness/run-20260911-001.json",
       "cancel_requested_at": "2026-09-11T07:25:00Z"
     },
     {
@@ -36,7 +36,7 @@
       "executor": "vm-seven",
       "provider": "copilot",
       "model": "claude-sonnet-4.5",
-      "cwd": "/home/owner/.pulse/work/job-price-cache",
+      "cwd": "/home/owner/.hive/work/job-price-cache",
       "status": "submitted",
       "exit_status": "submitted",
       "submission": "SUMMARY: Cached price lookups per request and kept the existing API.\nFINDING: The previous path called lookupPrice once per line item.\nSUGGESTION: Add a fixture for mixed warm and cold cart requests before raising the latency target.",
@@ -49,7 +49,7 @@
       "started_at": "2026-09-11T05:30:00Z",
       "updated_at": "2026-09-11T05:42:00Z",
       "ended_at": "2026-09-11T05:42:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-002.json",
+      "trajectory": "/home/owner/.hive/harness/run-20260911-002.json",
       "cancel_requested_at": ""
     },
     {
@@ -58,11 +58,11 @@
       "job_id": "job-schema-index",
       "job_title": "Add events subject index",
       "agent": "fjord",
-      "project": "pulse",
+      "project": "hive",
       "executor": "",
       "provider": "copilot",
       "model": "gpt-4.1",
-      "cwd": "/home/owner/.pulse/work/job-schema-index",
+      "cwd": "/home/owner/.hive/work/job-schema-index",
       "status": "step_limit",
       "exit_status": "step_limit",
       "submission": "",
@@ -75,7 +75,7 @@
       "started_at": "2026-09-11T04:00:00Z",
       "updated_at": "2026-09-11T04:47:00Z",
       "ended_at": "2026-09-11T04:47:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-003.json",
+      "trajectory": "/home/owner/.hive/harness/run-20260911-003.json",
       "cancel_requested_at": ""
     },
     {
@@ -88,7 +88,7 @@
       "executor": "vm-seven",
       "provider": "copilot",
       "model": "gpt-5.5",
-      "cwd": "/home/owner/.pulse/work/job-auth-fixture",
+      "cwd": "/home/owner/.hive/work/job-auth-fixture",
       "status": "provider_error",
       "exit_status": "provider_error",
       "submission": "",
@@ -101,7 +101,7 @@
       "started_at": "2026-09-11T03:10:00Z",
       "updated_at": "2026-09-11T03:18:00Z",
       "ended_at": "2026-09-11T03:18:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-004.json",
+      "trajectory": "/home/owner/.hive/harness/run-20260911-004.json",
       "cancel_requested_at": ""
     },
     {
@@ -114,7 +114,7 @@
       "executor": "",
       "provider": "copilot",
       "model": "gpt-4.1",
-      "cwd": "/home/owner/.pulse/work/job-legacy-docs",
+      "cwd": "/home/owner/.hive/work/job-legacy-docs",
       "status": "cancelled",
       "exit_status": "cancelled",
       "submission": "",
@@ -127,7 +127,7 @@
       "started_at": "2026-09-11T02:00:00Z",
       "updated_at": "2026-09-11T02:04:00Z",
       "ended_at": "2026-09-11T02:04:00Z",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-005.json",
+      "trajectory": "/home/owner/.hive/harness/run-20260911-005.json",
       "cancel_requested_at": "2026-09-11T02:03:00Z"
     },
     {
@@ -140,7 +140,7 @@
       "executor": "retired-vm",
       "provider": "copilot",
       "model": "gpt-4.1",
-      "cwd": "/home/owner/.pulse/work/job-retired-executor",
+      "cwd": "/home/owner/.hive/work/job-retired-executor",
       "status": "lost",
       "exit_status": "lost",
       "submission": "",
@@ -153,7 +153,7 @@
       "started_at": "2026-09-11T01:00:00Z",
       "updated_at": "2026-09-11T01:04:00Z",
       "ended_at": "",
-      "trajectory": "/home/owner/.pulse/harness/run-20260911-006.json",
+      "trajectory": "/home/owner/.hive/harness/run-20260911-006.json",
       "cancel_requested_at": ""
     }
   ],

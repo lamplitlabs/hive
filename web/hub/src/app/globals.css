@@ -8,7 +8,7 @@
 @custom-variant collapsed (&:is(.sidebar-collapsed *));
 
 /*
-  PULSE hub design tokens - "the daily briefing".
+  Hive hub design tokens - "the daily briefing".
 
   The console reads like a calm briefing from your team: what needs you,
   what is moving, what is done. Five rules hold it together:
@@ -43,7 +43,7 @@
   Utilities kept for the components that use them (now flat): tnum,
   anywhere, bg-brand, text-brand, shadow-card, shadow-pop, shadow-glow,
   surface-tint, surface-glass, surface-hero, surface-raised, glossy, lift,
-  ring-soft. New: surface-you, text-you, bg-you, border-you, pulse-draw.
+  ring-soft. New: surface-you, text-you, bg-you, border-you, hive-draw.
 */
 
 @font-face {
@@ -665,20 +665,20 @@ html[data-awake="holding"] body::before {
   }
 }
 
-/* The pulse line draws itself once, the console's one moment of motion on load. */
-@keyframes pulse-draw {
+/* The hive line draws itself once, the console's one moment of motion on load. */
+@keyframes hive-draw {
   from {
-    stroke-dashoffset: var(--pulse-length, 320);
+    stroke-dashoffset: var(--hive-length, 320);
   }
   to {
     stroke-dashoffset: 0;
   }
 }
-@utility pulse-draw {
-  stroke-dasharray: var(--pulse-length, 320);
+@utility hive-draw {
+  stroke-dasharray: var(--hive-length, 320);
   stroke-dashoffset: 0;
   @media (prefers-reduced-motion: no-preference) {
-    animation: pulse-draw 1.4s var(--ease-out-soft) 0.15s both;
+    animation: hive-draw 1.4s var(--ease-out-soft) 0.15s both;
   }
 }
 @keyframes shimmer {
@@ -876,7 +876,7 @@ html[data-awake="holding"] body::before {
   }
 }
 
-/* The cartoon layer for the whole console (pulse/mascots.tsx and the shared
+/* The cartoon layer for the whole console (hive/mascots.tsx and the shared
    components): things arrive with a small rise, a number pops when it
    changes, Pip floats and waves, the live dot beats, a hovered nav icon
    wiggles, a pressed button squishes, a card lifts. Every motion is short
@@ -914,7 +914,7 @@ html[data-awake="holding"] body::before {
     transform: translateY(-5px);
   }
 }
-/* Pip's wave: the whole arm pivots at the shoulder (pulse/mascots.tsx sets
+/* Pip's wave: the whole arm pivots at the shoulder (hive/mascots.tsx sets
    the origin in the drawing's own units), two beats and a rest, like a
    person waving hello rather than a windscreen wiper. */
 @keyframes wave-hand {
@@ -1150,7 +1150,7 @@ html[data-awake="holding"] body::before {
     display: none;
   }
 }
-.pulse-mark-path {
+.hive-mark-path {
   stroke-dasharray: 380;
   stroke-dashoffset: 0;
 }
@@ -1190,9 +1190,9 @@ html[data-awake="holding"] body::before {
   .nav-item:focus-visible .nav-icon {
     animation: nav-wiggle 0.5s var(--ease-out-soft) 1;
   }
-  .brand-link:hover .pulse-mark-path {
-    animation: pulse-draw 0.9s var(--ease-out-soft) 1;
-    --pulse-length: 380;
+  .brand-link:hover .hive-mark-path {
+    animation: hive-draw 0.9s var(--ease-out-soft) 1;
+    --hive-length: 380;
   }
   .lift:hover {
     transform: translateY(-2px);
@@ -1472,73 +1472,73 @@ html[data-awake="holding"] body::before {
 }
 
 /* Markdown bodies (records, briefs, chat). Readable first. */
-.prose-pulse {
+.prose-hive {
   @apply text-base leading-[1.6] anywhere;
   max-width: 75ch;
 }
-.prose-pulse > :first-child {
+.prose-hive > :first-child {
   margin-top: 0;
 }
-.prose-pulse h1,
-.prose-pulse h2,
-.prose-pulse h3,
-.prose-pulse h4 {
+.prose-hive h1,
+.prose-hive h2,
+.prose-hive h3,
+.prose-hive h4 {
   @apply mt-6 mb-2 font-semibold tracking-tight text-foreground;
 }
-.prose-pulse h1 {
+.prose-hive h1 {
   @apply text-xl;
 }
-.prose-pulse h2 {
+.prose-hive h2 {
   @apply text-lg;
 }
-.prose-pulse h3 {
+.prose-hive h3 {
   @apply text-base;
 }
-.prose-pulse p,
-.prose-pulse ul,
-.prose-pulse ol,
-.prose-pulse blockquote,
-.prose-pulse pre,
-.prose-pulse table {
+.prose-hive p,
+.prose-hive ul,
+.prose-hive ol,
+.prose-hive blockquote,
+.prose-hive pre,
+.prose-hive table {
   @apply my-3;
 }
-.prose-pulse ul {
+.prose-hive ul {
   @apply list-disc pl-5;
 }
-.prose-pulse ol {
+.prose-hive ol {
   @apply list-decimal pl-5;
 }
-.prose-pulse li {
+.prose-hive li {
   @apply my-1;
 }
-.prose-pulse a {
+.prose-hive a {
   @apply text-link underline underline-offset-2 hover:text-foreground;
 }
-.prose-pulse code {
+.prose-hive code {
   @apply rounded-md bg-muted px-1 py-0.5 font-mono text-[13px];
 }
-.prose-pulse pre {
+.prose-hive pre {
   @apply overflow-x-auto rounded-lg border bg-muted/60 p-3 text-[13px] leading-5;
 }
-.prose-pulse pre code {
+.prose-hive pre code {
   @apply bg-transparent p-0;
 }
-.prose-pulse blockquote {
+.prose-hive blockquote {
   @apply border-l-2 border-primary/40 pl-3 text-muted-foreground;
 }
-.prose-pulse table {
+.prose-hive table {
   @apply w-full border-collapse text-[13px];
 }
-.prose-pulse th,
-.prose-pulse td {
+.prose-hive th,
+.prose-hive td {
   @apply border px-2 py-1 text-left align-top;
 }
-.prose-pulse th {
+.prose-hive th {
   @apply bg-muted/60 font-semibold;
 }
-.prose-pulse hr {
+.prose-hive hr {
   @apply my-5 border-border;
 }
-.prose-pulse input[type="checkbox"] {
+.prose-hive input[type="checkbox"] {
   @apply mr-1.5 align-middle;
 }

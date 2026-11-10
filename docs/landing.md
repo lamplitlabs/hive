@@ -1,7 +1,7 @@
 # Delivery: every branch becomes a pull request
 
 Workers commit in their own clones and never push; the runner copies each
-job's commits to a `pulse/<agent>/<job>` branch in your checkout. From there
+job's commits to a `hive/<agent>/<job>` branch in your checkout. From there
 the daemon delivers: every finished branch is pushed to the project's upstream
 and becomes a pull request against the upstream default branch, a `review` job
 reads it and merges it or hands it to you ([The reviewer](review.md)), and the
@@ -10,7 +10,7 @@ Nothing merges into the local default branch any more: the forge holds the
 merge, the review and the pipeline, and the checkout follows it. (A project
 with no upstream at all - no remote for its default branch and no `origin` -
 has no forge to hold them, so its finished branches land locally as before;
-the daemon says so in its delivery line and `pulse land --dry-run` says so
+the daemon says so in its delivery line and `hive land --dry-run` says so
 per project.)
 
 Before this (ADR-024) the daemon merged each finished branch into the local
@@ -24,15 +24,15 @@ links to it stay valid.
 
 A delivery pass runs inside the daemon's maintenance pass (its stage is named
 `delivery` in the pass summary) - every tick, on its own thread, so a slow
-`gh` call never holds dispatch, heartbeats or STOP - and by hand as `pulse
+`gh` call never holds dispatch, heartbeats or STOP - and by hand as `hive
 land`. It delivers four kinds of work:
 
 | Kind | What | Branch | When |
 | --- | --- | --- | --- |
-| `task` | the owner's task: every job the lead cut for it, as one pull request | `pulse/task-<id>`, built in a scratch worktree (`.git/pulse-task-pr/<task>`) from the default branch plus every finished job branch of the task, each merged with its own merge commit in finished order | once no job of the task is queued, running or blocked and at least one finished job has a branch that no pull request carries yet; the branch is rebuilt and pushed again, and the same pull request updated, when a later job of the task finishes |
-| `job` | one finished job that belongs to no task: suggestion work, a security update, a lead's or a schedule's job, a pipeline or setup fix, research, a handoff | `pulse/<agent>/<job>`, pushed as the runner wrote it | when the job is `done` with a branch; a branch that moves while its pull request is open is pushed again and the pull request updated |
+| `task` | the owner's task: every job the lead cut for it, as one pull request | `hive/task-<id>`, built in a scratch worktree (`.git/hive-task-pr/<task>`) from the default branch plus every finished job branch of the task, each merged with its own merge commit in finished order | once no job of the task is queued, running or blocked and at least one finished job has a branch that no pull request carries yet; the branch is rebuilt and pushed again, and the same pull request updated, when a later job of the task finishes |
+| `job` | one finished job that belongs to no task: suggestion work, a security update, a lead's or a schedule's job, a pipeline or setup fix, research, a handoff | `hive/<agent>/<job>`, pushed as the runner wrote it | when the job is `done` with a branch; a branch that moves while its pull request is open is pushed again and the pull request updated |
 | `experiment` | a kept evolve experiment | the experiment's branch | when the measurement says keep ([Evolve](self-improvement.md#evolve)); the measurement summary is the pull request body |
-| `proposed` | a branch proposed by hand, or a conversation's branch | the branch itself; `pulse/chat-<id>` for a conversation | `pulse land --project X --branch B` at once; a conversation branch once it holds commits the default branch lacks and its last commit is older than ten minutes, so an agent still at work does not get a pull request of half its change |
+| `proposed` | a branch proposed by hand, or a conversation's branch | the branch itself; `hive/chat-<id>` for a conversation | `hive land --project X --branch B` at once; a conversation branch once it holds commits the default branch lacks and its last commit is older than ten minutes, so an agent still at work does not get a pull request of half its change |
 
 What is not delivered: a job's branch while another job of its task is still
 queued or running (the task is one pull request, so the reviewer reads the
@@ -48,7 +48,7 @@ own - and, while `landing.ui_report` is `require`, a conversation branch
 whose change has a face and whose session left no before/after report: the
 session is woken once with what to do, and its pull request opens when the
 report shows the change, or an hour after the ask for the owner to merge
-([Before/after reports](reports.md)). The first push of a branch is a plain `--force` (the branch is PULSE's
+([Before/after reports](reports.md)). The first push of a branch is a plain `--force` (the branch is Hive's
 own); a push onto an open pull request is `--force-with-lease` against the
 commit the last push left there, so a branch someone moved on the forge is
 not overwritten. A pass opens at most ten pull requests per project
@@ -64,7 +64,7 @@ every finished branch.
 
 ## The pull request
 
-A pull request is PULSE's words about the work before its diff, so the
+A pull request is Hive's words about the work before its diff, so the
 reviewer and you read what was meant first. A task's is titled `<task id>:
 <task title>`; its body names the task, lists the jobs with their branches
 and says that the reviewer reviews it, that merging it closes the task and
@@ -77,12 +77,12 @@ and archive ids, the summary with the baseline and the variant scores, the
 fixtures that moved and the verdict, and the job and branch; merging it
 finalizes the experiment. A proposed branch's title is its last commit's
 subject, and its body says who proposed it (a conversation by id, or
-`pulse land --branch` by hand) and lists the commits it adds over the
+`hive land --branch` by hand) and lists the commits it adds over the
 upstream default branch.
 
-The commits are the runner's: each carries its `Pulse-Agent`, `Pulse-Job` and
-`Pulse-Executor` trailers and the run key's signature, and `pulse verify
-<ref>` checks that they match the run that made it (ADR-022; `pulse signers`
+The commits are the runner's: each carries its `Hive-Agent`, `Hive-Job` and
+`Hive-Executor` trailers and the run key's signature, and `hive verify
+<ref>` checks that they match the run that made it (ADR-022; `hive signers`
 lists the trusted keys). The `land.pr` event names the pull request (`number`,
 `url`, `title`), the branches (`head`, `base`, `remote`), the commits (`from`,
 the merge base with the default branch; `to`, the head pushed; `commits`, how
@@ -95,17 +95,17 @@ pushed onto an open pull request after the reviewer asked for changes
 
 ## Stacked pull requests
 
-A project's pull requests form one stack. While a pull request of PULSE's
+A project's pull requests form one stack. While a pull request of Hive's
 is open, the next one is built on it rather than beside it: a task's branch
 is rebuilt from the head of the open pull request instead of the default
 branch, a job's, an experiment's or a hand-proposed branch has that head
-merged in (a merge commit on PULSE's own branch, in a scratch worktree),
+merged in (a merge commit on Hive's own branch, in a scratch worktree),
 and the pull request is opened with `--base` the open pull request's branch.
 Two open pull requests therefore never hold changes to the same lines that
 meet for the first time at merge time. The one a new pull request goes on is
 the **top**: the stacking pull request opened last; its `land.pr` records
 the branch as `base` and the pull request as `stack_on`. A conversation's
-pull request (`pulse/chat-<id>`) is never stacked and never stacked on: the
+pull request (`hive/chat-<id>`) is never stacked and never stacked on: the
 hub keeps its branch checked out in a worktree of its own, so nothing is
 merged into it and nothing is built on it. It targets the default branch
 whatever is open, and the next pull request of another kind goes on the
@@ -116,17 +116,17 @@ default branch, so its branch goes out based on the default branch, never
 on another open pull request, and nothing is built on it - a pull request
 merged into a pull request strands its change when the one below is closed
 or squashed ([Experiment pull requests](#experiment-pull-requests)). A
-`pulse review`'s fix goes onto the pull request it fixes, wherever that
+`hive review`'s fix goes onto the pull request it fixes, wherever that
 stands.
 
 A worker may build on the stack itself: a follow-up task whose brief names
 the sibling's branch and commit (TASK-078 on TASK-077's, 2026-11-05) puts
 its clone on that commit and commits on top. The landing's identity check
 (ADR-022) then answers only for the commits past the default branch as it
-stands now and past PULSE's own `pulse/*` branches - never a conversation's
-`pulse/chat-*`, which nothing is built on, and never the branch under check
+stands now and past Hive's own `hive/*` branches - never a conversation's
+`hive/chat-*`, which nothing is built on, and never the branch under check
 itself. The sibling's commits passed that check when their own branch
-landed, and carry their own run's signature for `pulse verify`; the run log
+landed, and carry their own run's signature for `hive verify`; the run log
 says `N of the M commit(s) are already on the project's own branches` and
 the delivery stacks the pull request on the sibling's as it would any other.
 Until 2026-11-05 the check judged every commit past the clone's base as this
@@ -136,13 +136,13 @@ request had merged while the run was on, since the base stays where the
 clone started.
 
 The stack is plain git branches and explicit bases, nothing a forge keeps
-for PULSE. When the pull request below merges, the pass moves every pull
+for Hive. When the pull request below merges, the pass moves every pull
 request that targeted its head onto its own base (`gh pr edit <n> --base`;
 the default branch when the merged one was the bottom) and writes a fresh
 `land.pr` for each with the new `base`, `stack_on` for the new one below or
 absent, `opened` false and `retargeted_from` naming the old base; a forge
 failure leaves no event and the next pass tries again. GitHub moves a pull
-request itself when the branch below is deleted; PULSE does not count on it.
+request itself when the branch below is deleted; Hive does not count on it.
 A pull request below that is closed unmerged leaves its commits in the one
 above, and moving that one down would carry the rejected work into the
 base through its merge; so the pass rebuilds it instead: the branch as the
@@ -165,14 +165,14 @@ before: a task's branch to a rebase job whose brief names the pull request
 it must go onto, a job's branch to a `land.pr-held` hold that names the
 files and the pull request.
 
-Merging a stack needs merge commits, which is what PULSE's reviewer and the
+Merging a stack needs merge commits, which is what Hive's reviewer and the
 hub's Merge button use (`gh pr merge --merge`). A squash would land the
 lower pull request as one new commit the upper one does not have, and the
 upper would show the lower's changes again as its own. The reviewer takes
 the stack bottom up: only a pull request whose base is the default branch
 is queued for review (the log says `#8 stacked on #7: reviewed after #7
-merges` for the rest); `pulse review merge 8`, and the Merge button, refuse
-a stacked pull request and name the one that must merge first; `pulse
+merges` for the rest); `hive review merge 8`, and the Merge button, refuse
+a stacked pull request and name the one that must merge first; `hive
 review list` shows `stacked on #7` on its line. Nothing you merge yourself
 by hand needs a different order: merge the bottom and the pass moves the
 rest down within a pass.
@@ -180,7 +180,7 @@ rest down within a pass.
 ## Experiment pull requests
 
 Each pass looks after an experiment's open pull request
-(`crates/pulse-runner/src/delivery/experiments.rs`) on top of what any open
+(`crates/hive-runner/src/delivery/experiments.rs`) on top of what any open
 pull request gets:
 
 - **Its change is on the default branch already** - landed by a squash, a
@@ -207,7 +207,7 @@ A forge or push failure leaves no event and is tried again next pass.
 
 ## Polling and bookkeeping
 
-Each pass asks GitHub about every pull request PULSE opened and has no verdict
+Each pass asks GitHub about every pull request Hive opened and has no verdict
 for yet (one `gh pr list --state all` per repository, `gh pr view <n>` for a
 number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
 `headRefOid`, `mergeable`, `mergeStateStatus` and `statusCheckRollup`):
@@ -224,7 +224,7 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   event is the same; the reviewer's own record is `review.merged`
   ([The reviewer](review.md)). The pull requests stacked on it move onto its
   base ([Stacked pull requests](#stacked-pull-requests)). A conversation's
-  pull request (`pulse/chat-<id>`) finishes the conversation as well: the
+  pull request (`hive/chat-<id>`) finishes the conversation as well: the
   pass says so on the bus (`chat.finish`, subject the conversation, with the
   text *pull request #N merged into main; this session is finished*) and the
   hub's wake loop ends the session there - after a turn in flight, never
@@ -232,7 +232,7 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
   picks the event up from its cursor when it starts ([Sessions](console.md#sessions)).
   A session with a sub-session still at work - working, waiting for you, or
   stopped by a restart - stays open instead, with a note naming each one
-  (*PULSE kept this session open: ... is not done*): the sub-session's report
+  (*Hive kept this session open: ... is not done*): the sub-session's report
   comes back to it, its agent's join may add commits to the branch, which go
   out as a new pull request, and its agent or you finish it.
 - **Closed without merging** - `land.pr-closed`. The branches are cleared
@@ -255,7 +255,7 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
 
 The pass remembers what it delivered in the event log alone: the newest of
 `land.pr`, `land.merged` and `land.pr-closed` for a task, job or branch says
-whether a pull request is open, so a daemon restart loses nothing and `pulse
+whether a pull request is open, so a daemon restart loses nothing and `hive
 events --action 'land.*'` is the whole history.
 
 `gh` is the GitHub CLI logged in on this machine; its login never reaches git.
@@ -267,7 +267,7 @@ comes back 401, 403 or 404 and remembers, per repository, the one that
 answered, for as long as it runs; the list of logins itself is read from `gh
 auth status` once every ten minutes. An error names the account and the
 command, and no token is ever written to a log, an event or an error. The
-same selection serves the pull requests, the reviewer's `pulse review`
+same selection serves the pull requests, the reviewer's `hive review`
 commands and the pipeline watcher below; git's own push and fetch use the
 machine's credentials or `push.credential`, never `gh`
 ([Credentials](#credentials)).
@@ -284,7 +284,7 @@ or no sha from an older `gh`) waits for the next pass. Four outcomes:
   or `mergeStateStatus` `DIRTY`: the base - the default branch, or the pull
   request below when the pull request is stacked - moved after the head was
   pushed) - the pass fetches the head and the base, merges the base into the
-  head in a scratch worktree of the checkout (`.git/pulse-pr-refresh/<head>`,
+  head in a scratch worktree of the checkout (`.git/hive-pr-refresh/<head>`,
   removed whatever happens) and pushes the merge onto the pull request with
   `--force-with-lease` on the tip GitHub named. `land.pr-refreshed` records
   it (`head_sha` the old tip, `new_sha` the merge), and a `land.pr` naming
@@ -339,23 +339,23 @@ around a merge; with it off the branch is left alone, the daemon records
 project, so the log does not fill with the same line) and tries again on the
 next pass - commit or stash your changes and the branch follows. A local
 default branch that has diverged from the upstream - commits of its own that
-the forge lacks, which only a `pulse land --branch B --local` or a merge by
+the forge lacks, which only a `hive land --branch B --local` or a merge by
 hand makes now - is not merged for you: on the default branch the
 fast-forward fails and `land.fast-forward` says so (`ok` false, `why`); on
 another branch the ref is not moved. Push or reset the local commits and the
 branch follows again.
 
-Following the upstream is what keeps PULSE updating itself: the brain project
-(PULSE on the machine that runs it) rebuilds and restarts the daemon when its
+Following the upstream is what keeps Hive updating itself: the brain project
+(Hive on the machine that runs it) rebuilds and restarts the daemon when its
 local default branch moves ([Services and self-update](runner.md#services-and-self-update)), and
 with the merge on the forge, the fast-forward is how a merged change reaches
-the running binary. The pass fast-forwards whether or not anything of PULSE's
+the running binary. The pass fast-forwards whether or not anything of Hive's
 merged, so a change you merged on GitHub by hand reaches the checkout within a
 pass too.
 
 ## Events
 
-Every event's subject is the project slug; `pulse watch --project X --action
+Every event's subject is the project slug; `hive watch --project X --action
 'land.*'` streams them (`--since 0 --detail` replays them), and the hub lists
 them at `GET /api/v1/events?project=X&action=land.*`.
 
@@ -393,7 +393,7 @@ are taught `land.merged`.
 A branch the pass cannot deliver is held with `land.pr-held` and the reason in
 `note`, shown on the task's conversation and on the hub's row, and tried again
 only when the work changes (a new job of the task finishes, a branch of it
-appears or moves to a new commit) or when you propose the branch by hand with `pulse land
+appears or moves to a new commit) or when you propose the branch by hand with `hive land
 --branch` - a hold is not retried blind every tick, because the reasons below
 do not clear by themselves:
 
@@ -435,7 +435,7 @@ A task's conversation shows one delivery line under its title, read from the
 same events: *PR #n open, waiting for review*, then *PR #n is being reviewed*
 while the review job runs, then one of *Needs your review: PR #n — <the
 reviewer's reasons>* with a **Merge** button (the button records `review.ask`,
-and the daemon merges as you on its next pass - the same as `pulse review
+and the daemon merges as you on its next pass - the same as `hive review
 merge <n> --by owner`), *Changes requested on PR #n: <note>. Follow-up <job>
 is queued.*, *Merging PR #n…*, *The review of PR #n failed* (with the button
 too) and *Merged*. A finished step whose branch still waits for the task's
@@ -447,7 +447,7 @@ land* and *Reviewing* groups are gone with the local landing they described.
 
 ## By hand
 
-- `pulse land [--project X | --all]` runs one delivery pass now: it pushes the
+- `hive land [--project X | --all]` runs one delivery pass now: it pushes the
   ready branches, opens or updates their pull requests, polls the open ones
   and fast-forwards the local default branch. It prints one line per pull
   request (`task pr <slug> <task>: #n opened|updated <url>`, `job pr <slug>
@@ -457,29 +457,29 @@ land* and *Reviewing* groups are gone with the local landing they described.
   without an upstream prints `<slug>: no upstream, landing locally` and the
   local landing's lines. `--limit` is accepted for older scripts and does
   nothing: a pass opens at most ten pull requests per project.
-- `pulse land --dry-run` lists what the next pass would deliver, per project,
+- `hive land --dry-run` lists what the next pass would deliver, per project,
   without pushing anything: where the pull requests go (`pull requests go to
   origin/main <url>`, or `no upstream, finished branches land locally on
   main`), then each task with its jobs and branches, each job's branch and
   whether it becomes a pull request or a push onto one, and each conversation
   branch with how far ahead it is and how old its last commit is.
-- `pulse land --project X --branch B` proposes `B` as a pull request: the
+- `hive land --project X --branch B` proposes `B` as a pull request: the
   branch is pushed and a pull request opened from it into the upstream default
   branch, delivered and reviewed like any other; it prints `<slug> proposed: B
   #n <url>`, or says the branch is delivered already (`--propose` is accepted
   as an alias; a conversation's **Open PR for review** button runs the same).
-  A branch not under `pulse/` counts as a person's to the reviewer, so it is
+  A branch not under `hive/` counts as a person's to the reviewer, so it is
   handed to you rather than merged ([The complexity
   rule](review.md#the-complexity-rule)).
-- `pulse land --project X --branch B --local` is the escape hatch: it merges
+- `hive land --project X --branch B --local` is the escape hatch: it merges
   `B` into the local default branch the way the old landing did (the verify
   command first unless `--no-verify`, then a fast-forward or a `Land …` merge
   commit) and warns that the local default branch will be ahead of its
   upstream until that is pushed or reset, and that the daemon only ever
   fast-forwards it. Use it when the forge is unreachable and a change cannot
   wait; the rest of the time, propose the branch.
-- `pulse review …` reads and decides pull requests ([The
-  reviewer](review.md#the-verdict-commands)); `pulse pipeline` shows what the
+- `hive review …` reads and decides pull requests ([The
+  reviewer](review.md#the-verdict-commands)); `hive pipeline` shows what the
   merges set running ([Pipelines](#pipelines-what-a-push-set-running-on-github)).
 
 ## Moving from the local landing
@@ -503,7 +503,7 @@ value is ignored. `landing.push` is kept so an older store's
 value still parses, but no code reads it: the daemon pushes branches and
 never the default branch, and the merge is the forge's. `landing.auto_stash`
 keeps its meaning for the fast-forward of a dirty checkout
-([above](#the-local-default-branch-follows-the-upstream)) and for `pulse land
+([above](#the-local-default-branch-follows-the-upstream)) and for `hive land
 --local`; `landing.verify_memo` and `landing.verify_memo_hours` govern the
 local landings and the run's own check ([The verify
 command](#the-verify-command)). `landing.base_red_retry_minutes` and
@@ -511,7 +511,7 @@ command](#the-verify-command)). `landing.base_red_retry_minutes` and
 that find the default branch red or its setup broken ([A red default
 branch](#a-red-default-branch)). `push.credential` is used for the push and
 the fetch alike ([Credentials](#credentials)). Patches the old flow saved
-under `~/.pulse/patches/<slug>/` stay where they are; only a local landing
+under `~/.hive/patches/<slug>/` stay where they are; only a local landing
 writes there now.
 
 What the local flow had, in one paragraph each, so the older events and
@@ -532,7 +532,7 @@ settings read right:
   and the chain code are removed, and a stored value is ignored. Older stores
   still hold `land.batch` events as history.
 - **The landing lock and parallel landings** (`landing.parallel`). One lock
-  per project (`.git/pulse-land.lock`) kept landings serial; a lock left by a
+  per project (`.git/hive-land.lock`) kept landings serial; a lock left by a
   daemon killed mid-landing froze the project's queue until it expired, 30
   minutes at a time. There is no lock: the pass pushes and reads, and nothing
   it does needs the checkout to hold still.
@@ -546,7 +546,7 @@ settings read right:
   commits the upstream lacked onto its tip, with a `task` job per commit that
   could not be re-applied. The local default branch has no commits of its own
   any more, so there is nothing to re-apply: it fast-forwards.
-- **Landing hold notes.** `pulse status` and the hub carried a `landing` line
+- **Landing hold notes.** `hive status` and the hub carried a `landing` line
   (how many branches waited and why: a red base, a refused push, a young
   lockfile, an owner-only path). A branch that cannot be delivered is
   `land.pr-held` on its own task or job, and a pull request that waits for a
@@ -585,12 +585,12 @@ watcher and the credentials the daemon pushes and fetches with.
 
 ### The verify command
 
-The verify command is the project's `verify_cmd` (`pulse init PATH --verify
+The verify command is the project's `verify_cmd` (`hive init PATH --verify
 CMD` sets or replaces it; re-registering keeps everything else); a project
 registered without one adopts its recipe's `suggested_check` the first time the
 daemon or a run reads a recipe that parses - once, with a `finding` on the
 project's `runner/verify` thread and a `verify.adopted` event - so a project is
-never left delivering unchecked work because nobody passed `--verify` (`pulse
+never left delivering unchecked work because nobody passed `--verify` (`hive
 env status` shows both when they differ, and an owner's own command is never
 replaced; before this, seven of eleven projects on one machine had no verify
 command and landed every job unchecked, three of them with a `make test`
@@ -600,7 +600,7 @@ The command runs where the work is made: in the worker clone's pre-commit hook
 at every commit, so a commit that fails the check is never made, and once more
 when the run ends, on the clone as the worker left it - unless the clone is
 clean and its committed tree is the one the hook just passed: the hook leaves
-a memo of the tree and the command under `~/.pulse/verified/<slug>/`, and a
+a memo of the tree and the command under `~/.hive/verified/<slug>/`, and a
 run that finds a fresh one (`landing.verify_memo`, `landing.verify_memo_hours`)
 says `verify skipped: tree <tree> already passed this check on this store` and
 records `verified earlier by hook at <when>` as its verification rather than
@@ -640,7 +640,7 @@ the daemon plans the fix (`landing.setup_repair`, default `on`): one Tier 1
 command, the exit code and the last lines), briefed with the base commit, the
 recipe file, the command and the output, and told the three ways such a setup
 breaks and how to prove each fixed: the recipe names paths or tools the tree no
-longer has (`pulse env set --project SLUG --file …`, and `pulse init PATH
+longer has (`hive env set --project SLUG --file …`, and `hive init PATH
 --verify` for a verify command that moved with them), a lockfile out of step
 with its manifest (regenerated only at the versions the manifest already pins,
 since the release-age rule reads every new version it adds), or the tree
@@ -666,23 +666,23 @@ its `overrides` held every run the same way.
 
 ### Workers and paired hands
 
-Each worker is one `pulse harness run` process (the daemon's own binary here;
-on a paired hand the shipped `pulse-hands` binary, which `/usr/local/bin/pulse`
+Each worker is one `hive harness run` process (the daemon's own binary here;
+on a paired hand the shipped `hive-hands` binary, which `/usr/local/bin/hive`
 links to) given the brief, the clone, the limits and the model from Settings,
 one minute less than `minutes_per_job` so it can stop with a report of its own,
 and the run id as its session; its stdout is the report the runner reads. A
 paired hand needs the same sign-in once: the native harness reuses the brain's
 stored provider login during heal/provision (a machine the daemon buys is
 paired first and logged in right after, before the probe that makes it
-active), and `pulse executor login NAME
---admin admin@host` copies that login to the hand's `pulse` user
+active), and `hive executor login NAME
+--admin admin@host` copies that login to the hand's `hive` user
 (`--with-token` still reads a token from stdin; `--remove` forgets it). The
-hand's probe reports `harness=yes|no` and the `pulse` build it runs. The probe
+hand's probe reports `harness=yes|no` and the `hive` build it runs. The probe
 also refuses a hand whose workdir filesystem has under `daemon.min_free_mb`
 (default 10240, ten gigabytes: a build and the clones beside it, since a run
 that hits ENOSPC mid-build is lost work) megabytes free and names that path in
 its note; 0 turns the check off. A hand that was drained but never active
-(added with `pulse executor add`, registered in the console, or paired while
+(added with `hive executor add`, registered in the console, or paired while
 the host was still booting) becomes active on its first passing probe,
 including the daemon's own; a hand drained by the owner, by errors or by the
 login gate still needs a human probe.
@@ -695,11 +695,11 @@ under floor: <free> MB free on <path> (daemon.min_free_mb <floor>)`; after
 fifteen minutes it writes one runner finding that says to free space or adjust
 the floor. It does not only wait for you: while the disk stays under the floor,
 each maintenance pass (at most every thirty minutes) climbs a reclaim ladder
-(`crates/pulse-runner/src/reclaim.rs`) and stops at the first rung that puts
+(`crates/hive-runner/src/reclaim.rs`) and stops at the first rung that puts
 the free space back over the floor. Rung one removes what the runner's own
 tools left in the OS temp directory (`TMPDIR`, and `/tmp` when that is a
 different place): Rust `tempfile` directories (`.tmpXXXXXX`) and
-`pulse-*`/`check-site-*`/`distill-ui-*` folders that nothing has written to for
+`hive-*`/`check-site-*`/`distill-ui-*` folders that nothing has written to for
 two hours and no live process has its working directory or executable
 under - on 2026-10-12 one laptop carried 105,774 of them, 19.7 GB, the test
 homes of `cargo test` runs the step deadline had killed before their
@@ -710,14 +710,14 @@ for an hour instead of `daemon.build_cache_keep_days`, and the store gives its
 free pages back past 64 MB instead of `daemon.vacuum_free_mb`; the things the
 sweep never touches stay untouched under pressure too. A floor still not clear
 after both rungs is reported with the five largest entries under the temp roots
-and `~/.pulse`, so the owner knows what to look at. Each pass that removed or
+and `~/.hive`, so the owner knows what to look at. Each pass that removed or
 listed something writes one `daemon.reclaim` event, and the disk-floor finding
 carries the last pass: what it freed, over which rungs, and what is left.
-`pulse sweep --reclaim [--dry-run]` climbs every rung by hand, floor or not.
+`hive sweep --reclaim [--dry-run]` climbs every rung by hand, floor or not.
 
 The leak itself is closed at the source: a local run's worker, its pre-commit
 hook and its run-end check get `TMPDIR` set to `<clone>.tmp` beside the clone
-(a recipe that sets `TMPDIR` wins), and a by-hand `pulse land --local` gets
+(a recipe that sets `TMPDIR` wins), and a by-hand `hive land --local` gets
 `<worktree>.tmp` beside its worktree, so what a killed test leaves behind goes
 with the clone or the worktree instead of piling up in the system temp
 directory.
@@ -751,7 +751,7 @@ disks.
 ### The load governor
 
 The machine itself is governed the same way
-(`crates/pulse-runner/src/daemon_load.rs`, sized by `capacity.rs`): a 12-core
+(`crates/hive-runner/src/daemon_load.rs`, sized by `capacity.rs`): a 12-core
 16 GB laptop once told to run twelve local slots leased seven jobs within a few
 seconds and ran their `npm ci`, test suites and `cargo test` builds at once, at a
 load average of forty with 2.3 GB of its 3 GB swap in use. There is no slot
@@ -761,10 +761,10 @@ smaller of its physical cores and one run per 3 GB of RAM, never under one (a
 machine does the same from the cores and memory its hands report on every
 probe. The fleet's total is the sum over the active machines, and a project may
 have `ceil(total / projects with work)` jobs in flight, so a lone busy project
-uses every slot and several share them fairly; `pulse status` shows it as
+uses every slot and several share them fairly; `hive status` shows it as
 `slots 18 = this machine 10 + vm-1 8, per project 6`. The one optional override is
 `capacity` (auto by default; a number caps this machine, 0 keeps it idle), and
-`pulse daemon --max-jobs N` overrides both for one daemon; `pulse stop` pauses.
+`hive daemon --max-jobs N` overrides both for one daemon; `hive stop` pauses.
 The startup line `load governor: up to N local run(s) at once
 (auto|capacity|--max-jobs; C cores, P CPUs, M MB), nothing new over load L or
 under F MB of memory free; children run at nice 10, builds at -jJ, the daemon
@@ -896,8 +896,8 @@ foreground work while the loop still comes before the fleet's builds; 0 leaves
 the level the service started it at, and a `renice` by hand does not survive
 the restart a self-update brings, which is why the daemon does it itself.
 
-`pulse executor probe local` probes this machine the same way (git, free space
-under `~/.pulse/work`), and a passing probe run by the owner clears the
+`hive executor probe local` probes this machine the same way (git, free space
+under `~/.hive/work`), and a passing probe run by the owner clears the
 projects a failed setup marked unfit here, instead of waiting a day for the
 marks to expire. While queued work waits behind an unfit mark, the maintenance
 pass also re-probes after `daemon.unfit_reprobe_minutes` (default 60; 0 off),
@@ -915,7 +915,7 @@ recipe no longer lists is cleared whether or not it is installed.
 Remote hands take a recipe's `tools:` and `env:` the way the hub does - the
 worker runs under `mise exec PIN… --` with the recipe's env set, after the
 `setup:` lines ran there - once their probe answers `recipe=1` (hands shipped
-since this landed do; `pulse pair` refreshes older ones, then `pulse executor
+since this landed do; `hive pair` refreshes older ones, then `hive executor
 probe NAME`); until then such a project runs on the hub only, as before, which
 kept five of eight projects off the hands.
 
@@ -969,7 +969,7 @@ same thread; the red was never the tree's own, or was fixed without moving the
 branch); if half an hour passes with no fix job open and the base still red,
 the daemon asks the owner once (`default branch main is still red at …`, a
 question marked for the owner) with the two ways out - merge a fix by hand,
-or give the project a check it can pass with `pulse init PATH --verify CMD` - and
+or give the project a check it can pass with `hive init PATH --verify CMD` - and
 answers its own question when the branch moves or the hold lifts. In the week
 before this landed, 42 runs across 40 jobs on one machine each spent a worker
 to learn the same thing and threw their commits away.
@@ -992,10 +992,10 @@ When the clones share a build cache (a `CARGO_TARGET_DIR`, a Gradle or Bazel
 cache: the usual way to keep a large build fast and the disk small) two
 overlapping runs rewrite each other's artifacts mid-run and both fail for
 reasons neither branch contains, so a good branch is charged or the default
-branch is judged red. `pulse settings verify.lock project` makes the
+branch is judged red. `hive settings verify.lock project` makes the
 verifications of one project take turns on the machine (`machine`: every
 verification does); the command runs under an atomic lock in
-`$PULSE_HOME/locks/`, a later arrival prints that it is waiting and for whom, a
+`$HIVE_HOME/locks/`, a later arrival prints that it is waiting and for whom, a
 lock whose holder has died is removed by the next arrival, and a wait longer
 than `minutes_per_job` gives up with exit 75 without running the command.
 Taking turns does not make a shared cache tell one checkout from another: a
@@ -1045,9 +1045,9 @@ verification`; a worker that stopped for a reason of its own keeps its verdict.
 ## Pipelines: what a push set running on GitHub
 
 A push is not the end of a delivery: the repository's GitHub Actions
-workflows run on it, and a red one is a regression PULSE made. So the daemon
+workflows run on it, and a red one is a regression Hive made. So the daemon
 watches what its own pushes set off - and, since a project's default branch
-is PULSE's to keep green whoever pushed to it, the head of that branch on
+is Hive's to keep green whoever pushed to it, the head of that branch on
 the forge as well. Each tick, for every active project
 whose remote is on GitHub, it takes the pushes of the last 48 hours that
 still have no verdict - every `land.pr` push, the head a pull request was
@@ -1106,11 +1106,11 @@ runner](runner.md#the-daemon-loop) has the detail).
 The branch head is read every ten minutes (`gh api
 repos/<owner>/<repo>/branches/<branch>`, the branch the local default branch
 tracks, `origin/<default>` when it tracks none). A head that is one of
-PULSE's own pushes, or a commit already judged, is left alone; any other
+Hive's own pushes, or a commit already judged, is left alone; any other
 is judged by the same rules, its verdict recorded with `head: true` and the
 login or name that pushed it (`by`), and a red one is a finding and a fix job
 like a push's. The merge of a pull request is such a head: the merge commit
-is the forge's, not a push of PULSE's, so a merge that turns the default
+is the forge's, not a push of Hive's, so a merge that turns the default
 branch red is found here, whoever merged it. One difference from a push's
 fix job: a worker starts from the project checkout, so the job is planned
 only once the checkout's default branch holds the commit. The delivery pass
@@ -1124,10 +1124,10 @@ the checkout still lacks the commit two hours after the daemon first saw the
 failure - a dirty checkout on the default branch is the usual reason - the
 finding goes out without a job and names what holds the checkout behind (the
 `land.sync-skipped` reason, when there is one), so you can see what to clear. The
-brief of a head's fix job says that the push was not PULSE's and that PULSE
+brief of a head's fix job says that the push was not Hive's and that Hive
 looks after the branch all the same.
 
-`pulse pipeline` shows, per project, the branch head last read (who pushed
+`hive pipeline` shows, per project, the branch head last read (who pushed
 it, and since when a red one waits for the checkout), the pushes still being
 watched and the last verdicts (`(pushed by X)` on a head's; a red one names
 its fix job and how that job stands - `(queued)`, `(leased)`, `(done)`, or
@@ -1135,14 +1135,14 @@ its fix job and how that job stands - `(queued)`, `(leased)`, `(done)`, or
 whose fix came back blocked reads as yours, not as looked after), with `--project
 <slug>` for one, `--all` for every active project, `--limit N` for more
 history and `--json` for the records (`head` holds the sha, `by`, `read`,
-`next` and `waiting_since`); `pulse pipeline --check` reads GitHub now
+`next` and `waiting_since`); `hive pipeline --check` reads GitHub now
 instead of waiting for the daemon's pass. A task's conversation in the hub
 shows the verdict on its own push on the delivery line
 (`delivery.pipeline` and `delivery.pipeline_job` in `GET /api/v1/tasks/<id>`).
 
 ## Dependencies: security alerts and the release-age rule
 
-One rule governs every dependency change in every project PULSE manages: **a
+One rule governs every dependency change in every project Hive manages: **a
 version is adopted only once it is `dependencies.min_release_age_days` old**
 (default `3` days, a store-wide setting, `0` turns the wait off). A package
 that is hijacked or shipped broken is usually pulled within days; waiting
@@ -1211,7 +1211,7 @@ one exception, a branch the **security watcher** queued (job source
 `security:…`) past the compatible range when `dependencies.major_updates` is
 `auto`, which carried `authorized: dependencies.major_updates` in its event.
 That reading still runs where a branch lands locally: a project without an
-upstream and `pulse land --branch B --local` ([Moving from the local
+upstream and `hive land --branch B --local` ([Moving from the local
 landing](#moving-from-the-local-landing)). A pull request carries no
 release-age reading today: the watcher already waits for a patched version to
 be the rule's age before it queues the update, and a pull request that bumps
@@ -1235,30 +1235,30 @@ locks - so the honest answer is a key of the daemon's own (ADR-041):
 - Make the daemon a key GitHub knows and that can do nothing but push this
   repository: a **deploy key with write access** on the repository (or a
   machine user's key). In 1Password, keep it as an SSH Key item in a vault of
-  its own, say `PULSE`, and create a **Service Account** (Developer > Service
+  its own, say `Hive`, and create a **Service Account** (Developer > Service
   Accounts) with **read-only** access to that vault only - service accounts
   cannot see your Private vault and never need the app to be unlocked.
-- `pulse cred token` - paste the service-account token once. It goes to the
-  login Keychain on macOS (service `pulse`, account
-  `OP_SERVICE_ACCOUNT_TOKEN`), to `$PULSE_HOME/secrets/` as a 0600 file
+- `hive cred token` - paste the service-account token once. It goes to the
+  login Keychain on macOS (service `hive`, account
+  `OP_SERVICE_ACCOUNT_TOKEN`), to `$HIVE_HOME/secrets/` as a 0600 file
   elsewhere, never on a command line, never in the store.
-- `pulse cred set "op://PULSE/pulse push key/private key?ssh-format=openssh"`
+- `hive cred set "op://Hive/hive push key/private key?ssh-format=openssh"`
   - the setting `push.credential` holds a **reference**, never the key. `set`
   reads the key, prints its fingerprint and public key, probes every
   project's upstream with a dry-run push through that key alone, and saves
   the reference only when the remote answers. A key the remote refuses names
   the public key to add as a deploy key and saves nothing.
-- `pulse cred status` (also `--json`) says what is set and where the token was
-  found; `pulse cred clear [--token]` returns the daemon to your credentials.
+- `hive cred status` (also `--json`) says what is set and where the token was
+  found; `hive cred clear [--token]` returns the daemon to your credentials.
 
 The same steps live in the hub (ADR-042): Settings > **Push key** > *Choose a
 key…* opens a picker that lists the providers this machine has (1Password,
 the macOS Keychain, a key file), takes the service-account token once, lets
 you browse the vaults and SSH Key items the token can see and pick one, then
-**Test and save** runs the same read-and-probe as `pulse cred set`. A refused
+**Test and save** runs the same read-and-probe as `hive cred set`. A refused
 key shows its public key to add as a deploy key and saves nothing; *Remove*
-is `pulse cred clear`. The hub route (`/api/v1/cred`) answers only on
-loopback, only with the `X-Pulse-Cred` header, and records the change as
+is `hive cred clear`. The hub route (`/api/v1/cred`) answers only on
+loopback, only with the `X-Hive-Cred` header, and records the change as
 `human:dashboard`, so the browser gets no more than the CLI does - the token
 and the key never pass through the settings store or the page.
 
@@ -1267,23 +1267,23 @@ holding the key, and `file:///ABSOLUTE/PATH` a 0600 file (a symlink or a
 looser mode is refused). Whatever the reference, the daemon resolves it when
 it pushes a branch and when it fetches the upstream to fast-forward the local
 default branch, writes the key 0600 into a 0700 directory under
-`$PULSE_HOME/tmp` for the seconds of the call, runs `ssh -oBatchMode=yes
+`$HIVE_HOME/tmp` for the seconds of the call, runs `ssh -oBatchMode=yes
 -oIdentitiesOnly=yes -oIdentityAgent=none -i <that file>` for exactly that
 push or fetch, and removes it. A key that cannot be resolved holds the
 delivery (`land.pr-held` with `push credential: <why>` in its note, shown on
-the task's row in the hub and by `pulse land`); the daemon never falls back to your
+the task's row in the hub and by `hive land`); the daemon never falls back to your
 credentials, and no reference is resolved inside a worker - the one exception
-is an MCP server's secret, which `pulse mcp` resolves on the local executor
+is an MCP server's secret, which `hive mcp` resolves on the local executor
 for the request it sends and never prints (see [Connecting the outside
-world](board.md#connecting-the-outside-world-pulse-mcp)). Only the owner runs `pulse
-cred token|set|clear` or sets `push.credential`; agents may read `pulse cred
-status`. Rolling back is `pulse cred clear` (ADR-037's behaviour
+world](board.md#connecting-the-outside-world-hive-mcp)). Only the owner runs `hive
+cred token|set|clear` or sets `push.credential`; agents may read `hive cred
+status`. Rolling back is `hive cred clear` (ADR-037's behaviour
 returns at once), then revoke the service account and the deploy key.
 
 Where this runs: the daemon is a launchd agent on macOS and a `systemd
 --user` service on Linux, and the credential behaves the same on both - the
 one difference is where the service-account token rests (the login Keychain
-on macOS, a 0600 file under `$PULSE_HOME/secrets/` on Linux, or the
+on macOS, a 0600 file under `$HIVE_HOME/secrets/` on Linux, or the
 `OP_SERVICE_ACCOUNT_TOKEN` environment variable on either) and that
 `keychain://` is refused on Linux with a pointer to `op://` or `file://`.
 1Password's Linux agent asks the same questions as the macOS one, and a

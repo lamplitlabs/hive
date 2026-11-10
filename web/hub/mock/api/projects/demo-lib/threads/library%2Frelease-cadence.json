@@ -38,7 +38,7 @@
       "provenance_ok": 1,
       "rel_path": "store:20260901T164200Z-demo-lib-lead",
       "resolution": "answered",
-      "runner": "pulse-daemon",
+      "runner": "hive-daemon",
       "session": "s-demo-lib-lead",
       "summary": "On demand, tagged from main",
       "text_hash": "",

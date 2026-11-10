@@ -5,12 +5,12 @@ import { useState } from "react";
 import { BookOpenIcon, CheckIcon, FileTextIcon, Loader2Icon, SparklesIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import { amendCommand, CommandBox, seedName } from "@/components/pulse/evolve";
-import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { Markdown } from "@/components/pulse/markdown";
-import { Disclosure, Notice } from "@/components/pulse/panel";
-import { ProjectLink, When, Who } from "@/components/pulse/who";
+import { ConfirmDialog, showApiError } from "@/components/hive/confirm";
+import { amendCommand, CommandBox, seedName } from "@/components/hive/evolve";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
+import { Markdown } from "@/components/hive/markdown";
+import { Disclosure, Notice } from "@/components/hive/panel";
+import { ProjectLink, When, Who } from "@/components/hive/who";
 import { writes, type JobRef, type RecordDetail, type RecordDraft } from "@/lib/api";
 import { draftState, type DraftState } from "./draft-state";
 import { hrefs } from "@/lib/nav";
@@ -161,7 +161,7 @@ export function RecordDraftPanel({ r, body, className }: { r: DraftState; body?:
         </Disclosure>
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
           <DraftActions r={r} body={body} size="sm" />
-          <span className="text-xs text-muted-foreground">{"Adopting saves it as revision " + (r.rev + 1) + " in your name. PULSE never edits the text itself."}</span>
+          <span className="text-xs text-muted-foreground">{"Adopting saves it as revision " + (r.rev + 1) + " in your name. Hive never edits the text itself."}</span>
         </div>
       </div>
     );
@@ -185,7 +185,7 @@ export function RecordDraftPanel({ r, body, className }: { r: DraftState; body?:
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
         <DraftJobButton id={r.id} size="sm" />
-        <span className="text-xs text-muted-foreground">An agent reads the repository (README, manifests, CI, checks) and drafts the full text for you to review. PULSE also asks for this by itself within a day.</span>
+        <span className="text-xs text-muted-foreground">An agent reads the repository (README, manifests, CI, checks) and drafts the full text for you to review. Hive also asks for this by itself within a day.</span>
       </div>
       <Disclosure summary="Prefer the terminal? Write it yourself" className="mt-2" contentClassName="mt-1.5">
         <CommandBox command={amendCommand(r.id)} copy className="bg-background/60" />

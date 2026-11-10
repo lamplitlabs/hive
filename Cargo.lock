@@ -831,6 +831,692 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hive"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-ask",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-cred-command",
+ "hive-evolve",
+ "hive-goals-command",
+ "hive-harness",
+ "hive-hooks",
+ "hive-hub",
+ "hive-inspect",
+ "hive-mcp",
+ "hive-provider",
+ "hive-provider-anthropic",
+ "hive-provider-copilot",
+ "hive-provider-gemini",
+ "hive-provider-openai",
+ "hive-records",
+ "hive-runner",
+ "hive-store",
+ "hive-tally",
+ "hive-tasks",
+ "hive-testutil",
+ "hive-voice",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-ask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-board",
+ "hive-cli",
+ "hive-goals",
+ "hive-harness",
+ "hive-provider",
+ "hive-provider-fake",
+ "hive-store",
+ "hive-tally",
+ "hive-testutil",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-board"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "hive-bus",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-goals",
+ "hive-hand-core",
+ "hive-store",
+ "hive-testutil",
+ "home",
+ "rand 0.10.3",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-bus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "hive-store",
+ "hive-testutil",
+ "parking_lot",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-hand-core",
+ "hive-store",
+ "hive-testutil",
+ "nix",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tabwriter",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-codedelivery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-store",
+ "hive-tally",
+ "hive-testutil",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-cred"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "hive-gitenv",
+ "hive-testutil",
+ "once_cell",
+ "rand 0.10.3",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hive-cred-command"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-cli",
+ "hive-cred",
+ "hive-cred-setup",
+ "hive-store",
+ "hive-testutil",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-cred-setup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-cred",
+ "hive-gitenv",
+ "hive-store",
+ "hive-testutil",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-evolve"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-records",
+ "hive-store",
+ "hive-tally",
+ "hive-testutil",
+ "home",
+ "libc",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "signal-hook",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-gitenv"
+version = "0.1.0"
+dependencies = [
+ "hive-testutil",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-goals"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hive-bus",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-store",
+ "hive-testutil",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-goals-command"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-board",
+ "hive-cli",
+ "hive-goals",
+ "hive-store",
+ "hive-testutil",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-hand"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-hand-core",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-hand-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "crossbeam-channel",
+ "hive-gitenv",
+ "hive-testutil",
+ "libc",
+ "nix",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "which",
+]
+
+[[package]]
+name = "hive-harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "hex",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-cred",
+ "hive-gitenv",
+ "hive-mcp",
+ "hive-provider",
+ "hive-provider-anthropic",
+ "hive-provider-fake",
+ "hive-provider-gemini",
+ "hive-provider-openai",
+ "hive-store",
+ "hive-tasks",
+ "hive-testutil",
+ "libc",
+ "rand 0.10.3",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "hive-hooks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "crossbeam-channel",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-evolve",
+ "hive-goals",
+ "hive-store",
+ "hive-tally",
+ "hive-tasks",
+ "hive-testutil",
+ "libc",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-hub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "hive-ask",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-codedelivery",
+ "hive-cred",
+ "hive-cred-setup",
+ "hive-evolve",
+ "hive-gitenv",
+ "hive-goals",
+ "hive-harness",
+ "hive-inspect",
+ "hive-mcp",
+ "hive-provider",
+ "hive-provider-anthropic",
+ "hive-provider-fake",
+ "hive-provider-gemini",
+ "hive-provider-openai",
+ "hive-records",
+ "hive-runner",
+ "hive-store",
+ "hive-tally",
+ "hive-tasks",
+ "hive-testutil",
+ "hive-voice",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "mime_guess",
+ "nix",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "hive-inspect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-harness",
+ "hive-provider",
+ "hive-provider-copilot",
+ "hive-runner",
+ "hive-store",
+ "hive-testutil",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tabwriter",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "hive-cli",
+ "hive-cred",
+ "hive-store",
+ "hive-testutil",
+ "rand 0.10.3",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "hive-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "hive-store",
+ "hive-testutil",
+ "rand 0.10.3",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
+name = "hive-provider-anthropic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hive-provider",
+ "hive-testutil",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "hive-provider-copilot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hive-provider",
+ "hive-store",
+ "hive-testutil",
+ "rand 0.10.3",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "hive-provider-fake"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-provider",
+ "hive-store",
+ "hive-testutil",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-provider-gemini"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-provider",
+ "hive-testutil",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "hive-provider-openai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "hive-provider",
+ "hive-store",
+ "hive-testutil",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "hive-records"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fs2",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-store",
+ "hive-testutil",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "crossbeam-channel",
+ "filetime",
+ "flate2",
+ "fs2",
+ "hex",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-codedelivery",
+ "hive-cred",
+ "hive-evolve",
+ "hive-gitenv",
+ "hive-goals",
+ "hive-hand-core",
+ "hive-harness",
+ "hive-hooks",
+ "hive-provider",
+ "hive-provider-anthropic",
+ "hive-provider-copilot",
+ "hive-provider-gemini",
+ "hive-provider-openai",
+ "hive-records",
+ "hive-store",
+ "hive-tally",
+ "hive-tasks",
+ "hive-testutil",
+ "libc",
+ "nix",
+ "parking_lot",
+ "rand 0.10.3",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "signal-hook",
+ "tempfile",
+ "uuid",
+ "which",
+]
+
+[[package]]
+name = "hive-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "crossbeam-channel",
+ "erased-serde",
+ "hive-cred",
+ "hive-gitenv",
+ "hive-hand-core",
+ "hive-testutil",
+ "home",
+ "parking_lot",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hive-tally"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hive-board",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-goals",
+ "hive-store",
+ "hive-testutil",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hive-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "hive-board",
+ "hive-bus",
+ "hive-cli",
+ "hive-gitenv",
+ "hive-store",
+ "hive-testutil",
+ "rusqlite",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2",
+ "signal-hook",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-testutil"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hive-gitenv",
+ "hive-testutil",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hive-voice"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "fs2",
+ "hex",
+ "hive-cli",
+ "hive-store",
+ "hive-testutil",
+ "hound",
+ "parakeet-rs",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1594,692 +2280,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "pulse"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-ask",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-cred-command",
- "pulse-evolve",
- "pulse-goals-command",
- "pulse-harness",
- "pulse-hooks",
- "pulse-hub",
- "pulse-inspect",
- "pulse-mcp",
- "pulse-provider",
- "pulse-provider-anthropic",
- "pulse-provider-copilot",
- "pulse-provider-gemini",
- "pulse-provider-openai",
- "pulse-records",
- "pulse-runner",
- "pulse-store",
- "pulse-tally",
- "pulse-tasks",
- "pulse-testutil",
- "pulse-voice",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-ask"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-board",
- "pulse-cli",
- "pulse-goals",
- "pulse-harness",
- "pulse-provider",
- "pulse-provider-fake",
- "pulse-store",
- "pulse-tally",
- "pulse-testutil",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-board"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "hex",
- "home",
- "pulse-bus",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-goals",
- "pulse-hand-core",
- "pulse-store",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-bus"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "parking_lot",
- "pulse-store",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "nix",
- "once_cell",
- "pulse-hand-core",
- "pulse-store",
- "pulse-testutil",
- "serde",
- "serde_json",
- "tabwriter",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-codedelivery"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-store",
- "pulse-tally",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-cred"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "hex",
- "once_cell",
- "pulse-gitenv",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "pulse-cred-command"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-cli",
- "pulse-cred",
- "pulse-cred-setup",
- "pulse-store",
- "pulse-testutil",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-cred-setup"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-cred",
- "pulse-gitenv",
- "pulse-store",
- "pulse-testutil",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-evolve"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "home",
- "libc",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-records",
- "pulse-store",
- "pulse-tally",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "signal-hook",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-gitenv"
-version = "0.1.0"
-dependencies = [
- "pulse-testutil",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-goals"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "pulse-bus",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-store",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-goals-command"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-board",
- "pulse-cli",
- "pulse-goals",
- "pulse-store",
- "pulse-testutil",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-hand"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-hand-core",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-hand-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "crossbeam-channel",
- "libc",
- "nix",
- "parking_lot",
- "pulse-gitenv",
- "pulse-testutil",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "which",
-]
-
-[[package]]
-name = "pulse-harness"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "hex",
- "libc",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-cred",
- "pulse-gitenv",
- "pulse-mcp",
- "pulse-provider",
- "pulse-provider-anthropic",
- "pulse-provider-fake",
- "pulse-provider-gemini",
- "pulse-provider-openai",
- "pulse-store",
- "pulse-tasks",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "reqwest",
- "rusqlite",
- "rustyline",
- "serde",
- "serde_json",
- "signal-hook",
- "tempfile",
- "uuid",
-]
-
-[[package]]
-name = "pulse-hooks"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "crossbeam-channel",
- "libc",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-evolve",
- "pulse-goals",
- "pulse-store",
- "pulse-tally",
- "pulse-tasks",
- "pulse-testutil",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-hub"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "bytes",
- "chrono",
- "futures",
- "http-body-util",
- "hyper",
- "hyper-util",
- "mime_guess",
- "nix",
- "pulse-ask",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-codedelivery",
- "pulse-cred",
- "pulse-cred-setup",
- "pulse-evolve",
- "pulse-gitenv",
- "pulse-goals",
- "pulse-harness",
- "pulse-inspect",
- "pulse-mcp",
- "pulse-provider",
- "pulse-provider-anthropic",
- "pulse-provider-fake",
- "pulse-provider-gemini",
- "pulse-provider-openai",
- "pulse-records",
- "pulse-runner",
- "pulse-store",
- "pulse-tally",
- "pulse-tasks",
- "pulse-testutil",
- "pulse-voice",
- "regex",
- "reqwest",
- "rusqlite",
- "rust-embed",
- "serde",
- "serde_json",
- "signal-hook",
- "tempfile",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "pulse-inspect"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-harness",
- "pulse-provider",
- "pulse-provider-copilot",
- "pulse-runner",
- "pulse-store",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "tabwriter",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "pulse-cli",
- "pulse-cred",
- "pulse-store",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "pulse-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "pulse-store",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "url",
-]
-
-[[package]]
-name = "pulse-provider-anthropic"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "pulse-provider",
- "pulse-testutil",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "pulse-provider-copilot"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "pulse-provider",
- "pulse-store",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "pulse-provider-fake"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-provider",
- "pulse-store",
- "pulse-testutil",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-provider-gemini"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "pulse-provider",
- "pulse-testutil",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "pulse-provider-openai"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "pulse-provider",
- "pulse-store",
- "pulse-testutil",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "pulse-records"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "fs2",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-store",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-runner"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "chrono",
- "crossbeam-channel",
- "filetime",
- "flate2",
- "fs2",
- "hex",
- "libc",
- "nix",
- "parking_lot",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-codedelivery",
- "pulse-cred",
- "pulse-evolve",
- "pulse-gitenv",
- "pulse-goals",
- "pulse-hand-core",
- "pulse-harness",
- "pulse-hooks",
- "pulse-provider",
- "pulse-provider-anthropic",
- "pulse-provider-copilot",
- "pulse-provider-gemini",
- "pulse-provider-openai",
- "pulse-records",
- "pulse-store",
- "pulse-tally",
- "pulse-tasks",
- "pulse-testutil",
- "rand 0.10.3",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "signal-hook",
- "tempfile",
- "uuid",
- "which",
-]
-
-[[package]]
-name = "pulse-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "crossbeam-channel",
- "erased-serde",
- "home",
- "parking_lot",
- "pulse-cred",
- "pulse-gitenv",
- "pulse-hand-core",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "pulse-tally"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "pulse-board",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-goals",
- "pulse-store",
- "pulse-testutil",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "pulse-tasks"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "hex",
- "pulse-board",
- "pulse-bus",
- "pulse-cli",
- "pulse-gitenv",
- "pulse-store",
- "pulse-testutil",
- "rusqlite",
- "serde",
- "serde-saphyr",
- "serde_json",
- "sha2",
- "signal-hook",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-testutil"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "parking_lot",
- "pulse-gitenv",
- "pulse-testutil",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "pulse-voice"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "flate2",
- "fs2",
- "hex",
- "hound",
- "parakeet-rs",
- "pulse-cli",
- "pulse-store",
- "pulse-testutil",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
 ]
 
 [[package]]

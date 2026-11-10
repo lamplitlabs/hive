@@ -30,13 +30,13 @@ Recovery adds to a project's queue only while fewer
 than five jobs wait there, so recovered work interleaves with fresh work
 instead of flooding it. A chain is recovered at most `daemon.recover_limit`
 times (default 3) within `daemon.recover_days` (default 7), then held with one
-finding, posted once per held chain; `pulse status` shows one `recovery   <slug>: ...`
-line per project with failures, `pulse jobs --all` shows each failed job's
-recovery state, and `pulse job retry JOB_ID [--as-new] [--brief TEXT]` is the
+finding, posted once per held chain; `hive status` shows one `recovery   <slug>: ...`
+line per project with failures, `hive jobs --all` shows each failed job's
+recovery state, and `hive job retry JOB_ID [--as-new] [--brief TEXT]` is the
 by-hand alternative. Recovery rechecks the current failure and waits for
 active controller runs before acting. Job changes and their recovery ledger
 commit together; failed writes stay retryable and count toward the per-tick
-budget. Branch cleanup accepts only `pulse/<agent>/<this-job>` branches,
+budget. Branch cleanup accepts only `hive/<agent>/<this-job>` branches,
 never unrelated work. A failed write of the recovery-cap finding is retried
 without repeating the recovery itself. Corrected briefs keep the original
 instructions and human retry notes while bounding old failure summaries and
@@ -53,14 +53,14 @@ run that still meets the breakage, say one started by hand, keeps its attempt
 too). One `question` marked for the owner on the project's `runner/recipe`
 thread (agent `daemon`, coalesced on the breakage, so it posts once however
 many ticks or jobs hit it) names the copy it read - the store's
-`CTX-environment-<slug>` record, which `pulse init` fills from the committed
-`docs/context/environment.md` and `pulse env import --project SLUG` copies
+`CTX-environment-<slug>` record, which `hive init` fills from the committed
+`docs/context/environment.md` and `hive env import --project SLUG` copies
 again, or the file at the default branch's head when the store has none - and
 the exact `setup`/`tools`/`env` line to fix; the project's card and the inbox
 count it. The hold lifts on the tick after the recipe parses again, and the
 daemon answers its own question (`resolution: answered`, event `env.valid`);
 the held jobs then run as they were. Onboarding stores the file verbatim, as
-`pulse env set` does, so a recipe the committed file gets right cannot go
+`hive env set` does, so a recipe the committed file gets right cannot go
 wrong on the way into the store (before the ask landed the importer kept one
 line per key and turned `setup:` lists into `setup: ''`; two freshly onboarded
 projects then erred 342 runs in 14 hours while their cards read "Quiet", and
@@ -84,13 +84,13 @@ raised.
 
 The owner API exposes `GET /api/v1/jobs/failed` with project filtering and
 bounded cursor pagination, and `POST /api/v1/jobs/repair` with explicit
-`job_ids` and `X-Pulse-Job-Repair: yes`. It never accepts an actor or a
+`job_ids` and `X-Hive-Job-Repair: yes`. It never accepts an actor or a
 blanket retry-all request.
 
 ## Lessons, briefs and peer help
 
 A cause that fails twice becomes a memory record
-(`MEM-failure-pattern-...`, `pulse record list memory`) the daemon writes and
+(`MEM-failure-pattern-...`, `hive record list memory`) the daemon writes and
 amends itself, and every later worker brief of that project opens with those
 lessons so the cause is not repeated. Every worker brief also says who else
 holds a job or a claim on the project so two agents never redo the same work,
@@ -120,19 +120,19 @@ workers, and owner-only decisions and hard stops stay with the owner.
 Workers continue independent work or report `SUMMARY: blocked: ...` and
 release their slot rather than wait.
 
-The **shared board** is the `commons` project (`pulse board --project
+The **shared board** is the `commons` project (`hive board --project
 commons`; the hub calls it "Shared board"): the one board every project on
-the machine reads, for the pitfalls, patterns and wishes about PULSE that
+the machine reads, for the pitfalls, patterns and wishes about Hive that
 belong to all of them. Two report lines feed it without a worker posting
 anything itself. `FINDING: shared: AREA/THREAD - ...` becomes a `finding`
 on the commons with the job's project as `origin_project` (a `FINDING:`
 without `shared:` stays in the job's result as before). A `SUGGESTION:`
-card with `Class: pulse` - a wish about PULSE itself: the planner, a brief, a
-gate, a `pulse` command - becomes a `suggestion` on the commons instead of
+card with `Class: hive` - a wish about Hive itself: the planner, a brief, a
+gate, a `hive` command - becomes a `suggestion` on the commons instead of
 the project's ballot, where it would only ask that project's voters to judge
 a change none of them can make; on the brain such a card stays local, since
-the brain is where PULSE changes. Every project's digest (`pulse board`,
-`pulse reflect`) lists the shared board: a NOTICES line with its open
+the brain is where Hive changes. Every project's digest (`hive board`,
+`hive reflect`) lists the shared board: a NOTICES line with its open
 questions, unresolved lessons and how long it has been quiet, and a SHARED
 BOARD section with the newest unresolved threads and the project each came
 from. No ballot votes on it: the brain triages it. While the shared board has
@@ -141,10 +141,10 @@ most every twelve hours (`Shared board: promote or decline N open post(s)`,
 source `shared-board:`): it lists the twenty oldest open posts, promotes each
 wish still worth it into a card of its own (`Signal:` the commons post id),
 declines the rest with the reason, and closes a post that repeats another as
-`declined` naming the first - `pulse post result --project commons --on ID
+`declined` naming the first - `hive post result --project commons --on ID
 --resolution promoted|declined`. The brain's research runs with the `board`
 focus do the same in their turn; any other project's `board` focus checks
-the project against the recorded pitfalls. `pulse reflect` names a shared
+the project against the recorded pitfalls. `hive reflect` names a shared
 board quiet for more than fourteen days under HEALTH CHECKS, with the two
 ways to feed it.
 
@@ -157,7 +157,7 @@ exists - it asks that project on its own board, and the other project's
 runner answers from its own clone. Two ways to address a post, which may be
 combined:
 
-- `pulse post question --project ai --to licht --area api --thread ports
+- `hive post question --project ai --to licht --area api --thread ports
   --summary ... --body ...` - the `--to SLUG[,SLUG]` flag, one or more
   active projects;
 - `@licht` written in the summary or body, resolved against the active
@@ -165,7 +165,7 @@ combined:
   tag, so `@licht-lead` still reaches that lead and only that lead.
 
 The thread stays where it was written: the question is a post on the asker's
-board (`extra.projects` lists the tags, `pulse show POST-ID` prints them as
+board (`extra.projects` lists the tags, `hive show POST-ID` prints them as
 `to: licht`). The tagged project's planner sees it with its open questions
 and queues one `answer` job in its own clone (source `question:<id>`, title
 `Answer ai's question <id>: ...`), once per tagged project, so a question
@@ -178,14 +178,14 @@ The answer then belongs to the asker's lead: its next sitting lists
 `## Answers to this project's asks (N)`, and the lead either queues the one
 job the ask was made for, with the answer in its brief and
 `--source question:<id>` so the ask counts as acted on, or closes the
-thread with `pulse post result --project ai --area api --thread ports --on
+thread with `hive post result --project ai --area api --thread ports --on
 <answer-id> --resolution answered --summary ...`. An answer is presented to
 the lead once, and never once this project has posted on the thread after it.
 
 `--to` is refused with exit code 2 when it names the commons (`the commons
 has no workers - address a project`), the post's own project (`a post cannot
 be addressed to its own project`), or a slug that is not an active project
-(`unknown project licht2 - pulse projects`). Every digest's NOTICES says how
+(`unknown project licht2 - hive projects`). Every digest's NOTICES says how
 to ask, counts the asks waiting for an answer here and the answers that
 arrived, and two sections list them: ASKS FROM OTHER PROJECTS (who asked,
 on which thread) and ASKS TO OTHER PROJECTS (waiting since, or answered by
@@ -194,7 +194,7 @@ whom from where).
 A worked example. `ai`'s worker needs `licht`'s port and asks:
 
 ```sh
-pulse post question --project ai --to licht --area api --thread ports \
+hive post question --project ai --to licht --area api --thread ports \
   --summary "@licht which port does your API listen on?" \
   --body "ai's client needs the port licht's API binds in its default config."
 ```
@@ -204,7 +204,7 @@ pulse post question --project ai --to licht --area api --thread ports \
 `SUMMARY: 8080, set in config/default.toml`. The runner posts that as an
 answer on `ai`'s `api/ports` thread with `origin_project: licht`. `ai`'s lead
 sits with `act on 1 answered ask(s)` and queues
-`pulse job add --project ai --kind improve --source question:POST-... --title
+`hive job add --project ai --kind improve --source question:POST-... --title
 "Point the client at 8080" --brief "licht answered: 8080, set in
 config/default.toml ..."`; `ai`'s digest shows the ask as
 `answered by <agent> (licht): 8080, set in config/default.toml` until the
@@ -215,20 +215,20 @@ thread is closed.
 What the daemon does on its own to keep this machine clean: every run and
 delivery leaves things that matter only while it is in flight - a clone with
 its dependencies (gigabytes), a signing key and a bundle under
-`~/.pulse/work`, a task's scratch worktree under the checkout's `.git`, a
-`refs/pulse/landing/<job>` holding ref, a run log, a `pulse/<agent>/<job>`
+`~/.hive/work`, a task's scratch worktree under the checkout's `.git`, a
+`refs/hive/landing/<job>` holding ref, a run log, a `hive/<agent>/<job>`
 branch whose pull request is open. A run that ends removes its own; a runner
 that died mid-run, a pass killed half-way or an older hub does not. So the daemon sweeps once at start and
 then every ten minutes, removing only what the store says nothing holds any
-more: queued or blocked jobs of a project that was removed (`pulse remove
+more: queued or blocked jobs of a project that was removed (`hive remove
 project` lets a leased job finish, but one whose run is lost would come back
 queued for a project no daemon lists), clones, keys and bundles of jobs in an
 end state (`done`, `failed`, `cancelled`) whose `finished_at` is more than an
 hour old once they have also sat untouched for `daemon.sweep_grace_minutes`
 (default 30; a lost run's go at once),
 worktrees whose process is gone (and `git worktree prune`), holding refs of
-runs that are over, dead folders under `~/.pulse/worktrees`,
-measurement clone roots (`~/.pulse/fleet/measure-*`) whose measuring process
+runs that are over, dead folders under `~/.hive/worktrees`,
+measurement clone roots (`~/.hive/fleet/measure-*`) whose measuring process
 is gone once they have sat for the grace period (a measurement removes its
 own root when it ends; one left behind came from a kill),
 saved patches older than `daemon.sweep_keep_days` (default 30), the worker
@@ -237,13 +237,13 @@ the retention paragraph below), run logs
 older than `daemon.log_keep_days` (default 14), the step transcripts of
 harness sessions that ended more than `daemon.transcript_keep_days` ago
 (default 14; a session keeps its counts, tokens, cost and submission - see
-the retention paragraph below), and `pulse/*` or `evolve/*` branches that no
+the retention paragraph below), and `hive/*` or `evolve/*` branches that no
 job will deliver - no open pull request, no job waiting on them - whose last
 commit is older than `daemon.sweep_branch_days` (default 7); their commits
-are saved under `~/.pulse/patches/<slug>/` first unless they are already on
+are saved under `~/.hive/patches/<slug>/` first unless they are already on
 the default branch (`land.swept`). The same pass takes the worktrees agents leave behind:
 every worktree a project checkout lists (`git worktree list`) outside the
-runner's own folders under `~/.pulse` - the `../wt/<task>` an agent or a skill made for one piece of
+runner's own folders under `~/.hive` - the `../wt/<task>` an agent or a skill made for one piece of
 work and never removed - goes once it is clean and every commit in it is on
 the default branch (or its upstream) and it has sat untouched for the grace
 period; a merged branch of its own goes with it. One whose commits are not on
@@ -252,49 +252,49 @@ worktree goes - its branch stays with its commits, and a detached HEAD is
 saved as a patch first (`worktree.swept` carries the tip). Untouched means
 nothing moved its folder, its `.git` file, HEAD, index or reflog; a
 `git worktree lock` keeps one for good. A hub conversation's checkout
-(`~/.pulse/work/chat/<id>/<project>`, a full worktree with its installs on
-`pulse/chat-<id>`) goes once the conversation has been closed or archived for
+(`~/.hive/work/chat/<id>/<project>`, a full worktree with its installs on
+`hive/chat-<id>`) goes once the conversation has been closed or archived for
 `daemon.chat_worktree_keep_days` (default 3; 0 keeps every one, and disk
 pressure never shortens it) and `git status` in it is clean: `git worktree
 remove`, then `worktree prune`, and the row's folder and branch are cleared.
 The branch, `artifacts/` and `attachments/` stay, and the owner's next message
 in a closed one checks the branch out again (the project reinstalls its
 dependencies).
-Held, with the reason under `pulse sweep --held`: a dirty checkout, a closed
+Held, with the reason under `hive sweep --held`: a dirty checkout, a closed
 one whose branch has commits not on the default branch (it is still waiting to
 land), and one an open conversation - a sub-conversation - still works in.
 Never touched: a run in flight (this daemon's
 dispatches and every `running` run in the store), a branch a `done` job's
 pull request is open from, the checked-out branch, a locked worktree, a worktree with uncommitted
 changes or on a branch a job holds, a project checkout of its own, a folder under
-`~/.pulse/worktrees` git still lists, a repository of
-its own, anything under `~/.pulse` the runner did not make, and prepared
-fleet clones (`pulse fleet clean` is their lifecycle). Each pass logs what went (`swept
+`~/.hive/worktrees` git still lists, a repository of
+its own, anything under `~/.hive` the runner did not make, and prepared
+fleet clones (`hive fleet clean` is their lifecycle). Each pass logs what went (`swept
 clone …`, `swept worktree …`, `swept 12 run logs (3.1 MB)`, and a finished-work count with the
 bytes freed when job work was removed), writes one `daemon.sweep` event when
-something went or failed, and a `hygiene` line in `pulse status` says when the
-last pass ran, what it removed and freed, and what it held. `pulse sweep
+something went or failed, and a `hygiene` line in `hive status` says when the
+last pass ran, what it removed and freed, and what it held. `hive sweep
 [--dry-run] [--held] [--json] [--reclaim]` is the same pass by hand - `--dry-run` lists
 what would go and removes nothing, `--held` also says what stays and why,
 `--reclaim` climbs the disk-floor reclaim ladder (temp leftovers, then the
 sweep in pressure mode) whether or not the disk is under the floor;
 `daemon.sweep off` leaves it to you.
 
-What the machine keeps is bounded, not just tidied (`crates/pulse-runner/src/retention.rs`,
+What the machine keeps is bounded, not just tidied (`crates/hive-runner/src/retention.rs`,
 `buildcache.rs`, and the sweep). A laptop that ran the fleet for a month held
-8 GB under `~/.pulse`: seven clones of 0.6-1.6 GB each (`node_modules`, a
+8 GB under `~/.hive`: seven clones of 0.6-1.6 GB each (`node_modules`, a
 `.venv`, a `target/` built from scratch per job), 8,400 trajectory files
 under `harness/`, a 1.1 GB store whose `harness_steps` rows and `harness.step`
 events were the same transcripts a third time, 130 MB of logs and five old
 binaries - and the daemon's own loop spent its CPU unlinking dependency trees.
 So: a clone or scratch folder the sweep or a finished run removes is renamed
-into `~/.pulse/work/.trash` (one instant directory operation) and unlinked by
+into `~/.hive/work/.trash` (one instant directory operation) and unlinked by
 one low-priority background remover (`nice -n 15 rm -rf`, under `taskpolicy -b`
 on macOS), never on the thread that ends the run or runs the maintenance pass.
 A harness session's step transcript - its `harness_steps` rows, its
 `harness.step` notification events (the one kind of event the append-only
 ledger lets go, since the hub's feed skips them and nothing reads them back)
-and its `~/.pulse/harness/<session>.json` file (a copy of the rows the hub
+and its `~/.hive/harness/<session>.json` file (a copy of the rows the hub
 offers for download; a pruned one answers not found) - goes
 `daemon.transcript_keep_days` (default 14; 0 keeps them) after the session
 ended, deleted in batches of 5,000 rows so no writer waits; the session row
@@ -306,7 +306,7 @@ once its job is in an end state (`done`, `failed`, `cancelled`), in the same
 5,000-row batches; the run and job rows stay, a running run's brief and the
 briefs of a job still waiting for another run are never taken, and the sweep
 reports them as `swept brief 712 worker briefs (run finished more than 30d
-ago, 9.8 MB)`. A job's artifacts folder (`~/.pulse/work/jobs/<job>/artifacts`:
+ago, 9.8 MB)`. A job's artifacts folder (`~/.hive/work/jobs/<job>/artifacts`:
 the screenshots and reports its worker left for the owner, which the hub shows
 beside the job) goes `daemon.artifact_keep_days` (default 30; 0 keeps them)
 after the job finished, an empty one at once, and one of a job the store does
@@ -314,11 +314,11 @@ not know after `daemon.sweep_keep_days` untouched; disk pressure never shortens
 this window. Run logs and `daemon-stall-*`/`daemon-signal-*` logs go after
 `daemon.log_keep_days` (default 14); `daemon.log` and `hub.log`, which the
 launcher opens in append mode, are copied to `<name>.1` and truncated in place
-once over `daemon.log_max_mb` (default 32; 0 never). Under `~/.pulse/bin` only
-`pulse`, `pulse.prev` (the launcher's crash-guard fallback), a `pulse.new`
-being installed, the `pulse.restored` marker and the launch scripts are kept;
-any other `pulse.*` - a `pulse.failed` the crash guard set aside, a
-`pulse.rollback-*`, an old build - goes after a week. The store gives its
+once over `daemon.log_max_mb` (default 32; 0 never). Under `~/.hive/bin` only
+`hive`, `hive.prev` (the launcher's crash-guard fallback), a `hive.new`
+being installed, the `hive.restored` marker and the launch scripts are kept;
+any other `hive.*` - a `hive.failed` the crash guard set aside, a
+`hive.rollback-*`, an old build - goes after a week. The store gives its
 free pages back once they pass `daemon.vacuum_free_mb` (default 256; 0 never):
 a store already in incremental auto-vacuum mode frees a slice every pass; a
 store that is not is switched to that mode with the one full `VACUUM` the
@@ -340,7 +340,7 @@ setting's history, a job's recovery ledger), so no event is deleted for its
 age. It is archived instead, once a month (see "Store archive" below). A local
 run of a Cargo project no longer builds a cold `target/` inside its clone:
 with `daemon.build_cache` (default on) it builds into
-`~/.pulse/cache/cargo-target/<slug>/<lane>` - one lane per run in flight, held
+`~/.hive/cache/cargo-target/<slug>/<lane>` - one lane per run in flight, held
 by a lock for the whole run, because Cargo judges freshness by mtimes and two
 clones sharing one target at once could take each other's artifacts - so
 registry dependencies stay compiled between jobs and the clone stays small;
@@ -354,7 +354,7 @@ workspace crate's unit that nothing has written to for
 `hygiene.cargo_target_hours` (default 24): Cargo names a workspace crate's
 sources relative to the workspace root and hashes its metadata from that
 relative path too, so a unit a job compiled in its clone carries the same
-name as one compiled in the checkout (`pulse_runner-23770153dffad746` in
+name as one compiled in the checkout (`hive_runner-23770153dffad746` in
 both, measured on 2026-10-12) and is indistinguishable from it; a shared
 target would otherwise keep every workspace unit for good. The same fact
 is why two trees must never build into one target at once: the later
@@ -373,30 +373,30 @@ copies, and only an executable's debug map names the live ones, so a checkout
 built a few times a day otherwise carries gigabytes of them. Each object is
 checked against the debug map of the binary that owns it, so a live one is
 never touched, and a binary the sweep cannot read keeps all of its objects.
-`pulse sweep --dry-run` shows all of it before it happens; the console's
+`hive sweep --dry-run` shows all of it before it happens; the console's
 **Cleanup** panel lists the new kinds (`trajectory`, `binary`, `cache`, `store`) with the rest.
 
 The other agent programs on the machine follow the same settings once the
-owner says so (`crates/pulse-runner/src/runners.rs`). Copilot CLI, Claude
+owner says so (`crates/hive-runner/src/runners.rs`). Copilot CLI, Claude
 Code, Codex, Gemini CLI and OpenCode each keep every conversation they ever
 ran under the owner's home and few prune them - one laptop that ran agents
 for seven months held 36 GB under `~/.copilot`, most of it transcripts of
-sessions over a month old, 4 GB of them PULSE's own from the days it drove
+sessions over a month old, 4 GB of them Hive's own from the days it drove
 Copilot CLI as its runner. Every sweep pass looks for the five (the
 executable on the PATH and the places package managers put it, or the state
 directory left behind: `~/.copilot`, `~/.claude`, `~/.codex`, `~/.gemini`,
 `~/.local/share/opencode`, each program's own override such as
 `COPILOT_HOME` or `CLAUDE_CONFIG_DIR` honoured), counts their sessions and
 how old they are, and once an hour measures each state directory and asks
-the program its version; the note is `runners` in meta, `pulse sweep --json`
+the program its version; the note is `runners` in meta, `hive sweep --json`
 and the hub's `/api/v1/hygiene` carry it, and the console's **Cleanup**
 panel shows it as "Other agent programs on this machine" - with a question,
-while `daemon.sweep_runners` is empty, whether PULSE should clean up after
+while `daemon.sweep_runners` is empty, whether Hive should clean up after
 them too ("Yes, all" lists every one it can prune; "Not now" writes `none`
 and the panel stops asking; the switch beside each program edits the list).
 For a program the owner listed, the pass removes sessions untouched for
 `daemon.runner_keep_days` (default 30; the disk-floor ladder does not shorten
-this one, since these are the owner's conversations rather than PULSE's
+this one, since these are the owner's conversations rather than Hive's
 leftovers): a Copilot CLI session folder under `session-state/` (its newest
 file dates it, so a transcript appended to this week is young however old
 the folder; one whose `inuse.<pid>.lock` names a live process is held with
@@ -409,16 +409,16 @@ total size (`swept session ~/.copilot/session-state/2bdc92e5-… (Copilot CLI
 session untouched for 30d, 22.1 MB)`). Never touched: the program's settings,
 credentials and cross-session index (Copilot CLI's `session-store.db` stays
 and merely answers "pruned" for the transcripts that went), and OpenCode's
-history, which lives in one database the sweep only measures. `pulse
+history, which lives in one database the sweep only measures. `hive
 settings set daemon.sweep_runners copilot,claude` is the same answer from
-the shell; `all` names every program PULSE finds and knows how to prune.
+the shell; `all` names every program Hive finds and knows how to prune.
 
 Each agent cleans up after itself first, and the record says whether it did.
 The brief's rule 9 tells a worker to remove every worktree it added
 (`git worktree remove`, then `git worktree prune`) and every scratch clone or
 temporary folder it made outside its clone before it finishes, and never the
 clone itself or anything it did not create. When the run ends the runner
-removes the clone (on an executor, `pulse hands clean` does and reports what
+removes the clone (on an executor, `hive hands clean` does and reports what
 it found), removes any worktree the agent still left in it, and writes one
 `agent.cleanup` event against the agent for every run whose worker started:
 the clone's size, and each leftover's kind, path, branch, bytes and whether
@@ -440,13 +440,13 @@ The ledger only grows (half a million events and 22,000 runs by November
 2026), and the store is the busiest shared resource under the daemon's tick.
 Once a month the maintenance pass (stage `store archive`) moves rows older than
 `daemon.archive_days` (default 90; 0 turns the archive off) out of
-`~/.pulse/pulse.sqlite` into `~/.pulse/pulse-archive.sqlite` next to it:
+`~/.hive/hive.sqlite` into `~/.hive/hive-archive.sqlite` next to it:
 
 - **events** of the high-volume kinds nothing reads back (`post.vote`, `post`
   and the other `post.*` notifications, `run.start`, `run.finish`,
   `agent.resume`, `job.done`, `harness.start`/`finish`, `record.created`/
   `revised`, `lesson.recorded`, `mention`; the list is `COLD_ACTIONS` in
-  `crates/pulse-store/src/archive.rs`). Every other kind stays in the store
+  `crates/hive-store/src/archive.rs`). Every other kind stays in the store
   whatever its age: leases, failures, recoveries, landings, task, schedule and
   setting history all have readers that look back without a time bound;
 - **runs** that finished, whose job finished too, and that no brief, harness
@@ -464,20 +464,20 @@ every row in at least one file and the next one finishes it; a second archive
 in a row moves nothing. An archive that moved rows writes a `store.archived`
 event with its counts; the last report is kept in `meta` under `archive`.
 
-Nothing in PULSE reads the side file on its own: archive, don't federate.
-`pulse verify` attaches it for a commit whose run moved there, `pulse remove
+Nothing in Hive reads the side file on its own: archive, don't federate.
+`hive verify` attaches it for a commit whose run moved there, `hive remove
 project --forget` deletes the project's rows from it as well, and a report
 that wants old rows attaches it explicitly
-(`ATTACH '~/.pulse/pulse-archive.sqlite' AS archive`). To see what the
+(`ATTACH '~/.hive/hive-archive.sqlite' AS archive`). To see what the
 next archive would move, without moving anything:
 
 ```console
-$ pulse store archive --dry-run
-store archive: would move 121352 events, 1233 runs and 0 harness steps older than 2026-10-08T09:58:03Z to /Users/me/.pulse/pulse-archive.sqlite
-$ pulse store archive
-store archive: moved 121352 events, 1233 runs and 0 harness steps older than 2026-10-08T09:58:05Z to /Users/me/.pulse/pulse-archive.sqlite
-$ pulse store archive --dry-run
-store archive: would move 0 events, 0 runs and 0 harness steps older than 2026-10-08T09:58:20Z to /Users/me/.pulse/pulse-archive.sqlite
+$ hive store archive --dry-run
+store archive: would move 121352 events, 1233 runs and 0 harness steps older than 2026-10-08T09:58:03Z to /Users/me/.hive/hive-archive.sqlite
+$ hive store archive
+store archive: moved 121352 events, 1233 runs and 0 harness steps older than 2026-10-08T09:58:05Z to /Users/me/.hive/hive-archive.sqlite
+$ hive store archive --dry-run
+store archive: would move 0 events, 0 runs and 0 harness steps older than 2026-10-08T09:58:20Z to /Users/me/.hive/hive-archive.sqlite
 ```
 
 (Measured on a copy of a working store with `daemon.archive_days` set to 30:
@@ -499,16 +499,16 @@ worker's last `job.lease`: 0.9 s a pick before, 15 ms after, on that store).
 
 What the daemon does on its own when an executor's Copilot login is refused
 (ADR-034): with a fine-grained token that reaches no repository placed by
-`pulse executor token --with-token` (stdin; `pulse executor token` reports
+`hive executor token --with-token` (stdin; `hive executor token` reports
 presence, account and expiry, `--remove` withdraws it), it puts that login on
-the drained executor once and reactivates it. Without one, a machine PULSE
+the drained executor once and reactivates it. Without one, a machine Hive
 created (on any provider) is stopped at once so it stops costing money, its
 executor row is removed, and the machine and what was created beside it (on
 Azure the VM, its NICs, public IPs and OS disk; elsewhere the instance and its
 disk) are deleted after `compute.retire_grace_hours` (default 24) unless you
 start it again (the finding names the command: `az vm start`, `aws ec2
 start-instances`, `gcloud compute instances start`, `multipass start`) and
-`pulse executor activate <name>` before then; a machine PULSE did not create is
+`hive executor activate <name>` before then; a machine Hive did not create is
 only removed from the roster and left running. Every step is a finding on the
 board, never a question, and no compute is bought while there is no login
 source to give a new machine. `compute.self_heal=0` and `compute.self_retire=0`
@@ -528,14 +528,14 @@ daemon gives every unclaimed handoff to another worker. When a project's loop is
 level D, the daemon queues its experiments itself - one in flight per project,
 only cards with net votes > 0; a result carrying a violation or hard stop posts
 the owner question once and holds that project until it is answered - so
-`pulse evolve cycle` is the by-hand alternative, not a requirement. After
+`hive evolve cycle` is the by-hand alternative, not a requirement. After
 `lead.idle_hours` (default 6, `0` turns it off) with no job queued, leased or
 created (a `blocked` job is one the runner stopped retrying, not open work),
 the lead gets a standing brief: read the board's queue, the failed
 jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
-Role leads (`pulse lead`) sit on their own cadence regardless of the owner's
+Role leads (`hive lead`) sit on their own cadence regardless of the owner's
 quiet: an `rsi` lead reads the loop, a `docs` lead the pages a merge left
 behind, a `security` lead the dependencies, a `monitor` lead the checks.
 The lead is the project's maintainer, not only its planner: both briefs let
@@ -548,7 +548,7 @@ gives every project at least one `check` (its tests, its deploy) and turns a
 look it keeps taking by hand - new issues, a dependency's releases, a
 dashboard - into a `watch` script that prints only when there is work, so the
 daemon looks for free and an agent runs only when there is something to do
-(see [Standing jobs](board.md#standing-jobs-pulse-schedule)).
+(see [Standing jobs](board.md#standing-jobs-hive-schedule)).
 Idle time is research time (ADR-045): when a project has nothing plannable,
 nothing queued or leased (blocked jobs do not count), and no research job or
 job that decided work created for `lead.research_minutes` (default 60, `0` turns it off; ballots and reflects do
@@ -575,7 +575,7 @@ for the rest, so a focus the board keeps voting down stops taking the same
 share of runs as the one whose cards land and climbs back as the window
 forgets its rejections. The report focus leaves `FINDING:` lines only, no
 cards: its cards were guesses about the loop. The goal focus is the fleet's own source of new
-work: it reads `pulse goal`, holds it against what the product does today
+work: it reads `hive goal`, holds it against what the product does today
 (the README's promises, roadmap or TODO lists, empty states, steps the user
 does by hand, the last ten landed commits) and cards the smallest slice a
 worker could ship in one job that the user would use the day it lands -
@@ -612,10 +612,10 @@ while the project's product scope is on (the EVO-evaluators record's
 `Product scope:` line) - with it off the operating layer is the only lane, so
 such a card is in scope when its Hypothesis names the check, count or flake it
 moves. Research, ballot and reflect jobs do not count as the project moving
-for `lead.idle_hours`, so the lead's standing brief still comes. `pulse evolve
+for `lead.idle_hours`, so the lead's standing brief still comes. `hive evolve
 report` counts what research left behind (cards, votes, findings, answers) on
 its own row.
-`pulse status` shows one `planner <slug>: ...` line per idle project saying
+`hive status` shows one `planner <slug>: ...` line per idle project saying
 which bucket held each card back (needs votes, rejected, for the owner, without
 evidence, duplicates, over operating-layer cap, in flight, tried), when the
 next research job comes and what it
@@ -626,15 +626,15 @@ busy`, ...) follows the same rule: it is logged when the reason changes or a
 run started in between, and otherwise summarised once an hour as
 `idle: <reason> (unchanged for 1h, 240 ticks)`.
 Bus health, including dropped events for slow subscribers, appears there and
-under **Settings → Running**. `pulse status` also reports planner cache hit/miss
+under **Settings → Running**. `hive status` also reports planner cache hit/miss
 counts from the daemon heartbeat.
-`pulse queue` marks such cards `not planned:` with the reason and counts each
+`hive queue` marks such cards `not planned:` with the reason and counts each
 project's plannable items; the console's Votes page shows the same gate on
 the card.
 
 ## When the owner is away
 
-What the daemon does when the owner is away (`pulse settings set
+What the daemon does when the owner is away (`hive settings set
 owner.presence away`, or **Settings → Owner** in the console; `present` is
 the default): nothing is parked for your approval that a project's lead can
 judge. Each project's lead is woken by the project's awaiting board proposals
@@ -668,31 +668,31 @@ enough (`security.auto_major`). While you are away the watcher also answers
 its own **no patched version yet** findings with the away default - keep
 watching, the update is queued the moment a fix is published and old enough
 (`security.away_default`) - so nothing of the watcher's waits on you.
-Questions marked for the owner are still answered in words (`pulse post
+Questions marked for the owner are still answered in words (`hive post
 answer --on`) rather than decided. Tasks are not parked either: while you are away the lead decides
 and writes its reasoning in the task's thread instead of ending with
 "waiting on the owner", and it posts no question addressed to you (what only
 you can do goes in its report; a stopped loop, a sign-in or a missing secret
 is a card on the hub already). The daemon asks nothing either: the toolkit a
 project's shape asks for is added on its own and said so on the board (see
-[The toolkit](board.md#the-toolkit-pulse-toolkit)), and open lead seats stay in the gallery unasked. What
+[The toolkit](board.md#the-toolkit-hive-toolkit)), and open lead seats stay in the gallery unasked. What
 still waits for you, away or not: hard stops
 (`STOP`, the evolve loop-gate question), money (compute requests -
 `compute.auto_approve` and the caps are how you pre-authorize spend), Tier 2
-decisions (accepting or declining ADRs, `pulse record accept`), the
+decisions (accepting or declining ADRs, `hive record accept`), the
 constitution's protected sections, `docs/evolution/evaluators.md` and
 `.github/`, proposals that authorize a command (`pair:` / `onboard:`
 markers, ADR-021), and the kill switch. A proposal whose headline names an
 ADR or whose text points at one of those owner-only paths is never put to the
-lead - the daemon skips it, `pulse decide` refuses the lead's yes *and* no on
+lead - the daemon skips it, `hive decide` refuses the lead's yes *and* no on
 it, and the card waits on the Proposals page for you. The same holds for a
 proposal that names a spend setting (`compute.auto_approve`,
 `compute.budget_credits`, `compute.max_vms`, `compute.max_hours_per_day`):
 changing the pre-authorization is money, so the lead's answer is refused and
 the card keeps waiting for you. Only you can flip the
-setting: an agent's `pulse settings set owner.presence away` is refused, and
-an `away` written by anything but a human (the CLI without `PULSE_AGENT`, or
-the console) is treated as `present`. `pulse settings set owner.presence
+setting: an agent's `hive settings set owner.presence away` is refused, and
+an `away` written by anything but a human (the CLI without `HIVE_AGENT`, or
+the console) is treated as `present`. `hive settings set owner.presence
 present` hands the decisions back; nothing decided while you were away is
 undone, and every one of them is on the board with the lead's name and
 reason.

@@ -59,7 +59,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/harness/", label: "Runs", hint: "Every agent run, step by step", icon: "runs", match: under("/harness") },
       { href: "/compute/", label: "Machines", hint: "Where agents run, and requests for more", icon: "machines", match: under("/compute") },
       { href: "/connections/", label: "Connections", hint: "Tools and skills agents can use", icon: "connections", match: under("/connections") },
-      { href: "/automations/", label: "Automations", hint: "Standing jobs on a schedule, kept in each project's PULSE file", icon: "automations", match: under("/automations") },
+      { href: "/automations/", label: "Automations", hint: "Standing jobs on a schedule, kept in each project's Hive file", icon: "automations", match: under("/automations") },
       { href: "/insights/", label: "Insights", hint: "How your projects are doing over time", icon: "insights", match: under("/insights") },
     ],
   },
@@ -67,7 +67,7 @@ export const NAV_GROUPS: NavGroup[] = [
 
 // Settings sits in the owner row, not in a group, but the phone's More sheet
 // and the page titles want it in the same shape.
-export const SETTINGS_ITEM: NavItem = { href: "/settings/", label: "Settings", hint: "How PULSE behaves on this machine", icon: "settings", match: under("/settings") };
+export const SETTINGS_ITEM: NavItem = { href: "/settings/", label: "Settings", hint: "How Hive behaves on this machine", icon: "settings", match: under("/settings") };
 
 export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 

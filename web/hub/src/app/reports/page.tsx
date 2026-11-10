@@ -4,9 +4,9 @@ import { Suspense, useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { WorkReports } from "@/components/reports/work-reports";
-import { PageHeader } from "@/components/pulse/page-header";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { SkeletonPage } from "@/components/pulse/panel";
+import { PageHeader } from "@/components/hive/page-header";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { SkeletonPage } from "@/components/hive/panel";
 import { registeredProjects, type Org } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 

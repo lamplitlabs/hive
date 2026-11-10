@@ -32,12 +32,12 @@ export const JOB_REPAIR_SENTENCE: Record<FailedJobCategory, string> = {
   manual_controller: "Its lead agent decides what happens next, so there's nothing to do here.",
   superseded: "A newer job already picked up this work. Nothing to do.",
   active_run: "It's running again right now. Check back when it finishes.",
-  recovery_cap: "PULSE already retried it as many times as allowed. Look at why before trying again.",
-  backoff: "PULSE will retry it on its own shortly. Nothing to do.",
+  recovery_cap: "Hive already retried it as many times as allowed. Look at why before trying again.",
+  backoff: "Hive will retry it on its own shortly. Nothing to do.",
   queue_full: "The project has too much waiting right now. Retry once the queue clears.",
   outside_window: "It failed too long ago to retry. Give the task again if it still matters.",
   held: "It's on hold, so it can't be retried until the hold is lifted.",
-  cancelled: "You cancelled it, so PULSE leaves it alone.",
+  cancelled: "You cancelled it, so Hive leaves it alone.",
   stopped: "Work is stopped on this machine, so nothing can be retried until it's resumed.",
   recovery_off: "Automatic retries are off for this project. You can still retry it by hand.",
   inactive_project: "Its project isn't active, so it can't run right now.",
@@ -116,7 +116,7 @@ export function repairFailedJobs(jobIDs: string[], project?: string): Promise<Jo
   }
   return api<JobRepairResponse>("jobs/repair", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Pulse-Job-Repair": "yes" },
+    headers: { "Content-Type": "application/json", "X-Hive-Job-Repair": "yes" },
     body: JSON.stringify({ job_ids: jobIDs, ...(project ? { project } : {}) }),
   });
 }

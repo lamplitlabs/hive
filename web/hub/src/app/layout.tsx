@@ -6,9 +6,9 @@ import { APPEARANCE_BOOT_SCRIPT } from "@/components/shell/appearance-state";
 import { SIDEBAR_BOOT_SCRIPT } from "@/components/shell/sidebar-state";
 
 export const metadata: Metadata = {
-  title: { default: "PULSE", template: "%s · PULSE" },
-  description: "Your console for PULSE: what waits for your answer, the tasks you gave, and what your agents are doing on every project on this machine.",
-  applicationName: "PULSE hub",
+  title: { default: "Hive", template: "%s · Hive" },
+  description: "Your console for Hive: what waits for your answer, the tasks you gave, and what your agents are doing on every project on this machine.",
+  applicationName: "Hive hub",
 };
 
 export const viewport: Viewport = {

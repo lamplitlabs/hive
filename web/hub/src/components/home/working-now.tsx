@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { ActivityIcon } from "lucide-react";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { workingRows } from "@/components/pulse/cards";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Avatar, When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { workingRows } from "@/components/hive/cards";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Avatar, When } from "@/components/hive/who";
 import type { Claim, Task } from "@/lib/api";
 import { sentence } from "@/lib/format";
 import { hrefs } from "@/lib/nav";

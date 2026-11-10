@@ -44,7 +44,7 @@ export function taskWorkFocus(detail, at) {
 }
 
 // The owner's task whose queued step the daemon named as waiting past ten
-// minutes (job.owner-wait, crates/pulse-runner/src/owner_wait.rs): its wait
+// minutes (job.owner-wait, crates/hive-runner/src/owner_wait.rs): its wait
 // line says since when and what held it.
 export const TASK_WAIT_ID = "TASK-001";
 

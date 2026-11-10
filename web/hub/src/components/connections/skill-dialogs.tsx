@@ -10,19 +10,19 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { showApiError } from "@/components/pulse/confirm";
-import { Markdown } from "@/components/pulse/markdown";
-import { Notice } from "@/components/pulse/panel";
-import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, useWizardLock, type WizardStep } from "@/components/pulse/stepper";
-import { Mono, StatusBadge, When } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { Markdown } from "@/components/hive/markdown";
+import { Notice } from "@/components/hive/panel";
+import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, useWizardLock, type WizardStep } from "@/components/hive/stepper";
+import { Mono, StatusBadge, When } from "@/components/hive/who";
 import { skillRepoPath, writes, type ProjectsPayload, type Skill, type SkillSuggestion, type SkillsPayload, type ToolkitPayload } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { EMPTY_SKILL_FORM, formFromSkill, scopeLabel, scopeTitle, skillFormReady, skillInput, skillPatch, validateSkillForm, type SkillForm } from "@/lib/mcp";
 import { invalidate, useApi } from "@/lib/use-api";
 
 // A skill is a markdown recipe every worker of a project (or of every
-// project) is told about in its brief and reads with `pulse skill show`.
-// The owner writes one here the way `pulse skill add` does; agents add
+// project) is told about in its brief and reads with `hive skill show`.
+// The owner writes one here the way `hive skill add` does; agents add
 // their own from the shell.
 
 export const refreshSkills = () => invalidate((p) => p === "skills" || p.startsWith("skills?") || p.startsWith("skills/") || p.startsWith("events"));
@@ -165,7 +165,7 @@ function SkillWizard({ project, initial, close, lockRef }: { project: string; in
   const title = step === "start" ? "Add a skill" : step === "write" ? "Write the skill" : step === "check" ? "How agents will see it" : (added?.name ?? f.name) + " is added";
   const description =
     step === "start"
-      ? "A set of instructions agents read before work it covers. Start from a shape, or from a draft PULSE wrote from your projects."
+      ? "A set of instructions agents read before work it covers. Start from a shape, or from a draft Hive wrote from your projects."
       : step === "write"
         ? "Fill in the parts that are yours. Write it in Markdown."
         : step === "check"
@@ -443,12 +443,12 @@ export function SkillViewDialog({ skill, onOpenChange, onEdit }: { skill: Skill 
               <Markdown source={skill.body} />
             </div>
             <p className="text-xs text-muted-foreground">
-              Agents read it with <Mono>pulse skill show {skill.name}</Mono>; each read is counted.
+              Agents read it with <Mono>hive skill show {skill.name}</Mono>; each read is counted.
               {skillRepoPath(skill) ? (
                 <>
                   {" The text lives in "}
                   <Mono>{skillRepoPath(skill)}</Mono>
-                  {" on the project's default branch: edit it there and commit; Pulse loads the new text by itself. Turning it off here lasts until the next commit that changes the project's skill folders or PULSE file; to drop it, delete the folder."}
+                  {" on the project's default branch: edit it there and commit; Hive loads the new text by itself. Turning it off here lasts until the next commit that changes the project's skill folders or Hive file; to drop it, delete the folder."}
                 </>
               ) : null}
             </p>

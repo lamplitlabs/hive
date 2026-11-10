@@ -165,7 +165,7 @@ test("initials take two words' first letters, or one word's first two", () => {
   assert.equal(initials("quartz-34"), "Q3");
   assert.equal(initials("amistio template"), "AT");
   assert.equal(initials("web/hub"), "WH");
-  assert.equal(initials("pulse_runner"), "PR");
+  assert.equal(initials("hive_runner"), "HR");
   assert.equal(initials("cinder"), "CI");
   assert.equal(initials("x"), "X");
   assert.equal(initials(""), "?");

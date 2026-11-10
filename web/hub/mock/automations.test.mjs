@@ -16,7 +16,7 @@ const fixture = JSON.parse(
   await readFile(join(here, "api", "automations.json"), "utf8"),
 );
 
-// The mock answers the shapes crates/pulse-hub/src/automations.rs serializes
+// The mock answers the shapes crates/hive-hub/src/automations.rs serializes
 // and the owner console (web/hub/src/lib/api.ts) reads.
 const LIST_KEYS = [
   "kinds",
@@ -117,7 +117,7 @@ test("list carries every project, the folder of each and the limits", () => {
   assert.deepEqual(keys(r.body), LIST_KEYS);
   assert.equal(r.body.projects.length, 2);
   const app = r.body.projects[0];
-  assert.equal(app.automations.dir, ".pulse/automations");
+  assert.equal(app.automations.dir, ".hive/automations");
   assert.deepEqual(
     app.automations.files.map((f) => f.name),
     ["docs-sweep", "nightly-audit", "site-check"],
@@ -139,7 +139,7 @@ test("check names the problems and composes the YAML without writing", () => {
   assert.equal(ok.status, 200);
   assert.deepEqual(keys(ok.body), CHECK_KEYS);
   assert.deepEqual(ok.body.problems, []);
-  assert.equal(ok.body.path, ".pulse/automations/deps-audit.yaml");
+  assert.equal(ok.body.path, ".hive/automations/deps-audit.yaml");
   assert.equal(ok.body.form, "file");
   assert.equal(ok.body.branch, "main");
   assert.equal(ok.body.yaml, yamlFile(entry()));
@@ -152,7 +152,7 @@ test("check names the problems and composes the YAML without writing", () => {
     bad.body.problems.some(
       (p) =>
         p ===
-        ".pulse/automations/nightly-audit.yaml already holds an automation named `nightly-audit`; edit that one or pick another name",
+        ".hive/automations/nightly-audit.yaml already holds an automation named `nightly-audit`; edit that one or pick another name",
     ),
     bad.body.problems.join("; "),
   );
@@ -166,7 +166,7 @@ test("check names the problems and composes the YAML without writing", () => {
     replace: "weekly-tidy",
   });
   assert.equal(item.body.form, "list");
-  assert.equal(item.body.path, ".pulse/pulse.yaml");
+  assert.equal(item.body.path, ".hive/hive.yaml");
   assert.match(item.body.yaml, /^  - name: weekly-tidy\n/);
   // Renaming it onto a name a file holds is refused.
   const clash = mock.check({
@@ -177,7 +177,7 @@ test("check names the problems and composes the YAML without writing", () => {
   });
   assert.ok(
     clash.body.problems.includes(
-      "`site-check` is already an automation (.pulse/automations/site-check.yaml); pick another name",
+      "`site-check` is already an automation (.hive/automations/site-check.yaml); pick another name",
     ),
     clash.body.problems.join("; "),
   );
@@ -208,12 +208,12 @@ test("a repo write adds a file of its own, commits and gives the live row; an ed
   assert.equal(r.status, 201);
   assert.deepEqual(keys(r.body), WRITE_KEYS);
   assert.equal(r.body.where, "repo");
-  assert.equal(r.body.path, ".pulse/automations/deps-audit.yaml");
+  assert.equal(r.body.path, ".hive/automations/deps-audit.yaml");
   assert.ok(r.body.commit);
   assert.equal(r.body.schedule.origin_name, "deps-audit");
   assert.equal(
     r.body.schedule.origin,
-    "repo:.pulse/automations/deps-audit.yaml#deps-audit",
+    "repo:.hive/automations/deps-audit.yaml#deps-audit",
   );
   assert.equal(r.body.schedule.every_words, "every day at 03:00 UTC");
   const p = data.projects[0];
@@ -263,7 +263,7 @@ test("a repo write adds a file of its own, commits and gives the live row; an ed
     replace: "deps-audit",
   });
   assert.equal(renamed.status, 200);
-  assert.equal(renamed.body.path, ".pulse/automations/deps-weekly.yaml");
+  assert.equal(renamed.body.path, ".hive/automations/deps-weekly.yaml");
   assert.ok(!p.automations.files.some((x) => x.name === "deps-audit"));
   assert.notEqual(renamed.body.schedule.id, r.body.schedule.id);
   assert.equal(
@@ -272,7 +272,7 @@ test("a repo write adds a file of its own, commits and gives the live row; an ed
   );
   assert.equal(
     renamed.body.schedule.origin,
-    "repo:.pulse/automations/deps-weekly.yaml#deps-weekly",
+    "repo:.hive/automations/deps-weekly.yaml#deps-weekly",
   );
   // A list item is edited in place and stays in the list.
   const tidy = mock.write({
@@ -288,7 +288,7 @@ test("a repo write adds a file of its own, commits and gives the live row; an ed
     replace: "weekly-tidy",
   });
   assert.equal(tidy.status, 200);
-  assert.equal(tidy.body.path, ".pulse/pulse.yaml");
+  assert.equal(tidy.body.path, ".hive/hive.yaml");
   assert.equal(p.file.entries[0].every, "2w");
   assert.match(
     p.file.text,
@@ -337,20 +337,20 @@ test("a store write adds a hand-set row; move puts it into the file and ends the
   assert.equal(lib.automations.files.length, 1);
   assert.equal(
     lib.automations.files[0].path,
-    ".pulse/automations/deps-audit.yaml",
+    ".hive/automations/deps-audit.yaml",
   );
   const old = lib.schedules.find((s) => s.id === r.body.schedule.id);
   assert.equal(old.status, "ended");
   assert.match(
     old.note,
-    /^moved to \.pulse\/automations\/deps-audit\.yaml as deps-audit/,
+    /^moved to \.hive\/automations\/deps-audit\.yaml as deps-audit/,
   );
   assert.equal(
     m.body.schedule.origin_path,
-    ".pulse/automations/deps-audit.yaml",
+    ".hive/automations/deps-audit.yaml",
   );
   assert.ok(lib.applied, "the folder was applied");
-  assert.deepEqual(lib.applied.files, [".pulse/automations/deps-audit.yaml"]);
+  assert.deepEqual(lib.applied.files, [".hive/automations/deps-audit.yaml"]);
 });
 
 test("ending a repo-kept schedule removes its file or list entry; remove does the same by name", () => {
@@ -361,7 +361,7 @@ test("ending a repo-kept schedule removes its file or list entry; remove does th
   const p = data.projects[0];
   assert.ok(!p.automations.files.some((f) => f.name === "site-check"));
   assert.equal(p.schedules.find((s) => s.id === "SCHED-002").status, "ended");
-  assert.ok(!p.applied.files.includes(".pulse/automations/site-check.yaml"));
+  assert.ok(!p.applied.files.includes(".hive/automations/site-check.yaml"));
   const x = mock.remove({ project: "demo-app", name: "weekly-tidy" });
   assert.equal(x.status, 200);
   assert.equal(p.schedules.find((s) => s.id === "SCHED-003").status, "ended");
@@ -414,7 +414,7 @@ test("history lists what happened newest first, pages by seq, and grows with the
   assert.equal(r.body.entries[0].what, "skipped");
   assert.equal(r.body.entries[0].job, "JOB-0402");
   assert.equal(r.body.schedule.script_outside, true);
-  assert.equal(r.body.schedule.script_home, ".pulse/automations/site-check.sh");
+  assert.equal(r.body.schedule.script_home, ".hive/automations/site-check.sh");
   assert.deepEqual(
     r.body.jobs.map((j) => j.id),
     ["JOB-0402", "JOB-0377"],
@@ -438,7 +438,7 @@ test("history lists what happened newest first, pages by seq, and grows with the
   assert.equal(mock.history("SCHED-999", q()).status, 404);
 });
 
-test("a new check's script must sit under .pulse/; an edit may keep the old one", () => {
+test("a new check's script must sit under .hive/; an edit may keep the old one", () => {
   const { mock } = setup();
   const outside = mock.check({
     project: "demo-app",
@@ -446,7 +446,7 @@ test("a new check's script must sit under .pulse/; an edit may keep the old one"
     entry: entry({ name: "site-2", kind: "check", script: "scripts/site.sh" }),
   });
   assert.ok(
-    outside.body.problems.some((p) => p.includes("is outside .pulse/")),
+    outside.body.problems.some((p) => p.includes("is outside .hive/")),
     outside.body.problems.join("|"),
   );
   const inside = mock.check({
@@ -455,7 +455,7 @@ test("a new check's script must sit under .pulse/; an edit may keep the old one"
     entry: entry({
       name: "site-2",
       kind: "check",
-      script: ".pulse/automations/site-2.sh",
+      script: ".hive/automations/site-2.sh",
     }),
   });
   assert.deepEqual(inside.body.problems, []);
@@ -484,11 +484,11 @@ test("a new check's script must sit under .pulse/; an edit may keep the old one"
       script: "scripts/other.sh",
     }),
   });
-  assert.ok(moved.body.problems.some((p) => p.includes("is outside .pulse/")));
+  assert.ok(moved.body.problems.some((p) => p.includes("is outside .hive/")));
   // The list flags the old row.
   const row = mock
     .list(new URLSearchParams({ project: "demo-app" }))
     .body.projects[0].schedules.find((s) => s.id === "SCHED-002");
   assert.equal(row.script_outside, true);
-  assert.equal(row.script_home, ".pulse/automations/site-check.sh");
+  assert.equal(row.script_home, ".hive/automations/site-check.sh");
 });

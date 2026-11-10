@@ -1,5 +1,5 @@
 #!/bin/sh
-# Checks the Mac app end to end: the PulseKit tests, a release build, and a run
+# Checks the Mac app end to end: the HiveKit tests, a release build, and a run
 # of the built app against the console's mock (web/hub/mock/server.mjs) on a
 # free port. The run goes to Records through the Go menu and to Tasks with a
 # real mouse click on the sidebar (through AppKit's hit testing, so nothing
@@ -22,8 +22,8 @@ set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
-app="$here/build/PULSE.app"
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/pulse-mac-check.XXXXXX")
+app="$here/build/Hive.app"
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/hive-mac-check.XXXXXX")
 mock=""
 pid=""
 
@@ -51,7 +51,7 @@ port=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=
 console="http://127.0.0.1:$port/"
 subsystem='subsystem == "io.github.manishtiwari25.pulse"'
 start_mock() {
-  (cd "$repo/web/hub" && exec env MOCK_STATIC=out PULSE_HUB_PORT="$port" node mock/server.mjs) >> "$scratch/mock.log" 2>&1 &
+  (cd "$repo/web/hub" && exec env MOCK_STATIC=out HIVE_HUB_PORT="$port" node mock/server.mjs) >> "$scratch/mock.log" 2>&1 &
   mock=$!
   i=0
   until curl -fs -o /dev/null "${console}api/v1/health"; do
@@ -85,7 +85,7 @@ say "== run against the mock on $console"
 start_mock
 since=$(date '+%Y-%m-%d %H:%M:%S')
 # The commands' clock starts when the first page has loaded.
-"$app/Contents/MacOS/PULSE" -EphemeralRun YES -HubURL "$console" -QuitAfter 60 \
+"$app/Contents/MacOS/Hive" -EphemeralRun YES -HubURL "$console" -QuitAfter 60 \
   -Commands "1:go /records/;2:clicklink /tasks/;3:snapshot $scratch/tasks.png;4:rightclicklink /tasks/;6:rightclick 700 500;8:reload;16:snapshot $scratch/back.png;17:addlink $beside blank;18:clicklink $beside;21:beside;23:quit" >/dev/null 2>&1 &
 pid=$!
 note "app started (pid $pid)"
@@ -118,7 +118,7 @@ match() {
     found { print; next }
     {
       message = $0
-      sub(/^.*\] \[io\.github\.manishtiwari25\.pulse:[a-z]+\] /, "", message)
+      sub(/^.*\] \[io\.github\.manishtiwari25\.hive:[a-z]+\] /, "", message)
       if ((how == "whole" && message == want) || (how == "prefix" && index(message, want) == 1)) found = 1
     }
     END { exit found ? 0 : 1 }' "$scratch/remaining.log" > "$scratch/rest.log" || fail "never logged: $2"
@@ -152,4 +152,4 @@ for shot in tasks back; do
   size=$(wc -c < "$scratch/$shot.png" 2>/dev/null || echo 0)
   [ "$size" -gt 20000 ] || fail "$shot.png is missing or blank ($size bytes)"
 done
-say "PULSE.app check passed (snapshots in $scratch)"
+say "Hive.app check passed (snapshots in $scratch)"

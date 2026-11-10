@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { ServiceDialog } from "@/components/pulse/service";
-import { StatusIcon } from "@/components/pulse/status-badge";
-import { Mono } from "@/components/pulse/who";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { ServiceDialog } from "@/components/hive/service";
+import { StatusIcon } from "@/components/hive/status-badge";
+import { Mono } from "@/components/hive/who";
 import { writes, type ServicePayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { invalidate } from "@/lib/use-api";
@@ -41,7 +41,7 @@ export function AttentionStrip({ rows, service, onRetry }: { rows: AttentionRow[
 // the writes the runner controls make: Resume is the same confirm as
 // Settings' (stop = 0), Start runner opens the service dialog that installs
 // or starts the background service, Retry reloads the inputs that failed,
-// and the rest are links. The setup card's "Keep PULSE running" step uses
+// and the rest are links. The setup card's "Keep Hive running" step uses
 // the same button.
 export function FixButton({ fix, label, why, service, onRetry, size = "sm", variant }: { fix: AttentionFix; label: string; why?: string; service: ServicePayload | undefined; onRetry?: () => void; size?: "xs" | "sm" | "default"; variant?: "default" | "outline" }) {
   const [open, setOpen] = useState(false);
@@ -57,7 +57,7 @@ export function FixButton({ fix, label, why, service, onRetry, size = "sm", vari
           title="Resume the runner?"
           description={
             <>
-              Agents can start new work again. This is the same as <Mono>pulse start</Mono>. It doesn&apos;t start a runner that isn&apos;t running or remove any STOP file, and your limits, project stops and approvals still apply.
+              Agents can start new work again. This is the same as <Mono>hive start</Mono>. It doesn&apos;t start a runner that isn&apos;t running or remove any STOP file, and your limits, project stops and approvals still apply.
             </>
           }
           action="Resume"

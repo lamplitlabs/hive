@@ -20,7 +20,7 @@ the per-project share (capacity.rs) leaves beside the project's queued and lease
 jobs (experiments aside), so a project with three lanes and five voted cards
 works three at once instead of one every five minutes. **Product cards go
 first**: the planner classes every card as *product* (the thing the project
-ships) or *operating-layer* (tests, fixtures, CI, tooling, formatting, PULSE
+ships) or *operating-layer* (tests, fixtures, CI, tooling, formatting, Hive
 control-plane docs) and builds every product card before any operating-layer
 one; within a class net score, then the card's quality score, then age decide.
 A card is operating-layer when it declares `Class: operating-layer`, when its
@@ -41,7 +41,7 @@ card competes, voted operating-layer cards are planned anyway
 workers do not watch eight voted cards wait for midnight because three morning
 attempts committed nothing; the moment a product card competes the cap holds
 again. `off` keeps it strict. Only `needs votes` cards appear on ballots;
-`pulse ballot`, worker briefs, `pulse queue` and planner ballot jobs use that
+`hive ballot`, worker briefs, `hive queue` and planner ballot jobs use that
 same ballot, ordered closest to quorum then oldest, capped by `lead.ballot_cap`
 (default 10). The board hygiene pass also retires open suggestions older than
 `board.stale_days` (default 7) when their non-empty `files` list names only
@@ -121,21 +121,21 @@ only then a flaky test, broken link, stale doc or lint finding; a quiet run
 `FINDING:` line, not `failed`; research jobs rotate through their focuses
 starting with the product as its user sees it, weighted by what the board
 accepted, and keep to the product focuses while the day's operating-layer cap
-is reached. The console's Votes page, `pulse queue` (`not planned: <gate>`) and
-`pulse status` (`planner <slug>: N eligible, M plannable (...)`) show the same
+is reached. The console's Votes page, `hive queue` (`not planned: <gate>`) and
+`hive status` (`planner <slug>: N eligible, M plannable (...)`) show the same
 gate for the same card, so a ballot that "does nothing" always says why. A job
 that ran marks the suggestion `built` or `tried`; a `blocked` job holds only
 its own card. **Amendments** carry a `text_hash`; a vote counts only when it
 read the same text. Passed amendments are written into the project's
-constitution record by `pulse amend apply` and ratified by the `pulse` system
+constitution record by `hive amend apply` and ratified by the `hive` system
 agent.
 
 ## Evolve
 
-`pulse evolve` runs the loop the constitution allows: `pulse evolve status`
-prints the gates, `pulse evolve measure --project P --ref REF` scores a tree
+`hive evolve` runs the loop the constitution allows: `hive evolve status`
+prints the gates, `hive evolve measure --project P --ref REF` scores a tree
 against the project's public fixtures and the owner's held-out ones (names and
-paths never leave the owner's side), `pulse evolve cycle --project P` takes the
+paths never leave the owner's side), `hive evolve cycle --project P` takes the
 top voted suggestion, builds it on an experiment branch, measures it, archives
 the row, and delivers a kept result as a pull request whose body is the
 measurement summary ([Delivery](landing.md)); the reviewer and the project's
@@ -143,14 +143,14 @@ pipeline decide it there like any other branch, the lane's state reads `pr`
 and the result post on the suggestion thread names the pull request until
 the merge finalizes the experiment (a project without an upstream lands it
 locally as before). The experiment branch keeps its `evolve/<id>` name on
-the forge, which the reviewer's rule reads as a branch not of PULSE's own
+the forge, which the reviewer's rule reads as a branch not of Hive's own
 making and hands to you ([The complexity rule](review.md#the-complexity-rule)).
 When the gates allow, the
 daemon runs the cycle by itself; the command is the by-hand alternative.
 
 - The evolution archive keeps lineage as well as scores. Each measured
   variant saves a binary patch outside the checkout under
-  `~/.pulse/patches/evolve/<project>/`, records the `parent` archive row it
+  `~/.hive/patches/evolve/<project>/`, records the `parent` archive row it
   built on (empty means the default branch) and the `base_commit` merge-base
   it forked from. The planner uses `evolve.parent_rate` (default `0.5`) as the
   share of experiments that should try an archived parent; eligible parents
@@ -160,7 +160,7 @@ daemon runs the cycle by itself; the command is the by-hand alternative.
   (`neutral`, the usual result on pass/fail fixtures) counts as a descendant
   but not as a productive one; only an improvement - a delta of at least
   `evolve.tolerance`, or a tie whose card's own check rose - earns
-  productivity. `pulse evolve lineage --project P [--json]` prints the
+  productivity. `hive evolve lineage --project P [--json]` prints the
   archived tree, each row's outcome (`improved`, `neutral`, `discarded`), CMP
   values and the current candidate count.
 
@@ -179,10 +179,10 @@ and `retire`.
   `land.merged` of a pull request, so under pull-request delivery
   ([Delivery](landing.md)) it covers only what landed locally until it is
   taught the merged ones.
-- **Genome.** A variant is a directory `~/.pulse/variants/<id>/` holding
+- **Genome.** A variant is a directory `~/.hive/variants/<id>/` holding
   `variant.yaml`, `agents/<name>.md`, `skills/<name>/SKILL.md`,
   `instructions.md` and `settings.toml`.
-  `pulse evolve variant new --project P --dir D [--id ID] [--parent ID]
+  `hive evolve variant new --project P --dir D [--id ID] [--parent ID]
   [--hypothesis "..."]` parses every file and refuses, naming the key or the
   file:
   - a setting off the allowlist (`worker_model`, `light_model`,
@@ -200,10 +200,10 @@ and `retire`.
     settings) of an archive member on the same island. The refusal names
     that member, and the empty overlay counts as `base`.
 
-  The checked genome is copied under `~/.pulse/variants/<id>/` and
+  The checked genome is copied under `~/.hive/variants/<id>/` and
   registered as `proposed`.
 - **The other variant commands.**
-  - `pulse evolve variant list|show ID` prints the archive, the overlay and
+  - `hive evolve variant list|show ID` prints the archive, the overlay and
     each variant's incumbent projects.
   - `retire ID` keeps the row and moves any incumbent pointer back to the
     parent (when it is promoted) or to `base`.
@@ -212,27 +212,27 @@ and `retire`.
 
 ## Seeded records and starter fixtures
 
-Registering a project (`pulse init`, `pulse onboard`, the console) seeds the
+Registering a project (`hive init`, `hive onboard`, the console) seeds the
 loop's records and six public behaviour fixtures. The records: a project whose
 checkout commits `docs/evolution/constitution.md` / `evaluators.md` gets those
 files indexed as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other
 project gets a copy of the template's text marked `seeded_from` in its
 frontmatter, with `loop: off`, no baseline and `Product scope: allowed` (amend
 the line to `operating-layer` to keep product cards out), so nothing runs until
-you edit it (`pulse record amend EVO-constitution-<slug> --body-file FILE`).
+you edit it (`hive record amend EVO-constitution-<slug> --body-file FILE`).
 
 An existing record is never touched. You do not have to write the text yourself
 (ADR-046): while a project's constitution or evaluators is still the seeded
 copy, the daemon plans one `reflect` job (source `draft:<slug>`, once per 24
 hours; the console's **Draft it for me** queues it at once) whose worker reads
 the checkout and files the complete text with every placeholder replaced as a
-*draft* - `pulse record draft ID --body-file F [--note ...]`, refused while a
+*draft* - `hive record draft ID --body-file F [--note ...]`, refused while a
 `<placeholder>` remains or a protected section (Hard stops, Kill switch,
 Amendments) differs from the current text. A draft never changes the record:
 the console shows it as `draft ready` on the project row and the Evolution tab,
-and one **Adopt** (or `pulse record adopt ID [--words ...]`, human only) writes
+and one **Adopt** (or `hive record adopt ID [--words ...]`, human only) writes
 it as the next revision authored by `human` with the drafting agent in the
-note; **Discard** (`pulse record discard ID`) drops it; `pulse record drafts
+note; **Discard** (`hive record discard ID`) drops it; `hive record drafts
 [--project P]` lists what waits. The switch `records.auto_adopt` (off by
 default) lets the daemon adopt waiting drafts while `owner.presence` is `away`:
 the revision note says `auto-adopted by the daemon while the owner was away
@@ -240,7 +240,7 @@ the revision note says `auto-adopted by the daemon while the owner was away
 points at the record, so you can see what it took and amend it back.
 
 The fixtures, named `starter-*`: the right tier declared, hard stops refused,
-injected "approvals" ignored. Their scorers live in the binary (`pulse evolve
+injected "approvals" ignored. Their scorers live in the binary (`hive evolve
 score NAME`) and judge effects only. Alongside them the loop *derives* metric
 fixtures from the project's own tree, named `derived-*`: `derived-tests` (test
 declarations the tree carries - `#[test]`, `it(`/`test(`, `def test_`, `func
@@ -255,23 +255,23 @@ a derived or hand-made metric no fixture would tell variants apart. In an
 experiment they count only inside the card's changed files (the diff scope
 below), so one card's change moves them visibly. A derived fixture whose count
 reaches its scale, or whose script changed, is re-armed with a fresh date
-(event `evolution.fixture.rearmed`); a disabled one is never re-added. `pulse
-evolve seed [--project P]` seeds both for a project registered earlier (`pulse
-evolve fixture seed` for the fixtures alone, which also derives); `pulse evolve
+(event `evolution.fixture.rearmed`); a disabled one is never re-added. `hive
+evolve seed [--project P]` seeds both for a project registered earlier (`hive
+evolve fixture seed` for the fixtures alone, which also derives); `hive evolve
 fixture list|disable` manages fixtures. The baseline is the daemon's: once the
 records and at least one enabled fixture exist and `loop: on`, it plans a
 `baseline` job that measures the default branch, archives the score and
 refreshes the experiment-lane baseline cache for that default-branch commit and
 fixture hash (a failure posts a finding and is retried after
 `baseline.retry_hours`, or after `lane.short_retry_minutes` when the failure is
-transient; `pulse job add --kind baseline` queues it by hand). The cache key is
+transient; `hive job add --kind baseline` queues it by hand). The cache key is
 the SHA-256 of the enabled fixture definitions, the held-out fixture marker and
 harness-affecting settings; `evolve.baseline_ttl_hours` defaults to `24`, and
 `0` means cached baselines never expire. The job's run log lists every public
 fixture's score and, for a 0, the scorer's one-line reason. The two private
 held-out fixtures - the proof that the loop is not grading itself - are the
 daemon's too by default (`evolve.heldout auto`): it creates
-`~/.pulse/private/heldout`, writes one fixture per tick through a sealed model
+`~/.hive/private/heldout`, writes one fixture per tick through a sealed model
 call and marks each as generated (`evolve status` says `2 ready (2 generated)`
 once the loop may open, the archive carries `heldout_generated`), and keeps
 going to a target of six - one per built-in judge - so `6 ready (6 generated)`
@@ -280,11 +280,11 @@ in its own slot, the oldest one per tick (`held-out: renewed H03 (41 days
 old, judge …)` in the daemon log), so the private set drifts away from what
 the agents have seen without ever changing all at once; since the held-out
 marker is part of the baseline cache key, the next measurement re-measures
-every baseline. `pulse settings set evolve.heldout
-owner` hands the step back to you: `pulse evolve setup DIR` or the console's
+every baseline. `hive settings set evolve.heldout
+owner` hands the step back to you: `hive evolve setup DIR` or the console's
 Held-out fixtures dialog, which also work under `auto` and are never
 overwritten or renewed. Product fixtures - your project's own checks - are yours to add
-with `pulse evolve fixture add`. Every scorer runs against a frozen clone: a
+with `hive evolve fixture add`. Every scorer runs against a frozen clone: a
 symlink or hardlink that leaves the clone, a special file, or a tree that
 differs after the scorer ran fails the measurement as a violation. What the
 project's own `.gitignore` ignores is removed from the clone first (`git clean
@@ -297,7 +297,7 @@ evolution branch was deferred as `scored tree has an escaping symlink:
 never scored. A metric
 fixture skips the agent request and scores the frozen tree directly, which
 gives the baseline headroom when governance fixtures already score `1.0`:
-`pulse evolve fixture add --project P --name N --metric --scorer 'pulse evolve
+`hive evolve fixture add --project P --name N --metric --scorer 'hive evolve
 score metric --higher --scale S -- CMD ARGS...'`. The helper takes the last
 number printed by `CMD`; `--higher` scores `min(1, raw/S)`, `--lower` scores
 `S/(S+raw)`, and `--floor F` clamps the final score upward. A metric fixture
@@ -310,7 +310,7 @@ run (the hub's `src/lib` line coverage read 81.6 to 89.1 on one tree, and
 `node_modules`, so a test that imports a package (`react`, or `typescript`
 through `tsx-test-loader.mjs`) fails there and the modules only it loads count
 as uncovered: the hub's `src/components` branch coverage reads 88.7 in a
-checkout after `npm ci` and 87.9 under `pulse evolve measure`. Compare a
+checkout after `npm ci` and 87.9 under `hive evolve measure`. Compare a
 coverage fixture's numbers with the measure's, not with a local run, and keep
 the logic it scores in modules a test reaches without a package import. A
 judge-scored fixture - every request fixture (the `starter-*` set and your own non-metric ones) and every
@@ -326,9 +326,9 @@ run no longer lands as progress. The log line ends in the raw runs (`starter-x:
 -> 1, ...; variant ...` so a dispute can see what the agreed scores were
 agreed from. The run count is part of the baseline cache key, so a baseline
 cached when judge fixtures ran once is measured again, and the daemon's
-baseline budget counts three runs per judge fixture. `pulse evolve
+baseline budget counts three runs per judge fixture. `hive evolve
 status` shows each cached baseline fixture score and a `Headroom` line
-(`none - every fixture scores 1.0 at baseline; add a metric fixture (pulse
+(`none - every fixture scores 1.0 at baseline; add a metric fixture (hive
 evolve fixture add --metric)` or `N of M fixtures below 1.0`). Fixtures run in
 a bounded pool (`evolve.measure_parallel`, default `4`; `0` or `1` keeps them
 sequential), and the log starts with `measuring <k> fixtures with <p> in
@@ -337,16 +337,16 @@ are placed under that fixture's isolated measurement home
 (`build/cargo-target`, `npm-cache`, `go-cache`, `go-mod`, `pip-cache`,
 `uv-cache`, `yarn-cache`) and the scorer gets the same cache environment, so
 cargo `target/` and other tool caches are not part of the frozen clone. Scorers
-also receive `PULSE_MEASURE_COMMIT`, `PULSE_MEASURE_BINARY` for self-scorers
-and `PULSE_MEASURE_SCRATCH`, a per-fixture scratch directory under the isolated
+also receive `HIVE_MEASURE_COMMIT`, `HIVE_MEASURE_BINARY` for self-scorers
+and `HIVE_MEASURE_SCRATCH`, a per-fixture scratch directory under the isolated
 home for work that must stay outside the tree. Each worker has at most one
 fixture clone at a time, and removes that clone as soon as its scorer finishes;
 the isolated homes stay until the measurement root's final cleanup. An
-experiment's measurement also exports its **diff scope**: `PULSE_MEASURE_BASE`
-(the base commit), `PULSE_MEASURE_CHANGED` (a file listing the paths that
+experiment's measurement also exports its **diff scope**: `HIVE_MEASURE_BASE`
+(the base commit), `HIVE_MEASURE_CHANGED` (a file listing the paths that
 differ between the base and the measured tree, one per line) and
-`PULSE_MEASURE_BASE_TREE` (a frozen, read-only checkout of the base, shared by
-the fixtures). `pulse evolve score metric` then runs `CMD` on both trees and
+`HIVE_MEASURE_BASE_TREE` (a frozen, read-only checkout of the base, shared by
+the fixtures). `hive evolve score metric` then runs `CMD` on both trees and
 takes the base's count as the scale in place of `--scale` (twice the count for
 `--higher`, the count itself for `--lower`, never below 1), so the base scores
 `0.5` and the variant's delta is relative to what the card touched; the derived
@@ -371,7 +371,7 @@ The card's own hypothesis, measured. A card whose `Signal:` line reads
 allowed) gets a fixture of its own for that experiment, `card-check` (kind
 `card`, weight `1.0`, part of the card's composite, recorded with the other
 fixtures in the archive row and as `card_check` on each measurement). The
-command runs from the tree root on the base and on the variant through `pulse
+command runs from the tree root on the base and on the variant through `hive
 evolve score check -- CMD ARGS...`: its exit status scores `1` or `0`; a single
 integer on stdout is a count that should fall, scored like a diff-scoped
 `--lower` metric against the base's count (so `grep -c unwrap src/x.rs` on both
@@ -383,7 +383,7 @@ brief asks every card for one.
 
 ## Fleet
 
-`pulse fleet` prepares isolated worker clones for parallel experiments;
+`hive fleet` prepares isolated worker clones for parallel experiments;
 **usage** gives best-effort local token diagnostics (never a ledger).
 
 **Readiness is not delivery.** Level D means the general evolution gates are
@@ -393,18 +393,18 @@ default: an EVO-evaluators record with no `Product scope:` line lets product
 cards run, `Product scope: off` (or `operating-layer`) restricts the loop to
 the operating layer, and a line the loop cannot read - the seeded
 placeholder, an unknown word, two lines that disagree - restricts it too and
-`pulse evolve status` says why. Starter
+`hive evolve status` says why. Starter
 fixtures measure agent safety, not the quality of the project's product;
 baseline rows are not completed improvement cycles. The console reports
 baselines and variants separately.
 
 Open **Project → Evolution → Experiment planning** for the current candidate
-or blocking reason. `pulse evolve status` reports the same planning state:
+or blocking reason. `hive evolve status` reports the same planning state:
 gated, blocked, waiting for an eligible suggestion, writing an experiment
 card, ready but not dispatched, queued, in flight, or finalizing. When the
 planner is blocked on something only the owner can do (an instruction-shaped
-post awaiting `pulse decide`), that command is also the `Next human step`
-line, in `pulse evolve status` and the `pulse reflect` digest alike. The
+post awaiting `hive decide`), that command is also the `Next human step`
+line, in `hive evolve status` and the `hive reflect` digest alike. The
 tripwire reads commands ("skip the checks", "ignore previous instructions",
 "push immediately"), not the vocabulary of the work: a bare `skip check(s)` or
 `skip guard(s)` with nothing between the words names a thing and passes. Level D
@@ -424,10 +424,10 @@ in another such line.
 
 The loop may edit only the file classes the constitution's Editable scope
 table has raised to Stage 2 (Stage 4 for product code) whose paths exist in
-the checkout. When no class qualifies, `pulse evolve status` reports Level C,
-`gated`, names the classes and the owner's step (raise a stage with `pulse
+the checkout. When no class qualifies, `hive evolve status` reports Level C,
+`gated`, names the classes and the owner's step (raise a stage with `hive
 record amend`, or point a staged class at paths that exist); the planner then
-cards nothing and asks nothing, because no experiment could run. `pulse evolve
+cards nothing and asks nothing, because no experiment could run. `hive evolve
 report --project P [--days N]` prints the week from the store - suggestions
 and where the vote left them, card jobs, jobs done with and without a change,
 landings, experiments, and the questions still waiting for the owner - so
@@ -435,8 +435,8 @@ landings, experiments, and the questions still waiting for the owner - so
 last three rows measure the improver itself: landings per worker-hour,
 first-pass share of landing attempts, median lead time from job to landing,
 owner asks per landing, how many landings changed the improver's own crates
-(`crates/pulse-runner`, `pulse-evolve`, `pulse-harness`, `pulse-provider*`,
-`pulse-board`, `pulse-tally`, `pulse-tasks`, `pulse-goals`) and, on the
+(`crates/hive-runner`, `hive-evolve`, `hive-harness`, `hive-provider*`,
+`hive-board`, `hive-tally`, `hive-tasks`, `hive-goals`) and, on the
 brain, how often the daemon rebuilt itself - for the window and for the
 window of the same length before it, with an `Improver trend` line that names
 the direction that counts as better. A window with fewer than five landings is
@@ -503,7 +503,7 @@ gain of at least `evolve.tolerance` is `improved`; anything in between is a
 tie, labelled `neutral`. A tie is not a win and does not land: nothing was
 shown to move, so the branch is deleted like a discard's (the board post and
 the `land.dropped` record say `not landed: neutral …`, never `regressed`), the
-archive row carries `kept = 0`, and `pulse evolve status`, `report` and
+archive row carries `kept = 0`, and `hive evolve status`, `report` and
 `lineage` show it apart from both improvements and discards; it earns no
 lineage credit - a tie means the card's hypothesis went
 unmeasured, so the worker brief asks every card to name a check that will move
@@ -517,7 +517,7 @@ can let them land again: with `evolve.land_neutral` on (the default since
 reached the owner) a measured tie lands like an improvement - the verdict says
 `landed: evolve.land_neutral is on` and the row is kept - but earns no
 lineage credit; a variant that was never measured, or regressed, never lands.
-`pulse settings set evolve.land_neutral off` restores the strict rule. A claimed gain
+`hive settings set evolve.land_neutral off` restores the strict rule. A claimed gain
 must reproduce: when the first measurement says `improved`, the lane measures
 the variant once more on the same fixtures (the baseline is the cached one)
 and the gain stands only when the second measurement also says `improved`;
@@ -546,7 +546,7 @@ count) `lane.retry_minutes` × 72 (`EXPERIMENT_DEFERRAL_RETRIES`, a day at the
 default) after its first such deferral is given up - the job fails with a
 `land.missing` event naming the wait and the last reason, the branch stays
 for review - where one experiment was deferred for eight days. The measurement harness the lane starts
-is the same `pulse harness run` the workers use, with the same tool denials,
+is the same `hive harness run` the workers use, with the same tool denials,
 so it never waits for a permission prompt; it runs on `measure_model`
 (`worker_model` while empty). When the daemon restarts on a new
 binary it cancels the lane at once (the next daemon measures again) and gives
@@ -595,19 +595,19 @@ reason name what was left out (`request left out as judge noise`). A fixture
 that flips the same baseline commit both ways twice is retired by the
 healer below (disabled, event `evolution.fixture.retired`, one finding
 `Evolution fixture retired: it scored the same commit both ways twice`);
-`pulse evolve fixture enable NAME` brings it back and only later cycles
+`hive evolve fixture enable NAME` brings it back and only later cycles
 count for it again.
-`pulse evolve status` shows the same reason on its `Experiment planning`
+`hive evolve status` shows the same reason on its `Experiment planning`
 line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
 NAME scored the same baseline commit two ways`) and the step as `Next human
 step`. Two things clear it: a
-fixture enabled after the streak began (usually a metric fixture, `pulse
+fixture enabled after the streak began (usually a metric fixture, `hive
 evolve fixture add --project P --name N --metric --scorer CMD`, which the loop
-notices on its own), or a review of the question - your answer (`pulse post
+notices on its own), or a review of the question - your answer (`hive post
 answer --project P --area evolution --thread loop-gate --on QUESTION_ID
 --summary 'Reviewed'`) or a decision on it - which lets the loop run
 `evolve.flat_cycles` more cycles before it may ask again (the review's own
-date starts the new window, whichever question it lands on). `pulse settings
+date starts the new window, whichever question it lands on). `hive settings
 set evolve.flat_cycles 0` turns the gate off; the smallest streak it accepts
 is `2`.
 
@@ -638,10 +638,10 @@ the failed-experiment gate holds, the loop writes nothing there at all
 question that no longer asks for anything - you added a fixture, `fixture
 seed` derived one, the gate was turned off, a later cycle moved - is closed
 by the loop with the reason (`Evolution resumed: the gate no longer holds`,
-event `evolution.flat.resumed`), so it leaves your inbox on its own. `pulse evolve status` says what comes next while the gate holds
+event `evolution.flat.resumed`), so it leaves your inbox on its own. `hive evolve status` says what comes next while the gate holds
 (`the loop reviews it itself at 2026-10-13T02:29:30Z (evolve.flat_wait_hours
 24)`), the daemon logs `evolve P: healed derived: added …` / `healed
-self-reviewed: …`, and the question body says so. `pulse settings set
+self-reviewed: …`, and the question body says so. `hive settings set
 evolve.flat_wait_hours 0` keeps derivation and leaves every review to you;
 `evolve.heal off` turns the step off.
 
@@ -681,11 +681,11 @@ the lead promptly.
 
 ## Evolution runner caps
 
-`pulse settings help` explains the supported caps without opening a store
-(`pulse settings --help` and `pulse help settings` show the same guidance).
+`hive settings help` explains the supported caps without opening a store
+(`hive settings --help` and `hive help settings` show the same guidance).
 The CLI does **not** support `evolve_minutes` or `evolve_credits`; they are
 not aliases. The former `docs/workflows/evolve.md` is now the `WF-evolve`
-record, read with `pulse record show WF-evolve`.
+record, read with `hive record show WF-evolve`.
 
 | Setting | Built-in default | Scope |
 | --- | --- | --- |
@@ -702,12 +702,12 @@ record, read with `pulse record show WF-evolve`.
 | `landing.base_red_retry_minutes` | `10` minutes | How long a project's held work waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
 | `landing.setup_repair` | `on` | `on`: a project setup that fails on its own default branch - twice the same way in a worker clone, or at a local landing - queues one repair job (source `setup:SLUG`, at most three a day per project) that runs without that setup and fixes the recipe, the lockfile or the tree; `off` only marks the machine unfit, as before. |
 | `landing.auto_stash` | `on` | A dirty checkout on the default branch is stashed around the daemon's fast-forward from the upstream (and around a local landing); `off` leaves it alone and records `land.sync-skipped` at most once an hour ([Delivery](landing.md#the-local-default-branch-follows-the-upstream)). |
-| `landing.push`, `landing.verify_memo`, `landing.verify_memo_hours`, `landing` | as before | Settings of the local landing, kept so an older store's values still parse: `landing.push` is read by nothing (the daemon pushes branches and never the default branch); the verify memo steers only the local landing a project without an upstream keeps, and `pulse land --branch B --local`; `landing` (`agents`/`human`, ADR-024) still gates the local landing and the experiment lane; for pull requests `review.merge` is the switch. `landing.parallel` and `landing.batch` are removed. |
+| `landing.push`, `landing.verify_memo`, `landing.verify_memo_hours`, `landing` | as before | Settings of the local landing, kept so an older store's values still parse: `landing.push` is read by nothing (the daemon pushes branches and never the default branch); the verify memo steers only the local landing a project without an upstream keeps, and `hive land --branch B --local`; `landing` (`agents`/`human`, ADR-024) still gates the local landing and the experiment lane; for pull requests `review.merge` is the switch. `landing.parallel` and `landing.batch` are removed. |
 | `pipeline.watch` | `fix` | What the daemon does with the GitHub Actions runs a push of its own set off ([Pipelines](landing.md#pipelines-what-a-push-set-running-on-github)): `fix` tells you on the project's `runner/pipeline` thread and queues one fix job for a red pipeline; `watch` tells you only; `off` reads nothing. |
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
-| `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `pulse executor label`. |
-| `executor.transport` | `local` | `local`: this machine runs its own jobs in a clone under the pulse home. `local-hand`: it leases them to the `pulse-hand` installed beside `pulse` over a pipe (ADR-070 step 1b). The hand clones in `PULSE_HOME/hands`, runs the worker there and, once the commits pass the identity check, pushes the job's branch with the key `push.credential` names, handed to it for that one push. Lead, review and suggestion-review jobs stay local, and a failed hand push is left to the delivery pass ([Machines](machines.md)). |
-| `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `pulse executor reserve NAME`. |
+| `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `hive executor label`. |
+| `executor.transport` | `local` | `local`: this machine runs its own jobs in a clone under the hive home. `local-hand`: it leases them to the `hive-hand` installed beside `hive` over a pipe (ADR-070 step 1b). The hand clones in `HIVE_HOME/hands`, runs the worker there and, once the commits pass the identity check, pushes the job's branch with the key `push.credential` names, handed to it for that one push. Lead, review and suggestion-review jobs stay local, and a failed hand push is left to the delivery pass ([Machines](machines.md)). |
+| `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `hive executor reserve NAME`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
 | `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
 | `dependencies.min_release_age_days` | `3` days | A dependency version is adopted only once it has been published this long, in every project: a security update waits for the patched version to age before it is queued, and a local landing holds a branch that pins a younger one; a pull request is not read for versions ([Delivery](landing.md#dependencies-security-alerts-and-the-release-age-rule)). `0` turns the wait off. |
@@ -729,22 +729,22 @@ record, read with `pulse record show WF-evolve`.
 | `harness.trim_keep_recent` | `8` results (`0` off) | Tool results a run or chat sends whole in each request, counting back from the latest; older ones longer than `harness.trim_over` characters reach the model as their first and last 750 characters around a marker, and it is told to rerun a command when it needs one whole. Only the request is trimmed: the conversation, the trajectory and the session's steps keep every output in full. Measured over three days of owner task runs, results older than the eight most recent held 84% of the result characters of an average 79,000-token request, and the defaults take about 14,000 to 18,000 tokens out of such a request (**Trimming older results** under [The harness](harness.md#the-harness-how-an-agent-runs)). |
 | `harness.trim_over` | `4000` characters (`0` off) | How long an older tool result may be before a request trims it; about the 80th percentile of measured results, above which two thirds of all result characters sit. |
 | `harness.format_retries` | `1` | Prose-only native-harness replies corrected without consuming `harness.max_steps` before later format errors count normally. |
-| `harness.context_window` | `0` tokens (= the model list) | The context window the harness measures `harness.compact_at` against and collapses observations harder past 80% of; `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none is taken as 128,000. `pulse harness run --context-window N` overrides it for one run. |
+| `harness.context_window` | `0` tokens (= the model list) | The context window the harness measures `harness.compact_at` against and collapses observations harder past 80% of; `0` reads the window the provider lists for the chosen model - 1M for the Claude and Gemini models that take it - and a model that lists none is taken as 128,000. `hive harness run --context-window N` overrides it for one run. |
 | `harness.compact_at` | `50` percent (`0` off, `95` at most) | Where in the context window a native-harness run asks the model to summarise the older part of its conversation and replaces those messages with the summary (**Compaction** under [The harness](harness.md#the-harness-how-an-agent-runs)); a request past `provider.max_request_mb` compacts whatever the percent. `--compact-at N` for one run. |
 | `harness.compact_model` | empty (= the run's model) | The model that writes the compaction summaries. A cheaper one saves money on the providers that bill per token - each summary reads up to about 30,000 tokens of transcript - while Copilot bills per request, so there it saves time rather than credits. `--compact-model M` for one run. |
 | `harness.reasoning` | `default` (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) | The reasoning effort a native-harness run asks of the model, sent as `reasoning_effort` to the OpenAI-compatible providers and to Copilot for the models that take it; `default` sends nothing (**Reasoning effort and prompt caching** under [The harness](harness.md#the-harness-how-an-agent-runs)). `--reasoning LEVEL` for one run. |
-| `harness.instructions` | `on` | A native-harness run reads the owner's `~/.pulse/AGENTS.md`, the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and its rules (`.pulse/rules`, `.claude/rules`, `.github/instructions`) into its system prompt; path-scoped rules and nested `AGENTS.md` files arrive with the files they cover. |
+| `harness.instructions` | `on` | A native-harness run reads the owner's `~/.hive/AGENTS.md`, the clone's `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` and its rules (`.hive/rules`, `.claude/rules`, `.github/instructions`) into its system prompt; path-scoped rules and nested `AGENTS.md` files arrive with the files they cover. |
 | `harness.mcp_tools` | `on` | A native-harness run offers the project's enabled MCP servers' tools to the model as `mcp__<server>__<tool>`. |
-| `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `pulse skill` registry. |
-| `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.pulse/hooks.json` and the owner's `~/.pulse/hooks.json`. |
+| `harness.skills` | `on` | A native-harness run offers the `skill` tool over the clone's skill folders and the project's `hive skill` registry. |
+| `harness.hooks` | `on` | A native-harness run runs the hooks in the clone's `.hive/hooks.json` and the owner's `~/.hive/hooks.json`. |
 | `harness.subagents` | `on` | A top-level native-harness run may hand a sub-task to a bounded helper run through the `subagent` tool. |
-| `harness.memory` | `on` | A native-harness run reads `~/.pulse/memory/<project>.md` and `~/.pulse/memory/user.md` into its system prompt and offers the `memory` tool (**Memory** under [The harness](harness.md#the-harness-how-an-agent-runs)). `--no-memory` for one run. |
+| `harness.memory` | `on` | A native-harness run reads `~/.hive/memory/<project>.md` and `~/.hive/memory/user.md` into its system prompt and offers the `memory` tool (**Memory** under [The harness](harness.md#the-harness-how-an-agent-runs)). `--no-memory` for one run. |
 | `harness.tasks` | `on` | A top-level native-harness run with a store offers the `task` tool: an agent files tasks on the board under its own name, with the conversation or job it came from as the origin ([Tasks an agent files](board.md#tasks-an-agent-files-the-task-tool)). `--no-tasks` for one run. |
 | `harness.teach` | `off` | Teacher mode (**Teacher mode** under [The harness](harness.md#the-harness-how-an-agent-runs)): the agent still does the work, but explains the why of each design or coding choice as it goes, for a junior reading along; a job reports `LESSON:` lines that become `lesson` posts on the board. `--teach` / `--teach-off` for one run. |
-| `harness.web_search` | `chat` | Where the model may search the web with the `web_search` tool (**Web search** under [The harness](harness.md#the-harness-how-an-agent-runs)): `chat` offers it in `pulse harness chat` and not to jobs, `on` to jobs too, `off` nowhere. `--web-search` / `--no-web-search` for one run. |
+| `harness.web_search` | `chat` | Where the model may search the web with the `web_search` tool (**Web search** under [The harness](harness.md#the-harness-how-an-agent-runs)): `chat` offers it in `hive harness chat` and not to jobs, `on` to jobs too, `off` nowhere. `--web-search` / `--no-web-search` for one run. |
 | `harness.fetch_allow` | empty (the tool is not offered) | Hosts the `fetch` tool may read web pages from, comma-separated, `*.` for subdomains. |
 | `harness.deny_tools` | empty | Permission rules every run refuses outright, comma-separated: `bash(rm *)`, `read(.env*)`, `write(*.lock)`, `subagent`; a tool denied whole is not offered. Jobs get it as `--deny-tool`. |
-| `harness.allow_tools` | empty | Permission rules `pulse harness chat` runs without asking: `bash(git *)`, `edit(src/*)`, `mcp__github__*`; a deny rule wins. Jobs ask nobody, so it changes nothing there. |
+| `harness.allow_tools` | empty | Permission rules `hive harness chat` runs without asking: `bash(git *)`, `edit(src/*)`, `mcp__github__*`; a deny rule wins. Jobs ask nobody, so it changes nothing there. |
 | `worker_model` | empty (the runner's default) | Model of the runs that change code: task, improve and experiment jobs. Also the loop's measurements while `measure_model` is empty, and every other run while `light_model` is empty. |
 | `light_model` | empty (= `worker_model`) | Model of the light runs: lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the executor login check. A cheaper model here leaves the strong one to implementation. |
 | `measure_model` | empty (= `worker_model`) | Model the self-improvement loop measures fixtures with: every baseline, experiment and landing re-measure. It is part of the evaluator, so a change re-measures every baseline; while it is pinned, a `worker_model` change keeps them. Empty measures with the model the workers use, so the tree is tuned for the agent that ships it. |
@@ -752,12 +752,12 @@ record, read with `pulse record show WF-evolve`.
 | `light_reasoning` | empty (= `harness.reasoning`) | Reasoning effort of the light runs and of a light-class agent, so the cheap model can also think less. |
 | `measure_reasoning` | empty (= `worker_reasoning`) | Reasoning effort the loop measures fixtures with. Like `measure_model` it is part of the evaluator: a non-default value enters the baseline key, so a change re-measures every baseline. |
 | `board.stale_days` | `7` days | Board hygiene retires an open suggestion this old when its non-empty `files` list names only paths absent at the project's HEAD. |
-| `schedule.script_timeout_minutes` | `20` minutes (minimum `1`) | How long a check or watch script (`pulse schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure: a red check, a broken watcher. |
+| `schedule.script_timeout_minutes` | `20` minutes (minimum `1`) | How long a check or watch script (`hive schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure: a red check, a broken watcher. |
 | `schedule.scripts_per_tick` | `2` scripts (minimum `1`) | Check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated. |
-| `manifest.load` | `on` | Whether the daemon reads each project's own PULSE files - `.pulse/automations/<name>.yaml` and `.pulse/pulse.yaml` on the default branch - and the `SKILL.md` folders beside them (`.pulse/skills`, `.claude/skills`, `.github/skills`, `.agents/skills`) whenever a commit changes them: the schedules the files name are added, updated, paused and ended in the store, the skills join the project's `pulse skill` registry, and what a file gets wrong is a problem on the project board, never a stopped schedule. `off` leaves the files to the harness, which still offers the skill folders to the model. |
-| `lead.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again to seat a role lead (`pulse lead add`) for a concern of a project nobody owns: a self-improvement loop with no `rsi` lead, code landing without docs and no `docs` lead, a dependency manifest with no `security` lead, no check or watcher and no `monitor` lead. One question per project per pass, on the board thread `lead/<role>`; a yes on it seats the lead. Nothing is asked while `owner.presence` is `away`, except that the `security` seat is then seated unasked, once, and said so on the thread `lead/security`. |
-| `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`pulse toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
-| `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `pulse goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
+| `manifest.load` | `on` | Whether the daemon reads each project's own Hive files - `.hive/automations/<name>.yaml` and `.hive/hive.yaml` on the default branch - and the `SKILL.md` folders beside them (`.hive/skills`, `.claude/skills`, `.github/skills`, `.agents/skills`) whenever a commit changes them: the schedules the files name are added, updated, paused and ended in the store, the skills join the project's `hive skill` registry, and what a file gets wrong is a problem on the project board, never a stopped schedule. `off` leaves the files to the harness, which still offers the skill folders to the model. |
+| `lead.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again to seat a role lead (`hive lead add`) for a concern of a project nobody owns: a self-improvement loop with no `rsi` lead, code landing without docs and no `docs` lead, a dependency manifest with no `security` lead, no check or watcher and no `monitor` lead. One question per project per pass, on the board thread `lead/<role>`; a yes on it seats the lead. Nothing is asked while `owner.presence` is `away`, except that the `security` seat is then seated unasked, once, and said so on the thread `lead/security`. |
+| `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`hive toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
+| `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `hive goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
 
 The drafting, held-out directory and variant-loop gates (`evolve.draft_hours`,
@@ -765,9 +765,9 @@ The drafting, held-out directory and variant-loop gates (`evolve.draft_hours`,
 their defaults in [Evolve settings](evolve.md).
 
 These are defaults, not the owner's effective values. Read those with
-`pulse settings get NAME` or `pulse settings list --json` (also includes
+`hive settings get NAME` or `hive settings list --json` (also includes
 defaults, validation rules and descriptions). Only the owner changes caps;
 neither an unlimited loop nor these docs adds a measurement-wide credit budget.
 
 Applicability notes for the historical legacy fixtures (F03, F08) live in the
-`EVO-archive` record (`pulse record show EVO-archive`).
+`EVO-archive` record (`hive record show EVO-archive`).

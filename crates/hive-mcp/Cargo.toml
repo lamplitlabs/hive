@@ -1,0 +1,28 @@
+[package]
+name = "hive-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: the MCP server registry, a minimal MCP client and the hive mcp / hive skill commands"
+
+[dependencies]
+hive-cli.workspace = true
+hive-cred.workspace = true
+hive-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+base64.workspace = true
+url.workspace = true
+sha2.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true
+rusqlite.workspace = true

@@ -1,7 +1,7 @@
-// Automations mock for `automations` (crates/pulse-hub/src/automations.rs):
+// Automations mock for `automations` (crates/hive-hub/src/automations.rs):
 // the standing jobs of each project, kept in the repository (one file per
-// automation under `.pulse/automations/`, or an item of the older
-// `schedules:` list in `.pulse/pulse.yaml`) or in the store, with the checks
+// automation under `.hive/automations/`, or an item of the older
+// `schedules:` list in `.hive/hive.yaml`) or in the store, with the checks
 // the hub runs on a draft and the writes the console makes. Pure functions
 // over in-memory state, so the shape is testable without a server:
 // createAutomationsMock({...}) mirrors mock/api/automations.json plus the
@@ -17,10 +17,10 @@
 const pad = (n, w) => String(n).padStart(w, "0");
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const SCRIPT_KINDS = ["check", "watch"];
-const DIR = ".pulse/automations";
-const scriptInPulse = (path) =>
-  String(path).replace(/^\.\//, "").startsWith(".pulse/") &&
-  String(path).replace(/^\.\//, "").length > ".pulse/".length;
+const DIR = ".hive/automations";
+const scriptInHive = (path) =>
+  String(path).replace(/^\.\//, "").startsWith(".hive/") &&
+  String(path).replace(/^\.\//, "").length > ".hive/".length;
 const scriptHome = (name) => DIR + "/" + (name || "<name>") + ".sh";
 
 export const KINDS = ["task", "improve", "clean", "reflect"];
@@ -105,7 +105,7 @@ export function yamlItem(e, indent = "  ") {
   return indent + "- name: " + scalar(e.name) + "\n" + fields + "\n";
 }
 
-// One file of `.pulse/automations/`: the fields at the top level; the
+// One file of `.hive/automations/`: the fields at the top level; the
 // file's name is the automation's.
 export function yamlFile(e) {
   return yamlFields(e, "") + "\n";
@@ -156,10 +156,10 @@ export function createAutomationsMock({
     return names;
   };
   const pathOf = (name) => DIR + "/" + name + ".yaml";
-  // A check or watch whose script sits outside .pulse/ is flagged with the
+  // A check or watch whose script sits outside .hive/ is flagged with the
   // place it belongs, the way the hub's schedule_json does.
   const flagScript = (s) => {
-    const outside = SCRIPT_KINDS.includes(s.kind) && !!s.script && !scriptInPulse(s.script);
+    const outside = SCRIPT_KINDS.includes(s.kind) && !!s.script && !scriptInHive(s.script);
     s.script_outside = outside;
     s.script_home = outside
       ? scriptHome(
@@ -226,7 +226,7 @@ export function createAutomationsMock({
 
   // What is wrong with an entry's own fields, the way the hub's static and
   // store checks word it. `kept` is the script the automation already
-  // runs: it may stay where it is, even outside .pulse/.
+  // runs: it may stay where it is, even outside .hive/.
   function fieldProblems(p, e, kept = "") {
     const problems = [];
     if (!e.name) problems.push("name: a lowercase name is required");
@@ -275,13 +275,13 @@ export function createAutomationsMock({
         problems.push(
           "script: " + e.script + " must be a path inside the repository",
         );
-      else if (!scriptInPulse(e.script) && e.script !== kept)
+      else if (!scriptInHive(e.script) && e.script !== kept)
         problems.push(
           "The script " +
             JSON.stringify(e.script) +
-            " is outside .pulse/",
+            " is outside .hive/",
         );
-      else if (!/^\.pulse\/automations\//.test(e.script) && e.script !== kept)
+      else if (!/^\.hive\/automations\//.test(e.script) && e.script !== kept)
         problems.push(
           "script: " +
             e.script +
@@ -564,7 +564,7 @@ export function createAutomationsMock({
       ) {
         Object.assign(s, {
           status: "ended",
-          note: note || "removed from the project's PULSE file",
+          note: note || "removed from the project's Hive file",
           next_at: "",
           updated_at: t,
         });
@@ -774,7 +774,7 @@ export function createAutomationsMock({
         404,
         "No checkout",
         slug + " has no checkout on this machine",
-        "pulse schedule list --project " + slug,
+        "hive schedule list --project " + slug,
       );
     const h = holder(p, name);
     if (!h)
@@ -820,7 +820,7 @@ export function createAutomationsMock({
         404,
         "No schedule " + id,
         "nothing in the store has that id",
-        "pulse schedule list",
+        "hive schedule list",
       );
     const t = now();
     const note = String(body.note || "").trim();
@@ -847,7 +847,7 @@ export function createAutomationsMock({
         404,
         "No such action",
         verb + " is not pause, resume, end or run",
-        "pulse schedule --help",
+        "hive schedule --help",
       );
     record(s.id, verb === "end" ? "ended" : verb === "pause" ? "paused" : verb === "resume" ? "resumed" : "run", { note });
     emit("human:console", "schedule." + verb, s.id, { project: s.project });

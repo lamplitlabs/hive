@@ -13,9 +13,9 @@
 // theme, so a reload never shows the default for a frame and then reflows.
 
 export const APPEARANCE_KEYS = {
-  density: "pulse.density",
-  font: "pulse.font",
-  text: "pulse.text",
+  density: "hive.density",
+  font: "hive.font",
+  text: "hive.text",
 } as const;
 
 export type Density = "comfortable" | "compact";

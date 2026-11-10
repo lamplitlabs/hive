@@ -1,7 +1,7 @@
 // The cloud setup form's state (ADR-070): which cloud machines come from,
 // how this machine signs in to it, the fields that cloud reads, and where
 // backups go - all rendered from the descriptors GET /api/v1/clouds sends
-// (crates/pulse-store/src/clouds), so a new cloud is a new descriptor and
+// (crates/hive-store/src/clouds), so a new cloud is a new descriptor and
 // no new form. The form saves through POST /api/v1/settings one changed
 // setting at a time, under the store's own validation. Pure: no DOM, no
 // fetch - the settings page and the tests drive it alike.
@@ -56,7 +56,7 @@ export function fieldProblem(f: CloudField, value: string): string {
     return REFERENCE.test(v) ? "" : "A reference to where the secret lives - op://VAULT/ITEM/FIELD, keychain://SERVICE/ACCOUNT or file:///ABSOLUTE/PATH - never the secret itself.";
   }
   if (/\s/.test(v) && !f.setting.startsWith("compute.multipass")) return f.label + " is one word, without spaces.";
-  if (/-----BEGIN|\b(ghp_|github_pat_|sk-)[A-Za-z0-9_-]{8,}|[A-Za-z0-9+/_=-]{40,}/.test(v)) return "That looks like a secret. PULSE keeps names and ids here; sign in on this machine instead.";
+  if (/-----BEGIN|\b(ghp_|github_pat_|sk-)[A-Za-z0-9_-]{8,}|[A-Za-z0-9+/_=-]{40,}/.test(v)) return "That looks like a secret. Hive keeps names and ids here; sign in on this machine instead.";
   return "";
 }
 

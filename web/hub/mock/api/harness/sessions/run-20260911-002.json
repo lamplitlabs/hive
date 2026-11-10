@@ -9,7 +9,7 @@
     "executor": "vm-seven",
     "provider": "copilot",
     "model": "claude-sonnet-4.5",
-    "cwd": "/home/owner/.pulse/work/job-price-cache",
+    "cwd": "/home/owner/.hive/work/job-price-cache",
     "status": "submitted",
     "exit_status": "submitted",
     "submission": "SUMMARY: Cached price lookups per request and kept the existing API.\nFINDING: The previous path called lookupPrice once per line item.\nSUGGESTION: Add a fixture for mixed warm and cold cart requests before raising the latency target.",
@@ -22,7 +22,7 @@
     "started_at": "2026-09-11T05:30:00Z",
     "updated_at": "2026-09-11T05:42:00Z",
     "ended_at": "2026-09-11T05:42:00Z",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-002.json",
+    "trajectory": "/home/owner/.hive/harness/run-20260911-002.json",
     "cancel_requested_at": ""
   },
   "steps": [

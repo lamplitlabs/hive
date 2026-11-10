@@ -9,15 +9,15 @@
     "errors": 0,
     "items": {
       "removed": [
-        { "kind": "clone", "path": "/home/owner/.pulse/work/job-20260911T074512Z-3f9a1c/clone", "why": "job done 1h ago", "bytes": 94371840 },
-        { "kind": "clone", "path": "/home/owner/.pulse/work/job-20260911T071030Z-9b2e44/clone", "why": "job done 1h ago", "bytes": 88080384 },
+        { "kind": "clone", "path": "/home/owner/.hive/work/job-20260911T074512Z-3f9a1c/clone", "why": "job done 1h ago", "bytes": 94371840 },
+        { "kind": "clone", "path": "/home/owner/.hive/work/job-20260911T071030Z-9b2e44/clone", "why": "job done 1h ago", "bytes": 88080384 },
         { "kind": "worktree", "path": "/home/owner/src/demo-app/wt/fleet-cap-continue", "project": "demo-app", "why": "merged into main, untouched for 42m", "bytes": 2097152 }
       ],
       "held": [
         { "kind": "worktree", "path": "/home/owner/src/demo-lib/wt/retry-backoff", "project": "demo-lib", "why": "has uncommitted changes" },
-        { "kind": "branch", "path": "pulse/demo-app/job-20260911T083000Z-1c7d2e", "project": "demo-app", "why": "held by job job-20260911T083000Z-1c7d2e (running)" },
-        { "kind": "branch", "path": "pulse/demo-app/job-20260910T190000Z-77ab10", "project": "demo-app", "why": "not merged; kept 7 days (daemon.sweep_branch_days)" },
-        { "kind": "branch", "path": "pulse/demo-lib/job-20260909T120000Z-0d4e9f", "project": "demo-lib", "why": "not merged; kept 7 days (daemon.sweep_branch_days)" }
+        { "kind": "branch", "path": "hive/demo-app/job-20260911T083000Z-1c7d2e", "project": "demo-app", "why": "held by job job-20260911T083000Z-1c7d2e (running)" },
+        { "kind": "branch", "path": "hive/demo-app/job-20260910T190000Z-77ab10", "project": "demo-app", "why": "not merged; kept 7 days (daemon.sweep_branch_days)" },
+        { "kind": "branch", "path": "hive/demo-lib/job-20260909T120000Z-0d4e9f", "project": "demo-lib", "why": "not merged; kept 7 days (daemon.sweep_branch_days)" }
       ],
       "errors": []
     }
@@ -34,7 +34,7 @@
       { "id": "copilot", "label": "GitHub Copilot CLI", "binary": "/opt/homebrew/bin/copilot", "version": "1.0.103", "dir": "/home/owner/.copilot", "dir_exists": true, "sessions_dir": "/home/owner/.copilot/session-state", "bytes": 5905580032, "capped": false, "sessions": 240, "stale": 61, "live": 1, "oldest": "2026-07-02T14:10:00Z", "newest": "2026-09-11T08:49:00Z", "sweeps": true, "managed": false, "note": "", "removed": 0, "freed": 0, "removed_at": "" },
       { "id": "claude", "label": "Claude Code", "binary": "/opt/homebrew/bin/claude", "version": "2.1.80 (Claude Code)", "dir": "/home/owner/.claude", "dir_exists": true, "sessions_dir": "/home/owner/.claude/projects", "bytes": 498073600, "capped": false, "sessions": 318, "stale": 140, "live": 0, "oldest": "2026-05-19T09:00:00Z", "newest": "2026-09-10T19:30:00Z", "sweeps": true, "managed": false, "note": "", "removed": 0, "freed": 0, "removed_at": "" },
       { "id": "codex", "label": "Codex CLI", "binary": "", "version": "", "dir": "/home/owner/.codex", "dir_exists": true, "sessions_dir": "/home/owner/.codex/sessions", "bytes": 54525952, "capped": false, "sessions": 37, "stale": 37, "live": 0, "oldest": "2026-04-02T11:00:00Z", "newest": "2026-06-30T16:00:00Z", "sweeps": true, "managed": false, "note": "", "removed": 0, "freed": 0, "removed_at": "" },
-      { "id": "opencode", "label": "OpenCode", "binary": "/opt/homebrew/bin/opencode", "version": "1.2.0", "dir": "/home/owner/.local/share/opencode", "dir_exists": true, "sessions_dir": "/home/owner/.local/share/opencode", "bytes": 6012954624, "capped": false, "sessions": 0, "stale": 0, "live": 0, "oldest": "", "newest": "", "sweeps": false, "managed": false, "note": "keeps its history in one database, so PULSE reports the size and leaves it alone", "removed": 0, "freed": 0, "removed_at": "" }
+      { "id": "opencode", "label": "OpenCode", "binary": "/opt/homebrew/bin/opencode", "version": "1.2.0", "dir": "/home/owner/.local/share/opencode", "dir_exists": true, "sessions_dir": "/home/owner/.local/share/opencode", "bytes": 6012954624, "capped": false, "sessions": 0, "stale": 0, "live": 0, "oldest": "", "newest": "", "sweeps": false, "managed": false, "note": "keeps its history in one database, so Hive reports the size and leaves it alone", "removed": 0, "freed": 0, "removed_at": "" }
     ]
   },
   "agents": [
@@ -50,7 +50,7 @@
       "actor": "daemon",
       "action": "daemon.sweep",
       "subject": "local",
-      "detail": { "removed": { "clone": 2, "scratch": 5, "worktree": 1 }, "bytes": 184549376, "held": 4, "errors": [], "examples": ["clone /home/owner/.pulse/work/job-20260911T074512Z-3f9a1c/clone", "worktree /home/owner/src/demo-app/wt/fleet-cap-continue"] }
+      "detail": { "removed": { "clone": 2, "scratch": 5, "worktree": 1 }, "bytes": 184549376, "held": 4, "errors": [], "examples": ["clone /home/owner/.hive/work/job-20260911T074512Z-3f9a1c/clone", "worktree /home/owner/src/demo-app/wt/fleet-cap-continue"] }
     },
     {
       "id": 9119,
@@ -82,14 +82,14 @@
       "actor": "borealis",
       "action": "agent.cleanup",
       "subject": "run-20260911T073000Z-c91d07",
-      "detail": { "job": "job-20260911T071030Z-9b2e44", "project": "demo-lib", "executor": "pulse-vm1", "status": "done", "clone_mb": 0, "left": [], "text": "clone removed on pulse-vm1; nothing left behind" }
+      "detail": { "job": "job-20260911T071030Z-9b2e44", "project": "demo-lib", "executor": "hive-vm1", "status": "done", "clone_mb": 0, "left": [], "text": "clone removed on hive-vm1; nothing left behind" }
     },
     {
       "id": 9031,
       "at": "2026-09-11T06:20:00Z",
       "actor": "daemon",
       "action": "land.swept",
-      "subject": "pulse/demo-app/job-20260910T214000Z-5e0f33",
+      "subject": "hive/demo-app/job-20260910T214000Z-5e0f33",
       "detail": { "project": "demo-app", "why": "merged branch, landed 2026-09-10T22:05:11Z" }
     }
   ]

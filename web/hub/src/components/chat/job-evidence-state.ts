@@ -105,10 +105,10 @@ export function evidenceEmptyText(error: string): string {
   return "This step left no files. Screenshots and reports an agent saves in its artifacts folder show up here.";
 }
 
-// The report: the page PULSE builds for every finished job and session
-// (pulse-runner work_report.rs) - where the work stands, who did it, its
+// The report: the page Hive builds for every finished job and session
+// (hive-runner work_report.rs) - where the work stands, who did it, its
 // commits and files, the checks - around the before/after pairs and the
-// screenshots the agent saved (report.json, `pulse report`). It is the file
+// screenshots the agent saved (report.json, `hive report`). It is the file
 // the owner opens first: a step's files open on it, a finished task and a
 // finished session show it by themselves, and the run links it on its own.
 export const REPORT_PAGE = "report.html";
@@ -124,7 +124,7 @@ export function hasReportPage(
 // The tooltip of a report link: whose report it is and where it opens.
 export function reportTip(of: "job" | "session" | "run"): string {
   return (
-    "The report PULSE built for this " +
+    "The report Hive built for this " +
     of +
     ": where it stands, what changed, the checks and the screenshots. Opens in a new tab."
   );

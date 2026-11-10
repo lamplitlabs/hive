@@ -10,16 +10,16 @@ import type { HarnessStep } from "@/lib/api";
 // ----- the list -------------------------------------------------------------
 
 // A row's state: working (the spinner), asks (a marigold dot - the agent
-// waits on you, or its pull request does), stopped (a marigold pause - PULSE
+// waits on you, or its pull request does), stopped (a marigold pause - Hive
 // stopped its turn to restart and nothing carried it on, so it waits for a
 // message), done (a tick), open (the quiet speech bubble). Status by icon and
 // word, never colour alone.
 export type SessionState = "working" | "asks" | "stopped" | "done" | "open";
 
-// The row note PULSE leaves on a conversation whose turn it stopped itself
-// (RESTART_NOTE in crates/pulse-harness/src/conversation.rs); the next turn
+// The row note Hive leaves on a conversation whose turn it stopped itself
+// (RESTART_NOTE in crates/hive-harness/src/conversation.rs); the next turn
 // clears it.
-export const RESTART_NOTE = "PULSE restarted during the last turn";
+export const RESTART_NOTE = "Hive restarted during the last turn";
 
 export interface SessionLike {
   status: string;
@@ -74,7 +74,7 @@ export const SESSION_STATE_WORD: Record<SessionState, string> = {
 
 // Where the dismissal lives; `storage` is injectable so tests (and a hub
 // rendered without a window) need no localStorage.
-export const TIP_KEY = "pulse.hub.tip.new-session";
+export const TIP_KEY = "hive.hub.tip.new-session";
 
 export interface TipStorage {
   getItem(key: string): string | null;

@@ -5,9 +5,9 @@
 // project's Tasks tab; a row opens the task's conversation on the Chat page.
 // Project and Lead hide on a narrow screen.
 
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { type Column } from "@/components/pulse/data-table";
-import { Avatar, StatusBadge, When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { type Column } from "@/components/hive/data-table";
+import { Avatar, StatusBadge, When } from "@/components/hive/who";
 import { taskProgress, type Task } from "@/lib/api";
 import { agentName } from "@/lib/words";
 import { PriorityMark, ProgressRing } from "./task-card";

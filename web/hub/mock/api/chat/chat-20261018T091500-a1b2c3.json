@@ -3,8 +3,8 @@
     "id": "chat-20261018T091500-a1b2c3",
     "title": "Add a dark mode toggle to the settings page",
     "project": "demo-app",
-    "cwd": "/home/owner/.pulse/work/chat/chat-20261018T091500-a1b2c3/tree",
-    "branch": "pulse/chat-a1b2c3",
+    "cwd": "/home/owner/.hive/work/chat/chat-20261018T091500-a1b2c3/tree",
+    "branch": "hive/chat-a1b2c3",
     "status": "idle",
     "session_id": "run-20261018-chat-a1b2c3-2",
     "provider": "copilot",
@@ -69,12 +69,12 @@
           {
             "name": "theme-mockup.png",
             "size": 184322,
-            "path": "/home/owner/.pulse/work/chat/chat-20261018T091500-a1b2c3/attachments/theme-mockup.png"
+            "path": "/home/owner/.hive/work/chat/chat-20261018T091500-a1b2c3/attachments/theme-mockup.png"
           },
           {
             "name": "icons.svg",
             "size": 2210,
-            "path": "/home/owner/.pulse/work/chat/chat-20261018T091500-a1b2c3/attachments/icons.svg"
+            "path": "/home/owner/.hive/work/chat/chat-20261018T091500-a1b2c3/attachments/icons.svg"
           }
         ]
       }
@@ -141,7 +141,7 @@
       "model": "claude-sonnet-4.5",
       "n": 2,
       "kind": "note",
-      "content": "Offered 2 skill(s) through the skill tool (0 from the project, 2 from the pulse skill registry): demo-app-dev-setup, demo-app-release",
+      "content": "Offered 2 skill(s) through the skill tool (0 from the project, 2 from the hive skill registry): demo-app-dev-setup, demo-app-release",
       "at": "2026-10-18T09:32:52Z",
       "command": "",
       "exit_code": null,
@@ -350,7 +350,7 @@
       "n": 18,
       "at": "2026-10-18T09:36:30Z",
       "kind": "observation",
-      "content": "[pulse/chat-a1b2c3 4f2a9c1] Settings: theme icons from the mockup\n 2 files changed, 9 insertions(+), 6 deletions(-)",
+      "content": "[hive/chat-a1b2c3 4f2a9c1] Settings: theme icons from the mockup\n 2 files changed, 9 insertions(+), 6 deletions(-)",
       "command": "git commit -am \"Settings: theme icons from the mockup\"",
       "exit_code": 0,
       "duration_ms": 230,
@@ -407,9 +407,9 @@
   ],
   "changes": {
     "project": "demo-app",
-    "branch": "pulse/chat-a1b2c3",
+    "branch": "hive/chat-a1b2c3",
     "base": "main",
-    "cwd": "/home/owner/.pulse/work/chat/chat-20261018T091500-a1b2c3/tree",
+    "cwd": "/home/owner/.hive/work/chat/chat-20261018T091500-a1b2c3/tree",
     "commits": 2,
     "stat": " src/app/layout.tsx | 9 +\n src/components/settings/theme-row.tsx | 48 ++++\n src/lib/theme.ts | 27 +++\n src/styles/theme.css | 6 +-",
     "dirty": [
@@ -422,8 +422,8 @@
       "id": "chat-20261018T093200-c0ffee",
       "title": "Check the contrast of the three theme states",
       "project": "demo-app",
-      "cwd": "/home/owner/.pulse/work/chat/chat-20261018T091500-a1b2c3/tree",
-      "branch": "pulse/chat-a1b2c3",
+      "cwd": "/home/owner/.hive/work/chat/chat-20261018T091500-a1b2c3/tree",
+      "branch": "hive/chat-a1b2c3",
       "status": "closed",
       "session_id": "run-20261018-chat-c0ffee-1",
       "provider": "copilot",

@@ -6,9 +6,9 @@ test("connectionState: Connected = done, Needs sign-in = waits, Off = paused, Fa
   assert.deepEqual(connectionState({ status: "enabled", auth: "none", last_check_at: "2026-11-01T00:00:00Z", last_check_ok: true, last_check_note: "github 1.2: 3 tools: a, b, c" }), { kind: "connected", status: "connected", label: "Connected", detail: "github 1.2: 3 tools: a, b, c" });
   assert.equal(connectionState({ status: "disabled", auth: "none", last_check_ok: true }).label, "Off");
   assert.equal(connectionState({ status: "disabled", auth: "none", last_check_ok: true }).status, "neutral");
-  assert.equal(connectionState({ status: "enabled", auth: "oauth", sign_in: { signed_in: false, note: "run pulse mcp login" } }).label, "Needs sign-in");
+  assert.equal(connectionState({ status: "enabled", auth: "oauth", sign_in: { signed_in: false, note: "run hive mcp login" } }).label, "Needs sign-in");
   assert.equal(connectionState({ status: "enabled", auth: "oauth", sign_in: { signed_in: false } }).status, "waiting");
-  assert.equal(connectionState({ status: "enabled", auth: "oauth", last_check_at: "x", last_check_ok: false, last_check_note: "401 unauthorized: run `pulse mcp login`" }).kind, "sign_in");
+  assert.equal(connectionState({ status: "enabled", auth: "oauth", last_check_at: "x", last_check_ok: false, last_check_note: "401 unauthorized: run `hive mcp login`" }).kind, "sign_in");
   assert.equal(connectionState({ status: "enabled", auth: "bearer", last_check_at: "x", last_check_ok: false, last_check_note: "connection refused\nmore" }).label, "Failed");
   assert.equal(connectionState({ status: "enabled", auth: "bearer", last_check_at: "x", last_check_ok: false, last_check_note: "connection refused\nmore" }).detail, "connection refused");
   assert.equal(connectionState({ status: "enabled", auth: "none" }).label, "Not checked yet");

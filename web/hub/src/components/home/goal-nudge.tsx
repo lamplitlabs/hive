@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { ArrowRightIcon } from "lucide-react";
-import { Notice } from "@/components/pulse/panel";
-import { ProjectLink } from "@/components/pulse/who";
+import { Notice } from "@/components/hive/panel";
+import { ProjectLink } from "@/components/hive/who";
 import type { ProjectCardData } from "@/lib/api";
 import { dismissGoalNudge, dismissedSet, forgetOwnerDismissals, GOAL_NUDGE_WHY, goalNudges, readDismissed, type NudgeStorage } from "@/lib/goal-nudge";
 import { hrefs } from "@/lib/nav";

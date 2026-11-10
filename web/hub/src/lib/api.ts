@@ -1,9 +1,9 @@
-// The API client. Every route is same-origin JSON under /api/v1/ (the pulse hub
+// The API client. Every route is same-origin JSON under /api/v1/ (the hive hub
 // serves the export and the API from one origin; `next dev` proxies /api to a
-// running `pulse hub`). The older routes keep the shapes the original
+// running `hive hub`). The older routes keep the shapes the original
 // dashboard returned; the new routes
 // (tasks, messages, compute, records, constitution, events) follow the
-// "API v1 additions" contract - the pulse hub is checked against these types.
+// "API v1 additions" contract - the hive hub is checked against these types.
 import type { Transcript, VoiceStatus } from "@/lib/voice";
 
 export class ApiError extends Error {
@@ -55,7 +55,7 @@ async function readJson<T>(r: Response): Promise<T> {
         "unreadable response",
         r.status,
         why,
-        "Check that the pulse hub is serving /api/v1 and reload.",
+        "Check that the hive hub is serving /api/v1 and reload.",
       );
     data = { error: "HTTP " + r.status, why };
   }
@@ -90,10 +90,10 @@ export function apiHref(path: string): string {
 // program the daemon runs, so the intent is stated in a header too; so does
 // the push key (ADR-042), which decides what the daemon may push with.
 const WRITE_HEADERS: Record<string, string> = {
-  decide: "X-Pulse-Decide",
-  settings: "X-Pulse-Settings",
-  heldout: "X-Pulse-Heldout",
-  cred: "X-Pulse-Cred",
+  decide: "X-Hive-Decide",
+  settings: "X-Hive-Settings",
+  heldout: "X-Hive-Heldout",
+  cred: "X-Hive-Cred",
 };
 
 export function post<T>(path: string, payload: unknown): Promise<T> {
@@ -140,7 +140,7 @@ export function allProjects(o: Org | undefined | null): ProjectCardData[] {
 }
 
 // What the console calls a project: the name the owner gave it (Rename,
-// `pulse init --name`), else its slug. The slug stays the id in every link.
+// `hive init --name`), else its slug. The slug stays the id in every link.
 export function projectLabel(p: { slug: string; name?: string | null }): string {
   const name = (p.name || "").trim();
   return name || p.slug;
@@ -645,7 +645,7 @@ export interface Org {
   active_claims: Claim[];
   proposals: Proposal[];
   questions?: OwnerQuestion[];
-  // pulse hub metadata (added after the original dashboard; may be absent).
+  // hive hub metadata (added after the original dashboard; may be absent).
   store?: string;
   schema_version?: string;
   records_version?: string;
@@ -750,7 +750,7 @@ export interface RegisterProjectInput {
 export const MAX_PROJECT_GOAL_CHARS = 4000;
 
 // "owner" when the owner set or edited the goal; "generated" for the default
-// PULSE composes from the project (also after the owner resets to it).
+// Hive composes from the project (also after the owner resets to it).
 export type GoalSource = "owner" | "generated";
 
 export interface ProjectGoal {
@@ -842,7 +842,7 @@ export interface GoalReviewPayload {
   can_decide: boolean;
 }
 
-// What `pulse init` did: the row, whether it was new, the onboarding job it
+// What `hive init` did: the row, whether it was new, the onboarding job it
 // queued (or found queued), and the environment record it imported, if any.
 export interface InitResult {
   project: RegisteredProject;
@@ -865,7 +865,7 @@ export interface RemoveItem {
   detail: string;
 }
 
-// What `pulse remove` shows before (dry_run) and records after (applied):
+// What `hive remove` shows before (dry_run) and records after (applied):
 // what changes, what stays, and the commands that are the human's to run.
 export interface RemovePreview {
   kind: "project" | "executor" | string;
@@ -931,8 +931,8 @@ export interface HeldoutPayload {
   created?: number;
 }
 
-// `pulse evolve setup DIR` from the console: an absolute path or ~, outside
-// every registered checkout and not under ~/.pulse; created 0700 if missing.
+// `hive evolve setup DIR` from the console: an absolute path or ~, outside
+// every registered checkout and not under ~/.hive; created 0700 if missing.
 export interface HeldoutSetupInput {
   dir: string;
 }
@@ -948,7 +948,7 @@ export interface HeldoutFixtureInput {
   slot?: number;
 }
 
-// Written by a live daemon that has a newer pulse built: it keeps running
+// Written by a live daemon that has a newer hive built: it keeps running
 // until the runs it was supervising when the build landed (`waits_for`)
 // finish, then swaps. `dispatching` is false once it stopped taking new work
 // and only waits. Omitted by older daemons, whose note still reads
@@ -1056,7 +1056,7 @@ export interface Runner {
   // dirty checkout is auto-stashed unless landing.auto_stash is off). Written
   // by the daemon once per change; empty when everything lands.
   landing?: LandingHold[];
-  // The `pulse status` hygiene line: when the daemon last swept, what went and
+  // The `hive status` hygiene line: when the daemon last swept, what went and
   // what it holds (omitted by an older hub; empty before the first sweep).
   hygiene?: string;
 }
@@ -1127,8 +1127,8 @@ export interface AgentHygiene {
   bytes: number;
 }
 
-// GET /leads?project=x: the role leads seated on a project (`pulse lead`), the
-// seats PULSE suggests from what the project shows, and the built-in roles.
+// GET /leads?project=x: the role leads seated on a project (`hive lead`), the
+// seats Hive suggests from what the project shows, and the built-in roles.
 // A lead is a standing agent with one concern - rsi, docs, security, monitor
 // or a word of the owner's - that sits at its cadence under its brief.
 export type LeadStatus = "active" | "paused" | "ended";
@@ -1255,7 +1255,7 @@ export interface ToolkitInput {
 // cleaning actions; `?limit=` caps the events (default 50, at most 500).
 // One of the other agent programs on the hub machine as the runner's sweep
 // knows it: installed or only its data left behind, how much it holds, how
-// many sessions are past the window or held open, and what PULSE removed.
+// many sessions are past the window or held open, and what Hive removed.
 export interface RunnerNote {
   id: string;
   label: string;
@@ -1290,7 +1290,7 @@ export interface RunnersNote {
   runners: RunnerNote[];
 }
 
-// The last store backup the runner (or `pulse backup`) made: where the gzip
+// The last store backup the runner (or `hive backup`) made: where the gzip
 // copy went, its size and digest, and why it failed when it did.
 export interface BackupOutcome {
   at: string;
@@ -1354,7 +1354,7 @@ export type SettingKind =
 // One of the owner's caps as the store holds it (ADR-025). `secret` marks
 // keys whose values the API never returns (compute credentials never live
 // here - each provider's auth is its CLI login on the hub machine - but the flag is the
-// contract for anything the pulse hub decides to hide).
+// contract for anything the hive hub decides to hide).
 export interface Setting {
   name: string;
   value: string;
@@ -1393,7 +1393,7 @@ export interface CredProvider {
   example: string;
 }
 
-// The state `pulse cred status` prints: the reference (never the key), where
+// The state `hive cred status` prints: the reference (never the key), where
 // the token was found ("none" when it was not), and the fingerprint the last
 // successful set recorded.
 export interface CredReport {
@@ -1779,7 +1779,7 @@ export interface Conversation {
   pr?: PrState | null;
 }
 
-// A pull request PULSE opened on the project's forge and where its review
+// A pull request Hive opened on the project's forge and where its review
 // stands (GET /projects/{slug}/prs, and on conversations and tasks). The
 // reviewer agent merges the simple ones; `needs_owner` and `review_failed`
 // are the two the owner decides with Merge (`can_merge`).
@@ -2110,9 +2110,9 @@ export interface HarnessFileResponse {
 export const harnessFilePath = (session: string, path: string) =>
   "harness/sessions/" + enc(session) + "/file" + query({ path });
 
-// GET /api/v1/running (ADR-035): which pulse runs where, against the brain's
+// GET /api/v1/running (ADR-035): which hive runs where, against the brain's
 // HEAD. `state` is one word: off, no-daemon, no-brain, current, unstamped,
-// behind, waiting (see crates/pulse-hub/src/running.rs). `daemon` comes from the
+// behind, waiting (see crates/hive-hub/src/running.rs). `daemon` comes from the
 // heartbeat and is null until the daemon has run once; `last` is the newest
 // rebuild the daemon recorded, null when it never rebuilt.
 export type RunningState =
@@ -2154,9 +2154,9 @@ export interface RestartNowResult {
 }
 
 // GET /api/v1/update: what the daemon's daily update check last found
-// (update.latest_url; crates/pulse-cli/src/update.rs), compared with the
+// (update.latest_url; crates/hive-cli/src/update.rs), compared with the
 // console's own build. `newer` is the hub's word on it; `notice` is the
-// line `pulse version` prints.
+// line `hive version` prints.
 export interface UpdatePayload {
   enabled: boolean;
   running: string;
@@ -2166,7 +2166,7 @@ export interface UpdatePayload {
   error: string;
   newer: boolean;
   notice: string | null;
-  // Where a newer PULSE comes from here (update.channel, `auto` resolved):
+  // Where a newer Hive comes from here (update.channel, `auto` resolved):
   // `release` installs the published release, `source` rebuilds from the
   // brain's checkout. Absent from a hub older than TASK-093.
   channel?: "release" | "source" | "";
@@ -2210,16 +2210,16 @@ export interface RunningPayload {
   } | null;
   last: { at: string; from: string; to: string; inflight: number } | null;
   state: RunningState;
-  // macOS only (null elsewhere): the running binary carries pulse's stable signing requirement, so
+  // macOS only (null elsewhere): the running binary carries hive's stable signing requirement, so
   // the owner's folder answers survive rebuilds (ADR-035 rule 8).
   signed?: boolean | null;
   restart_ask?: RestartAsk | null;
 }
 
-// GET /service (ADR-038): the user services that keep PULSE alive on this
-// machine - launchd or systemd --user - as `pulse service status` reads them.
+// GET /service (ADR-038): the user services that keep Hive alive on this
+// machine - launchd or systemd --user - as `hive service status` reads them.
 // `installed` is the daemon's unit present and loaded; `hub_is_service` says
-// whether the hub answering is the service's own (a foreground `pulse hub`
+// whether the hub answering is the service's own (a foreground `hive hub`
 // on the service's port hands over when it installs).
 export interface ServiceUnit {
   name: string;
@@ -2259,7 +2259,7 @@ export interface ServiceInstallResult {
   hub_url: string;
 }
 
-// Whether the inbox asks the owner to keep PULSE running: a service manager
+// Whether the inbox asks the owner to keep Hive running: a service manager
 // exists and the daemon's unit is not installed yet. Nothing to ask elsewhere.
 export function serviceStep(p: ServicePayload | undefined | null): boolean {
   return !!p && p.service.supported && !p.service.installed;
@@ -2715,7 +2715,7 @@ export interface LeadWork {
 }
 
 // Where a task's code stands: each task gets one GitHub pull request
-// (branch pulse/task-<id>) that the reviewer agent reads. pr_open (url,
+// (branch hive/task-<id>) that the reviewer agent reads. pr_open (url,
 // number) until the review starts, in_review, needs_owner (reasons, note:
 // the owner decides with Merge), merge_asked (the daemon merges it as the
 // owner), changes_requested (note, follow_up job), review_failed (note is
@@ -3128,9 +3128,9 @@ export interface Compute {
   pairings?: Pairing[];
 }
 
-// What "Add machine" sends. `pair` is `pulse pair ADMIN --name NAME`: the hub
+// What "Add machine" sends. `pair` is `hive pair ADMIN --name NAME`: the hub
 // reaches an admin account over ssh and sets the machine up. `register` is
-// `pulse executor add` for a machine prepared by hand, probed at once when
+// `hive executor add` for a machine prepared by hand, probed at once when
 // asked. `request` asks the cloud provider the way an agent does and, unless
 // `approve` is false, approves it on the spot.
 export type AddMachineInput =
@@ -3277,8 +3277,8 @@ export interface EventsPayload {
 
 // ----- MCP servers and skills (TASK-022) -----------------------------------
 
-// A registered MCP server, as `pulse mcp list --json` prints it. The secret
-// never travels: `secret_ref` is a pulse-cred reference (op://, keychain://,
+// A registered MCP server, as `hive mcp list --json` prints it. The secret
+// never travels: `secret_ref` is a hive-cred reference (op://, keychain://,
 // file://) read on this machine at connect time, like the push key.
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpAuth =
@@ -3311,7 +3311,7 @@ export interface McpServer {
 
 export interface McpSignIn {
   signed_in: boolean;
-  note: string; // the line `pulse mcp show` prints
+  note: string; // the line `hive mcp show` prints
 }
 
 export interface McpServersPayload {
@@ -3346,8 +3346,8 @@ export interface McpLoginState {
   verification_uri?: string;
   verification_uri_complete?: string;
   expires_in?: number;
-  // who PULSE is to the authorization server; built_in when it is a client
-  // PULSE carries (GitHub), client_label what the consent page calls it
+  // who Hive is to the authorization server; built_in when it is a client
+  // Hive carries (GitHub), client_label what the consent page calls it
   client_id?: string;
   client_label?: string;
   built_in?: boolean;
@@ -3456,11 +3456,11 @@ export interface SkillInput {
 export type SkillPatch = Partial<SkillInput>;
 
 // ----- Memory: what agents remembered across runs (`/api/v1/memory`) -------
-// One Markdown file of dated bullets per project under ~/.pulse/memory/, one
+// One Markdown file of dated bullets per project under ~/.hive/memory/, one
 // for the owner that every project reads, one shared by chats without a
 // project. The harness reads them into every run's system prompt; agents
 // extend them with the `memory` tool. The hub lists them and writes the way
-// the tool does (crates/pulse-hub/src/memory_api.rs).
+// the tool does (crates/hive-hub/src/memory_api.rs).
 
 export interface MemoryEntry {
   day: string; // "2026-01-02" when the tool wrote it; "" for a hand-written line
@@ -3475,7 +3475,7 @@ export interface MemoryFile {
   kind: MemoryFileKind;
   project: string; // the registered project's slug; "" for the user's, the shared, or an orphan file
   scope: "user" | "project";
-  path: string; // ~/.pulse/memory/<key>.md
+  path: string; // ~/.hive/memory/<key>.md
   exists: boolean;
   size: number; // bytes on disk
   updated_at: string; // ISO; "" when the file does not exist
@@ -3501,12 +3501,12 @@ export interface MemoryWritten {
   count: number;
 }
 
-// ----- Automations: the standing jobs of a project (`pulse schedule`,
-// `.pulse/automations/<name>.yaml`; GET/POST /api/v1/automations) ------------
+// ----- Automations: the standing jobs of a project (`hive schedule`,
+// `.hive/automations/<name>.yaml`; GET/POST /api/v1/automations) ------------
 
-// One automation as its file says it: `.pulse/automations/<name>.yaml` holds
+// One automation as its file says it: `.hive/automations/<name>.yaml` holds
 // these fields at the top level (the file's name is the automation's), and
-// the older `schedules:` list of `.pulse/pulse.yaml` holds the same shape per
+// the older `schedules:` list of `.hive/hive.yaml` holds the same shape per
 // item with `name:` inside. The same shape describes a schedule kept in the
 // store alone.
 export interface AutomationEntry {
@@ -3526,7 +3526,7 @@ export interface AutomationEntry {
   paused: boolean;
 }
 
-// A schedule row as `pulse schedule list` shows it, plus the words the
+// A schedule row as `hive schedule list` shows it, plus the words the
 // console says the cadence in and the file entry that keeps it (if one does).
 export interface AutomationSchedule {
   id: string;
@@ -3562,11 +3562,11 @@ export interface AutomationSchedule {
   every_words: string; // "every day at 02:00 UTC"
   origin_name: string; // the file entry's name, "" for a hand-set one
   origin_path: string; // the file, "" for a hand-set one
-  // A check or watch whose script sits outside .pulse/: set before the rule
-  // that keeps everything PULSE adds to a repository under one folder. It
+  // A check or watch whose script sits outside .hive/: set before the rule
+  // that keeps everything Hive adds to a repository under one folder. It
   // keeps running from where it is until the script moves to `script_home`.
   script_outside?: boolean;
-  script_home?: string; // .pulse/automations/<name>.sh when script_outside
+  script_home?: string; // .hive/automations/<name>.sh when script_outside
 }
 
 // One line of an automation's history (GET /api/v1/automations/<id>/history),
@@ -3631,9 +3631,9 @@ export function automationHistoryPath(
   );
 }
 
-// The project's list file (`.pulse/pulse.yaml`, `schedules:`) on its default
+// The project's list file (`.hive/hive.yaml`, `schedules:`) on its default
 // branch, as it is now. Older projects keep automations there; new ones get a
-// file each under `.pulse/automations/`.
+// file each under `.hive/automations/`.
 export interface AutomationFile {
   path: string;
   text: string;
@@ -3642,10 +3642,10 @@ export interface AutomationFile {
   problems: string[];
 }
 
-// One file of `.pulse/automations/`: the automation it holds (null when the
+// One file of `.hive/automations/`: the automation it holds (null when the
 // file cannot be read as one) and what is wrong with it, if anything.
 export interface AutomationRepoFile {
-  path: string; // .pulse/automations/<name>.yaml
+  path: string; // .hive/automations/<name>.yaml
   name: string; // the file's stem, which is the automation's name
   text: string;
   entry: AutomationEntry | null;
@@ -3711,7 +3711,7 @@ export interface AutomationWritten {
   synced?: { line: string; problems: string[] } | null;
 }
 
-// ----- Ask: a quick answer about a project (`pulse ask`, POST /api/v1/ask) ----
+// ----- Ask: a quick answer about a project (`hive ask`, POST /api/v1/ask) ----
 
 export type AskTurn = { role: "user" | "assistant"; content: string };
 
@@ -3793,7 +3793,7 @@ export const writes = {
       "records/" + enc(id) + "/draft-job",
       {},
     ),
-  // `id` is the contract field; `post_id` is what the original dashboard sent - the pulse hub accepts both.
+  // `id` is the contract field; `post_id` is what the original dashboard sent - the hive hub accepts both.
   decide: (id: string, answer: "yes" | "no", words: string) =>
     post<{ ok?: boolean; decided?: unknown }>("decide", {
       id,
@@ -3818,7 +3818,7 @@ export const writes = {
   // Sign-in for a provider: the one in use unless `provider` names another,
   // so the Connect a provider wizard can sign in before it switches. A
   // device flow with an empty `user_code` is a browser sign-in on the
-  // machine PULSE runs on (Anthropic's CLI): nothing to type, just approve.
+  // machine Hive runs on (Anthropic's CLI): nothing to type, just approve.
   harnessLogin: (provider?: string) =>
     post<HarnessDeviceFlow>("harness/login", provider ? { provider } : {}),
   harnessLoginPoll: (device_code: string, provider?: string) =>
@@ -3900,7 +3900,7 @@ export const writes = {
     post<{ request: ComputeRequest }>("compute/" + enc(id) + "/deny", {
       words,
     }),
-  // Project lifecycle (ADR-027) - the same functions `pulse init` and `pulse remove` run.
+  // Project lifecycle (ADR-027) - the same functions `hive init` and `hive remove` run.
   registerProject: (input: RegisterProjectInput) =>
     post<InitResult>("projects", input),
   setProjectGoal: (slug: string, text: string) =>
@@ -3923,7 +3923,7 @@ export const writes = {
   // Queued jobs follow, running ones keep their machine.
   setProjectNeeds: (slug: string, needs: string) =>
     post<ProjectNeeds>("projects/" + enc(slug) + "/needs", { needs }),
-  // `pulse move SLUG PATH [--force]`: the project follows its checkout to a new
+  // `hive move SLUG PATH [--force]`: the project follows its checkout to a new
   // folder; force adopts a checkout that tracks another remote.
   moveProject: (slug: string, path: string, force = false) =>
     post<MovedProject>(
@@ -3945,16 +3945,16 @@ export const writes = {
       "compute/pairings/" + enc(name) + "/dismiss",
       {},
     ),
-  // The owner's held-out fixtures (ADR-032): `pulse evolve setup DIR`, then one
+  // The owner's held-out fixtures (ADR-032): `hive evolve setup DIR`, then one
   // write per fixture. The hub answers with counts only and never reads a fixture back.
   heldoutSetup: (dir: string) =>
     post<HeldoutPayload>("heldout", { dir } satisfies HeldoutSetupInput),
   heldoutFixture: (input: HeldoutFixtureInput) =>
     post<HeldoutPayload>("heldout/fixtures", input),
-  // Keep PULSE running (ADR-038): `pulse service install` from the console. dry_run:true previews.
+  // Keep Hive running (ADR-038): `hive service install` from the console. dry_run:true previews.
   serviceInstall: (dryRun: boolean) =>
     post<ServiceInstallResult>("service", { dry_run: dryRun }),
-  // The daemon's push key (ADR-042): the same steps as `pulse cred`. The token
+  // The daemon's push key (ADR-042): the same steps as `hive cred`. The token
   // is posted once and kept by the hub machine; a set probes every upstream
   // and saves only when they all answer; a refusal carries the public key.
   credToken: (token: string) =>
@@ -3971,7 +3971,7 @@ export const writes = {
     post<{ cleared: CredCleared; report: CredReport }>("cred/clear", { token }),
   credGenerate: (replace: boolean) =>
     post<{ generated: CredGenerated }>("cred/generate", { replace }),
-  // MCP servers and skills (TASK-022): the same functions `pulse mcp` and `pulse skill` run.
+  // MCP servers and skills (TASK-022): the same functions `hive mcp` and `hive skill` run.
   addMcp: (input: McpServerInput) => post<{ server: McpServer }>("mcp", input),
   updateMcp: (id: string, input: McpServerPatch) =>
     patch<{ server: McpServer }>("mcp/" + enc(id), input),
@@ -3993,7 +3993,7 @@ export const writes = {
     post<MemoryWritten>("memory", input),
   forgetMemory: (input: MemoryWrite) =>
     post<MemoryWritten>("memory/forget", input),
-  // Automations: the same checks and writes `pulse schedule` and the daemon's
+  // Automations: the same checks and writes `hive schedule` and the daemon's
   // manifest sync make; `check` composes the YAML without writing anything.
   checkAutomation: (input: AutomationWrite) =>
     post<AutomationCheck>("automations/check", input),
@@ -4013,7 +4013,7 @@ export const writes = {
       "automations/" + enc(id) + "/" + action,
       note ? { note } : {},
     ),
-  // Role leads: the same functions `pulse lead add|pause|resume|end|run` call.
+  // Role leads: the same functions `hive lead add|pause|resume|end|run` call.
   addLead: (input: LeadInput) => post<{ lead: Lead }>("leads", input),
   leadAction: (
     id: string,

@@ -1,10 +1,10 @@
-# Releases and `pulse update`
+# Releases and `hive update`
 
-How a machine gets a newer PULSE: by rebuilding from the brain project's
+How a machine gets a newer Hive: by rebuilding from the brain project's
 checkout (the **source** channel, [self-update](runner.md#services-and-self-update)),
 or by installing a published release (the **release** channel, this page).
 
-PULSE is released as a tagged version `vX.Y.Z` with a prebuilt `pulse`
+Hive is released as a tagged version `vX.Y.Z` with a prebuilt `hive`
 executable for macOS attached to a GitHub Release. The repository is
 private, so reading or downloading a release needs a GitHub account that can
 see it (`gh` signed in).
@@ -23,10 +23,10 @@ Two workflows in `.github/workflows/`:
   `release: minor` or `release: major`.
 - **release.yml** runs when a `vX.Y.Z` tag is pushed (cut-release starts it
   explicitly, since a push made with the workflow token starts no workflow on
-  its own). It builds `pulse` with the console embedded on
+  its own). It builds `hive` with the console embedded on
   `aarch64-apple-darwin` (Apple silicon) and `x86_64-apple-darwin` (Intel),
-  checks that the binary reports the tag in `pulse version`, packs each as
-  `pulse-vX.Y.Z-<target>.tar.gz`, and publishes a GitHub Release with the
+  checks that the binary reports the tag in `hive version`, packs each as
+  `hive-vX.Y.Z-<target>.tar.gz`, and publishes a GitHub Release with the
   archives, a `SHA256SUMS` file and notes listing the commits since the
   previous tag.
 
@@ -34,13 +34,13 @@ By hand, the same thing is:
 
 ```sh
 git checkout main && git pull
-git tag -a v0.2.0 -m "PULSE v0.2.0" && git push origin v0.2.0
+git tag -a v0.2.0 -m "Hive v0.2.0" && git push origin v0.2.0
 gh workflow run release.yml -f tag=v0.2.0
 ```
 
-The version a binary prints comes from `crates/pulse/build.rs`: an exact
+The version a binary prints comes from `crates/hive/build.rs`: an exact
 release tag at HEAD gives `vX.Y.Z`; a later commit on `main` gives
-`vX.Y.(Z+1)-0.<stamp>-<rev>`, which the update check and `pulse version`
+`vX.Y.(Z+1)-0.<stamp>-<rev>`, which the update check and `hive version`
 treat as newer than `vX.Y.Z` and older than the next release. Release tags
 must stay reachable from `main`: squashing `main` to a new root orphans them
 and every build falls back to `v0.0.0-...`.
@@ -48,18 +48,18 @@ and every build falls back to `v0.0.0-...`.
 ## Installing a release on a Mac by hand
 
 ```sh
-mkdir -p ~/.pulse/bin && cd "$(mktemp -d)"
+mkdir -p ~/.hive/bin && cd "$(mktemp -d)"
 gh release download --repo lamplitlabs/pulse --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
-tar -xzf pulse-*.tar.gz && install -m 755 pulse-*/pulse ~/.pulse/bin/pulse
-pulse version
+tar -xzf hive-*.tar.gz && install -m 755 hive-*/hive ~/.hive/bin/hive
+hive version
 ```
 
 `gh release download` without a tag takes the latest release; add `vX.Y.Z`
 for a particular one. Verify the archive against `SHA256SUMS` with
-`shasum -a 256 -c SHA256SUMS --ignore-missing`. Once installed, `pulse
+`shasum -a 256 -c SHA256SUMS --ignore-missing`. Once installed, `hive
 update` (below) takes over. The binaries are not notarized; Gatekeeper does
 not check a binary `gh` downloads and `install` copies, but Finder may
-refuse one dragged in from a browser (`xattr -d com.apple.quarantine pulse`
+refuse one dragged in from a browser (`xattr -d com.apple.quarantine hive`
 clears that).
 
 ## Windows
@@ -74,15 +74,15 @@ build target.
 | Value | What happens |
 | --- | --- |
 | `auto` (default) | `source` when a brain project is registered and `cargo` is on PATH, `release` otherwise |
-| `source` | the daemon rebuilds pulse from the brain's checkout after each landing (`daemon.self_update`); `pulse update` only reports (`--check`) |
-| `release` | the daemon never builds from source; `pulse update` installs the newest published release, and every command says once per release that one is out |
+| `source` | the daemon rebuilds hive from the brain's checkout after each landing (`daemon.self_update`); `hive update` only reports (`--check`) |
+| `release` | the daemon never builds from source; `hive update` installs the newest published release, and every command says once per release that one is out |
 
-Set it with `pulse settings set update.channel release` or under
+Set it with `hive settings set update.channel release` or under
 **Settings → Updates** in the console.
 
 ## Where releases are found: `update.latest_url`
 
-Both the daily check and `pulse update` read the JSON document
+Both the daily check and `hive update` read the JSON document
 `update.latest_url` names: a GitHub `releases/latest` answer
 (`https://api.github.com/repos/OWNER/REPO/releases/latest`), a GitHub
 releases list (drafts and pre-releases skipped), or a plain document:
@@ -92,7 +92,7 @@ releases list (drafts and pre-releases skipped), or a plain document:
   "version": "v1.2.3",
   "url": "https://example.test/releases/v1.2.3",
   "assets": [
-    {"name": "pulse-v1.2.3-aarch64-apple-darwin.tar.gz", "url": "https://example.test/pulse-v1.2.3-aarch64-apple-darwin.tar.gz"},
+    {"name": "hive-v1.2.3-aarch64-apple-darwin.tar.gz", "url": "https://example.test/hive-v1.2.3-aarch64-apple-darwin.tar.gz"},
     {"name": "SHA256SUMS", "url": "https://example.test/SHA256SUMS"}
   ]
 }
@@ -103,28 +103,28 @@ and the API `url`). The setting is empty by default: no check, no network.
 
 **A private repository.** GitHub answers 404 to an anonymous request for a
 private repository's releases. When an `api.github.com` address fails over
-HTTP and `gh` is on PATH, PULSE reads it again with `gh api` as the account
+HTTP and `gh` is on PATH, Hive reads it again with `gh api` as the account
 gh is signed in with, and downloads the assets through their API addresses
-the same way. PULSE never stores a token: the setting refuses a URL that
+the same way. Hive never stores a token: the setting refuses a URL that
 carries a credential, and gh keeps its own login.
 
 ## What a release must carry
 
 For each target it ships, one archive named
-`pulse-vX.Y.Z-<target>.tar.gz` holding the `pulse` binary at its top (or one
+`hive-vX.Y.Z-<target>.tar.gz` holding the `hive` binary at its top (or one
 folder down), plus one `SHA256SUMS` file listing every archive in
-`sha256sum` form (`<64 hex digits>  <file name>`). The targets PULSE asks
+`sha256sum` form (`<64 hex digits>  <file name>`). The targets Hive asks
 for are `aarch64-apple-darwin` and `x86_64-apple-darwin` (and
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` on Linux). The
-binary inside must print the release's version from `pulse version --json`;
-a build at the exact tag does (`crates/pulse/build.rs`), and
-`PULSE_VERSION=vX.Y.Z cargo build --release -p pulse --locked` forces it
+binary inside must print the release's version from `hive version --json`;
+a build at the exact tag does (`crates/hive/build.rs`), and
+`HIVE_VERSION=vX.Y.Z cargo build --release -p hive --locked` forces it
 elsewhere. `release.yml` above produces exactly this layout.
 
-## `pulse update`
+## `hive update`
 
 ```
-pulse update [--check] [--json]
+hive update [--check] [--json]
 ```
 
 - `--check` says whether a newer release exists. It uses what the daily
@@ -132,24 +132,24 @@ pulse update [--check] [--json]
   otherwise; it downloads nothing.
 - Without `--check` (channel `release` only) it reads the document, picks
   the archive for the running target (the exact name first, else the one
-  `pulse-*<target>*.tar.gz`), downloads it and `SHA256SUMS`, and refuses to
+  `hive-*<target>*.tar.gz`), downloads it and `SHA256SUMS`, and refuses to
   go on when the release has no `SHA256SUMS`, lists no digest for the
   archive, or the digest differs. It then unpacks the archive, writes the
-  binary beside the running one as `pulse.new`, signs it on macOS (the same
+  binary beside the running one as `hive.new`, signs it on macOS (the same
   ad-hoc requirement the self-update gives every build), smoke-tests it -
-  `pulse.new version --json` must print the release's version, `pulse.new
-  help` must exit 0 - copies the running binary to `pulse.prev` and renames
-  `pulse.new` into its place. Any failure before the rename leaves the
-  running binary as it was and removes `pulse.new`.
+  `hive.new version --json` must print the release's version, `hive.new
+  help` must exit 0 - copies the running binary to `hive.prev` and renames
+  `hive.new` into its place. Any failure before the rename leaves the
+  running binary as it was and removes `hive.new`.
 - The daemon sees its binary change on disk and restarts on it after its
   runs in flight (the restart drain, `daemon.restart_drain_minutes`); the
   hub restarts within a minute. Nothing in flight is stopped.
-- Roll back with `mv ~/.pulse/bin/pulse.prev ~/.pulse/bin/pulse`.
-- An install writes the event `pulse.update` (from, to, binary, asset,
+- Roll back with `mv ~/.hive/bin/hive.prev ~/.hive/bin/hive`.
+- An install writes the event `hive.update` (from, to, binary, asset,
   sha256).
 
-On the `source` channel `pulse update` refuses to install and says how to
-switch; `pulse update --check` still reports.
+On the `source` channel `hive update` refuses to install and says how to
+switch; `hive update --check` still reports.
 
 ## The once-per-release line
 
@@ -158,12 +158,12 @@ owner's next command prints one line on stderr and then stays quiet until
 the next release:
 
 ```
-A newer PULSE v1.2.3 is available - run: pulse update
+A newer Hive v1.2.3 is available - run: hive update
 ```
 
 It reads the store only (no network). Commands run as an agent or inside a
 job never print it, nor do read-only commands; the release it last named is
-kept in the store's `meta` row `update.prompted`. `pulse version` keeps
+kept in the store's `meta` row `update.prompted`. `hive version` keeps
 printing its own notice line every time.
 
 ## The console
@@ -173,7 +173,7 @@ release link. An **Update now** button that asks the daemon to install the
 release (`POST /api/v1/update/apply`) is proposed, not built: `web/hub` is
 owner-owned.
 
-Code: crates/pulse-cli/src/update.rs (the pure parts: assets, checksums,
-channel, the prompt), crates/pulse-runner/src/release_update.rs (download,
-verify, install, `pulse update`), crates/pulse-runner/src/update_check.rs
+Code: crates/hive-cli/src/update.rs (the pure parts: assets, checksums,
+channel, the prompt), crates/hive-runner/src/release_update.rs (download,
+verify, install, `hive update`), crates/hive-runner/src/update_check.rs
 (the daily check).

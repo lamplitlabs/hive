@@ -1,16 +1,16 @@
 #!/bin/sh
-# Builds PULSE.app: the Swift package in apps/macos, the console's own fonts
+# Builds Hive.app: the Swift package in apps/macos, the console's own fonts
 # (web/hub/public/fonts), the icon (Resources/AppIcon.svg), an Info.plist, and
-# a signature (hardened runtime, Resources/PULSE.entitlements for the
+# a signature (hardened runtime, Resources/Hive.entitlements for the
 # microphone the chat's dictation uses) whose requirement every build meets,
 # so macOS keeps its answers (folder access, microphone, notifications)
-# across rebuilds - the same idea as the `identifier "pulse"` signature
-# `pulse service install` gives pulse (ADR-035).
+# across rebuilds - the same idea as the `identifier "hive"` signature
+# `hive service install` gives hive (ADR-035).
 #
-#   apps/macos/scripts/build.sh              build apps/macos/build/PULSE.app (release)
+#   apps/macos/scripts/build.sh              build apps/macos/build/Hive.app (release)
 #   apps/macos/scripts/build.sh --install    and copy it to /Applications (~/Applications when not writable)
 #   apps/macos/scripts/build.sh --open       and open it
-#   apps/macos/scripts/build.sh --dmg        and make apps/macos/build/PULSE.dmg
+#   apps/macos/scripts/build.sh --dmg        and make apps/macos/build/Hive.dmg
 #   apps/macos/scripts/build.sh --universal  one binary for Apple silicon and Intel
 #   apps/macos/scripts/build.sh --debug      a debug build (faster, with assertions)
 #
@@ -23,7 +23,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
 bundle_id=io.github.manishtiwari25.pulse
 out="$here/build"
-app="$out/PULSE.app"
+app="$out/Hive.app"
 
 install=0 open_app=0 dmg=0 universal=0 configuration=release
 for arg in "$@"; do
@@ -40,7 +40,7 @@ done
 
 say() { printf '%s\n' "$*" >&2; }
 
-# The version PULSE's workspace carries, and a build number from the commit time.
+# The version Hive's workspace carries, and a build number from the commit time.
 version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$repo/Cargo.toml" | head -1)
 [ -n "$version" ] || version=0.1.0
 build=$(git -C "$repo" log -1 --format=%cd --date=format:%Y%m%d.%H%M 2>/dev/null || date +%Y%m%d.%H%M)
@@ -55,25 +55,25 @@ if [ "$universal" = 1 ]; then arch_flags="--arch arm64 --arch x86_64"; fi
 sdk=$(xcrun --sdk macosx --show-sdk-path)
 sdk_flags="-Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc $sdk"
 
-say "Building PULSE.app $version ($build, $revision, $configuration)"
+say "Building Hive.app $version ($build, $revision, $configuration)"
 # shellcheck disable=SC2086
-swift build --package-path "$here" -c "$configuration" --product PULSE $arch_flags $sdk_flags >&2
+swift build --package-path "$here" -c "$configuration" --product Hive $arch_flags $sdk_flags >&2
 # shellcheck disable=SC2086
-bin_dir=$(swift build --package-path "$here" -c "$configuration" --product PULSE $arch_flags --show-bin-path)
-[ -x "$bin_dir/PULSE" ] || { say "build.sh: no PULSE binary in $bin_dir"; exit 1; }
+bin_dir=$(swift build --package-path "$here" -c "$configuration" --product Hive $arch_flags --show-bin-path)
+[ -x "$bin_dir/Hive" ] || { say "build.sh: no Hive binary in $bin_dir"; exit 1; }
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Fonts"
-cp "$bin_dir/PULSE" "$app/Contents/MacOS/PULSE"
+cp "$bin_dir/Hive" "$app/Contents/MacOS/Hive"
 # The linker adds a search path into the Xcode that built it; the app only
 # uses the Swift runtime macOS ships in /usr/lib/swift. A universal binary
 # lists each path once per slice; one deletion removes it from every slice.
-otool -l "$app/Contents/MacOS/PULSE" | awk '/LC_RPATH/ { getline; getline; print $2 }' | sort -u | while read -r rpath; do
+otool -l "$app/Contents/MacOS/Hive" | awk '/LC_RPATH/ { getline; getline; print $2 }' | sort -u | while read -r rpath; do
   case "$rpath" in
-    /Applications/*|*/Toolchains/*|*/Developer/*) install_name_tool -delete_rpath "$rpath" "$app/Contents/MacOS/PULSE" ;;
+    /Applications/*|*/Toolchains/*|*/Developer/*) install_name_tool -delete_rpath "$rpath" "$app/Contents/MacOS/Hive" ;;
   esac
 done
-linked_sdk=$(otool -l "$app/Contents/MacOS/PULSE" | awk '/LC_BUILD_VERSION/ { found = 1 } found && $1 == "sdk" { print $2; exit }')
+linked_sdk=$(otool -l "$app/Contents/MacOS/Hive" | awk '/LC_BUILD_VERSION/ { found = 1 } found && $1 == "sdk" { print $2; exit }')
 case "$linked_sdk" in
   13.*|"") say "build.sh: the binary records SDK '$linked_sdk', not $(xcrun --sdk macosx --show-sdk-version)"; exit 1 ;;
 esac
@@ -116,25 +116,25 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>PULSE</string>
-  <key>CFBundleExecutable</key><string>PULSE</string>
+  <key>CFBundleDisplayName</key><string>Hive</string>
+  <key>CFBundleExecutable</key><string>Hive</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>$bundle_id</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>PULSE</string>
+  <key>CFBundleName</key><string>Hive</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$build</string>
-  <key>PulseRevision</key><string>$revision</string>
+  <key>HiveRevision</key><string>$revision</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key><string>13.3</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key><false/>
-  <key>NSHumanReadableCopyright</key><string>PULSE, MIT licence.</string>
-  <key>NSDownloadsFolderUsageDescription</key><string>PULSE saves what you download from the console (chat files, run transcripts) in your Downloads folder.</string>
-  <key>NSMicrophoneUsageDescription</key><string>PULSE listens while you dictate a message in chat; the words are transcribed on this Mac and nothing you say leaves it.</string>
+  <key>NSHumanReadableCopyright</key><string>Hive, MIT licence.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>Hive saves what you download from the console (chat files, run transcripts) in your Downloads folder.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Hive listens while you dictate a message in chat; the words are transcribed on this Mac and nothing you say leaves it.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <!-- The console is plain HTTP on 127.0.0.1. -->
@@ -147,8 +147,8 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null
 
 # The hardened runtime (--options runtime, below) gives the microphone only
 # to an app entitled to it; without the entitlement the chat's dictation
-# records silence. Resources/PULSE.entitlements asks for audio input alone.
-entitlements="$here/Resources/PULSE.entitlements"
+# records silence. Resources/Hive.entitlements asks for audio input alone.
+entitlements="$here/Resources/Hive.entitlements"
 plutil -lint "$entitlements" >/dev/null
 
 # Ad hoc by default: no certificate, and a requirement every build meets.
@@ -168,14 +168,14 @@ if [ "$install" = 1 ]; then
   dest=/Applications
   [ -w "$dest" ] || dest="$HOME/Applications"
   mkdir -p "$dest"
-  target="$dest/PULSE.app"
-  if pgrep -f "$target/Contents/MacOS/PULSE" >/dev/null 2>&1; then
-    say "Quitting the running PULSE.app first"
+  target="$dest/Hive.app"
+  if pgrep -f "$target/Contents/MacOS/Hive" >/dev/null 2>&1; then
+    say "Quitting the running Hive.app first"
     osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
     i=0
-    while pgrep -f "$target/Contents/MacOS/PULSE" >/dev/null 2>&1 && [ $i -lt 40 ]; do sleep 0.5; i=$((i + 1)); done
+    while pgrep -f "$target/Contents/MacOS/Hive" >/dev/null 2>&1 && [ $i -lt 40 ]; do sleep 0.5; i=$((i + 1)); done
   fi
-  case "$target" in */PULSE.app) rm -rf "$target" ;; esac
+  case "$target" in */Hive.app) rm -rf "$target" ;; esac
   ditto "$app" "$target"
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$target" >/dev/null 2>&1 || true
   say "Installed $target"
@@ -183,20 +183,20 @@ fi
 
 if [ "$dmg" = 1 ]; then
   stage="$out/dmg"
-  rm -rf "$stage" "$out/PULSE.dmg"
+  rm -rf "$stage" "$out/Hive.dmg"
   mkdir -p "$stage"
-  ditto "$app" "$stage/PULSE.app"
+  ditto "$app" "$stage/Hive.app"
   ln -s /Applications "$stage/Applications"
-  hdiutil create -volname PULSE -srcfolder "$stage" -ov -format UDZO "$out/PULSE.dmg" >/dev/null
+  hdiutil create -volname Hive -srcfolder "$stage" -ov -format UDZO "$out/Hive.dmg" >/dev/null
   rm -rf "$stage"
   if [ -n "${SIGN_IDENTITY:-}" ]; then
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp "$out/PULSE.dmg"
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp "$out/Hive.dmg"
   fi
   if [ -n "${NOTARY_PROFILE:-}" ]; then
-    xcrun notarytool submit "$out/PULSE.dmg" --keychain-profile "$NOTARY_PROFILE" --wait
-    xcrun stapler staple "$out/PULSE.dmg"
+    xcrun notarytool submit "$out/Hive.dmg" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$out/Hive.dmg"
   fi
-  say "Made $out/PULSE.dmg"
+  say "Made $out/Hive.dmg"
 fi
 
 if [ "$open_app" = 1 ]; then

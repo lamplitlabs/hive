@@ -8,7 +8,7 @@ const file = (key, kind, project, entries = [], extra = {}) => ({
   key,
   kind,
   project,
-  path: "~/.pulse/memory/" + key + ".md",
+  path: "~/.hive/memory/" + key + ".md",
   exists: entries.length > 0,
   size: entries.length * 40,
   updated_at: entries.length ? "2026-11-05T10:00:00Z" : "",
@@ -17,7 +17,7 @@ const file = (key, kind, project, entries = [], extra = {}) => ({
 });
 
 const FILES = [
-  file("pulse", "project", "pulse", []),
+  file("hive", "project", "hive", []),
   file("demo-app", "project", "demo-app", [entry("2026-10-01", "Uses pnpm"), entry("", "Hand-written line")]),
   file("old-shop", "project", "", [entry("2026-01-01", "Gone project")]),
   file("conversations", "conversations", "", [entry("2026-10-20", "From a session")]),
@@ -40,7 +40,7 @@ test("chosenFile resolves ?file=, falls back to the older ?key=, then to the use
   assert.equal(chosenFile(FILES, "no-such-file").key, "user");
   assert.equal(chosenFile([], "user"), null);
   const noUser = FILES.filter((f) => f.kind !== "user");
-  assert.equal(chosenFile(noUser, "nothing").key, "pulse");
+  assert.equal(chosenFile(noUser, "nothing").key, "hive");
 });
 
 test("fileChoices lists You, then the sessions file, then projects (with entries first, alphabetical), then orphans", () => {
@@ -52,7 +52,7 @@ test("fileChoices lists You, then the sessions file, then projects (with entries
       ["Sessions without a project", "none", "sessions", 1],
       ["alpha", "alpha", "project", 1],
       ["demo-app", "demo-app", "project", 2],
-      ["pulse", "pulse", "project", 0],
+      ["hive", "hive", "project", 0],
       ["old-shop", "old-shop", "orphan", 1],
     ],
   );
@@ -90,7 +90,7 @@ test("shownEntries puts the newest first and narrows by every word of the search
 });
 
 test("fileNote counts the entries and names the file, or says there is no file yet", () => {
-  assert.equal(fileNote({ exists: true, entries: [1, 2], path: "~/.pulse/memory/demo-app.md" }), "2 memories in ~/.pulse/memory/demo-app.md");
+  assert.equal(fileNote({ exists: true, entries: [1, 2], path: "~/.hive/memory/demo-app.md" }), "2 memories in ~/.hive/memory/demo-app.md");
   assert.equal(fileNote({ exists: true, entries: [1], path: "p" }), "1 memory in p");
   assert.equal(fileNote({ exists: false, entries: [], path: "p" }), "Nothing yet; no file yet");
 });

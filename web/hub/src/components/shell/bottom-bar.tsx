@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { MenuIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { useInbox } from "@/components/pulse/inbox";
+import { useInbox } from "@/components/hive/inbox";
 import { cn } from "@/lib/utils";
 import { NAV_ICON } from "./nav-icons";
 import { activeItem, MORE_GROUPS, PRIMARY_ITEMS, SETTINGS_ITEM, type NavItem } from "./nav-items";

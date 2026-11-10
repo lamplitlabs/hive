@@ -6,13 +6,13 @@ import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { MachineCard } from "@/components/compute/machine";
 import { ThisMachineCard } from "@/components/compute/this-machine";
 import { CapsPanel, ComputeRequestCard, ComputeRequestListRow, ComputeRequestRow } from "@/components/compute/compute";
-import { HygienePanel } from "@/components/pulse/hygiene";
-import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/pulse/runners";
+import { HygienePanel } from "@/components/hive/hygiene";
+import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/hive/runners";
 import { Button } from "@/components/ui/button";
-import { CardGrid } from "@/components/pulse/item-card";
-import { PageHeader } from "@/components/pulse/page-header";
-import { Disclosure, EmptyState, ErrorNotice, SkeletonPage } from "@/components/pulse/panel";
-import { SectionHeading } from "@/components/pulse/section-heading";
+import { CardGrid } from "@/components/hive/item-card";
+import { PageHeader } from "@/components/hive/page-header";
+import { Disclosure, EmptyState, ErrorNotice, SkeletonPage } from "@/components/hive/panel";
+import { SectionHeading } from "@/components/hive/section-heading";
 import { RemoveMenuButton } from "@/components/project/project-dialogs";
 import { plural } from "@/lib/format";
 import type { Compute, ComputeRequest, Executor, Hygiene, Org, Runner } from "@/lib/api";
@@ -128,7 +128,7 @@ export default function ComputePage() {
               ) : null}
             </div>
           ) : (
-            <EmptyState action={<AddMachineButton caps={c.caps} />}>No other machine yet. Add one and PULSE sets it up over ssh, or approve an agent&apos;s request. It starts taking work after its first check passes.</EmptyState>
+            <EmptyState action={<AddMachineButton caps={c.caps} />}>No other machine yet. Add one and Hive sets it up over ssh, or approve an agent&apos;s request. It starts taking work after its first check passes.</EmptyState>
           )}
         </section>
 

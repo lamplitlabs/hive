@@ -1,0 +1,42 @@
+[package]
+name = "hive-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: the built-in agent harness: bash-tool loop, limits, deny rules, trajectories, sessions"
+
+[dependencies]
+base64.workspace = true
+hive-board.workspace = true
+hive-bus.workspace = true
+hive-cli.workspace = true
+hive-cred.workspace = true
+hive-gitenv.workspace = true
+hive-mcp.workspace = true
+hive-provider.workspace = true
+hive-provider-fake.workspace = true
+hive-store.workspace = true
+hive-tasks.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+libc.workspace = true
+signal-hook.workspace = true
+rustyline.workspace = true
+rand.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true
+hive-provider-openai.workspace = true
+hive-provider-anthropic.workspace = true
+hive-provider-gemini.workspace = true

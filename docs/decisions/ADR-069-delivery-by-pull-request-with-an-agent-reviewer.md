@@ -13,7 +13,7 @@ tags:
   - review
 supersedes:
   - ADR-024 (the local landing: verify before land, the landing lock, `landing: agents|human`)
-  - ADR-037 (`landing.push`: pushing the default branch, the `pulse/landed` pull request)
+  - ADR-037 (`landing.push`: pushing the default branch, the `hive/landed` pull request)
 delivery: not started
 delivered: null
 ---
@@ -26,7 +26,7 @@ Since ADR-024 the daemon merged every finished branch into the project's local
 default branch itself: the verify command on the merged result in a throwaway
 worktree, then a fast-forward or a `Land …` merge commit, under one landing
 lock per project. ADR-037 added `landing.push` to carry the result further -
-`main` pushed the default branch, `pr` pushed it to a `pulse/landed` branch
+`main` pushed the default branch, `pr` pushed it to a `hive/landed` branch
 and kept one pull request open from it. PR #53 moved one kind of work, the
 owner's tasks, to a pull request per task.
 
@@ -39,7 +39,7 @@ stalled for reasons unrelated to the work: a lock left by the restart of a
 self-update froze a project's queue for 30 minutes at a time, four times in a
 day; a verify of 7-10 minutes per branch on the brain serialised every branch
 behind it; the owner saw tasks *waiting to land* for hours. The brain project
-(PULSE itself) self-updates from its local default branch, so whatever
+(Hive itself) self-updates from its local default branch, so whatever
 replaces the landing must keep that branch moving.
 
 ## Options Considered
@@ -73,8 +73,8 @@ Batch landing (`landing.batch`) and per-project landing workers
 
 Option 3. For a project with an upstream the daemon never merges into the
 local default branch. Every finished branch becomes a pull request there: a task's
-jobs as one `pulse/task-<id>` pull request, every other finished job's
-`pulse/<agent>/<job>` branch as its own, a kept evolve experiment with its
+jobs as one `hive/task-<id>` pull request, every other finished job's
+`hive/<agent>/<job>` branch as its own, a kept evolve experiment with its
 measurement as the body, and a branch proposed by hand or a conversation's
 branch ten minutes after its last commit. The pass polls the open pull
 requests, records `land.merged` or `land.pr-closed`, and fast-forwards the
@@ -84,24 +84,24 @@ and the one that works is remembered per repository; no token is logged. A
 project without an upstream keeps the local landing of ADR-024, since there
 is no forge to deliver to.
 
-A `review` job reads each pull request PULSE opened (`review:<slug>:<number>`,
+A `review` job reads each pull request Hive opened (`review:<slug>:<number>`,
 owner priority, one at a time per project; a pull request opened by hand on
-the forge is not queued) and ends with one verdict: `pulse review
-merge`, `pulse review changes --note` (a follow-up job: a `task` job for a
+the forge is not queued) and ends with one verdict: `hive review
+merge`, `hive review changes --note` (a follow-up job: a `task` job for a
 task's pull request, an `improve` job with source `pr-fix:<slug>:<n>` pushed
-onto the head otherwise) or `pulse review owner --note`. The complexity rule
+onto the head otherwise) or `hive review owner --note`. The complexity rule
 is computed before the job runs, and any reason hands the pull request to
 the owner with the reviewer's findings: `review.merge=ask`; more than
 `review.max_files` (20) files or `review.max_lines` (600) lines excluding
 generated paths; a guarded path (constitution-closed files,
 `.github/workflows/**`, `.env*`, secret-looking files); more than twice as
-much removed as added with over 200 deletions; a head not under `pulse/` (a
+much removed as added with over 200 deletions; a head not under `hive/` (a
 proposed branch, or an experiment's `evolve/<id>`); the reviewer failed twice
 on the same head. The hub shows *Needs your review* with the reasons and a
 **Merge** button, which records `review.ask` so that the daemon merges the
-pull request on GitHub as the owner on its next pass (the same as `pulse
+pull request on GitHub as the owner on its next pass (the same as `hive
 review merge <n> --by owner`); the owner may equally merge or close on
-GitHub. `pulse land --branch B --local` remains as the by-hand local merge
+GitHub. `hive land --branch B --local` remains as the by-hand local merge
 and warns that the local default branch will diverge from the upstream.
 
 ## Consequences
@@ -130,7 +130,7 @@ and warns that the local default branch will diverge from the upstream.
 - `landing.parallel` is removed. `landing.push` is read by nothing;
   `landing.batch`, `landing.verify_memo*`, `landing.base_red_retry_minutes`
   and `landing.setup_repair` matter only to the local landing that remains
-  for `pulse land --local` and for projects without an upstream; `landing`
+  for `hive land --local` and for projects without an upstream; `landing`
   (`agents|human`) still gates that landing and the experiment lane;
   `landing.auto_stash` now decides whether the fast-forward stashes around a
   dirty checkout or skips it.
@@ -141,15 +141,15 @@ and warns that the local default branch will diverge from the upstream.
 
 ## Follow-Up
 
-- [ ] Confirm this number against `pulse record list --kind adr` before import
-      (`pulse migrate --records --repo . --ref HEAD`, or `pulse record new adr
+- [ ] Confirm this number against `hive record list --kind adr` before import
+      (`hive migrate --records --repo . --ref HEAD`, or `hive record new adr
       --body-file docs/decisions/ADR-069-delivery-by-pull-request-with-an-agent-reviewer.md`)
 - [ ] Retire the landing parts of ADR-024 and the `landing.push` part of ADR-037
-      (`pulse record deliver ADR-024 retired`, `pulse record deliver ADR-037
+      (`hive record deliver ADR-024 retired`, `hive record deliver ADR-037
       retired`) once this is accepted
-- [ ] Amend `ARCH-overview` and the `WF-pulse` / `INSTR-*` records that say
-      `pulse land` merges locally (`pulse record amend`)
-- [ ] Update `delivery:` and `delivered:` when the work closes (`pulse record deliver`)
+- [ ] Amend `ARCH-overview` and the `WF-hive` / `INSTR-*` records that say
+      `hive land` merges locally (`hive record amend`)
+- [ ] Update `delivery:` and `delivered:` when the work closes (`hive record deliver`)
 
 ## Delivery
 

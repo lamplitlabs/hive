@@ -12,10 +12,10 @@ test("headings: h2 and h3 in order, h1 and deeper levels skipped", () => {
 });
 
 test("headings: fenced code is not a heading; closing hashes and backticks drop", () => {
-  const md = "## Steps ##\n```sh\n# not a heading\n## nor this\n```\n~~~\n## nor this either\n~~~\n### Run `pulse land`\n";
+  const md = "## Steps ##\n```sh\n# not a heading\n## nor this\n```\n~~~\n## nor this either\n~~~\n### Run `hive land`\n";
   assert.deepEqual(headings(md), [
     { level: 2, text: "Steps", id: "steps" },
-    { level: 3, text: "Run pulse land", id: "run-pulse-land" },
+    { level: 3, text: "Run hive land", id: "run-hive-land" },
   ]);
 });
 

@@ -1,5 +1,5 @@
 // Href builders. Every route is a static page; state lives in search params
-// so the export has no dynamic segments and the pulse hub serves one
+// so the export has no dynamic segments and the hive hub serves one
 // index.html per route.
 
 export type ProjectCanonicalTab =
@@ -132,7 +132,7 @@ export const hrefs = {
     qs({ project: f.project, tab: f.tab !== "mcp" ? f.tab : undefined }),
   votes: (f: { project?: string; status?: string; kind?: string } = {}) =>
     "/votes/" + qs(f),
-  // Standing jobs and the `.pulse/pulse.yaml` entries that keep them; `project` narrows to one.
+  // Standing jobs and the `.hive/hive.yaml` entries that keep them; `project` narrows to one.
   automations: (f: { project?: string } = {}) =>
     "/automations/" + qs({ project: f.project }),
   // What agents remembered across runs; `key` opens one file, `q` searches.

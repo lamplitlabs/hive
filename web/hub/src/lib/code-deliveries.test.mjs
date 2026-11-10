@@ -108,7 +108,7 @@ test("local-only, unsupported and invalid targets keep an unlinked commit", () =
 // the page say: a merge whose files are still being read, no merges at all,
 // and a checked zero each read differently, and only the last is a real zero.
 const mockFixture = JSON.parse(readFileSync(new URL("../../mock/api/code-deliveries.json", import.meta.url), "utf8"));
-const mock = createCodeDeliveryMock(mockFixture, ["demo-app", "demo-lib", "pulse", "old-site", "fresh"]);
+const mock = createCodeDeliveryMock(mockFixture, ["demo-app", "demo-lib", "hive", "old-site", "fresh"]);
 
 test("payload to displayed state: merged pull requests are counted on the tile and the page", () => {
   const { body } = mock.read(new URLSearchParams("limit=100"));
@@ -119,13 +119,13 @@ test("payload to displayed state: merged pull requests are counted on the tile a
 });
 
 test("payload to displayed state: a merge still being read is not a zero", () => {
-  const { body } = mock.read(new URLSearchParams("project=pulse"));
+  const { body } = mock.read(new URLSearchParams("project=hive"));
   assert.equal(body.summary.code_deliveries, 0);
   assert.equal(body.unavailable[0].reason, CODE_DELIVERY_PENDING_REASON);
   const empty = codeDeliveryEmptyState(body);
   assert.equal(empty.kind, "pending");
   assert.equal(empty.title, "Still reading the latest merges");
-  assert.match(empty.body, /1 merged pull request in pulse is waiting/);
+  assert.match(empty.body, /1 merged pull request in hive is waiting/);
   assert.match(empty.body, /not a real zero/);
   assert.equal(codeDeliveryKpiState(body, false, "").sub, "0 source files changed in 1 merge checked; 1 still being read");
   assert.match(codeDeliveryCoverageText(body), /1 merge is still being read, so it isn't counted yet\./);

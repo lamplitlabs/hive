@@ -1,0 +1,59 @@
+[package]
+name = "hive-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+build = "build.rs"
+description = "Hive: the HTTP API and SSE the console uses, with the embedded console"
+
+[dependencies]
+base64.workspace = true
+hive-board.workspace = true
+hive-bus.workspace = true
+hive-cli.workspace = true
+hive-codedelivery.workspace = true
+hive-cred.workspace = true
+hive-cred-setup.workspace = true
+hive-evolve.workspace = true
+hive-gitenv.workspace = true
+hive-ask.workspace = true
+hive-goals.workspace = true
+hive-harness.workspace = true
+hive-inspect.workspace = true
+hive-mcp.workspace = true
+hive-provider.workspace = true
+hive-provider-openai.workspace = true
+hive-provider-anthropic.workspace = true
+hive-provider-gemini.workspace = true
+hive-records.workspace = true
+hive-runner.workspace = true
+hive-store.workspace = true
+hive-tally.workspace = true
+hive-tasks.workspace = true
+hive-voice.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+futures.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
+nix.workspace = true
+url.workspace = true
+signal-hook.workspace = true
+
+[dev-dependencies]
+hive-testutil.workspace = true
+hive-provider-fake.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true

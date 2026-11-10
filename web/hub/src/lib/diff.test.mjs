@@ -69,7 +69,7 @@ test("short paths keep a folder only for common file names", () => {
   assert.equal(shortPath("README.md"), "README.md");
   assert.equal(shortPath("src/lib/diff.ts"), "diff.ts");
   assert.equal(shortPath("src/app/chat/page.tsx"), "chat/page.tsx");
-  assert.equal(shortPath("crates/pulse-hub/src/lib.rs"), "src/lib.rs");
+  assert.equal(shortPath("crates/hive-hub/src/lib.rs"), "src/lib.rs");
 });
 
 test("a review gutter numbers both sides from each hunk header and strips the sign", () => {

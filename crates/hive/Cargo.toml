@@ -1,0 +1,47 @@
+[package]
+name = "hive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: the store, board, records and runner in one binary"
+default-run = "hive"
+build = "build.rs"
+
+[[bin]]
+name = "hive"
+path = "src/main.rs"
+
+[dependencies]
+hive-bus.workspace = true
+hive-cli.workspace = true
+hive-store.workspace = true
+hive-board.workspace = true
+hive-cred-command.workspace = true
+hive-evolve.workspace = true
+hive-goals-command.workspace = true
+hive-ask.workspace = true
+hive-harness.workspace = true
+hive-hooks.workspace = true
+hive-hub.workspace = true
+hive-inspect.workspace = true
+hive-mcp.workspace = true
+hive-provider-copilot.workspace = true
+hive-provider-openai.workspace = true
+hive-provider-anthropic.workspace = true
+hive-provider-gemini.workspace = true
+hive-records.workspace = true
+hive-runner.workspace = true
+hive-tally.workspace = true
+hive-tasks.workspace = true
+hive-voice.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-provider.workspace = true
+hive-testutil.workspace = true
+serde.workspace = true

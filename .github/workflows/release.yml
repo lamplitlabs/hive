@@ -1,6 +1,6 @@
-# Build the pulse executable for macOS when a release tag is pushed and attach
-# it to a GitHub Release. The tag commit is what crates/pulse/build.rs stamps,
-# so the binary reports exactly vX.Y.Z in `pulse version`.
+# Build the hive executable for macOS when a release tag is pushed and attach
+# it to a GitHub Release. The tag commit is what crates/hive/build.rs stamps,
+# so the binary reports exactly vX.Y.Z in `hive version`.
 #
 # Tags come from cut-release.yml (or `git tag vX.Y.Z && git push --tags` by
 # hand). Windows is not built here yet: the runner and daemon use unix-only
@@ -52,27 +52,27 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --locked --bin pulse --target ${{ matrix.target }}
+        run: cargo build --release --locked --bin hive --target ${{ matrix.target }}
       - name: Check the stamp
         run: |
           set -eu
           tag="${{ inputs.tag || github.ref_name }}"
-          out="$(target/${{ matrix.target }}/release/pulse version)"
+          out="$(target/${{ matrix.target }}/release/hive version)"
           echo "$out"
           case "$out" in *"$tag"*) ;; *) echo "binary does not report $tag" >&2; exit 1 ;; esac
       - name: Package
         run: |
           set -eu
           tag="${{ inputs.tag || github.ref_name }}"
-          name="pulse-$tag-${{ matrix.target }}"
+          name="hive-$tag-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/pulse" "dist/$name/pulse"
+          cp "target/${{ matrix.target }}/release/hive" "dist/$name/hive"
           cp README.md LICENSE* "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
       - uses: actions/upload-artifact@v4
         with:
-          name: pulse-${{ matrix.target }}
+          name: hive-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -103,13 +103,13 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
           prev="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$tag" | head -1 || true)"
           {
-            echo "## PULSE $tag"
+            echo "## Hive $tag"
             echo
             echo "Install (macOS):"
             echo
             echo '```sh'
-            echo "gh release download $tag --repo ${{ github.repository }} --pattern \"pulse-$tag-\$(uname -m | sed 's/arm64/aarch64/')-apple-darwin.tar.gz\""
-            echo "tar -xzf pulse-$tag-*-apple-darwin.tar.gz && install -m 755 pulse-$tag-*/pulse ~/.pulse/bin/pulse"
+            echo "gh release download $tag --repo ${{ github.repository }} --pattern \"hive-$tag-\$(uname -m | sed 's/arm64/aarch64/')-apple-darwin.tar.gz\""
+            echo "tar -xzf hive-$tag-*-apple-darwin.tar.gz && install -m 755 hive-$tag-*/hive ~/.hive/bin/hive"
             echo '```'
             echo
             if [ -n "$prev" ]; then
@@ -128,5 +128,5 @@ jobs:
           if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber --repo "${{ github.repository }}"
           else
-            gh release create "$tag" dist/* --title "PULSE $tag" --notes-file notes.md --repo "${{ github.repository }}"
+            gh release create "$tag" dist/* --title "Hive $tag" --notes-file notes.md --repo "${{ github.repository }}"
           fi

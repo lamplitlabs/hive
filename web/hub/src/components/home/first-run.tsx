@@ -6,8 +6,8 @@ import { useState } from "react";
 import { BookOpenIcon, CircleCheckIcon, CircleIcon, RocketIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AddProjectDialog } from "@/components/project/project-dialogs";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { SectionHeading } from "@/components/pulse/section-heading";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { SectionHeading } from "@/components/hive/section-heading";
 import { ProviderWizard } from "@/components/settings/provider-wizard";
 import type { HarnessStatus, ServicePayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { FixButton } from "./attention-strip";
 import { runningFix, setupSteps, type AttentionDaemon, type SetupSnapshot } from "./home-state";
 
-// Home before PULSE can work (spec "Home" - Other states, first run: no model
+// Home before Hive can work (spec "Home" - Other states, first run: no model
 // provider or no project): a three-step setup card in place of "Needs you".
 // Each step is a row with a tick once it is done and, until then, the button
 // that opens its wizard - the same Connect a provider wizard Settings uses,
@@ -39,7 +39,7 @@ export function SetupCard({ snapshot, harness, service, daemon }: { snapshot: Se
           </Link>
         }
       >
-        Set up PULSE
+        Set up Hive
       </SectionHeading>
       <ListRows ariaLabel="Setup steps">
         {steps.map((step, i) => {

@@ -1,0 +1,7364 @@
+//! Conversations: the agent behind the hub's chat window.
+//!
+//! A conversation is `hive harness chat` without a terminal. The owner
+//! types in the hub, the message goes to an [`Agent`] that runs on a worker
+//! thread inside the hub process, the steps it takes land in the store as
+//! the harness session's steps (the Runs page shows them too), the reply
+//! streams back, and when the agent needs the owner - a question, a call
+//! that changes things while approvals are on - the turn parks until the
+//! answer arrives over HTTP. A conversation outlives its harness sessions:
+//! a hub restart, a move into a project's worktree, or a session the
+//! provider ended all start a new session with the messages carried over.
+//!
+//! Where it works: a conversation that names a project gets its own git
+//! worktree of that project under `HIVE_HOME/work/chat/<id>/<slug>` on
+//! branch `hive/chat-<id>`, so two conversations never collide and the
+//! owner's checkout stays theirs; `hive land --branch` opens a pull
+//! request for it, and the daemon opens one itself once the branch has
+//! been quiet for ten minutes. A conversation without a project starts in a
+//! scratch folder with a brief that lists the projects and tells the agent
+//! how to pick one (`hive chat attach SLUG`), queue tasks for the fleet, or
+//! answer outright. Files for the owner's eyes go in `$HIVE_ARTIFACTS`,
+//! which the hub serves beside the conversation.
+use crate::background::{Managed, fmt_dur};
+use crate::commands::{PrepareOpts, Prepared, add_agent_flags, prepare_agent_with};
+use crate::harness::{
+    Agent, Approval, ApprovalRequest, ChatReply, ChatRequest, EXIT_ENDED, KeepResult, Sink,
+    SteerSlot, Step, StreamSink, Trajectory, Turn, Ui, trim_dangling_tool_calls,
+};
+use crate::repair::repair_tool_arguments;
+use crate::retitle;
+use anyhow::{Context as _, Result, anyhow, bail};
+use hive_cli::{Context, FlagSet};
+use hive_provider::{CancelToken, ImageContent};
+use hive_store::{Conversation as Row, Project, Store};
+use serde::Serialize;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// Branches conversations commit on; `hive land` accepts the `hive/`
+/// prefix.
+pub const BRANCH_PREFIX: &str = "hive/chat-";
+/// The environment variable that names the conversation inside its agent's
+/// commands (`hive chat attach` reads it).
+pub const CONVERSATION_ENV: &str = "HIVE_CONVERSATION";
+/// The environment variable that names the artifacts folder.
+pub use crate::artifacts::ARTIFACTS_ENV;
+/// The memory key conversations without a project share
+/// (`~/.hive/memory/conversations.md`): one of them learning a thing is
+/// enough for the next. A conversation attached to a project reads and
+/// extends that project's memory instead, the fleet's file for it.
+pub const SHARED_MEMORY_KEY: &str = "conversations";
+/// How long a parked question or approval waits between checks of the
+/// cancel flag.
+const PARK_TICK: Duration = Duration::from_millis(250);
+/// How much of a `hive chat wake` message reaches the agent: a script's
+/// "done" line with a result, not its whole log (that stays in a file the
+/// agent reads).
+const WAKE_CHARS: usize = 4_000;
+/// The bus action `hive chat wake` publishes; the hub's wake loop turns
+/// it into a turn of the named conversation.
+pub const WAKE_ACTION: &str = "chat.wake";
+/// The meta key under which the hub's wake loop keeps the bus sequence it
+/// has delivered up to, so a wake sent while no hub ran is not lost.
+pub const WAKE_CURSOR_KEY: &str = "chat.wake.cursor";
+/// The bus action the daemon publishes when the pull request a
+/// conversation's branch went out as is merged on the forge; the hub's wake
+/// loop finishes the conversation it names ([`Manager::finish_from`]), the
+/// detail's `text` saying why.
+pub const FINISH_ACTION: &str = "chat.finish";
+/// The row note a turn leaves when Hive itself stopped it (a hub restart,
+/// a shutdown, a crash) rather than the owner or the agent: the next turn
+/// tells the agent so it checks the workspace before redoing work.
+pub const RESTART_NOTE: &str = "Hive restarted during the last turn";
+/// What the transcript says where a restart cut a working turn.
+const CUT_RUNNING_LINE: &str = "Hive restarted while the agent was working on this, so the turn stopped here. What it did until then is above and the workspace keeps those changes; send a message to carry on - \"continue\" is enough.";
+/// What the transcript says where a restart cut a turn parked on the owner.
+const CUT_WAITING_LINE: &str = "Hive restarted while the agent waited for you, so the turn stopped here. Send your answer as a message and it carries on.";
+/// What the transcript says where a shutdown stopped the turn itself.
+const STOPPED_TO_RESTART_LINE: &str = "Hive stopped this turn to restart. What it did until then is above and the workspace keeps those changes; send a message to carry on - \"continue\" is enough.";
+/// The note the hub leaves when it carries a turn it stopped to restart
+/// on by itself ([`Manager::carry_on_restarted`]).
+pub const CARRIED_ON_LINE: &str =
+    "Hive is back after the update and carries this turn on by itself.";
+/// The note where the hub carries a stopped turn on, and passes on the
+/// messages that were still on their way to the agent when it stopped.
+fn carried_on_line(waiting: usize) -> String {
+    match waiting {
+        0 => CARRIED_ON_LINE.to_string(),
+        1 => "Hive is back after the update and carries this turn on by itself, then passes on the message that waited for it.".to_string(),
+        n => format!("Hive is back after the update and carries this turn on by itself, then passes on the {n} messages that waited for it."),
+    }
+}
+
+/// The note on a conversation Hive would have finished (`why`) but keeps
+/// open for its sub-sessions still at work.
+fn kept_open_line(why: &str, at_work: &[(Row, &str)]) -> String {
+    let why = why
+        .trim()
+        .trim_end_matches('.')
+        .trim_end_matches("; this session is finished")
+        .trim();
+    let names = at_work
+        .iter()
+        .map(|(k, word)| {
+            let title = if k.title.trim().is_empty() {
+                k.id.as_str()
+            } else {
+                k.title.trim()
+            };
+            format!("\u{201c}{title}\u{201d} ({word})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (whose, reports) = if at_work.len() == 1 {
+        ("its sub-session", "Its report comes")
+    } else {
+        ("its sub-sessions", "Their reports come")
+    };
+    format!(
+        "Hive kept this session open: {why}, but {whose} {names} {} not done. {reports} back here; the session finishes when its agent or you finish it.",
+        if at_work.len() == 1 { "is" } else { "are" }
+    )
+}
+
+/// Whether a transcript ends where the last hub stopped the turn to
+/// restart, and the messages that waited behind it: Some(empty) when it
+/// ends on [`STOPPED_TO_RESTART_LINE`]; Some(the messages, oldest first)
+/// when what follows the stop is only the messages that were on their way
+/// to the agent, each recorded with what the agent would have read
+/// ([`Runtime::write_unsent`]); None otherwise - the turn went on, or a
+/// waiting message cannot be passed on as it was (it had images, or it was
+/// recorded before Hive kept the text), and the turn is the owner's.
+fn stopped_to_restart(messages: &[hive_store::ConversationMessage]) -> Option<Vec<Queued>> {
+    let at = messages
+        .iter()
+        .rposition(|m| m.role == "note" && m.content == STOPPED_TO_RESTART_LINE)?;
+    let rest = &messages[at + 1..];
+    let unsent = |m: &hive_store::ConversationMessage| {
+        m.role == "note" && m.extra.get("unsent").and_then(Value::as_bool) == Some(true)
+    };
+    if let Some(last) = rest.last()
+        && !unsent(last)
+    {
+        return None;
+    }
+    let mut waiting = Vec::new();
+    for m in rest {
+        if !unsent(m) {
+            // A waiting message's own row (the owner's words, a note from
+            // the parent) sits before its note; nothing the agent said may.
+            if !matches!(m.role.as_str(), "user" | "note") {
+                return None;
+            }
+            continue;
+        }
+        if m.extra.get("restart").and_then(Value::as_bool) != Some(true)
+            || m.extra.get("images").and_then(Value::as_u64).unwrap_or(0) > 0
+        {
+            return None;
+        }
+        let text = m.extra.get("text").and_then(Value::as_str)?;
+        waiting.push(Queued {
+            text: text.to_string(),
+            images: Vec::new(),
+            row: None,
+            report: m
+                .extra
+                .get("report")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    Some(waiting)
+}
+
+/// What the agent is told to pick the stopped turn back up; the restart
+/// hint ([`restart_hint`]) with the steps it had taken comes first.
+const CARRY_ON_PROMPT: &str = "Hive is back after its update. Carry on with the turn it stopped: finish what the owner last asked for, picking up from the steps listed above without redoing what is already there. If all of it was already done, say so in a line.";
+/// What the transcript says under a message the agent never saw because
+/// Hive went down first: the agent's memory does not hold it, so
+/// "continue" would not do.
+const UNSENT_LINE: &str =
+    "Hive stopped to restart before this message reached the agent. Send it again.";
+/// The same where the owner stopped the turn the message waited behind.
+const UNSENT_STOPPED_LINE: &str = "You stopped the turn before this message reached the agent. Send it again if you still want it.";
+/// The same where the conversation was finished or archived first.
+const UNSENT_CLOSED_LINE: &str =
+    "The conversation was closed before this message reached the agent. Send it again to carry on.";
+/// The same where the agent could not start.
+const UNSENT_NO_AGENT_LINE: &str = "The agent could not start, so this message never reached it. Send it again once the cause above is fixed.";
+/// The row note of a conversation the owner finished.
+const CLOSED_BY_OWNER_NOTE: &str = "closed by you";
+/// What the transcript says where the owner finished the conversation.
+const CLOSED_BY_OWNER_LINE: &str = "You finished this conversation. Write again to reopen it.";
+/// What the transcript says where the agent finished the conversation;
+/// its summary follows.
+pub const FINISHED_BY_AGENT_LINE: &str = "The agent finished this conversation:";
+/// What the transcript says where Hive finished the conversation (its
+/// pull request merged); the reason follows.
+const FINISHED_BY_HIVE_LINE: &str = "Hive finished this conversation:";
+/// The message the conversation sends itself once when a transport
+/// provider_error cut the last turn.
+const RESUME_AFTER_PROVIDER_ERROR: &str =
+    "Continue from where the turn stopped; check the worktree first.";
+
+/// Whether a turn that stopped on `provider_error` resumes itself once:
+/// the failure is a transport one (a failed send or a broken reply body,
+/// the classes hive-provider's own retries cannot outlast) and
+/// chat.resume_after_provider_error_secs (default 90, 0 = off) gives the
+/// pause before the retry. A second failure in a row goes idle as before.
+fn resume_after_provider_error(store: &Store, why: &str, error: &str) -> bool {
+    why == "provider_error"
+        && (error.contains("error sending request")
+            || error.contains("error decoding response body"))
+        && store
+            .setting("chat.resume_after_provider_error_secs", "90")
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0)
+            > 0
+}
+/// How many of the cut turn's steps the next turn's hint lists for the agent.
+const HINT_STEPS: usize = 12;
+/// The most text a diff endpoint returns.
+const DIFF_LIMIT: usize = 400 * 1024;
+
+pub fn new_conversation_id() -> String {
+    let b: [u8; 3] = rand::random();
+    format!(
+        "chat-{}-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S"),
+        hex::encode(b)
+    )
+}
+
+fn now() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// What the agent waits for from the owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Pending {
+    Question {
+        id: u64,
+        question: String,
+        choices: Vec<String>,
+    },
+    Approval {
+        id: u64,
+        tool: String,
+        summary: String,
+        detail: String,
+        reason: String,
+        always: String,
+    },
+}
+
+impl Pending {
+    fn id(&self) -> u64 {
+        match self {
+            Pending::Question { id, .. } | Pending::Approval { id, .. } => *id,
+        }
+    }
+}
+
+/// The conversation as the hub shows it between polls.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Live {
+    /// `idle`, `running`, `waiting`, `ended`, `closed`.
+    pub status: String,
+    pub note: String,
+    /// The reply streamed so far in the running turn.
+    pub stream: String,
+    pub pending: Option<Pending>,
+    /// Messages typed while a turn ran, in order.
+    pub queued: Vec<String>,
+    /// Messages steered into the running turn that the agent has not taken
+    /// up yet: they reach it before its next model call, not after the
+    /// turn. Already in the transcript (marked `steered`).
+    pub steered: Vec<String>,
+    /// The harness step number the running turn started after (-1 when the
+    /// session has no step yet); the turn's steps are `turn_from < n`.
+    pub turn_from: i64,
+    pub turn_started_at: String,
+    pub auto_approve: bool,
+    /// Lockdown (sandbox) mode: the agent works offline, confined to its
+    /// worktree.
+    pub lockdown: bool,
+    /// Moves on every change; the hub skips a re-render when it stands.
+    pub version: u64,
+    /// The harness session the live steps belong to.
+    pub session_id: String,
+}
+
+/// One file in the artifacts folder.
+pub use crate::artifacts::Artifact;
+
+/// A file the owner handed the agent with a message. It lives in the
+/// conversation's attachments folder, never in the branch; the agent gets
+/// its absolute path with the message.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Attachment {
+    pub name: String,
+    pub size: u64,
+    pub path: String,
+}
+
+/// The most bytes one attachment may hold.
+pub const ATTACHMENT_LIMIT: usize = 8 * 1024 * 1024;
+/// How many files one message may carry.
+pub const ATTACHMENTS_PER_MESSAGE: usize = 12;
+/// The most decoded bytes one inline image may hold.
+pub const IMAGE_LIMIT: usize = 5 * 1024 * 1024;
+
+/// An image the owner pasted into a message, base64-decoded and saved into
+/// the conversation's attachments folder. The bytes are not handed to the
+/// model yet (that is a later job); the hub serves them back over
+/// `/api/v1/chat/{id}/image/...` so the thread can render them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
+pub struct ImageAttachment {
+    pub mime: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub data: String,
+}
+
+impl ImageAttachment {
+    /// The decoded bytes, or why this image is refused: a mime that is not
+    /// png, jpeg or webp, data over [`IMAGE_LIMIT`], or bad base64.
+    pub fn decode(&self) -> Result<Vec<u8>> {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        let mime = self.mime.trim().to_ascii_lowercase();
+        if !matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/webp") {
+            bail!(
+                "Invalid images: mime must be image/png, image/jpeg or image/webp, got {:?}",
+                self.mime
+            );
+        }
+        let bytes = STANDARD
+            .decode(self.data.trim())
+            .map_err(|e| anyhow!("Invalid images: {e}"))?;
+        if bytes.len() > IMAGE_LIMIT {
+            bail!(
+                "Invalid images: one image holds up to {} bytes, this one holds {}",
+                IMAGE_LIMIT,
+                bytes.len()
+            );
+        }
+        Ok(bytes)
+    }
+
+    fn ext(&self) -> &'static str {
+        match self.mime.trim().to_ascii_lowercase().as_str() {
+            "image/png" => "png",
+            "image/jpeg" => "jpeg",
+            "image/webp" => "webp",
+            _ => "bin",
+        }
+    }
+}
+
+/// What the conversation's branch holds against the project's default
+/// branch.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Changes {
+    pub project: String,
+    pub branch: String,
+    pub base: String,
+    pub cwd: String,
+    /// Commits on the branch the base does not have.
+    pub commits: i64,
+    /// `git diff --stat base...HEAD`, last line first.
+    pub stat: String,
+    /// Files changed but not committed (`git status --porcelain` lines).
+    pub dirty: Vec<String>,
+}
+
+/// What `attach` did.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Attached {
+    pub id: String,
+    pub project: String,
+    pub cwd: String,
+    pub branch: String,
+    pub base: String,
+    /// Whether the worktree was made now (false: it already existed).
+    pub created: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Idle,
+    Running,
+    Waiting,
+    Ended,
+    /// Finished: the agent said the request is done, or the owner closed
+    /// it. A new message reopens it.
+    Closed,
+}
+
+impl Status {
+    fn word(self) -> &'static str {
+        match self {
+            Status::Idle => "idle",
+            Status::Running => "running",
+            Status::Waiting => "waiting",
+            Status::Ended => "ended",
+            Status::Closed => "closed",
+        }
+    }
+}
+
+/// Who finished the conversation, and their words for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Finished {
+    /// The agent's `finish` tool, with its summary.
+    Agent(String),
+    /// The owner, from the hub or `hive chat close`.
+    Owner,
+    /// Hive, once the conversation's pull request merged
+    /// ([`FINISH_ACTION`]), with why.
+    Hive(String),
+}
+
+impl Finished {
+    /// The row note while the conversation stands finished.
+    fn note(&self) -> String {
+        match self {
+            Finished::Agent(summary) | Finished::Hive(summary) => one_line(summary),
+            Finished::Owner => CLOSED_BY_OWNER_NOTE.to_string(),
+        }
+    }
+
+    /// The transcript line that marks the end.
+    fn line(&self) -> String {
+        match self {
+            Finished::Agent(summary) => format!("{FINISHED_BY_AGENT_LINE} {summary}"),
+            Finished::Owner => CLOSED_BY_OWNER_LINE.to_string(),
+            Finished::Hive(why) => format!("{FINISHED_BY_HIVE_LINE} {why}"),
+        }
+    }
+
+    fn by(&self) -> &'static str {
+        match self {
+            Finished::Agent(_) => "agent",
+            Finished::Owner => "owner",
+            Finished::Hive(_) => "hive",
+        }
+    }
+
+    /// What the conversation that started this one is told.
+    fn report(&self) -> String {
+        match self {
+            Finished::Agent(summary) => summary.clone(),
+            Finished::Owner => "The owner finished it.".to_string(),
+            Finished::Hive(why) => format!("Hive finished it: {why}"),
+        }
+    }
+
+    /// Whether a turn about to start stops at once: the agent's and the
+    /// owner's finish end the work, Hive's waits for the turn in flight
+    /// to end by itself and never cuts it.
+    fn stops_turns(&self) -> bool {
+        !matches!(self, Finished::Hive(_))
+    }
+}
+
+enum Answer {
+    Text(String),
+    Approval(Approval),
+}
+
+struct LiveState {
+    status: Status,
+    note: String,
+    stream: String,
+    pending: Option<Pending>,
+    answer: Option<(u64, Answer)>,
+    queued: VecDeque<Queued>,
+    /// The running turn's steering slot ([`Agent::steer_slot`]): a message
+    /// pushed here reaches the agent before its next model call. None
+    /// between turns.
+    steer: Option<SteerSlot>,
+    /// What the owner steered into the running turn, in order, as shown;
+    /// the last `slot.len()` of them still wait for the agent's next step.
+    steered: Vec<String>,
+    /// Messages dropped from the queue (a stop, a close, a shutdown) that
+    /// the worker still has to write to the transcript, after the note of
+    /// the turn they waited behind.
+    unsent: Vec<(Queued, Unsent)>,
+    /// A finish asked for during the turn (the agent's tool, the owner's
+    /// close): the turn ends closed.
+    finish: Option<Finished>,
+    cancel: Option<CancelToken>,
+    auto: bool,
+    /// Lockdown (sandbox) mode as the hub shows it; the session itself
+    /// picks the flag up from the row at its next start.
+    lockdown: bool,
+    version: u64,
+    worker: bool,
+    /// When the worker last stood down (or the conversation was opened):
+    /// how long the conversation has sat idle, for [`Runtime::release_if_idle`].
+    idle_since: Instant,
+    last_step: i64,
+    turn_from: i64,
+    turn_started_at: String,
+    next_id: u64,
+    closed: bool,
+    /// Closed by the hub going down, not by the owner: the stopped turn's
+    /// note says so.
+    shutdown: bool,
+    session_id: String,
+}
+
+struct Shared {
+    state: Mutex<LiveState>,
+    cv: Condvar,
+}
+
+impl Shared {
+    fn new(auto: bool, lockdown: bool) -> Self {
+        Self {
+            state: Mutex::new(LiveState {
+                status: Status::Idle,
+                note: String::new(),
+                stream: String::new(),
+                pending: None,
+                answer: None,
+                queued: VecDeque::new(),
+                steer: None,
+                steered: Vec::new(),
+                unsent: Vec::new(),
+                finish: None,
+                cancel: None,
+                auto,
+                lockdown,
+                version: 1,
+                worker: false,
+                idle_since: Instant::now(),
+                // Steps count from 0, so "none yet" is -1 and a turn's steps
+                // are `turn_from < n <= last_step`.
+                last_step: -1,
+                turn_from: -1,
+                turn_started_at: String::new(),
+                next_id: 1,
+                closed: false,
+                shutdown: false,
+                session_id: String::new(),
+            }),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, LiveState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn bump(&self, st: &mut LiveState) {
+        st.version += 1;
+        self.cv.notify_all();
+    }
+
+    fn snapshot(&self) -> Live {
+        let st = self.lock();
+        // A worker holding a message that has not reached the agent yet
+        // counts as running: the owner just sent it.
+        let status = if st.worker && matches!(st.status, Status::Idle | Status::Closed) {
+            Status::Running
+        } else {
+            st.status
+        };
+        Live {
+            status: status.word().to_string(),
+            note: st.note.clone(),
+            stream: st.stream.clone(),
+            pending: st.pending.clone(),
+            queued: st.queued.iter().map(Queued::shown).collect(),
+            steered: match &st.steer {
+                // The slot is drained whole, so what still waits is the
+                // tail of what was steered.
+                Some(slot) => {
+                    let waiting = slot.len().min(st.steered.len());
+                    st.steered[st.steered.len() - waiting..].to_vec()
+                }
+                None => Vec::new(),
+            },
+            turn_from: st.turn_from,
+            turn_started_at: st.turn_started_at.clone(),
+            auto_approve: st.auto,
+            lockdown: st.lockdown,
+            version: st.version,
+            session_id: st.session_id.clone(),
+        }
+    }
+
+    /// Parks the agent's thread until the owner answers pending item `id`,
+    /// the turn is cancelled, or the runtime closes.
+    fn wait_answer(&self, id: u64) -> Option<Answer> {
+        let mut st = self.lock();
+        loop {
+            if let Some((for_id, _)) = &st.answer
+                && *for_id == id
+            {
+                let (_, answer) = st.answer.take().expect("answer present");
+                return Some(answer);
+            }
+            if st.closed || st.cancel.as_ref().is_none_or(CancelToken::is_cancelled) {
+                return None;
+            }
+            st = self
+                .cv
+                .wait_timeout(st, PARK_TICK)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
+
+/// The reply's text as it streams in, for the page to show; a restart
+/// (the stream broke and the model is asked again) clears it.
+struct LiveStream {
+    shared: Arc<Shared>,
+}
+
+impl StreamSink for LiveStream {
+    fn text(&mut self, text: &str) {
+        let mut st = self.shared.lock();
+        st.stream.push_str(text);
+        self.shared.bump(&mut st);
+    }
+
+    fn restart(&mut self) {
+        let mut st = self.shared.lock();
+        st.stream.clear();
+        self.shared.bump(&mut st);
+    }
+}
+
+/// The owner at the other end of HTTP.
+struct WebUi {
+    shared: Arc<Shared>,
+    store: Store,
+    id: String,
+    /// The manager, for the sub-conversations this agent starts and reads.
+    manager: Weak<ManagerInner>,
+    /// The runtime, which keeps the background processes the agent hands
+    /// over with `process notify` past the end of its turn.
+    runtime: Weak<Runtime>,
+}
+
+impl WebUi {
+    fn manager(&self) -> Option<Manager> {
+        self.manager.upgrade().map(Manager::from_inner)
+    }
+
+    /// Tells the conversation that started this one (if any) that its
+    /// agent asks a question, so it can answer or leave it to the owner.
+    fn report_question(&self, question: &str, choices: &[String]) {
+        let Some(m) = self.manager() else { return };
+        let Ok(Some(row)) = self.store.chat_get(&self.id) else {
+            return;
+        };
+        if row.parent.is_empty() {
+            return;
+        }
+        let mut text = question.to_string();
+        if !choices.is_empty() {
+            text.push_str("\nChoices: ");
+            text.push_str(&choices.join(" | "));
+        }
+        m.deliver_report(&row, REPORT_ASKS, &text);
+    }
+    fn park(&self, pending: Pending, note: String) -> Option<Answer> {
+        let id = pending.id();
+        {
+            let mut st = self.shared.lock();
+            st.pending = Some(pending);
+            st.status = Status::Waiting;
+            st.note = note.clone();
+            self.shared.bump(&mut st);
+        }
+        let _ = self.store.chat_set_status(&self.id, "waiting", &note);
+        let answer = self.shared.wait_answer(id);
+        {
+            let mut st = self.shared.lock();
+            if st.pending.as_ref().is_some_and(|p| p.id() == id) {
+                st.pending = None;
+            }
+            if !st.closed {
+                st.status = Status::Running;
+                st.note.clear();
+            }
+            self.shared.bump(&mut st);
+        }
+        let _ = self.store.chat_set_status(&self.id, "running", "");
+        answer
+    }
+
+    fn next_id(&self) -> u64 {
+        let mut st = self.shared.lock();
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    }
+}
+
+impl Ui for WebUi {
+    fn finish(&mut self, summary: &str) -> bool {
+        let mut st = self.shared.lock();
+        if st.finish.is_none() {
+            st.finish = Some(Finished::Agent(summary.to_string()));
+        }
+        self.shared.bump(&mut st);
+        true
+    }
+
+    fn finish_held(&mut self) -> Option<String> {
+        let open: Vec<String> = self
+            .store
+            .chat_children(&self.id, false)
+            .ok()?
+            .into_iter()
+            .filter(|c| c.status != "closed")
+            .map(|c| format!("{} ({})", c.id, c.title))
+            .collect();
+        if open.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "sub-sessions you started are still at work: {}. End this turn without finishing; each one's report arrives here as a message and starts your next turn. Join their results, then finish.",
+            open.join(", ")
+        ))
+    }
+
+    fn keep(&mut self, proc: Managed) -> KeepResult {
+        match self.runtime.upgrade() {
+            Some(rt) => rt.keep(proc),
+            None => Err(Box::new((
+                proc,
+                "this session is closing; nothing outlives the turn".into(),
+            ))),
+        }
+    }
+
+    fn approve(&mut self, req: &ApprovalRequest) -> Approval {
+        if self.shared.lock().auto {
+            return Approval::Allow;
+        }
+        let id = self.next_id();
+        let pending = Pending::Approval {
+            id,
+            tool: req.tool.clone(),
+            summary: req.summary.clone(),
+            detail: req.detail.clone(),
+            reason: req.reason.clone(),
+            always: req.always.clone(),
+        };
+        let note = format!(
+            "waiting for your approval: {} {}",
+            req.tool,
+            one_line(&req.summary)
+        );
+        let decision = match self.park(pending, note) {
+            Some(Answer::Approval(a)) => a,
+            Some(Answer::Text(_)) | None => {
+                Approval::Deny("the owner stopped this turn before deciding".to_string())
+            }
+        };
+        let (word, reason) = match &decision {
+            Approval::Allow => ("allow", String::new()),
+            Approval::Always => ("always", req.always.clone()),
+            Approval::Deny(why) => ("deny", why.clone()),
+        };
+        let _ = self.store.chat_add_message(
+            &self.id,
+            "approval",
+            &format!("{}: {}", req.tool, one_line(&req.summary)),
+            &json!({"tool": req.tool, "decision": word, "reason": reason, "always": req.always}),
+        );
+        decision
+    }
+
+    fn ask(&mut self, question: &str, choices: &[String]) -> Option<String> {
+        let id = self.next_id();
+        let _ = self.store.chat_add_message(
+            &self.id,
+            "question",
+            question,
+            &json!({"choices": choices, "pending": id}),
+        );
+        let pending = Pending::Question {
+            id,
+            question: question.to_string(),
+            choices: choices.to_vec(),
+        };
+        self.report_question(question, choices);
+        match self.park(
+            pending,
+            format!("waiting for your answer: {}", one_line(question)),
+        ) {
+            Some(Answer::Text(t)) => Some(t),
+            Some(Answer::Approval(_)) | None => None,
+        }
+    }
+
+    fn chat(&mut self, req: &ChatRequest) -> Option<ChatReply> {
+        let m = self.manager()?;
+        Some(match req {
+            ChatRequest::Start { title, text } => m
+                .create_child(&self.id, title, text)
+                .map(|row| {
+                    format!(
+                        "Started sub-session {} ({:?}). It works in your workspace and every reply it makes reaches you as a message from it; the owner sees it on its own page too. Carry on with your own work meanwhile, or end your turn and wait for it.",
+                        row.id, row.title
+                    )
+                })
+                .map_err(|e| e.to_string()),
+            ChatRequest::Send { id, text } => m
+                .send_from_parent(id, &self.id, text)
+                .map(|()| format!("Sent to {id}; its reply reaches you as a message from it."))
+                .map_err(|e| e.to_string()),
+            ChatRequest::Read { id } => m
+                .read_children(&self.id, id)
+                .map_err(|e| e.to_string()),
+        })
+    }
+}
+
+/// Keeps the live step counter current so the hub knows which steps belong
+/// to the running turn.
+struct LiveSink(Arc<Shared>);
+
+impl Sink for LiveSink {
+    fn step(&mut self, step: Step) {
+        let mut st = self.0.lock();
+        st.last_step = st.last_step.max(i64::from(step.n));
+        self.0.bump(&mut st);
+    }
+}
+
+/// What a message with `n` images says once they are left out because
+/// `model` cannot see: the text the model gets (the owner's words and a
+/// line saying images were there) and the note the owner reads.
+fn left_out_images(text: &str, n: usize, model: &str) -> (String, String) {
+    let what = if n == 1 {
+        "1 image".to_string()
+    } else {
+        format!("{n} images")
+    };
+    let text = format!(
+        "{text}\n\n[The owner attached {what}; it was left out because the model {model} cannot see images. Say so if the answer depends on it.]"
+    );
+    let note = format!(
+        "{what} left out: the model {model} cannot see images, so it got the words alone. Pick a model that takes images to have them looked at."
+    );
+    (text, note)
+}
+
+fn one_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.chars().count() > 160 {
+        let cut: String = line.chars().take(157).collect();
+        format!("{cut}...")
+    } else {
+        line.to_string()
+    }
+}
+
+/// The agent of one conversation while the hub holds it.
+struct Started {
+    agent: Arc<Mutex<Agent>>,
+    prepared: Prepared,
+    ctx: Context,
+    session_id: String,
+    cwd: String,
+    /// The model the session resolved to; a row that names another one
+    /// restarts the session on the next turn.
+    model: String,
+    /// The reasoning effort the session runs on (empty: the provider's
+    /// default), compared like the model.
+    reasoning: String,
+    /// Whether the session runs in lockdown; a row that flips it restarts
+    /// the session on the next turn, like a model change.
+    lockdown: bool,
+    last_cost: f64,
+    ended: bool,
+}
+
+impl Started {
+    /// Ends the session when it is still open: the trajectory goes to disk
+    /// (the next session resumes from it) and the harness session finishes
+    /// as ended.
+    fn end(&mut self) {
+        if self.ended {
+            return;
+        }
+        self.ended = true;
+        let result = self
+            .agent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .end(EXIT_ENDED);
+        let _ = self.prepared.write_trajectory(&mut self.ctx);
+        let _ = self.prepared.finish(&mut self.ctx, &result);
+    }
+}
+
+/// One message waiting for the agent: its text as the model sees it, the
+/// images the owner attached inline (`Message.images`) and, for a message
+/// the owner typed, its transcript row. The row is written when the agent
+/// takes the message up, not when it was typed: a message sent during a
+/// turn then lands after that turn's reply, the order the agent read them
+/// in, instead of above a reply it never saw. Until then the hub shows it
+/// as queued.
+#[derive(Clone, Debug, Default)]
+struct Queued {
+    text: String,
+    images: Vec<ImageContent>,
+    /// The owner's words and the row's extra (attachments, images); None
+    /// for the runtime's own prompts, which leave no row.
+    row: Option<(String, Value)>,
+    /// A report from a sub-conversation rather than the owner's words: the
+    /// row is a note (the page shows who it is from), not a message of
+    /// the owner's.
+    report: bool,
+}
+
+impl From<String> for Queued {
+    fn from(text: String) -> Self {
+        Queued {
+            text,
+            images: Vec::new(),
+            row: None,
+            report: false,
+        }
+    }
+}
+
+impl From<&str> for Queued {
+    fn from(text: &str) -> Self {
+        text.to_string().into()
+    }
+}
+
+impl Queued {
+    /// The words the hub lists while the message waits: the owner's own,
+    /// or the prompt itself for the runtime's.
+    fn shown(&self) -> String {
+        match &self.row {
+            Some((shown, _)) => shown.clone(),
+            None => self.text.clone(),
+        }
+    }
+
+    /// The transcript role of the message's row.
+    fn role(&self) -> &'static str {
+        if self.report { "note" } else { "user" }
+    }
+}
+
+/// A message row's extra with `steered: true` on it: the hub shows the
+/// message as one that reached the agent mid-turn.
+fn steered_extra(extra: &Value) -> Value {
+    match extra {
+        Value::Object(map) => {
+            let mut map = map.clone();
+            map.insert("steered".to_string(), Value::Bool(true));
+            Value::Object(map)
+        }
+        _ => json!({"steered": true}),
+    }
+}
+
+/// Why a queued message never reached the agent; the transcript says so
+/// under it, since "continue" would not bring it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unsent {
+    /// The hub went down (restart, shutdown).
+    Shutdown,
+    /// The owner stopped the turn it waited behind.
+    Stopped,
+    /// The conversation was finished or put away first.
+    Closed,
+    /// The agent could not start.
+    NoAgent,
+}
+
+impl Unsent {
+    fn line(self) -> &'static str {
+        match self {
+            Unsent::Shutdown => UNSENT_LINE,
+            Unsent::Stopped => UNSENT_STOPPED_LINE,
+            Unsent::Closed => UNSENT_CLOSED_LINE,
+            Unsent::NoAgent => UNSENT_NO_AGENT_LINE,
+        }
+    }
+}
+
+/// The conversation's runtime: its queue, its live state and, once the
+/// first message arrives, its agent.
+pub struct Runtime {
+    pub id: String,
+    home: String,
+    store: Store,
+    provider: String,
+    model: String,
+    shared: Arc<Shared>,
+    started: Mutex<Option<Started>>,
+    /// The manager this runtime belongs to, for the sub-conversations its
+    /// agent starts and the reports it sends up to its parent.
+    manager: Weak<ManagerInner>,
+    /// Background processes the agent handed over with `process notify`:
+    /// they run past the turn that started them, and a watcher thread
+    /// wakes the conversation with the exit and the last output of each
+    /// when it ends ([`Runtime::keep`]).
+    kept: Mutex<Kept>,
+}
+
+/// The kept background processes of a conversation and whether a watcher
+/// thread is looking after them.
+#[derive(Default)]
+struct Kept {
+    list: Vec<Managed>,
+    watching: bool,
+}
+
+/// How many lines of a kept process's output its wake carries.
+const KEPT_TAIL_LINES: usize = 40;
+
+impl Runtime {
+    fn new(
+        home: &str,
+        store: Store,
+        provider: &str,
+        model: &str,
+        row: &Row,
+        manager: Weak<ManagerInner>,
+    ) -> Arc<Self> {
+        let shared = Arc::new(Shared::new(row.auto_approve, row.lockdown));
+        shared.lock().session_id = row.session_id.clone();
+        Arc::new(Self {
+            id: row.id.clone(),
+            home: home.to_string(),
+            store,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            shared,
+            started: Mutex::new(None),
+            manager,
+            kept: Mutex::new(Kept::default()),
+        })
+    }
+
+    /// The manager, while the hub holds it.
+    fn manager(&self) -> Option<Manager> {
+        self.manager.upgrade().map(Manager::from_inner)
+    }
+
+    /// Takes a background process off the agent's hands so it runs past
+    /// the turn: the conversation is woken with its exit and last output
+    /// when it ends, however long that takes. Refused (the process handed
+    /// back) once the conversation is closing.
+    fn keep(self: &Arc<Self>, mut proc: Managed) -> KeepResult {
+        if self.shared.lock().closed {
+            return Err(Box::new((
+                proc,
+                "this session is closing; nothing outlives the turn".into(),
+            )));
+        }
+        if let Some(code) = proc.exit() {
+            return Err(Box::new((
+                proc,
+                format!("it already ended with exit {code}; read its output with `output`"),
+            )));
+        }
+        let line = format!(
+            "{} `{}` now runs past this turn (pid {}, running for {}); the session is woken with its exit and last output when it ends. Reply or end the turn; you are not blocked on it.",
+            proc.id,
+            one_line(&proc.command),
+            proc.pid(),
+            fmt_dur(proc.elapsed())
+        );
+        let _ = self.store.chat_add_message(
+            &self.id,
+            "note",
+            &format!(
+                "Background process {} keeps running past this turn: `{}` (pid {}).",
+                proc.id,
+                one_line(&proc.command),
+                proc.pid()
+            ),
+            &json!({"kept": {"id": proc.id, "command": proc.command, "pid": proc.pid()}}),
+        );
+        let spawn = {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            kept.list.push(proc);
+            let spawn = !kept.watching;
+            kept.watching = true;
+            spawn
+        };
+        if spawn {
+            let me = self.clone();
+            thread::Builder::new()
+                .name(format!("chat-kept-{}", self.id))
+                .spawn(move || me.watch_kept())
+                .expect("spawn conversation process watcher");
+        }
+        Ok(line)
+    }
+
+    /// Looks at the kept processes every [`PARK_TICK`] until none is
+    /// left; each one that ends wakes the conversation with a message the
+    /// agent reads as the owner's, carrying the exit and the last lines.
+    fn watch_kept(self: Arc<Self>) {
+        loop {
+            let ended: Vec<Managed> = {
+                let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+                if kept.list.is_empty() {
+                    kept.watching = false;
+                    return;
+                }
+                let mut done = Vec::new();
+                let mut i = 0;
+                while i < kept.list.len() {
+                    if kept.list[i].exit().is_some() {
+                        done.push(kept.list.remove(i));
+                    } else {
+                        i += 1;
+                    }
+                }
+                done
+            };
+            for mut m in ended {
+                let _ = m.take_output();
+                self.wake_for(&mut m);
+            }
+            thread::sleep(PARK_TICK);
+        }
+    }
+
+    /// Wakes the conversation for a kept process that ended: a note in the
+    /// transcript and a turn on it, after the turn in flight if there is
+    /// one. Nothing reaches a conversation that is closing; the
+    /// transcript still says the process ended.
+    fn wake_for(self: &Arc<Self>, m: &mut Managed) {
+        let code = m.exit().unwrap_or(-1);
+        let elapsed = fmt_dur(m.elapsed());
+        let tail = m.peek_tail(KEPT_TAIL_LINES);
+        let command = one_line(&m.command);
+        let shown = format!(
+            "Background process {} `{}` ended with exit {code} after {elapsed}.",
+            m.id, command
+        );
+        let extra = json!({"process": {
+            "id": m.id,
+            "command": m.command,
+            "pid": m.pid(),
+            "exit": code,
+            "elapsed": elapsed,
+            "tail": tail,
+        }});
+        if self.shared.lock().closed {
+            let _ = self
+                .store
+                .chat_add_message(&self.id, "note", &shown, &extra);
+            return;
+        }
+        let mut text = format!(
+            "{shown}\nIt was started in an earlier turn with the bash tool and handed over with `process notify`; its id is not valid any more. The last lines it wrote:"
+        );
+        if tail.trim().is_empty() {
+            text.push_str("\n(no output)");
+        } else {
+            text.push('\n');
+            text.push_str(&tail);
+        }
+        text.push_str("\nCarry on with what waited for it.");
+        self.enqueue(Queued {
+            text,
+            images: Vec::new(),
+            row: Some((shown, extra)),
+            report: true,
+        });
+    }
+
+    /// Stops every kept background process (a close, a shutdown): the
+    /// transcript names each one that was still running.
+    fn stop_kept(&self, shutdown: bool) {
+        let list: Vec<Managed> = {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut kept.list)
+        };
+        for mut m in list {
+            let was_running = m.stop();
+            let exit = m.exit();
+            let why = if shutdown {
+                "Hive stopped it to go down"
+            } else {
+                "the conversation was closed"
+            };
+            let line = if was_running {
+                format!(
+                    "Background process {} `{}` was stopped after {}: {why}.",
+                    m.id,
+                    one_line(&m.command),
+                    fmt_dur(m.elapsed())
+                )
+            } else {
+                format!(
+                    "Background process {} `{}` ended with exit {} after {}; {why} before the wake reached the agent.",
+                    m.id,
+                    one_line(&m.command),
+                    exit.unwrap_or(-1),
+                    fmt_dur(m.elapsed())
+                )
+            };
+            let _ = self.store.chat_add_message(
+                &self.id,
+                "note",
+                &line,
+                &json!({"process": {
+                    "id": m.id,
+                    "command": m.command,
+                    "pid": m.pid(),
+                    "exit": exit,
+                    "elapsed": fmt_dur(m.elapsed()),
+                    "stopped": was_running,
+                    "shutdown": shutdown,
+                }}),
+            );
+        }
+    }
+
+    /// How many kept background processes the conversation is watching.
+    pub fn kept_count(&self) -> usize {
+        self.kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .list
+            .len()
+    }
+
+    pub fn live(&self) -> Live {
+        self.shared.snapshot()
+    }
+
+    /// Queues a message and makes sure a worker is running it. The owner's
+    /// row goes to the transcript now when nothing runs ahead of it (the
+    /// turn starts on it at once); behind a running turn it waits with the
+    /// message ([`Queued::row`]).
+    fn enqueue(self: &Arc<Self>, message: impl Into<Queued>) {
+        let mut message = message.into();
+        let role = message.role();
+        let (spawn, row) = {
+            let mut st = self.shared.lock();
+            let spawn = !st.worker;
+            let row = if spawn { message.row.take() } else { None };
+            st.queued.push_back(message);
+            st.worker = true;
+            self.shared.bump(&mut st);
+            (spawn, row)
+        };
+        if let Some((shown, extra)) = row {
+            let _ = self.store.chat_add_message(&self.id, role, &shown, &extra);
+        }
+        if spawn {
+            let me = self.clone();
+            thread::Builder::new()
+                .name(format!("chat-{}", self.id))
+                .spawn(move || me.work())
+                .expect("spawn conversation worker");
+        }
+    }
+
+    /// Steers the running turn: the message goes to the agent's steering
+    /// slot, so it reads it before its next model call, and into the
+    /// transcript now (marked `steered`, since it lands mid-turn rather
+    /// than after the reply). A turn waiting on a question or an approval
+    /// is still in flight: the steer reaches the agent once the answer
+    /// does, before its next call. With no turn running, or one that cannot
+    /// be steered (it is stopping, or has not reached the agent yet), the
+    /// message queues as [`Runtime::enqueue`] does.
+    fn steer(self: &Arc<Self>, message: Queued) {
+        let role = message.role();
+        // Images for a model that cannot see are left out as on a turn; the
+        // note follows the owner's row. A message that ends up queued keeps
+        // its images and the turn decides.
+        let blind = self.blind_model(&message.images);
+        let mut left_out = None;
+        let written = {
+            let mut st = self.shared.lock();
+            let steerable = matches!(st.status, Status::Running | Status::Waiting)
+                && !st.closed
+                && st.finish.is_none()
+                && !st.cancel.as_ref().is_some_and(|c| c.is_cancelled());
+            match st.steer.clone().filter(|_| steerable) {
+                Some(slot) => {
+                    let shown = message.shown();
+                    let extra = match &message.row {
+                        Some((_, extra)) => steered_extra(extra),
+                        None => json!({"steered": true}),
+                    };
+                    match &blind {
+                        Some(model) => {
+                            let (text, note) =
+                                left_out_images(&message.text, message.images.len(), model);
+                            slot.push(text, Vec::new());
+                            left_out = Some(note);
+                        }
+                        None => slot.push(message.text.clone(), message.images.clone()),
+                    }
+                    st.steered.push(shown.clone());
+                    self.shared.bump(&mut st);
+                    Some((shown, extra))
+                }
+                None => None,
+            }
+        };
+        match written {
+            Some((shown, extra)) => {
+                let _ = self.store.chat_add_message(&self.id, role, &shown, &extra);
+                if let Some(note) = left_out {
+                    let _ = self
+                        .store
+                        .chat_add_message(&self.id, "note", &note, &Value::Null);
+                }
+            }
+            None => self.enqueue(message),
+        }
+    }
+
+    fn work(self: Arc<Self>) {
+        loop {
+            // Taking the next message and standing down are one step under
+            // the lock: a message that arrives between them would find a
+            // worker that is no longer looking and wait for the next one.
+            let next = {
+                let mut st = self.shared.lock();
+                if st.closed {
+                    let why = if st.shutdown {
+                        Unsent::Shutdown
+                    } else {
+                        Unsent::Closed
+                    };
+                    let dropped: Vec<Queued> = st.queued.drain(..).collect();
+                    st.unsent.extend(dropped.into_iter().map(|q| (q, why)));
+                }
+                let next = st.queued.pop_front();
+                let mut finished = None;
+                if next.is_none() && !st.closed {
+                    // A finish that found no turn to end (the owner closed
+                    // between two) lands here.
+                    finished = st.finish.take();
+                    if let Some(f) = &finished {
+                        st.status = Status::Closed;
+                        st.note = f.note();
+                    }
+                    st.worker = false;
+                    st.idle_since = Instant::now();
+                }
+                self.shared.bump(&mut st);
+                drop(st);
+                if let Some(f) = finished {
+                    self.record_finished(&f);
+                }
+                next
+            };
+            match next {
+                Some(message) => self.turn(message),
+                None => break,
+            }
+        }
+        self.write_unsent();
+        // A close that came while this worker was active left ending the
+        // session to it, so the session ends after the last turn, never
+        // under one.
+        let close_here = self.shared.lock().closed;
+        if close_here {
+            self.end_session();
+            let mut st = self.shared.lock();
+            st.worker = false;
+            self.shared.bump(&mut st);
+        }
+    }
+
+    /// Runs one turn: starts or restarts the agent when the workspace
+    /// changed, sends the message, records what came back.
+    fn turn(self: &Arc<Self>, message: Queued) {
+        let row = match self.store.chat_get(&self.id) {
+            Ok(Some(r)) if r.status != "archived" => r,
+            _ => {
+                self.shared.lock().closed = true;
+                return;
+            }
+        };
+        {
+            let mut st = self.shared.lock();
+            if st.closed {
+                // Put away or going down before the turn began: no session
+                // starts for a message that cannot run; the transcript says
+                // the message never arrived.
+                let why = if st.shutdown {
+                    Unsent::Shutdown
+                } else {
+                    Unsent::Closed
+                };
+                st.unsent.push((message, why));
+                drop(st);
+                self.write_unsent();
+                return;
+            }
+        }
+        let row_role = message.role();
+        let Queued {
+            text,
+            images,
+            row: owner_row,
+            ..
+        } = message;
+        // The owner's message enters the transcript as the agent takes it
+        // up: after the reply of the turn it waited behind.
+        if let Some((shown, extra)) = &owner_row {
+            let _ = self
+                .store
+                .chat_add_message(&self.id, row_role, shown, extra);
+        }
+        let row_note = row.note.clone();
+        let (agent, session_id, ran_in, first) = match self.ensure_started(&row) {
+            Ok(v) => v,
+            Err(e) => {
+                let why = format!("could not start the agent: {e:#}");
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, "note", &why, &Value::Null);
+                let _ = self
+                    .store
+                    .chat_set_status(&self.id, "ended", &one_line(&why));
+                {
+                    let mut st = self.shared.lock();
+                    st.status = Status::Ended;
+                    st.note = one_line(&why);
+                    let dropped: Vec<Queued> = st.queued.drain(..).collect();
+                    st.unsent
+                        .extend(dropped.into_iter().map(|q| (q, Unsent::NoAgent)));
+                    self.shared.bump(&mut st);
+                }
+                self.write_unsent();
+                return;
+            }
+        };
+        // A model that cannot see gets no images: they would fail the call
+        // or vanish without a word. The owner reads a note saying so, and
+        // the model is told the images were left out.
+        let (text, images) = match self.blind_model(&images) {
+            Some(model) => {
+                let (text, note) = left_out_images(&text, images.len(), &model);
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, "note", &note, &Value::Null);
+                (text, Vec::new())
+            }
+            None => (text, images),
+        };
+        let message = if first {
+            let row = self.store.chat_get(&self.id).ok().flatten().unwrap_or(row);
+            let brief = self.brief(&row);
+            format!("{brief}\n\n{text}")
+        } else {
+            text.clone()
+        };
+        let message = match restart_hint(&self.store, &self.id, &row_note) {
+            Some(hint) => format!("{hint}\n\n{message}"),
+            None => message,
+        };
+        let cancel = CancelToken::new();
+        let steer = agent.lock().unwrap_or_else(|e| e.into_inner()).steer_slot();
+        {
+            let mut st = self.shared.lock();
+            st.status = Status::Running;
+            st.note.clear();
+            st.stream.clear();
+            st.cancel = Some(cancel.clone());
+            st.steer = Some(steer.clone());
+            st.steered.clear();
+            st.turn_from = st.last_step;
+            st.turn_started_at = now();
+            st.session_id = session_id.clone();
+            if st.closed || st.finish.as_ref().is_some_and(Finished::stops_turns) {
+                // Closed or finished while the message was on its way to
+                // the agent: the turn stops at its first step instead of
+                // running on.
+                cancel.cancel();
+            }
+            self.shared.bump(&mut st);
+        }
+        let _ = self.store.chat_set_status(&self.id, "running", "");
+        let stop_watch = self
+            .started
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|s| s.prepared.watch_cancel(&cancel, None));
+        let outcome = agent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .turn_with_images(&cancel, &message, images);
+        if let Some(stop) = stop_watch {
+            stop();
+        }
+        // A steer that arrived after the agent's last step never reached
+        // it: it runs as the next turn, its row already in the transcript.
+        let leftovers: Vec<Queued> = steer
+            .take()
+            .into_iter()
+            .map(|(text, images)| Queued {
+                text,
+                images,
+                row: None,
+                report: false,
+            })
+            .collect();
+        {
+            let mut st = self.shared.lock();
+            st.steer = None;
+            st.steered.clear();
+            for q in leftovers.into_iter().rev() {
+                st.queued.push_front(q);
+            }
+        }
+        let turn_from = self.shared.lock().turn_from;
+        let steps_to = self.shared.lock().last_step;
+        let extra = json!({"session": session_id, "steps": [turn_from, steps_to]});
+        let mut ended = false;
+        let mut status = Status::Idle;
+        let mut note = String::new();
+        // What the conversation that started this one hears of the turn.
+        let mut report: Option<(&str, String)> = None;
+        match outcome {
+            Ok(Turn::Reply(reply)) => {
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, "assistant", &reply, &extra);
+                if !cancel.is_cancelled() {
+                    self.retitle(&text, &reply);
+                }
+                report = Some((REPORT_REPLIED, reply));
+            }
+            Ok(Turn::Blocked(reason)) => {
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, "note", &reason, &extra);
+                report = Some((REPORT_BLOCKED, reason));
+            }
+            Ok(Turn::Stopped { status: why, error }) => {
+                let resume = !cancel.is_cancelled()
+                    && resume_after_provider_error(&self.store, &why, &error);
+                let line = if cancel.is_cancelled() {
+                    let st = self.shared.lock();
+                    if st.shutdown {
+                        drop(st);
+                        note = RESTART_NOTE.to_string();
+                        STOPPED_TO_RESTART_LINE.to_string()
+                    } else if matches!(st.finish, Some(Finished::Owner)) {
+                        "The turn stopped here: you finished the conversation.".to_string()
+                    } else {
+                        drop(st);
+                        report = Some((REPORT_STOPPED, "The owner stopped its turn.".to_string()));
+                        "You stopped this turn.".to_string()
+                    }
+                } else if error.is_empty() {
+                    let line = format!("The turn stopped: {why}.");
+                    report = Some((REPORT_STOPPED, line.clone()));
+                    line
+                } else if resume {
+                    format!(
+                        "The turn stopped: {why}: {error} (resuming once; if it fails again the conversation waits for your message)"
+                    )
+                } else {
+                    let line = format!("The turn stopped: {why}: {error}");
+                    report = Some((REPORT_STOPPED, line.clone()));
+                    line
+                };
+                if resume {
+                    // A transport provider_error (a failed send or a broken reply body,
+                    // after hive-provider already spent its own retries) cut the turn
+                    // while the owner may be away from the console: leave the note, then
+                    // resume the turn once after the configured pause. A second failure
+                    // in a row goes idle as before.
+                    self.shared
+                        .lock()
+                        .queued
+                        .push_front(RESUME_AFTER_PROVIDER_ERROR.to_string().into());
+                }
+                let _ = self.store.chat_add_message(&self.id, "note", &line, &extra);
+            }
+            Ok(Turn::Ended(result)) => {
+                ended = true;
+                status = Status::Ended;
+                note = format!("session ended: {}", result.exit_status);
+                let line = if result.error.is_empty() {
+                    format!(
+                        "The session ended ({}). Your next message starts a new one with this conversation carried over.",
+                        result.exit_status
+                    )
+                } else {
+                    format!(
+                        "The session ended ({}): {}. Your next message starts a new one with this conversation carried over.",
+                        result.exit_status, result.error
+                    )
+                };
+                let _ = self.store.chat_add_message(&self.id, "note", &line, &extra);
+                report = Some((REPORT_ENDED, line));
+            }
+            Err(e) => {
+                let line = format!("The turn failed: {e:#}");
+                let _ = self.store.chat_add_message(&self.id, "note", &line, &extra);
+                if agent.lock().unwrap_or_else(|e| e.into_inner()).is_ended() {
+                    ended = true;
+                    status = Status::Ended;
+                    note = "session ended".to_string();
+                }
+                report = Some((REPORT_STOPPED, line));
+            }
+        }
+        // Costs, the trajectory on disk, and the session's end when it came.
+        let cost = agent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .result()
+            .usage
+            .cost;
+        {
+            let mut guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(s) = guard.as_mut() {
+                let delta = (cost - s.last_cost).max(0.0);
+                s.last_cost = cost;
+                let _ = self.store.chat_add_turn(&self.id, delta);
+                let _ = s.prepared.write_trajectory(&mut s.ctx);
+                if ended {
+                    s.ended = true;
+                    let result = s.agent.lock().unwrap_or_else(|e| e.into_inner()).result();
+                    let _ = s.prepared.finish(&mut s.ctx, &result);
+                }
+            }
+        }
+        // A move into a project during the turn (`hive chat attach`): the
+        // next turn runs there, and starts by itself so the owner need not
+        // ask twice. A conversation put away during the turn stays put
+        // away.
+        let row_now = self.store.chat_get(&self.id).ok().flatten();
+        let archived = row_now.as_ref().is_some_and(|r| r.status == "archived");
+        let finishing = !ended && self.shared.lock().finish.is_some();
+        let moved = row_now
+            .as_ref()
+            .filter(|r| !archived && !finishing && !r.cwd.is_empty() && r.cwd != ran_in);
+        let finished = {
+            let mut st = self.shared.lock();
+            st.cancel = None;
+            st.stream.clear();
+            // A finish during the turn (the agent's tool, the owner's
+            // close) ends it closed, unless the session itself ended.
+            let finished = st.finish.take().filter(|_| !ended);
+            if let Some(f) = &finished {
+                status = Status::Closed;
+                note = f.note();
+                // The conversation's own prompts (a resume) stop here; a
+                // message the owner sent meanwhile runs next and reopens it.
+                st.queued.retain(|q| q.row.is_some());
+            }
+            st.status = status;
+            st.note = note.clone();
+            if let Some(r) = &moved {
+                st.queued.push_front(
+                    format!(
+                        "You now work in {} (project {}, branch {}). Carry on with the request above from here.",
+                        r.cwd, r.project, r.branch
+                    )
+                    .into(),
+                );
+            }
+            self.shared.bump(&mut st);
+            finished
+        };
+        if let Some(f) = &finished {
+            let _ = self.store.chat_add_message(
+                &self.id,
+                "note",
+                &f.line(),
+                &json!({"closed": f.by(), "session": session_id}),
+            );
+            // The finish is the report: the summary, with the closing
+            // reply when the agent made one.
+            let closing = report
+                .take()
+                .filter(|(kind, _)| *kind == REPORT_REPLIED)
+                .map(|(_, text)| text)
+                .unwrap_or_default();
+            let text = match f {
+                Finished::Agent(summary) if closing.trim().is_empty() => summary.clone(),
+                Finished::Agent(summary) => format!("{summary}\n\n{closing}"),
+                other => other.report(),
+            };
+            report = Some((REPORT_FINISHED, text));
+        }
+        if let Some(r) = &moved {
+            let _ = self.store.chat_add_message(
+                &self.id,
+                "note",
+                &format!("Moved into project {} ({}).", r.project, r.cwd),
+                &json!({"project": r.project, "cwd": r.cwd, "branch": r.branch}),
+            );
+        }
+        if !archived {
+            let _ = self.store.chat_set_status(&self.id, status.word(), &note);
+        }
+        // What was dropped behind this turn (a stop, a close) follows its
+        // note, so the transcript reads in the order things happened.
+        self.write_unsent();
+        // A sub-conversation's turn ends with its report to the
+        // conversation that started it.
+        if let Some((kind, text)) = report
+            && !archived
+            && let Some(row) = row_now.as_ref().filter(|r| !r.parent.is_empty())
+            && let Some(m) = self.manager()
+        {
+            m.deliver_report(row, kind, &text);
+        }
+    }
+
+    /// The session's model when `images` is not empty and the provider's
+    /// model list says that model cannot see (`Model.vision` false). None
+    /// when there are no images, the model takes them, or the list does
+    /// not answer or name the model: then the images go as they are.
+    fn blind_model(&self, images: &[ImageContent]) -> Option<String> {
+        if images.is_empty() {
+            return None;
+        }
+        let (provider, model) = {
+            let guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+            let s = guard.as_ref()?;
+            (s.prepared.provider.clone(), s.model.clone())
+        };
+        let cancel = CancelToken::new().with_timeout(Duration::from_secs(10));
+        let models = provider.models(&cancel).ok()?;
+        let listed = models.iter().find(|m| m.id == model)?;
+        (!listed.vision).then_some(model)
+    }
+
+    /// Renames the conversation after what it has become: a short title
+    /// the session's model gives for the recent exchange, written unless
+    /// the owner named the conversation by hand. Best effort: a failed or
+    /// empty answer leaves the title as it was, and nothing here touches
+    /// the turn's outcome.
+    fn retitle(&self, asked: &str, reply: &str) {
+        let row = match self.store.chat_get(&self.id) {
+            Ok(Some(row)) if !row.title_owner => row,
+            _ => return,
+        };
+        let (provider, model) = {
+            let guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(s) => (s.prepared.provider.clone(), s.model.clone()),
+                None => return,
+            }
+        };
+        let exchange: Vec<(&'static str, String)> = match self.store.chat_messages(&self.id, 0) {
+            Ok(messages) => messages
+                .into_iter()
+                .filter_map(|m| match m.role.as_str() {
+                    "user" => Some(("owner", m.content)),
+                    "assistant" => Some(("agent", m.content)),
+                    _ => None,
+                })
+                .collect(),
+            Err(_) => vec![("owner", asked.to_string()), ("agent", reply.to_string())],
+        };
+        let lines: Vec<retitle::Line<'_>> = exchange
+            .iter()
+            .map(|(who, text)| retitle::Line { who, text })
+            .collect();
+        let req = retitle::title_request(&model, &row.title, &lines);
+        let cancel = CancelToken::new();
+        let answer = match provider.chat(&cancel, req) {
+            Ok(r) => r.message.map(|m| m.content).unwrap_or_default(),
+            // A title is a nicety: a provider error here is not the
+            // owner's concern and the turn already replied.
+            Err(_) => return,
+        };
+        if let Some(title) = retitle::title_from_answer(&answer)
+            && self.store.chat_retitle(&self.id, &title).unwrap_or(false)
+        {
+            let mut st = self.shared.lock();
+            self.shared.bump(&mut st);
+        }
+    }
+
+    /// The agent for the row's current workspace: the one running, or a
+    /// new session with the messages so far carried over.
+    /// Returns the agent, its harness session, the folder it works in and
+    /// whether this is the session's first turn (the brief goes with it).
+    fn ensure_started(
+        self: &Arc<Self>,
+        row: &Row,
+    ) -> Result<(Arc<Mutex<Agent>>, String, String, bool)> {
+        let mut guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        let row = self.ensure_workspace(row)?;
+        // A pinned model (tests) wins over the row's; otherwise a row that
+        // names another model than the session runs on ends that session.
+        let same_model = |s: &Started| !self.model.is_empty() || s.model == row.model;
+        if let Some(s) = guard.as_ref()
+            && !s.ended
+            && s.cwd == row.cwd
+            && same_model(s)
+            && s.reasoning == row.reasoning
+            && s.lockdown == row.lockdown
+        {
+            return Ok((s.agent.clone(), s.session_id.clone(), s.cwd.clone(), false));
+        }
+        let resume: Option<Trajectory> = match guard.take() {
+            Some(mut old) => {
+                let traj = old
+                    .agent
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .trajectory();
+                old.end();
+                Some(traj)
+            }
+            None if !row.session_id.is_empty() => read_trajectory(&self.home, &row.session_id),
+            None => None,
+        };
+        let mut ctx = Context {
+            store: Some(self.store.clone()),
+            home: self.home.clone(),
+            out: Box::new(io::sink()),
+            err: Box::new(io::sink()),
+            json: false,
+            quiet: true,
+            color: false,
+            agent: String::new(),
+            project: row.project.clone(),
+            session: String::new(),
+            now: String::new(),
+            args: Vec::new(),
+        };
+        let mut fs = FlagSet::new("chat");
+        fs.set_output(hive_cli::flags::Output::Discard);
+        add_agent_flags(&mut fs);
+        fs.parse(&[])?;
+        fs.set("C", &row.cwd)?;
+        if !self.provider.is_empty() {
+            fs.set("provider", &self.provider)?;
+        }
+        if !self.model.is_empty() {
+            fs.set("model", &self.model)?;
+        } else if !row.model.is_empty() {
+            fs.set("model", &row.model)?;
+        }
+        if !row.reasoning.is_empty() {
+            fs.set("reasoning", &row.reasoning)?;
+        }
+        let mut env = vec![
+            format!("{CONVERSATION_ENV}={}", row.id),
+            format!(
+                "{ARTIFACTS_ENV}={}",
+                artifacts_dir(&self.home, &row.id).display()
+            ),
+        ];
+        if !row.project.is_empty() {
+            env.push(format!("HIVE_PROJECT={}", row.project));
+        }
+        if let Some(path) = path_with_hive() {
+            env.push(format!("PATH={path}"));
+        }
+        env.extend(self.build_env(&row));
+        let lockdown = row.lockdown.then(|| self.lockdown_for(&row));
+        if lockdown.is_some() {
+            env.retain(|kv| !kv.starts_with(&format!("{}=", crate::lockdown::LOCKDOWN_ENV)));
+            env.extend(crate::lockdown::env_lines());
+        }
+        let prepared = prepare_agent_with(
+            &mut ctx,
+            &fs,
+            "chat",
+            String::new(),
+            true,
+            vec![Box::new(LiveSink(self.shared.clone()))],
+            false,
+            PrepareOpts {
+                project: row.project.clone(),
+                memory: if row.project.is_empty() {
+                    SHARED_MEMORY_KEY.to_string()
+                } else {
+                    String::new()
+                },
+                env,
+                lockdown,
+                // The agent files tasks in the conversation's name, from
+                // the conversation: the owner is the one it talks to, not
+                // the one filing.
+                actor: row.id.clone(),
+                origin: Some(hive_tasks::tasks::Origin::Conversation(row.id.clone())),
+            },
+        )?;
+        let agent = prepared.shared.clone();
+        {
+            let mut a = agent.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(traj) = resume
+                && !traj.messages.is_empty()
+            {
+                a.resume_messages(traj.messages)?;
+            }
+            a.set_ui(Arc::new(Mutex::new(WebUi {
+                shared: self.shared.clone(),
+                store: self.store.clone(),
+                id: row.id.clone(),
+                manager: self.manager.clone(),
+                runtime: Arc::downgrade(self),
+            })));
+            a.offer_finish(true);
+            a.offer_chat(true);
+            let shared = self.shared.clone();
+            a.set_stream(Box::new(LiveStream { shared }));
+        }
+        let session_id = prepared.session_id.clone();
+        self.store.chat_set_session(
+            &row.id,
+            &session_id,
+            &prepared.provider_name,
+            &prepared.model_name,
+        )?;
+        {
+            let mut st = self.shared.lock();
+            st.last_step = -1;
+            st.turn_from = -1;
+            st.session_id = session_id.clone();
+            self.shared.bump(&mut st);
+        }
+        let model = prepared.model_name.clone();
+        *guard = Some(Started {
+            agent: agent.clone(),
+            prepared,
+            ctx,
+            session_id: session_id.clone(),
+            cwd: row.cwd.clone(),
+            model,
+            reasoning: row.reasoning.clone(),
+            lockdown: row.lockdown,
+            last_cost: 0.0,
+            ended: false,
+        });
+        Ok((agent, session_id, row.cwd, true))
+    }
+
+    /// The sandbox a lockdown conversation's commands run under: writes go
+    /// to the worktree, the conversation's own folder (artifacts, scratch,
+    /// attachments), the shared Cargo target the build hygiene points at,
+    /// the git dir of the worktree (a worktree's `.git` is a file naming a
+    /// folder under the owner's checkout's `.git`, where the objects and
+    /// refs live) and the store's SQLite files (`hive` commands write the
+    /// WAL); the credential paths of the user's home and the hive home
+    /// cannot be read.
+    fn lockdown_for(&self, row: &Row) -> crate::lockdown::Lockdown {
+        let user_home = std::env::var("HOME").unwrap_or_default();
+        let mut l = crate::lockdown::Lockdown::new(&row.cwd, &user_home, &self.home);
+        l.allow_write(chat_dir(&self.home, &row.id));
+        let cwd = Path::new(&row.cwd);
+        let owned = chat_dir(&self.home, &row.id);
+        if let Some(target) = crate::buildenv::shared_target(&self.home, &row.project, cwd, &owned)
+        {
+            l.allow_write(target);
+        }
+        for key in ["--git-dir", "--git-common-dir"] {
+            let dir = git(&row.cwd, &["rev-parse", "--path-format=absolute", key]);
+            let dir = dir.trim();
+            if !dir.is_empty() {
+                l.allow_write(PathBuf::from(dir));
+            }
+        }
+        l.allow_write(PathBuf::from(self.store.db_path()));
+        l
+    }
+
+    /// The build hygiene the conversation's commands run with
+    /// ([`crate::buildenv`]): a shared Cargo target per project for a
+    /// worktree Hive made, bounded compile jobs, no debug info or
+    /// incremental caches - the daemon's rules for its own children.
+    fn build_env(&self, row: &Row) -> Vec<String> {
+        let cwd = Path::new(&row.cwd);
+        let owned = chat_dir(&self.home, &row.id);
+        let target = crate::buildenv::shared_target(&self.home, &row.project, cwd, &owned);
+        if let Some(dir) = &target {
+            crate::buildenv::link_target(cwd, dir);
+        }
+        let jobs = crate::buildenv::jobs(self.store.setting_int("daemon.build_jobs"));
+        crate::buildenv::lines(
+            |name| std::env::var_os(name).is_some(),
+            target.as_deref(),
+            jobs,
+        )
+    }
+
+    /// Gives the conversation a place to work: the project's worktree when
+    /// it names one, a scratch folder otherwise. Returns the row as it
+    /// stands afterwards.
+    fn ensure_workspace(&self, row: &Row) -> Result<Row> {
+        let dir = artifacts_dir(&self.home, &row.id);
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        if !row.project.is_empty() && row.branch.is_empty() {
+            let attached = attach_workspace(&self.store, &self.home, &row.id, &row.project)?;
+            let mut r = row.clone();
+            r.cwd = attached.cwd;
+            r.branch = attached.branch;
+            return Ok(r);
+        }
+        if row.cwd.is_empty() || !Path::new(&row.cwd).is_dir() {
+            let scratch = scratch_dir(&self.home, &row.id);
+            std::fs::create_dir_all(&scratch)
+                .with_context(|| format!("create {}", scratch.display()))?;
+            let cwd = scratch.display().to_string();
+            self.store
+                .chat_set_workspace(&row.id, &row.project, &cwd, &row.branch)?;
+            let mut r = row.clone();
+            r.cwd = cwd;
+            return Ok(r);
+        }
+        Ok(row.clone())
+    }
+
+    /// What the agent reads before the owner's first message of a session.
+    fn brief(&self, row: &Row) -> String {
+        let projects = self.store.projects(true).unwrap_or_default();
+        brief_text_with(
+            row,
+            &projects,
+            &artifacts_dir(&self.home, &row.id),
+            &self.store.ui_report_mode(&row.project),
+        )
+    }
+
+    /// Hands the owner's answer to the parked agent and records it in the
+    /// transcript first, under the lock the agent wakes through: once the
+    /// agent has the answer it can finish its turn, note a move and ask
+    /// again, and none of that may land above the answer that caused it.
+    /// A failed write leaves the question waiting.
+    fn answer(&self, text: String) -> Result<()> {
+        let mut st = self.shared.lock();
+        let Some(Pending::Question { id, .. }) = &st.pending else {
+            bail!("the agent is not waiting for an answer");
+        };
+        let id = *id;
+        self.store
+            .chat_add_message(&self.id, "answer", &text, &Value::Null)?;
+        st.answer = Some((id, Answer::Text(text)));
+        st.pending = None;
+        self.shared.bump(&mut st);
+        Ok(())
+    }
+
+    fn approve(&self, decision: Approval) -> Result<()> {
+        let mut st = self.shared.lock();
+        let Some(Pending::Approval { id, .. }) = &st.pending else {
+            bail!("the agent is not waiting for an approval");
+        };
+        let id = *id;
+        st.answer = Some((id, Answer::Approval(decision)));
+        st.pending = None;
+        self.shared.bump(&mut st);
+        Ok(())
+    }
+
+    fn set_auto(&self, on: bool) {
+        let mut st = self.shared.lock();
+        st.auto = on;
+        if on && let Some(Pending::Approval { id, .. }) = &st.pending {
+            let id = *id;
+            st.answer = Some((id, Answer::Approval(Approval::Allow)));
+            st.pending = None;
+        }
+        self.shared.bump(&mut st);
+    }
+
+    /// Shows the new lockdown state to the hub at once; the session picks
+    /// it up (restarting inside or outside the sandbox) at its next turn.
+    fn set_lockdown(&self, on: bool) {
+        let mut st = self.shared.lock();
+        st.lockdown = on;
+        self.shared.bump(&mut st);
+    }
+
+    /// Stops the running turn and drops what was queued behind it; the
+    /// dropped messages reach the transcript after the stopped turn's note.
+    fn cancel(&self) {
+        let mut st = self.shared.lock();
+        Self::drop_queue(&mut st, Unsent::Stopped);
+        if let Some(c) = &st.cancel {
+            c.cancel();
+        }
+        self.shared.bump(&mut st);
+    }
+
+    /// Moves what waits in the queue to the unsent list, for the worker to
+    /// write out ([`Runtime::write_unsent`]).
+    fn drop_queue(st: &mut LiveState, why: Unsent) {
+        let dropped: Vec<Queued> = st.queued.drain(..).collect();
+        st.unsent.extend(dropped.into_iter().map(|q| (q, why)));
+    }
+
+    /// Writes the messages that never reached the agent: the owner's words
+    /// as their own row, then the note that says why and what to do.
+    fn write_unsent(&self) {
+        let unsent = std::mem::take(&mut self.shared.lock().unsent);
+        for (message, why) in unsent {
+            if let Some((shown, extra)) = &message.row {
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, message.role(), shown, extra);
+            }
+            let extra = if why == Unsent::Shutdown {
+                // What the agent would have read, so the next hub passes it
+                // on as it carries the stopped turn on (carry_on_restarted).
+                json!({
+                    "restart": true,
+                    "unsent": true,
+                    "text": message.text,
+                    "report": message.report,
+                    "images": message.images.len(),
+                })
+            } else {
+                json!({"unsent": true})
+            };
+            let _ = self
+                .store
+                .chat_add_message(&self.id, "note", why.line(), &extra);
+        }
+    }
+
+    /// The owner finishes the conversation. With a worker active the turn
+    /// in flight stops and ends closed (recording it); otherwise the
+    /// runtime stands closed at once and the caller records it. The session
+    /// stays open either way: a new message reopens the conversation where
+    /// it was.
+    fn finish_by_owner(&self) -> bool {
+        let mut st = self.shared.lock();
+        Self::drop_queue(&mut st, Unsent::Closed);
+        if st.worker {
+            if st.finish.is_none() {
+                st.finish = Some(Finished::Owner);
+            }
+            if let Some(c) = &st.cancel {
+                c.cancel();
+            }
+            self.shared.bump(&mut st);
+            false
+        } else {
+            st.status = Status::Closed;
+            st.note = Finished::Owner.note();
+            self.shared.bump(&mut st);
+            true
+        }
+    }
+
+    /// Hive finishes the conversation (its pull request merged). A turn
+    /// in flight is never cut: it runs to its end and the conversation
+    /// stands closed after it (recording it then); otherwise the runtime
+    /// stands closed at once and the caller records it. Says which.
+    fn finish_by_hive(&self, why: &str) -> bool {
+        let mut st = self.shared.lock();
+        if st.worker {
+            if st.finish.is_none() {
+                st.finish = Some(Finished::Hive(why.to_string()));
+            }
+            self.shared.bump(&mut st);
+            false
+        } else {
+            st.status = Status::Closed;
+            st.note = Finished::Hive(why.to_string()).note();
+            self.shared.bump(&mut st);
+            true
+        }
+    }
+
+    /// Writes a finish to the store: its transcript line, then the row.
+    fn record_finished(&self, f: &Finished) {
+        let _ =
+            self.store
+                .chat_add_message(&self.id, "note", &f.line(), &json!({"closed": f.by()}));
+        let _ = self.store.chat_set_status(&self.id, "closed", &f.note());
+        self.write_unsent();
+        self.report_up(REPORT_FINISHED, &f.report());
+    }
+
+    /// Hands a report to the conversation that started this one, when
+    /// there is one and the hub still holds the manager.
+    fn report_up(&self, kind: &str, text: &str) {
+        let Ok(Some(row)) = self.store.chat_get(&self.id) else {
+            return;
+        };
+        if row.parent.is_empty() || row.status == "archived" {
+            return;
+        }
+        if let Some(m) = self.manager() {
+            m.deliver_report(&row, kind, text);
+        }
+    }
+
+    /// Ends the agent's session; the worker, if any, winds down after the
+    /// cancelled turn returns. The handle is the thread ending the session.
+    fn close(self: &Arc<Self>) -> thread::JoinHandle<()> {
+        self.stop(false)
+    }
+
+    /// [`Runtime::close`] for a hub going down: the stopped turn's note
+    /// says Hive stopped it, not the owner.
+    fn stop(self: &Arc<Self>, shutdown: bool) -> thread::JoinHandle<()> {
+        let (worker, shutdown) = {
+            let mut st = self.shared.lock();
+            st.closed = true;
+            st.shutdown |= shutdown;
+            let why = if st.shutdown {
+                Unsent::Shutdown
+            } else {
+                Unsent::Closed
+            };
+            Self::drop_queue(&mut st, why);
+            if let Some(c) = &st.cancel {
+                c.cancel();
+            }
+            self.shared.bump(&mut st);
+            (st.worker, st.shutdown)
+        };
+        let me = self.clone();
+        thread::Builder::new()
+            .name(format!("chat-close-{}", self.id))
+            .spawn(move || {
+                // Kept background processes go with the conversation.
+                me.stop_kept(shutdown);
+                // An active worker ends the session itself once its turn
+                // has returned ([`Runtime::work`]); ending it from here
+                // would cut the turn off before its note is written.
+                if !worker {
+                    me.end_session();
+                }
+            })
+            .expect("spawn conversation close")
+    }
+
+    /// Ends the agent's session when one is open: the trajectory goes to
+    /// disk and the harness session finishes as ended.
+    fn end_session(&self) {
+        let mut guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut s) = guard.take() {
+            s.end();
+        }
+    }
+
+    /// Lets the agent go once the conversation has sat idle - no turn
+    /// running, nothing queued, no question open - for `max_idle`: the
+    /// session ends with its trajectory on disk, which the next message
+    /// resumes from ([`Runtime::ensure_started`]), and the provider
+    /// connection, the MCP connections and their child processes go with
+    /// it. Says whether it did. The `started` lock is held throughout, so
+    /// a message arriving meanwhile starts its turn after the release and
+    /// finds the trajectory to resume from.
+    fn release_if_idle(&self, max_idle: Duration) -> bool {
+        let mut guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            return false;
+        }
+        {
+            let st = self.shared.lock();
+            if st.worker || !st.queued.is_empty() || st.idle_since.elapsed() < max_idle {
+                return false;
+            }
+        }
+        if let Some(mut s) = guard.take() {
+            s.end();
+        }
+        true
+    }
+
+    /// Ends the in-memory session on the owner's say-so, so the next
+    /// message starts a fresh one from the saved transcript (the trajectory
+    /// on disk, written here) and repairs it on the way in
+    /// ([`Agent::resume_messages`]): the way out of a session whose memory
+    /// holds something the provider refuses, without a hub restart. Says
+    /// whether a session was open. A turn in flight, or a message waiting
+    /// behind one, is a refusal: the owner stops it or waits.
+    fn restart_session(&self) -> Result<bool> {
+        let mut guard = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let st = self.shared.lock();
+            if st.worker || !st.queued.is_empty() {
+                bail!(
+                    "a turn is running in this conversation; stop it (or wait for it to finish), then restart the session"
+                );
+            }
+        }
+        let Some(mut s) = guard.take() else {
+            return Ok(false);
+        };
+        s.end();
+        let mut st = self.shared.lock();
+        if matches!(st.status, Status::Ended) {
+            st.status = Status::Idle;
+            st.note.clear();
+        }
+        self.shared.bump(&mut st);
+        Ok(true)
+    }
+
+    /// True once no worker thread holds a turn (or a queued message) and,
+    /// after a close, the session has ended.
+    fn settled(&self) -> bool {
+        !self.shared.lock().worker
+    }
+}
+
+/// The hub's handle on every conversation: rows in the store, runtimes in
+/// memory while the hub runs. A thin handle on [`ManagerInner`], which the
+/// runtimes hold weakly so a conversation's agent can start and steer its
+/// sub-conversations through the same manager.
+pub struct Manager {
+    inner: Arc<ManagerInner>,
+}
+
+pub struct ManagerInner {
+    home: String,
+    store: Store,
+    provider: String,
+    model: String,
+    runtimes: Mutex<BTreeMap<String, Arc<Runtime>>>,
+}
+
+impl std::ops::Deref for Manager {
+    type Target = ManagerInner;
+
+    fn deref(&self) -> &ManagerInner {
+        &self.inner
+    }
+}
+
+/// Minutes a conversation may sit idle before the hub lets its agent go
+/// ([`Manager::release_idle`]); `0` keeps every agent for as long as the
+/// hub runs.
+pub const IDLE_RELEASE_SETTING: &str = "chat.idle_release_minutes";
+
+/// The owner's caps on sub-conversations, `0` lifting each: `chat.sub_depth`
+/// (default 2) is how many levels down a conversation may still start one -
+/// a top-level conversation's children may have children of their own, and
+/// those may not - and `chat.sub_open` (default 8) how many a conversation
+/// may have open (not finished or archived) at a time.
+pub const SUB_DEPTH_SETTING: &str = "chat.sub_depth";
+pub const SUB_OPEN_SETTING: &str = "chat.sub_open";
+/// How many of a sub-conversation's last messages its parent's agent reads
+/// at a time, and how much of each.
+const READ_MESSAGES: usize = 6;
+const READ_MESSAGE_CHARS: usize = 2_000;
+
+/// The kinds of report a sub-conversation sends its parent.
+pub const REPORT_FINISHED: &str = "finished";
+pub const REPORT_REPLIED: &str = "replied";
+pub const REPORT_ASKS: &str = "asks";
+pub const REPORT_BLOCKED: &str = "blocked";
+pub const REPORT_STOPPED: &str = "stopped";
+pub const REPORT_ENDED: &str = "ended";
+
+/// The words the parent's agent reads for a report's kind.
+fn report_phrase(kind: &str) -> &'static str {
+    match kind {
+        REPORT_FINISHED => "it finished and closed",
+        REPORT_REPLIED => "it replied and waits for its next message",
+        REPORT_ASKS => {
+            "it asks a question and waits for the answer (the owner can answer it on its page; you can with the chat tool, action send)"
+        }
+        REPORT_BLOCKED => "it is blocked",
+        REPORT_STOPPED => "its turn stopped",
+        REPORT_ENDED => "its agent ended the turn without a reply",
+        _ => "it reports",
+    }
+}
+
+impl Manager {
+    pub fn new(home: &str, store: Store) -> Self {
+        Self {
+            inner: Arc::new(ManagerInner {
+                home: home.to_string(),
+                store,
+                provider: String::new(),
+                model: String::new(),
+                runtimes: Mutex::new(BTreeMap::new()),
+            }),
+        }
+    }
+
+    fn from_inner(inner: Arc<ManagerInner>) -> Self {
+        Self { inner }
+    }
+
+    /// Pins the provider and model every conversation uses (tests). Call
+    /// it before the first conversation runs.
+    pub fn with_provider(mut self, provider: &str, model: &str) -> Self {
+        let inner = Arc::get_mut(&mut self.inner)
+            .expect("with_provider is called before any conversation runs");
+        inner.provider = provider.to_string();
+        inner.model = model.to_string();
+        self
+    }
+
+    pub fn home(&self) -> &str {
+        &self.home
+    }
+
+    fn runtime(&self, row: &Row) -> Arc<Runtime> {
+        let mut map = self.runtimes.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(row.id.clone())
+            .or_insert_with(|| {
+                Runtime::new(
+                    &self.home,
+                    self.store.clone(),
+                    &self.provider,
+                    &self.model,
+                    row,
+                    Arc::downgrade(&self.inner),
+                )
+            })
+            .clone()
+    }
+
+    fn running(&self, id: &str) -> Option<Arc<Runtime>> {
+        self.runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    fn row(&self, id: &str) -> Result<Row> {
+        self.store
+            .chat_get(id)?
+            .ok_or_else(|| anyhow!("no such session: {id}"))
+    }
+
+    /// Starts a conversation and sends its first message.
+    pub fn create(
+        &self,
+        title: &str,
+        project: &str,
+        auto_approve: bool,
+        text: &str,
+        by: &str,
+    ) -> Result<Row> {
+        self.create_with(title, project, "", "", auto_approve, text, by)
+    }
+
+    /// [`Manager::create`] on a chosen model and reasoning effort (empty:
+    /// the provider's defaults).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with(
+        &self,
+        title: &str,
+        project: &str,
+        model: &str,
+        reasoning: &str,
+        auto_approve: bool,
+        text: &str,
+        by: &str,
+    ) -> Result<Row> {
+        self.create_with_lockdown(
+            title,
+            project,
+            model,
+            reasoning,
+            auto_approve,
+            false,
+            text,
+            by,
+        )
+    }
+
+    /// [`Manager::create_with`] that may start the conversation in lockdown
+    /// (sandbox) mode ([`crate::lockdown`]): its agent then works with the
+    /// network off and its writes confined to its worktree from the first
+    /// turn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_lockdown(
+        &self,
+        title: &str,
+        project: &str,
+        model: &str,
+        reasoning: &str,
+        auto_approve: bool,
+        lockdown: bool,
+        text: &str,
+        by: &str,
+    ) -> Result<Row> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the first message is empty");
+        }
+        let model = model_id(model)?;
+        let reasoning = reasoning_effort(reasoning)?;
+        if !project.is_empty() {
+            let p = self
+                .store
+                .project(project)?
+                .ok_or_else(|| anyhow!("no such project: {project}"))?;
+            if p.status != "active" {
+                bail!("project {project} is {}", p.status);
+            }
+        }
+        let title = if title.trim().is_empty() {
+            title_from(text)
+        } else {
+            title.trim().to_string()
+        };
+        let row = self.store.chat_create(&Row {
+            id: new_conversation_id(),
+            title,
+            project: project.to_string(),
+            model,
+            reasoning,
+            status: "idle".into(),
+            auto_approve,
+            lockdown,
+            created_by: by.to_string(),
+            ..Row::default()
+        })?;
+        self.send(&row.id, text)?;
+        self.row(&row.id)
+    }
+
+    /// Starts a sub-conversation of `parent`: its agent's brief is `text`,
+    /// and it works in the parent's workspace on the parent's model,
+    /// effort and approval setting, reporting each reply back to the
+    /// parent ([`Manager::deliver_report`]). Refused past the owner's depth
+    /// and open-children caps ([`SUB_DEPTH_SETTING`], [`SUB_OPEN_SETTING`])
+    /// and for an archived parent.
+    pub fn create_child(&self, parent: &str, title: &str, text: &str) -> Result<Row> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the sub-session's brief is empty");
+        }
+        let p = self.row(parent)?;
+        if p.status == "archived" {
+            bail!("session {parent} is archived");
+        }
+        let depth = self.store.chat_depth(parent)?;
+        let depth_limit = self.store.setting_int(SUB_DEPTH_SETTING);
+        if depth_limit > 0 && depth as i64 >= depth_limit {
+            bail!(
+                "this session already stands {depth} levels down; sub-sessions go {depth_limit} levels deep at most - do this part here, or with the subagent tool"
+            );
+        }
+        let open_limit = self.store.setting_int(SUB_OPEN_SETTING);
+        let open = self
+            .store
+            .chat_children(parent, false)?
+            .iter()
+            .filter(|c| c.status != "closed")
+            .count();
+        if open_limit > 0 && open as i64 >= open_limit {
+            bail!(
+                "this session already has {open} sub-sessions open; finish or archive one before starting another"
+            );
+        }
+        let title = if title.trim().is_empty() {
+            title_from(text)
+        } else {
+            title.trim().to_string()
+        };
+        let row = self.store.chat_create(&Row {
+            id: new_conversation_id(),
+            title,
+            project: p.project.clone(),
+            cwd: p.cwd.clone(),
+            branch: p.branch.clone(),
+            model: p.model.clone(),
+            reasoning: p.reasoning.clone(),
+            status: "idle".into(),
+            auto_approve: p.auto_approve,
+            lockdown: p.lockdown,
+            created_by: p.id.clone(),
+            parent: p.id.clone(),
+            ..Row::default()
+        })?;
+        let _ = self.store.chat_add_message(
+            parent,
+            "note",
+            &format!("Started sub-session: {}", row.title),
+            &json!({"child": row.id, "title": row.title}),
+        );
+        self.send(&row.id, text)?;
+        self.row(&row.id)
+    }
+
+    /// A message from the conversation that started `id` (the parent's
+    /// agent steering it): recorded as a note from the parent, and the
+    /// agent reads it marked as the parent's. A question the
+    /// sub-conversation waits on takes the text as its answer.
+    pub fn send_from_parent(&self, id: &str, parent: &str, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the message is empty");
+        }
+        let row = self.row(id)?;
+        if row.parent != parent {
+            bail!("session {id} is not a sub-session of this one");
+        }
+        if row.status == "archived" {
+            bail!("sub-session {id} is archived");
+        }
+        if let Some(rt) = self.running(id)
+            && matches!(rt.live().pending, Some(Pending::Question { .. }))
+        {
+            return self.answer(id, text);
+        }
+        let rt = self.runtime(&row);
+        rt.enqueue(Queued {
+            text: format!("Message from the session that started you ({parent}):\n{text}"),
+            images: Vec::new(),
+            row: Some((text.to_string(), json!({"from": parent}))),
+            report: true,
+        });
+        Ok(())
+    }
+
+    /// Hands a sub-conversation's report to its parent: a note in the
+    /// parent's transcript that says who it is from, and a turn there on
+    /// it, the way the owner's message would run (after the turn in
+    /// flight, reopening a finished parent). Nothing reaches an archived
+    /// parent.
+    pub fn deliver_report(&self, child: &Row, kind: &str, text: &str) {
+        if child.parent.is_empty() {
+            return;
+        }
+        let Ok(Some(parent)) = self.store.chat_get(&child.parent) else {
+            return;
+        };
+        if parent.status == "archived" {
+            return;
+        }
+        let text = text.trim();
+        let prompt = format!(
+            "Report from sub-session {:?} ({}) - {}:\n{}\n\n(Steer it with the chat tool: action send, id {}; read it: action read, id {}. It works in your workspace.)",
+            child.title,
+            child.id,
+            report_phrase(kind),
+            text,
+            child.id,
+            child.id
+        );
+        self.runtime(&parent).enqueue(Queued {
+            text: prompt,
+            images: Vec::new(),
+            row: Some((
+                text.to_string(),
+                json!({"report": {"child": child.id, "title": child.title, "kind": kind}}),
+            )),
+            report: true,
+        });
+    }
+
+    /// What a conversation's agent reads of its sub-conversations: all of
+    /// them in a line each (`id` empty), or one with its state and its
+    /// last replies.
+    pub fn read_children(&self, parent: &str, id: &str) -> Result<String> {
+        if id.is_empty() {
+            let children = self.store.chat_children(parent, false)?;
+            if children.is_empty() {
+                return Ok("No sub-sessions yet.".to_string());
+            }
+            let lines: Vec<String> = children
+                .iter()
+                .map(|c| {
+                    let live = self.live(c);
+                    format!(
+                        "{}  {:<8} {}{}",
+                        c.id,
+                        live.status,
+                        c.title,
+                        if live.note.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" - {}", live.note)
+                        }
+                    )
+                })
+                .collect();
+            return Ok(lines.join("\n"));
+        }
+        let row = self.row(id)?;
+        if row.parent != parent {
+            bail!("session {id} is not a sub-session of this one");
+        }
+        let live = self.live(&row);
+        let mut out = format!(
+            "{}  {}\nstatus {}{}  turns {}\n",
+            row.id,
+            row.title,
+            live.status,
+            if live.note.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", live.note)
+            },
+            row.turns
+        );
+        let messages = self.store.chat_messages(id, 0)?;
+        let shown: Vec<&hive_store::ConversationMessage> =
+            messages.iter().filter(|m| m.role != "approval").collect();
+        let skipped = shown.len().saturating_sub(READ_MESSAGES);
+        if skipped > 0 {
+            out.push_str(&format!("({skipped} earlier messages not shown)\n"));
+        }
+        for m in &shown[skipped..] {
+            let who = match m.role.as_str() {
+                "user" if m.n == 1 => "brief",
+                "user" => "owner",
+                "assistant" => "agent",
+                "note" if m.extra.get("from").is_some() => "you",
+                other => other,
+            };
+            let content: String = m.content.chars().take(READ_MESSAGE_CHARS).collect();
+            let cut = if content.len() < m.content.len() {
+                "..."
+            } else {
+                ""
+            };
+            out.push_str(&format!("\n[{who}] {}{cut}\n", content.trim_end()));
+        }
+        Ok(out.trim_end().to_string())
+    }
+
+    /// Records the owner's message and runs a turn on it (after the one
+    /// running, when there is one).
+    pub fn send(&self, id: &str, text: &str) -> Result<()> {
+        self.send_with(id, text, &[])
+    }
+
+    /// [`Manager::send`] with files the owner uploaded first
+    /// ([`Manager::save_attachment`]), named by their saved names. The
+    /// message keeps the owner's words; the agent gets the files' paths
+    /// with them.
+    pub fn send_with(&self, id: &str, text: &str, attachments: &[String]) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, &[])?;
+        rt.enqueue(message);
+        Ok(())
+    }
+
+    /// Steers the running turn with the owner's message: the agent reads
+    /// it before its next model call, instead of after the turn. With no
+    /// turn running (or none that can take a steer) the message runs a
+    /// turn of its own, as [`Manager::send`] does.
+    pub fn steer(&self, id: &str, text: &str) -> Result<()> {
+        self.steer_with(id, text, &[])
+    }
+
+    /// [`Manager::steer`] with uploaded files, as [`Manager::send_with`].
+    pub fn steer_with(&self, id: &str, text: &str, attachments: &[String]) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, &[])?;
+        rt.steer(message);
+        Ok(())
+    }
+
+    /// [`Manager::steer`] with inline images, as [`Manager::send_with_images`].
+    pub fn steer_with_images(
+        &self,
+        id: &str,
+        text: &str,
+        attachments: &[String],
+        images: &[ImageAttachment],
+    ) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, images)?;
+        rt.steer(message);
+        Ok(())
+    }
+
+    /// The owner's message as the agent gets it: validated, its files
+    /// resolved to their saved paths, its images saved and carried inline,
+    /// with the transcript row (the owner's words plus the attachments and
+    /// images as the hub lists them). Also the runtime it goes to.
+    fn owner_message(
+        &self,
+        id: &str,
+        text: &str,
+        attachments: &[String],
+        images: &[ImageAttachment],
+    ) -> Result<(Arc<Runtime>, Queued)> {
+        let text = text.trim();
+        if attachments.len() + images.len() > ATTACHMENTS_PER_MESSAGE {
+            bail!("Invalid attachments: one message carries up to {ATTACHMENTS_PER_MESSAGE} files");
+        }
+        if text.is_empty() && attachments.is_empty() && images.is_empty() {
+            bail!("the message is empty");
+        }
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        let mut stored: Vec<Value> = Vec::with_capacity(images.len());
+        let mut shown: Vec<ImageContent> = Vec::with_capacity(images.len());
+        for (n, image) in images.iter().enumerate() {
+            let data = image.decode()?;
+            shown.push(ImageContent {
+                media_type: image.mime.trim().to_ascii_lowercase(),
+                data: image.data.trim().to_string(),
+            });
+            let name = if image.name.trim().is_empty() {
+                format!("image-{}.{}", n + 1, image.ext())
+            } else {
+                image.name.trim().to_string()
+            };
+            let saved = self.save_attachment(id, &name, &data)?;
+            stored.push(json!({
+                "name": saved.name,
+                "mime": image.mime.trim().to_ascii_lowercase(),
+                "size": saved.size,
+                "path": format!("image/{id}/{n}"),
+            }));
+        }
+        let mut files: Vec<Attachment> = Vec::new();
+        for name in attachments {
+            let path = self.attachment_path(id, name).ok_or_else(|| {
+                anyhow!(
+                    "Invalid attachments: no file named {name:?} in this conversation; upload it first"
+                )
+            })?;
+            if files.iter().any(|f| f.name == *name) {
+                continue;
+            }
+            files.push(Attachment {
+                name: name.clone(),
+                size: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                path: path.display().to_string(),
+            });
+        }
+        let text = if text.is_empty() {
+            if files.len() + stored.len() == 1 {
+                "Look at the attached file.".to_string()
+            } else {
+                "Look at the attached files.".to_string()
+            }
+        } else {
+            text.to_string()
+        };
+        let extra = match (files.is_empty(), stored.is_empty()) {
+            (true, true) => Value::Null,
+            (false, true) => json!({"attachments": files}),
+            (true, false) => json!({"images": stored}),
+            (false, false) => json!({"attachments": files, "images": stored}),
+        };
+        let rt = self.runtime(&row);
+        Ok((
+            rt,
+            Queued {
+                text: message_with_attachments(&text, &files),
+                images: shown,
+                row: Some((text, extra)),
+                report: false,
+            },
+        ))
+    }
+
+    /// Wakes the agent of a conversation with a note from outside it: a
+    /// script the agent started (or anything else on this machine) says
+    /// "I am done" through `hive chat wake`, and the agent gets a turn on
+    /// the text, after the one running when there is one. `from` names the
+    /// sender (the actor of the event) and is kept on the transcript row.
+    pub fn wake(&self, id: &str, text: &str, from: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the wake message is empty");
+        }
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        let text: String = text.chars().take(WAKE_CHARS).collect();
+        let line = format!("Wake from {from}: {text}");
+        let rt = self.runtime(&row);
+        rt.enqueue(Queued {
+            text: line.clone(),
+            images: Vec::new(),
+            row: Some((line, json!({"wake": {"from": from}}))),
+            report: true,
+        });
+        Ok(())
+    }
+
+    /// Owner posts a message with inline images: each image is validated,
+    /// its bytes saved into the attachments folder, and the stored message
+    /// carries an `images` array so the hub can serve the bytes back at
+    /// `GET /api/v1/chat/{id}/image/{message}/{n}`. The images ride the
+    /// message to the model too (`Message.images`): a provider that takes
+    /// images shows them to the model, one that does not ignores them.
+    pub fn send_with_images(
+        &self,
+        id: &str,
+        text: &str,
+        attachments: &[String],
+        images: &[ImageAttachment],
+    ) -> Result<()> {
+        let (rt, message) = self.owner_message(id, text, attachments, images)?;
+        rt.enqueue(message);
+        Ok(())
+    }
+
+    /// Reads one image back from a message `send_with_images` stored: the
+    /// `n`-th entry in its `images` array, bytes plus the mime it arrived
+    /// with. `None` when the entry or its file is gone.
+    pub fn image(&self, id: &str, message_n: i64, n: usize) -> Result<Option<(String, Vec<u8>)>> {
+        let _ = self.row(id)?;
+        let Some(m) = self.store.chat_message(id, message_n)? else {
+            return Ok(None);
+        };
+        let meta = m.extra.get("images").and_then(|v| v.as_array()).cloned();
+        let Some(entry) = meta.and_then(|a| a.into_iter().nth(n)) else {
+            return Ok(None);
+        };
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("image entry has no name"))?;
+        let Some(path) = self.attachment_path(id, name) else {
+            return Ok(None);
+        };
+        let data = std::fs::read(&path)?;
+        if data.len() > ATTACHMENT_LIMIT {
+            bail!("one attachment holds up to {ATTACHMENT_LIMIT} bytes");
+        }
+        let mime = entry
+            .get("mime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        Ok(Some((mime, data)))
+    }
+
+    /// Keeps a file the owner is attaching to a message, under its own
+    /// name when that is free, a numbered one otherwise. The bytes are
+    /// already in memory: the hub capped them at [`ATTACHMENT_LIMIT`].
+    pub fn save_attachment(&self, id: &str, name: &str, data: &[u8]) -> Result<Attachment> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        if data.is_empty() {
+            bail!("Invalid file: the file is empty");
+        }
+        if data.len() > ATTACHMENT_LIMIT {
+            bail!(
+                "Invalid file: the file is {} bytes; attachments go up to {ATTACHMENT_LIMIT}",
+                data.len()
+            );
+        }
+        let name = attachment_name(name)?;
+        let dir = attachments_dir(&self.home, id);
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        let unique = unique_name(&dir, &name);
+        let path = dir.join(&unique);
+        std::fs::write(&path, data).with_context(|| format!("write {}", path.display()))?;
+        Ok(Attachment {
+            name: unique,
+            size: data.len() as u64,
+            path: path.display().to_string(),
+        })
+    }
+
+    /// The path of one attachment, or None when the name is not a plain
+    /// file name there.
+    pub fn attachment_path(&self, id: &str, name: &str) -> Option<PathBuf> {
+        if !plain_file_name(name) {
+            return None;
+        }
+        let path = attachments_dir(&self.home, id).join(name);
+        path.is_file().then_some(path)
+    }
+
+    /// The model the conversation's next turn runs on; empty means the
+    /// provider's default. A turn in flight finishes on the model it
+    /// started with; the session then restarts onto the new one with the
+    /// conversation carried over.
+    pub fn set_model(&self, id: &str, model: &str) -> Result<()> {
+        let model = model_id(model)?;
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        self.store.chat_set_model(id, &model)
+    }
+
+    /// The reasoning effort the conversation's next turn runs with
+    /// (`minimal` to `max`; empty or `default` for the provider's own).
+    /// Like [`Manager::set_model`], a turn in flight finishes as it
+    /// started; the session then restarts with the conversation carried
+    /// over.
+    pub fn set_reasoning(&self, id: &str, reasoning: &str) -> Result<()> {
+        let reasoning = reasoning_effort(reasoning)?;
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        self.store.chat_set_reasoning(id, &reasoning)
+    }
+
+    /// The owner's answer to the question the agent asked.
+    pub fn answer(&self, id: &str, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the answer is empty");
+        }
+        let rt = self
+            .running(id)
+            .ok_or_else(|| anyhow!("the agent is not waiting for an answer"))?;
+        rt.answer(text.to_string())
+    }
+
+    /// The owner's decision on the call the agent wants to make:
+    /// `allow`, `always` or `deny` (with a reason to pass on).
+    pub fn approve(&self, id: &str, decision: &str, reason: &str) -> Result<()> {
+        let decision = match decision {
+            "allow" | "yes" => Approval::Allow,
+            "always" | "all" => Approval::Always,
+            "deny" | "no" => Approval::Deny(reason.trim().to_string()),
+            other => bail!("decision {other:?} is not allow, always or deny"),
+        };
+        let rt = self
+            .running(id)
+            .ok_or_else(|| anyhow!("the agent is not waiting for an approval"))?;
+        rt.approve(decision)
+    }
+
+    pub fn cancel(&self, id: &str) -> Result<()> {
+        self.row(id)?;
+        if let Some(rt) = self.running(id) {
+            rt.cancel();
+        }
+        Ok(())
+    }
+
+    pub fn set_auto_approve(&self, id: &str, on: bool) -> Result<()> {
+        self.row(id)?;
+        self.store.chat_set_auto_approve(id, on)?;
+        if let Some(rt) = self.running(id) {
+            rt.set_auto(on);
+        }
+        Ok(())
+    }
+
+    /// Lockdown (sandbox) mode for the conversation's next turn
+    /// ([`crate::lockdown`]): on, the agent works with the network off,
+    /// its writes confined to its worktree, no fetch, web search, MCP or
+    /// credentials. Like [`Manager::set_model`], a turn in flight finishes
+    /// as it started; the session then restarts inside (or outside) the
+    /// sandbox with the conversation carried over. The flag is written to
+    /// the sub-conversations too, so a locked-down conversation cannot
+    /// reach outside through one of them.
+    pub fn set_lockdown(&self, id: &str, on: bool) -> Result<()> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        self.store.chat_set_lockdown(id, on)?;
+        if let Some(rt) = self.running(id) {
+            rt.set_lockdown(on);
+        }
+        for child in self.store.chat_children(id, false)? {
+            if child.lockdown != on {
+                let _ = self.set_lockdown(&child.id, on);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
+        if title.trim().is_empty() {
+            bail!("the title is empty");
+        }
+        self.store.chat_set_title(id, title)
+    }
+
+    /// Puts the conversation away: the running turn stops, the session
+    /// ends, the row stays (and its branch, for `hive land`).
+    pub fn archive(&self, id: &str) -> Result<()> {
+        self.row(id)?;
+        let rt = self
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(rt) = rt {
+            let _ = rt.close();
+        }
+        self.store.chat_set_status(id, "archived", "")
+    }
+
+    /// Finishes the conversation from the owner's side: a running turn
+    /// stops, what waited behind it is noted as unsent, and the row stands
+    /// closed until a new message reopens it. The session and the branch
+    /// stay as they are.
+    pub fn close(&self, id: &str) -> Result<()> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        if row.status == "closed" {
+            return Ok(());
+        }
+        let record_now = match self.running(id) {
+            Some(rt) => rt.finish_by_owner(),
+            None => true,
+        };
+        if record_now {
+            self.store.chat_add_message(
+                id,
+                "note",
+                &Finished::Owner.line(),
+                &json!({"closed": "owner"}),
+            )?;
+            self.store
+                .chat_set_status(id, "closed", &Finished::Owner.note())?;
+            self.deliver_report(&row, REPORT_FINISHED, "The owner finished it.");
+        }
+        Ok(())
+    }
+
+    /// Finishes the conversation from Hive's side, `why` saying what
+    /// settled it (the pull request its branch went out as was merged,
+    /// [`FINISH_ACTION`]). Unlike the owner's close, a turn in flight runs
+    /// to its end and nothing queued is dropped: the conversation stands
+    /// closed after it, and a message the owner sends reopens it as ever.
+    /// A conversation with a sub-session still at work (working, asking
+    /// the owner, or stopped by a restart nothing carried on) stays open
+    /// instead, with a note that says why: the sub-session's report comes
+    /// back to its agent, whose join may add to the branch the merged pull
+    /// request left, and its agent or the owner finishes it. A conversation
+    /// already closed, or kept open, is left as it is (false); an archived
+    /// one is an error.
+    pub fn finish_from(&self, id: &str, why: &str) -> Result<bool> {
+        let why = one_line(why);
+        if why.is_empty() {
+            bail!("the finish reason is empty");
+        }
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("conversation {id} is archived");
+        }
+        if row.status == "closed" {
+            return Ok(false);
+        }
+        let at_work = self.children_at_work(id);
+        if !at_work.is_empty() {
+            let line = kept_open_line(&why, &at_work);
+            let said = self
+                .store
+                .chat_messages(id, 0)
+                .unwrap_or_default()
+                .iter()
+                .any(|m| m.role == "note" && m.content == line);
+            if !said {
+                self.store
+                    .chat_add_message(id, "note", &line, &json!({"kept_open": true}))?;
+            }
+            return Ok(false);
+        }
+        let record_now = match self.running(id) {
+            Some(rt) => rt.finish_by_hive(&why),
+            None => true,
+        };
+        if record_now {
+            let f = Finished::Hive(why);
+            self.store
+                .chat_add_message(id, "note", &f.line(), &json!({"closed": f.by()}))?;
+            self.store.chat_set_status(id, "closed", &f.note())?;
+            self.deliver_report(&row, REPORT_FINISHED, &f.report());
+        }
+        Ok(true)
+    }
+
+    /// The sub-conversations of `id` still at their work, each with a word
+    /// for where it is: running or waiting (live or as its row says), or
+    /// stopped by a restart that nothing carried on.
+    fn children_at_work(&self, id: &str) -> Vec<(Row, &'static str)> {
+        let Ok(children) = self.store.chat_children(id, false) else {
+            return Vec::new();
+        };
+        children
+            .into_iter()
+            .filter(|k| k.id != id)
+            .filter_map(|k| {
+                let live = self.running(&k.id).map(|rt| rt.live().status);
+                let status = live.unwrap_or_else(|| k.status.clone());
+                let word = match status.as_str() {
+                    "running" => "still working",
+                    "waiting" => "waiting for your answer",
+                    "idle" if k.note == RESTART_NOTE => "stopped by a restart",
+                    _ => return None,
+                };
+                Some((k, word))
+            })
+            .collect()
+    }
+
+    /// Starts the conversation's session over from its saved transcript,
+    /// on the owner's say-so: the in-memory session ends (its trajectory
+    /// written), the row keeps its session id, and the next message loads
+    /// the conversation back from that file through [`Runtime::ensure_started`],
+    /// repairing on the way in any tool call whose arguments are not JSON
+    /// (the harness used to keep one when a reply was cut mid-stream, and
+    /// the provider then refused every request carrying it). The
+    /// transcript and the workspace stay. The way out of a stuck session
+    /// without a hub restart; a turn in flight has to stop first.
+    pub fn restart_session(&self, id: &str) -> Result<()> {
+        let row = self.row(id)?;
+        if row.status == "archived" {
+            bail!("session {id} is archived");
+        }
+        let had_session = match self.running(id) {
+            Some(rt) => rt.restart_session()?,
+            None => false,
+        };
+        // What the next message will repair as it loads the transcript.
+        let repaired = read_trajectory(&self.home, &row.session_id)
+            .map(|traj| {
+                let mut msgs = trim_dangling_tool_calls(traj.messages);
+                repair_tool_arguments(&mut msgs).len()
+            })
+            .unwrap_or(0);
+        let line = format!(
+            "The session was restarted from the transcript{}. Your next message starts a new one with this conversation carried over{}.",
+            if had_session {
+                ""
+            } else {
+                " (none was open in memory)"
+            },
+            match repaired {
+                0 => String::new(),
+                1 => "; it repairs 1 tool call whose arguments are not JSON".to_string(),
+                n => format!("; it repairs {n} tool calls whose arguments are not JSON"),
+            }
+        );
+        self.store.chat_add_message(
+            id,
+            "note",
+            &line,
+            &json!({"restarted": "owner", "repaired": repaired, "session": row.session_id}),
+        )?;
+        Ok(())
+    }
+
+    /// Moves the conversation into a project's worktree. A running turn
+    /// finishes where it is; the next one runs there.
+    pub fn attach(&self, id: &str, project: &str) -> Result<Attached> {
+        attach_workspace(&self.store, &self.home, id, project)
+    }
+
+    /// The live state: from the runtime while the hub holds one, from the
+    /// row otherwise.
+    pub fn live(&self, row: &Row) -> Live {
+        match self.running(&row.id) {
+            Some(rt) => rt.live(),
+            None => Live {
+                status: if row.status == "running" || row.status == "waiting" {
+                    // The hub restarted under it: nothing runs now.
+                    "idle".to_string()
+                } else {
+                    row.status.clone()
+                },
+                note: row.note.clone(),
+                auto_approve: row.auto_approve,
+                lockdown: row.lockdown,
+                session_id: row.session_id.clone(),
+                version: 1,
+                ..Live::default()
+            },
+        }
+    }
+
+    pub fn artifacts_dir(&self, id: &str) -> PathBuf {
+        artifacts_dir(&self.home, id)
+    }
+
+    /// The files in the artifacts folder, newest first.
+    pub fn artifacts(&self, id: &str) -> Vec<Artifact> {
+        list_artifacts(&artifacts_dir(&self.home, id))
+    }
+
+    /// The path of one artifact, or None when the name is not a plain file
+    /// name there.
+    pub fn artifact_path(&self, id: &str, name: &str) -> Option<PathBuf> {
+        if !plain_file_name(name) {
+            return None;
+        }
+        let path = artifacts_dir(&self.home, id).join(name);
+        path.is_file().then_some(path)
+    }
+
+    /// A job's artifacts folder (`HIVE_HOME/work/jobs/<job>/artifacts`),
+    /// listed and served the same way as a conversation's.
+    pub fn job_artifacts(&self, job_id: &str) -> Vec<Artifact> {
+        crate::artifacts::list(&crate::artifacts::job_artifacts_dir(&self.home, job_id))
+    }
+
+    pub fn job_artifact_path(&self, job_id: &str, name: &str) -> Option<PathBuf> {
+        crate::artifacts::file(
+            &crate::artifacts::job_artifacts_dir(&self.home, job_id),
+            name,
+        )
+    }
+
+    /// What the branch holds, when the conversation has one.
+    pub fn changes(&self, row: &Row) -> Option<Changes> {
+        if row.branch.is_empty() || row.cwd.is_empty() || !Path::new(&row.cwd).is_dir() {
+            return None;
+        }
+        let base = self
+            .store
+            .project(&row.project)
+            .ok()
+            .flatten()
+            .map(|p| default_branch(&p))
+            .unwrap_or_else(|| "main".to_string());
+        Some(changes_in(&row.cwd, &row.project, &row.branch, &base))
+    }
+
+    /// The ids of the conversations among `rows` whose branch holds commits
+    /// the project's default branch does not have: work that is finished or
+    /// paused but not landed, the Chat page's "Waiting to land" section.
+    /// One `git for-each-ref --no-merged` per project (a few milliseconds)
+    /// rather than a `rev-list` per conversation, so the list's five-second
+    /// poll costs the same whatever its length; only a branch that test
+    /// leaves unmerged pays a `git cherry`, which drops a branch whose every
+    /// commit has a patch-equivalent on the default branch - an agent that
+    /// rebased its branch a minute after the landing read the tip left a
+    /// ref no merge contains while its work is on main (a206ec, 2026-11-04).
+    /// A conversation without a branch, a project whose checkout is gone or
+    /// whose default branch is missing has nothing waiting.
+    pub fn waiting_to_land(&self, rows: &[Row]) -> BTreeSet<String> {
+        let mut unmerged: BTreeMap<String, Unmerged> = BTreeMap::new();
+        let mut out = BTreeSet::new();
+        for row in rows {
+            if row.branch.is_empty() || row.project.is_empty() {
+                continue;
+            }
+            let project = unmerged
+                .entry(row.project.clone())
+                .or_insert_with(|| self.unmerged_branches(&row.project));
+            if project.branches.contains(&row.branch)
+                && git(
+                    &project.path,
+                    &["cherry", &project.default_branch, &row.branch],
+                )
+                .lines()
+                .any(|l| l.starts_with('+'))
+            {
+                out.insert(row.id.clone());
+            }
+        }
+        out
+    }
+
+    /// The ids of the conversations among `rows` whose branch a landing is
+    /// merging and checking right now (`landing_branch`): the Chat page's
+    /// "Reviewing", after "Waiting to land" and before the work is on main.
+    pub fn reviewing(&self, rows: &[Row]) -> BTreeSet<String> {
+        let mut landing: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let mut out = BTreeSet::new();
+        for row in rows {
+            if row.branch.is_empty() || row.project.is_empty() {
+                continue;
+            }
+            let branch = landing.entry(row.project.clone()).or_insert_with(|| {
+                let p = self.store.project(&row.project).ok().flatten()?;
+                landing_branch(&p.path)
+            });
+            if branch.as_deref() == Some(row.branch.as_str()) {
+                out.insert(row.id.clone());
+            }
+        }
+        out
+    }
+
+    /// The project's local branches with commits its default branch lacks.
+    fn unmerged_branches(&self, project: &str) -> Unmerged {
+        let Some(p) = self.store.project(project).ok().flatten() else {
+            return Unmerged::default();
+        };
+        if p.path.is_empty() || !Path::new(&p.path).is_dir() {
+            return Unmerged::default();
+        }
+        // The full ref name: the short form of a branch that shares its
+        // name with a tag is "heads/x", not "x".
+        let default_branch = default_branch(&p);
+        let base = format!("--no-merged=refs/heads/{default_branch}");
+        let branches = git(
+            &p.path,
+            &["for-each-ref", "--format=%(refname)", &base, "refs/heads/"],
+        )
+        .lines()
+        .filter_map(|l| l.strip_prefix("refs/heads/"))
+        .map(str::to_string)
+        .collect();
+        Unmerged {
+            path: p.path,
+            default_branch,
+            branches,
+        }
+    }
+
+    /// The branch's diff against its base, committed and not, capped.
+    pub fn diff(&self, row: &Row) -> Option<String> {
+        let changes = self.changes(row)?;
+        let mut out = String::new();
+        let committed = git(&row.cwd, &["diff", &format!("{}...HEAD", changes.base)]);
+        if !committed.trim().is_empty() {
+            out.push_str(&committed);
+        }
+        let working = uncommitted_diff(&row.cwd);
+        if !working.trim().is_empty() {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str("# not committed yet\n");
+            out.push_str(&working);
+        }
+        if out.len() > DIFF_LIMIT {
+            let mut cut = DIFF_LIMIT;
+            while !out.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            out.truncate(cut);
+            out.push_str("\n... (the diff goes on; open the worktree to see it all)\n");
+        }
+        Some(out)
+    }
+
+    /// Lets go of the agents of conversations that have sat idle for
+    /// `max_idle` or longer ([`Runtime::release_if_idle`]) and returns
+    /// their ids. The conversations stay open: the next message resumes
+    /// each from its trajectory on disk.
+    pub fn release_idle(&self, max_idle: Duration) -> Vec<String> {
+        let all: Vec<Arc<Runtime>> = self
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        all.iter()
+            .filter(|rt| rt.release_if_idle(max_idle))
+            .map(|rt| rt.id.clone())
+            .collect()
+    }
+
+    /// [`Manager::release_idle`] after `chat.idle_release_minutes` of
+    /// idleness; nothing when the setting is 0.
+    pub fn release_idle_by_setting(&self) -> Vec<String> {
+        let minutes = self.store.setting_int(IDLE_RELEASE_SETTING);
+        if minutes <= 0 {
+            return Vec::new();
+        }
+        self.release_idle(Duration::from_secs(60 * minutes.unsigned_abs()))
+    }
+
+    /// Ends every session the hub holds (shutdown).
+    pub fn close_all(&self) {
+        let all: Vec<Arc<Runtime>> = self
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for rt in all {
+            let _ = rt.close();
+        }
+    }
+
+    /// How many conversations have a turn in flight right now (a parked
+    /// one waits on the owner and does not count).
+    pub fn working(&self) -> usize {
+        let all: Vec<Arc<Runtime>> = self
+            .runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        all.iter()
+            .filter(|rt| rt.live().status == "running")
+            .count()
+    }
+
+    /// The hub is going down: stops every turn with a note that says so,
+    /// ends every session (trajectory written, harness session finished)
+    /// and waits up to `grace` for that to land. Returns how many
+    /// conversations were still working, and whether everything settled.
+    pub fn shutdown(&self, grace: Duration) -> (usize, bool) {
+        let all: Vec<Arc<Runtime>> =
+            std::mem::take(&mut *self.runtimes.lock().unwrap_or_else(|e| e.into_inner()))
+                .into_values()
+                .collect();
+        if all.is_empty() {
+            return (0, true);
+        }
+        let working = all
+            .iter()
+            .filter(|rt| rt.live().status == "running")
+            .count();
+        let deadline = Instant::now() + grace;
+        let (tx, rx) = mpsc::channel();
+        let handles: Vec<thread::JoinHandle<()>> = all.iter().map(|rt| rt.stop(true)).collect();
+        thread::Builder::new()
+            .name("chat-shutdown".into())
+            .spawn(move || {
+                for h in handles {
+                    let _ = h.join();
+                    let _ = tx.send(());
+                }
+            })
+            .expect("spawn conversation shutdown");
+        let mut ended = 0;
+        while ended < all.len() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return (working, false);
+            }
+            match rx.recv_timeout(left) {
+                Ok(()) => ended += 1,
+                Err(_) => return (working, false),
+            }
+        }
+        // The stopped turns write their notes after the session ends; give
+        // them the rest of the grace.
+        while all.iter().any(|rt| !rt.settled()) {
+            if Instant::now() >= deadline {
+                return (working, false);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        (working, true)
+    }
+
+    /// Conversations whose turn the last hub stopped to restart (the
+    /// transcript ends on [`STOPPED_TO_RESTART_LINE`], or on the messages
+    /// that were still on their way to the agent then) carry on by
+    /// themselves: a note says the hub is back and the agent is told to
+    /// pick the turn back up, with the restart hint naming the steps it
+    /// had taken, and then reads the messages that waited, as they were
+    /// (a parent's steering of its sub-session among them). A turn cut
+    /// without a clean stop (a crash, a kill: [`CUT_RUNNING_LINE`]), one
+    /// that waited for the owner, or one whose waiting message Hive cannot
+    /// pass on as it was ([`stopped_to_restart`]) is left for the owner, so
+    /// a turn that brings the hub down cannot loop. Returns the ids carried
+    /// on.
+    pub fn carry_on_restarted(&self) -> Vec<String> {
+        let Ok(rows) = self.store.chat_list(false, i64::MAX) else {
+            return Vec::new();
+        };
+        let mut carried = Vec::new();
+        for row in rows {
+            if row.status != "idle" || row.note != RESTART_NOTE || self.running(&row.id).is_some() {
+                continue;
+            }
+            let messages = self.store.chat_messages(&row.id, 0).unwrap_or_default();
+            let Some(waiting) = stopped_to_restart(&messages) else {
+                continue;
+            };
+            let line = carried_on_line(waiting.len());
+            if self
+                .store
+                .chat_add_message(&row.id, "note", &line, &Value::Null)
+                .is_err()
+            {
+                continue;
+            }
+            let rt = self.runtime(&row);
+            rt.enqueue(CARRY_ON_PROMPT.to_string());
+            for message in waiting {
+                rt.enqueue(message);
+            }
+            carried.push(row.id);
+        }
+        carried
+    }
+
+    /// Rows that say a turn is running or parked while no runtime holds
+    /// one are from a hub that is gone (a crash, a restart that could not
+    /// wait): each goes idle with a note in the transcript that carries the
+    /// cut turn's steps, and its harness session closes as `lost`. Sessions
+    /// idle conversations kept open close as `ended`. Returns the ids whose
+    /// turn was cut.
+    pub fn recover(&self) -> Vec<String> {
+        let Ok(rows) = self.store.chat_list(false, i64::MAX) else {
+            return Vec::new();
+        };
+        let mut cut = Vec::new();
+        for row in rows {
+            if self.running(&row.id).is_some() {
+                continue;
+            }
+            let open = row.status == "running" || row.status == "waiting";
+            let sid = row.session_id.clone();
+            let (session, last) = if sid.is_empty() {
+                (None, None)
+            } else {
+                (
+                    self.store.harness_session_head(&sid).ok().flatten(),
+                    self.store.last_harness_step(&sid).ok().flatten(),
+                )
+            };
+            if open {
+                let to = last.as_ref().map_or(-1, |s| s.n);
+                let from = turn_from(&self.store, &row.id, &sid);
+                let extra = if sid.is_empty() {
+                    json!({"restart": true})
+                } else {
+                    json!({"session": sid, "steps": [from, to], "restart": true})
+                };
+                let line = if row.status == "waiting" {
+                    CUT_WAITING_LINE
+                } else {
+                    CUT_RUNNING_LINE
+                };
+                let _ = self.store.chat_add_message(&row.id, "note", line, &extra);
+                let _ = self.store.chat_set_status(&row.id, "idle", RESTART_NOTE);
+                cut.push(row.id.clone());
+            }
+            if let Some(s) = session
+                && s.status == "running"
+            {
+                let (status, error) = if open {
+                    ("lost", cut_error(&self.store, last.as_ref()))
+                } else {
+                    (EXIT_ENDED, String::new())
+                };
+                let path = Path::new(&self.home)
+                    .join("harness")
+                    .join(format!("{sid}.json"));
+                let trajectory = if path.is_file() {
+                    path.display().to_string()
+                } else {
+                    String::new()
+                };
+                let _ = self.store.finish_harness_session(
+                    &sid,
+                    status,
+                    status,
+                    "",
+                    &error,
+                    0.0,
+                    &trajectory,
+                );
+            }
+        }
+        cut
+    }
+}
+
+/// Where the cut turn's steps start: after the last turn the transcript
+/// records for the session (`-1`: it was the session's first).
+fn turn_from(store: &Store, id: &str, session_id: &str) -> i64 {
+    if session_id.is_empty() {
+        return -1;
+    }
+    store
+        .chat_messages(id, 0)
+        .unwrap_or_default()
+        .iter()
+        .filter(|m| m.extra["session"] == session_id)
+        .filter_map(|m| m.extra["steps"][1].as_i64())
+        .max()
+        .unwrap_or(-1)
+}
+
+/// The error a cut turn's session closes with: what happened and the last
+/// step, the way the runner closes a worker's sessions.
+fn cut_error(store: &Store, last: Option<&hive_store::HarnessStep>) -> String {
+    let mut error = "the hub stopped while the agent was working".to_string();
+    if let Some(step) = last {
+        error.push_str(&format!("; last step {} {}", step.n, step.kind));
+        if !step.command.trim().is_empty() {
+            let cmd: String = step.command.trim().chars().take(120).collect();
+            error.push_str(&format!(" `{}`", cmd.replace('\n', " ")));
+        }
+        if let (Ok(a), Ok(b)) = (
+            chrono::DateTime::parse_from_rfc3339(&step.at),
+            chrono::DateTime::parse_from_rfc3339(&store.now()),
+        ) {
+            error.push_str(&format!(" {} min ago", (b - a).num_minutes().max(0)));
+        }
+    }
+    error
+}
+
+/// What the agent reads first when its previous turn here was cut: the
+/// steps it took then may be gone from its context while their effects
+/// stay in the workspace. `None` unless the row's note says a restart cut
+/// the turn ([`RESTART_NOTE`], cleared as the turn starts).
+fn restart_hint(store: &Store, id: &str, row_note: &str) -> Option<String> {
+    if row_note != RESTART_NOTE {
+        return None;
+    }
+    let mut hint = String::from(
+        "Hive restarted while you were working on your previous turn in this session, so that turn may be missing from your context; the workspace keeps whatever it changed.",
+    );
+    let messages = store.chat_messages(id, 0).unwrap_or_default();
+    let cut = messages.iter().rev().find(|m| m.extra["restart"] == true);
+    if let Some(m) = cut
+        && let Some(sid) = m.extra["session"].as_str()
+        && let (Some(from), Some(to)) = (m.extra["steps"][0].as_i64(), m.extra["steps"][1].as_i64())
+        && let Ok(steps) = store.harness_steps(sid, from)
+    {
+        let lines: Vec<String> = steps
+            .iter()
+            .filter(|s| s.n <= to && s.depth == 0 && s.kind != "exit")
+            .map(|s| {
+                let what = if !s.command.trim().is_empty() {
+                    s.command.trim().to_string()
+                } else if !s.title.trim().is_empty() {
+                    s.title.trim().to_string()
+                } else {
+                    s.content.trim().to_string()
+                };
+                format!("- {}: {}", s.kind, one_line(&what))
+            })
+            .collect();
+        if !lines.is_empty() {
+            let skipped = lines.len().saturating_sub(HINT_STEPS);
+            hint.push_str(&format!(
+                "\nThe steps you had taken{}:\n{}",
+                if skipped > 0 {
+                    format!(" (the last {HINT_STEPS} of {})", lines.len())
+                } else {
+                    String::new()
+                },
+                lines[skipped..].join("\n")
+            ));
+        }
+    }
+    hint.push_str(
+        "\nCheck what is already there (git status, the files, the artifacts folder) before redoing any of it.",
+    );
+    Some(hint)
+}
+
+fn title_from(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let mut title = String::new();
+    for w in words {
+        if title.chars().count() + w.chars().count() + 1 > 60 {
+            title.push_str("...");
+            break;
+        }
+        if !title.is_empty() {
+            title.push(' ');
+        }
+        title.push_str(w);
+    }
+    if title.is_empty() {
+        "New conversation".to_string()
+    } else {
+        title
+    }
+}
+
+/// `HIVE_HOME/work/chat/<id>`: the conversation's folder (on the bulk
+/// disk when one is attached, like the job clones).
+pub fn chat_dir(home: &str, id: &str) -> PathBuf {
+    Path::new(home).join("work").join("chat").join(id)
+}
+
+pub fn artifacts_dir(home: &str, id: &str) -> PathBuf {
+    chat_dir(home, id).join("artifacts")
+}
+
+/// Where the files the owner attached to messages live.
+pub fn attachments_dir(home: &str, id: &str) -> PathBuf {
+    chat_dir(home, id).join("attachments")
+}
+
+/// Whether `name` names a file in a folder and nothing more: no path
+/// separators, no `.`/`..`, no control characters.
+use crate::artifacts::plain_file_name;
+
+/// The file name an upload is kept under: the browser's name trimmed to a
+/// plain file name of at most 120 characters, spaces kept, path parts and
+/// control characters refused.
+fn attachment_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.chars().count() > 120 {
+        bail!("Invalid file name: longer than 120 characters");
+    }
+    if !plain_file_name(name) || name.starts_with('.') {
+        bail!("Invalid file name: {name:?} is not a plain file name");
+    }
+    Ok(name.to_string())
+}
+
+/// `name` when nothing in `dir` has it, else `stem-2.ext`, `stem-3.ext`...
+fn unique_name(dir: &Path, name: &str) -> String {
+    if !dir.join(name).exists() {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| format!("{stem}-{n}{ext}"))
+        .find(|candidate| !dir.join(candidate).exists())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// A model id as the provider names them: letters, digits and `. _ - : /`,
+/// up to 80 characters; empty for the default.
+fn model_id(model: &str) -> Result<String> {
+    let model = model.trim();
+    if model.chars().count() > 80
+        || !model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/'))
+    {
+        bail!(
+            "Invalid model: {model:?} is not a model id (letters, digits and . _ - : /, up to 80 characters)"
+        );
+    }
+    Ok(model.to_string())
+}
+
+/// A reasoning effort the owner may pick for a conversation: one of
+/// [`hive_provider::REASONING_EFFORTS`], or empty (`default` reads as
+/// empty) for the provider's own default.
+fn reasoning_effort(effort: &str) -> Result<String> {
+    let effort = effort.trim();
+    if effort.is_empty() || effort == "default" {
+        return Ok(String::new());
+    }
+    if !hive_provider::REASONING_EFFORTS.contains(&effort) {
+        bail!(
+            "Invalid reasoning: {effort:?} is not an effort (one of {}, or default)",
+            hive_provider::REASONING_EFFORTS.join(", ")
+        );
+    }
+    Ok(effort.to_string())
+}
+
+/// The message the agent gets: the owner's words, then where the files
+/// they attached are.
+fn message_with_attachments(text: &str, files: &[Attachment]) -> String {
+    if files.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::from(text);
+    out.push_str(
+        "\n\nAttached by the owner - files on this machine, outside the branch; read them with your tools (an image is a file to inspect with a tool, not something you see):\n",
+    );
+    for f in files {
+        out.push_str(&format!("- {} ({})\n", f.path, size_words(f.size)));
+    }
+    out
+}
+
+fn size_words(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn scratch_dir(home: &str, id: &str) -> PathBuf {
+    chat_dir(home, id).join("scratch")
+}
+
+fn default_branch(p: &Project) -> String {
+    if p.default_branch.is_empty() {
+        "main".to_string()
+    } else {
+        p.default_branch.clone()
+    }
+}
+
+/// A project's branches `for-each-ref --no-merged` lists against its default
+/// branch, with what `waiting_to_land` needs to look closer at each.
+#[derive(Default)]
+struct Unmerged {
+    path: String,
+    default_branch: String,
+    branches: BTreeSet<String>,
+}
+
+/// The branch a landing of the project at `path` is merging and checking
+/// now: the third field of its `.git/hive-land.lock` ("pid time branch",
+/// hive-runner land.rs landing_lock). A lock older than the landing's own
+/// 30-minute limit is stale and names nothing.
+pub fn landing_branch(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let lock = Path::new(path).join(".git").join("hive-land.lock");
+    let age = std::fs::metadata(&lock)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .unwrap_or_default();
+    if age > Duration::from_secs(30 * 60) {
+        return None;
+    }
+    let text = std::fs::read_to_string(&lock).ok()?;
+    let branch = text.split_whitespace().nth(2)?;
+    Some(branch.to_string())
+}
+
+fn read_trajectory(home: &str, session_id: &str) -> Option<Trajectory> {
+    let path = Path::new(home)
+        .join("harness")
+        .join(format!("{session_id}.json"));
+    let data = std::fs::read(path).ok()?;
+    serde_json::from_slice(&data).ok()
+}
+
+/// PATH with the running binary's folder first, so the agent's `hive` is
+/// this one.
+fn path_with_hive() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.display().to_string();
+    let path = std::env::var("PATH").unwrap_or_default();
+    if path.split(':').any(|p| p == dir) {
+        return None;
+    }
+    Some(if path.is_empty() {
+        dir
+    } else {
+        format!("{dir}:{path}")
+    })
+}
+
+/// Read-only git for reporting on a conversation's worktree. The hub polls
+/// this while the conversation's agent runs `git add` / `git commit` in the
+/// same worktree, so it must never take index.lock: `GIT_OPTIONAL_LOCKS=0`
+/// keeps `git status` from refreshing and rewriting the index.
+fn git(cwd: &str, args: &[&str]) -> String {
+    Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+/// The worktree's changes against HEAD, as a patch. The hub asks for this the
+/// moment a turn leaves a file dirty, which is when the agent is about to
+/// `git add` / `git commit`. Porcelain `git diff HEAD` refreshes a
+/// stat-stale index under index.lock even with `GIT_OPTIONAL_LOCKS=0`;
+/// the plumbing `diff-index` never writes the index. `-M` keeps the renames
+/// porcelain shows by default.
+fn uncommitted_diff(cwd: &str) -> String {
+    git(cwd, &["diff-index", "-p", "-M", "HEAD", "--"])
+}
+
+fn git_ok(cwd: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("run git {}", args.join(" ")))?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Makes (or finds) the conversation's worktree of `project` and records
+/// it on the row. Used by the manager and by `hive session attach` from
+/// inside the agent's own commands.
+pub fn attach_workspace(store: &Store, home: &str, id: &str, project: &str) -> Result<Attached> {
+    let row = store
+        .chat_get(id)?
+        .ok_or_else(|| anyhow!("no such session: {id}"))?;
+    if row.status == "archived" {
+        bail!("session {id} is archived");
+    }
+    let p = store
+        .project(project)?
+        .ok_or_else(|| anyhow!("no such project: {project}"))?;
+    if p.status != "active" {
+        bail!("project {project} is {}", p.status);
+    }
+    let root = Path::new(&p.path);
+    if !root.join(".git").exists() {
+        bail!("project {project} at {} is not a git checkout", p.path);
+    }
+    let base = default_branch(&p);
+    let dir = chat_dir(home, id).join(&p.slug);
+    let branch = format!("{BRANCH_PREFIX}{id}");
+    let created = if dir.join(".git").exists() {
+        false
+    } else {
+        std::fs::create_dir_all(chat_dir(home, id))
+            .with_context(|| format!("create {}", chat_dir(home, id).display()))?;
+        if dir.exists() {
+            // A folder left behind without a worktree: git refuses to add
+            // over it unless it is empty.
+            let _ = std::fs::remove_dir(&dir);
+        }
+        let dir_s = dir.display().to_string();
+        let have_branch = git_ok(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok();
+        if have_branch {
+            git_ok(root, &["worktree", "add", &dir_s, &branch])?;
+        } else {
+            git_ok(root, &["worktree", "add", "-b", &branch, &dir_s, &base])?;
+        }
+        true
+    };
+    let cwd = dir.display().to_string();
+    std::fs::create_dir_all(artifacts_dir(home, id)).ok();
+    store.chat_set_workspace(id, &p.slug, &cwd, &branch)?;
+    Ok(Attached {
+        id: id.to_string(),
+        project: p.slug,
+        cwd,
+        branch,
+        base,
+        created,
+    })
+}
+
+fn changes_in(cwd: &str, project: &str, branch: &str, base: &str) -> Changes {
+    let commits = git(cwd, &["rev-list", "--count", &format!("{base}..HEAD")])
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(0);
+    let stat = git(cwd, &["diff", "--stat", &format!("{base}...HEAD")])
+        .trim_end()
+        .to_string();
+    let dirty: Vec<String> = git(cwd, &["status", "--porcelain"])
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.is_empty())
+        .collect();
+    Changes {
+        project: project.to_string(),
+        branch: branch.to_string(),
+        base: base.to_string(),
+        cwd: cwd.to_string(),
+        commits,
+        stat,
+        dirty,
+    }
+}
+
+fn list_artifacts(dir: &Path) -> Vec<Artifact> {
+    crate::artifacts::list(dir)
+}
+
+/// The brief the agent reads with the first message of each session.
+pub fn brief_text(row: &Row, projects: &[Project], artifacts: &Path) -> String {
+    brief_text_with(row, projects, artifacts, "require")
+}
+
+/// `brief_text` for a session whose project's `landing.ui_report` is
+/// `ui_report` (require, warn or off): what a change with a face brings.
+pub fn brief_text_with(
+    row: &Row,
+    projects: &[Project],
+    artifacts: &Path,
+    ui_report: &str,
+) -> String {
+    let mut b = String::new();
+    if row.parent.is_empty() {
+        b.push_str(&format!(
+            "You are working with the owner of Hive in a session from the hub (session {}). \
+             Keep going until the request is done; use the question tool only for a decision that is the owner's. \
+             Report progress in short plain words, and say what you did when you finish. \
+             When the request is complete (or the owner says it is), call the finish tool with a one-line summary, then give your closing reply: the session is marked finished, and the owner's next message reopens it.\n",
+            row.id
+        ));
+    } else {
+        b.push_str(&format!(
+            "You are working in sub-session {} of session {}: the agent of that session started you for one part of its work, and the owner of Hive can read and write here too. \
+             Your brief follows below. Every reply you make is delivered to the session that started you, so reply when there is something to report and keep replies to the point; a message marked as from that session is its agent steering you. \
+             Use the question tool only for a decision that is the owner's. \
+             When the part is done, call the finish tool with a one-line summary, then give your closing reply: that summary and reply are your report.\n",
+            row.id, row.parent
+        ));
+    }
+    b.push_str(&format!(
+        "Files meant for the owner to look at (screenshots, reports, HTML pages, images, CSVs) go in ${ARTIFACTS_ENV} ({}); the hub shows that folder beside this session.\n",
+        artifacts.display()
+    ));
+    if ui_report != "off" {
+        b.push_str(&format!(
+            "When your change touches anything a person sees (a page, a view, a stylesheet, a native screen), finish it with a before/after report in ${ARTIFACTS_ENV}: \
+             before you change a screen, save a picture of it as it is (run the project's dev server; before-<screen>.png at 1440x900, plus 390x844 for a screen people open on a phone, plus the dark theme when the change touches colour); \
+             when the change is done, save the same screens the same way as after-<screen>.png; \
+             then write report.json beside them (`hive report --example` prints its shape: a title, what changed for the person looking, a was and a now line per change with its before and after pictures, the checks you ran, where the work stands) and run `hive report` until it names nothing. \
+             The owner reads that page (the hub shows it beside this session) rather than the diff; {}\n",
+            if ui_report == "warn" {
+                "a change with a face and no report still lands, and its landing says it has none."
+            } else {
+                "the pull request of a change with a face waits for it (landing.ui_report)."
+            }
+        ));
+    }
+    b.push_str("The `hive` command is on PATH.\n");
+    b.push_str(
+        "Work that runs for hours or days (a benchmark, a soak, a long build, a job on another machine) is not waited for inside a turn. \
+         Two ways to be woken when it ends. A command you started with bash background:true is handed over with process notify ID: it keeps running after your turn ends and a note with its exit code and last output starts your next turn. \
+         Anything else - a script you wrote, a cron job, a hook at the end of a pipeline - runs `hive session wake \"what ended and how\"` when it is done (the session's id comes from $HIVE_CONVERSATION, set in every shell you start, or --id), and that message starts your next turn. \
+         Either way end your turn after starting the work and say so; do not poll with process wait or sleep.\n",
+    );
+    if row.lockdown {
+        b.push_str(
+            "LOCKDOWN (sandbox) MODE. This session runs inside a sandbox and nothing reaches outside this machine: the network is off (only localhost answers), writes land only in your worktree and the temp and build folders, credentials and private keys cannot be read, and there is no fetch, web_search or MCP tool. \
+             Commands that would reach a remote (git push/fetch/pull/clone, curl or ssh to a host, hive land, publishing, sign-in) are refused, and the sandbox refuses an attempt that slips past the words. \
+             Do the work from what is in the worktree and on this machine; commit here, and leave the pull request to the owner after they take the session out of lockdown. \
+             When something cannot be done without the outside, say so plainly instead of working around the sandbox.\n",
+        );
+    }
+    b.push_str(
+        "The owner's words are Hive's own - RSI, lead, board, ballot, evolve, experiment, land, brain, goal - and the fleet has already written about them. \
+         Before asking what a word or a thing means, look it up: `hive ask --all \"...\"` answers from the shared board of every project (add --no-model for the matching posts alone), \
+         `hive guide` explains how Hive works, `hive lead list` names the standing leads and their roles, `hive status` shows the fleet, `hive board --project SLUG` reads one project's board. \
+         Ask the owner only for what none of these can tell.\n",
+    );
+    if row.parent.is_empty() {
+        b.push_str(
+            "Fan the work out rather than doing all of it in this one thread. A request with several parts, or with one part that takes a while (a survey of the code, a long check, a review, a second thing to build), is split: keep what needs you - the decision, the join, the answer to the owner - and hand the rest out, in parallel where the parts are independent. \
+             Two ways. The subagent tool runs a helper inside this turn on one bounded, self-contained sub-task and returns its report: use it whenever you would otherwise read many files or sit through a long command yourself (find every caller of X, run the suite and summarise the failures, survey a crate). \
+             The chat tool with action start, a title and a full brief starts a sub-session: a whole session in your workspace with its own page in the hub, for a part that should keep going while you work on another, or that the owner may want to watch or steer; several may run at once. \
+             Its replies reach you as messages from it between your turns; action read shows its state and last replies, action send steers it or answers its question. Reply or end your turn while it works - you are not blocked on it. \
+             Both work in your worktree on your branch: give each part its own files and a brief with everything it needs (it sees nothing of this session), and do the join yourself. \
+             Only a request small enough for a few tool calls is done here by you alone. \
+             Work that is not this session's to do - a feature or a fix bigger than this request, a follow-up for later, work in another project - is a task: the task tool (action create, a title and a brief that says what, why and how it is proved) files it on Hive's board under this session's name, and the project's lead plans it into jobs on its next pass, as it does the owner's; tell the owner which tasks you filed. File a task for work the fleet should carry, not for what you can do here now.\n",
+        );
+    } else {
+        b.push_str(
+            "Do your part yourself. The subagent tool runs a helper inside this turn for a bounded lookup or a long check summarised; the chat tool (action start) hands a part of your brief to a sub-session of your own only when that part is itself big enough to need a page, and most are not.\n",
+        );
+    }
+    if !row.parent.is_empty() {
+        b.push_str(&format!(
+            "Workspace: you work in {}, the same folder{} as the session that started you, on its branch{}: commit on that branch and leave landing to it. \
+             Do not run `hive session attach`; this sub-session stays where its parent is.\n",
+            row.cwd,
+            if row.project.is_empty() {
+                String::new()
+            } else {
+                format!(" (project {})", row.project)
+            },
+            if row.branch.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", row.branch)
+            }
+        ));
+        return b.trim_end().to_string();
+    }
+    if !row.project.is_empty() {
+        let p = projects.iter().find(|p| p.slug == row.project);
+        let (name, base, path) = p
+            .map(|p| (p.name.clone(), default_branch(p), p.path.clone()))
+            .unwrap_or_else(|| (row.project.clone(), "main".to_string(), String::new()));
+        b.push_str(&format!(
+            "Workspace: {} is your own git worktree of project {} ({}) on branch {}, started from {}. \
+             Commit your work on this branch. The owner's checkout{} is not yours to edit.\n",
+            row.cwd,
+            row.project,
+            name,
+            row.branch,
+            base,
+            if path.is_empty() {
+                String::new()
+            } else {
+                format!(" at {path}")
+            }
+        ));
+        b.push_str(&format!(
+            "When the work is complete and verified, or when the owner asks, `hive land --project {} --branch {}` pushes the branch and opens a pull request against {} for review; another agent reviews and merges it, or asks the owner when it is complex. \
+             The daemon opens that pull request on its own once your last commit is ten minutes old, so commit only what is ready. \
+             Other projects: `hive session attach SLUG` moves this session into that project's worktree after your reply.\n",
+            row.project, row.branch, base
+        ));
+    } else {
+        b.push_str(
+            "This session is not attached to a project yet. Decide what the request is about and act:\n",
+        );
+        if projects.is_empty() {
+            b.push_str("- No projects are registered; help from here, or tell the owner to run `hive add project`.\n");
+        } else {
+            b.push_str("- The projects Hive manages (slug: name, checkout):\n");
+            for p in projects {
+                b.push_str(&format!("  - {}: {}, {}\n", p.slug, p.name, p.path));
+            }
+        }
+        b.push_str(
+            "- Work inside one project's code: run `hive session attach SLUG`, then end your reply; the session moves into your own worktree of that project (its own branch) and carries on there in the next turn by itself.\n\
+             - Work for the fleet rather than for you now, or work across several projects: file it with the task tool (action create, project SLUG, a title and a brief saying what and why), one task per project, and say which tasks you made.\n\
+             - A question about a project or about Hive: answer it from the shared board and the store - `hive ask --all \"...\"`, `hive status`, `hive task list --project SLUG`, `hive goal show --project SLUG`, `hive ask --project SLUG \"...\"` - and the checkouts (read them where they are; do not edit them).\n\
+             - Ask with the question tool only when the project really cannot be told from the request and the board does not say.\n",
+        );
+        b.push_str(&format!("Scratch space: {}.\n", row.cwd));
+    }
+    b.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hive_store::Options;
+    use std::io::Write;
+
+    fn store(home: &Path) -> Store {
+        hive_testutil::neutralize_runner_environment();
+        Store::open(Options {
+            home: home.display().to_string(),
+            create: true,
+            now: "2026-10-19T10:00:00Z".into(),
+            ..Options::default()
+        })
+        .expect("store")
+    }
+
+    fn script(home: &Path, replies: serde_json::Value) -> PathBuf {
+        let path = home.join("script.json");
+        std::fs::write(&path, json!({"replies": replies}).to_string()).expect("script");
+        path
+    }
+
+    /// Waits until the conversation is at rest: idle, ended or closed,
+    /// nothing queued.
+    fn wait_settled(m: &Manager, id: &str) {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            let live = m.live(&row);
+            if ["idle", "ended", "closed"].contains(&live.status.as_str()) && live.queued.is_empty()
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the conversation never settled");
+    }
+
+    fn wait_idle(m: &Manager, id: &str) -> Row {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            let live = m.live(&row);
+            if (live.status == "idle" || live.status == "ended") && live.queued.is_empty() {
+                return row;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the conversation never went idle");
+    }
+
+    #[test]
+    fn resume_after_provider_error_gates() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let s = store(home.path());
+        // A transport provider_error (a failed send or a broken reply body) resumes.
+        assert!(resume_after_provider_error(
+            &s,
+            "provider_error",
+            "copilot: error sending request for url (https://api.githubcopilot.test/chat)"
+        ));
+        assert!(resume_after_provider_error(
+            &s,
+            "provider_error",
+            "copilot: error decoding response body"
+        ));
+        // Budget stops, questions and non-transport errors wait for a human as before.
+        assert!(!resume_after_provider_error(&s, "budget", "out of credits"));
+        assert!(!resume_after_provider_error(
+            &s,
+            "provider_error",
+            "copilot: HTTP 429: rate limited"
+        ));
+        // chat.resume_after_provider_error_secs = 0 turns the resume off.
+        s.set_setting("test", "chat.resume_after_provider_error_secs", "0")
+            .expect("set");
+        assert!(!resume_after_provider_error(
+            &s,
+            "provider_error",
+            "copilot: error sending request for url (https://api.githubcopilot.test/chat)"
+        ));
+    }
+
+    fn wait_pending(m: &Manager, id: &str) -> Pending {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            if let Some(p) = m.live(&row).pending {
+                return p;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the agent never asked");
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Keeps the developer's global git config (signing, hooks) out of
+    /// the test repositories and out of the agent's commands.
+    struct PlainGit;
+
+    impl PlainGit {
+        fn set() -> Self {
+            unsafe {
+                std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+                std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            }
+            PlainGit
+        }
+    }
+
+    impl Drop for PlainGit {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("GIT_CONFIG_NOSYSTEM");
+                std::env::remove_var("GIT_CONFIG_GLOBAL");
+            }
+        }
+    }
+
+    fn project_repo(home: &Path, store: &Store, slug: &str) -> PathBuf {
+        let dir = home.join(format!("{slug}-checkout"));
+        std::fs::create_dir_all(&dir).unwrap();
+        git_in(&dir, &["init", "-q", "-b", "main"]);
+        git_in(&dir, &["config", "user.email", "t@example.com"]);
+        git_in(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("README.md"), "hello\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "first"]);
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, default_branch, status, added_at) VALUES (?, ?, ?, 'main', 'active', ?)",
+                rusqlite::params![slug, slug, dir.display().to_string(), store.now()],
+            )
+            .unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_conversation_runs_a_turn_and_keeps_its_transcript() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "Hello from the agent."}, {"content": "Second reply."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "say hello please", "owner")
+            .expect("create");
+        assert_eq!(row.title, "say hello please");
+        assert!(row.project.is_empty());
+        let row = wait_idle(&m, &row.id);
+        assert!(!row.session_id.is_empty(), "a harness session was opened");
+        assert!(
+            row.cwd.ends_with("scratch"),
+            "a scratch folder was made: {}",
+            row.cwd
+        );
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant"], "{msgs:?}");
+        assert_eq!(msgs[1].content, "Hello from the agent.");
+        assert_eq!(msgs[1].extra["session"], row.session_id);
+        // The harness session carries the steps; the brief went with the
+        // first message only.
+        let (session, steps) = s.harness_session(&row.session_id).unwrap();
+        assert!(session.is_some());
+        // The reply names its step range: every step of the session so far.
+        assert_eq!(msgs[1].extra["steps"][0], -1, "{:?}", msgs[1].extra);
+        assert_eq!(
+            msgs[1].extra["steps"][1].as_i64().unwrap(),
+            steps.last().map(|st| st.n).unwrap_or(-1),
+            "{:?}",
+            msgs[1].extra
+        );
+        assert!(steps.iter().any(|st| st.kind == "assistant"));
+        m.send(&row.id, "and again").expect("send");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[3].content, "Second reply.");
+        assert_eq!(row.turns, 2);
+        m.archive(&row.id).expect("archive");
+        assert_eq!(m.row(&row.id).unwrap().status, "archived");
+        assert!(m.send(&row.id, "more").is_err());
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    // Watches a kept process by pid (libc::kill(pid, 0)): unix only for now.
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_background_process_wakes_the_conversation_when_it_ends() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let flag = home.path().join("go");
+        let flag_s = flag.display().to_string();
+        // The soak waits for a flag file, prints and exits 7; the agent
+        // hands it over and ends its turn, then answers the wake.
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "bash", "args": {"command": format!("while [ ! -e '{flag_s}' ]; do sleep 0.1; done; echo soak finished; exit 7"), "background": true, "wait": 0}},
+                {"tool": "process", "args": {"action": "notify", "id": "bg-1"}},
+                {"content": "Started the soak; I will carry on when it ends."},
+                {"content": "The soak ended, exit 7 as expected."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "run the soak and tell me", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.turns, 1);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "note", "assistant"], "{msgs:?}");
+        assert!(
+            msgs[1]
+                .content
+                .starts_with("Background process bg-1 keeps running past this turn:"),
+            "{}",
+            msgs[1].content
+        );
+        assert_eq!(msgs[1].extra["kept"]["id"], "bg-1");
+        let pid = msgs[1].extra["kept"]["pid"].as_i64().expect("pid") as i32;
+        assert!(pid > 0);
+        let (_, steps) = s.harness_session(&row.session_id).unwrap();
+        let notify = steps
+            .iter()
+            .position(|st| st.kind == "process" && st.command == "notify bg-1")
+            .expect("the hand-over is a step");
+        assert!(
+            steps[notify + 1]
+                .content
+                .contains("now runs past this turn"),
+            "{}",
+            steps[notify + 1].content
+        );
+        // Idle for a while: nothing happens until the process ends.
+        thread::sleep(PARK_TICK * 3);
+        assert_eq!(s.chat_messages(&row.id, 0).unwrap().len(), 3);
+        assert!(
+            unsafe { libc::kill(pid, 0) } == 0,
+            "the kept process is still alive"
+        );
+        std::fs::write(&flag, "").unwrap();
+        // The watcher sees the exit and the agent gets a turn on it.
+        let row = {
+            let mut got = None;
+            for _ in 0..400 {
+                let row = m.row(&row.id).expect("row");
+                if row.turns >= 2 && m.live(&row).status == "idle" {
+                    got = Some(row);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            got.expect("the wake turn ran")
+        };
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "note", "assistant", "note", "assistant"],
+            "{msgs:?}"
+        );
+        assert_eq!(
+            msgs[3].content,
+            format!(
+                "Background process bg-1 `while [ ! -e '{flag_s}' ]; do sleep 0.1; done; echo soak finished; exit 7` ended with exit 7 after {}.",
+                msgs[3].extra["process"]["elapsed"].as_str().unwrap()
+            )
+        );
+        assert_eq!(msgs[3].extra["process"]["exit"], 7);
+        assert_eq!(msgs[3].extra["process"]["tail"], "soak finished");
+        assert_eq!(msgs[4].content, "The soak ended, exit 7 as expected.");
+        // The agent read the wake with the tail and the hand-off reminder.
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let wake = traj
+            .messages
+            .iter()
+            .rfind(|m| m.role == hive_provider::Role::User)
+            .expect("the wake is the last user message");
+        assert!(
+            wake.content.contains("ended with exit 7"),
+            "{}",
+            wake.content
+        );
+        assert!(wake.content.contains("soak finished"), "{}", wake.content);
+        assert!(
+            wake.content.contains("handed over with `process notify`"),
+            "{}",
+            wake.content
+        );
+        m.archive(&row.id).expect("archive");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    // Watches a kept process by pid (libc::kill(pid, 0)): unix only for now.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_conversation_stops_what_it_kept() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "bash", "args": {"command": "sleep 300", "background": true, "wait": 0}},
+                {"tool": "process", "args": {"action": "notify", "id": "bg-1"}},
+                {"content": "Sleeping for a while."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "sleep", "owner").expect("create");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let pid = msgs[1].extra["kept"]["pid"].as_i64().expect("pid") as i32;
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "alive after the turn");
+        m.archive(&row.id).expect("archive");
+        // The archive closes the runtime: the sleep is stopped and the
+        // transcript says so.
+        let mut stopped = None;
+        for _ in 0..400 {
+            let msgs = s.chat_messages(&row.id, 0).unwrap();
+            if let Some(n) = msgs
+                .iter()
+                .find(|m| m.role == "note" && m.content.contains("was stopped after"))
+            {
+                stopped = Some(n.content.clone());
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let stopped = stopped.expect("the stop is on the transcript");
+        assert!(
+            stopped.starts_with("Background process bg-1 `sleep 300` was stopped after"),
+            "{stopped}"
+        );
+        assert!(stopped.contains("the conversation was closed"), "{stopped}");
+        for _ in 0..200 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the sleep is gone");
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_wake_from_outside_gives_the_agent_a_turn_on_the_message() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "Waiting for the build."},
+                {"content": "The build passed; moving on."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "wait for the build", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        assert!(
+            m.wake(&row.id, "   ", "build.sh").is_err(),
+            "empty wakes are refused"
+        );
+        m.wake(&row.id, "build passed: 212 tests ok", "build.sh")
+            .expect("wake");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.turns, 2);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant", "note", "assistant"],
+            "{msgs:?}"
+        );
+        assert_eq!(
+            msgs[2].content,
+            "Wake from build.sh: build passed: 212 tests ok"
+        );
+        assert_eq!(msgs[2].extra["wake"]["from"], "build.sh");
+        assert_eq!(msgs[3].content, "The build passed; moving on.");
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let wake = traj
+            .messages
+            .iter()
+            .rfind(|m| m.role == hive_provider::Role::User)
+            .expect("the wake reached the agent");
+        assert_eq!(
+            wake.content,
+            "Wake from build.sh: build passed: 212 tests ok"
+        );
+        m.archive(&row.id).expect("archive");
+        assert!(
+            m.wake(&row.id, "late", "build.sh").is_err(),
+            "an archived conversation takes no wake"
+        );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn the_title_follows_the_conversation_until_the_owner_names_it() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        // The fake answers every title request with the same line, aside
+        // from its scripted replies.
+        let path = home.path().join("script.json");
+        std::fs::write(
+            &path,
+            json!({
+                "replies": [{"content": "Done: the redirect now keeps the query."}, {"content": "Second reply."}],
+                "title": "\"Fix the login redirect.\"\n"
+            })
+            .to_string(),
+        )
+        .expect("script");
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &path) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create(
+                "",
+                "",
+                true,
+                "hi, can you look at something for me",
+                "owner",
+            )
+            .expect("create");
+        assert_eq!(
+            row.title, "hi, can you look at something for me",
+            "born with its first line"
+        );
+        assert!(!row.title_owner);
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(
+            row.title, "Fix the login redirect",
+            "after the reply the title names what the talk is about"
+        );
+        assert!(!row.title_owner, "the agent's title is not the owner's");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant"],
+            "the title call left no trace in the transcript: {msgs:?}"
+        );
+        assert_eq!(msgs[1].content, "Done: the redirect now keeps the query.");
+
+        // The owner names it: from then on the agent leaves it.
+        m.set_title(&row.id, "Login work").expect("rename");
+        assert!(m.row(&row.id).unwrap().title_owner);
+        m.send(&row.id, "and again").expect("send");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.title, "Login work", "the owner's title stays");
+        assert_eq!(s.chat_messages(&row.id, 0).unwrap().len(), 4);
+        m.archive(&row.id).expect("archive");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_title_call_that_answers_nothing_leaves_the_title_as_it_was() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        // No `title` in the script: the fake answers the title request
+        // with an empty line.
+        let script = script(home.path(), json!([{"content": "Hello from the agent."}]));
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "say hello please", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.title, "say hello please");
+        assert!(!row.title_owner);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
+        assert_eq!(msgs[1].content, "Hello from the agent.");
+        m.archive(&row.id).expect("archive");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_model_switch_restarts_the_session_and_attachments_ride_with_the_message() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"content": "Second."}, {"content": "Third."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        // The model is not pinned: the row's model is the one the session runs on.
+        let m =
+            Manager::new(&home.path().display().to_string(), s.clone()).with_provider("fake", "");
+        assert!(
+            m.create_with("", "", "bad model!", "", true, "hi", "owner")
+                .is_err(),
+            "a model id has no spaces or punctuation beyond . _ - : /"
+        );
+        let row = m
+            .create_with("", "", "fake-1", "", true, "say hello please", "owner")
+            .expect("create");
+        assert_eq!(row.model, "fake-1");
+        let row = wait_idle(&m, &row.id);
+        let first_session = row.session_id.clone();
+        assert_eq!(
+            row.model, "fake-1",
+            "the session resolved to the chosen model"
+        );
+
+        // The same model: the session stays.
+        m.send(&row.id, "again").unwrap();
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.session_id, first_session);
+
+        // Another model: the next turn runs in a new session, the
+        // conversation carried over.
+        assert!(m.set_model(&row.id, "no spaces here").is_err());
+        m.set_model(&row.id, "fake-2").expect("set model");
+        assert_eq!(m.row(&row.id).unwrap().model, "fake-2");
+
+        // An attachment: saved under its name, a second one numbered, the
+        // message carries the paths to the agent and the names in its record.
+        let a = m
+            .save_attachment(&row.id, "notes.txt", b"remember the milk")
+            .expect("save");
+        assert_eq!(a.name, "notes.txt");
+        assert_eq!(a.size, 17);
+        assert!(Path::new(&a.path).is_file());
+        let b = m
+            .save_attachment(&row.id, "notes.txt", b"second")
+            .expect("save");
+        assert_eq!(b.name, "notes-2.txt");
+        assert!(m.save_attachment(&row.id, "../evil.txt", b"x").is_err());
+        assert!(m.save_attachment(&row.id, ".hidden", b"x").is_err());
+        assert!(m.save_attachment(&row.id, "empty.txt", b"").is_err());
+        assert!(m.attachment_path(&row.id, "notes.txt").is_some());
+        assert!(m.attachment_path(&row.id, "missing.txt").is_none());
+        assert!(
+            m.send_with(&row.id, "read this", &["missing.txt".to_string()])
+                .is_err(),
+            "a name that was not uploaded is refused"
+        );
+        m.send_with(&row.id, "", std::slice::from_ref(&a.name))
+            .expect("send");
+        let row = wait_idle(&m, &row.id);
+        assert_ne!(
+            row.session_id, first_session,
+            "the model switch restarted the session"
+        );
+        assert_eq!(row.model, "fake-2");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let last_user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(last_user.content, "Look at the attached file.");
+        assert_eq!(last_user.extra["attachments"][0]["name"], "notes.txt");
+        assert_eq!(last_user.extra["attachments"][0]["size"], 17);
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let sent = traj
+            .messages
+            .iter()
+            .filter(|m| m.content.contains("Look at the attached file."))
+            .map(|m| m.content.clone())
+            .next_back()
+            .expect("the agent got the message");
+        assert!(sent.contains(&a.path), "{sent}");
+        assert!(sent.contains("Attached by the owner"), "{sent}");
+        // The fake's script restarted with the new provider instance.
+        assert_eq!(msgs.last().unwrap().content, "First.");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn an_idle_conversation_lets_its_agent_go_and_the_next_message_resumes_it() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "Hello, I am here."}, {"content": "Still here."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "say hello please", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let first_session = row.session_id.clone();
+        let rt = m.running(&row.id).expect("runtime");
+        // The worker stands down a moment after the row reads idle.
+        for _ in 0..400 {
+            if !rt.shared.lock().worker {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!rt.shared.lock().worker, "the worker stood down");
+        assert!(
+            rt.started.lock().unwrap().is_some(),
+            "the agent is held while the conversation is idle"
+        );
+
+        // Not idle for long enough, or the sweep turned off: the agent stays.
+        assert!(m.release_idle(Duration::from_secs(3600)).is_empty());
+        s.set_setting("test", IDLE_RELEASE_SETTING, "0").unwrap();
+        assert!(m.release_idle_by_setting().is_empty());
+        assert!(rt.started.lock().unwrap().is_some());
+
+        // Idle long enough: the agent goes; the conversation stays open,
+        // idle, and still names the session its trajectory is under.
+        assert_eq!(m.release_idle(Duration::ZERO), vec![row.id.clone()]);
+        assert!(rt.started.lock().unwrap().is_none(), "the agent was let go");
+        assert!(
+            m.release_idle(Duration::ZERO).is_empty(),
+            "nothing left to release"
+        );
+        let row = m.row(&row.id).unwrap();
+        assert_eq!(row.status, "idle");
+        assert_eq!(m.live(&row).status, "idle");
+        assert_eq!(row.session_id, first_session);
+        let kept = read_trajectory(&home.path().display().to_string(), &first_session)
+            .expect("the trajectory is on disk");
+        assert!(
+            kept.messages
+                .iter()
+                .any(|m| m.content.contains("say hello please")),
+            "{kept:?}"
+        );
+
+        // The next message runs in a new session with the conversation
+        // carried over from that trajectory.
+        m.send(&row.id, "and again").expect("send");
+        let row = wait_idle(&m, &row.id);
+        assert_ne!(row.session_id, first_session, "a new session was opened");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant", "user", "assistant"],
+            "{msgs:?}"
+        );
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        for carried in ["say hello please", "Hello, I am here.", "and again"] {
+            assert!(
+                traj.messages.iter().any(|m| m.content.contains(carried)),
+                "{carried:?} carried into the new session: {traj:?}"
+            );
+        }
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_restarted_session_reloads_the_conversation_from_its_transcript_repaired() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "Hello, I am here."},
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"content": "Blue it is."},
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let home_s = home.path().display().to_string();
+        let m = Manager::new(&home_s, s.clone()).with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "say hello please", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let first_session = row.session_id.clone();
+        let rt = m.running(&row.id).expect("runtime");
+        for _ in 0..400 {
+            if !rt.shared.lock().worker {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!rt.shared.lock().worker, "the worker stood down");
+
+        // A turn in flight (the agent waits on a question) refuses the
+        // restart; the owner stops it or answers first.
+        m.send(&row.id, "pick one").expect("send");
+        let pending = wait_pending(&m, &row.id);
+        assert!(matches!(pending, Pending::Question { .. }), "{pending:?}");
+        let err = m.restart_session(&row.id).expect_err("a turn is running");
+        assert!(
+            err.to_string()
+                .starts_with("a turn is running in this conversation"),
+            "{err}"
+        );
+        m.answer(&row.id, "blue").expect("answer");
+        let row = wait_idle(&m, &row.id);
+        for _ in 0..400 {
+            if !rt.shared.lock().worker {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(row.session_id, first_session, "the same session answered");
+        assert!(rt.started.lock().unwrap().is_some());
+
+        // Idle: the session ends in memory, its trajectory on disk, and the
+        // transcript says so. The row keeps the session id, so the next
+        // message loads the conversation back from that file.
+        m.restart_session(&row.id).expect("restart");
+        assert!(rt.started.lock().unwrap().is_none(), "the session ended");
+        let row = m.row(&row.id).unwrap();
+        assert_eq!(row.status, "idle");
+        assert_eq!(m.live(&row).status, "idle");
+        assert_eq!(row.session_id, first_session);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let note = msgs.last().unwrap();
+        assert_eq!(note.role, "note");
+        assert_eq!(
+            note.content,
+            "The session was restarted from the transcript. Your next message starts a new one with this conversation carried over."
+        );
+        assert_eq!(note.extra["restarted"], "owner");
+        assert_eq!(note.extra["repaired"], 0);
+        assert_eq!(note.extra["session"], first_session);
+
+        // The stuck conversation's shape: the saved transcript carries a
+        // tool call whose arguments the gateway cut mid-stream, with the
+        // result the old harness gave it (what a session's memory held is
+        // what its trajectory holds). Restarting again, with no session
+        // open, counts what the next load repairs.
+        let path = Path::new(&home_s)
+            .join("harness")
+            .join(format!("{first_session}.json"));
+        let mut traj: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let cut = r#"{"path": "AGENTS.md", "replace": "  with the GitHub noreply address.\n\n## Rollback Planning""#;
+        let messages = traj["messages"].as_array_mut().unwrap();
+        messages.push(json!({"role": "assistant", "tool_calls": [{"id": "toolu_01D9XWUQtuVBTWixzvum3zYd", "name": "edit", "arguments": cut}]}));
+        messages.push(json!({"role": "tool", "content": "edit: arguments are not JSON: EOF while parsing an object at line 1 column 93", "tool_call_id": "toolu_01D9XWUQtuVBTWixzvum3zYd", "name": "edit"}));
+        std::fs::write(&path, serde_json::to_vec(&traj).unwrap()).unwrap();
+        m.restart_session(&row.id).expect("restart again");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let note = msgs.last().unwrap();
+        assert_eq!(
+            note.content,
+            "The session was restarted from the transcript (none was open in memory). Your next message starts a new one with this conversation carried over; it repairs 1 tool call whose arguments are not JSON."
+        );
+        assert_eq!(note.extra["repaired"], 1);
+
+        // The next message runs in a new session (whose fake provider
+        // starts the script over): the cut call went in as `{}`, the
+        // harness said so, and the provider answered.
+        m.send(&row.id, "land it").expect("send");
+        let row = wait_idle(&m, &row.id);
+        assert_ne!(row.session_id, first_session, "a new session was opened");
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        assert_eq!(msgs.last().unwrap().role, "assistant");
+        assert_eq!(msgs.last().unwrap().content, "Hello, I am here.");
+        let traj = read_trajectory(&home_s, &row.session_id).expect("trajectory");
+        let call = traj
+            .messages
+            .iter()
+            .find(|m| {
+                m.tool_calls
+                    .iter()
+                    .any(|c| c.id == "toolu_01D9XWUQtuVBTWixzvum3zYd")
+            })
+            .expect("the cut call is carried over");
+        assert_eq!(call.tool_calls[0].arguments, "{}");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content.starts_with(
+                    "repaired 1 carried-over tool call whose arguments were not JSON (edit toolu_01D9XWUQtuVBTWixzvum3zYd)"
+                )),
+            "{steps:?}"
+        );
+
+        // An archived conversation has nothing to restart.
+        m.archive(&row.id).expect("archive");
+        let err = m.restart_session(&row.id).expect_err("archived");
+        assert_eq!(err.to_string(), format!("session {} is archived", row.id));
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Sends one image to a conversation on the fake model `fake-1`, whose
+    /// list entry says `vision`, and returns the transcript and the user
+    /// messages the agent holds.
+    fn send_image_to_fake(
+        vision: bool,
+    ) -> (
+        Vec<hive_store::ConversationMessage>,
+        Vec<hive_provider::Message>,
+    ) {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let path = home.path().join("script.json");
+        let model = json!({
+            "id": "fake-1", "name": "Fake 1", "vendor": "fake", "chat": true,
+            "tool_calls": true, "vision": vision, "premium": 0.0, "preview": false,
+            "context_window": 128000, "max_output": 0, "default": true
+        });
+        std::fs::write(
+            &path,
+            json!({"replies": [{"content": "Hello."}, {"content": "Answered."}], "models": [model]})
+                .to_string(),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &path) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create_with("", "", "fake", "", true, "hi", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let image = ImageAttachment {
+            mime: "image/png".into(),
+            name: "".into(),
+            data: STANDARD.encode(b"\x89PNG fake bytes"),
+        };
+        m.send_with_images(
+            &row.id,
+            "what is on screen?",
+            &[],
+            std::slice::from_ref(&image),
+        )
+        .expect("send image");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let sent: Vec<hive_provider::Message> = {
+            let rt = m.running(&row.id).expect("running");
+            let guard = rt.started.lock().unwrap();
+            let a = guard.as_ref().unwrap().agent.lock().unwrap();
+            a.messages()
+                .into_iter()
+                .filter(|m| m.role == hive_provider::Role::User)
+                .collect()
+        };
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+        (msgs, sent)
+    }
+
+    #[test]
+    fn images_for_a_model_that_cannot_see_are_left_out_with_a_note() {
+        let _env = hive_testutil::env_lock();
+        let (msgs, sent) = send_image_to_fake(false);
+        let asked = sent
+            .iter()
+            .rfind(|m| m.content.contains("what is on screen?"))
+            .expect("the owner's words reach the model");
+        assert!(asked.images.is_empty(), "no image goes to a blind model");
+        assert!(
+            asked
+                .content
+                .contains("left out because the model fake-1 cannot see images"),
+            "{}",
+            asked.content
+        );
+        let note = msgs
+            .iter()
+            .find(|m| m.role == "note" && m.content.contains("cannot see images"))
+            .expect("the owner reads a note");
+        assert!(
+            note.content.starts_with("1 image left out"),
+            "{}",
+            note.content
+        );
+        assert!(note.content.contains("fake-1"), "{}", note.content);
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(
+            user.extra["images"][0]["name"], "image-1.png",
+            "the image is still kept"
+        );
+    }
+
+    #[test]
+    fn images_for_a_model_that_can_see_reach_it() {
+        let _env = hive_testutil::env_lock();
+        let (msgs, sent) = send_image_to_fake(true);
+        let asked = sent
+            .iter()
+            .rfind(|m| m.content.contains("what is on screen?"))
+            .expect("the owner's words reach the model");
+        assert_eq!(asked.images.len(), 1);
+        assert!(!asked.content.contains("left out"), "{}", asked.content);
+        assert!(!msgs.iter().any(|m| m.content.contains("cannot see images")));
+    }
+
+    #[test]
+    fn inline_images_validate_save_and_read_back() {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(home.path(), json!([{"content": "Saw it."}]));
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m =
+            Manager::new(&home.path().display().to_string(), s.clone()).with_provider("fake", "");
+        let row = m
+            .create_with("", "", "fake", "", true, "watch out", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        let png = b"\x89PNG fake bytes".to_vec();
+        let image = ImageAttachment {
+            mime: "image/png".into(),
+            name: "".into(),
+            data: STANDARD.encode(&png),
+        };
+        // Bad shapes are refused before anything is stored.
+        for bad in [
+            ImageAttachment {
+                mime: "image/gif".into(),
+                ..image.clone()
+            },
+            ImageAttachment {
+                data: "not base64!!!".into(),
+                ..image.clone()
+            },
+            ImageAttachment {
+                data: STANDARD.encode(vec![0u8; IMAGE_LIMIT + 1]),
+                ..image.clone()
+            },
+        ] {
+            assert!(
+                m.send_with_images(&row.id, "see", &[], std::slice::from_ref(&bad))
+                    .is_err()
+            );
+        }
+        // A good image rides the message: saved under a numbered name and
+        // read back with its mime.
+        m.send_with_images(&row.id, "look", &[], std::slice::from_ref(&image))
+            .expect("send image");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(user.content, "look");
+        assert_eq!(user.extra["images"][0]["name"], "image-1.png");
+        assert_eq!(user.extra["images"][0]["mime"], "image/png");
+        assert_eq!(
+            user.extra["images"][0]["path"],
+            format!("image/{}/0", row.id)
+        );
+        let (mime, data) = m
+            .image(&row.id, user.n, 0)
+            .expect("image")
+            .expect("present");
+        assert_eq!(mime, "image/png");
+        assert_eq!(data, png);
+        assert!(m.image(&row.id, user.n, 1).expect("none").is_none());
+        assert!(m.image(&row.id, 9999, 0).expect("none").is_none());
+        // The model saw the image: it rides the user message in the
+        // trajectory as `images`, base64 as it arrived.
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let sent = traj
+            .messages
+            .iter()
+            .rfind(|m| m.content == "look")
+            .expect("the agent got the message");
+        assert_eq!(sent.images.len(), 1, "{sent:?}");
+        assert_eq!(sent.images[0].media_type, "image/png");
+        assert_eq!(sent.images[0].data, STANDARD.encode(&png));
+        // Text-only messages carry none.
+        assert!(
+            traj.messages
+                .iter()
+                .filter(|m| m.content != "look")
+                .all(|m| m.images.is_empty())
+        );
+        // A renamed image keeps its own name.
+        let named = ImageAttachment {
+            name: "shot.webp".into(),
+            mime: "image/webp".into(),
+            data: STANDARD.encode(b"RIFF webp"),
+        };
+        m.send_with_images(&row.id, "", &[], std::slice::from_ref(&named))
+            .expect("send named");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(user.content, "Look at the attached file.");
+        assert_eq!(user.extra["images"][0]["name"], "shot.webp");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_question_parks_the_turn_until_the_owner_answers() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"content": "Blue it is."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("colours", "", true, "pick a colour", "owner")
+            .unwrap();
+        let pending = wait_pending(&m, &row.id);
+        match &pending {
+            Pending::Question {
+                question, choices, ..
+            } => {
+                assert_eq!(question, "Red or blue?");
+                assert_eq!(choices, &["red", "blue"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(m.live(&m.row(&row.id).unwrap()).status, "waiting");
+        assert_eq!(m.row(&row.id).unwrap().status, "waiting");
+        assert!(
+            m.approve(&row.id, "allow", "").is_err(),
+            "no approval waits"
+        );
+        m.answer(&row.id, "blue").expect("answer");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "question", "answer", "assistant"],
+            "{msgs:?}"
+        );
+        assert_eq!(msgs[1].extra["choices"][1], "blue");
+        assert_eq!(msgs[3].content, "Blue it is.");
+        m.archive(&row.id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// A turn parked on a question is still in flight: a steer written
+    /// then is in the transcript at once and reaches the agent with the
+    /// answer, before its next model call, instead of waiting for a turn
+    /// of its own.
+    #[test]
+    fn a_steer_while_a_question_waits_reaches_the_agent_with_the_answer() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"content": "Dark blue it is."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("colours", "", true, "pick a colour", "owner")
+            .unwrap();
+        let id = row.id.clone();
+        wait_pending(&m, &id);
+        m.steer(&id, "and make it dark").expect("steer");
+        let live = m.live(&m.row(&id).unwrap());
+        assert_eq!(live.status, "waiting");
+        assert!(live.queued.is_empty(), "{live:?}");
+        assert_eq!(live.steered, vec!["and make it dark".to_string()]);
+        m.answer(&id, "blue").expect("answer");
+        wait_idle(&m, &id);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "pick a colour".to_string()),
+                ("question".to_string(), "Red or blue?".to_string()),
+                ("user".to_string(), "and make it dark".to_string()),
+                ("answer".to_string(), "blue".to_string()),
+                ("assistant".to_string(), "Dark blue it is.".to_string()),
+            ],
+            "one turn, steered while it waited"
+        );
+        let row = m.row(&id).unwrap();
+        assert!(m.live(&row).steered.is_empty());
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content == format!("{}: and make it dark", crate::harness::STEERED_NOTE)),
+            "{steps:?}"
+        );
+        m.archive(&id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn approvals_park_when_auto_is_off_and_pass_when_on() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "write", "args": {"path": "note.txt", "content": "hi\n"}},
+                {"content": "Written."},
+                {"tool": "write", "args": {"path": "two.txt", "content": "hi\n"}},
+                {"content": "Written again."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", false, "write a note", "owner").unwrap();
+        let pending = wait_pending(&m, &row.id);
+        match &pending {
+            Pending::Approval { tool, .. } => assert_eq!(tool, "write"),
+            other => panic!("{other:?}"),
+        }
+        assert!(m.answer(&row.id, "x").is_err(), "no question waits");
+        m.approve(&row.id, "deny", "not that file").expect("deny");
+        let row = wait_idle(&m, &row.id);
+        assert!(!Path::new(&row.cwd).join("note.txt").exists());
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let approval = msgs
+            .iter()
+            .find(|m| m.role == "approval")
+            .expect("approval row");
+        assert_eq!(approval.extra["decision"], "deny");
+        assert_eq!(approval.extra["reason"], "not that file");
+        // Auto on: the next write runs without a question.
+        m.set_auto_approve(&row.id, true).unwrap();
+        m.send(&row.id, "write another").unwrap();
+        let row = wait_idle(&m, &row.id);
+        assert!(
+            Path::new(&row.cwd).join("two.txt").exists(),
+            "{:?}",
+            row.cwd
+        );
+        assert!(m.live(&row).auto_approve);
+        m.archive(&row.id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn reporting_changes_never_rewrites_the_worktree_index() {
+        // The hub polls a project conversation's changes while its agent runs
+        // `git add` / `git commit` in the same worktree. A plain `git status`
+        // refreshes a stat-stale index under index.lock, and the agent's own
+        // command then fails on the lock it finds held.
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let dir = project_repo(home.path(), &s, "demo");
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("README.md"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .unwrap();
+        let index = dir.join(".git").join("index");
+        let before = std::fs::read(&index).unwrap();
+        let changes = changes_in(&dir.display().to_string(), "demo", "main", "main");
+        assert!(changes.dirty.is_empty(), "{changes:?}");
+        assert!(
+            std::fs::read(&index).unwrap() == before,
+            "reading the changes rewrote the index"
+        );
+    }
+
+    #[test]
+    fn reading_the_uncommitted_diff_never_rewrites_the_worktree_index() {
+        // The hub fetches the diff as soon as a turn leaves a file dirty,
+        // while the agent goes on to `git add` / `git commit`. Porcelain
+        // `git diff HEAD` refreshes a stat-stale index under index.lock even
+        // with GIT_OPTIONAL_LOCKS=0, so the agent's commit could hit the lock.
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let dir = project_repo(home.path(), &s, "demo");
+        std::fs::write(dir.join("notes.md"), "one\n").unwrap();
+        std::fs::write(dir.join("old.md"), "kept as it was\n").unwrap();
+        git_in(&dir, &["add", "notes.md", "old.md"]);
+        git_in(&dir, &["commit", "-q", "-m", "notes"]);
+        std::fs::write(dir.join("notes.md"), "one\ntwo\n").unwrap();
+        git_in(&dir, &["mv", "old.md", "new.md"]);
+        // An unchanged file whose mtime no longer matches the index: what a
+        // checkout, a build or an editor leaves behind.
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("README.md"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .unwrap();
+        let index = dir.join(".git").join("index");
+        let before = std::fs::read(&index).unwrap();
+        let diff = uncommitted_diff(&dir.display().to_string());
+        assert!(diff.contains("+two"), "{diff}");
+        assert!(
+            diff.contains("rename from old.md") && diff.contains("rename to new.md"),
+            "{diff}"
+        );
+        assert!(
+            std::fs::read(&index).unwrap() == before,
+            "reading the diff rewrote the index"
+        );
+    }
+
+    #[test]
+    fn landing_branch_reads_the_branch_off_the_land_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        assert_eq!(landing_branch(&root), None);
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let lock = dir.path().join(".git").join("hive-land.lock");
+        std::fs::write(&lock, "42 2026-11-04T05:00:00Z\n").unwrap();
+        assert_eq!(landing_branch(&root), None, "an older lock names no branch");
+        std::fs::write(&lock, "42 2026-11-04T05:00:00Z hive/chat-x\n").unwrap();
+        assert_eq!(landing_branch(&root).as_deref(), Some("hive/chat-x"));
+        assert_eq!(landing_branch(""), None);
+    }
+
+    #[test]
+    fn waiting_to_land_names_the_conversations_whose_branch_is_ahead_of_the_default_branch() {
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let dir = project_repo(home.path(), &s, "demo");
+        // Two branches off main: one with a commit of its own, one at main.
+        git_in(&dir, &["branch", "hive/chat-ahead", "main"]);
+        git_in(&dir, &["branch", "hive/chat-level", "main"]);
+        git_in(&dir, &["checkout", "-q", "hive/chat-ahead"]);
+        std::fs::write(dir.join("NOTES.md"), "work\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "work on the branch"]);
+        git_in(&dir, &["checkout", "-q", "main"]);
+        let m = Manager::new(&home.path().display().to_string(), s.clone());
+        let row = |id: &str, branch: &str, project: &str| Row {
+            id: id.into(),
+            project: project.into(),
+            branch: branch.into(),
+            cwd: dir.display().to_string(),
+            ..Row::default()
+        };
+        let rows = vec![
+            row("c-ahead", "hive/chat-ahead", "demo"),
+            row("c-level", "hive/chat-level", "demo"),
+            row("c-gone", "hive/chat-gone", "demo"),
+            row("c-none", "", "demo"),
+            row("c-elsewhere", "hive/chat-ahead", "nowhere"),
+        ];
+        let waiting = m.waiting_to_land(&rows);
+        assert_eq!(
+            waiting.into_iter().collect::<Vec<_>>(),
+            vec!["c-ahead".to_string()],
+            "only the branch with a commit main lacks waits to land"
+        );
+        // Landed (merged into main): nothing waits any more.
+        git_in(&dir, &["merge", "-q", "--no-edit", "hive/chat-ahead"]);
+        assert!(m.waiting_to_land(&rows).is_empty());
+        // A branch rebased after its commit landed: no merge contains the new
+        // ref, but every commit on it has a patch-equivalent on main, so it is
+        // landed, not waiting. A further commit of its own waits again.
+        git_in(&dir, &["checkout", "-q", "hive/chat-ahead"]);
+        git_in(
+            &dir,
+            &[
+                "commit",
+                "-q",
+                "--amend",
+                "-m",
+                "work on the branch, reworded",
+            ],
+        );
+        git_in(&dir, &["checkout", "-q", "main"]);
+        assert!(
+            git(
+                &dir.display().to_string(),
+                &["branch", "--no-merged", "main"]
+            )
+            .contains("hive/chat-ahead"),
+            "the amended ref is not an ancestor of main"
+        );
+        assert!(m.waiting_to_land(&rows).is_empty());
+        git_in(&dir, &["checkout", "-q", "hive/chat-ahead"]);
+        std::fs::write(dir.join("MORE.md"), "more\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "more work"]);
+        git_in(&dir, &["checkout", "-q", "main"]);
+        assert_eq!(
+            m.waiting_to_land(&rows).into_iter().collect::<Vec<_>>(),
+            vec!["c-ahead".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_project_conversation_works_in_its_own_worktree_and_reports_changes() {
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let checkout = project_repo(home.path(), &s, "demo");
+        let script = script(
+            home.path(),
+            json!([
+                {"command": "printf 'more\\n' >> README.md && git add README.md && git -c user.email=a@b.c -c user.name=a commit -q -m 'chat change' && echo done"},
+                {"content": "Committed on my branch."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("readme", "demo", true, "add a line to the readme", "owner")
+            .unwrap();
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.project, "demo");
+        assert_eq!(row.branch, format!("hive/chat-{}", row.id));
+        assert!(row.cwd.ends_with("/demo"), "{}", row.cwd);
+        assert!(Path::new(&row.cwd).join(".git").exists(), "a worktree");
+        let changes = m.changes(&row).expect("changes");
+        assert_eq!(changes.commits, 1, "{changes:?}");
+        assert!(changes.stat.contains("README.md"), "{changes:?}");
+        assert!(changes.dirty.is_empty());
+        let diff = m.diff(&row).expect("diff");
+        assert!(diff.contains("+more"), "{diff}");
+        // The owner's checkout did not move.
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("README.md")).unwrap(),
+            "hello\n"
+        );
+        // Artifacts: a file in the folder shows up; names with slashes do not resolve.
+        let art = m.artifacts_dir(&row.id);
+        std::fs::File::create(art.join("report.md"))
+            .unwrap()
+            .write_all(b"# r\n")
+            .unwrap();
+        let list = m.artifacts(&row.id);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "report.md");
+        assert!(m.artifact_path(&row.id, "report.md").is_some());
+        assert!(m.artifact_path(&row.id, "../report.md").is_none());
+        m.archive(&row.id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_cargo_project_conversation_builds_into_the_shared_target() {
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        // The test process may run under an owner's own exports; the rule
+        // under test is what a conversation gets when it has none.
+        let _clear: Vec<_> = [
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_JOBS",
+            "CARGO_INCREMENTAL",
+            "CARGO_PROFILE_DEV_DEBUG",
+        ]
+        .iter()
+        .map(|k| hive_testutil::unsetenv(k))
+        .collect();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let checkout = project_repo(home.path(), &s, "demo");
+        std::fs::write(
+            checkout.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        git_in(&checkout, &["add", "Cargo.toml"]);
+        git_in(&checkout, &["commit", "-q", "-m", "cargo"]);
+        s.set_setting("test", "daemon.build_jobs", "3").unwrap();
+        let script = script(
+            home.path(),
+            json!([
+                {"command": "env | grep '^CARGO_' | sort > env.txt; readlink target > link.txt; echo done"},
+                {"content": "Printed."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("env", "demo", true, "show the build env", "owner")
+            .unwrap();
+        let row = wait_idle(&m, &row.id);
+        let cwd = Path::new(&row.cwd);
+        let want = home.path().join("cache/cargo-target/demo/chat");
+        let env = std::fs::read_to_string(cwd.join("env.txt")).expect("env.txt");
+        for line in [
+            format!("CARGO_TARGET_DIR={}", want.display()),
+            "CARGO_BUILD_JOBS=3".to_string(),
+            "CARGO_INCREMENTAL=0".to_string(),
+            "CARGO_PROFILE_DEV_DEBUG=0".to_string(),
+        ] {
+            assert!(
+                env.lines().any(|l| l == line),
+                "{line} missing from:\n{env}"
+            );
+        }
+        let link = std::fs::read_to_string(cwd.join("link.txt")).expect("link.txt");
+        assert_eq!(link.trim(), want.display().to_string());
+        assert!(want.is_dir(), "the shared target exists");
+        // The link stays out of the Changes tab: a worktree's exclude file
+        // lives under the owner's .git, not its own.
+        let status = git(&row.cwd, &["status", "--porcelain"]);
+        assert!(
+            !status.lines().any(|l| l.ends_with("target")),
+            "target listed by git status:\n{status}"
+        );
+        assert!(status.contains("env.txt"), "{status}");
+        m.archive(&row.id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn attach_moves_the_conversation_after_the_turn_and_carries_on() {
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        project_repo(home.path(), &s, "demo");
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "I will work in demo."},
+                {"content": "Now in the worktree."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "fix the demo readme", "owner")
+            .unwrap();
+        let before = wait_idle(&m, &row.id);
+        assert!(before.project.is_empty());
+        let first_session = before.session_id.clone();
+        // What `hive chat attach demo` does between turns.
+        let attached = m.attach(&row.id, "demo").expect("attach");
+        assert!(attached.created);
+        assert_eq!(attached.branch, format!("hive/chat-{}", row.id));
+        let again = m.attach(&row.id, "demo").expect("attach again");
+        assert!(!again.created);
+        // The next message runs in the worktree, in a new session that
+        // carries the earlier messages (the fake's script restarts with
+        // the new provider instance, so the reply is the first one again).
+        m.send(&row.id, "go on").unwrap();
+        let row = wait_idle(&m, &row.id);
+        assert_eq!(row.project, "demo");
+        assert_ne!(row.session_id, first_session);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant", "user", "assistant"],
+            "{msgs:?}"
+        );
+        assert_eq!(msgs[3].extra["session"], row.session_id);
+        let (session, steps) = s.harness_session(&row.session_id).unwrap();
+        assert_eq!(session.expect("session row").project, "demo");
+        assert!(!steps.is_empty());
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory on disk");
+        let carried = traj.messages.iter().any(|m| {
+            serde_json::to_string(m)
+                .unwrap()
+                .contains("fix the demo readme")
+        });
+        assert!(carried, "the first message came along into the new session");
+        m.archive(&row.id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn attach_during_a_turn_moves_after_it_and_carries_on_by_itself() {
+        let _env = hive_testutil::env_lock();
+        let _git = PlainGit::set();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        project_repo(home.path(), &s, "demo");
+        // Each session replays the script: a question, then a reply.
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "question", "args": {"question": "Which project?", "choices": ["demo"]}},
+                {"content": "Carrying on."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "fix the readme", "owner").unwrap();
+        wait_pending(&m, &row.id);
+        let first_session = m.row(&row.id).unwrap().session_id;
+        // The agent ran `hive chat attach demo` mid-turn, then answered.
+        m.attach(&row.id, "demo").expect("attach");
+        m.answer(&row.id, "demo").unwrap();
+        // The turn ends in the scratch folder; the runtime notes the move
+        // and starts the next turn in the worktree by itself, where the
+        // replayed script asks again.
+        let pending = wait_pending(&m, &row.id);
+        assert!(matches!(pending, Pending::Question { .. }));
+        let row_now = m.row(&row.id).unwrap();
+        assert_ne!(
+            row_now.session_id, first_session,
+            "a new session in the worktree"
+        );
+        m.answer(&row.id, "demo").unwrap();
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            [
+                "user",
+                "question",
+                "answer",
+                "assistant",
+                "note",
+                "question",
+                "answer",
+                "assistant"
+            ],
+            "{msgs:?}"
+        );
+        assert!(
+            msgs[4].content.starts_with("Moved into project demo"),
+            "{}",
+            msgs[4].content
+        );
+        assert_eq!(msgs[4].extra["branch"], format!("hive/chat-{}", row.id));
+        assert_eq!(msgs[7].extra["session"], row.session_id);
+        assert_eq!(row.turns, 2);
+        m.archive(&row.id).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn attachment_names_and_model_ids_are_checked() {
+        assert_eq!(attachment_name(" notes.txt ").unwrap(), "notes.txt");
+        assert_eq!(attachment_name("my file.PNG").unwrap(), "my file.PNG");
+        assert!(attachment_name("../evil").is_err());
+        assert!(attachment_name("a/b.txt").is_err());
+        assert!(attachment_name("a\\b.txt").is_err());
+        assert!(attachment_name(".env").is_err());
+        assert!(attachment_name("").is_err());
+        assert!(attachment_name(&"x".repeat(121)).is_err());
+        assert!(attachment_name("tab\there").is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(unique_name(dir.path(), "a.txt"), "a.txt");
+        std::fs::write(dir.path().join("a.txt"), "1").unwrap();
+        assert_eq!(unique_name(dir.path(), "a.txt"), "a-2.txt");
+        std::fs::write(dir.path().join("a-2.txt"), "2").unwrap();
+        assert_eq!(unique_name(dir.path(), "a.txt"), "a-3.txt");
+        std::fs::write(dir.path().join("Makefile"), "").unwrap();
+        assert_eq!(unique_name(dir.path(), "Makefile"), "Makefile-2");
+        std::fs::write(dir.path().join("archive.tar.gz"), "").unwrap();
+        assert_eq!(
+            unique_name(dir.path(), "archive.tar.gz"),
+            "archive.tar-2.gz"
+        );
+
+        assert_eq!(model_id("").unwrap(), "");
+        assert_eq!(model_id(" gpt-5.4 ").unwrap(), "gpt-5.4");
+        assert_eq!(
+            model_id("anthropic/claude-3:latest").unwrap(),
+            "anthropic/claude-3:latest"
+        );
+        assert!(model_id("bad model").is_err());
+        assert!(model_id("x;rm").is_err());
+        assert!(model_id(&"m".repeat(81)).is_err());
+
+        let files = vec![Attachment {
+            name: "notes.txt".into(),
+            size: 2048,
+            path: "/tmp/x/notes.txt".into(),
+        }];
+        let msg = message_with_attachments("read this", &files);
+        assert!(msg.starts_with("read this\n\nAttached by the owner"));
+        assert!(msg.contains("- /tmp/x/notes.txt (2.0 KB)"));
+        assert_eq!(message_with_attachments("plain", &[]), "plain");
+        assert_eq!(size_words(512), "512 B");
+        assert_eq!(size_words(3 * 1024 * 1024), "3.0 MB");
+    }
+
+    #[test]
+    fn briefs_name_the_workspace_or_the_projects() {
+        let projects = vec![Project {
+            slug: "demo".into(),
+            name: "Demo".into(),
+            path: "/srv/demo".into(),
+            default_branch: "main".into(),
+            status: "active".into(),
+            ..Project::default()
+        }];
+        let art = Path::new("/tmp/art");
+        let loose = Row {
+            id: "chat-1".into(),
+            cwd: "/tmp/scratch".into(),
+            ..Row::default()
+        };
+        let text = brief_text(&loose, &projects, art);
+        assert!(text.contains("not attached to a project yet"));
+        assert!(text.contains("- demo: Demo, /srv/demo"));
+        assert!(text.contains("hive session attach SLUG"));
+        assert!(text.contains("file it with the task tool (action create, project SLUG"));
+        assert!(!text.contains("hive task new"));
+        assert!(text.contains("$HIVE_ARTIFACTS (/tmp/art)"));
+        // A change with a face brings its before/after report, built by `hive report`.
+        assert!(
+            text.contains("before you change a screen, save a picture of it as it is"),
+            "{text}"
+        );
+        assert!(
+            text.contains("run `hive report` until it names nothing"),
+            "{text}"
+        );
+        assert!(text.contains("waits for it (landing.ui_report)"), "{text}");
+        assert!(
+            brief_text_with(&loose, &projects, art, "warn")
+                .contains("still lands, and its landing says it has none")
+        );
+        assert!(!brief_text_with(&loose, &projects, art, "off").contains("hive report"));
+        // The owner's words are looked up on the shared board before the
+        // agent asks what they mean.
+        assert!(text.contains("The owner's words are Hive's own - RSI, lead, board"));
+        assert!(
+            text.contains(
+                "`hive ask --all \"...\"` answers from the shared board of every project"
+            )
+        );
+        assert!(text.contains("`hive guide` explains how Hive works"));
+        assert!(text.contains("answer it from the shared board and the store - `hive ask --all"));
+        let attached = Row {
+            id: "chat-1".into(),
+            project: "demo".into(),
+            cwd: "/w/demo".into(),
+            branch: "hive/chat-chat-1".into(),
+            ..Row::default()
+        };
+        let text = brief_text(&attached, &projects, art);
+        assert!(text.contains("Workspace: /w/demo is your own git worktree of project demo (Demo) on branch hive/chat-chat-1, started from main"));
+        assert!(text.contains("`hive land --project demo --branch hive/chat-chat-1` pushes the branch and opens a pull request against main for review"));
+        assert!(text.contains(
+            "The daemon opens that pull request on its own once your last commit is ten minutes old"
+        ));
+        assert!(text.contains("The owner's checkout at /srv/demo is not yours to edit"));
+        assert!(text.contains("`hive ask --all \"...\"` answers from the shared board"));
+        // A top-level conversation is told to fan its work out: helpers
+        // inside the turn, sub-conversations for the parts that keep
+        // going, and only a small request done alone.
+        assert!(text.contains("Fan the work out rather than doing all of it in this one thread"));
+        assert!(text.contains("The subagent tool runs a helper inside this turn"));
+        assert!(text.contains(
+            "The chat tool with action start, a title and a full brief starts a sub-session"
+        ));
+        assert!(text.contains("in parallel where the parts are independent"));
+        assert!(text.contains(
+            "Only a request small enough for a few tool calls is done here by you alone"
+        ));
+        // Work beyond the conversation goes to the board as a task under
+        // the conversation's name, for the lead to plan.
+        assert!(text.contains("is a task: the task tool (action create"));
+        assert!(text.contains("files it on Hive's board under this session's name"));
+        assert!(!text.contains("Do your part yourself"));
+        // A sub-conversation does its part itself: it may run a helper, but
+        // another level of sub-conversations is the exception.
+        let child = Row {
+            id: "chat-2".into(),
+            parent: "chat-1".into(),
+            project: "demo".into(),
+            cwd: "/w/demo".into(),
+            branch: "hive/chat-chat-1".into(),
+            ..Row::default()
+        };
+        let text = brief_text(&child, &projects, art);
+        assert!(text.contains("You are working in sub-session chat-2 of session chat-1"));
+        assert!(text.contains("Do your part yourself"));
+        assert!(text.contains("only when that part is itself big enough to need a page"));
+        assert!(!text.contains("Fan the work out"));
+        assert!(text.contains("Do not run `hive session attach`"));
+        // The agent hears one word for what the hub calls a session.
+        for t in [
+            brief_text(&loose, &projects, art),
+            brief_text(&attached, &projects, art),
+            brief_text(&child, &projects, art),
+        ] {
+            assert!(!t.contains("conversation"), "{t}");
+            assert!(!t.contains("hive chat "), "{t}");
+        }
+        // A lockdown conversation is told what the sandbox holds back.
+        assert!(!text.contains("LOCKDOWN (sandbox) MODE"));
+        let locked = Row {
+            lockdown: true,
+            ..attached.clone()
+        };
+        let text = brief_text(&locked, &projects, art);
+        assert!(text.contains("LOCKDOWN (sandbox) MODE"));
+        assert!(text.contains("the network is off (only localhost answers)"));
+        assert!(text.contains("no fetch, web_search or MCP tool"));
+        assert!(text.contains("leave the pull request to the owner"));
+        assert_eq!(
+            title_from("  Fix the login page\nmore"),
+            "Fix the login page"
+        );
+        assert_eq!(title_from(""), "New conversation");
+        let long = "word ".repeat(30);
+        assert!(title_from(&long).ends_with("..."));
+        assert!(title_from(&long).chars().count() <= 64);
+    }
+
+    /// A conversation as a hub that died mid-turn leaves it: the row says
+    /// running, its session is still open with steps past the last reply.
+    fn cut_conversation(s: &Store, id: &str, status: &str) -> String {
+        let sid = format!("hs-{id}");
+        s.chat_create(&Row {
+            id: id.to_string(),
+            title: "cut".into(),
+            status: "idle".into(),
+            ..Row::default()
+        })
+        .unwrap();
+        s.chat_set_session(id, &sid, "fake", "fake-1").unwrap();
+        s.begin_harness_session(hive_store::HarnessSession {
+            id: sid.clone(),
+            cwd: "/tmp".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let step = |n: i64, kind: &str, content: &str, command: &str| hive_store::HarnessStep {
+            session_id: sid.clone(),
+            n,
+            at: "2026-10-19T09:58:00Z".into(),
+            kind: kind.into(),
+            content: content.into(),
+            command: command.into(),
+            ..Default::default()
+        };
+        s.append_harness_step(step(0, "assistant", "On it.", ""))
+            .unwrap();
+        s.append_harness_step(step(1, "command", "", "ls")).unwrap();
+        s.chat_add_message(id, "user", "do the thing", &Value::Null)
+            .unwrap();
+        s.chat_add_message(
+            id,
+            "assistant",
+            "Done with part one.",
+            &json!({"session": sid, "steps": [-1, 1]}),
+        )
+        .unwrap();
+        s.chat_add_message(id, "user", "now part two", &Value::Null)
+            .unwrap();
+        s.append_harness_step(step(2, "assistant", "Part two.", ""))
+            .unwrap();
+        s.append_harness_step(step(3, "command", "", "cargo test -p demo"))
+            .unwrap();
+        s.append_harness_step(step(4, "edit", "src/lib.rs", ""))
+            .unwrap();
+        s.chat_set_status(id, status, "").unwrap();
+        sid
+    }
+
+    #[test]
+    fn recover_notes_the_cut_turn_and_closes_the_sessions_the_last_hub_left() {
+        let _env = hive_testutil::env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let cut = cut_conversation(&s, "chat-cut", "running");
+        let parked = cut_conversation(&s, "chat-parked", "waiting");
+        // An idle conversation whose session the last hub kept open.
+        let idle = cut_conversation(&s, "chat-idle", "idle");
+        let m = Manager::new(&home.path().display().to_string(), s.clone());
+        let mut ids = m.recover();
+        ids.sort();
+        assert_eq!(ids, ["chat-cut", "chat-parked"]);
+
+        let row = s.chat_get("chat-cut").unwrap().unwrap();
+        assert_eq!(row.status, "idle");
+        assert_eq!(row.note, RESTART_NOTE);
+        assert_eq!(m.live(&row).status, "idle");
+        let msgs = s.chat_messages("chat-cut", 0).unwrap();
+        let note = msgs.last().unwrap();
+        assert_eq!(note.role, "note");
+        assert_eq!(note.content, CUT_RUNNING_LINE);
+        assert_eq!(note.extra["restart"], true);
+        assert_eq!(note.extra["session"], cut);
+        // The steps after the last reply up to the last one recorded.
+        assert_eq!(note.extra["steps"], json!([1, 4]));
+        let session = s.harness_session_head(&cut).unwrap().unwrap();
+        assert_eq!(session.status, "lost");
+        assert_eq!(session.exit_status, "lost");
+        assert_eq!(
+            session.error,
+            "the hub stopped while the agent was working; last step 4 edit 2 min ago"
+        );
+        assert!(!session.ended_at.is_empty());
+
+        let msgs = s.chat_messages("chat-parked", 0).unwrap();
+        assert_eq!(msgs.last().unwrap().content, CUT_WAITING_LINE);
+        assert_eq!(s.chat_get("chat-parked").unwrap().unwrap().status, "idle");
+        assert_eq!(
+            s.harness_session_head(&parked).unwrap().unwrap().status,
+            "lost"
+        );
+
+        // The idle one keeps its transcript; only its session closes.
+        let row = s.chat_get("chat-idle").unwrap().unwrap();
+        assert_eq!(row.status, "idle");
+        assert_eq!(row.note, "");
+        assert_eq!(s.chat_messages("chat-idle", 0).unwrap().len(), 3);
+        let session = s.harness_session_head(&idle).unwrap().unwrap();
+        assert_eq!(session.status, EXIT_ENDED);
+        assert_eq!(session.error, "");
+
+        // Running it again finds nothing to do.
+        assert!(m.recover().is_empty());
+        assert_eq!(s.chat_messages("chat-cut", 0).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn the_turn_after_a_cut_tells_the_agent_what_it_had_done() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(home.path(), json!([{"content": "Picking it up."}]));
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        cut_conversation(&s, "chat-cut", "running");
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        assert_eq!(m.recover(), ["chat-cut"]);
+        m.send("chat-cut", "continue").expect("send");
+        let row = wait_idle(&m, "chat-cut");
+        assert_eq!(row.note, "", "the hint is given once");
+        assert_ne!(row.session_id, "hs-chat-cut", "a new session started");
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let sent = traj
+            .messages
+            .iter()
+            .filter(|m| m.content.ends_with("continue"))
+            .map(|m| m.content.clone())
+            .next_back()
+            .expect("the agent got the message");
+        assert!(
+            sent.contains("Hive restarted while you were working on your previous turn"),
+            "{sent}"
+        );
+        assert!(sent.contains("The steps you had taken:\n- assistant: Part two.\n- command: cargo test -p demo\n- edit: src/lib.rs"), "{sent}");
+        assert!(sent.contains("Check what is already there"), "{sent}");
+        // The hint is not repeated on the turn after.
+        m.send("chat-cut", "and more").expect("send");
+        let row = wait_idle(&m, "chat-cut");
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let again = traj
+            .messages
+            .iter()
+            .find(|m| m.content.ends_with("and more"))
+            .expect("the agent got the second message");
+        assert!(
+            !again.content.contains("Hive restarted"),
+            "{}",
+            again.content
+        );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn shutdown_stops_a_working_turn_with_a_note_and_ends_the_sessions() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"command": "sleep 5"}, {"content": "Never reached."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        // Every session plays the script from its start: both answer
+        // "First." and go idle; the second message to one of them sleeps.
+        let working = m
+            .create("", "", true, "take your time", "owner")
+            .expect("create");
+        let idle = m
+            .create("", "", true, "quick one", "owner")
+            .expect("create");
+        let _ = wait_idle(&m, &working.id);
+        let _ = wait_idle(&m, &idle.id);
+        m.send(&working.id, "go on").expect("send");
+        // The queued message counts as working at once; the stop should
+        // land on the running command, so wait until the turn reached the
+        // agent (the row says running) and its sleep began.
+        for _ in 0..400 {
+            if s.chat_get(&working.id).unwrap().unwrap().status == "running" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(s.chat_get(&working.id).unwrap().unwrap().status, "running");
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(m.working(), 1, "the sleeping turn counts as working");
+        let started = Instant::now();
+        let (stopped, settled) = m.shutdown(Duration::from_secs(10));
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the shutdown did not wait the sleep out"
+        );
+        assert_eq!(stopped, 1);
+        assert!(settled, "every session ended within the grace");
+        assert_eq!(m.working(), 0);
+        let row = s.chat_get(&working.id).unwrap().unwrap();
+        let msgs = s.chat_messages(&working.id, 0).unwrap();
+        assert_eq!(row.status, "idle", "{msgs:#?}");
+        assert_eq!(
+            row.note,
+            RESTART_NOTE,
+            "{row:#?}\n{msgs:#?}\n{:#?}",
+            s.harness_sessions(hive_store::HarnessSessionFilter {
+                limit: 100,
+                ..Default::default()
+            })
+            .unwrap()
+        );
+        let note = msgs.last().unwrap();
+        assert_eq!(note.role, "note");
+        assert_eq!(note.content, STOPPED_TO_RESTART_LINE);
+        assert_eq!(note.extra["session"], row.session_id);
+        for id in [&working.id, &idle.id] {
+            let sid = s.chat_get(id).unwrap().unwrap().session_id;
+            let session = s.harness_session_head(&sid).unwrap().unwrap();
+            assert_eq!(session.status, EXIT_ENDED, "{id}: {session:?}");
+        }
+        // A message still on its way when the hub went down never reached
+        // the agent: the transcript says so, since "continue" would not do.
+        let late = Runtime::new(
+            &home.path().display().to_string(),
+            s.clone(),
+            "fake",
+            "fake-1",
+            &row,
+            Weak::new(),
+        );
+        {
+            let mut st = late.shared.lock();
+            st.closed = true;
+            st.shutdown = true;
+        }
+        late.turn("one more thing".into());
+        let last = s.chat_messages(&working.id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.role, "note");
+        assert_eq!(last.content, UNSENT_LINE);
+        assert_eq!(last.extra["unsent"], true);
+        // What the agent would have read, for the next hub to pass on.
+        assert!(
+            last.extra["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("one more thing")),
+            "{last:?}"
+        );
+        assert_eq!(last.extra["report"], false);
+        assert_eq!(last.extra["images"], 0);
+        assert!(late.started.lock().unwrap().is_none(), "no session started");
+        // Nothing is left for the next hub to recover.
+        let next = Manager::new(&home.path().display().to_string(), s.clone());
+        assert!(next.recover().is_empty());
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn the_next_hub_carries_a_turn_stopped_to_restart_on_by_itself() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"command": "sleep 5"}, {"content": "Never reached."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let stopped = m
+            .create("", "", true, "take your time", "owner")
+            .expect("create");
+        let crashed = m
+            .create("", "", true, "quick one", "owner")
+            .expect("create");
+        let _ = wait_idle(&m, &stopped.id);
+        let _ = wait_idle(&m, &crashed.id);
+        m.send(&stopped.id, "go on").expect("send");
+        for _ in 0..400 {
+            if s.chat_get(&stopped.id).unwrap().unwrap().status == "running" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(m.shutdown(Duration::from_secs(10)), (1, true));
+        let before = s.chat_messages(&stopped.id, 0).unwrap().len();
+        // The other conversation's hub went down mid-turn without stopping
+        // it: the next hub cuts it with a note and leaves it to the owner.
+        s.chat_set_status(&crashed.id, "running", "").unwrap();
+
+        let next = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        assert_eq!(next.recover(), [crashed.id.as_str()]);
+        assert_eq!(next.carry_on_restarted(), [stopped.id.as_str()]);
+        assert!(
+            next.carry_on_restarted().is_empty(),
+            "a turn is carried on once"
+        );
+        let row = wait_idle(&next, &stopped.id);
+        assert_eq!(row.status, "idle");
+        assert_ne!(
+            row.note, RESTART_NOTE,
+            "the carried-on turn cleared the note"
+        );
+        let msgs = s.chat_messages(&stopped.id, 0).unwrap();
+        assert_eq!(msgs.len(), before + 2, "{msgs:#?}");
+        assert_eq!(msgs[before - 1].content, STOPPED_TO_RESTART_LINE);
+        assert_eq!(msgs[before].role, "note");
+        assert_eq!(msgs[before].content, CARRIED_ON_LINE);
+        assert_eq!(msgs[before + 1].role, "assistant", "{msgs:#?}");
+        assert_eq!(msgs[before + 1].content, "First.");
+        // The agent read the restart hint and the carry-on prompt, not an
+        // owner message: the transcript has no new user line.
+        assert!(
+            !msgs[before..].iter().any(|m| m.role == "user"),
+            "{msgs:#?}"
+        );
+        let other = s.chat_get(&crashed.id).unwrap().unwrap();
+        assert_eq!(other.status, "idle");
+        assert_eq!(other.note, RESTART_NOTE);
+        let last = s.chat_messages(&crashed.id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.content, CUT_RUNNING_LINE);
+        assert!(next.running(&crashed.id).is_none(), "left to the owner");
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    fn wait_status(m: &Manager, id: &str, want: &[&str]) -> Row {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            let live = m.live(&row);
+            if want.contains(&live.status.as_str())
+                && (live.status != "idle" || live.queued.is_empty())
+            {
+                return row;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("the conversation never reached {want:?}");
+    }
+
+    fn transcript(s: &Store, id: &str) -> Vec<(String, String)> {
+        s.chat_messages(id, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.role, m.content))
+            .collect()
+    }
+
+    /// A message typed while a turn runs waits behind it, shown as queued,
+    /// and lands in the transcript after that turn's reply - never between
+    /// the owner's earlier message and the answer to it.
+    #[test]
+    fn a_message_sent_during_a_turn_lands_after_that_turns_reply() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(200));
+        m.send(&id, "three").expect("send");
+        let live = m.live(&m.row(&id).unwrap());
+        assert_eq!(live.queued, vec!["three".to_string()]);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "one".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+                ("user".to_string(), "two".to_string()),
+            ],
+            "the queued message is not in the transcript yet"
+        );
+        wait_idle(&m, &id);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "one".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+                ("user".to_string(), "two".to_string()),
+                ("assistant".to_string(), "Second.".to_string()),
+                ("user".to_string(), "three".to_string()),
+                ("assistant".to_string(), "Third.".to_string()),
+            ]
+        );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// A steer during a turn reaches the agent before its next model call:
+    /// the row lands in the transcript at once (marked steered), the hub
+    /// lists it as steered until the agent takes it, a note step marks
+    /// where it landed, and the reply that follows saw it. With no turn
+    /// running a steer is a plain send.
+    #[test]
+    fn a_steer_during_a_turn_reaches_the_agent_before_its_next_step() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(200));
+        m.steer(&id, "actually, b").expect("steer");
+        let live = m.live(&m.row(&id).unwrap());
+        assert!(live.queued.is_empty(), "a steer does not queue: {live:?}");
+        assert_eq!(live.steered, vec!["actually, b".to_string()]);
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        assert_eq!(
+            (msgs[3].role.as_str(), msgs[3].content.as_str()),
+            ("user", "actually, b"),
+            "the steered row is in the transcript at once: {msgs:#?}"
+        );
+        assert_eq!(msgs[3].extra["steered"], true);
+        wait_idle(&m, &id);
+        assert_eq!(
+            transcript(&s, &id),
+            vec![
+                ("user".to_string(), "one".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+                ("user".to_string(), "two".to_string()),
+                ("user".to_string(), "actually, b".to_string()),
+                ("assistant".to_string(), "Second.".to_string()),
+            ],
+            "the steer ran inside the turn, not as one of its own"
+        );
+        let row = m.row(&id).unwrap();
+        let live = m.live(&row);
+        assert!(live.steered.is_empty(), "{live:?}");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps.iter().any(|st| st.kind == "note"
+                && st.content == format!("{}: actually, b", crate::harness::STEERED_NOTE)),
+            "{steps:?}"
+        );
+        // Idle: a steer is a send.
+        m.steer(&id, "four").expect("steer idle");
+        wait_idle(&m, &id);
+        let tail: Vec<(String, String)> = transcript(&s, &id).into_iter().skip(5).collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("user".to_string(), "four".to_string()),
+                ("assistant".to_string(), "Third.".to_string()),
+            ]
+        );
+        let last_user = s
+            .chat_messages(&id, 0)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.content == "four")
+            .unwrap();
+        assert!(last_user.extra.get("steered").is_none(), "{last_user:?}");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Stop drops what waited behind the turn: the owner's words stay in
+    /// the transcript after the stop note, with a note that they never
+    /// reached the agent.
+    #[test]
+    fn stop_notes_the_messages_that_waited_behind_the_turn() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"command": "sleep 5"}, {"content": "Never reached."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(300));
+        m.send(&id, "three").expect("send");
+        m.cancel(&id).expect("cancel");
+        let row = wait_idle(&m, &id);
+        assert_eq!(row.status, "idle");
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        let tail: Vec<(&str, &str)> = msgs[3..]
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("note", "You stopped this turn."),
+                ("user", "three"),
+                ("note", UNSENT_STOPPED_LINE),
+            ],
+            "{msgs:#?}"
+        );
+        assert_eq!(msgs.last().unwrap().extra["unsent"], true);
+        assert!(m.live(&row).queued.is_empty());
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// The agent's finish tool closes the conversation after its closing
+    /// reply; the owner's next message reopens it.
+    /// A lockdown (sandbox) conversation: the agent's outside-reaching
+    /// commands are refused in words, a local command runs with
+    /// `HIVE_LOCKDOWN=1` set, the outside tools are not offered, the
+    /// environment summary says so, and switching lockdown off restarts
+    /// the session outside the sandbox with the conversation carried over.
+    #[test]
+    fn a_lockdown_conversation_refuses_the_outside_and_works_inside() {
+        let _env = hive_testutil::env_lock();
+        let _plain = PlainGit::set();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"command": "git push origin main"},
+                {"command": "curl -s https://example.invalid/"},
+                {"command": "echo inside > inside.txt && cat inside.txt"},
+                {"command": "echo lockdown=${HIVE_LOCKDOWN:-unset}"},
+                {"content": "Done."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create_with_lockdown("", "", "", "", true, true, "work offline please", "owner")
+            .expect("create");
+        assert!(row.lockdown);
+        assert!(m.live(&row).lockdown);
+        let id = row.id.clone();
+        let row = wait_idle(&m, &id);
+        let first_session = row.session_id.clone();
+        let steps = s.harness_steps(&first_session, -1).unwrap();
+        let errors: Vec<&str> = steps
+            .iter()
+            .filter(|st| st.kind == "error")
+            .map(|st| st.content.as_str())
+            .collect();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("lockdown") && e.contains("git push is disabled")),
+            "git push is refused outright, not offered for approval: {errors:#?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("reaches a host outside this machine")),
+            "curl to a host is refused in words: {errors:#?}"
+        );
+        let observations: Vec<&str> = steps
+            .iter()
+            .filter(|st| st.kind == "observation")
+            .map(|st| st.content.as_str())
+            .collect();
+        assert!(
+            observations.iter().any(|o| o.contains("inside")),
+            "a local command runs: {observations:#?}"
+        );
+        assert!(
+            observations.iter().any(|o| o.contains("lockdown=1")),
+            "HIVE_LOCKDOWN=1 is in the environment: {observations:#?}"
+        );
+        {
+            let rt = m.running(&id).unwrap();
+            let guard = rt.started.lock().unwrap();
+            let a = guard.as_ref().unwrap().agent.lock().unwrap();
+            let env = a.environment();
+            assert!(
+                env.iter().any(|l| l.contains("lockdown (sandbox)")),
+                "{env:#?}"
+            );
+            assert!(
+                env.iter().any(|l| l.starts_with("lockdown: network off")),
+                "{env:#?}"
+            );
+            let tools = a.offered_tool_names();
+            assert!(
+                !tools.iter().any(|t| t == "web_search" || t == "fetch"),
+                "{tools:?}"
+            );
+            assert!(a.locked_down());
+        }
+        // Off again: the next turn runs outside the sandbox in a new session
+        // (the fake provider replays its script there: the same commands,
+        // now unrefused, and the probe line reads unset).
+        m.set_lockdown(&id, false).expect("off");
+        let row = m.row(&id).unwrap();
+        assert!(!row.lockdown);
+        assert!(!m.live(&row).lockdown);
+        m.send(&id, "and now outside").expect("send");
+        let row = wait_idle(&m, &id);
+        assert_ne!(row.session_id, first_session, "the session restarted");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|st| st.kind == "observation" && st.content.contains("lockdown=unset")),
+            "HIVE_LOCKDOWN is gone outside the sandbox: {steps:#?}"
+        );
+        assert!(
+            !steps
+                .iter()
+                .any(|st| st.kind == "error" && st.content.contains("reaches a host outside")),
+            "outside the sandbox curl is not refused in words: {steps:#?}"
+        );
+        {
+            let rt = m.running(&id).unwrap();
+            let guard = rt.started.lock().unwrap();
+            assert!(!guard.as_ref().unwrap().agent.lock().unwrap().locked_down());
+        }
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn the_finish_tool_closes_the_conversation_and_a_message_reopens_it() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "finish", "args": {"summary": "The login works again."}},
+                {"content": "All done."},
+                {"content": "Reopened."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m
+            .create("", "", true, "fix the login", "owner")
+            .expect("create");
+        let id = row.id.clone();
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.status, "closed");
+        assert_eq!(row.note, "The login works again.");
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "note"], "{msgs:#?}");
+        assert_eq!(msgs[1].content, "All done.");
+        assert_eq!(
+            msgs[2].content,
+            format!("{FINISHED_BY_AGENT_LINE} The login works again.")
+        );
+        assert_eq!(msgs[2].extra["closed"], "agent");
+        let steps = s.harness_steps(&row.session_id, -1).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|st| st.content == "finish: The login works again."),
+            "{steps:#?}"
+        );
+        // Closed is not archived: a message runs and reopens it.
+        m.send(&id, "one more").expect("send");
+        let row = wait_idle(&m, &id);
+        assert_eq!(row.status, "idle");
+        assert_eq!(row.note, "");
+        let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.content, "Reopened.");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Waits until `id`'s transcript has a note whose extra matches `want`.
+    fn wait_note(
+        s: &Store,
+        id: &str,
+        want: impl Fn(&Value) -> bool,
+    ) -> hive_store::ConversationMessage {
+        wait_note_after(s, id, 0, want)
+    }
+
+    /// The same for a note after message `after`.
+    fn wait_note_after(
+        s: &Store,
+        id: &str,
+        after: i64,
+        want: impl Fn(&Value) -> bool,
+    ) -> hive_store::ConversationMessage {
+        for _ in 0..400 {
+            if let Some(m) = s
+                .chat_messages(id, after)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.role == "note" && want(&m.extra))
+            {
+                return m;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!(
+            "conversation {id} never got the note: {:#?}",
+            s.chat_messages(id, 0).unwrap()
+        );
+    }
+
+    /// A conversation cannot finish while a sub-conversation it started is
+    /// still open: the finish tool refuses, naming the child, so the agent
+    /// ends its turn and waits for the report like a harness waits for its
+    /// helper.
+    #[test]
+    fn finish_waits_for_open_sub_conversations() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "chat", "args": {"action": "start", "title": "Part", "text": "Do the part."}},
+                {"tool": "finish", "args": {"summary": "Too early."}},
+                {"content": "Waiting for the part."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let parent = m
+            .create("", "", true, "two parts", "owner")
+            .expect("create");
+        let pid = parent.id.clone();
+        let started = wait_note(&s, &pid, |x| x.get("child").is_some());
+        let cid = started.extra["child"].as_str().unwrap().to_string();
+        let mut refused = false;
+        for _ in 0..400 {
+            let row = m.row(&pid).expect("row");
+            if !row.session_id.is_empty()
+                && s.harness_steps(&row.session_id, -1)
+                    .unwrap()
+                    .iter()
+                    .any(|st| st.content.contains("still at work") && st.content.contains(&cid))
+            {
+                refused = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            refused,
+            "the parent's finish was refused while {cid} was open"
+        );
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// The chat tool starts a sub-conversation in the parent's workspace,
+    /// the sub-conversation's finish comes back to the parent as a report
+    /// (a note from it that runs a turn there, reopening the finished
+    /// parent), and the third level down is refused. Every session replays
+    /// the one script, so the parent's `chat start` cascades: parent,
+    /// child, grandchild - whose own start is the refused one.
+    #[test]
+    fn a_sub_conversation_reports_to_its_parent_and_stops_two_levels_down() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"tool": "chat", "args": {"action": "start", "title": "Docs check", "text": "Check that the docs match the code."}},
+                {"tool": "finish", "args": {"summary": "Started the docs check."}},
+                {"content": "Waiting on it."},
+                {"tool": "finish", "args": {"summary": "Docs checked."}},
+                {"content": "Done here."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let parent = m
+            .create("", "", true, "ship the feature", "owner")
+            .expect("create");
+        let pid = parent.id.clone();
+        let parent = wait_status(&m, &pid, &["closed", "idle"]);
+        assert!(!parent.cwd.is_empty(), "the parent works in scratch space");
+
+        // The child: the parent's row, inherited.
+        let started = wait_note(&s, &pid, |x| x.get("child").is_some());
+        let cid = started.extra["child"].as_str().unwrap().to_string();
+        assert_eq!(started.content, "Started sub-session: Docs check");
+        let child = m.row(&cid).expect("child row");
+        assert_eq!(child.parent, pid);
+        assert_eq!(child.created_by, pid);
+        assert_eq!(child.title, "Docs check");
+        assert_eq!(
+            child.cwd, parent.cwd,
+            "a sub-conversation shares its parent's workspace"
+        );
+        assert!(child.auto_approve);
+        assert_eq!(s.chat_depth(&cid).unwrap(), 1);
+        let children = s.chat_children(&pid, false).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, cid);
+        let brief = s.chat_messages(&cid, 0).unwrap().remove(0);
+        assert_eq!(brief.role, "user");
+        assert_eq!(brief.content, "Check that the docs match the code.");
+
+        // The child's finish reaches the parent as a report, and the
+        // parent (finished by then) runs a turn on it.
+        let report = wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_FINISHED);
+        assert_eq!(report.extra["report"]["child"], cid);
+        assert_eq!(report.extra["report"]["title"], "Docs check");
+        // Every session replays the one script, so the child's report
+        // depends on a race: when its grandchild closed before the child's
+        // first finish, that finish is accepted and the next scripted reply
+        // ("Waiting on it.") closes it; otherwise the finish is refused and
+        // the second one closes with "Done here.". Both are correct.
+        assert!(
+            (report.content.starts_with("Docs checked.") && report.content.contains("Done here."))
+                || (report.content.starts_with("Started the docs check.")
+                    && report.content.contains("Waiting on it.")),
+            "{}",
+            report.content
+        );
+        let parent = wait_status(&m, &pid, &["idle"]);
+        assert_eq!(
+            parent.status, "idle",
+            "the report reopened the finished parent"
+        );
+        let msgs = s.chat_messages(&pid, 0).unwrap();
+        let after = msgs.iter().position(|x| x.n == report.n).unwrap();
+        assert!(
+            msgs[after + 1..].iter().any(|x| x.role == "assistant"),
+            "the parent's agent took the report up: {msgs:#?}"
+        );
+
+        // The grandchild: started by the child (one level down is fine),
+        // refused its own start (two levels down).
+        let g_started = wait_note(&s, &cid, |x| x.get("child").is_some());
+        let gid = g_started.extra["child"].as_str().unwrap().to_string();
+        let grandchild = wait_status(&m, &gid, &["closed", "idle"]);
+        assert_eq!(grandchild.parent, cid);
+        assert_eq!(s.chat_depth(&gid).unwrap(), 2);
+        assert!(s.chat_children(&gid, false).unwrap().is_empty());
+        let steps = s.harness_steps(&grandchild.session_id, -1).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|st| st.content.contains("levels deep at most")),
+            "{steps:#?}"
+        );
+        // The grandchild's finish reaches the child.
+        wait_note(&s, &cid, |x| x["report"]["child"] == gid);
+
+        // The parent's agent steers the child: a note from the parent in
+        // the child's transcript, a turn there, and its reply back.
+        wait_settled(&m, &cid);
+        wait_settled(&m, &pid);
+        let before = s.chat_messages(&pid, 0).unwrap().last().unwrap().n;
+        assert!(m.send_from_parent(&cid, "someone-else", "x").is_err());
+        m.send_from_parent(&cid, &pid, "Also check the README.")
+            .expect("send from parent");
+        let steer = wait_note(&s, &cid, |x| x["from"] == pid);
+        assert_eq!(steer.content, "Also check the README.");
+        wait_idle(&m, &cid);
+        wait_note_after(&s, &pid, before, |x| {
+            x["report"]["kind"] == REPORT_REPLIED && x["report"]["child"] == cid
+        });
+        let listing = m.read_children(&pid, "").unwrap();
+        assert!(
+            listing.contains(&cid) && listing.contains("Docs check"),
+            "{listing}"
+        );
+        let one = m.read_children(&pid, &cid).unwrap();
+        assert!(one.contains("[you] Also check the README."), "{one}");
+        assert!(m.read_children(&pid, &gid).is_err(), "not this one's child");
+        wait_idle(&m, &pid);
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// A sub-conversation is refused for an archived parent and past the
+    /// owner's depth and open caps (settings, 0 lifting one), and one the
+    /// owner closes reports that to its parent.
+    #[test]
+    fn sub_conversations_need_a_live_parent_and_report_the_owners_close() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(home.path(), json!([{"content": "Ok."}, {"content": "Ok."}]));
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let parent = m.create("", "", true, "plan", "owner").expect("create");
+        let pid = parent.id.clone();
+        wait_idle(&m, &pid);
+        assert!(m.create_child(&pid, "", "  ").is_err(), "an empty brief");
+        let child = m
+            .create_child(&pid, "", "Review the plan for gaps.")
+            .expect("child");
+        assert_eq!(child.title, "Review the plan for gaps.");
+        assert_eq!(child.parent, pid);
+        wait_idle(&m, &child.id);
+        wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_REPLIED);
+        wait_idle(&m, &pid);
+        // The caps are the owner's settings: one open child at most, and
+        // a closed one no longer counts; one level deep at most; 0 lifts
+        // a cap.
+        s.set_setting("test", SUB_OPEN_SETTING, "1").unwrap();
+        let err = m
+            .create_child(&pid, "", "a second")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 sub-sessions open"), "{err}");
+        s.set_setting("test", SUB_DEPTH_SETTING, "1").unwrap();
+        let err = m
+            .create_child(&child.id, "", "a grandchild")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 levels deep at most"), "{err}");
+        s.set_setting("test", SUB_DEPTH_SETTING, "0").unwrap();
+        let grandchild = m
+            .create_child(&child.id, "", "a grandchild")
+            .expect("no depth limit");
+        assert_eq!(s.chat_depth(&grandchild.id).unwrap(), 2);
+        wait_idle(&m, &grandchild.id);
+        m.close(&child.id).expect("close");
+        let closed = wait_note(&s, &pid, |x| x["report"]["kind"] == REPORT_FINISHED);
+        assert_eq!(closed.content, "The owner finished it.");
+        wait_idle(&m, &pid);
+        let second = m
+            .create_child(&pid, "", "a second")
+            .expect("a closed child leaves room");
+        wait_idle(&m, &second.id);
+        s.set_setting("test", SUB_OPEN_SETTING, "0").unwrap();
+        let third = m.create_child(&pid, "", "a third").expect("no open limit");
+        wait_idle(&m, &third.id);
+        wait_idle(&m, &pid);
+        m.archive(&pid).expect("archive");
+        assert!(
+            m.create_child(&pid, "", "another").is_err(),
+            "archived parent"
+        );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Hive finishes a conversation whose pull request merged: an idle one
+    /// at once, with its own line; a working one only after its turn ends
+    /// by itself, never cut. Twice adds nothing; the owner's next message
+    /// reopens it; an archived one is refused.
+    #[test]
+    fn hive_finishes_a_conversation_without_cutting_its_turn() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"content": "First."},
+                {"command": "sleep 1"},
+                {"content": "Second."},
+                {"content": "Third."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "one", "owner").expect("create");
+        let id = row.id.clone();
+        wait_idle(&m, &id);
+        assert!(m.finish_from(&id, "  ").is_err(), "a reason is needed");
+
+        // Idle: closed at once, Hive's line and note.
+        assert!(
+            m.finish_from(&id, "pull request #7 merged")
+                .expect("finish")
+        );
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.status, "closed");
+        assert_eq!(row.note, "pull request #7 merged");
+        let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.role, "note");
+        assert_eq!(
+            last.content,
+            "Hive finished this conversation: pull request #7 merged"
+        );
+        assert_eq!(last.extra["closed"], "hive");
+        let before = s.chat_messages(&id, 0).unwrap().len();
+        assert!(!m.finish_from(&id, "again").expect("finish again"));
+        assert_eq!(s.chat_messages(&id, 0).unwrap().len(), before);
+
+        // The owner's message reopens it; a finish during the turn waits
+        // for the reply and closes after it.
+        m.send(&id, "two").expect("send");
+        wait_status(&m, &id, &["running"]);
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            m.finish_from(&id, "pull request #8 merged")
+                .expect("finish")
+        );
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.note, "pull request #8 merged");
+        assert_eq!(
+            transcript(&s, &id)[before..],
+            [
+                ("user".to_string(), "two".to_string()),
+                ("assistant".to_string(), "Second.".to_string()),
+                (
+                    "note".to_string(),
+                    "Hive finished this conversation: pull request #8 merged".to_string()
+                ),
+            ],
+            "the turn ran to its reply"
+        );
+
+        m.archive(&id).expect("archive");
+        assert!(m.finish_from(&id, "late").is_err(), "archived");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn a_session_with_a_sub_session_at_work_stays_open_when_its_pull_request_merges() {
+        let _env = hive_testutil::env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let m = Manager::new(&home.path().display().to_string(), s.clone());
+        for (id, title, parent) in [
+            ("chat-p", "Land the fixes", ""),
+            ("chat-a", "RSI A", "chat-p"),
+            ("chat-b", "RSI B", "chat-p"),
+        ] {
+            s.chat_create(&Row {
+                id: id.into(),
+                title: title.into(),
+                status: "idle".into(),
+                parent: parent.into(),
+                ..Row::default()
+            })
+            .unwrap();
+        }
+        s.chat_set_status("chat-a", "closed", "done").unwrap();
+        s.chat_set_status("chat-b", "idle", RESTART_NOTE).unwrap();
+        let why = "pull request #9 (https://x/9) merged into main; this session is finished";
+        // RSI B was stopped by a restart: the parent stays open and says why, once.
+        assert!(!m.finish_from("chat-p", why).unwrap());
+        assert_eq!(s.chat_get("chat-p").unwrap().unwrap().status, "idle");
+        let last = s.chat_messages("chat-p", 0).unwrap().pop().unwrap();
+        assert_eq!(
+            last.content,
+            "Hive kept this session open: pull request #9 (https://x/9) merged into main, but its sub-session \u{201c}RSI B\u{201d} (stopped by a restart) is not done. Its report comes back here; the session finishes when its agent or you finish it."
+        );
+        assert_eq!(last.extra["kept_open"], true);
+        let before = s.chat_messages("chat-p", 0).unwrap().len();
+        assert!(!m.finish_from("chat-p", why).unwrap());
+        assert_eq!(
+            s.chat_messages("chat-p", 0).unwrap().len(),
+            before,
+            "said once"
+        );
+        // Two at work read as two.
+        s.chat_set_status("chat-a", "running", "").unwrap();
+        assert!(!m.finish_from("chat-p", "pull request #10 merged").unwrap());
+        let last = s.chat_messages("chat-p", 0).unwrap().pop().unwrap();
+        assert!(
+            last.content.contains("its sub-sessions \u{201c}RSI A\u{201d} (still working), \u{201c}RSI B\u{201d} (stopped by a restart) are not done. Their reports come back here"),
+            "{}",
+            last.content
+        );
+        // Once its sub-sessions are done, the merge finishes it.
+        s.chat_set_status("chat-a", "closed", "done").unwrap();
+        s.chat_set_status("chat-b", "closed", "done").unwrap();
+        assert!(m.finish_from("chat-p", why).unwrap());
+        assert_eq!(s.chat_get("chat-p").unwrap().unwrap().status, "closed");
+    }
+
+    #[test]
+    fn a_turn_stopped_to_restart_carries_on_with_the_messages_that_waited() {
+        let msg =
+            |n: i64, role: &str, content: &str, extra: Value| hive_store::ConversationMessage {
+                conversation_id: "c".into(),
+                n,
+                at: String::new(),
+                role: role.into(),
+                content: content.into(),
+                extra,
+            };
+        let stop = msg(1, "note", STOPPED_TO_RESTART_LINE, json!({}));
+        assert_eq!(
+            stopped_to_restart(std::slice::from_ref(&stop)).map(|w| w.len()),
+            Some(0)
+        );
+        // The parent's steering that waited: passed on as the agent would have read it.
+        let row = msg(2, "note", "continue", json!({"from": "chat-p"}));
+        let unsent = msg(
+            3,
+            "note",
+            UNSENT_LINE,
+            json!({"restart": true, "unsent": true, "report": true, "images": 0,
+                   "text": "Message from the session that started you (chat-p):\ncontinue"}),
+        );
+        let waiting = stopped_to_restart(&[stop.clone(), row.clone(), unsent.clone()]).unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert!(waiting[0].text.ends_with("(chat-p):\ncontinue"));
+        assert!(waiting[0].report && waiting[0].row.is_none() && waiting[0].images.is_empty());
+        // Recorded before Hive kept the text, or with pictures: the owner's to send again.
+        let old = msg(
+            3,
+            "note",
+            UNSENT_LINE,
+            json!({"restart": true, "unsent": true}),
+        );
+        assert!(stopped_to_restart(&[stop.clone(), row.clone(), old]).is_none());
+        let pictures = msg(
+            3,
+            "note",
+            UNSENT_LINE,
+            json!({"restart": true, "unsent": true, "text": "see", "images": 2}),
+        );
+        assert!(stopped_to_restart(&[stop.clone(), row.clone(), pictures]).is_none());
+        // The owner stopped it, the agent spoke since, or nothing stopped it: the owner's.
+        let by_owner = msg(3, "note", UNSENT_STOPPED_LINE, json!({"unsent": true}));
+        assert!(stopped_to_restart(&[stop.clone(), row.clone(), by_owner]).is_none());
+        let reply = msg(4, "assistant", "done", json!({}));
+        assert!(stopped_to_restart(&[stop.clone(), reply]).is_none());
+        assert!(stopped_to_restart(&[row, unsent]).is_none());
+        assert_eq!(carried_on_line(0), CARRIED_ON_LINE);
+        assert!(carried_on_line(1).ends_with("then passes on the message that waited for it."));
+        assert!(carried_on_line(2).contains("the 2 messages that waited"));
+    }
+
+    #[test]
+    fn the_next_hub_passes_on_the_message_a_restart_left_waiting() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"content": "Carried on."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let row = m.create("", "", true, "start", "owner").expect("create");
+        wait_idle(&m, &row.id);
+        // The last hub stopped the turn with the owner's next message still queued.
+        s.chat_add_message(&row.id, "note", STOPPED_TO_RESTART_LINE, &json!({}))
+            .unwrap();
+        s.chat_add_message(&row.id, "user", "and the docs", &json!({}))
+            .unwrap();
+        s.chat_add_message(
+            &row.id,
+            "note",
+            UNSENT_LINE,
+            &json!({"restart": true, "unsent": true, "text": "and the docs", "report": false, "images": 0}),
+        )
+        .unwrap();
+        s.chat_set_status(&row.id, "idle", RESTART_NOTE).unwrap();
+        let before = s.chat_messages(&row.id, 0).unwrap().len();
+
+        let next = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        assert_eq!(next.carry_on_restarted(), [row.id.as_str()]);
+        assert!(next.carry_on_restarted().is_empty(), "carried on once");
+        for _ in 0..400 {
+            let n = s.chat_messages(&row.id, 0).unwrap().len();
+            if n >= before + 3 && s.chat_get(&row.id).unwrap().unwrap().status == "idle" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let tail: Vec<(String, String)> = transcript(&s, &row.id)[before..].to_vec();
+        // The fake script starts over in the next hub's session: the
+        // carried-on turn reads "First.", the passed-on message the next.
+        assert_eq!(
+            tail,
+            [
+                ("note".to_string(), carried_on_line(1)),
+                ("assistant".to_string(), "First.".to_string()),
+                ("assistant".to_string(), "Carried on.".to_string()),
+            ],
+            "the stopped turn, then the message that waited; no second copy of it"
+        );
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// The owner closes: an idle conversation at once, a working one by
+    /// stopping its turn; what waited behind is noted as unsent. The effort
+    /// the owner picks restarts the session like a model change and reaches
+    /// the agent.
+    #[test]
+    fn the_owner_closes_idle_and_working_conversations_and_picks_the_effort() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([{"content": "First."}, {"command": "sleep 5"}, {"content": "Never reached."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        assert!(
+            m.create_with("", "", "", "extreme", true, "hi", "owner")
+                .is_err(),
+            "an effort outside the list is refused"
+        );
+        let row = m
+            .create_with("", "", "", "default", true, "one", "owner")
+            .expect("create");
+        let id = row.id.clone();
+        assert_eq!(row.reasoning, "", "default reads as the provider's own");
+        wait_idle(&m, &id);
+        // Idle: closed at once, with the owner's line.
+        m.close(&id).expect("close");
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.status, "closed");
+        assert_eq!(row.note, CLOSED_BY_OWNER_NOTE);
+        let last = s.chat_messages(&id, 0).unwrap().pop().unwrap();
+        assert_eq!(last.role, "note");
+        assert_eq!(last.content, CLOSED_BY_OWNER_LINE);
+        assert_eq!(last.extra["closed"], "owner");
+        let before = s.chat_messages(&id, 0).unwrap().len();
+        m.close(&id).expect("close again");
+        assert_eq!(
+            s.chat_messages(&id, 0).unwrap().len(),
+            before,
+            "closing twice adds nothing"
+        );
+        // A new effort restarts the session on the next turn and the agent
+        // runs with it; the message reopens the conversation. Every session
+        // plays the script from its start, so the reply comes at once.
+        let first_session = row.session_id.clone();
+        assert!(m.set_reasoning(&id, "extreme").is_err());
+        m.set_reasoning(&id, "high").expect("reasoning");
+        assert_eq!(m.row(&id).unwrap().reasoning, "high");
+        m.send(&id, "two").expect("send");
+        let row = wait_idle(&m, &id);
+        assert_eq!(row.status, "idle", "reopened");
+        assert_eq!(row.note, "");
+        assert_ne!(row.session_id, first_session, "the session restarted");
+        {
+            let rt = m.running(&id).unwrap();
+            let guard = rt.started.lock().unwrap();
+            let started = guard.as_ref().unwrap();
+            assert_eq!(started.reasoning, "high");
+            let env = started.agent.lock().unwrap().environment();
+            assert!(
+                env.iter().any(|l| l.contains("; reasoning high")),
+                "{env:#?}"
+            );
+        }
+        assert_eq!(
+            transcript(&s, &id)[before..],
+            [
+                ("user".to_string(), "two".to_string()),
+                ("assistant".to_string(), "First.".to_string()),
+            ]
+        );
+        // Working: the owner's close stops the turn; the message behind it
+        // is noted as unsent, and the conversation stands closed.
+        m.send(&id, "three").expect("send");
+        for _ in 0..400 {
+            if s.chat_get(&id).unwrap().unwrap().status == "running" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        thread::sleep(Duration::from_millis(300));
+        m.send(&id, "four").expect("send");
+        m.close(&id).expect("close");
+        let row = wait_status(&m, &id, &["closed"]);
+        assert_eq!(row.note, CLOSED_BY_OWNER_NOTE);
+        let msgs = s.chat_messages(&id, 0).unwrap();
+        let tail: Vec<(&str, &str)> = msgs[before + 2..]
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("user", "three"),
+                (
+                    "note",
+                    "The turn stopped here: you finished the conversation."
+                ),
+                ("note", CLOSED_BY_OWNER_LINE),
+                ("user", "four"),
+                ("note", UNSENT_CLOSED_LINE),
+            ],
+            "{msgs:#?}"
+        );
+        assert!(m.live(&row).queued.is_empty());
+        m.archive(&id).expect("archive");
+        assert!(
+            m.close(&id).is_err(),
+            "an archived conversation is not closed"
+        );
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+}

@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import { ErrorNotice, Panel, SkeletonRows } from "@/components/pulse/panel";
-import { ToneBadge, When } from "@/components/pulse/who";
+import { ConfirmDialog, showApiError } from "@/components/hive/confirm";
+import { ErrorNotice, Panel, SkeletonRows } from "@/components/hive/panel";
+import { ToneBadge, When } from "@/components/hive/who";
 import { MAX_PROJECT_GOAL_CHARS, projectPath, writes, type ProjectGoal, type ProjectGoalPayload } from "@/lib/api";
 import { num } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -49,7 +49,7 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
         actions={
           goal ? (
             <>
-              <ToneBadge tone="neutral" title={goal.source === "owner" ? "You wrote this goal" : "PULSE wrote this goal from the project; nobody has set one yet"}>{goal.source === "owner" ? "Set by you" : "Written by PULSE"}</ToneBadge>
+              <ToneBadge tone="neutral" title={goal.source === "owner" ? "You wrote this goal" : "Hive wrote this goal from the project; nobody has set one yet"}>{goal.source === "owner" ? "Set by you" : "Written by Hive"}</ToneBadge>
               {canEdit ? (
                 <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                   <PencilIcon /> Edit goal
@@ -72,13 +72,13 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
               <p className="max-w-3xl whitespace-pre-wrap text-sm leading-relaxed anywhere">{goal.text}</p>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
                 {goal.source === "generated" ? (
-                  <span>PULSE wrote this from the project because you haven&apos;t set a goal. Edit it to point the agents at the outcome you want.</span>
+                  <span>Hive wrote this from the project because you haven&apos;t set a goal. Edit it to point the agents at the outcome you want.</span>
                 ) : (
                   <>
-                    {goal.updated_at ? <span>Changed <When d={goal.updated_at} /></span> : <span>Your goal replaces the one PULSE wrote.</span>}
+                    {goal.updated_at ? <span>Changed <When d={goal.updated_at} /></span> : <span>Your goal replaces the one Hive wrote.</span>}
                     {canEdit ? (
                       <Button size="xs" variant="ghost" onClick={() => setResetting(true)}>
-                        <RotateCcwIcon /> Go back to the PULSE goal
+                        <RotateCcwIcon /> Go back to the Hive goal
                       </Button>
                     ) : null}
                   </>
@@ -95,12 +95,12 @@ export function ProjectGoalPanel({ slug }: { slug: string }) {
       <ConfirmDialog
         open={resetting}
         onOpenChange={setResetting}
-        title="Go back to the goal PULSE wrote?"
-        description="Your goal is replaced by the one PULSE writes from the project. Tasks and self-improvement settings stay as they are."
-        action="Use the PULSE goal"
+        title="Go back to the goal Hive wrote?"
+        description="Your goal is replaced by the one Hive writes from the project. Tasks and self-improvement settings stay as they are."
+        action="Use the Hive goal"
         dismiss="Keep my goal"
         onConfirm={() => writes.resetProjectGoal(slug)}
-        success="Back to the PULSE goal. Agents read it from their next run."
+        success="Back to the Hive goal. Agents read it from their next run."
         invalidates={goalViews}
       />
     </section>

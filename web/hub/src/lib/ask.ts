@@ -8,7 +8,7 @@ import type { AskAnswer, AskSource, AskTurn } from "./api";
 export const ASK_HISTORY_CAP = 20;
 // Turns sent back with the next question so follow-ups make sense.
 export const ASK_SEND_TURNS = 6;
-// The server refuses longer questions (pulse_ask::MAX_QUESTION).
+// The server refuses longer questions (hive_ask::MAX_QUESTION).
 export const ASK_MAX_QUESTION = 2000;
 
 export const ASK_STARTERS = ["What waits for me?", "What is blocked, and on whom?", "What changed in the last day?", "What are the agents working on right now?"];
@@ -28,7 +28,7 @@ export type AskMessage =
     };
 
 export function askStorageKey(project: string): string {
-  return "pulse.ask." + (project.trim() || "all");
+  return "hive.ask." + (project.trim() || "all");
 }
 
 export function trimHistory<T>(turns: T[], cap: number = ASK_HISTORY_CAP): T[] {

@@ -114,7 +114,7 @@ export function postKindWord(k?: string | null): string {
   return POST_KIND[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
 }
 
-// Record kinds (pulse record): the label on a record's badge and filter.
+// Record kinds (hive record): the label on a record's badge and filter.
 export const RECORD_KIND: Record<string, string> = {
   adr: "Decision",
   plan: "Plan",
@@ -153,7 +153,7 @@ export function threadName(key?: string | null): string {
 
 // An agent's id as the owner reads it. Leads are named after their project
 // and role in the store ("demo-app-lead", "demo-app-lead-security", see
-// pulse-tasks leads.rs agent_name); workers after their model and number
+// hive-tasks leads.rs agent_name); workers after their model and number
 // ("fable-worker-1"). Plain codenames ("cinder") are already names and stay
 // as they are. With `project`, a lead of that project drops the project
 // from its name ("Lead" rather than "demo-app lead" on demo-app's page).
@@ -204,8 +204,8 @@ export function priorityWord(p: number): string {
 // Plain names for the concepts the store is built on, with the term the CLI
 // and the README use - shown as a hint where an owner may meet the term.
 export const TERMS = {
-  daemon: { word: "background runner", term: "daemon", hint: "The background runner (pulse daemon) plans work and starts agents on this machine." },
-  executor: { word: "machine", term: "executor", hint: "A machine that runs agents: this one, or one PULSE reaches over ssh." },
+  daemon: { word: "background runner", term: "daemon", hint: "The background runner (hive daemon) plans work and starts agents on this machine." },
+  executor: { word: "machine", term: "executor", hint: "A machine that runs agents: this one, or one Hive reaches over ssh." },
   heartbeat: { word: "check-in", term: "heartbeat", hint: "Agents check in every few minutes; a missed check-in means the agent is offline." },
   claim: { word: "picked up", term: "claim", hint: "An agent says “I'm on this” for a few hours, so others leave it alone." },
   quorum: { word: "votes needed", term: "quorum", hint: "How many agents must vote before a suggestion is decided." },

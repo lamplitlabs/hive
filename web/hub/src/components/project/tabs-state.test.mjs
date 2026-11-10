@@ -5,12 +5,12 @@ import { test } from "node:test";
 // The For you tab's split between what waits for the owner and what the
 // agents settle themselves, without react: tabs-state.ts and inbox-state.ts
 // import only pure .ts modules, so this suite runs in a clone without
-// node_modules too (the way pulse evolve measure scores the hub's coverage
+// node_modules too (the way hive evolve measure scores the hub's coverage
 // fixtures). The rendered audit is agents-decided-audit.test.mjs.
 register("./tsx-test-loader.mjs", import.meta.url);
 
 const { AGENTS_DECIDED_HINT, AGENTS_DECIDED_SUMMARY, deciderOf, settledLabel, splitQuestions, waitingNote, whoSettled } = await import("./tabs-state.ts");
-const { buildInbox } = await import("../pulse/inbox-state.ts");
+const { buildInbox } = await import("../hive/inbox-state.ts");
 
 const base = { project: "demo-app", slug: "demo-app", area: "governance", thread: "vote-reasons", kind: "question", stop: false, stale: false, agent: "agent-rose", body: "" };
 const OWNER_Q = { ...base, id: "q-owner", date: "2026-10-28T10:00:00Z", summary: "Ship the beta to everyone?", decider: "owner" };
@@ -42,7 +42,7 @@ test("the audit names who settled each question", () => {
 });
 
 test("the waiting note says where to answer, or how many the agents settle", () => {
-  assert.equal(waitingNote(false, 2), "To answer, open PULSE on the machine that runs it.");
+  assert.equal(waitingNote(false, 2), "To answer, open Hive on the machine that runs it.");
   assert.equal(waitingNote(true, 0), undefined);
   assert.equal(waitingNote(true, 1), "1 question the agents are deciding themselves.");
   assert.equal(waitingNote(true, 2), "2 questions the agents are deciding themselves.");

@@ -18,7 +18,7 @@ const file = (key, kind, project, entries = [], over = {}) => ({
   kind,
   project,
   scope: kind === "user" ? "user" : "project",
-  path: "~/.pulse/memory/" + key + ".md",
+  path: "~/.hive/memory/" + key + ".md",
   exists: entries.length > 0,
   size: entries.length * 40,
   updated_at: entries.length ? "2026-11-01T10:00:00Z" : "",
@@ -71,12 +71,12 @@ test("counts and the summary read as sentences", () => {
   assert.equal(countWords(1234), "1,234 memories");
   const files = [user, shared, demo, quiet, orphan];
   assert.equal(
-    summaryLine({ on: true, total: 5, files, dir: "~/.pulse/memory" }),
-    "5 memories across 3 files, read into every run's prompt in ~/.pulse/memory.",
+    summaryLine({ on: true, total: 5, files, dir: "~/.hive/memory" }),
+    "5 memories across 3 files, read into every run's prompt in ~/.hive/memory.",
   );
-  assert.match(summaryLine({ on: true, total: 0, files: [shared, quiet], dir: "~/.pulse/memory" }), /^Nothing remembered yet/);
-  assert.match(summaryLine({ on: false, total: 5, files, dir: "~/.pulse/memory" }), /^Memory is off.*5 memories still on disk/);
-  assert.match(summaryLine({ on: false, total: 0, files: [], dir: "~/.pulse/memory" }), /^Memory is off.*Nothing is stored/);
+  assert.match(summaryLine({ on: true, total: 0, files: [shared, quiet], dir: "~/.hive/memory" }), /^Nothing remembered yet/);
+  assert.match(summaryLine({ on: false, total: 5, files, dir: "~/.hive/memory" }), /^Memory is off.*5 memories still on disk/);
+  assert.match(summaryLine({ on: false, total: 0, files: [], dir: "~/.hive/memory" }), /^Memory is off.*Nothing is stored/);
 });
 
 test("the Add box offers the user's file first and skips orphans that are gone from disk", () => {

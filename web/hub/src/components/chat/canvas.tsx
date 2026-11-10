@@ -73,8 +73,8 @@ import {
   keepSelection,
 } from "@/components/chat/job-evidence-state";
 import { exitWords, planItems } from "@/components/harness/harness";
-import { EmptyState, Notice, SkeletonRows } from "@/components/pulse/panel";
-import { When } from "@/components/pulse/who";
+import { EmptyState, Notice, SkeletonRows } from "@/components/hive/panel";
+import { When } from "@/components/hive/who";
 import {
   artifactHref,
   harnessFilePath,
@@ -1251,7 +1251,7 @@ function EvidenceTab({ jobId, job }: { jobId: string; job?: TaskJob }) {
       <Pane>
         <EmptyState
           icon={<ImagesIcon className="size-[18px]" />}
-          hint={"Job " + jobId + ". It knows the folder as $PULSE_ARTIFACTS."}
+          hint={"Job " + jobId + ". It knows the folder as $HIVE_ARTIFACTS."}
         >
           {evidenceEmptyText(error)}
         </EmptyState>

@@ -10,10 +10,10 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { showApiError } from "@/components/pulse/confirm";
-import { Disclosure, Notice } from "@/components/pulse/panel";
-import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, type WizardStep } from "@/components/pulse/stepper";
-import { Mono } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { Disclosure, Notice } from "@/components/hive/panel";
+import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, type WizardStep } from "@/components/hive/stepper";
+import { Mono } from "@/components/hive/who";
 import { hrefs } from "@/lib/nav";
 import { errorText, writes, type AddMachineInput, type Compute, type ComputeCaps, type ComputeRequest, type MachineAdded, type Pairing, type ProjectsPayload } from "@/lib/api";
 import { rel } from "@/lib/format";
@@ -23,16 +23,16 @@ import { cn } from "@/lib/utils";
 // Adding a machine from the console, as a few short steps instead of a
 // form full of ssh words. The three ways the shell offers:
 //
-// - Set it up for me (`pulse pair admin@host --name NAME`): the hub reaches
-//   an admin account over ssh, creates the pulse user, installs the hands,
+// - Set it up for me (`hive pair admin@host --name NAME`): the hub reaches
+//   an admin account over ssh, creates the hive user, installs the hands,
 //   registers and probes the machine. "Check the machine" first runs the
 //   same pairing as a dry run (nothing changes) and shows its report; the
 //   real pairing takes minutes and runs on the hub, so the last step
 //   watches its report grow and the owner may close the window meanwhile.
-// - Already set up (`pulse executor add`): a machine someone prepared by
-//   hand - the hands installed and a `pulse` user that answers ssh - is
+// - Already set up (`hive executor add`): a machine someone prepared by
+//   hand - the hands installed and a `hive` user that answers ssh - is
 //   added as drained and checked right away when asked.
-// - Rent one (`pulse compute request` + approve): the owner asks the
+// - Rent one (`hive compute request` + approve): the owner asks the
 //   configured cloud provider for a machine for a few hours, like an agent.
 
 export const refreshMachines = () => invalidate((p) => p === "compute" || p === "runner" || p === "org" || p.startsWith("org?") || p.startsWith("projects/"));
@@ -109,12 +109,12 @@ const STEPS: Record<Mode, WizardStep[]> = {
 };
 
 const MODE_WORDS: Record<Mode, { title: string; icon: React.ComponentType<{ className?: string }>; blurb: string }> = {
-  pair: { title: "Set it up for me", icon: KeyRoundIcon, blurb: "A Linux computer you can reach over ssh with an admin account. PULSE installs what it needs and checks it." },
-  register: { title: "It's already set up", icon: ServerIcon, blurb: "Someone installed PULSE's hands and a pulse user that answers ssh. PULSE adds it and checks it." },
+  pair: { title: "Set it up for me", icon: KeyRoundIcon, blurb: "A Linux computer you can reach over ssh with an admin account. Hive installs what it needs and checks it." },
+  register: { title: "It's already set up", icon: ServerIcon, blurb: "Someone installed Hive's hands and a hive user that answers ssh. Hive adds it and checks it." },
   request: { title: "Rent one from the cloud", icon: CloudIcon, blurb: "Your cloud provider starts a machine for a few hours, the way an agent asks for one." },
 };
 
-// What a project can need that PULSE can't find by itself. The system and
+// What a project can need that Hive can't find by itself. The system and
 // the chip are always found; the rest are words the owner says it offers.
 const OFFERS = ["gpu", "cuda", "android", "xcode", "docker", "chrome"];
 
@@ -148,7 +148,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const [projects, setProjects] = useState<string[]>([]);
   const [offers, setOffers] = useState<string[]>([]);
   const [ownWord, setOwnWord] = useState("");
-  const [workdir, setWorkdir] = useState("/srv/pulse");
+  const [workdir, setWorkdir] = useState("/srv/hive");
   const [workers, setWorkers] = useState("1");
   // Register: check right away.
   const [probe, setProbe] = useState(true);
@@ -201,7 +201,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
 
   const common = () => ({
     name,
-    workdir: workdir.trim() || "/srv/pulse",
+    workdir: workdir.trim() || "/srv/hive",
     workers: workersOk ? workersN : 1,
     projects: onlySome ? projects.join(",") : "",
     labels: offers.join(","),
@@ -255,7 +255,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
       ? "Add a machine"
       : step === "reach"
         ? mode === "pair"
-          ? "How PULSE reaches it"
+          ? "How Hive reaches it"
           : "Where it is"
         : step === "use"
           ? "What it's for"
@@ -279,8 +279,8 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
       ? "Another computer your agents can run on. Pick how you have it."
       : step === "reach"
         ? mode === "pair"
-          ? "An account with passwordless sudo that this computer can ssh to. Check the machine first: it shows what PULSE would do, and changes nothing."
-          : "The pulse account PULSE reaches the machine with."
+          ? "An account with passwordless sudo that this computer can ssh to. Check the machine first: it shows what Hive would do, and changes nothing."
+          : "The hive account Hive reaches the machine with."
         : step === "use"
           ? "Which projects may run on it and what it offers. You can change both later."
           : step === "details"
@@ -372,7 +372,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
         {step === "reach" ? (
           <div className="grid gap-4">
             <div className="grid gap-1.5">
-              <Label htmlFor="machine-address">{mode === "pair" ? "Admin account" : "PULSE account"}</Label>
+              <Label htmlFor="machine-address">{mode === "pair" ? "Admin account" : "Hive account"}</Label>
               <Input
                 id="machine-address"
                 value={address}
@@ -380,14 +380,14 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                   setAddress(e.target.value);
                   setCheck(null);
                 }}
-                placeholder={mode === "pair" ? "e.g. admin@10.0.0.5 or admin@build-box:2222" : "e.g. pulse@gpu-box"}
+                placeholder={mode === "pair" ? "e.g. admin@10.0.0.5 or admin@build-box:2222" : "e.g. hive@gpu-box"}
                 spellCheck={false}
                 autoCapitalize="off"
                 autoFocus
                 aria-invalid={(address && !addressOk) || undefined}
                 className="font-mono text-[13px]"
               />
-              {address && !addressOk ? <p className={bad}>Write it as user@host, with :port when it isn&apos;t 22.</p> : <p className={hint}>{mode === "pair" ? "It needs passwordless sudo, and this computer must be able to ssh to it." : "Usually pulse@ and the machine's name or address."}</p>}
+              {address && !addressOk ? <p className={bad}>Write it as user@host, with :port when it isn&apos;t 22.</p> : <p className={hint}>{mode === "pair" ? "It needs passwordless sudo, and this computer must be able to ssh to it." : "Usually hive@ and the machine's name or address."}</p>}
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="machine-name">Name</Label>
@@ -409,7 +409,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
             {mode === "pair" ? (
               <MachineCheck pairing={checked} started={!!check} error={checkError} busy={busy} disabled={!addressOk || !nameOk} onCheck={() => void startCheck()} />
             ) : (
-              <p className={hint}>PULSE reaches the machine when you add it, so it can take work right away.</p>
+              <p className={hint}>Hive reaches the machine when you add it, so it can take work right away.</p>
             )}
           </div>
         ) : null}
@@ -443,7 +443,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
             </fieldset>
             <fieldset className="grid gap-2">
               <legend className="mb-1 text-sm font-medium">What it offers</legend>
-              <p className={hint}>Pick what a project might need. PULSE finds the system and the chip by itself.</p>
+              <p className={hint}>Pick what a project might need. Hive finds the system and the chip by itself.</p>
               <div className="flex flex-wrap gap-1.5">
                 {[...new Set([...OFFERS, ...offers])].map((w) => {
                   const on = offers.includes(w);
@@ -498,7 +498,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                 <div className="grid gap-1.5">
                   <Label htmlFor="machine-workdir">Folder on the machine</Label>
                   <Input id="machine-workdir" value={workdir} onChange={(e) => setWorkdir(e.target.value)} spellCheck={false} autoCapitalize="off" aria-invalid={!workdirOk || undefined} className="font-mono text-[13px]" />
-                  {workdirOk ? <p className={hint}>Where its copies of the projects and its runs live.</p> : <p className={bad}>An absolute path, such as /srv/pulse.</p>}
+                  {workdirOk ? <p className={hint}>Where its copies of the projects and its runs live.</p> : <p className={bad}>An absolute path, such as /srv/hive.</p>}
                 </div>
                 <div className="grid gap-1.5">
                   <Label htmlFor="machine-workers">Jobs at once</Label>
@@ -593,9 +593,9 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                     <Mono>{address.trim()}</Mono>
                   </Row>
                   <Row label="Projects">{onlySome ? projects.map((s) => active.find((p) => p.slug === s)?.name || s).join(", ") : "Every project"}</Row>
-                  <Row label="Offers">{offers.length ? offers.join(", ") : "Only what PULSE finds itself"}</Row>
+                  <Row label="Offers">{offers.length ? offers.join(", ") : "Only what Hive finds itself"}</Row>
                   <Row label="Folder">
-                    <Mono>{workdir.trim() || "/srv/pulse"}</Mono>
+                    <Mono>{workdir.trim() || "/srv/hive"}</Mono>
                   </Row>
                   {mode === "pair" ? <Row label="Checked">{checked?.status === "ok" ? "Yes, it can be set up" : checked?.status === "failed" ? "The check found a problem" : "Not checked"}</Row> : null}
                 </>
@@ -626,8 +626,8 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                   The same from a terminal on this computer:{" "}
                   <Mono>
                     {mode === "pair"
-                      ? "pulse pair " + address.trim() + " --name " + name + (onlySome && projects.length ? " --projects " + projects.join(",") : "")
-                      : "pulse executor add " + name + " --ssh " + address.trim() + " --workdir " + (workdir.trim() || "/srv/pulse") + (offers.length ? " --labels " + offers.join(",") : "")}
+                      ? "hive pair " + address.trim() + " --name " + name + (onlySome && projects.length ? " --projects " + projects.join(",") : "")
+                      : "hive executor add " + name + " --ssh " + address.trim() + " --workdir " + (workdir.trim() || "/srv/hive") + (offers.length ? " --labels " + offers.join(",") : "")}
                   </Mono>
                 </p>
               </Disclosure>
@@ -687,7 +687,7 @@ function MachineCheck({ pairing, started, error, busy, disabled, onCheck }: { pa
       ) : pairing ? (
         <>
           {pairing.ok ? (
-            <Notice tone="ok">It can be set up. Here is what PULSE would do.</Notice>
+            <Notice tone="ok">It can be set up. Here is what Hive would do.</Notice>
           ) : (
             <Notice tone="bad">
               The check found a problem: {lastLine(pairing.lines)}. Fix it on the machine, or check the account, then check again.

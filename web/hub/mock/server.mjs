@@ -1,9 +1,9 @@
 // Fixture server for `npm run dev:mock`. Serves web/hub/mock/api/**.json at
-// /api/v1/<path> with the same shapes the pulse hub returns, answers the
+// /api/v1/<path> with the same shapes the hive hub returns, answers the
 // owner's writes in memory (nothing is written to disk), and streams
 // events over SSE so the live timeline and chat can be exercised without a
 // hub. Not part of the export. The fixtures are synthetic; regenerate them
-// from the pulse hub with `npm run mock:generate`.
+// from the hive hub with `npm run mock:generate`.
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
@@ -21,10 +21,10 @@ import { createAutomationsMock } from "./automations.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 // The job artifact folders under root/jobs/<id>/artifacts, read on demand.
 const jobArtifacts = createJobArtifactsMock({ root });
-const port = Number(process.env.PULSE_HUB_PORT ?? 8787);
+const port = Number(process.env.HIVE_HUB_PORT ?? 8787);
 const delay = Number(process.env.MOCK_DELAY_MS ?? 120);
-// MOCK_STATIC=out serves the static export next to the API the way the pulse
-// hub does (crates/pulse-hub embeds web/hub/out); used by `npm run serve:out`.
+// MOCK_STATIC=out serves the static export next to the API the way the hive
+// hub does (crates/hive-hub embeds web/hub/out); used by `npm run serve:out`.
 const staticDir = process.env.MOCK_STATIC
   ? normalize(
       join(
@@ -87,7 +87,7 @@ const state = {
   },
 };
 const privateGoalComponent =
-  "(?:private|heldout|held-out|\\.ssh|\\.aws|\\.azure|\\.pulse)";
+  "(?:private|heldout|held-out|\\.ssh|\\.aws|\\.azure|\\.hive)";
 const privateGoalPath = new RegExp(
   "(?:^|[\\s\"'`(\\[<{=:,;])" +
     "(?:file:(?://[^/\\\\\\s\"'`<>]*)?)?" +
@@ -153,8 +153,8 @@ function heldoutState() {
         present: preset !== "missing",
         dir:
           preset === "generated"
-            ? HOME + "/.pulse/private/heldout"
-            : HOME + "/private/pulse-heldout",
+            ? HOME + "/.hive/private/heldout"
+            : HOME + "/private/hive-heldout",
       },
       preset === "ready"
         ? { count: 2 }
@@ -381,7 +381,7 @@ const TREE = {
     "demo-web",
     "experiments",
     "old-site",
-    "pulse",
+    "hive",
     "scratch",
   ],
   "/home/owner/src/demo-api": ["cmd", "internal"],
@@ -391,7 +391,7 @@ const TREE = {
   "/home/owner/src/demo-cli": ["cmd"],
   "/home/owner/src/demo-lib": ["pkg"],
   "/home/owner/src/demo-web": ["src", "public"],
-  "/home/owner/src/pulse": ["cmd", "docs", "internal", "web"],
+  "/home/owner/src/hive": ["cmd", "docs", "internal", "web"],
   "/home/owner/src/old-site": ["public"],
   "/home/owner/src/experiments": ["spike-a"],
   "/home/owner/src/experiments/spike-a": [],
@@ -406,7 +406,7 @@ const CHECKOUTS = new Set([
   "/home/owner/src/demo-web",
   "/home/owner/src/demo-cli",
   "/home/owner/src/demo-lib",
-  "/home/owner/src/pulse",
+  "/home/owner/src/hive",
   "/home/owner/src/old-site",
   "/home/owner/src/experiments/spike-a",
 ]);
@@ -454,7 +454,7 @@ function recordView(r) {
 }
 
 // What kind of machine a project's jobs need (ADR: machines), the way the
-// hub's pulse-store needs module reads it: lowercase words, a few spellings
+// hub's hive-store needs module reads it: lowercase words, a few spellings
 // folded, "" for any machine. Fit is computed against the executors fixture
 // the compute page shows, so both views agree.
 const OS_WORDS = ["macos", "linux", "windows"];
@@ -537,7 +537,7 @@ async function projectNeeds(p) {
 
 function projectGoal(p) {
   const product = p.brain
-    ? "PULSE's agent-first engineering control plane"
+    ? "Hive's agent-first engineering control plane"
     : p.name || p.slug;
   return {
     project: p.slug,
@@ -573,7 +573,7 @@ function folders(raw) {
   if (!children) return { error: "No folder " + path };
   const registered = (p) =>
     state.projects.find((x) => x.path === p)?.slug || "";
-  // The registered project a folder sits inside (ADR-032), "" when none - the current path only, like the pulse hub.
+  // The registered project a folder sits inside (ADR-032), "" when none - the current path only, like the hive hub.
   const inside =
     state.projects.find(
       (x) => x.status === "active" && path.startsWith(x.path + "/"),
@@ -619,10 +619,10 @@ const heldoutRefused = (res, why) =>
     400,
     "Private fixture set is not ready",
     why,
-    "pulse evolve setup DIR",
+    "hive evolve setup DIR",
   );
 // The projects whose next human step was the held-out one: after a write their
-// gates move the way the real hub's do (crates/pulse-hub/src/lifecycle.rs), so the card leaves the inbox.
+// gates move the way the real hub's do (crates/hive-hub/src/lifecycle.rs), so the card leaves the inbox.
 const heldoutGated = new Set();
 const heldoutAuto = () =>
   (state.settings.settings.find((s) => s.name === "evolve.heldout")?.value ||
@@ -637,7 +637,7 @@ function heldoutGates() {
   for (const p of state.projects) {
     if (
       !heldoutGated.has(p.slug) &&
-      !/^pulse evolve setup/.test(p.evolve_next || "")
+      !/^hive evolve setup/.test(p.evolve_next || "")
     )
       continue;
     heldoutGated.add(p.slug);
@@ -646,13 +646,13 @@ function heldoutGates() {
         "C",
         heldoutAuto()
           ? "none - the daemon writes the private set itself"
-          : "pulse evolve setup DIR",
+          : "hive evolve setup DIR",
       ];
     else if (loopOn) [p.evolve_level, p.evolve_next] = ["D", "none"];
     else
       [p.evolve_level, p.evolve_next] = [
         "C",
-        "pulse settings set evolve.loop 1",
+        "hive settings set evolve.loop 1",
       ];
   }
 }
@@ -686,7 +686,7 @@ function evolutionView(slug, d) {
     const problem = !h.configured
       ? "evolve.heldout_dir is not set"
       : !h.present
-        ? "private fixture validation failed; owner: pulse evolve setup DIR"
+        ? "private fixture validation failed; owner: hive evolve setup DIR"
         : h.problem;
     out.gates = {
       ...d.gates,
@@ -873,7 +873,7 @@ const nextId = (prefix, rows) =>
     prefix === "MSG" ? 4 : 3,
   );
 
-// GET tasks/{id}/activity as the hub folds it (pulse-tasks activity.rs):
+// GET tasks/{id}/activity as the hub folds it (hive-tasks activity.rs):
 // the brief, each revision, each message (whole in `reference`), each
 // step added, one run per step that somebody took with its session's
 // loud steps one by one and the quiet stretches (reads, searches, notes)
@@ -1275,7 +1275,7 @@ async function serveStatic(res, pathname) {
 const maskSetting = (s) =>
   s.secret ? { ...s, value: s.value ? "[owner-private]" : "" } : s;
 
-// The Python secret_shaped rule the store keeps (pulse_store::secret_shaped).
+// The Python secret_shaped rule the store keeps (hive_store::secret_shaped).
 function secretShaped(v) {
   return (
     /^(sk|ghp|gho|ghu|ghs|ghr|xox[abpr]|AKIA|AIza|ya29|eyJ)[A-Za-z0-9_\-]{8,}/.test(
@@ -1462,7 +1462,7 @@ async function handle(req, res) {
     if (segs[1] !== "apply") return fail(res, 404, "not found", "no route " + url.pathname, "use update or update/apply");
     if (req.method !== "POST") return fail(res, 405, "method not allowed", "Only POST installs an update.", "Send POST /api/v1/update/apply.");
     if (channel === "source")
-      return fail(res, 409, "update not started", "update.channel resolves to source here: the daemon rebuilds pulse from the brain project's checkout after each landing", "To install published releases instead: pulse settings set update.channel release");
+      return fail(res, 409, "update not started", "update.channel resolves to source here: the daemon rebuilds hive from the brain project's checkout after each landing", "To install published releases instead: hive settings set update.channel release");
     if (apply().state === "installing") return fail(res, 409, "update not started", "an update is already being installed", "Wait for the install running to end.");
     Object.assign(updateApply, { state: "installing", at: now(), actor: "human", from: base.running, latest: base.latest, error: "", endsAt: Date.now() + Number(process.env.MOCK_UPDATE_MS || 4000) });
     return send(res, 202, { ...base, channel, apply: apply() });
@@ -1480,7 +1480,7 @@ async function handle(req, res) {
         "send a JSON object",
       );
     }
-    // Memory (crates/pulse-hub/src/memory_api.rs): remember appends a dated
+    // Memory (crates/hive-hub/src/memory_api.rs): remember appends a dated
     // bullet to one file, forget removes the one entry whose line contains
     // the text; both answer with the file as GET memory lists it.
     if (segs[0] === "memory" && segs.length <= 2) {
@@ -1516,7 +1516,7 @@ async function handle(req, res) {
       flips[segs[2] === "auto" ? "auto_approve" : "lockdown"] = body.on;
       return send(res, 200, { conversation: chatWithFlips(d.conversation) });
     }
-    // Automations (`pulse schedule`, `.pulse/pulse.yaml`): check a draft,
+    // Automations (`hive schedule`, `.hive/hive.yaml`): check a draft,
     // write it into the file or the store, remove an entry, act on a row.
     if (segs[0] === "automations") {
       const a = state.automations;
@@ -1532,7 +1532,7 @@ async function handle(req, res) {
                 : null;
       if (r) return send(res, r.status, r.body);
     }
-    // Add a suggested tool or skill the way `pulse toolkit add` would.
+    // Add a suggested tool or skill the way `hive toolkit add` would.
     if (segs[0] === "toolkit" && segs.length === 1) {
       const project = String(body.project ?? "").trim();
       const kind = String(body.kind ?? "").trim();
@@ -1557,7 +1557,7 @@ async function handle(req, res) {
             404,
             "No tool " + name,
             "the catalog has no tool named " + name,
-            "pulse toolkit --json lists it",
+            "hive toolkit --json lists it",
           );
         if (x.auth !== "none" && x.auth !== "oauth")
           return fail(
@@ -1577,7 +1577,7 @@ async function handle(req, res) {
             409,
             "Already there",
             "a tool named " + name + " exists",
-            "pulse mcp list",
+            "hive mcp list",
           );
         const server = {
           id: "MCP-" + String(++state.seq).padStart(3, "0"),
@@ -1591,7 +1591,7 @@ async function handle(req, res) {
           auth_header: x.auth_header || "",
           secret_ref: "",
           env: {},
-          note: x.about + " Suggested by pulse toolkit for " + project + ".",
+          note: x.about + " Suggested by hive toolkit for " + project + ".",
           status: "enabled",
           created_by: "human",
           created_at: t,
@@ -1612,7 +1612,7 @@ async function handle(req, res) {
             404,
             "No skill " + name,
             "the catalog has no skill named " + name,
-            "pulse toolkit --json lists it",
+            "hive toolkit --json lists it",
           );
         if (state.skills.some((k) => k.name === name))
           return fail(
@@ -1620,7 +1620,7 @@ async function handle(req, res) {
             409,
             "Already there",
             "a skill named " + name + " exists",
-            "pulse skill list",
+            "hive skill list",
           );
         const skill = {
           id: "SKILL-" + String(++state.seq).padStart(3, "0"),
@@ -1666,7 +1666,7 @@ async function handle(req, res) {
           400,
           "Bad role",
           "a role is a short lowercase word: letters, digits and hyphens",
-          "pulse lead add --project P --role docs",
+          "hive lead add --project P --role docs",
         );
       const builtin = state.leads.roles.find((r) => r.role === role);
       const title = String(body.title ?? "").trim() || builtin?.title || "";
@@ -1679,7 +1679,7 @@ async function handle(req, res) {
           "--title and --brief say what " +
             role +
             " owns and what counts as done",
-          "pulse lead add --project " +
+          "hive lead add --project " +
             project +
             " --role " +
             role +
@@ -1696,7 +1696,7 @@ async function handle(req, res) {
           409,
           "Already seated",
           "a " + role + " lead sits on " + project + " already",
-          "pulse lead list --project " + project,
+          "hive lead list --project " + project,
         );
       const every = String(body.every ?? "").trim() || builtin?.every || "1d";
       const m = /^(\d+)([hdw])$/.exec(every);
@@ -1734,7 +1734,7 @@ async function handle(req, res) {
           404,
           "No such lead",
           "nothing seated as " + segs[1],
-          "pulse lead list",
+          "hive lead list",
         );
       const action = segs[2];
       const t = now();
@@ -1873,11 +1873,11 @@ async function handle(req, res) {
       });
     }
     if (segs[0] === "jobs" && segs[1] === "repair") {
-      if (req.headers["x-pulse-job-repair"] !== "yes")
+      if (req.headers["x-hive-job-repair"] !== "yes")
         return fail(
           res,
           403,
-          "missing X-Pulse-Job-Repair: yes",
+          "missing X-Hive-Job-Repair: yes",
           "An explicit confirmation header is required.",
           "Select jobs and confirm their repair.",
         );
@@ -2314,7 +2314,7 @@ async function handle(req, res) {
       if (s.name === "compute.provider") state.compute.caps.provider = v;
       syncHarnessSetting(s.name, v);
       // Owner-private settings: the event names the key only and the echo masks
-      // the value exactly like the pulse hub ("[owner-private]" when set, "" when cleared).
+      // the value exactly like the hive hub ("[owner-private]" when set, "" when cleared).
       emit(
         "owner",
         "settings.set",
@@ -2371,7 +2371,7 @@ async function handle(req, res) {
           emit("daemon", "compute.provisioning", r.id, { size: r.size });
           setTimeout(() => {
             r.status = "ready";
-            r.executor = "pulse-vm" + (state.compute.caps.vms_now + 1);
+            r.executor = "hive-vm" + (state.compute.caps.vms_now + 1);
             state.compute.caps.vms_now += 1;
             r.updated_at = now();
             emit("daemon", "compute.ready", r.id, { executor: r.executor });
@@ -2387,7 +2387,7 @@ async function handle(req, res) {
           404,
           "No project " + segs[1],
           "only a registered project has needs",
-          "pulse projects",
+          "hive projects",
         );
       const parsed = needWords(
         typeof body.needs === "string" ? body.needs : "",
@@ -2398,7 +2398,7 @@ async function handle(req, res) {
           400,
           parsed.error,
           "a need is a word a machine can offer",
-          "pulse machines",
+          "hive machines",
         );
       const was = p.needs || "";
       p.needs = parsed.words.join(",");
@@ -2500,7 +2500,7 @@ async function handle(req, res) {
           400,
           "The brain is chosen in the terminal",
           "The console does not move the brain flag.",
-          "Run pulse init PATH --brain.",
+          "Run hive init PATH --brain.",
         );
       const raw = typeof body.path === "string" ? body.path.trim() : "";
       if (!raw)
@@ -2560,7 +2560,7 @@ async function handle(req, res) {
           baseline: false,
           evolve_level: "B",
           evolve_next:
-            "none - the daemon plans the baseline job on its next tick (pulse daemon)",
+            "none - the daemon plans the baseline job on its next tick (hive daemon)",
           baseline_job: null,
           baseline_failed_at: "",
           constitution: seeded("constitution"),
@@ -2588,7 +2588,7 @@ async function handle(req, res) {
         job,
         job_queued: created,
         environment_record: "",
-        store: "/home/owner/.pulse/pulse.sqlite",
+        store: "/home/owner/.hive/hive.sqlite",
       });
     }
     if (
@@ -2604,7 +2604,7 @@ async function handle(req, res) {
           "No project '" + segs[1] + "'",
           "only a registered project can be " +
             (segs[2] === "remove" ? "removed" : "restored"),
-          "pulse projects",
+          "hive projects",
         );
       if (segs[2] === "restore") {
         if (p.status === "active")
@@ -2613,7 +2613,7 @@ async function handle(req, res) {
             400,
             "Project " + p.slug + " is already active",
             "restore registers an inactive project again",
-            "pulse projects",
+            "hive projects",
           );
         // The real hub restores through board.Init -> RegisterProject, so a checkout gone from disk is refused the same way.
         const refused = checkoutRefusal(p.path);
@@ -2637,7 +2637,7 @@ async function handle(req, res) {
           job,
           job_queued: true,
           environment_record: "",
-          store: "/home/owner/.pulse/pulse.sqlite",
+          store: "/home/owner/.hive/hive.sqlite",
         });
       }
       if (p.status !== "active")
@@ -2646,7 +2646,7 @@ async function handle(req, res) {
           400,
           "Project " + p.slug + " is already " + p.status,
           "remove deactivates an active project",
-          "pulse init " + p.path + "  (registers it again)",
+          "hive init " + p.path + "  (registers it again)",
         );
       if ("dry_run" in body && typeof body.dry_run !== "boolean")
         return fail(
@@ -2704,7 +2704,7 @@ async function handle(req, res) {
         ],
         yours: [
           "rm -rf " + p.path + "  (only if you want the checkout gone)",
-          "pulse init " + p.path + "  (registers it again)",
+          "hive init " + p.path + "  (registers it again)",
         ],
         cancelled_jobs: queued,
         leased_jobs: [],
@@ -2803,7 +2803,7 @@ async function handle(req, res) {
           "labels are lowercase words",
           "Correct the labels.",
         );
-      const workdir = body.workdir || "/srv/pulse";
+      const workdir = body.workdir || "/srv/hive";
       const workers = Number(body.workers) || 1;
       const offers = ["linux", "amd64", ...labels].join(" ");
       if (mode === "register") {
@@ -2811,7 +2811,7 @@ async function handle(req, res) {
           return fail(
             res,
             400,
-            "The machine's ssh address is needed (user@host[:port], usually pulse@host)",
+            "The machine's ssh address is needed (user@host[:port], usually hive@host)",
             "The machine was not added.",
             "Correct the machine's details and add it again.",
           );
@@ -2877,7 +2877,7 @@ async function handle(req, res) {
               workdir +
               "; offers " +
               offers +
-              "); it is drained until `pulse executor probe " +
+              "); it is drained until `hive executor probe " +
               slug +
               "` passes",
           },
@@ -2972,7 +2972,7 @@ async function handle(req, res) {
           p.lines.push(
             "executor add " +
               slug +
-              " --ssh pulse@" +
+              " --ssh hive@" +
               slug +
               " --workdir " +
               workdir +
@@ -2988,7 +2988,7 @@ async function handle(req, res) {
             name: slug,
             kind: "ssh",
             status: "active",
-            address: "pulse@" + slug,
+            address: "hive@" + slug,
             workdir,
             workers,
             projects: body.projects || "*",
@@ -2999,7 +2999,7 @@ async function handle(req, res) {
             created_by: "human",
           });
           emit("human", "executor.add", slug, {
-            address: "pulse@" + slug,
+            address: "hive@" + slug,
             workdir,
             workers,
           });
@@ -3046,9 +3046,9 @@ async function handle(req, res) {
         return fail(
           res,
           400,
-          "The local executor is this machine; use `pulse settings set workers N` to size it",
+          "The local executor is this machine; use `hive settings set workers N` to size it",
           "local is not a row in the store",
-          "pulse settings set workers 0",
+          "hive settings set workers 0",
         );
       const e = state.compute.executors.find((x) => x.name === name);
       if (!e)
@@ -3057,7 +3057,7 @@ async function handle(req, res) {
           404,
           "No executor " + name,
           "only a registered executor can be removed",
-          "pulse executor list",
+          "hive executor list",
         );
       if (e.status === "removed")
         return fail(
@@ -3065,7 +3065,7 @@ async function handle(req, res) {
           400,
           "Executor " + name + " was already removed",
           "its row stays for the runs it made",
-          "pulse executor list",
+          "hive executor list",
         );
       const dry = body.dry_run !== false;
       const preview = {
@@ -3089,7 +3089,7 @@ async function handle(req, res) {
         yours: [
           "ssh " +
             e.address +
-            " sudo userdel pulse  (only if the machine is yours to clean)",
+            " sudo userdel hive  (only if the machine is yours to clean)",
         ],
         cancelled_jobs: [],
         leased_jobs: [],
@@ -3101,7 +3101,7 @@ async function handle(req, res) {
       }
       return send(res, 200, preview);
     }
-    // Keep PULSE running (ADR-038): preview on dry_run true or absent, install on false; the mock never hands over.
+    // Keep Hive running (ADR-038): preview on dry_run true or absent, install on false; the mock never hands over.
     if (segs[0] === "service" && segs.length === 1) {
       if ("dry_run" in body && typeof body.dry_run !== "boolean")
         return fail(
@@ -3115,13 +3115,13 @@ async function handle(req, res) {
       const d = await fixture("service");
       const [daemon, hub] = d.service.units;
       const output = [
-        "daemon launcher: ~/.pulse/bin/pulse-daemon.sh",
+        "daemon launcher: ~/.hive/bin/hive-daemon.sh",
         "#!/bin/sh",
-        "# pulse daemon (ADR-035): launchd runs this script; the crash guard keeps a broken build from looping.",
+        "# hive daemon (ADR-035): launchd runs this script; the crash guard keeps a broken build from looping.",
         "exec " + d.service.binary + " daemon --interval 60 &",
         "",
         "daemon " + d.service.kind + " service file: " + daemon.path,
-        "hub launcher: ~/.pulse/bin/pulse-hub.sh",
+        "hub launcher: ~/.hive/bin/hive-hub.sh",
         "exec " +
           d.service.binary +
           " hub --no-browser --port 8765 --restart-on-change &",
@@ -3159,7 +3159,7 @@ async function handle(req, res) {
           404,
           "No record " + segs[1],
           "nothing by that id is indexed",
-          "pulse record list",
+          "hive record list",
         );
       const words = String(body.words || "").trim();
       const row = state.projects.find((x) => x.slug === base.project);
@@ -3192,7 +3192,7 @@ async function handle(req, res) {
                             : " is the project's own text (r" + r.rev + ")"),
                     )
                     .join("; ")
-                : "no loop records yet (pulse evolve seed)"),
+                : "no loop records yet (hive evolve seed)"),
             "The seeded records are already drafted or adopted; refresh the page.",
           );
         const open = seeded.find((r) => r.draft_job);
@@ -3234,7 +3234,7 @@ async function handle(req, res) {
           400,
           "No draft to " + segs[2],
           base.id + " has no draft filed",
-          "pulse record drafts",
+          "hive record drafts",
         );
       const o = (state.records[base.id] ||= {
         status: base.status,
@@ -3276,7 +3276,7 @@ async function handle(req, res) {
           404,
           "No record " + segs[1],
           "nothing by that id is indexed",
-          "pulse record list",
+          "hive record list",
         );
       const words = String(body.words || "").trim();
       if (!words)
@@ -3295,7 +3295,7 @@ async function handle(req, res) {
             400,
             "Cannot accept " + base.id,
             "only ADRs use human acceptance",
-            "pulse record status " + base.id + " Accepted",
+            "hive record status " + base.id + " Accepted",
           );
       } else {
         const want = String(body.status || "").toLowerCase();
@@ -3305,7 +3305,7 @@ async function handle(req, res) {
             400,
             "The console declines or defers",
             "Only Rejected and Deferred are set here; acceptance is its own action and every other status stays in the terminal.",
-            "Use Accept, or pulse record status " + base.id + " STATUS.",
+            "Use Accept, or hive record status " + base.id + " STATUS.",
           );
         status = want === "rejected" ? "Rejected" : "Deferred";
       }
@@ -3332,11 +3332,11 @@ async function handle(req, res) {
       segs[0] === "heldout" &&
       (segs.length === 1 || (segs.length === 2 && segs[1] === "fixtures"))
     ) {
-      if (req.headers["x-pulse-heldout"] !== "yes")
+      if (req.headers["x-hive-heldout"] !== "yes")
         return fail(
           res,
           403,
-          "missing X-Pulse-Heldout: yes",
+          "missing X-Hive-Heldout: yes",
           "An explicit confirmation header is required.",
           "Confirm the change in the hub.",
         );
@@ -3375,9 +3375,9 @@ async function handle(req, res) {
             "the directory must be outside every registered project",
           );
         if (
-          full === HOME + "/.pulse" ||
-          full === HOME + "/.pulse/fleet" ||
-          full.startsWith(HOME + "/.pulse/fleet/")
+          full === HOME + "/.hive" ||
+          full === HOME + "/.hive/fleet" ||
+          full.startsWith(HOME + "/.hive/fleet/")
         )
           return heldoutRefused(
             res,
@@ -3433,8 +3433,8 @@ async function handle(req, res) {
       if (!judge && !scorer.trim())
         return heldoutRefused(res, "the scorer must not be empty");
       if (
-        /PULSE_HELDOUT_TEMPLATE/.test(request) ||
-        /PULSE_HELDOUT_TEMPLATE/.test(scorer)
+        /HIVE_HELDOUT_TEMPLATE/.test(request) ||
+        /HIVE_HELDOUT_TEMPLATE/.test(scorer)
       )
         return heldoutRefused(res, "the template marker is still in the text");
       if (
@@ -3479,11 +3479,11 @@ async function handle(req, res) {
     }
     // The daemon's push key (ADR-042): browse 1Password, test a reference against the remotes, save when they answer.
     if (segs[0] === "cred" && segs.length >= 2) {
-      if (req.headers["x-pulse-cred"] !== "yes")
+      if (req.headers["x-hive-cred"] !== "yes")
         return fail(
           res,
           403,
-          "missing X-Pulse-Cred: yes",
+          "missing X-Hive-Cred: yes",
           "An explicit confirmation header is required.",
           "Confirm the change in the hub.",
         );
@@ -3507,7 +3507,7 @@ async function handle(req, res) {
             : null
           : dflt;
       const publicKey =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockPublicKeyForTheDemoHubOnlyNotARealKey00 pulse push key (owner-mac)";
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockPublicKeyForTheDemoHubOnlyNotARealKey00 hive push key (owner-mac)";
       const fingerprint =
         "SHA256:MockFingerprintOfTheDemoKey0123456789abcdefghijk";
       if (sub === "token") {
@@ -3531,7 +3531,7 @@ async function handle(req, res) {
         c.token = "the keychain";
         return send(res, 200, {
           stored_in:
-            "the keychain (service pulse, account OP_SERVICE_ACCOUNT_TOKEN)",
+            "the keychain (service hive, account OP_SERVICE_ACCOUNT_TOKEN)",
           report: report(),
         });
       }
@@ -3542,11 +3542,11 @@ async function handle(req, res) {
             409,
             "1Password token not found",
             "no service-account token in OP_SERVICE_ACCOUNT_TOKEN, the keychain or the token file",
-            "Add a service-account token first (pulse cred token or the Connect step), and check op is installed.",
+            "Add a service-account token first (hive cred token or the Connect step), and check op is installed.",
           );
         return send(res, 200, {
           vaults: [
-            { id: "v-pulse", name: "PULSE" },
+            { id: "v-hive", name: "Hive" },
             { id: "v-personal", name: "Personal" },
             { id: "v-work", name: "Work" },
           ],
@@ -3571,15 +3571,15 @@ async function handle(req, res) {
             "Add a service-account token first.",
           );
         const items =
-          vault === "v-pulse"
+          vault === "v-hive"
             ? [
                 {
                   id: "i-push",
-                  title: "pulse push key",
+                  title: "hive push key",
                   category: "SSH_KEY",
                   updated_at: "2026-09-14T10:12:00Z",
                   reference:
-                    "op://PULSE/pulse push key/private key?ssh-format=openssh",
+                    "op://Hive/hive push key/private key?ssh-format=openssh",
                 },
                 {
                   id: "i-old",
@@ -3587,7 +3587,7 @@ async function handle(req, res) {
                   category: "SSH_KEY",
                   updated_at: "2024-03-02T08:00:00Z",
                   reference:
-                    "op://PULSE/old deploy key (2024)/private key?ssh-format=openssh",
+                    "op://Hive/old deploy key (2024)/private key?ssh-format=openssh",
                 },
               ]
             : vault === "v-work"
@@ -3632,7 +3632,7 @@ async function handle(req, res) {
             res,
             400,
             "That is a key, not a reference",
-            "pulse cred set takes a reference to where the key lives, never the key itself.",
+            "hive cred set takes a reference to where the key lives, never the key itself.",
             "Put the key in 1Password, the keychain or a file and pass op://, keychain:// or file://.",
           );
         const m = /^(op|keychain|file):\/\/(.+)$/.exec(reference);
@@ -3786,8 +3786,8 @@ async function handle(req, res) {
         c.generated = true;
         return send(res, 200, {
           generated: {
-            path: HOME + "/.pulse/secrets/push_key",
-            reference: "file://" + HOME + "/.pulse/secrets/push_key",
+            path: HOME + "/.hive/secrets/push_key",
+            reference: "file://" + HOME + "/.hive/secrets/push_key",
             fingerprint,
             public_key: publicKey,
             existed,
@@ -3842,7 +3842,7 @@ async function handle(req, res) {
         404,
         "No project " + segs[1],
         "only a registered project has needs",
-        "pulse projects",
+        "hive projects",
       );
     return send(res, 200, await projectNeeds(p));
   }
@@ -4121,7 +4121,7 @@ async function handle(req, res) {
       );
     return send(res, 200, evolutionView(segs[1], d));
   }
-  // Role leads (`pulse lead`): the seats on a project, what PULSE suggests
+  // Role leads (`hive lead`): the seats on a project, what Hive suggests
   // from the project's own signals, and the built-in roles for the gallery.
   if (segs[0] === "leads" && segs.length === 1) {
     const p = q.get("project") || "demo-app";
@@ -4149,7 +4149,7 @@ async function handle(req, res) {
     const r = state.automations.history(segs[1], q);
     return send(res, r.status, r.body);
   }
-  // The toolkit (`pulse toolkit`): what each checkout asks for and lacks.
+  // The toolkit (`hive toolkit`): what each checkout asks for and lacks.
   if (segs[0] === "toolkit" && segs.length === 1) {
     const p = q.get("project") || "";
     const have = new Set([
@@ -4384,7 +4384,7 @@ async function handle(req, res) {
         404,
         "no such record",
         segs[1] + " is not indexed",
-        "run pulse init in the project checkout",
+        "run hive init in the project checkout",
       );
     const o = state.records[segs[1]];
     const row = state.projects.find((x) => x.slug === d.record.project);
@@ -4416,7 +4416,7 @@ async function handle(req, res) {
       });
     return send(res, 200, view);
   }
-  // Keep PULSE running (ADR-038): the fixture says not installed; a POST with dry_run:false flips it.
+  // Keep Hive running (ADR-038): the fixture says not installed; a POST with dry_run:false flips it.
   if (segs[0] === "service" && segs.length === 1) {
     const d = await fixture("service");
     if (!state.serviceInstalled) return send(res, 200, d);
@@ -4458,7 +4458,7 @@ async function handle(req, res) {
             404,
             "No MCP server " + segs[1],
             "Nothing registered under that id or name.",
-            "pulse mcp list shows what there is.",
+            "hive mcp list shows what there is.",
           );
     }
     if (segs.length === 3 && segs[2] === "login") {
@@ -4471,7 +4471,7 @@ async function handle(req, res) {
           404,
           "No MCP server " + segs[1],
           "Nothing registered under that id or name.",
-          "pulse mcp list shows what there is.",
+          "hive mcp list shows what there is.",
         );
       if (server.auth !== "oauth")
         return fail(
@@ -4479,7 +4479,7 @@ async function handle(req, res) {
           400,
           server.name + " does not sign in with OAuth",
           "its auth is " + server.auth,
-          "pulse mcp update " + server.name + " --auth oauth first",
+          "hive mcp update " + server.name + " --auth oauth first",
         );
       const job = state.mcpLogins.get(server.id);
       return send(
@@ -4511,7 +4511,7 @@ async function handle(req, res) {
             404,
             "No skill " + segs[1],
             "Nothing registered under that id or name.",
-            "pulse skill list shows what there is.",
+            "hive skill list shows what there is.",
           );
     }
     return fail(res, 404, "not found", "No such API route.", "Use /api/v1/.");
@@ -4593,7 +4593,7 @@ const strip = (t) =>
 
 // ----- MCP servers and skills (TASK-022) --------------------------------
 // The mock keeps the hub's rules: slugs, one endpoint per transport, an
-// auth that fits the transport, a pulse-cred reference whenever auth is not
+// auth that fits the transport, a hive-cred reference whenever auth is not
 // none, and never a secret in the store. Connect is canned per row.
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
@@ -4649,7 +4649,7 @@ function mcpValidate(row) {
   if (row.auth === "oauth" && row.secret_ref)
     return [
       "Invalid secret",
-      "auth oauth signs in by itself (pulse mcp login " +
+      "auth oauth signs in by itself (hive mcp login " +
         row.name +
         ") and keeps its own tokens; a client registered with the provider by hand goes on the login",
       "drop the secret; sign in from the card after saving",
@@ -4713,7 +4713,7 @@ function mcpRowFrom(body, base, project) {
   if (row.auth === "oauth")
     row.sign_in = row.sign_in ?? {
       signed_in: false,
-      note: "not signed in: pulse mcp login " + row.name,
+      note: "not signed in: hive mcp login " + row.name,
     };
   else delete row.sign_in;
   return row;
@@ -4730,10 +4730,10 @@ function mcpRowFrom(body, base, project) {
 
 const MOCK_SIGN_IN_MS = 4500;
 
-// GitHub registers no clients, so PULSE carries one (the GitHub CLI's public
+// GitHub registers no clients, so Hive carries one (the GitHub CLI's public
 // app) and signs in through it with the device flow; a provider at
 // auth.hand.example registers none either and carries nothing, which is the
-// needs_client path. Everyone else registers PULSE itself.
+// needs_client path. Everyone else registers Hive itself.
 function mcpIssuer(server) {
   if (/github(?:copilot)?\.com/.test(server.url))
     return {
@@ -4842,7 +4842,7 @@ function mcpLoginStart(server, body, res) {
       redirect_port: port,
       scopes_supported: who.scopes,
       command:
-        "pulse mcp login " +
+        "hive mcp login " +
         server.name +
         " --client-id ID" +
         (who.device ? "" : " --redirect-port " + redirectPort),
@@ -4862,14 +4862,14 @@ function mcpLoginStart(server, body, res) {
         ") signs in with the device flow only, since it has no secret; the code flow at " +
         who.issuer +
         " takes a client you registered by hand: --client-id ID [--client-secret REF] --redirect-port PORT",
-      "fix what the why line names and run the login again; pulse mcp show NAME shows the server",
+      "fix what the why line names and run the login again; hive mcp show NAME shows the server",
     );
   const useDevice =
     flow === "device" || !!builtIn || (flow === "" && clientId && who.device);
   const id =
     clientId ||
     builtIn?.client_id ||
-    "pulse-" + Math.random().toString(36).slice(2, 8);
+    "hive-" + Math.random().toString(36).slice(2, 8);
   steps.push(
     builtIn
       ? "using the built-in client " +
@@ -4967,7 +4967,7 @@ function mcpLogout(server, res) {
   const had = !!server.sign_in?.signed_in;
   server.sign_in = {
     signed_in: false,
-    note: "not signed in: pulse mcp login " + server.name,
+    note: "not signed in: hive mcp login " + server.name,
   };
   if (had) {
     server.updated_at = now();
@@ -5054,7 +5054,7 @@ function mcpWrite(req, res, segs, q, body) {
       404,
       "No MCP server " + (segs[1] ?? ""),
       "Nothing registered under that id or name.",
-      "pulse mcp list shows what there is.",
+      "hive mcp list shows what there is.",
     );
   if (req.method === "PATCH" && segs.length === 2) {
     const keys = Object.keys(body).filter((k) =>
@@ -5128,7 +5128,7 @@ function mcpWrite(req, res, segs, q, body) {
         400,
         server.name + " does not sign in with OAuth",
         "its auth is " + server.auth,
-        "pulse mcp update " + server.name + " --auth oauth first",
+        "hive mcp update " + server.name + " --auth oauth first",
       );
     return mcpLoginStart(server, body, res);
   }
@@ -5139,7 +5139,7 @@ function mcpWrite(req, res, segs, q, body) {
         400,
         server.name + " does not sign in with OAuth",
         "its auth is " + server.auth,
-        "pulse mcp update " + server.name + " --auth oauth first",
+        "hive mcp update " + server.name + " --auth oauth first",
       );
     return mcpLogout(server, res);
   }
@@ -5205,7 +5205,7 @@ function mcpConnectOutcome(server) {
       code: 409,
       error: server.name + " needs a sign-in",
       why: "no sign-in on this machine yet",
-      fix: "pulse mcp login " + server.name,
+      fix: "hive mcp login " + server.name,
     };
   }
   if (server.secret_ref.startsWith("keychain://")) {
@@ -5422,7 +5422,7 @@ async function voiceRoute(req, res, segs, q) {
       return fail(res, 400, "No audio", "The request body is empty.", "Send the recording as the body: audio/pcm (16 kHz, 16-bit, mono) or audio/wav.");
     voiceTick(v);
     if (!v.ready)
-      return fail(res, 409, "The speech model is not set up", v.model.id + " is not on this machine.", "Start the setup from the microphone button, or run `pulse voice setup`.");
+      return fail(res, 409, "The speech model is not set up", v.model.id + " is not on this machine.", "Start the setup from the microphone button, or run `hive voice setup`.");
     const seconds = bytes / 32000;
     await new Promise((r) => setTimeout(r, Math.min(1500, 200 + seconds * 60)));
     v.loaded = v.model.id;
@@ -5474,7 +5474,7 @@ async function voiceRoute(req, res, segs, q) {
 
 // ----- Memory (what agents remembered) -----------------------------------
 // The fixture is the files as the hub lists them; writes change the in-memory
-// copy the way crates/pulse-harness/src/memory.rs changes the Markdown.
+// copy the way crates/hive-harness/src/memory.rs changes the Markdown.
 function memoryView() {
   const files = state.memory.files;
   return {
@@ -5606,7 +5606,7 @@ function skillWrite(req, res, segs, q, body) {
       404,
       "No skill " + (segs[1] ?? ""),
       "Nothing registered under that id or name.",
-      "pulse skill list shows what there is.",
+      "hive skill list shows what there is.",
     );
   if (req.method === "PATCH" && segs.length === 2) {
     const keys = Object.keys(body).filter((k) =>
@@ -5672,6 +5672,6 @@ createServer((req, res) => {
   });
 }).listen(port, "127.0.0.1", () =>
   console.log(
-    `pulse mock hub on http://127.0.0.1:${port}/api/v1/  (fixtures: ${root})`,
+    `hive mock hub on http://127.0.0.1:${port}/api/v1/  (fixtures: ${root})`,
   ),
 );

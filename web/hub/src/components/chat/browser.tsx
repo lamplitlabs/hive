@@ -24,7 +24,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Notice } from "@/components/pulse/panel";
+import { Notice } from "@/components/hive/panel";
 import { browserAddress, isLocalUrl } from "@/lib/canvas";
 import {
   askForHelper,
@@ -215,7 +215,7 @@ export function BrowserTab({
             title={
               helper === "yes"
                 ? "Pick an element: hover and click one on the page, Esc to stop."
-                : "Pick needs the PULSE helper on the page; press for how."
+                : "Pick needs the Hive helper on the page; press for how."
             }
             className="shrink-0"
           >
@@ -242,7 +242,7 @@ export function BrowserTab({
           <Notice tone="info" className="py-2 text-[13px]">
             <span className="grid min-w-0 gap-1.5">
               <span>
-                This page has no PULSE pick helper yet, so the hub cannot see
+                This page has no Hive pick helper yet, so the hub cannot see
                 what you point at. Add one line to the app&apos;s development
                 pages:
               </span>
