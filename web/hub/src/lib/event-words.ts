@@ -306,7 +306,9 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   }
   if (a === "post" || a.startsWith("post.")) {
     const kind = a.startsWith("post.") ? a.slice(5) : str(d?.kind);
-    return POSTED[kind] ?? "posted on the board";
+    // A board-maintenance action (post.remove.*) that is not a post kind
+    // reads from its own VERB entry, so a new cleanup event needs no case here.
+    return POSTED[kind] ?? VERB[a] ?? "posted on the board";
   }
   if (a === "decide") {
     const answer = str(d?.answer);
