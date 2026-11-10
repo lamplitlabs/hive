@@ -2935,10 +2935,27 @@ pub(crate) fn daemon(
                 && let Some(c) = conn.as_ref()
             {
                 let owner = crate::idle_hold::owner_waiting(s, &now);
+                // The machine as the governor sees it after this tick's
+                // dispatch: a load or memory hold is the owner's question
+                // only where the governor itself would refuse the owner.
+                let local_runs = inflight
+                    .values()
+                    .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR);
+                let governor = crate::idle_hold::GovernorTick {
+                    limits,
+                    pressure,
+                    running: local_runs.clone().count(),
+                    measuring: crate::daemon_load::measuring(&s.home),
+                    reserved: usize::from(crate::selfupdate::update_pending()),
+                    owner_running: local_runs
+                        .filter(|d| crate::jobs::is_owner_driven(&d.job))
+                        .count(),
+                };
                 for line in idle_holds.tend(
                     s,
                     &crate::board::brain_project(c),
                     &holds_seen,
+                    &governor,
                     &owner,
                     spacing,
                     &now,
