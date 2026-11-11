@@ -554,14 +554,7 @@ impl Copilot {
         if let Some(left) = request_timeout(cancel) {
             get = get.timeout(left);
         }
-        let res = get.send().map_err(|err| {
-            // A stall past the caller's deadline is the caller's cancel,
-            // not a network fault worth retrying.
-            if cancel.is_cancelled() {
-                return anyhow::Error::from(hive_provider::CancelledError);
-            }
-            provider_error_new(0, "network", &err.to_string(), true).into()
-        })?;
+        let res = get.send().map_err(|err| send_error(cancel, &err))?;
         if !res.status().is_success() {
             return Err(self.http_provider_error(res, true).into());
         }
@@ -675,16 +668,18 @@ impl Copilot {
             "{}/copilot_internal/v2/token",
             github_base().trim_end_matches('/')
         );
-        let res = self
+        let mut get = self
             .http
             .get(url)
             .header(AUTHORIZATION, format!("token {github_token}"))
             .header(ACCEPT, "application/json")
             .header("Editor-Version", EDITOR_VERSION)
             .header("Editor-Plugin-Version", EDITOR_PLUGIN_VERSION)
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
+            .header("User-Agent", USER_AGENT);
+        if let Some(left) = request_timeout(cancel) {
+            get = get.timeout(left);
+        }
+        let res = get.send().map_err(|err| send_error(cancel, &err))?;
         let status = res.status().as_u16();
         if status == 401 || status == 403 || status == 404 {
             let msg = copilot_access_message(status);
@@ -871,13 +866,15 @@ impl Copilot {
         cancel.check()?;
         remember_secret(token);
         let url = format!("{}/user", github_base().trim_end_matches('/'));
-        let res = self
+        let mut get = self
             .http
             .get(url)
             .header(AUTHORIZATION, format!("token {token}"))
-            .header(ACCEPT, "application/json")
-            .send()
-            .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
+            .header(ACCEPT, "application/json");
+        if let Some(left) = request_timeout(cancel) {
+            get = get.timeout(left);
+        }
+        let res = get.send().map_err(|err| send_error(cancel, &err))?;
         if !res.status().is_success() {
             return Err(self.http_provider_error(res, false).into());
         }
@@ -1818,6 +1815,15 @@ fn request_timeout(cancel: &CancelToken) -> Option<Duration> {
         at.saturating_duration_since(std::time::Instant::now())
             .max(Duration::from_millis(1))
     })
+}
+
+/// The error for a request that failed to send: a stall past the caller's
+/// deadline is the caller's cancel, not a network fault worth retrying.
+fn send_error(cancel: &CancelToken, err: &reqwest::Error) -> anyhow::Error {
+    if cancel.is_cancelled() {
+        return anyhow::Error::from(hive_provider::CancelledError);
+    }
+    provider_error_new(0, "network", &err.to_string(), true).into()
 }
 
 fn format_duration(d: Duration) -> String {
@@ -2829,6 +2835,90 @@ mod tests {
         drop(srv);
         release.send(()).unwrap();
         hold.join().unwrap();
+    }
+
+    /// A listener that accepts connections and never answers, held until
+    /// the returned sender fires (or 10s pass).
+    fn stalled_listener() -> (String, std::sync::mpsc::Sender<()>, thread::JoinHandle<()>) {
+        let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", stalled.local_addr().unwrap());
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let hold = thread::spawn(move || {
+            let held: Vec<_> = stalled.incoming().take(1).collect();
+            let _ = released.recv_timeout(Duration::from_secs(10));
+            drop(held);
+        });
+        (url, release, hold)
+    }
+
+    #[test]
+    fn session_token_stops_at_the_callers_deadline() {
+        let _serial = test_serial();
+        // The token endpoint accepts the connection and never answers.
+        let (stalled_url, release, hold) = stalled_listener();
+        let cleanup = reset_globals(&stalled_url, &stalled_url, &stalled_url);
+        let p = new_test_provider(
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .as_ref(),
+            Some(env_token()),
+        );
+        let started = std::time::Instant::now();
+        let err = p
+            .session_token(
+                &cancel().with_timeout(Duration::from_secs(3)),
+                "gho_abcdefghijklmnopqrstuvwxyz",
+                true,
+            )
+            .expect_err("a stalled token endpoint must not produce a token");
+        let took = started.elapsed();
+        cleanup();
+        release.send(()).unwrap();
+        hold.join().unwrap();
+        assert!(
+            took < Duration::from_millis(4500),
+            "session_token waited {took:?} past a 3s deadline: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<hive_provider::CancelledError>()
+                .is_some(),
+            "a missed deadline reads as cancelled, not a network fault: {err:#}"
+        );
+    }
+
+    #[test]
+    fn status_stops_at_the_callers_deadline_when_github_stalls() {
+        let _serial = test_serial();
+        // api.github.com accepts the connection and never answers.
+        let (stalled_url, release, hold) = stalled_listener();
+        let cleanup = reset_globals(&stalled_url, &stalled_url, &stalled_url);
+        let p = new_test_provider(
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .as_ref(),
+            Some(env_token()),
+        );
+        let started = std::time::Instant::now();
+        let err = p
+            .status(&cancel().with_timeout(Duration::from_secs(3)))
+            .expect_err("a stalled /user must not produce a status");
+        let took = started.elapsed();
+        cleanup();
+        release.send(()).unwrap();
+        hold.join().unwrap();
+        assert!(
+            took < Duration::from_millis(4500),
+            "status waited {took:?} past a 3s deadline: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<hive_provider::CancelledError>()
+                .is_some(),
+            "a missed deadline reads as cancelled, not a network fault: {err:#}"
+        );
     }
 
     #[test]

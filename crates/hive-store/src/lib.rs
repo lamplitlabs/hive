@@ -20,6 +20,7 @@ pub mod hooks_ddl;
 pub mod kinds;
 pub mod mcp_ddl;
 pub mod mcp_servers;
+pub mod members;
 pub use hive_hand_core::needs;
 pub mod posts;
 pub mod projects;
@@ -33,6 +34,8 @@ pub mod store;
 pub mod task_source;
 pub mod tasks_ddl;
 pub mod variants;
+pub mod vault;
+pub mod vault_ddl;
 
 pub use archive::*;
 pub use chat::*;
@@ -44,10 +47,12 @@ pub use evolve_ddl::EVOLVE_DDL;
 pub use forget::*;
 pub use harness::*;
 pub use harness_ddl::{HARNESS_COLUMNS, HARNESS_DDL};
+pub use hive_hand_core::vault::Zeroizing;
 pub use hooks_ddl::HOOKS_DDL;
 pub use kinds::*;
 pub use mcp_ddl::MCP_DDL;
 pub use mcp_servers::*;
+pub use members::*;
 pub use posts::*;
 pub use projects::*;
 pub use pyjson::*;
@@ -60,6 +65,8 @@ pub use store::*;
 pub use task_source::{TASK_SOURCE_PREFIX, task_source_clause, task_source_id, task_source_params};
 pub use tasks_ddl::{COMPUTE_COLUMNS, MESSAGE_COLUMNS, SCHEDULE_COLUMNS, TASK_COLUMNS, TASKS_DDL};
 pub use variants::*;
+pub use vault::{VAULT_KEY_FILE, VAULT_MAX_VALUE, VaultEntry, VaultHolder, brain_holder};
+pub use vault_ddl::VAULT_DDL;
 
 #[cfg(test)]
 mod needs_sql_tests;

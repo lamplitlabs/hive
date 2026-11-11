@@ -39,7 +39,7 @@ pub fn register_commands() {
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"hive thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       hive thread show AREA/THREAD --project SLUG [--bodies]\n       hive thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"hive decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
         cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"hive job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--needs WORDS] [--project SLUG]\n       hive job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       hive job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]\n       hive job needs JOB_ID WORDS|-".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
-        cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"hive init [PATH] [--name N] [--remote URL] [--verify CMD] [--needs WORDS] [--brain]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
+        cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"hive init [PATH] [--name N] [--remote URL] [--verify CMD] [--needs WORDS] [--brain] | hive init --store-only".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
         cli_register(Command { name:"move".into(), group:"human".into(), summary:"point a project at the checkout it now lives in (a folder moved or cloned again); the slug and its history stay".into(), usage:"hive move SLUG PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_move, flags:Some(move_flags) });
         cli_register(Command { name:"export".into(), group:"records".into(), summary:"copy the store to a .sql or .sqlite file outside every project".into(), usage:"hive export --sql PATH | --db PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_export, flags:Some(export_flags) });
         cli_register(Command { name:"import".into(), group:"records".into(), summary:"register the projects of a JSON registry (the pre-store ~/.hive/projects.json)".into(), usage:"hive import --registry PATH".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_import, flags:Some(import_flags) });
@@ -196,6 +196,11 @@ fn init_flags(fs: &mut FlagSet) {
         "the machine the project's jobs must run on, as words: macos, linux, arm64, xcode, docker (the repo's .hive/hive.yaml needs: overrides this)",
     );
     fs.bool_var("brain", false, "this checkout is the Hive framework itself");
+    fs.bool_var(
+        "store-only",
+        false,
+        "create this machine's store and register no project (a hosted brain with brain.code none holds no checkout)",
+    );
 }
 fn move_flags(fs: &mut FlagSet) {
     fs.bool_var(
@@ -980,6 +985,29 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     Ok(())
 }
 fn run_init(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
+    if fs.get_bool("store-only") {
+        // The store was created when the command opened it (only `init`
+        // may create one); a hosted brain's image starts from this, with no
+        // checkout to register (ADR-070 rule 6).
+        if !args.is_empty()
+            || ["path", "name", "remote", "verify", "needs"]
+                .iter()
+                .any(|f| !fs.get_string(f).is_empty())
+            || fs.get_bool("brain")
+        {
+            return Err(usage(
+                "init",
+                "--store-only registers no project; give it no PATH and no project flags",
+            ));
+        }
+        let path = store(c)?.path.clone();
+        if c.json {
+            write_json(&mut c.out, &serde_json::json!({ "store": path }))?
+        } else {
+            writeln!(c.out, "store: {path}")?;
+        }
+        return Ok(());
+    }
     let mut path = fs.get_string("path");
     if args.len() > 1 {
         return Err(usage("init", "at most one PATH"));

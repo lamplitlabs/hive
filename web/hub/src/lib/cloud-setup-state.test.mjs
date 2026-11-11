@@ -139,3 +139,135 @@ test("the hub's real /api/v1/clouds answer (captured in mock/api/clouds.json) dr
   assert.ok(missingFields(az, d).some((x) => x.setting === "compute.azure.tenant"));
   assert.ok(p.backup.targets.some((t) => t.id === "azure-blob" && t.cloud === "azure"));
 });
+
+test("a cloud with no sign-in modes, or a payload with no clouds, still gives the form a starting point", () => {
+  const bare = { id: "bare", label: "Bare cloud", blurb: "", auth_setting: "", auth: [], fields: [f("compute.bare.zone", "Zone", true)], backup_target: "", auth_value: "", values: {}, missing: [] };
+  const twoModes = { ...payload().clouds[0], id: "azure", auth_value: "" };
+  const p = payload({ provider: "", clouds: [bare, twoModes] });
+  const d = initialDraft(p);
+  assert.equal(d.provider, "bare", "no stored provider: the first cloud is picked");
+  assert.equal(d.auth.bare, "", "no sign-in modes: no mode is drafted");
+  assert.equal(d.auth.azure, "login", "no stored mode: the cloud's first (default) mode");
+  assert.deepEqual(visibleFields(bare, d).map((x) => x.setting), ["compute.bare.zone"], "no mode: only the cloud's own fields");
+  assert.equal(signInCommand(bare, d), "", "no mode: no sign-in command to show");
+  assert.deepEqual(missingFields(bare, d).map((x) => x.setting), ["compute.bare.zone"], "a field the store never sent counts as empty");
+  assert.equal(readiness(p, d), "Bare cloud still needs zone.");
+  assert.deepEqual(problems(p, d), {}, "an empty required field is named in the summary, not a stopping problem");
+  assert.deepEqual(changes(p, d), [], "the defaulted provider is what the store would pick too; no auth setting to save");
+  d.values["compute.bare.zone"] = "north-1";
+  assert.equal(readiness(p, d), "Bare cloud is set up. Machines are made only when an agent asks and you approve, within the limits below.");
+  assert.deepEqual(changes(p, d), [["compute.bare.zone", "north-1"]], "a field the store never held is saved once filled");
+
+  const empty = payload({ provider: "", clouds: [] });
+  const e = initialDraft(empty);
+  assert.equal(e.provider, "", "no clouds at all: nothing is picked");
+  assert.equal(readiness(empty, e), "Pick where extra machines come from.");
+  assert.deepEqual(problems(empty, e), {});
+  assert.deepEqual(changes(empty, e), []);
+});
+
+test("an unknown or undrafted sign-in mode falls back to the cloud's default one", () => {
+  const p = payload();
+  const az = p.clouds[0];
+  const d = initialDraft(p);
+  d.auth.azure = "no-such-mode";
+  assert.equal(signInCommand(az, d), "az login", "an unknown mode reads as the default");
+  assert.equal(visibleFields(az, d)[0].setting, "compute.azure.subscription");
+  delete d.auth.azure;
+  assert.equal(signInCommand(az, d), "az login", "no drafted mode reads as the default");
+  assert.equal(visibleFields(az, d).length, 4);
+  assert.deepEqual(changes(p, d), [["compute.azure.auth", ""]], "a cleared mode is saved as empty");
+  const fresh = { ...payload(), clouds: payload().clouds.map((c) => ({ ...c, values: {} })) };
+  const n = initialDraft(fresh);
+  n.values = {};
+  assert.deepEqual(changes(fresh, n), [], "neither draft nor store holds a value: nothing changes");
+});
+
+test("a field value is checked the way the store would refuse it", () => {
+  assert.equal(fieldProblem(f("compute.azure.location", "Region", true), "   "), "Region is needed.", "a blank required field");
+  assert.equal(fieldProblem(f("compute.azure.vm_size", "Machine size"), ""), "", "a blank optional field is fine");
+  assert.equal(fieldProblem(f("compute.azure.resource_group", "Resource group"), "hive hands"), "Resource group is one word, without spaces.");
+  assert.equal(fieldProblem(f("compute.multipass.size", "Size"), "cpus=2 mem=4G"), "", "Multipass sizes may hold spaces");
+  assert.match(fieldProblem(f("compute.multipass.size", "Size"), "-----BEGIN RSA"), /looks like a secret/);
+  assert.equal(fieldProblem(f("compute.azure.location", "Region"), "westeurope"), "");
+
+  const p = payload();
+  const d = initialDraft(p);
+  d.values["compute.azure.resource_group"] = "hive hands";
+  assert.deepEqual(problems(p, d), { "compute.azure.resource_group": "Resource group is one word, without spaces." });
+  delete d.values["compute.azure.location"];
+  assert.deepEqual(missingFields(p.clouds[0], d).map((x) => x.setting), ["compute.azure.location"], "a value missing from the draft is empty");
+  assert.equal(readiness(p, d), "Microsoft Azure still needs region.");
+  assert.deepEqual(problems(p, d), { "compute.azure.resource_group": "Resource group is one word, without spaces." });
+});
+
+test("a secret reference is read in the sign-in command only when it names a scheme", () => {
+  assert.equal(readReference("  op://Infra/sp/credential  "), "$(op read 'op://Infra/sp/credential')");
+  assert.equal(readReference("hunter2"), "", "no scheme: nothing to read");
+  assert.equal(readReference("keychain://hive/azure/extra"), "", "a keychain reference with a third part is not a keychain read");
+  assert.equal(readReference(""), "");
+
+  const p = payload();
+  const az = p.clouds[0];
+  const d = initialDraft(p);
+  d.auth.azure = "service-principal";
+  Object.assign(d.values, { "compute.azure.tenant": "t-1", "compute.azure.client_id": "app-1", "compute.azure.client_secret": "hunter2" });
+  assert.equal(signInCommand(az, d), 'az login --service-principal --tenant t-1 --username app-1 --password "<Where the secret lives>"', "an unreadable reference shows its label, never the value");
+  delete d.values["compute.azure.tenant"];
+  assert.match(signInCommand(az, d), /--tenant <Tenant> /, "a value missing from the draft shows its label");
+
+  const custom = {
+    ...az,
+    auth: [{ id: "cli", label: "CLI", blurb: "", sign_in: 'cloud login --zone "{compute.azure.location}" --org {compute.other.org}', fields: [] }],
+  };
+  const c = initialDraft(p);
+  c.auth.azure = "cli";
+  assert.equal(signInCommand(custom, c), 'cloud login --zone "westeurope" --org <compute.other.org>', "a quoted slot keeps its quotes; a slot naming no field shows the setting name");
+});
+
+test("the backup target string and its saves follow the chosen target", () => {
+  const p = payload();
+  const d = initialDraft(p);
+  assert.equal(backupTo(p, d), "", "no target: no backup.to");
+  d.backupTarget = "gone";
+  assert.equal(backupTo(p, d), "", "an unknown target: no backup.to");
+  assert.deepEqual(changes(p, d), [], "an unknown target saves nothing, nor turns backups off when they are off");
+  d.backupTarget = "folder";
+  delete d.backupParts.folder;
+  assert.equal(backupTo(p, d), "", "a target without drafted parts composes empty");
+  assert.deepEqual(changes(p, d), [], "a required part still empty: backup.to is not saved");
+  assert.deepEqual(problems(p, d), {}, "no parts drafted: nothing to refuse yet");
+  d.backupParts.folder = { path: "Volumes/hive" };
+  assert.deepEqual(problems(p, d), { "backup:path": "An absolute path, or one starting with ~/." });
+  d.backupParts.folder = { path: "~/hive-backups" };
+  assert.deepEqual(problems(p, d), {});
+  assert.deepEqual(changes(p, d), [["backup.to", "~/hive-backups"]]);
+  d.backupParts.folder = { path: "/Volumes/hive" };
+  assert.deepEqual(problems(p, d), {});
+
+  d.backupTarget = "command";
+  delete d.backupParts.command;
+  assert.deepEqual(problems(p, d), {}, "no command drafted: nothing to refuse yet");
+  d.backupParts.command = { command: "rclone copy {file} r:hive" };
+  assert.deepEqual(problems(p, d), {});
+  assert.deepEqual(changes(p, d), [["backup.to", "run: rclone copy {file} r:hive"]]);
+
+  d.backupTarget = "azure-blob";
+  d.backupParts["azure-blob"] = { account: "acct", container: "c" };
+  d.values["backup.subscription"] = "sub one";
+  assert.deepEqual(problems(p, d), { "backup.subscription": "Subscription is one word, without spaces." }, "a backup field is checked like a cloud field");
+  d.values["backup.subscription"] = "sub-1";
+  assert.deepEqual(changes(p, d), [["backup.to", "az://acct/c"], ["backup.subscription", "sub-1"]]);
+  delete d.values["backup.subscription"];
+  assert.deepEqual(problems(p, d), {}, "a backup field missing from the draft is empty, not wrong");
+  const bare = { ...p, backup: { ...p.backup, values: {} } };
+  const b = initialDraft(bare);
+  b.backupTarget = "azure-blob";
+  delete b.values["backup.subscription"];
+  assert.deepEqual(changes(bare, b), [], "neither draft nor store holds the backup field: nothing changes");
+
+  const needs = payload({ backup: { ...p.backup, targets: [{ id: "s3", label: "S3", blurb: "", cloud: "", parts: [f("bucket", "Bucket", true)], template: "s3://{bucket}", fields: [f("backup.region", "Backup region", true)] }] } });
+  const n = initialDraft(needs);
+  n.backupTarget = "s3";
+  assert.deepEqual(problems(needs, n), {}, "a required backup field missing from the draft waits for the owner, it does not stop a save");
+});

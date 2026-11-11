@@ -185,6 +185,18 @@
       "value": "https://api.github.com/repos/lamplitlabs/pulse/releases/latest"
     },
     {
+      "choices": null,
+      "default": "",
+      "description": "the hosted front's origin (https://team.example.com) the console may be reached through from anywhere (ADR-070 rule 5): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only",
+      "kind": "text",
+      "min": null,
+      "name": "hub.allow_remote",
+      "secret": false,
+      "updated_at": "2026-09-09T10:00:00Z",
+      "updated_by": "init",
+      "value": ""
+    },
+    {
       "choices": [
         "off",
         "on"
@@ -1224,10 +1236,11 @@
     {
       "choices": [
         "on",
-        "off"
+        "off",
+        "release"
       ],
       "default": "on",
-      "description": "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
+      "description": "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - a hosted brain holds no Hive source (ADR-070 rule 1); off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
       "kind": "choice",
       "min": null,
       "name": "daemon.self_update",
@@ -1235,6 +1248,21 @@
       "updated_at": "",
       "updated_by": "default",
       "value": "on"
+    },
+    {
+      "choices": [
+        "clone",
+        "none"
+      ],
+      "default": "clone",
+      "description": "clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md)",
+      "kind": "choice",
+      "min": null,
+      "name": "brain.code",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "clone"
     },
     {
       "choices": null,
@@ -1381,6 +1409,42 @@
       "updated_at": "",
       "updated_by": "default",
       "value": ""
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "the numeric App ID of the GitHub App Hive reads and writes repositories as (ADR-070 step 3), from the App's settings page on GitHub; with git.github_app.installation_id and git.github_app.private_key_ref set, the brain mints a one-hour installation token scoped to the one repository a job needs, hands it to the run through a git credential helper that lives as long as the run, and pushes and opens pull requests with it before it tries this machine's own logins. Empty: no App, git and gh use what this machine is logged in to",
+      "kind": "identifier",
+      "min": null,
+      "name": "git.github_app.app_id",
+      "secret": false,
+      "updated_at": "2026-11-09T18:02:11Z",
+      "updated_by": "owner",
+      "value": "1048576"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "the numeric id of the GitHub App's installation on your account or organization (the number at the end of github.com/settings/installations/N); the brain exchanges the App's signed JWT for tokens of this installation. Empty: no App",
+      "kind": "identifier",
+      "min": null,
+      "name": "git.github_app.installation_id",
+      "secret": false,
+      "updated_at": "2026-11-09T18:02:11Z",
+      "updated_by": "owner",
+      "value": "52428800"
+    },
+    {
+      "choices": null,
+      "default": "",
+      "description": "where the GitHub App's private key (the .pem GitHub downloads once) lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD (1Password), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). Only the brain reads it, for the seconds it takes to sign a ten-minute JWT; jobs never see it, only the one-hour repository tokens it buys. Empty: no App",
+      "kind": "reference",
+      "min": null,
+      "name": "git.github_app.private_key_ref",
+      "secret": false,
+      "updated_at": "2026-11-09T18:02:11Z",
+      "updated_by": "owner",
+      "value": "op://Private/hive-github-app/private-key"
     },
     {
       "choices": null,

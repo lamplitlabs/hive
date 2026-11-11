@@ -29,6 +29,27 @@
       "status": "drained",
       "workdir": "/srv/hive",
       "workers": 1
+    },
+    {
+      "address": "",
+      "admin": "",
+      "backoff_minutes": 0,
+      "created_at": "2026-09-02T09:10:00Z",
+      "created_by": "dev-1",
+      "errors": 0,
+      "healed_at": "",
+      "kind": "dial",
+      "last_probe_at": "",
+      "name": "build-mini",
+      "next_probe_at": "",
+      "probe_note": "",
+      "projects": "*",
+      "runs_done": 3,
+      "runs_failed": 0,
+      "status": "active",
+      "workdir": "~/.hive-hand/work",
+      "workers": 2,
+      "offers": "macos arm64"
     }
   ],
   "requests": [
@@ -70,6 +91,17 @@
       "size": "Standard_B2ms",
       "status": "denied",
       "updated_at": "2026-09-01T21:01:00Z"
+    }
+  ],
+  "devices": [
+    {
+      "id": "dev-1",
+      "executor": "build-mini",
+      "created_at": "2026-09-02T09:10:00Z",
+      "created_by": "join",
+      "last_seen_at": "2026-09-02T09:14:30Z",
+      "revoked_at": "",
+      "revoked_by": ""
     }
   ]
 }

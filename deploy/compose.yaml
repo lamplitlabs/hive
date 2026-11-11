@@ -1,0 +1,38 @@
+# One hosted brain (docs/security.md). One service per team: copy it with
+# its own volume and port; teams never share a volume.
+#
+#   HIVE_VERSION=v0.2.0 docker compose -f deploy/compose.yaml up -d --build
+#
+# The hub listens on loopback only until hub.allow_remote (ADR-070 step 5)
+# lands, and a container's loopback is its own, so the brain runs on the
+# host's network: the hub is on the host's 127.0.0.1:HIVE_HUB_PORT, reached
+# over an SSH tunnel (ssh -L 8765:127.0.0.1:8765 host). Give each team's
+# service its own HIVE_HUB_PORT.
+services:
+  brain:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        HIVE_VERSION: ${HIVE_VERSION:?set HIVE_VERSION to the release tag the image is built from}
+    image: hive-brain:${HIVE_VERSION}
+    restart: unless-stopped
+    environment:
+      HIVE_HUB_PORT: ${HIVE_HUB_PORT:-8765}
+      # az://ACCOUNT/CONTAINER/PREFIX: daily store backups (docs/security.md "Backups").
+      HIVE_BACKUP_TO: ${HIVE_BACKUP_TO:-}
+      # Where `daemon.self_update release` looks for releases; empty keeps the default.
+      HIVE_UPDATE_LATEST_URL: ${HIVE_UPDATE_LATEST_URL:-}
+    volumes:
+      - brain-data:/data
+    network_mode: host
+    # Not read_only: `daemon.self_update release` writes the new binary
+    # beside the old one, and gh keeps its login under ~/.config.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  # The one place the brain keeps anything. Put it on a disk the host
+  # encrypts at rest (docs/security.md "Encryption at rest").
+  brain-data: {}

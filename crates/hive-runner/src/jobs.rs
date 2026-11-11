@@ -181,6 +181,49 @@ pub(crate) const STORE_KINDS: &[&str] = &[
     crate::suggestions::REVIEW_KIND,
 ];
 
+/// The setting that says whether the brain holds project code (ADR-070
+/// rule 6): `clone` (the default) clones a project for every run here;
+/// `none` keeps every checkout off this machine - it runs only
+/// [`NO_CODE_KINDS`], in an empty workspace, and the rest waits for a hand.
+pub(crate) const BRAIN_CODE_SETTING: &str = "brain.code";
+/// [`BRAIN_CODE_SETTING`]'s value for a brain without code.
+pub(crate) const BRAIN_CODE_NONE: &str = "none";
+
+/// The kinds a brain without code still runs itself: the project lead and
+/// the reflection plan from the board, the task text and what the hands
+/// report, never from a checkout. A review checks out the pull request and
+/// runs the check, so with `brain.code none` it waits for a hand like the
+/// work does.
+pub(crate) const NO_CODE_KINDS: &[&str] =
+    &[crate::lead::LEAD_KIND, crate::suggestions::REVIEW_KIND];
+
+/// Whether `brain.code` is `none` on this machine.
+pub(crate) fn brain_code_none(s: &hive_store::Store) -> bool {
+    s.setting(BRAIN_CODE_SETTING, "clone")
+        .trim()
+        .eq_ignore_ascii_case(BRAIN_CODE_NONE)
+}
+
+/// The jobs a run on `executor` would need a checkout of the project for
+/// while `brain.code` is `none`: every run on this machine (the local
+/// executor, whatever `executor.transport` says - a local `hive-hand`
+/// clones onto this machine's disk too) except [`NO_CODE_KINDS`]. A hand
+/// elsewhere holds its own clone and is never limited.
+pub(crate) fn needs_code_here(s: &hive_store::Store, executor: &str, kind: &str) -> bool {
+    (executor.is_empty() || executor == crate::executor::LOCAL_EXECUTOR)
+        && brain_code_none(s)
+        && !NO_CODE_KINDS.contains(&kind)
+}
+
+/// [`NO_CODE_KINDS`] as a SQL list for `kind IN (...)`.
+fn no_code_kinds_sql() -> String {
+    NO_CODE_KINDS
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// [`STORE_KINDS`] as a SQL list for `kind NOT IN (...)`.
 pub(crate) fn store_kinds_sql() -> String {
     STORE_KINDS
@@ -651,6 +694,14 @@ pub(crate) fn lease_job(
                 crate::executor::LOCAL_EXECUTOR
             ));
             sql.push_str(&format!(" AND j.kind NOT IN ({})", store_kinds_sql()));
+        }
+        // `brain.code none` (ADR-070 rule 6): this machine clones no
+        // project, so it takes only the kinds that plan from the board; the
+        // rest waits for a hand.
+        if (o.executor.is_empty() || o.executor == crate::executor::LOCAL_EXECUTOR)
+            && brain_code_none(s)
+        {
+            sql.push_str(&format!(" AND j.kind IN ({})", no_code_kinds_sql()));
         }
         // The work this agent holds first - its clone and conversation carry
         // on only under it; then the owner's work; then the jobs that need
@@ -4233,6 +4284,175 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             1
         );
     }
+    /// ADR-070 step 3: with a GitHub App configured, the brain mints an
+    /// installation token for the job's one repository and leases it to
+    /// the hand, which pushes the branch over https through a credential
+    /// helper that lives as long as the push. The token is in no log line,
+    /// no event and no file the hand leaves behind.
+    #[test]
+    fn a_job_leased_to_a_local_hive_hand_pushes_with_the_app_token() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if !hive_testutil::githttp::available() {
+            return;
+        }
+        let bin = crate::test_helpers::build_hive();
+        let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
+        let s = crate::test_helpers::new_store();
+        let keys = tempfile::tempdir().unwrap();
+        let Some((key, _)) = crate::gitapp::tests::app_key(keys.path()) else {
+            return;
+        };
+        crate::gitapp::tests::configure(&s, &key);
+        let clock: std::sync::Arc<dyn Fn() -> i64 + Send + Sync> = std::sync::Arc::new(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        });
+        let (api, seen_api) = crate::gitapp::tests::fake_github(clock);
+        let (proj, repo, bare) = crate::test_helpers_daemon::push_fixture(&s);
+        let served = tempfile::tempdir().unwrap();
+        let origin = served.path().join("amistio").join("hive.git");
+        std::fs::create_dir_all(origin.parent().unwrap()).unwrap();
+        crate::test_helpers::run(
+            ".",
+            &[
+                "git",
+                "clone",
+                "-q",
+                "--bare",
+                &bare,
+                origin.to_str().unwrap(),
+            ],
+        );
+        let basic = {
+            use base64::Engine;
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("x-access-token:ghs_minted1")
+            )
+        };
+        let git = hive_testutil::githttp::Server::new(served.path(), &basic);
+        let _ep = crate::gitapp::tests::point_at(&api.url(), &git.url());
+        crate::test_helpers::run(
+            &repo,
+            &[
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                &format!("{}/amistio/hive.git", git.url()),
+            ],
+        );
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
+            .unwrap();
+        s.set_setting(
+            crate::util::HUMAN_AGENT,
+            crate::executor::TRANSPORT_SETTING,
+            crate::executor::TRANSPORT_LOCAL_HAND,
+        )
+        .unwrap();
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let old_hand = crate::executor::set_local_hand(Some((
+            crate::test_helpers_hands::hive_hand_binary(),
+            vec![
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("HIVE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                (
+                    "PATH".into(),
+                    fake_path.trim_start_matches("PATH=").to_string(),
+                ),
+            ],
+        )));
+        struct Restore(Option<crate::executor::HandOverride>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::executor::set_local_hand(self.0.take());
+            }
+        }
+        let _hand = Restore(old_hand);
+        let job = crate::jobs::add_job(
+            &s,
+            proj.str("slug"),
+            "task".into(),
+            "hand push with the app".into(),
+            "commit a note".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        let (run, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the hand'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(reason.is_empty(), "{reason}");
+        let log = std::fs::read_to_string(run.str("log")).unwrap_or_default();
+        assert_eq!(run.str("status"), "done", "run {run:?}\n{log}");
+        let job = crate::jobs::job_row(&s.conn().unwrap(), job.str("id"));
+        let branch = job.str("branch");
+        let local = crate::util::git(&repo, &["rev-parse", &format!("refs/heads/{branch}")]);
+        let pushed = crate::util::git(
+            &origin.display().to_string(),
+            &["rev-parse", &format!("refs/heads/{branch}")],
+        );
+        assert!(local.ok() && pushed.ok(), "{branch} not pushed:\n{log}");
+        assert_eq!(pushed.stdout.trim(), local.stdout.trim());
+        assert!(log.contains("with the leased GitHub App token"), "{log}");
+        assert!(
+            git.seen().iter().any(|a| a == &basic),
+            "git authenticated with the token: {:?}",
+            git.seen()
+        );
+        let minted: Vec<String> = seen_api
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.1.ends_with("/access_tokens"))
+            .map(|r| r.3.clone())
+            .collect();
+        assert_eq!(minted, [r#"{"repositories":["hive"]}"#], "one repository");
+        // The token is in no log line and no event payload.
+        assert!(!log.contains("ghs_minted"), "the token is in the log");
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE detail LIKE '%ghs_minted%' OR subject LIKE '%ghs_minted%'",
+                &[]
+            ),
+            0,
+            "the token is in an event"
+        );
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'hand.push' AND detail LIKE '%GitHub App%'",
+                &[]
+            ),
+            1
+        );
+        let workdir = std::path::Path::new(&s.home).join("hands");
+        let entries = std::fs::read_dir(&workdir)
+            .map(|rd| rd.collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(entries.is_empty(), "hand job dir not cleaned: {entries:?}");
+    }
     #[test]
     fn remote_run_through_a_local_hive_hand() {
         let _serial = crate::test_helpers::serial();
@@ -5873,7 +6093,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         // The owner's task: queued, in progress, in review before this rule
         // existed; the lead's "queued" (08:30) is the chat's last word, and
         // the job it names died at 09:00 (the store's clock stands at 10:00,
-        // so the ask the daemon writes postdates the failure).
+        // so the ask the daemon writes postdates the failure). Its id has the
+        // store's MSG-<stamp>-<n> shape: the lead reads a task's last word
+        // by id, so a made-up id would sort after every real one.
         let early = run("Vision 0", &format!("task:{}", task.id), "failed");
         hive_tasks::set_status(&s, &task.id, "in_progress", "daemon").unwrap();
         hive_tasks::set_status(&s, &task.id, "review", "daemon").unwrap();
@@ -5941,6 +6163,11 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             chosen_asks[0].body.contains("waits for your decision")
                 && chosen_asks[0].body.contains("Which name?"),
+            "{}",
+            chosen_asks[0].body
+        );
+        assert!(
+            !chosen_asks[0].body.contains("tries at it failed"),
             "{}",
             chosen_asks[0].body
         );

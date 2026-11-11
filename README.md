@@ -205,10 +205,11 @@ and lessons as records in the store, where the console searches them and
 | [Evolve settings](docs/evolve.md) | every evolve gate the loop chapter leaves out, with its default and range: drafting, the held-out directory, and the variant loop's trigger, replay, canary and promotion gates |
 | [The harness](docs/harness.md) | how an agent's turn runs: the tools, what a run brings with it, budgets and compaction, sessions, chatting with it, providers and sign-in |
 | [The runner](docs/runner.md) | the daemon loop, services and self-update, stall detection, folder access, bulk storage, backups, keeping the machine awake |
-| [Releases and `hive update`](docs/release.md) | the source and release channels, what a release carries, installing a newer release with `hive update`, the once-per-release line |
+| [Releases and `hive update`](docs/release.md) | the source and release channels, what a release carries, installing a newer release with `hive update`, `daemon.self_update release`, the once-per-release line |
 | [Delivery](docs/landing.md) | every finished branch as a pull request, polling and the local default branch following the upstream, the `land.*` events, what changed from the local landing; workers, the verify command, disk and the load governor, pipelines, dependency alerts, credentials |
 | [The reviewer](docs/review.md) | the review job, the complexity rule, the verdict commands, follow-up jobs, your part (Needs your review, the Merge button), the review lead, events and settings |
-| [Machines](docs/machines.md) | what runs where, pairing hands, heartbeats and presence, moving and removing projects and executors |
+| [Machines](docs/machines.md) | what runs where, pairing hands, the hand, a brain without code, heartbeats and presence, moving and removing projects and executors |
+| [Security notes](docs/security.md) | where a team's code and data live: `brain.code none`, one hosted brain per team (`deploy/`), encryption at rest, backups, deletion on request, release-only updates, and what later ADR-070 steps still add |
 | [Recovery and hygiene](docs/recovery.md) | failed jobs and recovery, lessons and peer help, asking another project, sweep and retention, self-heal, what happens while you are quiet or away |
 | [Development](docs/development.md) | building and testing Hive itself, the crate map, upgrading from older Hive, sharing a copy |
 | [Windows port](docs/windows-port.md) | every unix-only site per crate with its Windows replacement, what already builds off unix, and the emulated check |

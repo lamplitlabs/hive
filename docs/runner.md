@@ -105,6 +105,14 @@ again when the hour is over. A branch that is not there is a 404 too but
 says so, and no other account is tried for it. The tokens stay in the
 process and never reach the log, the board or an event.
 
+When a GitHub App is configured ([landing](landing.md), ADR-070 step 3) every
+pipeline read runs as the App first, with its installation token for the
+one repository in `GH_TOKEN`, and no machine login is asked for a token or
+listed. Only a read the App cannot make (the same 401/403/404 answers: the
+App is not installed on the repository or lacks Actions read access) or a
+token that cannot be minted (written down once as `gitapp.fallback`) goes
+to the remembered login and the rotation above, for the rest of that pass.
+
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
 slot until its controller run ends. Workers are not kept idle: a dispatch

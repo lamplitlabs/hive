@@ -13,6 +13,9 @@ pub(crate) const RECIPE_PATH: &str = "docs/context/environment.md";
 pub(crate) const RECIPE_MAX_TOOLS: usize = 12;
 pub(crate) const RECIPE_UNFIT_SERVICES: &str = "services";
 pub(crate) const RECIPE_UNFIT_HANDS: &str = "hands outdated";
+/// The recipe declares vault secrets and the executor is a remote hand,
+/// which cannot open the team vault before device keys (ADR-070 step 2).
+pub(crate) const RECIPE_UNFIT_SECRETS: &str = "secrets on the brain only";
 pub(crate) const RECIPE_UNFIT_CHECKOUT: &str = "checkout unreadable";
 pub(crate) const RECIPE_UNFIT_MISE: &str = "mise";
 /// The project's committed recipe (or the store's copy of it) does not parse:
@@ -44,6 +47,7 @@ static RECIPE_KEYS: &[&str] = &[
     "setup",
     "env",
     "services",
+    "secrets",
     "suggested_check",
 ];
 #[allow(unused_imports)]
@@ -58,6 +62,10 @@ pub struct Recipe {
     pub has_setup: bool,
     pub env: BTreeMap<String, String>,
     pub services: Vec<String>,
+    /// Names of team vault secrets this project's jobs may be granted
+    /// (ADR-070 rule 4); values never live in the recipe.
+    #[serde(default)]
+    pub secrets: Vec<String>,
     pub suggested_check: String,
     pub has_check: bool,
 }
@@ -294,6 +302,7 @@ pub(crate) fn parse_recipe(text: &str) -> (Option<Recipe>, Vec<String>) {
                         r.has_setup = true;
                     }
                     "services" => r.services = items,
+                    "secrets" => r.secrets = items,
                     _ => {}
                 }
             }
@@ -322,6 +331,18 @@ pub(crate) fn parse_recipe(text: &str) -> (Option<Recipe>, Vec<String>) {
             problems.push(format!("env `{name}`: one line only"));
         } else if secret_shaped(&value) {
             problems.push(format!("env `{name}`: the value is shaped like a credential; secrets never live in the recipe"));
+        }
+    }
+    let mut named = std::collections::BTreeSet::new();
+    for name in &r.secrets {
+        if let Some(why) = hive_hand_core::vault::name_problem(name) {
+            problems.push(format!("`secrets`: {why}"));
+        } else if r.env.contains_key(name) {
+            problems.push(format!(
+                "`secrets`: `{name}` is also set under `env`; a name is one or the other"
+            ));
+        } else if !named.insert(name.clone()) {
+            problems.push(format!("`secrets`: `{name}` is listed twice"));
         }
     }
     for line in &r.setup {
@@ -528,6 +549,9 @@ pub(crate) fn recipe_summary(r: &Recipe) -> String {
     }
     if !r.services.is_empty() {
         parts.push(format!("services {}", r.services.join(", ")));
+    }
+    if !r.secrets.is_empty() {
+        parts.push(format!("secrets {}", r.secrets.join(", ")));
     }
     if parts.is_empty() {
         "recipe with nothing to install".to_string()
@@ -1092,6 +1116,7 @@ pub(crate) fn unfit_phrase(tool: &str) -> String {
     match tool {
         RECIPE_UNFIT_SERVICES => "needs services".to_string(),
         RECIPE_UNFIT_HANDS => RECIPE_UNFIT_HANDS.to_string(),
+        RECIPE_UNFIT_SECRETS => "needs vault secrets, which only the brain opens yet".to_string(),
         RECIPE_UNFIT_CHECKOUT => "cannot read the checkout".to_string(),
         RECIPE_UNFIT_INVALID => "has an environment recipe that does not parse".to_string(),
         _ if tool.starts_with("setup:") => format!("cannot set up {}", setup_unfit_files(tool)),
@@ -1133,6 +1158,10 @@ static TOOL_HINTS: LazyLock<BTreeMap<&'static str, &'static str>> = LazyLock::ne
         (
             RECIPE_UNFIT_SERVICES,
             "the recipe lists `services:`; provide them another way and empty the list - the runner starts no services",
+        ),
+        (
+            RECIPE_UNFIT_SECRETS,
+            "the recipe declares `secrets:`; remote hands open the team vault once they hold a device key (ADR-070 step 2), so these jobs run on the brain's own executor",
         ),
         (
             RECIPE_UNFIT_HANDS,
@@ -1897,6 +1926,32 @@ pub(crate) fn recipe_hive_cli(r: &Recipe) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recipe_declares_vault_secret_names_never_values() {
+        let (r, problems) =
+            parse_recipe("---\nrecipe: 1\nsecrets:\n  - GH_TOKEN\n  - NPM_TOKEN\n---\n");
+        assert!(problems.is_empty(), "{problems:?}");
+        let r = r.unwrap();
+        assert_eq!(r.secrets, ["GH_TOKEN", "NPM_TOKEN"]);
+        assert_eq!(recipe_summary(&r), "secrets GH_TOKEN, NPM_TOKEN");
+        assert_eq!(recipe_block(&r, false), "", "the brain runs secrets");
+        for (text, want) in [
+            ("secrets:\n  - gh-token\n", "not a secret name"),
+            ("secrets:\n  - HIVE_JOB\n", "Hive sets"),
+            ("secrets:\n  - A_KEY\n  - A_KEY\n", "listed twice"),
+            ("env:\n  FOO: bar\nsecrets:\n  - FOO\n", "one or the other"),
+            ("secrets: GH_TOKEN\n", "`- item` lines"),
+        ] {
+            let (_, problems) = parse_recipe(&format!("---\nrecipe: 1\n{text}---\n"));
+            assert!(
+                problems.iter().any(|p| p.contains(want)),
+                "{text:?}: {problems:?}"
+            );
+        }
+        assert!(unfit_phrase(RECIPE_UNFIT_SECRETS).contains("vault secrets"));
+        assert!(tool_hint(RECIPE_UNFIT_SECRETS).contains("device key"));
+    }
 
     #[test]
     fn dns_failures_are_transient_and_npm_peer_notes_are_not() {

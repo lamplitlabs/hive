@@ -91,7 +91,7 @@ public struct HiveSetup: Equatable, Sendable {
         return env
     }
 
-    static func fallbackPath(userHome: String?) -> String {
+    public static func fallbackPath(userHome: String?) -> String {
         var dirs: [String] = []
         if let home = userHome, !home.isEmpty {
             dirs += ["\(home)/.hive/bin", "\(home)/.cargo/bin", "\(home)/.local/bin"]

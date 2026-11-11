@@ -1010,6 +1010,117 @@ mod tests {
         );
     }
 
+    /// ADR-070 step 6: `daemon.self_update release` replaces the binary from
+    /// a published release - here a local release folder - and never runs
+    /// cargo; a hosted brain holds no Hive source to build from.
+    #[test]
+    fn self_update_release_mode_installs_the_release_and_never_runs_cargo() {
+        let _serial = serial();
+        let _env = hive_testutil::env_lock();
+        let _signing = signing_linux();
+        let _reset = crate::test_helpers_selfupdate::reset_guard();
+        let s = new_store();
+        let served = tempfile::tempdir().unwrap();
+        let base = serve(served.path().to_path_buf());
+        let url = release_dir(&base, served.path(), "v0.2.0", false);
+        let home = tempfile::tempdir().unwrap();
+        let binary = installed_binary(home.path());
+        // A cargo on PATH that leaves a mark when anything runs it.
+        let tools = home.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let mark = home.path().join("cargo-ran");
+        std::fs::write(
+            tools.join("cargo"),
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", mark.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tools.join("cargo"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let _path = hive_testutil::setenv(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+        let env = crate::selfupdate::SelfUpdateEnv {
+            binary: binary.clone(),
+            cargo_cmd: "cargo".into(),
+            revision: "0000000000000000000000000000000000000000".into(),
+            actor: "daemon".into(),
+            inflight: 1,
+            version: "v0.1.0".into(),
+            target: TARGET.into(),
+            ..Default::default()
+        };
+        let set = |name: &str, value: &str| s.set_setting("human", name, value).unwrap();
+
+        // Release mode without a release source says so once and installs nothing.
+        set("daemon.self_update", "release");
+        let lines = crate::selfupdate::tend_binary(&s, s.now(), env.clone());
+        assert!(
+            lines.len() == 1 && lines[0].contains("update.latest_url is empty"),
+            "{lines:?}"
+        );
+        assert!(
+            crate::selfupdate::tend_binary(&s, s.now(), env.clone()).is_empty(),
+            "the same wait is said once"
+        );
+
+        set(LATEST_URL_SETTING, &url);
+        let lines = crate::selfupdate::tend_binary(&s, s.now(), env.clone());
+        assert!(
+            lines.is_empty(),
+            "the install runs on its thread: {lines:?}"
+        );
+        crate::test_helpers_selfupdate::wait_self_update_idle();
+        let lines = crate::selfupdate::tend_binary(&s, s.now(), env.clone());
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("installed release v0.2.0") && l.contains(&binary)),
+            "{lines:?}"
+        );
+        // The release's own binary is in place, the old one kept beside it.
+        let installed = std::fs::read_to_string(&binary).unwrap();
+        assert!(installed.contains("v0.2.0"), "{installed}");
+        assert_eq!(
+            std::fs::read_to_string(format!("{binary}.prev")).unwrap(),
+            "old binary"
+        );
+        assert!(!mark.exists(), "release mode ran cargo");
+        let detail: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT detail FROM events WHERE action = ? ORDER BY seq DESC LIMIT 1",
+                [crate::selfupdate::SELF_UPDATE_EVENT],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            detail.contains("\"mode\": \"release\"") && detail.contains("\"to\": \"v0.2.0\""),
+            "{detail}"
+        );
+        // Until the restart, the daemon waits on what it installed (said
+        // once, on the pass that reported the install) and reads nothing
+        // more.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("release v0.2.0 is installed")),
+            "{lines:?}"
+        );
+        let lines = crate::selfupdate::tend_binary(&s, s.now(), env);
+        assert!(lines.is_empty(), "the wait is said once: {lines:?}");
+        assert!(!mark.exists(), "release mode ran cargo");
+    }
+
     #[test]
     fn update_refuses_a_bad_checksum_a_wrong_binary_or_a_missing_target() {
         let _serial = serial();

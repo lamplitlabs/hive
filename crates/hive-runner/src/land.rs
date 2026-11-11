@@ -597,6 +597,58 @@ pub(crate) fn job_id_of(job: crate::util::Row) -> String {
     job.str("id")
 }
 
+/// The `land.held` reason of a branch a brain without code cannot land.
+pub(crate) const BRAIN_CODE_NONE_REASON: &str = "brain-code-none";
+
+/// A brain without code (`brain.code none`, ADR-070 rule 6) holds no
+/// checkout of the project, so it cannot merge a branch in a worktree of
+/// one: the landing waits instead of cloning, and nothing is made under
+/// `HIVE_HOME/work`. The first look records `land.held` (reason
+/// `brain-code-none`); later looks only renew the hold, which the daemon's
+/// passes skip until `HELD_RECHECK_MINUTES` (`held_branch_waits`). None on
+/// a brain that keeps the code.
+pub(crate) fn hold_without_code(
+    s: &hive_store::Store,
+    slug: &str,
+    branch: &str,
+    job: &crate::util::Row,
+    actor: &str,
+    now: &str,
+) -> Option<(String, String)> {
+    if !crate::jobs::brain_code_none(s) {
+        return None;
+    }
+    if let Ok(conn) = s.conn() {
+        let earlier = crate::util::must_one(
+            &conn,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'land.held' AND subject = ? AND json_extract(detail, '$.reason') = ?",
+            &[&branch, &BRAIN_CODE_NONE_REASON],
+        )
+        .int("n");
+        if earlier == 0 {
+            crate::util::event_at(
+                &conn,
+                now,
+                actor,
+                "land.held",
+                branch,
+                serde_json::json!({
+                    "slug": slug,
+                    "job": job_id_of(job.clone()),
+                    "reason": BRAIN_CODE_NONE_REASON,
+                }),
+            );
+        }
+    }
+    set_held_branch(s, slug, branch, now);
+    Some((
+        "held".to_string(),
+        format!(
+            "{branch} waits: brain.code is none, so this brain holds no checkout of {slug} to merge it in; land it through the forge (its pull request) or from a machine that keeps the code, or set brain.code clone"
+        ),
+    ))
+}
+
 pub(crate) fn hold_recipe_branch(
     s: &hive_store::Store,
     project: crate::util::Row,
@@ -1392,6 +1444,10 @@ pub(crate) fn land_branch_with_registry(
             format!("hive lands only hive/* and evolve/* branches, not {branch}"),
         )
         .into());
+    }
+    // A brain without code reads nothing of the checkout and adds no worktree.
+    if let Some(held) = hold_without_code(s, &project.str("slug"), &branch, &job, &actor, &now) {
+        return Ok(held);
     }
     let (exists, unreadable) = branch_exists(root.clone(), branch.clone());
     if !unreadable.is_empty() {
@@ -2825,7 +2881,13 @@ pub(crate) fn land_job_context_with_registry(
     verify: bool,
     reg: &dyn crate::release_age::Registry,
 ) -> LandResult {
-    let (state, note) = if job.str("kind") == "experiment" {
+    // An experiment is measured in worktrees too: on a brain without code
+    // it is held like any branch, before the measurement starts.
+    let (state, note) = if let Some(held) =
+        hold_without_code(s, &project.str("slug"), &job.str("branch"), job, actor, now)
+    {
+        held
+    } else if job.str("kind") == "experiment" {
         crate::experiment::land_experiment_context(
             ctx,
             s,
@@ -6143,6 +6205,97 @@ mod tests {
         let states = res.iter().map(|r| r.state.as_str()).collect::<Vec<_>>();
         assert_eq!(states, ["landed", "landed"], "{res:?}");
         assert_eq!(verify_runs(&log), 2);
+    }
+
+    /// `brain.code none` (ADR-070 rule 6, TASK-107): a finished job branch
+    /// is held with the reason said, the check never runs and nothing is
+    /// made under `HIVE_HOME/work`; the record is written once, and the
+    /// daemon's next pass skips the branch until the recheck. With the code
+    /// back the same branch lands.
+    #[test]
+    fn brain_code_none_holds_a_finished_branch_without_a_worktree() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (s, project, root, log) = checked_project();
+        set_setting(&s, "brain.code", "none");
+        let (job, branch) = finished_branch(
+            &s,
+            &root,
+            "nocode",
+            "nocode.txt",
+            "x",
+            "2026-09-06T09:00:00Z",
+        );
+        let work = std::path::Path::new(&s.home).join("work");
+        let work_entries = || -> Vec<String> {
+            std::fs::read_dir(&work)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        };
+        let before = work_entries();
+        let main_before = run(&root, &["git", "rev-parse", "main"]);
+
+        let res = super::land_pending(&s, project.clone(), "daemon", TEST_NOW, true, 0, false);
+        assert_eq!(res.len(), 1, "{res:?}");
+        assert_eq!(res[0].state, "held", "{}", res[0].note);
+        assert!(
+            res[0].note.contains("brain.code is none"),
+            "{}",
+            res[0].note
+        );
+        assert!(res[0].note.contains(&branch), "{}", res[0].note);
+        assert_eq!(
+            verify_runs(&log),
+            0,
+            "the check ran on a brain without code"
+        );
+        assert_eq!(
+            work_entries(),
+            before,
+            "the landing made something under work/"
+        );
+        let worktrees = run(&root, &["git", "worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|l| l.starts_with("worktree "))
+                .count(),
+            1,
+            "{worktrees}"
+        );
+        assert_eq!(
+            run(&root, &["git", "rev-parse", "main"]),
+            main_before,
+            "main moved"
+        );
+        assert!(
+            !run(&root, &["git", "ls-tree", "--name-only", "main"]).contains("nocode.txt"),
+            "the branch was merged"
+        );
+        let held = event_details(&s, "land.held");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0]["reason"], super::BRAIN_CODE_NONE_REASON);
+        assert_eq!(held[0]["job"], job);
+        assert_eq!(job_row(&s, &job).str("status"), "done");
+        assert!(super::held_branch_waits(&s, "proj", &branch, TEST_NOW));
+
+        // The daemon's next pass skips the held branch; `hive land` by
+        // hand (force) looks again, holds again, and records nothing new.
+        let quiet = super::land_pending(&s, project.clone(), "daemon", TEST_NOW, true, 0, false);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        let by_hand = super::land_pending(&s, project.clone(), "human", TEST_NOW, true, 0, true);
+        assert_eq!(by_hand[0].state, "held", "{}", by_hand[0].note);
+        assert_eq!(event_details(&s, "land.held").len(), 1);
+        assert_eq!(work_entries(), before);
+
+        // With the code back the same branch lands.
+        set_setting(&s, "brain.code", "clone");
+        let landed = super::land_pending(&s, project, "daemon", TEST_NOW, true, 0, true);
+        assert_eq!(landed[0].state, "landed", "{}", landed[0].note);
+        assert!(run(&root, &["git", "ls-tree", "--name-only", "main"]).contains("nocode.txt"));
     }
 
     /// A job's change that has a face waits for its before/after report

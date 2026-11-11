@@ -30,6 +30,7 @@ const LABELS: Record<string, string> = {
   "dependencies.min_release_age_days": "A new dependency version must be at least this old (days)",
   "dependencies.alert_check_minutes": "Look for new security alerts every (minutes)",
   "update.latest_url": "Where to look for a newer Hive release (empty = never look)",
+  "hub.allow_remote": "Reach this console from anywhere through your team front (empty = this machine only)",
   "update.channel": "How this machine gets a newer Hive (source build or published release)",
   "pipeline.watch": "Watch the checks a push sets off on GitHub",
   "pipeline.wait_hours": "Give up on a check still running after (hours)",
@@ -42,6 +43,9 @@ const LABELS: Record<string, string> = {
   "backup.subscription": "Azure subscription of the backup account",
   "verify.lock": "Run checks one at a time",
   "push.credential": "Push key",
+  "git.github_app.app_id": "GitHub App ID",
+  "git.github_app.installation_id": "GitHub App installation",
+  "git.github_app.private_key_ref": "GitHub App key",
   quorum: "Votes a suggestion needs",
   expiry_days: "Close a suggestion after (days)",
   stale_days: "A quiet thread goes stale after (days)",
@@ -132,6 +136,7 @@ const LABELS: Record<string, string> = {
   "lane.retry_minutes": "Retry a failed experiment after (minutes)",
   "lane.short_retry_minutes": "Retry a brief experiment failure after (minutes)",
   "daemon.self_update": "Update Hive by itself",
+  "brain.code": "Project code on this machine",
   "daemon.self_update_retry_minutes": "Try a failed update again after (minutes)",
   "daemon.self_update_settle_minutes": "Wait before updating after a change (minutes, 0 = at once)",
   "daemon.restart_drain_minutes": "Let runs finish before a restart (minutes)",
@@ -232,7 +237,7 @@ const LABELS: Record<string, string> = {
   "voice.language": "Language spoken into the microphone (auto = detect)",
 };
 
-const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
+const PREFIX = /^(compute\.(azure|aws|gcp|multipass)|compute|evolve|daemon|lead|owner|landing|push|git\.github_app|git|harness|provider|lane|baseline|board|inbox|plan|schedule|heartbeat|records|verify|dependencies|pipeline|review|voice)\./;
 
 const HELP: Record<string, string> = {
   stop: "Pause all agent work on this machine until you turn it back on.",
@@ -259,6 +264,7 @@ const HELP: Record<string, string> = {
   "dependencies.min_release_age_days": "How many days a new version of a package must have been published before an agent may adopt it or a merge may bring it in, in every project. Protects against a bad or hijacked release that is pulled within days. 0 turns the wait off.",
   "dependencies.alert_check_minutes": "How often Hive asks GitHub for open security alerts on each project's dependencies.",
   "update.latest_url": "A web address that answers JSON naming the latest Hive release, such as a GitHub releases/latest URL. When set, this machine looks once a day and says when a newer version is out, with a link to it. It only looks; the hive update command installs the release. Empty means it never looks and makes no network request.",
+  "hub.allow_remote": "The web address of your team's hosted front, such as https://team.example.com. When set, the console can be opened from anywhere through the front: reading needs this setting, and every change made there must be signed with a member's passkey, which this machine checks itself, so the front alone cannot change anything. Only you can set it; a value an agent set is ignored. Empty keeps the console on this machine only.",
   "update.channel": "Source: Hive rebuilds itself from the brain project's checkout after each landing. Release: the hive update command downloads the newest published release, checks its checksum and installs it, and every command mentions once per release that one is out. Auto picks source when a brain project is registered and cargo is installed, release otherwise.",
   "pipeline.watch": "What Hive does with the GitHub Actions checks that run on a push it made, to the main branch or to a pull request. Tell me and fix: a failed check is a message for you on the project's board and one fix job for an agent, with the failed step and the end of its log; at most three fix jobs a day per project. Tell me: the message only. Off: Hive does not look.",
   "pipeline.wait_hours": "How many hours Hive waits for a check that is still running before it stops watching that push and tells you.",
@@ -270,6 +276,9 @@ const HELP: Record<string, string> = {
   "backup.keep": "How many of this machine's backups stay at the destination before the oldest is removed. 0 keeps them all.",
   "backup.subscription": "Only for an az:// destination whose storage account lives outside the az CLI's default subscription: its name or id, passed to every az call a backup makes. Leave empty when the account is in the default subscription.",
   "push.credential": "The SSH key Hive pushes with. Only a reference to where the key lives is saved, never the key.",
+  "git.github_app.app_id": "The number GitHub shows on your Hive GitHub App's settings page. With the installation and the key set, every job gets a one-hour token for its one repository instead of a key or login kept on a machine.",
+  "git.github_app.installation_id": "The number at the end of the App's installation page on GitHub (github.com/settings/installations/N, or your organization's).",
+  "git.github_app.private_key_ref": "Where the App's private key (the .pem GitHub downloads) lives: op://, keychain:// or file:// (a 0600 file). Only the reference is saved; only this computer reads the key, to sign for a token.",
   quorum: "How many agents must vote for a suggestion before it can become work.",
   expiry_days: "How long a suggestion stays open for votes before it closes.",
   stale_days: "How long a thread can go untouched before it counts as stale.",
@@ -322,7 +331,8 @@ const HELP: Record<string, string> = {
   "evolve.promote_confidence": "How sure Hive must be that a candidate does better before it adopts it, as a fraction (0.95 is 95%).",
   "evolve.replay_set": "How many past jobs a new candidate re-runs in throwaway copies before it may try real work. 0 skips this step.",
   "evolve.trigger_failures": "How many jobs on one project must fail for the same reason within a week before Hive proposes a candidate to fix it.",
-  "daemon.self_update": "Whether Hive rebuilds and restarts itself when its own source changes. Runs in progress finish first.",
+  "daemon.self_update": "Whether Hive updates and restarts itself. On, it rebuilds from its own source after each change there. From releases, it installs each newer published release after checking it against the release's checksums, and never builds anything: the choice for a hosted brain, which holds no Hive source. Runs in progress finish first.",
+  "brain.code": "Clone, this machine copies a project to run its jobs, its check scripts and its merges. None, no project code is ever copied here: this machine only plans, from the board, the task text and what the hands report, and every job that needs the code waits for a hand. The choice for a hosted brain (docs/security.md).",
   "machine.labels": "Words a project can ask for in its .hive/hive.yaml (needs:) and this machine then counts as offering, comma-separated: gpu, android, a tool's name. Its system (macos, linux), chip (arm64, amd64), and xcode and docker are found on their own; the Machines page shows the whole list.",
   "executor.transport": "Local, this machine runs its own jobs the way it always has. Local hand, it hands them to the hive-hand program installed beside Hive: the hand works in its own folder and, once the commits pass the identity check, pushes the job's branch with the push key Hive lends it for that one push. Planning and review jobs stay local.",
   "machine.reserve": "On, this machine takes only the jobs that need something it offers, such as a project that needs a Mac with Xcode, and leaves the rest of the queue to the other machines. Off, it takes any job it can run.",

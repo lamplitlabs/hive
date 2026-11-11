@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
+import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, GitBranchIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,9 +9,11 @@ import { SectionHeading } from "@/components/hive/item-card";
 import { PageHeader } from "@/components/hive/page-header";
 import { EmptyState, ErrorNotice, Notice, SkeletonPage } from "@/components/hive/panel";
 import { AppearanceSection } from "@/components/settings/appearance-section";
+import { SecretsSection } from "@/components/settings/secrets";
 import { RunningStrip } from "@/components/settings/running";
 import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
 import { CredentialRow } from "@/components/settings/credential";
+import { GitAppStrip } from "@/components/settings/git-app";
 import { HARNESS_SETTING_KEYS, HarnessSettingsCard, isHarnessSetting } from "@/components/settings/harness";
 import { NotificationsCard } from "@/components/settings/notifications";
 import { PauseCard, SettingRow, setShowKeys, useShowKeys } from "@/components/settings/setting-row";
@@ -37,6 +39,7 @@ const ICONS: Record<GroupIcon, Icon> = {
   Cloud: CloudIcon,
   ShieldAlert: ShieldAlertIcon,
   Gauge: GaugeIcon,
+  GitBranch: GitBranchIcon,
   Server: ServerIcon,
   Sparkles: SparklesIcon,
   Plug: PlugIcon,
@@ -71,7 +74,7 @@ interface Group {
 // notifications, the harness, then the caps (Limits), machines, self-improvement, this machine
 // and the advanced provider addresses. Keys the store knows that no section
 // claims fall into "Other", so a new cap the runner learns never disappears
-// from the owner's view. Anchors (#stop #owner #notify #harness #runner #compute
+// from the owner's view. Anchors (#stop #owner #notify #harness #runner #compute #git
 // #evolve #daemon #provider #other) are linked from other pages.
 const RUNNER_CLUSTERS: Cluster[] = [
   { title: "How much work runs", keys: ["stop", "capacity", "jobs_per_day", "minutes_per_job", "prune_after_days"] },
@@ -94,7 +97,9 @@ const COMPUTE_CLUSTERS: Cluster[] = [
 ];
 const DAEMON_CLUSTERS: Cluster[] = [
   { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes", "update.latest_url"] },
+  { title: "Project code", keys: ["brain.code"] },
   { title: "Staying awake", keys: ["daemon.keep_awake"] },
+  { title: "Reaching the console from anywhere", keys: ["hub.allow_remote"] },
   { title: "What this machine offers", keys: ["machine.labels", "machine.reserve"] },
   { title: "Failed work", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
   { title: "Cleanup and disk space", keys: ["daemon.sweep", "daemon.min_free_mb", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.chat_worktree_keep_days", "daemon.sweep_keep_days", "daemon.log_keep_days", "daemon.log_max_mb", "daemon.transcript_keep_days", "daemon.artifact_keep_days", "daemon.sweep_runners", "daemon.runner_keep_days", "daemon.vacuum_free_mb", "daemon.archive_days", "daemon.build_cache", "daemon.build_cache_keep_days", "hygiene.cargo_target", "hygiene.cargo_target_hours"] },
@@ -130,6 +135,14 @@ const GROUPS: Group[] = [
     strip: (canEdit) => <CloudSetup canEdit={canEdit} />,
   },
   {
+    id: "git",
+    title: "Git",
+    note: "How jobs push and open pull requests. With a GitHub App, each job gets a one-hour token for its one repository; without one, git and gh use this computer's own logins.",
+    keys: ["git.github_app.app_id", "git.github_app.installation_id", "git.github_app.private_key_ref"],
+    match: (n) => n.startsWith("git."),
+    strip: () => <GitAppStrip />,
+  },
+  {
     id: "evolve",
     title: "Self-improvement",
     note: "Experiments where agents try changes and keep the ones that score better on tests. Your private tests stay hidden from agents.",
@@ -144,7 +157,7 @@ const GROUPS: Group[] = [
     keys: keysOf(DAEMON_CLUSTERS),
     match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat.") || n.startsWith("hygiene.") || n.startsWith("machine."),
     clusters: DAEMON_CLUSTERS,
-    primary: ["daemon.self_update", "daemon.keep_awake", "daemon.recover", "daemon.sweep", "daemon.min_free_mb", "machine.labels", "machine.reserve"],
+    primary: ["daemon.self_update", "brain.code", "daemon.keep_awake", "daemon.recover", "daemon.sweep", "daemon.min_free_mb", "machine.labels", "machine.reserve"],
     strip: () => <RunningStrip />,
   },
   {
@@ -184,8 +197,10 @@ const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "general", title: "General", icon: iconOf("general") },
   { id: "appearance", title: "Appearance", icon: iconOf("appearance") },
   { id: "harness", title: "Harness", icon: iconOf("harness") },
+  { id: "secrets", title: "Secrets", icon: iconOf("secrets") },
   { id: "runner", title: "Limits", icon: iconOf("runner") },
   { id: "compute", title: "Machines", icon: iconOf("compute") },
+  { id: "git", title: "Git", icon: iconOf("git") },
   { id: "evolve", title: "Self-improvement", icon: iconOf("evolve") },
   { id: "daemon", title: "This machine", icon: iconOf("daemon") },
   { id: "provider", title: "Provider addresses", icon: iconOf("provider") },
@@ -206,6 +221,7 @@ const useHash = () => useSyncExternalStore(subscribeHash, () => window.location.
 // settings (matched like every other row): the card's headings and words.
 // The same for the Notifications card, which keeps its choices in this
 // browser rather than in Hive's settings.
+const SECRETS_WORDS = "secrets secret vault team vault api key keys token tokens password env environment variable recipe";
 const NOTIFY_WORDS = "notifications notify notification alerts alert sound chime bell desktop browser mac question waits for you finished done reply";
 // Appearance is browser-only (no setting rows), so a search reaches it by its words.
 const APPEARANCE_WORDS = "appearance theme dark light system mode density compact comfortable font geist readable atkinson text size larger default look colours colors";
@@ -257,7 +273,8 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   // Owner-private: the hub answers "[owner-private]" instead of the real path once set.
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
   { name: "evolve.draft_hours", value: "24", default: "24", kind: "count", min: 0, choices: null, description: "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button" },
-  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
+  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off", "release"], description: "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - a hosted brain holds no Hive source (ADR-070 rule 1); off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
+  { name: "brain.code", value: "clone", default: "clone", kind: "choice", min: null, choices: ["clone", "none"], description: "clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
   { name: "daemon.keep_awake", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "on", "always"], description: "on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say" },
   { name: "machine.labels", value: "", default: "", kind: "text", min: null, choices: null, description: "what this machine offers beyond its OS and architecture, as words a project or job can need (hive.yaml needs:, hive job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name" },
@@ -291,7 +308,8 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "compute.self_retire": { on: "On: Hive stops it, then deletes it later", off: "Off: the machine is left running" },
   "evolve.loop": { on: "On: experiments run back to back", off: "Off: no experiments run" },
   "evolve.heldout": { choices: { auto: "Hive writes them", owner: "I write them myself" } },
-  "daemon.self_update": { choices: ON_OFF },
+  "daemon.self_update": { choices: { on: "On: rebuild from source after each change", release: "From releases: install each newer published release", off: "Off: updates are mine" } },
+  "brain.code": { choices: { clone: "Clone: this machine copies projects to work on them", none: "None: no project code here, hands do that work" } },
   "daemon.keep_awake": { choices: { off: "Off: the machine sleeps as usual", on: "On while plugged in", always: "On, even on battery" } },
   "machine.reserve": { choices: { off: "Off: takes any job it can run", on: "On: only the jobs that need what it offers" } },
   "daemon.recover": { choices: ON_OFF },
@@ -498,6 +516,7 @@ export default function SettingsPage() {
   const harnessHits = harnessRows.filter(match).length;
   const harnessShown = !needle || harnessHits > 0 || HARNESS_WORDS.includes(needle);
   const notifyShown = !needle || NOTIFY_WORDS.includes(needle);
+  const secretsShown = !needle || SECRETS_WORDS.includes(needle);
   const appearanceShown = !needle || APPEARANCE_WORDS.includes(needle);
   // The kill switch has its own card at the top, so it leaves the Limits section.
   const killShown = !!stop && (match(stop) || "pause stop kill switch emergency brake resume".includes(needle));
@@ -507,9 +526,9 @@ export default function SettingsPage() {
   const matched = shown.reduce((n, x) => n + x.rows.length, 0) + (killShown ? 1 : 0) + harnessHits;
   const hits: Record<string, number> = { ...Object.fromEntries(shown.map((x) => [x.g.id, x.rows.length])), harness: harnessHits };
   const generalHit = killShown || notifyShown || appearanceShown || !!hits.owner;
-  const present = new Set<string>(["general", "appearance", "harness", ...groups.map((x) => x.g.id)]);
+  const present = new Set<string>(["general", "appearance", "harness", "secrets", ...groups.map((x) => x.g.id)]);
   const navItems = NAV.filter((n) => present.has(n.id)).map((n) => {
-    const hit = !needle || (n.id === "general" ? generalHit : n.id === "appearance" ? appearanceShown : n.id === "harness" ? harnessShown : !!hits[n.id]);
+    const hit = !needle || (n.id === "general" ? generalHit : n.id === "appearance" ? appearanceShown : n.id === "harness" ? harnessShown : n.id === "secrets" ? secretsShown : !!hits[n.id]);
     const count = needle && hit ? (n.id === "general" ? (killShown ? 1 : 0) + (hits.owner ?? 0) : hits[n.id]) : undefined;
     return { ...n, hit, count: count || undefined };
   });
@@ -517,7 +536,7 @@ export default function SettingsPage() {
   const page = present.has(pageOf(hash)) ? pageOf(hash) : "general";
   const show = (id: string) => !!needle || pageOf(id) === page;
   // While searching every section with a hit shows, in page order.
-  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
+  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", secretsShown ? "secrets" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
   // Appearance lives on the General page (#appearance scrolls to its card) but
   // has its own nav item, so the marker names it rather than General.
   const navOf = (id: string) => (id === "appearance" ? id : pageOf(id));
@@ -673,9 +692,15 @@ export default function SettingsPage() {
             </Section>
           ) : null}
 
+          {secretsShown && show("secrets") ? (
+            <Section id="secrets" title="Secrets" note="API keys and tokens your team's jobs need, kept sealed in one vault. A job gets only the names its project's recipe lists, for that run.">
+              <SecretsSection canEdit={d.can_edit} />
+            </Section>
+          ) : null}
+
           {shown.filter((x) => x.g.id !== "owner" && show(x.g.id)).map(groupSection)}
 
-          {needle && !matched && !harnessShown && !notifyShown && !appearanceShown ? (
+          {needle && !matched && !harnessShown && !notifyShown && !appearanceShown && !secretsShown ? (
             <EmptyState
               icon={<SearchIcon className="size-[18px]" />}
               title={<>No setting matches &ldquo;{find.trim()}&rdquo;</>}
