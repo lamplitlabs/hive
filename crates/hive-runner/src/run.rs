@@ -3822,7 +3822,11 @@ pub(crate) fn cli_on_path(path_env: &str, exe: &str) -> String {
 /// from its own clone, with the push credential the brain leases it for
 /// that one push (ADR-070 step 1b): `push.credential` resolved here and
 /// handed over on the verb's stdin, never written into the run's env. A
-/// project without an upstream lands locally and nothing is pushed; a push
+/// brain without a checkout of the project (`brain.code none`) has no git
+/// remote to read, so the upstream is the url the project was registered
+/// with (`projects.remote`) and the branch reaches the forge, where its
+/// pull request lands it. A project without an upstream lands locally and
+/// nothing is pushed; a push
 /// that fails is left to the delivery pass, which pushes the same branch
 /// from the checkout. Returns the log line.
 #[allow(clippy::too_many_arguments)]
@@ -3837,7 +3841,9 @@ fn push_from_hand(
     now: &str,
 ) -> String {
     let def = crate::baseline::default_branch(project.clone());
-    let Some(up) = crate::forge::upstream_of(root, &def) else {
+    let Some(up) =
+        crate::forge::upstream_of(root, &def).or_else(|| registered_upstream(project, root, &def))
+    else {
         return "hand push skipped: the project has no upstream; it lands locally".into();
     };
     let sha = crate::util::git(root, &["rev-parse", "--verify", "-q", holding])
@@ -3911,6 +3917,27 @@ fn push_from_hand(
         );
     }
     line
+}
+
+/// The upstream a brain with no checkout of the project pushes to: the
+/// project's registered remote url on its default branch. None while the
+/// project path is a checkout (its own remotes decide) or no remote was
+/// registered.
+fn registered_upstream(project: &Row, root: &str, def: &str) -> Option<crate::forge::Upstream> {
+    if Path::new(root).join(".git").exists() {
+        return None;
+    }
+    let url = project.str("remote").trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+    Some(crate::forge::Upstream {
+        remote: "origin".into(),
+        remote_branch: def.to_string(),
+        upstream_ref: format!("refs/remotes/origin/{def}"),
+        repo: crate::landing_pr::repo_slug(&url).unwrap_or_default(),
+        url,
+    })
 }
 
 pub(crate) fn remote_hive_cli(recipe: Option<&crate::recipe::Recipe>) -> String {
@@ -4470,6 +4497,148 @@ mod tests {
         fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
             Vec::new()
         }
+    }
+
+    /// A local `hive-hand` that records the url each push goes to.
+    struct PushExec(std::cell::RefCell<Vec<String>>);
+    impl Executor for PushExec {
+        fn name(&self) -> String {
+            "hands".into()
+        }
+        fn remote(&self) -> bool {
+            false
+        }
+        fn clone(&self) -> String {
+            String::new()
+        }
+        fn key_path(&self) -> String {
+            String::new()
+        }
+        fn started(&self) -> bool {
+            false
+        }
+        fn worker_dirs(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn prepare(&mut self, _: &hive_bus::CancellationToken) -> Result<String> {
+            unreachable!()
+        }
+        fn run_worker(
+            &mut self,
+            _: &hive_bus::CancellationToken,
+            _: &[String],
+            _: &BTreeMap<String, String>,
+            _: i32,
+        ) -> Result<crate::proc::Outcome> {
+            unreachable!()
+        }
+        fn result_text(&self) -> Option<String> {
+            None
+        }
+        fn commit_count(&self, _: &str) -> i32 {
+            0
+        }
+        fn dirty(&self) -> String {
+            String::new()
+        }
+        fn owner_paths_touched(&self, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn verify(
+            &self,
+            _: &hive_bus::CancellationToken,
+            _: &str,
+            _: i32,
+        ) -> (Option<i32>, String) {
+            (Some(0), String::new())
+        }
+        fn install_pre_commit_hook(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&crate::recipe::Recipe>,
+            _: &[String],
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        fn fetch_source(&self) -> String {
+            String::new()
+        }
+        fn fetch_env(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn pushes(&self) -> bool {
+            true
+        }
+        fn push_from_hand(&self, url: &str, _: &str, head: &str, _: &[u8]) -> Result<String> {
+            self.0.borrow_mut().push(url.to_string());
+            Ok(format!("pushed {head}"))
+        }
+        fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
+            Vec::new()
+        }
+    }
+
+    /// `brain.code none`: the project path holds no checkout, so the hand
+    /// pushes its finished branch to the url the project was registered
+    /// with, and the branch reaches the forge for its pull request; with no
+    /// registered url it still lands locally.
+    #[test]
+    fn hand_push_on_a_codeless_brain_goes_to_the_registered_remote() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        s.set_setting(crate::util::HUMAN_AGENT, "brain.code", "none")
+            .unwrap();
+        let gone = tempfile::tempdir().unwrap();
+        let root = gone.path().join("no-checkout").display().to_string();
+        let url = "git@github.com:acme/widgets.git";
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ?1, remote = ?2 WHERE slug = 'proj'",
+                rusqlite::params![root, url],
+            )
+            .unwrap();
+        let project = crate::board::project_by_slug(&s.conn().unwrap(), "proj".into());
+        let ex = PushExec(Default::default());
+        let line = push_from_hand(
+            &s,
+            &ex,
+            &project,
+            &root,
+            "hive/aurora/job-1",
+            "refs/hive/landing/job-1",
+            "aurora",
+            TEST_NOW,
+        );
+        assert_eq!(*ex.0.borrow(), vec![url.to_string()], "{line}");
+        assert!(
+            line.contains("hands pushed hive/aurora/job-1 to origin/"),
+            "{line}"
+        );
+        // No registered url: nothing to push to, the branch lands locally.
+        s.conn()
+            .unwrap()
+            .execute("UPDATE projects SET remote = '' WHERE slug = 'proj'", [])
+            .unwrap();
+        let project = crate::board::project_by_slug(&s.conn().unwrap(), "proj".into());
+        let ex = PushExec(Default::default());
+        let line = push_from_hand(
+            &s,
+            &ex,
+            &project,
+            &root,
+            "hive/aurora/job-2",
+            "refs/hive/landing/job-2",
+            "aurora",
+            TEST_NOW,
+        );
+        assert!(ex.0.borrow().is_empty(), "{line}");
+        assert!(line.contains("no upstream"), "{line}");
     }
 
     #[test]
