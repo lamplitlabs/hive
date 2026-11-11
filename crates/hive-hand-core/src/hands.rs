@@ -1243,6 +1243,76 @@ mod tests {
         assert!(err.contains("tool CHECK"), "{err}");
     }
 
+    /// Every `key=1` on the probe line is a promise the brain acts on: it
+    /// sees `heartbeat=1 steps=1` and polls those verbs on every remote run.
+    /// A capability advertised but refused by the dispatch ("verb not
+    /// allowed") drops remote presence silently, as heartbeat and steps once
+    /// did; so each one must reach its verb. The few capabilities that are
+    /// not verbs are named here with the verb that carries them, and must
+    /// still be on the line, so the list cannot rot.
+    #[test]
+    fn hands_main_dispatches_every_capability_the_probe_advertises() {
+        let _serial = crate::test_helpers::serial();
+        let workdir = tempfile::tempdir().unwrap();
+        let wd = workdir.path().display().to_string();
+        #[derive(Clone, Default)]
+        struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let mut h = make_hands(&wd, "");
+        h.stdout = Box::new(buf.clone());
+        h.hands_main(&["probe".into()]).unwrap();
+        let line = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let advertised: Vec<&str> = line
+            .split_whitespace()
+            .filter_map(|kv| kv.split_once('='))
+            .filter(|(_, v)| *v == "1")
+            .map(|(k, _)| k)
+            .collect();
+        // Capabilities that describe how another verb behaves, not a verb.
+        let carried_by: &[(&str, &str)] = &[("recipe", "run")];
+        for (cap, _) in carried_by {
+            assert!(
+                advertised.contains(cap),
+                "{cap} is listed as carried by a verb but the probe no longer says {cap}=1: {line}"
+            );
+        }
+        for cap in ["heartbeat", "steps"] {
+            assert!(advertised.contains(&cap), "probe lost {cap}=1: {line}");
+        }
+        let refusal = |verb: &str| -> String {
+            let mut h = make_hands(&wd, "");
+            match h.hands_main(&[verb.to_string()]) {
+                Ok(()) => String::new(),
+                Err(e) => e.to_string(),
+            }
+        };
+        // The refusal this test looks for is what an unknown verb gets.
+        assert!(
+            refusal("no-such-verb").contains("verb not allowed"),
+            "the dispatch no longer words its refusal 'verb not allowed'"
+        );
+        for cap in &advertised {
+            let verb = carried_by
+                .iter()
+                .find(|(c, _)| c == cap)
+                .map_or(*cap, |(_, v)| *v);
+            let err = refusal(verb);
+            assert!(
+                !err.contains("verb not allowed"),
+                "probe advertises {cap}=1 but hands_main refuses {verb}: {err}"
+            );
+        }
+    }
+
     /// `probe` says `heartbeat=1 steps=1`, and the brain then calls these two
     /// verbs (heartbeat.rs, steps_mirror.rs) through the same dispatch every
     /// other verb takes; a refusal there leaves a remote job with no presence
