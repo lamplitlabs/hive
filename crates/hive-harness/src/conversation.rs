@@ -2834,6 +2834,7 @@ impl Manager {
             }));
         }
         let mut files: Vec<Attachment> = Vec::new();
+        let mut inline: Vec<String> = Vec::new();
         for name in attachments {
             let path = self.attachment_path(id, name).ok_or_else(|| {
                 anyhow!(
@@ -2842,6 +2843,15 @@ impl Manager {
             })?;
             if files.iter().any(|f| f.name == *name) {
                 continue;
+            }
+            // A pasted screenshot comes up as an upload: when it is an
+            // image a model takes, it goes inline as well, so a model that
+            // can see looks at it instead of reaching for a tool. A model
+            // that cannot see has it left out with a note, as with images
+            // sent inline; the path below stays either way.
+            if let Some(image) = uploaded_image(&path) {
+                shown.push(image);
+                inline.push(name.clone());
             }
             files.push(Attachment {
                 name: name.clone(),
@@ -2868,7 +2878,7 @@ impl Manager {
         Ok((
             rt,
             Queued {
-                text: message_with_attachments(&text, &files),
+                text: message_with_attachments(&text, &files, &inline),
                 images: shown,
                 row: Some((text, extra)),
                 report: false,
@@ -3866,19 +3876,61 @@ fn reasoning_effort(effort: &str) -> Result<String> {
 }
 
 /// The message the agent gets: the owner's words, then where the files
-/// they attached are.
-fn message_with_attachments(text: &str, files: &[Attachment]) -> String {
+/// they attached are. A file named in `inline` is an image also carried
+/// in the message ([`uploaded_image`]) and is marked so, since the model
+/// sees it already.
+fn message_with_attachments(text: &str, files: &[Attachment], inline: &[String]) -> String {
     if files.is_empty() {
         return text.to_string();
     }
     let mut out = String::from(text);
     out.push_str(
-        "\n\nAttached by the owner - files on this machine, outside the branch; read them with your tools (an image is a file to inspect with a tool, not something you see):\n",
+        "\n\nAttached by the owner - files on this machine, outside the branch; read them with your tools (an image marked inline is also in this message for you to look at):\n",
     );
     for f in files {
-        out.push_str(&format!("- {} ({})\n", f.path, size_words(f.size)));
+        let mark = if inline.contains(&f.name) {
+            ", image, inline"
+        } else {
+            ""
+        };
+        out.push_str(&format!("- {} ({}{mark})\n", f.path, size_words(f.size)));
     }
     out
+}
+
+/// An uploaded file as an image for the model: Some when its bytes are a
+/// png, jpeg, gif or webp (by their signature, not the name) of at most
+/// [`IMAGE_LIMIT`] bytes. Anything else, or a file that cannot be read,
+/// stays a path the agent reads with its tools.
+fn uploaded_image(path: &Path) -> Option<ImageContent> {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    let size = std::fs::metadata(path).ok()?.len();
+    if size == 0 || size > IMAGE_LIMIT as u64 {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let mime = image_mime(&bytes)?;
+    Some(ImageContent {
+        media_type: mime.to_string(),
+        data: STANDARD.encode(&bytes),
+    })
+}
+
+/// The image type `bytes` start with, among those every vision provider
+/// takes: png, jpeg, gif and webp.
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 fn size_words(n: u64) -> String {
@@ -5085,9 +5137,11 @@ mod tests {
 
     /// Sends one image to a conversation on the fake model `fake-1`, whose
     /// list entry says `vision`, and returns the transcript and the user
-    /// messages the agent holds.
+    /// messages the agent holds. With `upload` the image comes as the hub
+    /// sends a pasted screenshot: uploaded first, then named in the message.
     fn send_image_to_fake(
         vision: bool,
+        upload: bool,
     ) -> (
         Vec<hive_store::ConversationMessage>,
         Vec<hive_provider::Message>,
@@ -5121,13 +5175,25 @@ mod tests {
             name: "".into(),
             data: STANDARD.encode(b"\x89PNG fake bytes"),
         };
-        m.send_with_images(
-            &row.id,
-            "what is on screen?",
-            &[],
-            std::slice::from_ref(&image),
-        )
-        .expect("send image");
+        if upload {
+            let saved = m
+                .save_attachment(&row.id, "screenshot.png", b"\x89PNG\r\n\x1a\nfake bytes")
+                .expect("upload");
+            m.send_with(
+                &row.id,
+                "what is on screen?",
+                std::slice::from_ref(&saved.name),
+            )
+            .expect("send upload");
+        } else {
+            m.send_with_images(
+                &row.id,
+                "what is on screen?",
+                &[],
+                std::slice::from_ref(&image),
+            )
+            .expect("send image");
+        }
         let row = wait_idle(&m, &row.id);
         let msgs = s.chat_messages(&row.id, 0).unwrap();
         let sent: Vec<hive_provider::Message> = {
@@ -5147,7 +5213,7 @@ mod tests {
     #[test]
     fn images_for_a_model_that_cannot_see_are_left_out_with_a_note() {
         let _env = hive_testutil::env_lock();
-        let (msgs, sent) = send_image_to_fake(false);
+        let (msgs, sent) = send_image_to_fake(false, false);
         let asked = sent
             .iter()
             .rfind(|m| m.content.contains("what is on screen?"))
@@ -5180,14 +5246,39 @@ mod tests {
     #[test]
     fn images_for_a_model_that_can_see_reach_it() {
         let _env = hive_testutil::env_lock();
-        let (msgs, sent) = send_image_to_fake(true);
+        for upload in [false, true] {
+            let (msgs, sent) = send_image_to_fake(true, upload);
+            let asked = sent
+                .iter()
+                .rfind(|m| m.content.contains("what is on screen?"))
+                .expect("the owner's words reach the model");
+            assert_eq!(asked.images.len(), 1, "upload {upload}: {}", asked.content);
+            assert_eq!(asked.images[0].media_type, "image/png");
+            assert!(!asked.content.contains("left out"), "{}", asked.content);
+            assert!(!msgs.iter().any(|m| m.content.contains("cannot see images")));
+            if upload {
+                // A pasted screenshot is seen and its path still listed.
+                assert!(
+                    asked
+                        .content
+                        .contains("screenshot.png (18 B, image, inline)"),
+                    "{}",
+                    asked.content
+                );
+            }
+        }
+        // An uploaded screenshot for a model that cannot see is left out
+        // with the same note as an inline image.
+        let (msgs, sent) = send_image_to_fake(false, true);
         let asked = sent
             .iter()
             .rfind(|m| m.content.contains("what is on screen?"))
             .expect("the owner's words reach the model");
-        assert_eq!(asked.images.len(), 1);
-        assert!(!asked.content.contains("left out"), "{}", asked.content);
-        assert!(!msgs.iter().any(|m| m.content.contains("cannot see images")));
+        assert!(asked.images.is_empty());
+        assert!(
+            msgs.iter()
+                .any(|m| m.role == "note" && m.content.starts_with("1 image left out"))
+        );
     }
 
     #[test]
@@ -5940,10 +6031,18 @@ mod tests {
             size: 2048,
             path: "/tmp/x/notes.txt".into(),
         }];
-        let msg = message_with_attachments("read this", &files);
+        let msg = message_with_attachments("read this", &files, &[]);
         assert!(msg.starts_with("read this\n\nAttached by the owner"));
-        assert!(msg.contains("- /tmp/x/notes.txt (2.0 KB)"));
-        assert_eq!(message_with_attachments("plain", &[]), "plain");
+        assert!(msg.contains("- /tmp/x/notes.txt (2.0 KB)\n"));
+        let msg = message_with_attachments("read this", &files, &["notes.txt".to_string()]);
+        assert!(msg.contains("- /tmp/x/notes.txt (2.0 KB, image, inline)"));
+        assert_eq!(message_with_attachments("plain", &[], &[]), "plain");
+        assert_eq!(image_mime(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
+        assert_eq!(image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(image_mime(b"GIF89a..."), Some("image/gif"));
+        assert_eq!(image_mime(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(image_mime(b"RIFF\0\0\0\0WAVEfmt "), None);
+        assert_eq!(image_mime(b"just text"), None);
         assert_eq!(size_words(512), "512 B");
         assert_eq!(size_words(3 * 1024 * 1024), "3.0 MB");
     }
