@@ -451,6 +451,13 @@ impl crate::server::Handler {
             let job = open_jobs.get(&id).cloned().unwrap_or_default();
             row.insert("job".into(), json!(job.id));
             row.insert("job_status".into(), json!(job.status));
+            // Whether the card names a check (`Signal: check:<command>`): the
+            // plan gate and the funnel read it, and the tally's records text
+            // does not carry it.
+            let checked = db_posts
+                .get(&id)
+                .is_some_and(|post| pulse_tally::card_has_check(&post.body));
+            row.insert("checked".into(), json!(checked));
             let mut gate = String::new();
             if str_key(row, "status") == "eligible" {
                 let post_ref = db_posts.get(&id);
@@ -466,6 +473,7 @@ impl crate::server::Handler {
                         summary: str_key(row, "summary"),
                         job: str_key(row, "job"),
                         job_status: str_key(row, "job_status"),
+                        checked,
                         ..Default::default()
                     },
                     post_ref,
@@ -525,6 +533,13 @@ impl crate::server::Handler {
                 vec![json!({"loop":"","stop":"","limits":""}), json!({"rows":[]})],
             )
         });
+        // The suggestion funnel (how cards become changes, and where they
+        // stall) is part of the self-improvement view, computed from the rows
+        // above so the console and the gate agree.
+        d.evolution.insert(
+            "funnel".into(),
+            json!(crate::funnel::funnel(&d.suggestions, store)),
+        );
         let evo_summary = crate::evolution::evolution_summary(d.evolution.clone());
         d.meta = object(
             "schema_version built_at now repo repo_name remote branch head dirty board_present evolution_present board_params posts_without_kind last_error",
@@ -1984,6 +1999,10 @@ mod tests {
     fn suggestion_rows_carry_jobs_and_plan_gates() {
         let _serial = crate::test_helpers::serial();
         let s = http::additions_store(false);
+        // These suggestions name no check; the rows' shape is under test, not
+        // the card-proof gate (evolve.require_check).
+        s.set_setting("human", pulse_store::EVOLVE_REQUIRE_CHECK, "off")
+            .unwrap();
         let repo = repo();
         let project = pulse_board::add_project(
             &s,
@@ -2088,6 +2107,128 @@ mod tests {
         );
         assert_eq!(by_id[&owner.id]["gate"], pulse_tally::GATE_OWNER);
         assert_eq!(data.overview()["suggestions_plannable"], 1);
+        // The rows say whether the card names a check, and the evolution
+        // payload carries the funnel the rows add up to.
+        assert_eq!(by_id[&plannable.id]["checked"], false);
+        let funnel = &data.evolution["funnel"];
+        assert_eq!(funnel["posted"], 4, "{funnel}");
+        assert_eq!(funnel["checked"], 0);
+        assert_eq!(funnel["needs_votes"], 1);
+        assert_eq!(funnel["eligible"], 3);
+        assert_eq!(funnel["plannable"], 1);
+        assert_eq!(funnel["in_flight"], 1);
+        assert_eq!(funnel["blocked"], 1);
+        assert_eq!(
+            funnel["held"],
+            json!([{"gate": "for the owner", "count": 1}])
+        );
+        assert_eq!(funnel["require_check"], false);
+        assert_eq!(funnel["alerts"][0]["code"], "blocked");
+        assert_eq!(funnel["alerts"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn a_card_with_a_check_counts_as_checked_and_a_stalled_funnel_raises_an_alert() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let repo = repo();
+        let project = pulse_board::add_project(
+            &s,
+            repo.path().to_str().unwrap(),
+            "One",
+            "",
+            false,
+            "",
+            "human",
+            "one",
+        )
+        .unwrap();
+        let agents = ["alpha", "bravo", "charlie"]
+            .into_iter()
+            .map(|n| (n.to_string(), join(&s, n)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let suggest = |agent: &str, thread: &str, summary: &str, body: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    kind: "suggestion".into(),
+                    project: project.slug.clone(),
+                    area: "product".into(),
+                    thread: thread.into(),
+                    agent_row: Some(agents[agent].clone()),
+                    summary: summary.into(),
+                    body: body.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let vote = |agent: &str, thread: &str, on_id: &str, direction: &str| {
+            pulse_board::create_post(
+                &s,
+                pulse_board::PostInput {
+                    kind: "vote".into(),
+                    project: project.slug.clone(),
+                    area: "product".into(),
+                    thread: thread.into(),
+                    agent_row: Some(agents[agent].clone()),
+                    on: on_id.into(),
+                    vote: direction.into(),
+                    summary: format!("Voting {direction}"),
+                    body: "Vote body.".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        };
+        // Agreed, but it names no check: held by the card-proof rule.
+        let unchecked = suggest(
+            "alpha",
+            "offset-scans",
+            "Use offset scans for exports",
+            "Class: product\nFile: src/export.rs\nVariable: scan\nHypothesis: faster exports\nSignal: src/export.rs",
+        );
+        vote("bravo", "offset-scans", &unchecked.id, "up");
+        vote("charlie", "offset-scans", &unchecked.id, "up");
+        // Names a check but was voted down: the check does not override a
+        // net-down vote.
+        let checked = suggest(
+            "bravo",
+            "parser-guard",
+            "Empty input to the parser returns an error",
+            "Class: product\nFile: src/parser.rs\nVariable: empty-input guard\nHypothesis: an empty input returns Err\nSignal: check:cargo test -p a parses",
+        );
+        vote("alpha", "parser-guard", &checked.id, "down");
+        vote("charlie", "parser-guard", &checked.id, "down");
+        let data = http::handler(&s).snapshot(&project.slug, "").unwrap();
+        let by_id = data
+            .suggestions
+            .iter()
+            .map(|r| (str_key(r, "id"), r.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(by_id[&unchecked.id]["checked"], false);
+        assert_eq!(by_id[&unchecked.id]["status"], "eligible");
+        assert_eq!(by_id[&unchecked.id]["gate"], pulse_tally::GATE_NO_CHECK);
+        assert_eq!(by_id[&checked.id]["checked"], true);
+        assert_eq!(by_id[&checked.id]["status"], "rejected");
+        let funnel = &data.evolution["funnel"];
+        assert_eq!(funnel["posted"], 2, "{funnel}");
+        assert_eq!(funnel["checked"], 1);
+        assert_eq!(funnel["eligible"], 1);
+        assert_eq!(funnel["plannable"], 0);
+        assert_eq!(funnel["rejected"], 1);
+        assert_eq!(
+            funnel["held"],
+            json!([{"gate": "names no check", "count": 1}])
+        );
+        assert_eq!(funnel["require_check"], true);
+        assert_eq!(funnel["check_skips_quorum"], true);
+        assert_eq!(funnel["alerts"].as_array().map(Vec::len), Some(1));
+        assert_eq!(funnel["alerts"][0]["code"], "held");
+        assert_eq!(
+            funnel["alerts"][0]["text"],
+            "Every agreed suggestion is held (1 names no check); nothing is ready to plan."
+        );
     }
 
     #[test]

@@ -337,12 +337,7 @@ pub(crate) fn gh(
         args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
     );
     let remembered = s.meta(&gh_meta_key(slug)).map(|m| m.0).unwrap_or_default();
-    let run_as = |user: &str| -> Result<String, String> {
-        let env = if user.is_empty() {
-            crate::proc::environ()
-        } else {
-            crate::gh_auth::env_as(user)?
-        };
+    let run_env = |env: Vec<String>| -> Result<String, String> {
         let out = crate::proc::run_group(
             &pulse_bus::CancellationToken::new(),
             &argv,
@@ -366,6 +361,23 @@ pub(crate) fn gh(
         }
         Ok(out.stdout)
     };
+    let run_as = |user: &str| -> Result<String, String> {
+        let env = if user.is_empty() {
+            crate::proc::environ()
+        } else {
+            crate::gh_auth::env_as(user)?
+        };
+        run_env(env)
+    };
+    // The GitHub App's token for this repository first (ADR-070 step 3);
+    // a call it cannot make falls back to the machine's logins.
+    if let Some(Ok(env)) = crate::gitapp::gh_env(s, repo) {
+        match run_env(env) {
+            Ok(out) => return Ok(out),
+            Err(e) if !account_failed(&e) => return Err(e),
+            Err(_) => {}
+        }
+    }
     let first = match run_as(&remembered) {
         Ok(out) => return Ok(out),
         Err(e) if !account_failed(&e) => return Err(e),
@@ -1010,8 +1022,9 @@ fn ci_expected(s: &pulse_store::Store, project: &Row) -> bool {
         .unwrap_or(false)
 }
 
-/// `gh pr view`, then `gh pr merge --merge --delete-branch`, then
-/// `review.merged`; on a gh failure of the merge `review.failed` with the
+/// `gh pr view`, then `gh pr merge --merge --delete-branch` (without
+/// `--delete-branch` while an open pull request is based on its head:
+/// `branch_kept_for` names them), then `review.merged`; on a gh failure of the merge `review.failed` with the
 /// error. Returns the pull request's url. Refused before gh is asked to
 /// merge, and without a `review.failed`: a pull request stacked on another
 /// (its turn has not come), and whatever [`merge_refusal`] names from the
@@ -1067,19 +1080,30 @@ pub(crate) fn merge_viewed(
     if let Some(why) = merge_refusal(&view, seen.as_ref()) {
         return Err(why);
     }
-    let result = gh(
-        s,
-        &slug,
-        &repo,
-        &[
-            "pr",
-            "merge",
-            &number.to_string(),
-            "--merge",
-            "--delete-branch",
-        ],
-        MERGE_TIMEOUT,
-    );
+    // A branch another open pull request is based on stays: GitHub closes
+    // the pull requests whose base branch `--delete-branch` deletes, and a
+    // closed one never reopens (#170 closed so when #168 merged). Delivery
+    // moves them onto this one's base and deletes the branch after
+    // (`delivery::retarget_stacked`).
+    let head = if view.head.is_empty() {
+        known.as_ref().map(|p| p.head.clone()).unwrap_or_default()
+    } else {
+        view.head.clone()
+    };
+    let stacked_above: Vec<i64> = match s.conn() {
+        Ok(c) if !head.is_empty() => open_prs(&c, &slug)
+            .into_iter()
+            .filter(|p| p.number != number && p.base == head)
+            .map(|p| p.number)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let number_arg = number.to_string();
+    let mut args = vec!["pr", "merge", number_arg.as_str(), "--merge"];
+    if stacked_above.is_empty() {
+        args.push("--delete-branch");
+    }
+    let result = gh(s, &slug, &repo, &args, MERGE_TIMEOUT);
     let job = std::env::var("PULSE_JOB").unwrap_or_default();
     match result {
         Ok(_) => {
@@ -1087,6 +1111,9 @@ pub(crate) fn merge_viewed(
                 "head_sha": view.head_sha, "checks": view.checks});
             if !job.is_empty() {
                 detail["job"] = json!(job);
+            }
+            if !stacked_above.is_empty() {
+                detail["branch_kept_for"] = json!(stacked_above);
             }
             if view.checks == 0 && ci_expected(s, project) {
                 detail["no_checks"] = json!(true);
@@ -1546,7 +1573,7 @@ pub(crate) fn checkout_into(
                 short(&view.head_sha)
             ));
         }
-        let (env, cleanup, why) = crate::forge::push_credential_env(s, root.clone());
+        let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.clone(), &url);
         if !why.is_empty() {
             return Err(why);
         }
@@ -2026,6 +2053,62 @@ mod tests {
         let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
         assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(calls(&log), ["pr view 7", "pr merge 7"]);
+    }
+
+    /// A merge whose head another open pull request is based on keeps the
+    /// branch: GitHub closes the pull requests whose base `--delete-branch`
+    /// deletes (#170 was lost so when #168 merged), so delivery moves them
+    /// first and deletes the branch after. With nothing on it, the branch
+    /// goes with the merge.
+    #[test]
+    fn a_merge_keeps_its_branch_while_a_pull_request_is_based_on_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = pulse_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        event(
+            &s,
+            TEST_NOW,
+            "daemon",
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "task", "task": "TASK-002", "number": 8,
+                "url": "https://github.com/o/r/pull/8", "head": "pulse/task/TASK-002",
+                "base": "pulse/task/TASK-001", "stack_on": 7, "to": "def456", "opened": true,
+                "title": "PR 8 title"}),
+        );
+        let merge_lines = |log: &str| -> Vec<String> {
+            std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.starts_with("pr merge"))
+                .map(str::to_string)
+                .collect()
+        };
+
+        merge(&s, &proj, 7, "reviewer-1", "reviewer-1", TEST_NOW).unwrap();
+        let merges = merge_lines(&log);
+        assert_eq!(merges.len(), 1, "{merges:?}");
+        assert!(merges[0].contains("--merge"), "{merges:?}");
+        assert!(!merges[0].contains("--delete-branch"), "{merges:?}");
+        let merged = events(&s, "review.merged");
+        assert_eq!(merged[0]["branch_kept_for"], json!([8]), "{}", merged[0]);
+
+        // Nothing is based on #9's head: its branch goes with the merge.
+        land_pr(&s, 9, "task", "TASK-003", "JOB-c");
+        view_with(&view, |v| {
+            v["number"] = json!(9);
+            v["url"] = json!("https://github.com/o/r/pull/9");
+            v["headRefName"] = json!("pulse/task/TASK-003");
+        });
+        merge(&s, &proj, 9, "reviewer-1", "reviewer-1", TEST_NOW).unwrap();
+        let merges = merge_lines(&log);
+        assert_eq!(merges.len(), 2, "{merges:?}");
+        assert!(merges[1].contains("--delete-branch"), "{merges:?}");
+        let merged = events(&s, "review.merged");
+        assert!(merged[1].get("branch_kept_for").is_none(), "{}", merged[1]);
     }
 
     /// The owner's click, like the reviewer's verdict, goes through the

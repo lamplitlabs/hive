@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
         scheduleTestQuit()
+        showJoinIfAsked()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -261,6 +262,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         parts.port = nil
         if let page = parts.string, page.hasPrefix("/"), page != rememberedPage {
             store(page, forKey: "LastPage")
+        }
+    }
+
+    // MARK: - Joining a brain (ADR-070 step 2)
+
+    /// The hand's directory and the pulse-hand to join with: the one inside
+    /// PULSE.app (build.sh bundles it) unless `PulseHandBinary` names another.
+    var handSetup: HandSetup {
+        let bundle = Bundle.main.bundleURL
+        return HandSetup.read(
+            homeOverride: stored("PulseHandHome") as? String,
+            binaryOverride: stored("PulseHandBinary") as? String,
+            environment: ProcessInfo.processInfo.environment,
+            userHome: FileManager.default.homeDirectoryForCurrentUser,
+            bundle: bundle.pathExtension == "app" ? bundle : nil
+        )
+    }
+
+    /// `pulse-hand join`, then the launchd agent that keeps `pulse-hand dial`
+    /// running. Answers how the join ended and, when it joined but the agent
+    /// could not be loaded, why. A test run (`-EphemeralRun`) writes the agent
+    /// into `HandAgents` (else the hand's home) and never calls launchctl.
+    func joinBrain(_ input: JoinInput) async -> (JoinOutcome, String?) {
+        let setup = handSetup
+        let base = ProcessInfo.processInfo.environment
+        log.notice("joining \(input.brain.absoluteString, privacy: .public) with \(setup.binary?.path ?? "no pulse-hand", privacy: .public)")
+        let outcome = await HandJoin.run(input, setup: setup, base: base)
+        log.notice("join: \(outcome.words, privacy: .public)")
+        guard case .joined = outcome else { return (outcome, nil) }
+        let userHome = FileManager.default.homeDirectoryForCurrentUser
+        let agents = (stored("HandAgents") as? String).map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? (ephemeral ? setup.home.appendingPathComponent("LaunchAgents", isDirectory: true)
+                : userHome.appendingPathComponent("Library/LaunchAgents", isDirectory: true))
+        let path = DialAgent.path(loginPath: await LoginShell.path(shell: base["SHELL"]), userHome: userHome.path)
+        let problem: String?
+        if ephemeral {
+            problem = await DialAgent.install(setup: setup, agents: agents, path: path) { [log] args in
+                log.notice("test run: launchctl \(args.joined(separator: " "), privacy: .public) not run")
+                return CommandResult(status: 0)
+            }
+        } else {
+            problem = await DialAgent.install(setup: setup, agents: agents, path: path)
+        }
+        log.notice("dial agent: \(problem ?? "loaded \(DialAgent.plistURL(agents: agents).path)", privacy: .public)")
+        return (outcome, problem)
+    }
+
+    /// Open the Brain: the brain this Mac joined, in the default browser.
+    func openBrain() {
+        guard let brain = handSetup.device()?.brain, let url = URL(string: brain) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// `-JoinBrain URL -JoinCode "six words"` opens the join screen filled in
+    /// (`-ShowJoin YES` empty); `-JoinSubmit YES` presses Join. For
+    /// scripts/check.sh and the screenshots in docs/mac-app.md.
+    private func showJoinIfAsked() {
+        let brain = defaults.string(forKey: "JoinBrain") ?? ""
+        let code = defaults.string(forKey: "JoinCode") ?? ""
+        guard !brain.isEmpty || !code.isEmpty || defaults.bool(forKey: "ShowJoin"), let window = windows.first else { return }
+        window.showJoin(brain: brain, code: code)
+        if defaults.bool(forKey: "JoinSubmit") {
+            Task { @MainActor [weak window] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                window?.submitJoin()
+            }
         }
     }
 

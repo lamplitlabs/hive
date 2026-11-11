@@ -5,7 +5,7 @@
 
 // The icon on each group's SectionHeading, by group id. The page maps the
 // name to the lucide component; unknown ids get the generic sliders.
-export type GroupIcon = "Settings2" | "Palette" | "Cpu" | "Play" | "Bell" | "KeyRound" | "Cloud" | "ShieldAlert" | "Gauge" | "Server" | "Sparkles" | "Plug" | "SlidersHorizontal" | "UserRound";
+export type GroupIcon = "Settings2" | "Palette" | "Cpu" | "Play" | "Bell" | "KeyRound" | "Cloud" | "ShieldAlert" | "Gauge" | "GitBranch" | "Server" | "Sparkles" | "Plug" | "SlidersHorizontal" | "UserRound";
 
 const GROUP_ICON: Record<string, GroupIcon> = {
   general: "Settings2",
@@ -18,11 +18,13 @@ const GROUP_ICON: Record<string, GroupIcon> = {
   notifications: "Bell",
   credential: "KeyRound",
   credentials: "KeyRound",
+  secrets: "KeyRound",
   cloud: "Cloud",
   compute: "Cloud",
   stop: "ShieldAlert",
   danger: "ShieldAlert",
   runner: "Gauge",
+  git: "GitBranch",
   evolve: "Sparkles",
   provider: "Plug",
   other: "SlidersHorizontal",

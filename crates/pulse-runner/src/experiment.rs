@@ -1059,10 +1059,13 @@ pub(crate) fn land_experiment_context(
     // A measured tie lands when the owner lets it (evolve.land_neutral): the
     // change did no harm on any fixture, only shown no gain. A variant that
     // was never measured, or regressed, does not.
+    // Cards that must prove themselves (evolve.require_check) land on their
+    // check alone: a tie means the check did not turn, and it does not land.
     let (keep, reason) = if !keep
         && skipped.is_none()
         && pulse_evolve::is_neutral_verdict(&reason)
         && s.setting_bool(pulse_store::EVOLVE_LAND_NEUTRAL)
+        && !s.setting_bool(pulse_store::EVOLVE_REQUIRE_CHECK)
     {
         let tidy = reason.replace(", so the branch is not landed", "").replace(
             "; a gain that is not there the second time is not landed",

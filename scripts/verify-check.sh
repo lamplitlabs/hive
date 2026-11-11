@@ -31,7 +31,11 @@
 # inside it, from the package directory with CARGO_MANIFEST_DIR set, as
 # `cargo test` runs them. Every listed test must report a result: a chunk
 # whose counts do not add up fails the check. A chunk still running after
-# VERIFY_CHUNK_SECONDS is killed and names the tests it never finished.
+# VERIFY_CHUNK_SECONDS is killed and names the tests it never finished. A
+# chunk whose binary is gone, or passes but ran fewer tests than it listed
+# (libtest filters out an --exact name the binary no longer has), fails as
+# `changed`: another build rewrote the binary during the run (a target dir
+# shared with another tree), which says nothing about this tree's code.
 #
 # What each chunk process gets, and why:
 # - One test thread. Several test binaries at once, each with a thread per
@@ -97,6 +101,14 @@ if [ "${1:-}" = "--chunk" ]; then
     verdict=ok
   elif [ "$rc" -eq 142 ]; then
     verdict=timeout
+  elif [ ! -x "$bin" ] ||
+    { [ "$rc" -eq 0 ] && [ -n "$result" ] && [ "$failed" -eq 0 ] &&
+      [ "$expect" -gt 0 ] && [ $((passed + ignored)) -lt "$expect" ]; }; then
+    # The binary no longer holds tests it listed when the pool was planned:
+    # libtest filters out an --exact name it lacks and still passes. Another
+    # build rewrote it (a target dir shared with another tree), so this is
+    # no verdict on the tree's code.
+    verdict=changed
   else
     verdict=FAILED
   fi
@@ -202,6 +214,7 @@ ran=$(date +%s)
 
 bad=0
 seen=0
+changed=0
 : > "$work/failed"
 for f in "$work"/status/*; do
   [ -f "$f" ] || continue
@@ -213,6 +226,14 @@ for f in "$work"/status/*; do
   IFS='	' read -r count dir bin name < "$work/suite.${id%.*}"
   echo
   echo "=== $verdict: $name chunk ${id#*.} (exit $rc, $passed passed, $failed failed, $ignored ignored of $expect)"
+  if [ "$verdict" = changed ]; then
+    echo "the test binary changed during the run (shared target dir?): $bin"
+    echo "tests it listed before the run and no longer ran:"
+    while IFS= read -r t; do
+      grep -qF "test $t ... " "$work/log/$id" || echo "  $t"
+    done < "$work/chunk/$id" | head -n 20
+    changed=$((changed + 1))
+  fi
   if [ "$verdict" = timeout ]; then
     echo "killed after ${VERIFY_CHUNK_SECONDS:-600}s; tests that never finished:"
     # libtest prints "test NAME ... " when a test starts and its verdict
@@ -262,11 +283,18 @@ if [ "$bad" -ne 0 ]; then
       [ "$verdict" = ok ] && continue
       id=${f##*/}
       IFS='	' read -r count dir bin name < "$work/suite.${id%.*}"
-      echo "  $name chunk ${id#*.}: $verdict (exit $rc, $failed failed)"
+      if [ "$verdict" = changed ]; then
+        echo "  $name chunk ${id#*.}: $verdict (exit $rc, $((passed + ignored)) of $expect tests ran) - the test binary changed during the run (shared target dir?)"
+      else
+        echo "  $name chunk ${id#*.}: $verdict (exit $rc, $failed failed)"
+      fi
     done
     if [ -s "$work/failed" ]; then
       echo "verify-check: failing tests:"
       sort -u "$work/failed" | head -n 40
+    fi
+    if [ "$changed" -ne 0 ]; then
+      echo "verify-check: $changed chunk(s) ran a test binary another build rewrote during the run (shared target dir?); rerun the check with a CARGO_TARGET_DIR no other tree builds into before reading this as a code failure"
     fi
   } >&2
   echo "verify-check: $bad chunk(s) failed" >&2

@@ -30,6 +30,11 @@ pub struct Request {
     pub remote_addr: SocketAddr,
     pub ctx: CancellationToken,
     pub force_query: bool,
+    /// The request reached the hub on its front listener (ADR-070 rule 5,
+    /// `hub.allow_remote`): it came through the hosted front's relay, so no
+    /// header of it is trusted to say otherwise and every write must carry
+    /// a member's passkey signature.
+    pub via_front: bool,
 }
 
 impl Request {
@@ -458,6 +463,7 @@ async fn handle_request(
     remote_addr: SocketAddr,
     root_ctx: CancellationToken,
     handler: HandlerFn,
+    via_front: bool,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, Infallible> {
     let req_ctx = root_ctx.child();
     let (parts, body) = req.into_parts();
@@ -486,6 +492,7 @@ async fn handle_request(
         remote_addr,
         ctx: req_ctx.clone(),
         force_query,
+        via_front,
     };
     let (head_tx, head_rx) = oneshot::channel();
     let mut writer = ResponseWriter::new(req_ctx.clone(), head_tx);
@@ -540,6 +547,17 @@ async fn handle_request(
 }
 
 pub fn serve(ctx: &CancellationToken, listener: TcpListener, handler: HandlerFn) -> Result<()> {
+    serve_on(ctx, listener, handler, false)
+}
+
+/// Serves like [`serve`], marking every request [`Request::via_front`] when
+/// `via_front` is set: the listener the hosted front's relay reaches.
+pub fn serve_on(
+    ctx: &CancellationToken,
+    listener: TcpListener,
+    handler: HandlerFn,
+    via_front: bool,
+) -> Result<()> {
     let addr = listener.local_addr()?;
     if addr.ip().to_string() != "127.0.0.1" {
         return Err(anyhow!(
@@ -562,7 +580,7 @@ pub fn serve(ctx: &CancellationToken, listener: TcpListener, handler: HandlerFn)
                     let h = handler.clone();
                     let c = root.clone();
                     tasks.spawn(async move {
-                        let service = service_fn(move |req| handle_request(req, remote, c.clone(), h.clone()));
+                        let service = service_fn(move |req| handle_request(req, remote, c.clone(), h.clone(), via_front));
                         let mut builder = http1::Builder::new();
                         builder.timer(TokioTimer::new()).header_read_timeout(Duration::from_secs(5)).keep_alive(true).max_buf_size(1 << 20);
                         let _ = builder.serve_connection(TokioIo::new(stream), service).await;

@@ -84,8 +84,11 @@ Where no reason holds, the verdict is one of three:
   and `pipeline.watch` is on, `review.merged` says so (`no_checks`). The
   same gate stands in front of the hub's Merge button. Then it merges on
   the forge (`gh pr merge --merge --delete-branch`, as the `gh` account
-  that works for this repository) and records `review.merged` with
-  `by: <the agent>`, the job, `head_sha` and `checks`; the delivery pass
+  that works for this repository; without `--delete-branch` while another
+  open pull request is based on its head, since GitHub would close that
+  one, and delivery deletes the branch once it has moved it) and records
+  `review.merged` with `by: <the agent>`, the job, `head_sha`, `checks`
+  and `branch_kept_for` (the pull requests the branch was kept for); the delivery pass
   sees the merge on its next poll, records `land.merged`, closes the task
   and fast-forwards the local default branch.
 - **Changes** - `pulse review changes <n> --note "…"`: the change is right
@@ -165,7 +168,7 @@ number (`7` or `#7`); `--json` gives the same as data.
 | `pulse review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: PULSE task T` (or job, experiment, proposed; `not a PULSE pull request` for one PULSE did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `pulse review diff <n>` | the diff against the base, from the forge |
 | `pulse review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
-| `pulse review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge |
+| `pulse review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge |
 | `pulse review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
 | `pulse review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
