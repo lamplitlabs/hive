@@ -102,7 +102,7 @@ public struct HiveSetup: Equatable, Sendable {
 }
 
 /// The owner's overrides, from the app's defaults (`defaults write
-/// io.github.manishtiwari25.pulse HiveHome ~/other`, or `-HiveHome` on the
+/// io.github.manishtiwari25.hive HiveHome ~/other`, or `-HiveHome` on the
 /// command line).
 public struct SetupOverrides: Equatable, Sendable {
     public var hiveHome: String?

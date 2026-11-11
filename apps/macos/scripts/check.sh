@@ -77,7 +77,12 @@ fi
 
 port=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
 console="http://127.0.0.1:$port/"
-subsystem='subsystem == "io.github.manishtiwari25.pulse"'
+# The app logs under its bundle identifier (AppIdentity.bundleID): read it
+# from the build, so the log query and the message match below cannot drift
+# from what build.sh stamped.
+bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") ||
+  fail "no CFBundleIdentifier in $app/Contents/Info.plist"
+subsystem="subsystem == \"$bundle_id\""
 start_mock() {
   (cd "$repo/web/hub" && exec env MOCK_STATIC=out HIVE_HUB_PORT="$port" node mock/server.mjs) >> "$scratch/mock.log" 2>&1 &
   mock=$!
@@ -142,11 +147,12 @@ wait_logged "test hook: quit" 10 || true
 # Each message must appear, in this order: the whole message (expect) or its
 # beginning (expect_prefix); a message is what follows the app's category.
 match() {
-  awk -v want="$2" -v how="$1" '
+  awk -v want="$2" -v how="$1" -v id="$bundle_id" '
+    BEGIN { gsub(/\./, "\\.", id); head = "^.*\\] \\[" id ":[a-z]+\\] " }
     found { print; next }
     {
       message = $0
-      sub(/^.*\] \[io\.github\.manishtiwari25\.hive:[a-z]+\] /, "", message)
+      sub(head, "", message)
       if ((how == "whole" && message == want) || (how == "prefix" && index(message, want) == 1)) found = 1
     }
     END { exit found ? 0 : 1 }' "$scratch/remaining.log" > "$scratch/rest.log" || fail "never logged: $2"
