@@ -1,18 +1,30 @@
 {
   "members": [
     {
+      "credential_id": "Zm9yLXRoZS1vd25lcg",
+      "member": "owner",
       "name": "owner",
       "role": "owner",
-      "added_at": "2026-11-10T08:00:00Z",
-      "passkeys": [
-        { "credential": "Zm9yLXRoZS1vd25lcg", "label": "MacBook", "added_at": "2026-11-10T08:05:00Z" }
-      ]
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
+      "sign_count": 12,
+      "status": "active",
+      "created_by": "human:dashboard",
+      "created_at": "2026-11-10T08:05:00Z",
+      "updated_at": "2026-11-10T08:05:00Z",
+      "last_used_at": "2026-11-10T09:30:00Z"
     },
     {
+      "credential_id": "YW5hLW9sZC1waG9uZQ",
+      "member": "ana@acme.dev",
       "name": "ana@acme.dev",
       "role": "member",
-      "added_at": "2026-11-10T09:00:00Z",
-      "passkeys": []
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
+      "sign_count": 3,
+      "status": "revoked",
+      "created_by": "human:dashboard",
+      "created_at": "2026-11-10T09:00:00Z",
+      "updated_at": "2026-11-10T10:00:00Z",
+      "last_used_at": ""
     }
   ]
 }

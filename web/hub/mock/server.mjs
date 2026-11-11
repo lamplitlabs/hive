@@ -1452,17 +1452,23 @@ async function handle(req, res) {
   // The update banner's "Update now" (TASK-093): POST update/apply starts an
   // install that ends a few seconds later; GET update follows it. MOCK_UPDATE_CHANNEL=source
   // shows the refusal; MOCK_UPDATE_FAIL=1 a failed install.
-  // The front's passkey pages (ADR-070 step 5): POST members/nonce hands out
-  // a one-use nonce, GET members lists members and their passkeys (no keys).
-  // The mock checks no signature; crates/hive-hub/src/front.rs does.
+  // The front's passkey pages (ADR-070 step 5): GET nonce hands out a
+  // one-use nonce, GET members lists the registered passkeys (one row each,
+  // as hive_store::Member). The mock checks no signature;
+  // crates/hive-hub/src/remote.rs does.
+  if (segs[0] === "nonce" && segs.length === 1) {
+    if (req.method !== "GET") return fail(res, 405, "method not allowed", "Only GET hands out a nonce.", "Send GET /api/v1/nonce.");
+    const nonce = "mock-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    return send(res, 200, {
+      nonce,
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+      origin: "https://" + (req.headers.host || "localhost").split(":")[0],
+      rp_id: (req.headers.host || "localhost").split(":")[0],
+    });
+  }
   if (segs[0] === "members" && segs.length <= 2) {
-    if (segs.length === 2 && segs[1] === "nonce") {
-      if (req.method !== "POST") return fail(res, 405, "method not allowed", "Only POST hands out a nonce.", "Send POST /api/v1/members/nonce.");
-      const nonce = "mock-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
-      return send(res, 200, { nonce, expires_at: new Date(Date.now() + 5 * 60_000).toISOString() });
-    }
     if (segs.length === 1 && req.method === "GET") return send(res, 200, await fixture("members"));
-    return fail(res, 404, "not found", "no route " + url.pathname, "use members or members/nonce");
+    return fail(res, 404, "not found", "no route " + url.pathname, "use GET members");
   }
   if (segs[0] === "update" && segs.length <= 2) {
     const base = await fixture("update");
