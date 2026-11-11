@@ -1,23 +1,22 @@
 // The browser half of passkey-signed writes (ADR-070 step 5, TASK-109):
 // asks the brain for a nonce, has the member's passkey sign the write
 // through navigator.credentials, and turns the answer into the
-// X-Hive-Passkey header. The format and every decision live in
+// X-Hive-Nonce and X-Hive-Passkey-* headers. The format and every decision live in
 // passkey-state.ts (pure, tested); this file only touches navigator,
 // location, localStorage and fetch.
 import { setWriteSigner } from "./api";
 import {
   NONCE_PATH,
   signingRequired,
-  PASSKEY_HEADER,
   SIGNED_IN_KEY,
   b64url,
   creationOptions,
   needsSignature,
   nonceOf,
   parseSignedIn,
-  passkeyHeader,
+  passkeyHeaders,
   passkeySupport,
-  rawP256FromSpki,
+  p256Spki,
   requestOptions,
   writeChallenge,
   type Registration,
@@ -58,13 +57,7 @@ export function rememberSignedIn(s: SignedIn | null) {
 
 // One nonce from the brain; it is spent by the write it signs.
 export async function fetchNonce(): Promise<string> {
-  const r = await fetch(API + NONCE_PATH, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-    cache: "no-store",
-    credentials: "same-origin",
-  });
+  const r = await fetch(API + NONCE_PATH, { cache: "no-store", credentials: "same-origin" });
   let data: unknown = null;
   try {
     data = await r.json();
@@ -81,7 +74,7 @@ export async function fetchNonce(): Promise<string> {
 export interface PasskeyAnswer {
   nonce: string;
   credential: string;
-  header: string;
+  headers: Record<string, string>;
 }
 
 // Signs one request: a fresh nonce, the member's passkey over the request's
@@ -96,13 +89,13 @@ export async function signRequest(method: string, path: string, body?: string | 
   })) as PublicKeyCredential | null;
   if (!cred) throw new Error("The browser returned no passkey.");
   const res = cred.response as AuthenticatorAssertionResponse;
-  const header = passkeyHeader(nonce, {
+  const headers = passkeyHeaders(nonce, {
     credentialId: new Uint8Array(cred.rawId),
     authenticatorData: new Uint8Array(res.authenticatorData),
     clientDataJSON: new Uint8Array(res.clientDataJSON),
     signature: new Uint8Array(res.signature),
   });
-  return { nonce, credential: b64url(cred.rawId), header };
+  return { nonce, credential: b64url(cred.rawId), headers };
 }
 
 // The request init a write needs on this page: unchanged on this machine
@@ -120,7 +113,7 @@ export async function withPasskey(path: string, init: RequestInit = {}): Promise
   else if (raw != null) throw new Error("This kind of request body cannot be passkey-signed.");
   const signed = await signRequest(init.method || "POST", href, body);
   const headers = new Headers(init.headers);
-  headers.set(PASSKEY_HEADER, signed.header);
+  for (const [name, value] of Object.entries(signed.headers)) headers.set(name, value);
   return { ...init, headers, body: body == null ? raw : (body as BodyInit) };
 }
 
@@ -161,6 +154,6 @@ export async function registerPasskey(member: string, exclude: string[] = []): P
   return {
     member,
     credential: b64url(cred.rawId),
-    publicKey: b64url(rawP256FromSpki(new Uint8Array(spki))),
+    publicKey: p256Spki(new Uint8Array(spki)),
   };
 }

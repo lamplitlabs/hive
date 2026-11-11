@@ -11,12 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { browserPasskeySupport, registerPasskey } from "@/lib/passkey";
-import { memberNameProblem, passkeyAddCommand, passkeyErrorWords, passkeyPageNote, type Registration } from "@/lib/passkey-state";
+import { memberAddCommand, memberNameProblem, passkeyErrorWords, passkeyPageNote, type Registration } from "@/lib/passkey-state";
 
 // /passkey/register/: make a passkey for this team's front on this device
 // (ADR-070 step 5). The brain trusts only public keys the owner adds, so the
-// page ends with the one line the owner runs on the brain:
-// `hive member passkey add MEMBER --credential ID --public-key KEY`.
+// page ends with the one line the owner runs on the brain's machine: a
+// POST /api/v1/members to the console's own port (memberAddCommand).
 export default function RegisterPasskeyPage() {
   useCrumbs([{ label: "Passkey", href: "/passkey/" }, { label: "Register" }]);
   const [host, setHost] = useState("");
@@ -83,7 +83,7 @@ export default function RegisterPasskeyPage() {
                 aria-describedby="passkey-member-help"
               />
               <p id="passkey-member-help" className={touched && problem ? "text-xs text-bad" : "text-xs text-muted-foreground"}>
-                {touched && problem ? problem : "The name the owner gave you with hive member add."}
+                {touched && problem ? problem : "The name the owner knows you by; the brain lists your passkey under it."}
               </p>
             </div>
             <div>
@@ -98,9 +98,9 @@ export default function RegisterPasskeyPage() {
           <Panel title="2. Send this to the owner" icon={KeyRoundIcon}>
             <div className="grid gap-3 text-sm leading-relaxed">
               <p>
-                The passkey is on this device. It holds no secret you need to hide - only its public half is below. The owner runs this on the brain:
+                The passkey is on this device. It holds no secret you need to hide - only its public half is below. The owner runs this on the brain&apos;s machine to add it:
               </p>
-              <CommandBox command={passkeyAddCommand(made)} copy />
+              <CommandBox command={memberAddCommand(made)} copy />
               <p className="text-muted-foreground">
                 Once it is added,{" "}
                 <Link href="/passkey/" className="text-link underline-offset-4 hover:underline">

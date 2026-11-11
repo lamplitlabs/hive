@@ -8,7 +8,7 @@ register("../components/project/tsx-test-loader.mjs", import.meta.url);
 
 const { api, post, setWriteSigner } = await import("./api.ts");
 const { installPasskeySigner, registerPasskey, withPasskey } = await import("./passkey.ts");
-const { PASSKEY_HEADER, b64url, fromB64url, readPasskeyHeader, writeChallenge } = await import("./passkey-state.ts");
+const { NONCE_HEADER, b64url, readPasskeyHeaders, writeChallenge } = await import("./passkey-state.ts");
 
 const enc = new TextEncoder();
 
@@ -62,7 +62,10 @@ test("through the front a write is signed over the brain's nonce and verifies; r
   let n = 0;
   const fetch = async (href, init = {}) => {
     calls.push({ href, init });
-    if (href === "/api/v1/members/nonce") return Response.json({ nonce: "nonce-" + ++n, expires_at: "2026-11-10T12:05:00Z" });
+    if (href === "/api/v1/nonce") {
+      assert.equal(init.method ?? "GET", "GET", "the brain hands out nonces on GET");
+      return Response.json({ nonce: "nonce-" + ++n, expires_at: "2026-11-10T12:05:00Z" });
+    }
     return Response.json({ ok: true });
   };
   await withGlobals({ location: { hostname: "acme.hive.example" }, navigator: { credentials: auth.credentials }, fetch }, async () => {
@@ -70,26 +73,27 @@ test("through the front a write is signed over the brain's nonce and verifies; r
     await post("settings", { key: "capacity", value: "2" });
     await api("org");
 
-    assert.deepEqual(calls.map((c) => c.href), ["/api/v1/members/nonce", "/api/v1/settings", "/api/v1/org"]);
+    assert.deepEqual(calls.map((c) => c.href), ["/api/v1/nonce", "/api/v1/settings", "/api/v1/org"]);
     const write = calls[1].init;
-    const header = readPasskeyHeader(new Headers(write.headers).get(PASSKEY_HEADER));
+    const sent = new Headers(write.headers);
+    const header = readPasskeyHeaders((name) => sent.get(name));
     assert.equal(new Headers(write.headers).get("X-Hive-Settings"), "yes", "the intent header is kept");
     assert.equal(header.nonce, "nonce-1");
     assert.equal(header.credential, "BwcH");
 
     // The brain's check: the challenge the passkey signed is this exact write.
-    const cd = JSON.parse(new TextDecoder().decode(fromB64url(header.client_data_json)));
+    const cd = JSON.parse(new TextDecoder().decode(header.clientDataJSON));
     const want = await writeChallenge({ nonce: "nonce-1", method: "POST", path: "/api/v1/settings", body: write.body });
     assert.equal(cd.challenge, b64url(want));
     const raw = await crypto.subtle.exportKey("raw", auth.keys.publicKey);
     const pub = await crypto.subtle.importKey("raw", raw, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
     const signed = new Uint8Array([
-      ...fromB64url(header.authenticator_data),
-      ...new Uint8Array(await crypto.subtle.digest("SHA-256", fromB64url(header.client_data_json))),
+      ...header.authenticatorData,
+      ...new Uint8Array(await crypto.subtle.digest("SHA-256", header.clientDataJSON)),
     ]);
-    assert.equal(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, fromB64url(header.signature), signed), true);
+    assert.equal(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, header.signature, signed), true);
 
-    assert.equal(new Headers(calls[2].init.headers).get(PASSKEY_HEADER), null, "a read is not signed");
+    assert.equal(new Headers(calls[2].init.headers).get(NONCE_HEADER), null, "a read is not signed");
     assert.equal(auth.asked[0].rpId, "acme.hive.example");
   });
 });
@@ -104,7 +108,7 @@ test("on this machine nothing is signed and no nonce is asked for", async () => 
     assert.equal(installPasskeySigner(), false);
     await post("tasks", { title: "x" });
     assert.deepEqual(calls.map((c) => c.href), ["/api/v1/tasks"]);
-    assert.equal(new Headers(calls[0].init.headers).get(PASSKEY_HEADER), null);
+    assert.equal(new Headers(calls[0].init.headers).get(NONCE_HEADER), null);
     const init = { method: "POST", body: "{}" };
     assert.equal(await withPasskey("tasks", init), init, "loopback leaves the request as it was");
   });
@@ -119,12 +123,12 @@ test("a brain that gives no nonce stops the write with its reason", async () => 
   });
 });
 
-test("registering hands back the line for hive member passkey add", async () => {
+test("registering hands back the passkey's id and SPKI for POST /api/v1/members", async () => {
   const auth = await authenticator();
   await withGlobals({ location: { hostname: "acme.hive.example" }, navigator: { credentials: auth.credentials } }, async () => {
     const r = await registerPasskey("ana");
-    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", auth.keys.publicKey));
-    assert.deepEqual(r, { member: "ana", credential: "BwcH", publicKey: b64url(raw) });
+    const spki = new Uint8Array(await crypto.subtle.exportKey("spki", auth.keys.publicKey));
+    assert.deepEqual(r, { member: "ana", credential: "BwcH", publicKey: b64url(spki) });
     assert.equal(auth.asked[0].rp.id, "acme.hive.example");
     assert.deepEqual(auth.asked[0].pubKeyCredParams, [{ type: "public-key", alg: -7 }]);
   });

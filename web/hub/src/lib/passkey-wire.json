@@ -1,0 +1,38 @@
+{
+  "note": "One passkey-signed write through the front, made by web/hub/src/lib/passkey-wire.test.mjs with the test-only key 0x07 x 32. Checked by that test (passkey-state.ts) and by crates/hive-hub/src/remote.rs (the brain). Regenerate only with a wire change on both sides.",
+  "origin": "https://team.example.com",
+  "rp_id": "team.example.com",
+  "nonce_route": "GET /api/v1/nonce",
+  "member": {
+    "headers": {
+      "X-Hive-Members": "yes"
+    },
+    "body": {
+      "credential_id": "YWxpY2UtcGFzc2tleQ",
+      "member": "alice@team.example.com",
+      "name": "alice@team.example.com",
+      "role": "owner",
+      "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHhhTL9R1TALzBB2cdc6zO4P_2BrHzk_ogsyxyYvFiW6kbDEcTi_0DdlqNlPm5FRF0y3-SG7O11x6kMahiIHAow"
+    }
+  },
+  "write": {
+    "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "method": "POST",
+    "path": "/api/v1/settings?via=front",
+    "body": "{\"name\":\"daemon.pass_seconds\",\"value\":\"90\"}",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Hive-Settings": "yes"
+    }
+  },
+  "sign_count": 1,
+  "signed_bytes": "aGl2ZS13cml0ZS12MQpBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4ClBPU1QgL2FwaS92MS9zZXR0aW5ncz92aWE9ZnJvbnQKeyJuYW1lIjoiZGFlbW9uLnBhc3Nfc2Vjb25kcyIsInZhbHVlIjoiOTAifQ",
+  "challenge": "-zcUji42BtyKqNtMqt4dtQPUqXeBg-PCriUeDbaaVlY",
+  "headers": {
+    "X-Hive-Nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "X-Hive-Passkey-Credential": "YWxpY2UtcGFzc2tleQ",
+    "X-Hive-Passkey-Authenticator": "3t2TjiCUmqqiRX2SGR56ul7jH8HbTByUjxaG_hwKJYUFAAAAAQ",
+    "X-Hive-Passkey-Client-Data": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiLXpjVWppNDJCdHlLcU50TXF0NGR0UVBVcVhlQmctUENyaVVlRGJhYVZsWSIsIm9yaWdpbiI6Imh0dHBzOi8vdGVhbS5leGFtcGxlLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+    "X-Hive-Passkey-Signature": "MEYCIQC9X44R93yfrYQYlirFCHxX1DQHuh4tns1qBC8HrsAQ0gIhAIHqh8KLVjPYfuqcj9DZArgQYGjskwHTP6SMx5TciaPF"
+  }
+}
