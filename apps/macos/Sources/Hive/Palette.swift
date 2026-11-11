@@ -17,7 +17,7 @@ enum Palette {
         appearance.isDark ? NSColor(white: 1, alpha: 0.09) : rgb(0xDCE3E4)
     }
 
-    /// The brand tile behind the hive line (--gradient-brand).
+    /// The brand tile behind the hive cell (--gradient-brand).
     static let brandStops: [NSColor] = [rgb(0x50F4C5), rgb(0x11BFF0), rgb(0x877AF7)]
 
     static func dynamic(light: UInt32, dark: UInt32) -> NSColor {

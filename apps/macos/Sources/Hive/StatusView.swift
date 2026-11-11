@@ -33,7 +33,7 @@ struct JoinFields: Equatable {
 }
 
 /// The console's brand mark (web/hub/src/components/shell/hive-mark.tsx):
-/// the hive line on the mint-sky-violet tile.
+/// the hive cell: a hexagon with a dot at its centre, on the mint-sky-violet tile.
 final class HiveMarkView: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: 56, height: 56) }
     override var isFlipped: Bool { true }
@@ -62,21 +62,28 @@ final class HiveMarkView: NSView {
         context.setLineWidth(1)
         context.strokePath()
 
-        // The waveform at 78% of the tile, from a 256-unit box.
+        // The cell at 78% of the tile, from a 256-unit box: a hexagon outline
+        // with a dot at its centre.
         let scale = side * 0.78 / 256
         let origin = CGPoint(x: tile.midX - 128 * scale, y: tile.midY - 128 * scale)
-        let points: [(CGFloat, CGFloat)] = [(30, 135), (71, 135), (90, 88), (124, 189), (155, 112), (173, 135), (226, 135)]
-        let line = CGMutablePath()
-        for (index, point) in points.enumerated() {
-            let p = CGPoint(x: origin.x + point.0 * scale, y: origin.y + point.1 * scale)
-            if index == 0 { line.move(to: p) } else { line.addLine(to: p) }
+        let corners: [(CGFloat, CGFloat)] = [(128, 36), (206, 81), (206, 171), (128, 216), (50, 171), (50, 81)]
+        let hexagon = CGMutablePath()
+        for (index, corner) in corners.enumerated() {
+            let p = CGPoint(x: origin.x + corner.0 * scale, y: origin.y + corner.1 * scale)
+            if index == 0 { hexagon.move(to: p) } else { hexagon.addLine(to: p) }
         }
-        context.addPath(line)
+        hexagon.closeSubpath()
+        context.addPath(hexagon)
         context.setStrokeColor(NSColor.white.cgColor)
         context.setLineWidth(22 * scale)
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.strokePath()
+
+        let dotRadius = 14 * scale
+        let dotCentre = CGPoint(x: origin.x + 128 * scale, y: origin.y + 126 * scale)
+        context.setFillColor(NSColor.white.cgColor)
+        context.fillEllipse(in: CGRect(x: dotCentre.x - dotRadius, y: dotCentre.y - dotRadius, width: dotRadius * 2, height: dotRadius * 2))
     }
 }
 
