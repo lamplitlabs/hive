@@ -1,35 +1,50 @@
-// Passkey-signed writes through the front (ADR-070 step 5, TASK-109).
+// Passkey-signed writes through the front (ADR-070 step 5, TASK-109/110).
 //
 // When the console is reached through the hosted front (any origin that is
 // not this machine's loopback), the brain refuses a write - POST, PUT, PATCH,
-// DELETE - unless it carries a member's passkey signature in the
-// X-Hive-Passkey header (crates/hive-hub/src/front.rs). The signature covers
-// a one-use nonce the brain issued (POST /api/v1/members/nonce), the method,
-// the path and the exact body, so the front that relays the request cannot
-// forge or alter a write: it never holds the member's private key.
+// DELETE - unless it carries a member's passkey assertion
+// (crates/hive-hub/src/remote.rs, checked by crates/hive-runner/src/webauthn.rs).
+// The signature covers a one-use nonce the brain issued (GET /api/v1/nonce),
+// the method, the path and the exact body, so the front that relays the
+// request cannot forge or alter a write: it never holds the member's private
+// key.
 //
 // Everything about the wire format lives in this module, so a change on the
 // brain's side costs one edit here:
-//   - the bytes signed:  "hive-write\n" nonce "\n" METHOD "\n" path "\n" body
+//   - the nonce:         GET /api/v1/nonce -> {nonce, expires_at, origin, rp_id}
+//   - the bytes signed:  "hive-write-v1\n" nonce "\n" METHOD " " path?query "\n" body
+//                        (webauthn::write_challenge)
 //   - the challenge:     SHA-256 of those bytes, handed to
 //                        navigator.credentials.get() as the WebAuthn challenge
-//   - the header:        base64url of the JSON {v, nonce, credential,
-//                        authenticator_data, client_data_json, signature}
-//   - the registration:  `hive member passkey add MEMBER --credential ID
-//                        --public-key KEY`, KEY being the base64url of the
-//                        65-byte uncompressed P-256 point (ES256 only)
+//   - the headers:       X-Hive-Nonce (the nonce as issued) and, base64url,
+//                        X-Hive-Passkey-Credential, -Authenticator,
+//                        -Client-Data and -Signature
+//   - the registration:  POST /api/v1/members (X-Hive-Members: yes) with
+//                        {credential_id, member, name, role, public_key},
+//                        public_key the base64url SubjectPublicKeyInfo of an
+//                        ES256 (P-256) key
+// src/lib/passkey-wire.json is one signed write in this format; the npm test
+// checks this module produces it and hive-hub's remote.rs test checks the
+// brain accepts it.
 //
 // Pure: no DOM, no fetch, no storage. lib/passkey.ts owns navigator and
 // localStorage; the pages under app/passkey/ own the screens.
 
-export const PASSKEY_HEADER = "X-Hive-Passkey";
+// The headers of a signed write (crates/hive-runner/src/webauthn.rs).
+export const NONCE_HEADER = "X-Hive-Nonce";
+export const CREDENTIAL_HEADER = "X-Hive-Passkey-Credential";
+export const AUTHENTICATOR_HEADER = "X-Hive-Passkey-Authenticator";
+export const CLIENT_DATA_HEADER = "X-Hive-Passkey-Client-Data";
+export const SIGNATURE_HEADER = "X-Hive-Passkey-Signature";
+// The confirmation header a members write carries.
+export const MEMBERS_HEADER = "X-Hive-Members";
 // apiHref-relative routes on the brain.
-export const NONCE_PATH = "members/nonce";
+export const NONCE_PATH = "nonce";
 export const MEMBERS_PATH = "members";
-// The prefix that keeps a write signature from ever doubling as another
-// protocol's challenge.
-export const SIGNED_PREFIX = "hive-write";
-export const HEADER_VERSION = 1;
+// The version word the challenge starts with (webauthn::CHALLENGE_DOMAIN):
+// a later shape never verifies under this one, and a write signature never
+// doubles as another protocol's challenge.
+export const SIGNED_PREFIX = "hive-write-v1";
 // COSE algorithm -7: ECDSA over P-256 with SHA-256, the one the brain checks.
 export const ES256 = -7;
 // How long the browser waits for the member to touch the authenticator.
@@ -106,7 +121,7 @@ export interface WriteToSign {
 
 // The exact bytes the member's passkey signs over (through the challenge).
 export function signedBytes(w: WriteToSign): Uint8Array {
-  const head = [SIGNED_PREFIX, w.nonce, w.method.toUpperCase(), w.path, ""].join("\n");
+  const head = SIGNED_PREFIX + "\n" + w.nonce + "\n" + w.method.toUpperCase() + " " + w.path + "\n";
   return concat([utf8.encode(head), bodyBytes(w.body)]);
 }
 
@@ -142,39 +157,52 @@ export interface Assertion {
   signature: Uint8Array;
 }
 
-export interface PasskeyHeaderBody {
-  v: number;
+// The headers of one signed write: the nonce as the brain issued it and the
+// assertion's parts, base64url (webauthn::NONCE_HEADER and the four after it).
+export function passkeyHeaders(nonce: string, a: Assertion): Record<string, string> {
+  return {
+    [NONCE_HEADER]: nonce,
+    [CREDENTIAL_HEADER]: b64url(a.credentialId),
+    [AUTHENTICATOR_HEADER]: b64url(a.authenticatorData),
+    [CLIENT_DATA_HEADER]: b64url(a.clientDataJSON),
+    [SIGNATURE_HEADER]: b64url(a.signature),
+  };
+}
+
+// What the brain reads back from those headers (remote.rs assertion_of), for
+// tests and the mock brain: null when any is missing, as the brain refuses it.
+export interface SignedWriteHeaders {
   nonce: string;
   credential: string;
-  authenticator_data: string;
-  client_data_json: string;
-  signature: string;
+  authenticatorData: Uint8Array;
+  clientDataJSON: Uint8Array;
+  signature: Uint8Array;
 }
 
-// The X-Hive-Passkey value for one signed write.
-export function passkeyHeader(nonce: string, a: Assertion): string {
-  const body: PasskeyHeaderBody = {
-    v: HEADER_VERSION,
-    nonce,
-    credential: b64url(a.credentialId),
-    authenticator_data: b64url(a.authenticatorData),
-    client_data_json: b64url(a.clientDataJSON),
-    signature: b64url(a.signature),
-  };
-  return b64url(utf8.encode(JSON.stringify(body)));
+export function readPasskeyHeaders(get: (name: string) => string | null | undefined): SignedWriteHeaders | null {
+  const nonce = get(NONCE_HEADER) || "";
+  const credential = get(CREDENTIAL_HEADER) || "";
+  if (!nonce || !credential) return null;
+  try {
+    return {
+      nonce,
+      credential,
+      authenticatorData: fromB64url(get(AUTHENTICATOR_HEADER) || ""),
+      clientDataJSON: fromB64url(get(CLIENT_DATA_HEADER) || ""),
+      signature: fromB64url(get(SIGNATURE_HEADER) || ""),
+    };
+  } catch {
+    return null;
+  }
 }
 
-// The inverse, for tests and for the mock brain.
-export function readPasskeyHeader(value: string): PasskeyHeaderBody {
-  const body = JSON.parse(new TextDecoder().decode(fromB64url(value))) as PasskeyHeaderBody;
-  if (body.v !== HEADER_VERSION) throw new Error("unknown passkey header version " + body.v);
-  return body;
-}
-
-// The nonce reply. Tolerant of a brain that answers { nonce } alone.
+// The nonce reply (GET /api/v1/nonce). Tolerant of a brain that answers
+// { nonce } alone.
 export interface NonceReply {
   nonce: string;
   expires_at?: string;
+  origin?: string;
+  rp_id?: string;
 }
 
 export function nonceOf(reply: unknown): string {
@@ -201,8 +229,8 @@ export function requestOptions(
 
 // navigator.credentials.create() options for registering a member's passkey
 // on this domain. The challenge is random: the brain never sees this
-// ceremony; what it trusts is the public key the owner adds with
-// `hive member passkey add`.
+// ceremony; what it trusts is the public key the owner registers with
+// POST /api/v1/members (memberAddCommand).
 export function creationOptions(input: {
   member: string;
   rpId: string;
@@ -226,11 +254,11 @@ export function creationOptions(input: {
   };
 }
 
-// A member name the brain will take: what `hive member add` was given.
+// A member name: what the owner knows this member by.
 // Letters, digits, dot, dash, underscore and @, 1-64 characters.
 export function memberNameProblem(name: string): string {
   const n = name.trim();
-  if (!n) return "Enter the member name the owner added with hive member add.";
+  if (!n) return "Enter your member name, the one the owner knows you by.";
   if (n.length > 64) return "A member name is at most 64 characters.";
   if (!/^[A-Za-z0-9._@-]+$/.test(n)) return "Use letters, digits, dots, dashes, underscores or @ only - no spaces.";
   return "";
@@ -243,9 +271,10 @@ const P256_SPKI_PREFIX = Uint8Array.from([
   0x01, 0x07, 0x03, 0x42, 0x00,
 ]);
 
-// AuthenticatorAttestationResponse.getPublicKey() hands back SPKI; the brain
-// stores the 65-byte point. Anything but an uncompressed P-256 key is
-// refused here, with words, instead of by the brain later.
+// AuthenticatorAttestationResponse.getPublicKey() hands back SPKI, which is
+// what the brain registers (it also takes the bare 65-byte point). Anything
+// but an uncompressed P-256 key is refused here, with words, instead of by
+// the brain later.
 export function rawP256FromSpki(spki: Uint8Array): Uint8Array {
   if (spki.length !== P256_SPKI_PREFIX.length + 65 || !P256_SPKI_PREFIX.every((b, i) => spki[i] === b))
     throw new Error("this passkey's key is not a P-256 (ES256) key; Hive takes ES256 passkeys only");
@@ -254,85 +283,97 @@ export function rawP256FromSpki(spki: Uint8Array): Uint8Array {
   return point;
 }
 
-// What the register page shows: the line the owner runs on the brain.
+// The public_key the brain registers: the SPKI itself, base64url, once it
+// is known to be a P-256 key.
+export function p256Spki(spki: Uint8Array): string {
+  rawP256FromSpki(spki);
+  return b64url(spki);
+}
+
+// What the register page made: the member's name, the passkey's id and its
+// public key (SubjectPublicKeyInfo DER), both base64url.
 export interface Registration {
   member: string;
   credential: string;
   publicKey: string;
 }
 
+// The body of POST /api/v1/members (hive_store::MemberInput): the brain
+// trusts only keys registered this way. The register page knows the member
+// by the name they typed, so that is both the member id and the display
+// name; the role is the owner's call and defaults to member.
+export interface MemberInput {
+  credential_id: string;
+  member: string;
+  name: string;
+  role: string;
+  public_key: string;
+}
+
+export function memberInput(r: Registration, role: "owner" | "member" = "member"): MemberInput {
+  return { credential_id: r.credential, member: r.member, name: r.member, role, public_key: r.publicKey };
+}
+
+// Where the owner's own console listens by default (`hive hub`).
+export const HUB_URL = "http://127.0.0.1:8765";
+
 // Single-quoted for any POSIX shell; member names are already restricted,
 // the quoting only guards the copy-paste.
 function shq(s: string): string {
-  return /^[A-Za-z0-9._@=/+-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+  return /^[A-Za-z0-9._@=/+:-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-export function passkeyAddCommand(r: Registration): string {
+// The line the owner runs on the brain's machine to register the passkey:
+// the members route on the console's own port, with its confirmation header.
+export function memberAddCommand(r: Registration, hub: string = HUB_URL): string {
   return [
-    "hive member passkey add",
-    shq(r.member),
-    "--credential",
-    shq(r.credential),
-    "--public-key",
-    shq(r.publicKey),
+    "curl -sS -X POST",
+    shq(hub.replace(/\/+$/, "") + "/api/v1/" + MEMBERS_PATH),
+    "-H 'Content-Type: application/json'",
+    "-H " + shq(MEMBERS_HEADER + ": yes"),
+    "-d",
+    shq(JSON.stringify(memberInput(r))),
   ].join(" ");
 }
 
-// GET members, as far as the front needs it: who holds which passkey. The
-// brain lists passkeys without their keys; a member who was removed stays in
-// the list for the audit trail but cannot sign.
+// GET members as the brain lists them: one row per registered passkey
+// (hive_store::Member), revoked ones kept with status "revoked".
 export interface MemberPasskey {
   credential: string;
-  label: string;
-  revoked: boolean;
-}
-
-export interface FrontMember {
+  member: string;
   name: string;
   role: string;
-  removed: boolean;
-  passkeys: MemberPasskey[];
+  revoked: boolean;
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-export function membersOf(payload: unknown): FrontMember[] {
+export function membersOf(payload: unknown): MemberPasskey[] {
   const raw = (payload as { members?: unknown } | null)?.members;
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
     .map((m) => ({
-      name: str(m.name),
+      credential: str(m.credential_id),
+      member: str(m.member),
+      name: str(m.name) || str(m.member),
       role: str(m.role) || "member",
-      removed: !!m.removed || !!str(m.removed_at),
-      passkeys: (Array.isArray(m.passkeys) ? m.passkeys : [])
-        .filter((p): p is Record<string, unknown> => !!p && typeof p === "object")
-        .map((p) => ({
-          credential: str(p.credential) || str(p.credential_id) || str(p.id),
-          label: str(p.label),
-          revoked: !!p.revoked || !!str(p.revoked_at),
-        }))
-        .filter((p) => p.credential),
+      revoked: str(m.status) === "revoked",
     }))
-    .filter((m) => m.name);
+    .filter((m) => m.credential && m.name);
 }
 
 // Who a passkey belongs to on this brain, and whether it may sign.
 export type PasskeyStanding =
   | { state: "active"; member: string; role: string }
   | { state: "revoked"; member: string }
-  | { state: "member-removed"; member: string }
   | { state: "unknown" };
 
-export function standingOf(members: FrontMember[], credential: string): PasskeyStanding {
-  for (const m of members) {
-    const p = m.passkeys.find((k) => k.credential === credential);
-    if (!p) continue;
-    if (m.removed) return { state: "member-removed", member: m.name };
-    if (p.revoked) return { state: "revoked", member: m.name };
-    return { state: "active", member: m.name, role: m.role };
-  }
-  return { state: "unknown" };
+export function standingOf(members: MemberPasskey[], credential: string): PasskeyStanding {
+  const p = members.find((m) => m.credential === credential);
+  if (!p) return { state: "unknown" };
+  if (p.revoked) return { state: "revoked", member: p.name };
+  return { state: "active", member: p.name, role: p.role };
 }
 
 // The passkey this browser signed in with, kept in localStorage so every
@@ -363,8 +404,6 @@ export function signInWords(s: PasskeyStanding): { tone: "ok" | "warn" | "bad"; 
       return { tone: "ok", text: "Signed in as " + s.member + ". Your changes from this browser are signed with this passkey." };
     case "revoked":
       return { tone: "bad", text: "This passkey belonged to " + s.member + " but was revoked. Register a new one and ask the owner to add it." };
-    case "member-removed":
-      return { tone: "bad", text: s.member + " is no longer a member of this team, so this passkey cannot sign changes." };
     default:
       return {
         tone: "warn",

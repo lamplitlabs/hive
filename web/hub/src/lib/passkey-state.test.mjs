@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  NONCE_HEADER,
   NONCE_PATH,
-  PASSKEY_HEADER,
+  SIGNATURE_HEADER,
   b64url,
   creationOptions,
   fromB64url,
@@ -13,12 +14,14 @@ import {
   needsSignature,
   nonceOf,
   parseSignedIn,
-  passkeyAddCommand,
+  memberAddCommand,
+  memberInput,
+  p256Spki,
   passkeyErrorWords,
-  passkeyHeader,
+  passkeyHeaders,
   passkeySupport,
   rawP256FromSpki,
-  readPasskeyHeader,
+  readPasskeyHeaders,
   requestOptions,
   signInWords,
   signedBytes,
@@ -44,14 +47,15 @@ test("only writes from a page served off this machine are signed", () => {
   assert.equal(needsSignature("localhost", "POST", "settings"), false);
   // The nonce route is how a signature starts; it cannot need one.
   assert.equal(needsSignature("acme.hive.example", "POST", NONCE_PATH), false);
-  assert.equal(needsSignature("acme.hive.example", "POST", "/api/v1/members/nonce"), false);
-  assert.equal(PASSKEY_HEADER, "X-Hive-Passkey");
+  assert.equal(needsSignature("acme.hive.example", "POST", "/api/v1/nonce"), false);
+  assert.equal(needsSignature("acme.hive.example", "POST", "/api/v1/members"), true);
+  assert.equal(NONCE_HEADER, "X-Hive-Nonce");
 });
 
 test("the signed bytes bind nonce, method, path and the exact body", async () => {
   const w = { nonce: "n-1", method: "post", path: "/api/v1/settings", body: '{"key":"capacity","value":"2"}' };
-  assert.equal(text(signedBytes(w)), 'hive-write\nn-1\nPOST\n/api/v1/settings\n{"key":"capacity","value":"2"}');
-  assert.equal(text(signedBytes({ ...w, body: undefined })), "hive-write\nn-1\nPOST\n/api/v1/settings\n");
+  assert.equal(text(signedBytes(w)), 'hive-write-v1\nn-1\nPOST /api/v1/settings\n{"key":"capacity","value":"2"}');
+  assert.equal(text(signedBytes({ ...w, body: undefined })), "hive-write-v1\nn-1\nPOST /api/v1/settings\n");
   // Binary bodies are signed as they are.
   const bin = signedBytes({ ...w, body: Uint8Array.from([0, 255, 10]) });
   assert.deepEqual([...bin.slice(-3)], [0, 255, 10]);
@@ -64,6 +68,7 @@ test("the signed bytes bind nonce, method, path and the exact body", async () =>
     { ...w, nonce: "n-2" },
     { ...w, method: "DELETE" },
     { ...w, path: "/api/v1/decide" },
+    { ...w, path: "/api/v1/settings?x=1" },
     { ...w, body: '{"key":"capacity","value":"3"}' },
   ])
     assert.notDeepEqual(await writeChallenge(other), c, JSON.stringify(other));
@@ -78,24 +83,30 @@ test("base64url round-trips without padding or +/", () => {
   assert.throws(() => fromB64url("not base64!"), /not base64url/);
 });
 
-test("the header carries every part the brain checks and reads back", () => {
+test("the headers carry every part the brain checks and read back", () => {
   const a = {
     credentialId: Uint8Array.from([1, 2, 3]),
     authenticatorData: Uint8Array.from([4, 5]),
     clientDataJSON: new TextEncoder().encode('{"type":"webauthn.get"}'),
     signature: Uint8Array.from([0x30, 0x44]),
   };
-  const h = passkeyHeader("n-1", a);
-  assert.match(h, /^[A-Za-z0-9_-]+$/, "a header value is one base64url token");
-  assert.deepEqual(readPasskeyHeader(h), {
-    v: 1,
+  const h = passkeyHeaders("n-1", a);
+  assert.deepEqual(h, {
+    "X-Hive-Nonce": "n-1",
+    "X-Hive-Passkey-Credential": "AQID",
+    "X-Hive-Passkey-Authenticator": "BAU",
+    "X-Hive-Passkey-Client-Data": b64url(a.clientDataJSON),
+    "X-Hive-Passkey-Signature": "MEQ",
+  });
+  for (const v of Object.values(h)) assert.match(v, /^[A-Za-z0-9_-]+$/, "each value is one base64url token");
+  assert.deepEqual(readPasskeyHeaders((n) => h[n]), {
     nonce: "n-1",
     credential: "AQID",
-    authenticator_data: "BAU",
-    client_data_json: b64url(a.clientDataJSON),
-    signature: "MEQ",
+    authenticatorData: a.authenticatorData,
+    clientDataJSON: a.clientDataJSON,
+    signature: a.signature,
   });
-  assert.throws(() => readPasskeyHeader(b64url(new TextEncoder().encode('{"v":2}'))), /version 2/);
+  assert.equal(readPasskeyHeaders((n) => (n === SIGNATURE_HEADER ? "!" : h[n])), null);
 });
 
 test("a signature over the challenge verifies with the member's public key, as the brain checks it", async () => {
@@ -112,30 +123,31 @@ test("a signature over the challenge verifies with the member's public key, as t
   const cdHash = new Uint8Array(await crypto.subtle.digest("SHA-256", clientDataJSON));
   const signed = new Uint8Array([...authenticatorData, ...cdHash]);
   const signature = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, signed));
-  const header = readPasskeyHeader(
-    passkeyHeader(w.nonce, { credentialId: Uint8Array.from([9]), authenticatorData, clientDataJSON, signature }),
-  );
+  const headers = passkeyHeaders(w.nonce, { credentialId: Uint8Array.from([9]), authenticatorData, clientDataJSON, signature });
+  const header = readPasskeyHeaders((n) => headers[n]);
 
   // What the brain does with the header:
-  const cd = JSON.parse(text(fromB64url(header.client_data_json)));
+  const cd = JSON.parse(text(header.clientDataJSON));
   assert.equal(cd.challenge, b64url(await writeChallenge({ ...w, nonce: header.nonce })));
   const raw = rawP256FromSpki(new Uint8Array(await crypto.subtle.exportKey("spki", keys.publicKey)));
   const pub = await crypto.subtle.importKey("raw", raw, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
   const again = new Uint8Array([
-    ...fromB64url(header.authenticator_data),
-    ...new Uint8Array(await crypto.subtle.digest("SHA-256", fromB64url(header.client_data_json))),
+    ...header.authenticatorData,
+    ...new Uint8Array(await crypto.subtle.digest("SHA-256", header.clientDataJSON)),
   ]);
-  assert.equal(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, fromB64url(header.signature), again), true);
+  assert.equal(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, header.signature, again), true);
   // A changed body no longer matches the challenge the passkey signed.
   assert.notEqual(cd.challenge, b64url(await writeChallenge({ ...w, body: '{"title":"y"}' })));
 });
 
-test("the registered key is the 65-byte P-256 point; other keys are refused in words", async () => {
+test("the registered key is the P-256 SPKI; other keys are refused in words", async () => {
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const spki = new Uint8Array(await crypto.subtle.exportKey("spki", keys.publicKey));
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
   assert.deepEqual(rawP256FromSpki(spki), raw);
   assert.equal(raw.length, 65);
+  assert.equal(p256Spki(spki), b64url(spki));
+  assert.equal(fromB64url(p256Spki(spki)).length, 91);
 
   const p384 = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
   assert.throws(
@@ -149,15 +161,17 @@ test("the registered key is the 65-byte P-256 point; other keys are refused in w
 });
 
 test("the register page's command is one line the owner can paste", () => {
+  const r = { member: "ana@acme.dev", credential: "AQID-_", publicKey: "MFkw" };
+  assert.deepEqual(memberInput(r), { credential_id: "AQID-_", member: "ana@acme.dev", name: "ana@acme.dev", role: "member", public_key: "MFkw" });
+  assert.equal(memberInput(r, "owner").role, "owner");
   assert.equal(
-    passkeyAddCommand({ member: "ana@acme.dev", credential: "AQID-_", publicKey: "BAAA" }),
-    "hive member passkey add ana@acme.dev --credential AQID-_ --public-key BAAA",
+    memberAddCommand(r),
+    "curl -sS -X POST http://127.0.0.1:8765/api/v1/members -H 'Content-Type: application/json' -H 'X-Hive-Members: yes' -d " +
+      `'{"credential_id":"AQID-_","member":"ana@acme.dev","name":"ana@acme.dev","role":"member","public_key":"MFkw"}'`,
   );
-  assert.equal(
-    passkeyAddCommand({ member: "it's", credential: "x", publicKey: "y" }),
-    "hive member passkey add 'it'\\''s' --credential x --public-key y",
-  );
-  assert.equal(memberNameProblem(""), "Enter the member name the owner added with hive member add.");
+  assert.match(memberAddCommand(r, "http://127.0.0.1:9000/"), /^curl -sS -X POST http:\/\/127\.0\.0\.1:9000\/api\/v1\/members /);
+  assert.match(memberAddCommand({ ...r, member: "it's" }), /"member":"it'\\''s"/);
+  assert.equal(memberNameProblem(""), "Enter your member name, the one the owner knows you by.");
   assert.match(memberNameProblem("ana smith"), /no spaces/);
   assert.match(memberNameProblem("a".repeat(65)), /64/);
   assert.equal(memberNameProblem(" ana@acme.dev "), "");
@@ -181,21 +195,22 @@ test("WebAuthn options ask for ES256, user verification and the signed-in passke
 });
 
 test("members and their passkeys: who may sign", () => {
+  // GET /api/v1/members lists one row per passkey (hive_store::Member).
   const members = membersOf({
     members: [
-      { name: "owner", role: "owner", passkeys: [{ credential: "K1", label: "laptop" }] },
-      { name: "ana", passkeys: [{ credential_id: "K2", revoked_at: "2026-11-10T00:00:00Z" }, { id: "K3" }] },
-      { name: "bo", removed_at: "2026-11-09T00:00:00Z", passkeys: [{ credential: "K4" }] },
-      { name: "", passkeys: [] },
+      { credential_id: "K1", member: "user_owner", name: "owner", role: "owner", status: "active", sign_count: 4 },
+      { credential_id: "K2", member: "user_ana", name: "ana", role: "member", status: "revoked" },
+      { credential_id: "K3", member: "user_ana", name: "", role: "", status: "active" },
+      { credential_id: "", member: "user_x", name: "x" },
       null,
     ],
   });
-  assert.deepEqual(members.map((m) => m.name), ["owner", "ana", "bo"]);
-  assert.equal(members[1].role, "member");
+  assert.deepEqual(members.map((m) => m.credential), ["K1", "K2", "K3"]);
+  assert.equal(members[2].name, "user_ana", "the member id stands in for an empty name");
+  assert.equal(members[2].role, "member");
   assert.deepEqual(standingOf(members, "K1"), { state: "active", member: "owner", role: "owner" });
   assert.deepEqual(standingOf(members, "K2"), { state: "revoked", member: "ana" });
-  assert.deepEqual(standingOf(members, "K3"), { state: "active", member: "ana", role: "member" });
-  assert.deepEqual(standingOf(members, "K4"), { state: "member-removed", member: "bo" });
+  assert.deepEqual(standingOf(members, "K3"), { state: "active", member: "user_ana", role: "member" });
   assert.deepEqual(standingOf(members, "nope"), { state: "unknown" });
   assert.deepEqual(membersOf(null), []);
   assert.deepEqual(membersOf({ members: "x" }), []);
@@ -203,7 +218,6 @@ test("members and their passkeys: who may sign", () => {
   assert.equal(signInWords(standingOf(members, "K1")).tone, "ok");
   assert.match(signInWords(standingOf(members, "K1")).text, /Signed in as owner/);
   assert.equal(signInWords({ state: "revoked", member: "ana" }).tone, "bad");
-  assert.equal(signInWords({ state: "member-removed", member: "bo" }).tone, "bad");
   assert.match(signInWords({ state: "unknown" }).text, /Register it/);
 });
 

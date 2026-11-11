@@ -1062,39 +1062,50 @@ There are two pages for this:
 
 - **Passkey** (`/passkey/`): **Sign in with passkey** asks the browser
   (`navigator.credentials.get()`) for one of the team's passkeys. It then
-  says whether the brain knows that passkey (the member's name), whether the
-  passkey belongs to a member who was removed, or whether the brain has never
-  seen it. After sign-in, each write first fetches a one-use nonce from the
-  brain, then asks the authenticator to sign, then sends the request with
-  the `X-Hive-Passkey` header. **Sign out** forgets the passkey in this
-  browser. Nothing secret is stored there: only the credential id and the
-  member's name are kept.
+  says whether the brain knows that passkey (the member's name), whether
+  the passkey was revoked, or whether the brain has never seen it. After
+  sign-in, each write first fetches a one-use nonce from the brain, then
+  asks the authenticator to sign, then sends the request with the
+  `X-Hive-Nonce` and `X-Hive-Passkey-*` headers. **Sign out** forgets the
+  passkey in this browser. Nothing secret is stored there: only the
+  credential id and the member's name are kept.
 - **Register a passkey** (`/passkey/register/`): the member types their
   member name and makes a passkey on this device. Only ES256 (P-256) keys
   are accepted, because that is the only kind the brain checks. The page
-  prints the line for the owner to run on the brain:
+  prints the line for the owner to run on the brain's machine. It registers
+  the passkey through the members route on the console's own port:
 
   ```bash
-  hive member passkey add MEMBER --credential CREDENTIAL_ID --public-key KEY
+  curl -sS -X POST http://127.0.0.1:8765/api/v1/members \
+    -H 'Content-Type: application/json' -H 'X-Hive-Members: yes' \
+    -d '{"credential_id":"...","member":"ana","name":"ana","role":"member","public_key":"..."}'
   ```
 
-  `KEY` is the base64url of the 65-byte uncompressed P-256 point. The
-  private key never leaves the member's authenticator, and the front never
-  sees it.
+  `public_key` is the passkey's SubjectPublicKeyInfo in base64url. The role
+  is `member`; change it to `owner` before you run the line to let that
+  passkey change settings and members. The private key never leaves the
+  member's authenticator, and the front never sees it.
 
 ### What the brain checks
 
-The page and the brain share this format. It lives in one module,
-`web/hub/src/lib/passkey-state.ts`, so a change on the brain's side
-(`crates/hive-hub/src/front.rs`) costs one edit there.
+The page and the brain share this format. The page's half lives in
+`web/hub/src/lib/passkey-state.ts`. The brain's half lives in
+`crates/hive-hub/src/remote.rs` and `crates/hive-runner/src/webauthn.rs`.
+`web/hub/src/lib/passkey-wire.json` is one signed write in this format.
+Two tests use it: the hub's npm test checks that the page makes exactly
+those bytes and headers, and hive-hub's
+`the_consoles_signed_write_fixture_is_accepted_by_the_brain` checks that
+the brain accepts the write. If one side changes and the other does not,
+one of the two tests fails.
 
 | Step | Wire |
 | --- | --- |
-| Nonce | `POST /api/v1/members/nonce`, answer `{"nonce": "..."}`. This is the one write that is not signed. |
-| Bytes signed | `hive-write` `\n` nonce `\n` METHOD `\n` path with query `\n` exact body bytes |
+| Nonce | `GET /api/v1/nonce`, answer `{"nonce", "expires_at", "origin", "rp_id"}`. Issued only while `hub.allow_remote` is set; five minutes, spendable once. |
+| Bytes signed | `hive-write-v1` `\n` nonce `\n` METHOD, a space, path with query `\n` exact body bytes |
 | Challenge | SHA-256 of those bytes, passed to `navigator.credentials.get()` |
-| Header | `X-Hive-Passkey`: base64url of the JSON `{v: 1, nonce, credential, authenticator_data, client_data_json, signature}`, each field base64url |
-| Refused | a reused or made-up nonce, a changed body, an unknown key, a removed member |
+| Headers | `X-Hive-Nonce`: the nonce as issued. `X-Hive-Passkey-Credential`, `X-Hive-Passkey-Authenticator`, `X-Hive-Passkey-Client-Data`, `X-Hive-Passkey-Signature`: the assertion's credential id, authenticator data, client data JSON and DER signature, each base64url |
+| Registration | `POST /api/v1/members` with `X-Hive-Members: yes` and `{credential_id, member, name, role, public_key}` |
+| Refused | a missing header, a reused or made-up nonce, a changed body or path, an unknown or revoked key, a counter that did not move; settings and members need an `owner` |
 
 Uploads and voice recordings are signed over their raw bytes. JSON writes
 are signed over the exact string that is sent.
@@ -1111,8 +1122,8 @@ need an account. None of these steps can be done by a worker:
 2. **Hosting.** Run the front on that domain over HTTPS. Browsers only offer
    passkeys on a secure origin. The front relays requests to the team's
    brain. It serves this console's static export (`web/hub/out/`) and passes
-   `/api/v1/*` through unchanged, including the `X-Hive-Passkey` header and
-   the exact request body.
+   `/api/v1/*` through unchanged, including the `X-Hive-Nonce` and
+   `X-Hive-Passkey-*` headers and the exact request body.
 3. **Clerk account.** Members log in to the front with Clerk (ADR-070
    rule 7). Create the Clerk application and its production instance on the
    front's domain; the `clerk-new-application` skill walks through it. Clerk
@@ -1124,5 +1135,6 @@ need an account. None of these steps can be done by a worker:
    `hive settings set hub.allow_remote <origin>`.
 5. **Add each member's passkey.** The member opens **Register a passkey**
    through the front and sends the printed line to the owner. The owner runs
-   that line on the brain. After that, the member's **Sign in with passkey**
+   that line on the brain's machine (with `hive hub` on its default port
+   8765; change the address in the line otherwise). After that, the member's **Sign in with passkey**
    shows their name, and their writes go through.
