@@ -9,7 +9,8 @@ MainActor.assumeIsolated {
     // A write to a pipe whose reader is gone (the watchdog's, say) returns
     // EPIPE instead of ending the app; children get the default back.
     signal(SIGPIPE, SIG_IGN)
-    // The settings from before the rename (io.github.manishtiwari25.pulse)
+    // The settings from the app's earlier bundle identifiers
+    // (io.github.manishtiwari25.pulse, then io.github.manishtiwari25.hive)
     // move over before anything reads them: the supervisor reads HiveHome,
     // HubPort and HubURL as the delegate is made. A test run
     // (`-EphemeralRun YES`, scripts/check.sh) writes nothing.
@@ -17,7 +18,7 @@ MainActor.assumeIsolated {
         let copied = DefaultsMigration.runForApp()
         if !copied.isEmpty {
             Logger(subsystem: AppIdentity.bundleID, category: "app")
-                .info("settings carried over from \(DefaultsMigration.legacyBundleID, privacy: .public): \(copied.joined(separator: ", "), privacy: .public)")
+                .info("settings carried over from \(DefaultsMigration.legacyBundleIDs.joined(separator: ", "), privacy: .public): \(copied.joined(separator: ", "), privacy: .public)")
         }
     }
     let delegate = AppDelegate()

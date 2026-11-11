@@ -177,7 +177,7 @@ pub const VENDORS: &[Vendor] = &[
         api_key_env: &["OPENROUTER_API_KEY"],
         base_url_env: &["OPENROUTER_BASE_URL"],
         extra_headers: &[
-            ("HTTP-Referer", "https://github.com/lamplitlabs/hive"),
+            ("HTTP-Referer", "https://hivefleet.dev"),
             ("X-Title", "Hive"),
         ],
         default_model_prefixes: &[

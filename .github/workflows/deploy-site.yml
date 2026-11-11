@@ -1,0 +1,86 @@
+name: Deploy site (hivefleet.dev)
+
+# Builds web/site (the landing page and sign-in at https://hivefleet.dev) and
+# deploys it to Vercel from CI, the way Lamplit Labs' other sites deploy: the
+# Vercel project is NOT connected to the repository; this workflow pulls its
+# settings and production environment (NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY lives
+# there), builds the export with the Vercel CLI and uploads the prebuilt output.
+#
+# Secrets the repository needs (Settings -> Secrets -> Actions):
+#   VERCEL_ORG_ID        the team id (Vercel: Settings -> General)
+#   VERCEL_PROJECT_ID    the project id (Project -> Settings -> General)
+#   VERCEL_DEPLOY_TOKEN  a token (Account -> Settings -> Tokens) scoped to the team
+# The Vercel project keeps Root Directory empty: every command here runs in web/site.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/site/**"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  VERCEL_CLI: vercel@65.14.0
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/site/package-lock.json
+      - run: npm ci
+      - run: npm run check
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: web/site
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/site/package-lock.json
+      - name: Vercel pull
+        run: npx --yes "$VERCEL_CLI" pull --yes --environment=production --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"
+      - name: Vercel build
+        run: npx --yes "$VERCEL_CLI" build --prod --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"
+      - name: Vercel deploy
+        shell: bash
+        run: |
+          max_attempts=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Vercel deploy attempt $attempt/$max_attempts"
+            if npx --yes "$VERCEL_CLI" deploy --prebuilt --prod --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"; then
+              exit 0
+            fi
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "Vercel deploy failed after $max_attempts attempts"
+              exit 1
+            fi
+            sleep_seconds=$((attempt * 15))
+            echo "Transient deploy failure. Retrying in ${sleep_seconds}s..."
+            sleep "$sleep_seconds"
+          done

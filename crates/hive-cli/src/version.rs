@@ -316,14 +316,14 @@ mod tests {
         let _serial = crate::test_helpers::serial();
         assert!(read_build_info().is_none());
         assert_eq!(revision(), "");
-        let stamp = "\npath\tgithub.com/lamplitlabs/hive/cmd/hive\nmod\tgithub.com/lamplitlabs/hive\t(devel)\t\nbuild\tvcs.revision=abcdef1234567890\nbuild\tvcs.modified=true\n";
+        let stamp = "\npath\thivefleet.dev/hive/cmd/hive\nmod\thivefleet.dev/hive\t(devel)\t\nbuild\tvcs.revision=abcdef1234567890\nbuild\tvcs.modified=true\n";
         assert!(install_build_info(stamp));
         assert!(install_build_info(stamp));
         assert!(!install_build_info("\nmod\tgithub.com/other\tv9.9.9\t\n"));
         assert_eq!(revision(), "abcdef1234567890");
         let info = read_build_info().expect("installed stamp parses");
-        assert_eq!(info.path, "github.com/lamplitlabs/hive/cmd/hive");
-        assert_eq!(info.main.path, "github.com/lamplitlabs/hive");
+        assert_eq!(info.path, "hivefleet.dev/hive/cmd/hive");
+        assert_eq!(info.main.path, "hivefleet.dev/hive");
         assert_eq!(info.main.version, "(devel)");
         assert_eq!(super::build_version(&info), "dev-abcdef123456-dirty");
     }

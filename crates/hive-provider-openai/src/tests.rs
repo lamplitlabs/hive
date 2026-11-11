@@ -1185,10 +1185,7 @@ fn openrouter_sends_its_attribution_headers() {
     let saw = saw.lock().unwrap().clone();
     assert_eq!(saw.len(), 2);
     for (referer, title) in &saw {
-        assert_eq!(
-            referer.as_deref(),
-            Some("https://github.com/lamplitlabs/hive")
-        );
+        assert_eq!(referer.as_deref(), Some("https://hivefleet.dev"));
         assert_eq!(title.as_deref(), Some("Hive"));
     }
     let p = new_test_vendor("openrouter", "", None, None);

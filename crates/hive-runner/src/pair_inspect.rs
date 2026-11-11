@@ -6,13 +6,18 @@ use std::sync::LazyLock;
 #[cfg(test)]
 use std::sync::RwLock;
 
-/// The module path a hand's build-info block names since the hive rename (TASK-115); the `hive`
+/// The module path a hand's build-info block names since the move to hivefleet.dev; the `hive`
 /// crate's build script writes it into the `path`, `mod` and `-X` lines.
-pub(crate) const PAIR_HANDS_MODULE: &str = "github.com/lamplitlabs/hive";
-/// Module paths hands built before the rename still carry. An installed hand keeps its binary
-/// until it is updated, so the inspection reads these exactly like the current path, the way
-/// `PAIR_LEGACY_HANDS` keeps recognising shell hands of older revisions.
-pub(crate) static PAIR_LEGACY_HANDS_MODULES: &[&str] = &["github.com/manishtiwari25/pulse"];
+pub(crate) const PAIR_HANDS_MODULE: &str = "hivefleet.dev/hive";
+/// Module paths hands built earlier still carry, most recent first: `github.com/lamplitlabs/hive`
+/// from the hive rename (TASK-115) until the move to hivefleet.dev, `github.com/manishtiwari25/pulse`
+/// from before the rename. An installed hand keeps its binary until it is updated, so the
+/// inspection reads these exactly like the current path, the way `PAIR_LEGACY_HANDS` keeps
+/// recognising shell hands of older revisions.
+pub(crate) static PAIR_LEGACY_HANDS_MODULES: &[&str] = &[
+    "github.com/lamplitlabs/hive",
+    "github.com/manishtiwari25/pulse",
+];
 
 /// Every module path a hand's build info may name: the current one first, then the legacy ones.
 pub(crate) fn pair_hands_modules() -> impl Iterator<Item = &'static str> {
@@ -336,8 +341,9 @@ mod tests {
     fn pair_hands_build_version() {
         let _serial = crate::test_helpers::serial();
         let revision = "abcdef01".repeat(5);
-        // A hand built after the rename and one built before it both report their version.
-        for module in [PAIR_HANDS_MODULE, "github.com/manishtiwari25/pulse"] {
+        // A hand built now, one built between the rename and the move to hivefleet.dev, and one
+        // built before the rename all report their version.
+        for module in pair_hands_modules() {
             for (name, module_version, flags, want) in [
                 ("release", "v2.3.4", "", "v2.3.4"),
                 ("development", "(devel)", "", "dev-abcdef01abcd-dirty"),
@@ -464,11 +470,17 @@ mod tests {
             "mod\t{PAIR_HANDS_MODULE}\t(devel)\t\nbuild\t-ldflags=\"-X {PAIR_HANDS_MODULE}/internal/cli.version=v3.2.1\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
             "ab".repeat(20)
         );
-        // A hand built before the hive rename names the old module path; it still reports.
+        // A hand built before the hive rename names the oldest module path; it still reports.
         let legacy_build_info = format!(
             "mod\t{legacy}\t(devel)\t\nbuild\t-ldflags=\"-X {legacy}/internal/cli.version=v3.1.0\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
             "cd".repeat(20),
             legacy = "github.com/manishtiwari25/pulse"
+        );
+        // One built between the rename and the move to hivefleet.dev names the GitHub path.
+        let github_build_info = format!(
+            "mod\t{legacy}\t(devel)\t\nbuild\t-ldflags=\"-X {legacy}/internal/cli.version=v3.1.5\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
+            "ef".repeat(20),
+            legacy = "github.com/lamplitlabs/hive"
         );
         for tc in [
             (
@@ -525,6 +537,16 @@ mod tests {
                 "go-build-info-legacy-module",
                 &format!("\u{7f}ELF\u{0}\n{legacy_build_info}\u{0}"),
                 "v3.1.0",
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "go-build-info-github-module",
+                &format!("\u{7f}ELF\u{0}\n{github_build_info}\u{0}"),
+                "v3.1.5",
                 false,
                 false,
                 false,

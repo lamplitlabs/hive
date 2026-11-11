@@ -187,6 +187,7 @@ else of Hive's is committed.
 | The runner | `hive-runner` (daemon, planner, workers, delivery and review, executors, leads, compute providers, recovery, sweep), `hive-evolve` (fixtures, measure, archive, cycle, fleet), `hive-codedelivery` (delivery evidence), `hive-cred` with `hive-cred-command` and `hive-cred-setup` (credentials), `hive-hooks`, `hive-gitenv` |
 | The harness | `hive-harness` (the tool loop, limits, deny rules, sessions), `hive-provider` with `hive-provider-copilot`, `-openai`, `-anthropic`, `-gemini` and `-fake`, `hive-mcp` (MCP servers and skills) |
 | The console | `hive-hub` (the HTTP API, server-sent events, the embedded console, the build script that exports it), `web/hub` (Next.js and Tailwind, exported to `web/hub/out/` at build time) |
+| The site | `web/site` ([hivefleet.dev](https://hivefleet.dev): the landing page and the sign-in, a static Next.js export deployed to Vercel by `.github/workflows/deploy-site.yml`) |
 | Inspection and tests | `hive-inspect` (status, jobs, agents, events, schema, verify), `hive-testutil` |
 
 ## Documentation

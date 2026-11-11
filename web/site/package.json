@@ -1,0 +1,39 @@
+{
+  "name": "hive-site",
+  "type": "module",
+  "//": [
+    "hivefleet.dev - the public landing page for Hive and the door to the team sign-in. Next.js App Router + Tailwind v4, exported statically to out/ (the same toolchain as web/hub). Vercel builds and serves it (.github/workflows/deploy-site-vercel.yml); nothing here is embedded in the hive binary.",
+    "Sign-in: Clerk, through @clerk/clerk-react (client only: the export has no server, so no middleware and no server auth). The publishable key comes from NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY at build time (.env.example); without it the page builds and the sign-in says it is not set up yet. SignIn/SignUp use hash routing so /sign-in/ and /sign-up/ are plain static pages.",
+    "check: `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + build + test."
+  ],
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'src/**/*.test.mjs'",
+    "check": "npm run typecheck && npm run lint && npm run build && npm run test"
+  },
+  "dependencies": {
+    "@clerk/clerk-react": "^5.61.3",
+    "lucide-react": "^1.41.0",
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.6",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "minimatch": "11.0.3"
+  }
+}

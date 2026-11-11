@@ -4,7 +4,7 @@ public enum AppIdentity {
     /// The bundle identifier `scripts/build.sh` gives Hive.app; also the
     /// designated requirement it signs with, so macOS keeps its answers
     /// (notifications, folder access) across rebuilds.
-    public static let defaultBundleID = "io.github.manishtiwari25.hive"
+    public static let defaultBundleID = "dev.hivefleet.hive"
 
     public static var bundleID: String { Bundle.main.bundleIdentifier ?? defaultBundleID }
 
