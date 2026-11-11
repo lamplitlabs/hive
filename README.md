@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/hive-logo.svg" alt="Hive - Planning & Unified Lifecycle for Software Engineering" width="760">
+  <img src=".github/assets/hive-logo.svg" alt="Hive - an agent-first control plane for software work" width="760">
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
 
 # Hive
 
-**Hive** (Planning & Unified Lifecycle for Software Engineering) runs your
+**Hive** runs your
 software projects with a team of coding agents and keeps you in charge. You give a project's lead agent a task in a console that runs on
 your own machine, watch the agents work on it as a conversation, answer the
 questions only you can answer, and say yes or no to what they propose. The

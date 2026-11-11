@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <!-- The console's brand mark (web/hub/src/components/shell/hive-mark.tsx):
-       the hive line on the mint-sky-violet tile (the console's brand gradient token), placed on
+       the hive cell: a hexagon with a dot at its centre, on the mint-sky-violet tile (the console's
+       brand gradient token), placed on
        the macOS icon grid (an 824 pt tile on a 1024 pt canvas).
        scripts/build.sh renders it into AppIcon.icns. -->
   <defs>
@@ -13,6 +14,7 @@
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#brand)"/>
   <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="2"/>
   <g transform="translate(190.64 190.64) scale(2.5106)">
-    <path d="M30 135h41l19-47 34 101 31-77 18 23h53" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M128 36l78 45v90l-78 45-78-45V81z" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="128" cy="126" r="14" fill="#ffffff"/>
   </g>
 </svg>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-labelledby="hive-title hive-description">
   <title id="hive-title">Hive</title>
-  <desc id="hive-description">Planning and Unified Lifecycle for Software Engineering, shown with a connected hive waveform.</desc>
+  <desc id="hive-description">An agent-first control plane for software work, shown with the hive cell: a hexagon with a dot at its centre.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#07111f"/>
@@ -11,11 +11,6 @@
       <stop offset="0.52" stop-color="#35bff3"/>
       <stop offset="1" stop-color="#8b7cff"/>
     </linearGradient>
-    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
-      <stop offset="0.5" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.75"/>
-    </linearGradient>
   </defs>
 
   <rect width="1200" height="360" rx="52" fill="url(#background)"/>
@@ -24,14 +19,16 @@
 
   <g transform="translate(52 52)">
     <rect width="256" height="256" rx="66" fill="url(#mark)"/>
-    <path d="M30 135h41l19-47 34 101 31-77 18 23h53" fill="none" stroke="url(#wave)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="30" cy="135" r="10" fill="#ffffff"/>
-    <circle cx="226" cy="135" r="10" fill="#ffffff"/>
-    <path d="M72 70a86 86 0 0 1 119 20" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.35"/>
-    <path d="M184 194a86 86 0 0 1-115-18" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.35"/>
+    <rect x="0.5" y="0.5" width="255" height="255" rx="65.5" fill="none" stroke="#ffffff" stroke-opacity="0.25"/>
+    <!-- The hive cell at 78% of the tile, the same shape the console's sidebar,
+         the favicon and the Mac app draw. -->
+    <g transform="translate(28.16 28.16) scale(0.78)">
+      <path d="M128 36l78 45v90l-78 45-78-45V81z" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="128" cy="126" r="14" fill="#ffffff"/>
+    </g>
   </g>
 
   <text x="365" y="168" fill="#ffffff" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="112" font-weight="800" letter-spacing="8">Hive</text>
-  <text x="371" y="222" fill="#9fb7cf" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="25" font-weight="700" letter-spacing="3.4">PLANNING &amp; UNIFIED LIFECYCLE</text>
-  <text x="371" y="264" fill="#9fb7cf" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="25" font-weight="700" letter-spacing="3.4">FOR SOFTWARE ENGINEERING</text>
+  <text x="371" y="222" fill="#9fb7cf" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="25" font-weight="700" letter-spacing="3.4">AN AGENT-FIRST CONTROL PLANE</text>
+  <text x="371" y="264" fill="#9fb7cf" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="25" font-weight="700" letter-spacing="3.4">FOR SOFTWARE WORK</text>
 </svg>
