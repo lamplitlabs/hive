@@ -1604,6 +1604,9 @@ export interface HarnessModel {
   vendor: string;
   chat: boolean;
   tool_calls: boolean;
+  // Whether the model takes images in a message (hive-provider Model.vision);
+  // false when the vendor does not say so. Absent from an older hub.
+  vision?: boolean;
   premium: number;
   preview: boolean;
   context_window: number;

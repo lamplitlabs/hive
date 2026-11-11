@@ -90,3 +90,44 @@ export function sentLabel(status: "sent" | "answered", steered: boolean): string
 
 // The hint beside a steered message the agent has not taken up yet.
 export const STEERED_HINT = "reaches the agent at its next step";
+
+// A model that cannot see images, as far as the composer's warning needs
+// its list entry (`HarnessModel` from harness/models).
+export interface SeeingModel {
+  id: string;
+  name: string;
+  default: boolean;
+  // The provider's word on images: false when the vendor does not say the
+  // model takes them. An older hub sends no `vision` at all; then nobody
+  // knows, and the composer says nothing.
+  vision?: boolean;
+}
+
+// The name of the model the next turn runs on when its list entry says it
+// cannot see images, else "". The conversation's model is `model`; empty
+// means the provider's default, the entry marked `default`. A model the list
+// does not name (or a list that has not loaded) is unknown, not blind: the
+// harness sends the images as they are then (conversation.rs blind_model).
+export function blindModel(model: string, models: SeeingModel[]): string {
+  const m = model ? models.find((x) => x.id === model) : models.find((x) => x.default);
+  if (!m || m.vision !== false) return "";
+  return m.name || m.id;
+}
+
+// The warning above the attached files when some are images and the model
+// cannot see: said before sending, so the owner can describe the picture
+// in words instead of finding out from the agent's answer.
+export function unseenImagesWarning(model: string, images: string[]): string {
+  if (!model || !images.length) return "";
+  const one = images.length === 1;
+  return (
+    model +
+    " cannot see images: " +
+    (one ? images[0] + " goes" : images.length + " images go") +
+    " as " +
+    (one ? "a file" : "files") +
+    " the agent can only read with its tools, not look at. Say in your message what " +
+    (one ? "it shows" : "they show") +
+    ", or pick a model that takes images."
+  );
+}
