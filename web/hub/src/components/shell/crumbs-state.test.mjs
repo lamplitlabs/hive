@@ -42,6 +42,34 @@ test("a filter or an open detail adds a crumb", () => {
   assert.deepEqual(defaultCrumbs("/reports/", q("project=demo-app")).map((c) => c.label), ["Reports", "demo-app"]);
 });
 
+test("the passkey pages outside the nav name themselves, not the 404 page", () => {
+  // The same crumbs the pages set through useCrumbs (app/passkey/**/page.tsx).
+  assert.deepEqual(defaultCrumbs("/passkey/", q()), [{ label: "Passkey" }]);
+  assert.deepEqual(defaultCrumbs("/passkey", q()), [{ label: "Passkey" }], "a missing trailing slash is the same page");
+  assert.deepEqual(defaultCrumbs("/passkey/register/", q()), [{ label: "Passkey", href: "/passkey/" }, { label: "Register" }]);
+  assert.equal(backHref(defaultCrumbs("/passkey/register/", q())), "/passkey/", "the phone's back arrow returns to Passkey");
+  assert.deepEqual(defaultCrumbs("/passkey/other/", q()), [{ label: "Page not found" }], "only the two passkey pages exist");
+});
+
+test("every page the console exports has crumbs other than the 404 page", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const app = fileURLToPath(new URL("../../app/", import.meta.url));
+  const routes = [];
+  const walk = async (dir, route) => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(dir + e.name + "/", route + e.name + "/");
+      else if (e.name === "page.tsx") routes.push(route);
+    }
+  };
+  await walk(app, "/");
+  assert.ok(routes.includes("/passkey/register/"), "found the app routes: " + routes.join(" "));
+  for (const route of routes) {
+    const search = route === "/project/" ? q("slug=demo-app") : q();
+    assert.notDeepEqual(defaultCrumbs(route, search, projects), [{ label: "Page not found" }], route + " has no default crumbs");
+  }
+});
+
 test("a route the console doesn't have is the 404 page", () => {
   assert.deepEqual(defaultCrumbs("/nope/", q()), [{ label: "Page not found" }]);
   assert.deepEqual(defaultCrumbs("/some-thing/", q()), [{ label: "Page not found" }], "never a word made from the path");
