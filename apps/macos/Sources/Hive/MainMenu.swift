@@ -55,6 +55,7 @@ enum MainMenu {
         menu.addItem(item("About Hive", #selector(AppDelegate.showAbout(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(ConsoleWindowController.goToRoute(_:)), ",", represented: "/settings/"))
+        menu.addItem(item("Join a Brain…", #selector(ConsoleWindowController.joinBrain(_:))))
         menu.addItem(.separator())
         let services = NSMenu(title: "Services")
         let servicesItem = item("Services", nil)

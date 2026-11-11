@@ -157,7 +157,7 @@ pub fn register() {
                 name: name.to_string(),
                 group: "hub".into(),
                 summary: "Serve the local owner console".into(),
-                usage: format!("hive {name} [--project SLUG] [--port N] [--no-browser] [--host 127.0.0.1] [--restart-on-change]"),
+                usage: format!("hive {name} [--project SLUG] [--port N] [--no-browser] [--host 127.0.0.1] [--front-port N] [--restart-on-change]"),
                 aliases: vec![],
                 no_store: false,
                 read_only: false,
@@ -167,6 +167,19 @@ pub fn register() {
             });
         }
     })
+}
+
+/// What the hub says about the front's relay listener: where it listens and
+/// whether the owner opened the console to the front.
+pub(crate) fn front_line(address: &str, store: Option<&hive_store::Store>) -> String {
+    match store.and_then(|s| s.hub_allow_remote()) {
+        Some(origin) => format!(
+            "Front relay on http://{address} for {origin} (reads need the front's session; every write needs a member's passkey)"
+        ),
+        None => format!(
+            "Front relay on http://{address} (closed: hub.allow_remote is empty; every request through it gets 403)"
+        ),
+    }
 }
 
 /// The bind failure as the hub reports it, "listen tcp4 127.0.0.1:8765: bind:
@@ -189,6 +202,11 @@ fn listen_error(host: &str, port: i64, err: &std::io::Error) -> String {
 fn hub_flags(fs: &mut FlagSet) {
     fs.int_var("port", 8765, "TCP port (0 chooses a free port)");
     fs.string_var("host", "127.0.0.1", "listen address (127.0.0.1 only)");
+    fs.int_var(
+        "front-port",
+        -1,
+        "also listen on 127.0.0.1:N for the team front's relay (hub.allow_remote; 0 chooses a free port)",
+    );
     fs.bool_var("no-browser", false, "do not open the browser");
     fs.bool_var(
         "restart-on-change",
@@ -220,9 +238,9 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
     if host != "127.0.0.1" {
         return Err(hive_cli::errorf(
             2,
-            "Remote hub serving is not supported",
-            "The owner write routes are loopback-only; hub.allow_remote is not supported yet",
-            &format!("hive {name} --host 127.0.0.1"),
+            "The hub listens on 127.0.0.1 only",
+            "Other machines reach the console through the team's front: set hub.allow_remote to the front's origin and give the relay a loopback port; every write through it is passkey-signed",
+            &format!("hive {name} --host 127.0.0.1 --front-port 8766"),
         )
         .into());
     }
@@ -233,6 +251,16 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
             "Invalid port",
             "The port must be between 0 and 65535",
             &format!("hive {name} --port 8765"),
+        )
+        .into());
+    }
+    let front_port = i64::from(fs.get_int("front-port"));
+    if !(-1..=65535).contains(&front_port) {
+        return Err(hive_cli::errorf(
+            2,
+            "Invalid front port",
+            "The front port must be between 0 and 65535",
+            &format!("hive {name} --front-port 8766"),
         )
         .into());
     }
@@ -287,6 +315,22 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
             &format!("hive {name} --port 0"),
         )
     })?;
+    // ADR-070 rule 5: the front's relay reaches a second loopback listener
+    // whose every request is via_front - writes need a member's passkey.
+    let front_listener = if front_port >= 0 {
+        Some(
+            TcpListener::bind((host.as_str(), front_port as u16)).map_err(|err| {
+                hive_cli::errorf(
+                    1,
+                    "The hub could not listen for the front",
+                    &listen_error(&host, front_port, &err),
+                    &format!("hive {name} --front-port 0"),
+                )
+            })?,
+        )
+    } else {
+        None
+    };
     h.port = i64::from(listener.local_addr()?.port());
     let address = format!("http://{}", listener.local_addr()?);
     writeln!(
@@ -297,6 +341,18 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
     // connection or child process per MCP server; at launchd's 256 the hub
     // stops being able to spawn git after a handful. The binary raises the
     // limit at start (hive_cli::limits); this says when that fell short.
+    if let Some(front) = &front_listener {
+        writeln!(
+            c.out,
+            "{}",
+            front_line(&front.local_addr()?.to_string(), h.store.as_deref())
+        )?;
+    } else if let Some(origin) = h.store.as_deref().and_then(|s| s.hub_allow_remote()) {
+        writeln!(
+            c.err,
+            "hub.allow_remote is {origin}, but no relay port is open; start the hub with --front-port N for the front"
+        )?;
+    }
     if let Some(allowed) = hive_cli::limits::open_files_allowed()
         && allowed < hive_cli::limits::OPEN_FILES_SHORT
     {
@@ -430,8 +486,22 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
     }
     let handler: HandlerFn =
         Arc::new(move |w: &mut ResponseWriter, r: &Request| h.serve_http(w, r));
+    let front = front_listener.map(|front| {
+        let ctx = ctx.clone();
+        let handler = handler.clone();
+        std::thread::spawn(move || crate::httpx::serve_on(&ctx, front, handler, true))
+    });
     // serve owns the listener, so it is closed by the time it returns.
     let served = serve(&ctx, listener, handler);
+    if let Some(front) = front {
+        // The front's listener goes with the console's.
+        ctx.cancel();
+        match front.join() {
+            Ok(Err(err)) => writeln!(c.err, "front listener: {err:#}")?,
+            Err(_) => writeln!(c.err, "front listener: its thread panicked")?,
+            Ok(Ok(())) => {}
+        }
+    }
     // Conversations end their sessions before the process goes: the
     // trajectory on disk, the harness session closed, a stopped turn noted.
     let manager = chats.lock().unwrap_or_else(|e| e.into_inner()).clone();

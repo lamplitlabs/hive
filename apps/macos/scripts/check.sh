@@ -42,6 +42,18 @@ swift test --package-path "$here" >&2
 say "== build"
 "$here/scripts/build.sh" >/dev/null
 
+# The join screen's step against a stub brain, with the hive-hand the app
+# carries (HandJoinTests ran with a stand-in above): a wrong code shows the
+# brain's 403, a good one writes device.json. A hive-hand from before
+# `hive-hand join` (ADR-070 step 2) is skipped, not failed.
+helper="$app/Contents/Helpers/hive-hand"
+if [ -x "$helper" ] && "$helper" --help 2>&1 | grep -q 'hive-hand join'; then
+  say "== join with the bundled hive-hand"
+  HIVE_HAND_BIN="$helper" swift test --package-path "$here" --filter HandJoinTests >&2
+else
+  say "== join with the bundled hive-hand: skipped (no hive-hand with join in the app)"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   say "== run: skipped (no node for the mock console)"
   exit 0

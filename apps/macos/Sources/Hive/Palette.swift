@@ -11,6 +11,8 @@ enum Palette {
     static let ink = dynamic(light: 0x192437, dark: 0xE7ECF0)
     static let muted = dynamic(light: 0x545F6C, dark: 0x9EA9B4)
     static let primary = dynamic(light: 0x007A71, dark: 0x5BCAB9)
+    /// --bad: oklch(0.52 0.19 27) light, oklch(0.76 0.15 25) dark.
+    static let bad = dynamic(light: 0xBE2323, dark: 0xFF8880)
     static let border = NSColor(name: nil) { appearance in
         appearance.isDark ? NSColor(white: 1, alpha: 0.09) : rgb(0xDCE3E4)
     }

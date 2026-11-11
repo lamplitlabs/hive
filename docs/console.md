@@ -2,7 +2,9 @@
 
 The console is where the owner lives: every page below is a view of the
 store, and every button calls the same helper the matching `hive` command
-does. It binds to `127.0.0.1` only. Page URLs without a trailing slash,
+does. It binds to `127.0.0.1` only; a team reaches it from elsewhere only
+through its front, with passkey-signed writes (see
+[Passkey sign-in through the team's front](#passkey-sign-in-through-the-teams-front)). Page URLs without a trailing slash,
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
 
@@ -684,7 +686,13 @@ Every machine that runs agents (`/compute/`), with what it offers (`macos arm64
 xcode docker`; *Reserved* when it is kept for the work that needs it,
 [Machines: what runs where](machines.md#machines-what-runs-where); this machine's card
 links to the setting that changes its words), and agents' requests for more
-machines (size, hours, why). Approve or deny; approved requests are provisioned
+machines (size, hours, why). **Add a machine** starts with **Run one
+command on it**: a six-word join code, good for ten minutes and one join, and
+the `hive-hand join` line to copy to the machine. The step says when the
+machine has joined. A machine that dials in shows its last call and a
+**Revoke** button that drops its key ([Enrolling a
+hand](machines.md#enrolling-a-hand)). The other ways pair a machine over
+ssh, add one prepared by hand, or rent one. Approve or deny; approved requests are provisioned
 by the configured provider (`compute.provider`: `azure`, `aws`, `gcp`, or
 `multipass` for a VM on the hub machine itself; `hive compute providers` lists
 them) inside the caps you set. Every provider works through its own CLI logged
@@ -751,6 +759,68 @@ project's lead decide board proposals with its best judgement - see [When the ow
 is away](recovery.md#when-the-owner-is-away)). Secret-shaped values are stored but
 never echoed; the held-out evaluator directory is owner-private and is masked
 in every agent-facing view and event.
+
+### Reaching the console from anywhere
+
+The console listens on 127.0.0.1 and nowhere else; `hive hub --host`
+refuses any other address. Other machines and phones reach it through the
+team's hosted **front** (ADR-070 rule 5), which signs members in on the web
+and relays their requests to this machine. The brain does not trust the
+front: every write that comes through it must carry a member's passkey
+signature, and the brain checks that signature itself.
+
+What this machine does today:
+
+1. **Open it.** Set **Settings → Reaching the console from anywhere →
+   `hub.allow_remote`** to the front's origin, such as
+   `https://team.example.com` (`hive settings set hub.allow_remote
+   https://team.example.com`). It counts only when you set it. A value an
+   agent wrote is ignored, so no agent can open the console. Clear it to
+   close the console to the front at once.
+2. **Give the relay a port.** `hive hub --front-port 8766` also listens
+   on `127.0.0.1:8766` for the front's relay. The serving output adds a
+   `Front relay on ...` line that says whether the relay is open. Every
+   request on that listener is treated as remote, whatever `Host` it names:
+   - while `hub.allow_remote` is empty, every request gets 403;
+   - reads pass;
+   - routes that only work on this machine (folders, credentials,
+     held-out fixtures, job repair) refuse it.
+3. **Register the members' passkeys.** `GET /api/v1/members` lists them.
+   `POST /api/v1/members` with `X-Hive-Members: yes` and
+   `{credential_id, member, name, role, public_key}` registers or
+   replaces one. `public_key` is the passkey's ES256 SubjectPublicKeyInfo
+   in base64url, and `role` is `owner` or `member`.
+   `DELETE /api/v1/members/<credential_id>` revokes one. These member
+   routes work on this machine like any other write; through the front
+   they also need an owner's passkey.
+4. **Sign every write.** The browser asks for a nonce with
+   `GET /api/v1/nonce`, which answers only while `hub.allow_remote` is set.
+   A nonce lasts five minutes and can be spent once. The browser then
+   signs the challenge
+   `SHA-256("hive-write-v1\n" + nonce + "\n" + METHOD + " " + path?query + "\n" + body)`
+   with `navigator.credentials.get` (the front's host as `rpId`,
+   `userVerification: "required"`). It sends the write with the nonce in
+   `X-Hive-Nonce` and the assertion, base64url, in
+   `X-Hive-Passkey-Credential`, `X-Hive-Passkey-Authenticator`,
+   `X-Hive-Passkey-Client-Data` and `X-Hive-Passkey-Signature`. Before
+   the write reaches its route, the brain checks:
+   - the type, challenge and origin in the client data;
+   - the front's RP ID hash;
+   - the user-present and user-verified flags;
+   - that the signature counter moved forward;
+   - the ES256 signature under the member's key.
+
+   Only after these checks does it spend the nonce and record the counter.
+   An unsigned write, a spent or made-up nonce, another key, another body
+   or a counter that did not move gets 403 with the reason. Settings and
+   members changes need a member whose role is `owner`.
+
+Not built yet: the hosted front itself. That means the web login (Clerk),
+team = organization, the members sync from it, the enrolment relay, and
+serving the console at `https://<team>.<domain>`. It waits on your choice
+of domain, hosting and Clerk account. Until it exists, nothing outside
+this machine reaches the relay port. See [security](security.md) for the
+model.
 
 ### Notifications
 
@@ -978,3 +1048,81 @@ apply equally to cards and tables. Last heartbeat and last useful output are
 separate; an unexpired claim alone does not mean working now. Each card and
 `hive agents` show what an agent is doing now: the job it holds, the thread it
 claimed and the executor it runs on.
+
+## Passkey sign-in through the team's front
+
+ADR-070 step 5. Through the hosted **front**, a team member uses the same
+console as the owner does on `127.0.0.1`, and the front still cannot act for
+anyone. Every write (POST, PUT, PATCH, DELETE) that comes through the front
+carries the member's **passkey** signature. The brain checks that signature
+before it writes anything. A console opened on this machine (`localhost`,
+`127.0.0.1`, `::1`) never signs and keeps the same-origin write guard.
+
+There are two pages for this:
+
+- **Passkey** (`/passkey/`): **Sign in with passkey** asks the browser
+  (`navigator.credentials.get()`) for one of the team's passkeys. It then
+  says whether the brain knows that passkey (the member's name), whether the
+  passkey belongs to a member who was removed, or whether the brain has never
+  seen it. After sign-in, each write first fetches a one-use nonce from the
+  brain, then asks the authenticator to sign, then sends the request with
+  the `X-Hive-Passkey` header. **Sign out** forgets the passkey in this
+  browser. Nothing secret is stored there: only the credential id and the
+  member's name are kept.
+- **Register a passkey** (`/passkey/register/`): the member types their
+  member name and makes a passkey on this device. Only ES256 (P-256) keys
+  are accepted, because that is the only kind the brain checks. The page
+  prints the line for the owner to run on the brain:
+
+  ```bash
+  hive member passkey add MEMBER --credential CREDENTIAL_ID --public-key KEY
+  ```
+
+  `KEY` is the base64url of the 65-byte uncompressed P-256 point. The
+  private key never leaves the member's authenticator, and the front never
+  sees it.
+
+### What the brain checks
+
+The page and the brain share this format. It lives in one module,
+`web/hub/src/lib/passkey-state.ts`, so a change on the brain's side
+(`crates/hive-hub/src/front.rs`) costs one edit there.
+
+| Step | Wire |
+| --- | --- |
+| Nonce | `POST /api/v1/members/nonce`, answer `{"nonce": "..."}`. This is the one write that is not signed. |
+| Bytes signed | `hive-write` `\n` nonce `\n` METHOD `\n` path with query `\n` exact body bytes |
+| Challenge | SHA-256 of those bytes, passed to `navigator.credentials.get()` |
+| Header | `X-Hive-Passkey`: base64url of the JSON `{v: 1, nonce, credential, authenticator_data, client_data_json, signature}`, each field base64url |
+| Refused | a reused or made-up nonce, a changed body, an unknown key, a removed member |
+
+Uploads and voice recordings are signed over their raw bytes. JSON writes
+are signed over the exact string that is sent.
+
+### Owner steps
+
+The pages are code only. The owner sets up the parts that cost money or
+need an account. None of these steps can be done by a worker:
+
+1. **Domain.** Pick the address the team will open, for example
+   `console.example.com`. Passkeys are tied to that domain (the WebAuthn
+   relying party), so a passkey made on one domain does not work on another.
+   Pick the domain before members register.
+2. **Hosting.** Run the front on that domain over HTTPS. Browsers only offer
+   passkeys on a secure origin. The front relays requests to the team's
+   brain. It serves this console's static export (`web/hub/out/`) and passes
+   `/api/v1/*` through unchanged, including the `X-Hive-Passkey` header and
+   the exact request body.
+3. **Clerk account.** Members log in to the front with Clerk (ADR-070
+   rule 7). Create the Clerk application and its production instance on the
+   front's domain; the `clerk-new-application` skill walks through it. Clerk
+   decides who may reach the front. The passkey decides what that person may
+   change on the brain.
+4. **Turn on remote access on the brain.** `hub.allow_remote` is owner-only
+   and empty by default. While it is empty the brain only listens on this
+   machine. Set it to the front's address, in **Settings** or with
+   `hive settings set hub.allow_remote <origin>`.
+5. **Add each member's passkey.** The member opens **Register a passkey**
+   through the front and sends the printed line to the owner. The owner runs
+   that line on the brain. After that, the member's **Sign in with passkey**
+   shows their name, and their writes go through.

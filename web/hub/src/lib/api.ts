@@ -74,10 +74,29 @@ async function readJson<T>(r: Response): Promise<T> {
 
 export const enc = encodeURIComponent;
 
+// Through the hosted front (ADR-070 step 5) every write must carry the
+// member's passkey signature; lib/passkey.ts installs the signer when the
+// console is served off this machine (installPasskeySigner). On this
+// machine none is installed and a write goes out as it always did.
+export type WriteSigner = (
+  href: string,
+  init: RequestInit,
+) => Promise<RequestInit>;
+let writeSigner: WriteSigner | null = null;
+
+export function setWriteSigner(s: WriteSigner | null) {
+  writeSigner = s;
+}
+
+export async function sendApi(path: string, init?: RequestInit): Promise<Response> {
+  const href = apiHref(path);
+  const base: RequestInit = { cache: "no-store", ...init };
+  const signed = writeSigner ? await writeSigner(href, base) : base;
+  return fetch(href, signed);
+}
+
 export function api<T>(path: string, init?: RequestInit): Promise<T> {
-  return fetch(apiHref(path), { cache: "no-store", ...init }).then((r) =>
-    readJson<T>(r),
-  );
+  return sendApi(path, init).then((r) => readJson<T>(r));
 }
 
 export function apiHref(path: string): string {
@@ -2043,8 +2062,8 @@ export async function chatUpload(
   id: string,
   file: File,
 ): Promise<ChatAttachment> {
-  const r = await fetch(
-    apiHref("chat/" + enc(id) + "/upload" + query({ name: file.name })),
+  const r = await sendApi(
+    "chat/" + enc(id) + "/upload" + query({ name: file.name }),
     {
       method: "POST",
       body: file,
@@ -2063,8 +2082,8 @@ export async function voiceTranscribe(
   pcm: Uint8Array,
   language = "",
 ): Promise<Transcript> {
-  const r = await fetch(
-    apiHref("voice/transcribe" + (language ? query({ language }) : "")),
+  const r = await sendApi(
+    "voice/transcribe" + (language ? query({ language }) : ""),
     {
       method: "POST",
       headers: { "Content-Type": "audio/pcm" },
@@ -3167,6 +3186,30 @@ export interface Compute {
   executors: Executor[];
   caps: ComputeCaps;
   pairings?: Pairing[];
+  // Machines that dial in (ADR-070 step 2): one row per enrolled device key,
+  // newest first. `executor` is the executors row (kind "dial") it works as;
+  // `last_seen_at` is the hand's last call; a revoked device keeps its row.
+  devices?: HandDevice[];
+}
+
+export interface HandDevice {
+  id: string;
+  executor: string;
+  created_at: string;
+  created_by: string;
+  last_seen_at: string;
+  revoked_at: string;
+  revoked_by: string;
+}
+
+// POST machines/join-codes: a six-word code good for `minutes` and one join,
+// and the line to run on the machine (`hive-hand join --brain URL CODE`).
+export interface JoinCode {
+  code: string;
+  expires_at: string;
+  minutes: number;
+  brain: string;
+  command: string;
 }
 
 // What "Add machine" sends. `pair` is `hive pair ADMIN --name NAME`: the hub
@@ -3495,6 +3538,24 @@ export interface SkillInput {
 }
 
 export type SkillPatch = Partial<SkillInput>;
+
+// ----- Secrets: the team secret vault (`/api/v1/secrets`, ADR-070 rule 4) --
+// Names, who set each and when; never a value. A write sends the value once
+// and the brain seals it in memory (crates/hive-hub/src/secrets_api.rs).
+
+export interface SecretEntry {
+  name: string;
+  created_by: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+  sealed_bytes: number; // bytes of the sealed value, not of the secret
+}
+
+export interface SecretsPayload {
+  secrets: SecretEntry[];
+  max_bytes: number;
+}
 
 // ----- Memory: what agents remembered across runs (`/api/v1/memory`) -------
 // One Markdown file of dated bullets per project under ~/.hive/memory/, one
@@ -3981,6 +4042,11 @@ export const writes = {
       "compute/executors",
       input,
     ),
+  // A machine that dials in: a join code for `hive-hand join`, and revoking
+  // the device key a hand enrolled with (its next call is refused).
+  joinCode: () => post<JoinCode>("machines/join-codes", {}),
+  revokeDevice: (device: string) =>
+    post<{ device: string }>("machines/devices/" + enc(device) + "/revoke", {}),
   dismissPairing: (name: string) =>
     post<{ dismissed: string }>(
       "compute/pairings/" + enc(name) + "/dismiss",
@@ -4029,6 +4095,11 @@ export const writes = {
     patch<{ skill: Skill }>("skills/" + enc(id), input),
   setSkillStatus: (id: string, status: McpStatus) =>
     post<{ skill: Skill }>("skills/" + enc(id) + "/status", { status }),
+  // Secrets: the same writes `hive secret set` / `hive secret rm` make.
+  setSecret: (name: string, value: string) =>
+    post<{ secret: SecretEntry }>("secrets", { name, value }),
+  removeSecret: (name: string) =>
+    post<{ removed: string }>("secrets/" + enc(name) + "/remove", {}),
   // Memory: the same writes an agent's `memory remember` / `memory forget` make.
   rememberMemory: (input: MemoryWrite) =>
     post<MemoryWritten>("memory", input),

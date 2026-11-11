@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { AlertTriangleIcon, GitMergeIcon, ServerIcon } from "lucide-react";
+import { AlertTriangleIcon, BanIcon, GitMergeIcon, ServerIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProjectAvatar } from "@/components/hive/avatar";
+import { ConfirmDialog } from "@/components/hive/confirm";
 import { LogoTile } from "@/components/hive/logo";
 import { Disclosure, EmptyState, Kv, Notice, Panel, SkeletonRows } from "@/components/hive/panel";
 import { StatusBadge } from "@/components/hive/status-badge";
@@ -16,7 +17,7 @@ import { num, plural, rel, statusTone, type Tone } from "@/lib/format";
 import { statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
-import type { Executor, LandingHold, Runner } from "@/lib/api";
+import { writes, type Executor, type HandDevice, type LandingHold, type Runner } from "@/lib/api";
 import { machineLabels, machineLogoKey, machineProjects, slotsMeter, thisMachineOs } from "./compute-state";
 import { Meter } from "./meter";
 
@@ -204,6 +205,7 @@ function kindWord(e: Executor): string {
   const k = (e.kind || "").toLowerCase();
   if (k === "local" || e.name === "local") return "This machine";
   if (k === "ssh") return "Over SSH";
+  if (k === "dial") return "Dials in";
   if (/cloud|azure|aws|gcp|hetzner|vm/.test(k)) return "Cloud machine";
   return statusWord(k) || "Machine";
 }
@@ -260,8 +262,10 @@ function cardTip(e: Executor): string {
 // `provider` is the cloud the runner provisions on (caps.provider), so a
 // requested machine shows that provider's mark. `host` is this machine's
 // name, so the local card wears the same mark as the "This machine" card.
-// `action` holds a Remove menu.
-export function MachineCard({ e, provider, host, action, className }: { e: Executor; provider?: string | null; host?: string | null; action?: React.ReactNode; className?: string }) {
+// `action` holds a Remove menu. `device` is the key a dial machine enrolled
+// with (ADR-070 step 2): the card says when it last called and, while the
+// key is live, offers Revoke.
+export function MachineCard({ e, provider, host, action, device, className }: { e: Executor; provider?: string | null; host?: string | null; action?: React.ReactNode; device?: HandDevice; className?: string }) {
   const local = e.kind === "local" || e.name === "local";
   const localOs = local ? thisMachineOs(e, host, typeof navigator !== "undefined" ? navigator.userAgent : "") : null;
   const logoKey = machineLogoKey(e, provider) ?? (localOs === "macos" || localOs === "linux" ? localOs : null);
@@ -282,7 +286,22 @@ export function MachineCard({ e, provider, host, action, className }: { e: Execu
           <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
             <StatusBadge status={e.status} size="sm" title={e.probe_note || undefined} />
             <span>{kindWord(e)}</span>
-            {e.last_probe_at ? (
+            {device ? (
+              <span className="inline-flex items-center gap-1">
+                <span aria-hidden>·</span>
+                {device.revoked_at ? (
+                  <>
+                    <span className="text-bad">Revoked</span> <When d={device.revoked_at} />
+                  </>
+                ) : device.last_seen_at ? (
+                  <>
+                    <span>Last call</span> <When d={device.last_seen_at} />
+                  </>
+                ) : (
+                  <span>Not called yet</span>
+                )}
+              </span>
+            ) : e.last_probe_at ? (
               <span className="inline-flex items-center gap-1">
                 <span aria-hidden>·</span>
                 <span>Checked</span> <When d={e.last_probe_at} />
@@ -339,5 +358,35 @@ export function MachineCard({ e, provider, host, action, className }: { e: Execu
       </div>
       {why ? <p className={cn("text-[13px] leading-snug anywhere", statusTone(e.status) === "bad" ? "text-bad" : "text-muted-foreground")}>{"Why: " + why}</p> : null}
     </article>
+  );
+}
+
+// Revoke a dial machine's device key: the brain forgets the key and its
+// sessions and removes the machine; the hand's next call is refused, and
+// joining again takes a new code.
+export function RevokeDeviceButton({ device, name }: { device: HandDevice; name: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button variant="ghost" size="icon-xs" aria-label={"Revoke " + name} className="text-muted-foreground hover:text-destructive" onClick={() => setOpen(true)}>
+            <BanIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Revoke its key…</TooltipContent>
+      </Tooltip>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={<>Revoke {name}?</>}
+        description="Hive forgets this machine's key and stops sending it work. Its next call is refused; to bring it back, add it again with a new join code. Work on it now is not stopped."
+        action="Revoke"
+        destructive
+        success={name + " is revoked."}
+        onConfirm={() => writes.revokeDevice(device.id)}
+        invalidates={(p) => p === "compute" || p === "runner" || p.startsWith("events")}
+      />
+    </>
   );
 }

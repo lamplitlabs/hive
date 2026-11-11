@@ -384,13 +384,60 @@ takes the base's count as the scale in place of `--scale` (twice the count for
 `--higher`, the count itself for `--lower`, never below 1), so the base scores
 `0.5` and the variant's delta is relative to what the card touched; the derived
 fixtures' scripts count only inside the listed files, and your own `CMD` does
-the same by reading that list. Such a fixture answers `scope: diff` after its
-score line, the log marks it `[diff-scoped]` and the archive row records it
-(`diff_scoped` in the measurement and in the `evolution.archived` event). A
+the same by reading that list. A whole-tree percentage gains nothing from
+the scope: `CMD` still prints the tree's share (90.9% of the hub's view
+branches covered), the base scale becomes twice that, and a card that covers
+three more branches moves it from `0.4995` to `0.5`, a tie at any tolerance:
+on amistio-template `behaviour-hub-view-branches`,
+`behaviour-hub-lib-coverage`, `behaviour-feed-events-worded` and
+`behaviour-settings-documented` told a variant from its base in at most 2 of
+the last 20 cycles, and none of those cycles was improved. Write such a
+fixture as a lower-is-better count of what is still wrong inside the listed files -
+uncovered lines and branches in each changed module (a changed test file
+stands for the module it tests), event actions a changed file emits that no
+hub label words, settings a changed `settings.rs` declares that no changed or
+existing doc names - and print the whole-tree count when the list is empty or
+missing, so the project-level report still reads a number:
+
+```sh
+hive evolve score metric --lower --scale 400 -- sh -c 'cd web/hub &&
+  node --test --experimental-test-isolation=none --experimental-test-coverage \
+    --test-reporter=lcov --test-reporter-destination=stdout \
+    "src/**/*.test.mjs" "mock/*.test.mjs" 2>/dev/null | python3 count_gaps.py'
+# count_gaps.py (inline it with -c): read LF/LH/BRF/BRH per SF from lcov;
+# scope = the web/hub/src/components/*.ts paths in $HIVE_MEASURE_CHANGED
+# (X.test.mjs -> X.ts), else every module; print the sum of
+# (LF-LH)+(BRF-BRH), counting an untested module's non-blank lines.
+```
+
+The base then scores `0.5` on the card's own count and a card that closes
+half the gaps in what it touched scores about `0.67` - a step of `0.17` on
+the fixture, where the percentage moved `0.0005`; the composite carries it
+weighted, so two such fixtures moving together, or the card's own check
+rising, is what lands the card.
+Retire the percentage fixture (`hive evolve fixture disable`) and add the
+count under a new name, one per RSI sitting, so each conversion is measured
+on its own; `behaviour-hub-untested-logic` was the first, and the healer
+retired it two cycles later as a flip until diff-scoped bases were exempted
+from that reading (below) - re-enable it with `hive evolve fixture enable`.
+Such a fixture answers `scope: diff` after its score line, the log marks it
+`[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
 those fixtures are measured again on the base in the same scope inside the same
 cycle, and the whole-tree numbers stay for the project-level report. A diff
 with no changed file exports the base alone and the scorers see the whole tree.
+A `CMD` that ignores the list still gets the base's count as its scale, so a
+whole-tree percentage loses its reach in an experiment: the hub's components
+branch coverage reads 87.9 on the base, the scale becomes 175.8, and a card that
+lifts it by a whole point moves that fixture by 0.006 - B-093 to B-099 all tied
+under `evolve.tolerance` 0.02 with such moves. Count something that
+belongs to files (uncovered lines and branches, error messages, unworded
+events) and add it up over the listed files only, as
+`behaviour-hub-untested-logic` does with the lcov report of the hub's
+`node --test` run (a changed `X.test.mjs` counts for the `X.ts` it pins): a card
+that tests the module it touches drops that count from, say, 7 to 0 and scores
+1.0 against the base's 0.5, which at weight 2 of a total near 35 moves the
+composite by about 0.029 on its own.
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
@@ -670,7 +717,11 @@ that flips the same baseline commit both ways twice is retired by the
 healer below (disabled, event `evolution.fixture.retired`, one finding
 `Evolution fixture retired: it scored the same commit both ways twice`);
 `hive evolve fixture enable NAME` brings it back and only later cycles
-count for it again.
+count for it again. A diff-scoped fixture is exempt from both readings: its
+base is measured in each card's own scope (`0.5` where the card touched what
+it counts, `1.0` where it found nothing to count), so two cards on one commit
+score it two ways by design - it is read in every cycle and never retired as
+a flip, nor counted as moving with the default branch.
 `hive evolve status` shows the same reason on its `Experiment planning`
 line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
 NAME scored the same baseline commit two ways`) and the step as `Next human
@@ -771,6 +822,7 @@ record, read with `hive record show WF-evolve`.
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `review.merge` | `auto` | `auto`: the review job merges a pull request no complexity reason holds back; `ask`: every pull request is handed to you with the reviewer's findings under **Needs your review**, and the reviewer merges nothing ([The reviewer](review.md)). |
+| `git.github_app.app_id`, `git.github_app.installation_id`, `git.github_app.private_key_ref` | empty | A GitHub App every git command Hive runs inherits (ADR-070 step 3): its id, its installation's id, and where its private key lives (`op://`, `keychain://`, `file://`; only the brain reads it). With all three set, pushes, fetches and `gh` on a repository the App covers use a one-hour token for that one repository - a hand gets it for its one push - and fall back to `push.credential` and this machine's logins when GitHub will not mint one ([Credentials](landing.md#one-git-login-for-every-machine-a-github-app-adr-070-step-3)). |
 | `review.max_files` | `20` files | A pull request that changes more files than this goes to you instead of merging; generated paths (`web/hub/out/**`, lockfiles, `dist/`, `out/`, `target/`, minified files) are not counted. |
 | `review.max_lines` | `600` lines | A pull request that adds and deletes more lines than this together goes to you instead of merging; the same paths are left out of the count. |
 | `landing.base_red_retry_minutes` | `10` minutes | How long a project's held work waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
@@ -781,6 +833,8 @@ record, read with `hive record show WF-evolve`.
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `hive executor label`. |
 | `executor.transport` | `local` | `local`: this machine runs its own jobs in a clone under the hive home. `local-hand`: it leases them to the `hive-hand` installed beside `hive` over a pipe (ADR-070 step 1b). The hand clones in `HIVE_HOME/hands`, runs the worker there and, once the commits pass the identity check, pushes the job's branch with the key `push.credential` names, handed to it for that one push. Lead, review and suggestion-review jobs stay local, and a failed hand push is left to the delivery pass ([Machines](machines.md)). |
+| `brain.code` | `clone` | Whether this machine keeps a copy of the projects' code (ADR-070 rule 6). `clone`: every run here clones the project, as always. `none`: no checkout of any project on this machine - it leases only the `lead` and `reflect` jobs, which plan from the board in an empty workspace; every other job, check script and the source self-update wait for a hand, and `hive run` of such a job is refused. The hosted brain sets it ([Security notes](security.md)). |
+| `daemon.self_update` | `on` | `on`: the daemon rebuilds hive from the brain project's checkout after a landing touches the binary's sources ([Self-update](runner.md#services-and-self-update)); `release`: it installs the newer published release `update.latest_url` names instead, checked hourly, with no source and no cargo on the machine ([Releases](release.md#daemonself_update-release-a-machine-without-source)); `off` leaves hive alone. |
 | `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `hive executor reserve NAME`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
 | `dependencies.major_updates` | `ask` | `ask`: a security fix that needs a major upgrade is a `finding` for you with Yes / No in the For you inbox ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `auto`: the watcher queues it like any other security update, to the newest eligible version of the patched line. |
@@ -833,6 +887,12 @@ record, read with `hive record show WF-evolve`.
 | `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`hive toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `hive goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
+| `hub.allow_remote` | empty (this machine only) | The team front's `https://` origin (ADR-070 rule 5). While set, the hub's front relay listener (`hive hub --front-port N`, 127.0.0.1 only) serves reads and accepts a write only when a registered member's passkey signed it over a nonce from `GET /api/v1/nonce`; empty closes the relay (403). Counts only when the owner set it - an agent's value is ignored. See [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere) and [security](security.md). |
+
+The team secret vault (ADR-070 step 4) adds no setting. What a job may be
+granted is the project's recipe `secrets:` list, and values are set with
+`hive secret set` or the hub's Settings → Secrets panel. See
+[Team secrets](harness.md#team-secrets-the-vault).
 
 The drafting, held-out directory and variant-loop gates (`evolve.draft_hours`,
 `evolve.heldout_dir`, `evolve.canary_share` and the rest) are listed with

@@ -175,3 +175,18 @@ test("inboxBreakdown says nothing waits, or lists each kind pluralised with the 
   );
   assert.equal(inboxBreakdown(buildInbox(sources())), "1 decision, 2 proposals, 2 questions, 1 request, 1 suggestion, 2 drafts and 2 steps");
 });
+
+test("INBOX_SOURCE_PATHS names one distinct hub path for every source buildInbox reads, each refresh a positive interval", async () => {
+  const { INBOX_SOURCE_PATHS } = await import("./inbox-state.ts");
+  assert.deepEqual(Object.keys(INBOX_SOURCE_PATHS).sort(), Object.keys(sources()).sort());
+  const paths = Object.values(INBOX_SOURCE_PATHS).map((s) => s.path);
+  assert.equal(new Set(paths).size, paths.length, "two sources share one path");
+  for (const [name, s] of Object.entries(INBOX_SOURCE_PATHS)) {
+    assert.match(s.path, /^[a-z][a-z/]*(\?[a-z_]+=[A-Za-z]+(&[a-z_]+=[A-Za-z]+)*)?$/, `${name}: a relative API path, no leading slash`);
+    if (s.refresh !== undefined) assert.ok(Number.isInteger(s.refresh) && s.refresh > 0, `${name}: refresh ${s.refresh}`);
+  }
+  // The decisions come from the proposed ADRs alone, and the owner's work
+  // from the suggestions the agents handed to the owner.
+  assert.equal(INBOX_SOURCE_PATHS.proposed.path, "records?kind=adr&status=Proposed");
+  assert.equal(INBOX_SOURCE_PATHS.suggested.path, "tasks/suggested?status=owner");
+});

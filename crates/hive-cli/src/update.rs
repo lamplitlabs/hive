@@ -734,6 +734,37 @@ mod tests {
         assert!(err.contains("2 archives"), "{err}");
     }
 
+    /// A Linux brain (the hosted image of ADR-070 step 6) takes the
+    /// linux-gnu archive of a release that carries one beside the macOS
+    /// ones, for its own architecture (TASK-107).
+    #[test]
+    fn a_linux_target_picks_the_linux_gnu_archive() {
+        let assets = vec![
+            asset("SHA256SUMS"),
+            asset("hive-v0.4.0-aarch64-apple-darwin.tar.gz"),
+            asset("hive-v0.4.0-x86_64-apple-darwin.tar.gz"),
+            asset("hive-v0.4.0-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("hive-v0.4.0-aarch64-unknown-linux-gnu.tar.gz"),
+        ];
+        let x86 = target_for("x86_64", "linux").unwrap();
+        assert_eq!(
+            pick_asset(&assets, "v0.4.0", &x86).unwrap().name,
+            "hive-v0.4.0-x86_64-unknown-linux-gnu.tar.gz"
+        );
+        let arm = target_for("aarch64", "linux").unwrap();
+        assert_eq!(
+            pick_asset(&assets, "0.4.0", &arm).unwrap().name,
+            "hive-v0.4.0-aarch64-unknown-linux-gnu.tar.gz"
+        );
+        // A Mac still takes its own archive from the same release.
+        assert_eq!(
+            pick_asset(&assets, "v0.4.0", "aarch64-apple-darwin")
+                .unwrap()
+                .name,
+            "hive-v0.4.0-aarch64-apple-darwin.tar.gz"
+        );
+    }
+
     #[test]
     fn checksums_parse_and_verify() {
         let a = "a".repeat(64);

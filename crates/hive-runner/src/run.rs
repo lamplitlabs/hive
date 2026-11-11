@@ -997,6 +997,7 @@ fn prepare_setup(
         crate::recipe::RECIPE_UNFIT_HANDS => return Err(crate::executor::ExecutorUnfit { msg: format!("{} pins tools or env that the hands on {} predate (their probe does not answer recipe=1); {} jobs run on the hub until the hands are refreshed", crate::recipe::RECIPE_PATH, ex.name(), project.str("slug")), tool: crate::recipe::RECIPE_UNFIT_HANDS.to_string(), project: project.str("slug"), detail: String::new() }.into()),
         _ => {}
     }
+
     let pins = r.tools.clone();
     let setup_budget = crate::recipe::SETUP_MINUTES;
     if !pins.is_empty() && !dry_run {
@@ -1151,7 +1152,9 @@ pub(crate) fn run_job(
         ));
     }
     let root = project.str("path");
-    if !Path::new(&root).join(".git").exists() {
+    // A brain without code (`brain.code none`) may hold no checkout of the
+    // project at all; its runs work in an empty workspace.
+    if !Path::new(&root).join(".git").exists() && !crate::jobs::brain_code_none(s) {
         return Err(cli_err(
             2,
             format!(
@@ -1333,6 +1336,8 @@ pub(crate) fn run_job(
     // clone is gone so no concurrent run of the project shares it.
     let mut build_cache: Option<crate::buildcache::Lane> = None;
 
+    // The vault secrets granted to this run, if any; wiped when dropped.
+    let mut secret_grant = crate::secrets::SecretGrant::default();
     let body_result: Result<()> = (|| {
         let mut resume = resumable_held_run(
             s,
@@ -1397,6 +1402,35 @@ pub(crate) fn run_job(
             crate::setup_repair::is_repair_job(&job),
             &mut log,
         )?;
+        // Vault secrets open on the brain only until hands hold device keys
+        // (ADR-070 step 2): refuse here and record it; the job keeps its
+        // attempt and the unfit mark sends it to the brain's own executor.
+        if ex.remote()
+            && let Some(r) = recipe.as_ref().filter(|r| !r.secrets.is_empty())
+        {
+            let why = crate::secrets::refuse_remote(
+                s,
+                r,
+                &crate::secrets::GrantFor {
+                    job: &job.str("id"),
+                    run: &run_id,
+                    project: &project.str("slug"),
+                    machine: &ex.name(),
+                    agent,
+                },
+            );
+            return Err(crate::executor::ExecutorUnfit {
+                msg: format!(
+                    "{} declares vault secrets ({}): {why}",
+                    crate::recipe::RECIPE_PATH,
+                    r.secrets.join(", ")
+                ),
+                tool: crate::recipe::RECIPE_UNFIT_SECRETS.to_string(),
+                project: project.str("slug"),
+                detail: String::new(),
+            }
+            .into());
+        }
         // A project without a verify command takes the recipe's
         // `suggested_check` here, so this run is already checked by it.
         if let Some(r) = &recipe
@@ -1679,8 +1713,37 @@ pub(crate) fn run_job(
             )?;
         }
         log.add(format!("$ {}", shown.join(" ")));
+        // Team vault secrets (ADR-070 rule 4): granted for this run and
+        // opened in memory on the brain; only the worker's env carries the
+        // values, wiped when it ends, and its output is redacted before any
+        // of it reaches the log, the result or an event.
+        if !ex.remote() && !o.dry_run {
+            let (grant, lines) = crate::secrets::grant_local(
+                s,
+                recipe.as_ref(),
+                &job.str("brief"),
+                &crate::secrets::GrantFor {
+                    job: &job.str("id"),
+                    run: &run_id,
+                    project: &project.str("slug"),
+                    machine: &ex.name(),
+                    agent,
+                },
+            );
+            for line in lines {
+                log.add(line);
+            }
+            secret_grant = grant;
+        }
         let launched = wall_clock();
-        let out = ex.run_worker(&cancel, &cmd, &env, minutes)?;
+        let mut out = if secret_grant.is_empty() {
+            ex.run_worker(&cancel, &cmd, &env, minutes)?
+        } else {
+            let worker_env = secret_grant.worker_env(&env);
+            ex.run_worker(&cancel, &cmd, &worker_env, minutes)?
+        };
+        out.stdout = secret_grant.redact(&out.stdout);
+        out.stderr = secret_grant.redact(&out.stderr);
         if !out.timeout {
             exit_code = Some(out.exit_code);
         }
@@ -1759,7 +1822,7 @@ pub(crate) fn run_job(
             log.put(&summary);
             return Ok(());
         }
-        parsed = crate::brief::parse_result_text(ex.result_text());
+        parsed = crate::brief::parse_result_text(ex.result_text().map(|t| secret_grant.redact(&t)));
         let current_job = crate::jobs::job_row(&*c, job.str("id"));
         if !is_nil(&current_job)
             && current_job.int("generation") == job.int("generation")
@@ -3781,31 +3844,59 @@ fn push_from_hand(
         .stdout
         .trim()
         .to_string();
-    let key = match crate::forge::push_credential_key(s) {
-        Ok(k) => k,
-        Err(why) => {
-            return format!(
-                "hand push skipped: push.credential could not be read ({why}); the delivery pass pushes {branch}"
+    // A GitHub App installation token for this one repository is leased
+    // first (ADR-070 step 3): the hand pushes it over https through a
+    // credential helper beside its clone; else `push.credential`'s key.
+    let mut via = "the leased push credential";
+    let mut url = up.url.clone();
+    let mut key = Vec::new();
+    match crate::gitapp::token_for_url(s, &up.url) {
+        Some(Ok((repo, token))) => {
+            key = hive_hand_core::gitcred::token_lease(token.secret());
+            url = crate::gitapp::https_url(&repo);
+            via = "the leased GitHub App token";
+        }
+        Some(Err(why)) => {
+            let _ = s.event(
+                agent,
+                "gitapp.fallback",
+                branch,
+                json!({"why": hive_cred::redact(&crate::executor::redact_tokens(&why), &[])}),
             );
         }
-    };
+        None => {}
+    }
+    if key.is_empty() {
+        key = match crate::forge::push_credential_key(s) {
+            Ok(k) => k,
+            Err(why) => {
+                return format!(
+                    "hand push skipped: push.credential could not be read ({why}); the delivery pass pushes {branch}"
+                );
+            }
+        };
+    }
     let leased = !key.is_empty();
-    let (line, ok) = match ex.push_from_hand(&up.url, &sha, branch, &key) {
+    let (line, ok) = match ex.push_from_hand(&url, &sha, branch, &key) {
         Ok(out) => (
             format!(
-                "{} pushed {branch} to {}{}: {out}",
+                "{} pushed {branch} to {}{}: {}",
                 ex.name(),
                 up.name(),
                 if leased {
-                    " with the leased push credential"
+                    format!(" with {via}")
                 } else {
-                    ""
-                }
+                    String::new()
+                },
+                crate::executor::redact_tokens(&out)
             ),
             true,
         ),
         Err(e) => (
-            format!("hand push failed, the delivery pass pushes {branch}: {e}"),
+            format!(
+                "hand push failed, the delivery pass pushes {branch}: {}",
+                crate::executor::redact_tokens(&e.to_string())
+            ),
             false,
         ),
     };
@@ -3816,7 +3907,7 @@ fn push_from_hand(
             agent,
             if ok { "hand.push" } else { "hand.push_failed" },
             branch,
-            json!({"executor": ex.name(), "sha": sha, "remote": up.name(), "leased": leased}),
+            json!({"executor": ex.name(), "sha": sha, "remote": up.name(), "leased": leased, "via": if leased { via } else { "" }}),
         );
     }
     line
@@ -5033,6 +5124,143 @@ mod tests {
                 .join(&job_id)
                 .exists()
         );
+    }
+
+    #[test]
+    fn run_job_hands_a_declared_vault_secret_to_the_worker_env_only() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, _) = new_repo(&s);
+        join(&s, "aurora");
+        let value = "vault-value-7f3a9c1e";
+        s.vault_set("owner", "DEPLOY_TOKEN", value.as_bytes())
+            .unwrap();
+        s.vault_set("owner", "OTHER_TOKEN", b"never-granted-42")
+            .unwrap();
+        let mut recipe = recipe_with(None, None, None, None, "");
+        recipe = recipe.replacen("recipe: 1\n", "recipe: 1\nsecrets:\n  - DEPLOY_TOKEN\n", 1);
+        crate::env::env_set(
+            &s,
+            proj.clone(),
+            recipe,
+            crate::util::HUMAN_AGENT.to_string(),
+            "store".into(),
+            "vault secret".into(),
+        )
+        .unwrap();
+        let seen_path = std::path::Path::new(&s.home).join("secret-seen");
+        let seen = crate::util::shell_quote(&seen_path.display().to_string());
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "use the deploy token".into(),
+            "Secrets: DEPLOY_TOKEN, OTHER_TOKEN".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let worker = format!(
+            "printf '%s' \"$DEPLOY_TOKEN\" > {seen} &&\nprintf '%s' \"${{OTHER_TOKEN:-unset}}\" >> {seen} &&\necho \"token is $DEPLOY_TOKEN\" &&\necho \"token again $DEPLOY_TOKEN\" >&2 &&\nprintf 'x\\n' > worker.txt &&\ngit add worker.txt &&\ngit commit -q -m 'use the token' &&\necho \"SUMMARY: done - used $DEPLOY_TOKEN\""
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "done", "run: {r:?}");
+        // The worker saw the declared value and not the undeclared one.
+        let got = std::fs::read_to_string(&seen_path).unwrap();
+        assert_eq!(got, format!("{value}unset"));
+        // The value is in no log, no result, no event, no file of the clone.
+        let log_text = std::fs::read_to_string(r.str("log")).unwrap();
+        assert!(!log_text.contains(value), "{log_text}");
+        assert!(log_text.contains("[secret DEPLOY_TOKEN]"), "{log_text}");
+        assert!(
+            log_text.contains("secret OTHER_TOKEN refused"),
+            "{log_text}"
+        );
+        assert!(!r.str("summary").contains(value), "{r:?}");
+        let conn = s.conn().unwrap();
+        let events: Vec<(String, String)> = conn
+            .prepare("SELECT action, detail FROM events")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect();
+        assert!(
+            events.iter().all(|(_, d)| !d.contains(value)),
+            "a value reached an event"
+        );
+        let jobs_row: String = conn
+            .query_row("SELECT result FROM jobs WHERE id = ?", [&job_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(!jobs_row.contains(value), "{jobs_row}");
+        let granted: Vec<&(String, String)> = events
+            .iter()
+            .filter(|(a, _)| a == "secret.granted")
+            .collect();
+        assert_eq!(granted.len(), 1, "{events:?}");
+        assert!(granted[0].1.contains("DEPLOY_TOKEN"));
+        assert!(granted[0].1.contains(&job_id));
+        assert!(!granted[0].1.contains("OTHER_TOKEN"));
+        let refused: Vec<&(String, String)> = events
+            .iter()
+            .filter(|(a, _)| a == "secret.refused")
+            .collect();
+        assert_eq!(refused.len(), 1, "{events:?}");
+        assert!(refused[0].1.contains("OTHER_TOKEN"));
+        assert!(refused[0].1.contains("not declared"));
+        assert_eq!(
+            events.iter().filter(|(a, _)| a == "secret.read").count(),
+            1,
+            "{events:?}"
+        );
+        let mut stack = vec![std::path::PathBuf::from(&s.home)];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p == seen_path {
+                    continue;
+                }
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Ok(bytes) = std::fs::read(&p) {
+                    assert!(
+                        !bytes.windows(value.len()).any(|w| w == value.as_bytes()),
+                        "{} holds the secret value",
+                        p.display()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

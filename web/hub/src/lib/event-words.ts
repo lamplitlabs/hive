@@ -58,6 +58,13 @@ export const VERB: Record<string, string> = {
   "executor.add": "added a machine",
   "executor.remove": "removed a machine",
   "executor.removed": "removed a machine",
+  // dial.rs (ADR-070 step 2): a machine that dials in - its join code, its
+  // join, each connect (or a refused one) and its key revoked.
+  "hand.join_code": "issued a join code for a machine",
+  "hand.join": "joined as a machine",
+  "hand.connect": "connected a machine",
+  "hand.connect_refused": "refused a machine's connection",
+  "hand.revoke": "revoked a machine",
   "task.created": "created a task",
   "task.amended": "changed a task",
   "task.cancelled": "cancelled a task",
@@ -178,6 +185,14 @@ export const VERB: Record<string, string> = {
   // hive-cred-setup setup.rs: the push credential (push.credential).
   "cred.set": "saved the credential Hive pushes with",
   "cred.clear": "removed the credential Hive pushes with",
+  // hive-store vault.rs and hive-runner secrets.rs: the team secret vault
+  // (ADR-070 rule 4). Names only; a value is never in an event.
+  "secret.key": "created the team's vault key",
+  "secret.set": "saved a secret in the team vault",
+  "secret.removed": "removed a secret from the team vault",
+  "secret.granted": "gave a job the vault secrets its project declares",
+  "secret.refused": "kept vault secrets from a job",
+  "secret.read": "opened a vault secret for a job",
   // hive-harness conversation.rs WAKE_ACTION/FINISH_ACTION: a message for a
   // conversation (`hive chat wake`), its pull request merged.
   "chat.wake": "woke a conversation with a message",
@@ -260,7 +275,7 @@ export const scalar = (v: unknown) => (typeof v === "string" || typeof v === "nu
 
 // The author a post id ends with: "20260901T203300Z-cinder" -> "cinder".
 const postAuthor = (id: string) => id.replace(/^\d{8}T\d{6}Z-?/, "");
-const isMachine = (a: string) => a.startsWith("executor.");
+const isMachine = (a: string) => a.startsWith("executor.") || a === "hand.join" || a === "hand.connect" || a === "hand.revoke";
 
 // A duration in words, from milliseconds: "40 seconds", "3 minutes",
 // "1 hour 5 minutes".
@@ -299,7 +314,9 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   }
   if (a === "post" || a.startsWith("post.")) {
     const kind = a.startsWith("post.") ? a.slice(5) : str(d?.kind);
-    return POSTED[kind] ?? "posted on the board";
+    // A board-maintenance action (post.remove.*) that is not a post kind
+    // reads from its own VERB entry, so a new cleanup event needs no case here.
+    return POSTED[kind] ?? VERB[a] ?? "posted on the board";
   }
   if (a === "decide") {
     const answer = str(d?.answer);

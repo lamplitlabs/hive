@@ -100,8 +100,14 @@ impl Handler {
             HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         );
 
+        if !self.front_gate(w, r) {
+            return;
+        }
         let p = r.path();
         if let Some(route) = p.strip_prefix("/api/v1/") {
+            if self.remote_api(w, r, route) {
+                return;
+            }
             if route == "running" {
                 self.addition_running(w, r);
                 return;
@@ -381,6 +387,11 @@ pub(crate) fn write_error(
 /// (when the browser sends one) names this host, and the request is not
 /// cross-site. Writes an error and returns false otherwise.
 pub(crate) fn same_origin_write(w: &mut ResponseWriter, r: &Request) -> bool {
+    // A write through the front passed `Handler::front_gate` already: its
+    // Origin is the front's and a member's passkey signed it.
+    if r.via_front {
+        return true;
+    }
     let origin = r.header("Origin");
     if !origin.is_empty() {
         let ok = url::Url::parse(&origin)

@@ -9,9 +9,12 @@
 //! a merge made on GitHub that turned the pipeline red is Hive's to fix as
 //! well. The fix is planned only once the project checkout holds that
 //! commit, so the worker starts from the code that is red. GitHub is read
-//! with the gh account that can see the repository: the active login
-//! first, and when it cannot, each other account `gh auth status` lists,
-//! the first that answers remembered for the project (`gh_auth`).
+//! with the GitHub App's installation token for the repository when an App
+//! is configured (ADR-070 step 3, `gitapp`); without one, or when the App
+//! cannot read it, with the gh account that can see the repository: the
+//! remembered or active login first, and when it cannot, each other
+//! account `gh auth status` lists, the first that answers remembered for
+//! the project (`gh_auth`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -228,11 +231,78 @@ pub(crate) enum Ask<'a> {
 /// login), so tests answer in its place.
 pub(crate) type Gh<'a> = dyn Fn(&Ask, Option<&str>) -> Result<String, String> + 'a;
 
+impl Ask<'_> {
+    /// The repository asked about, `OWNER/REPO`.
+    fn repo(&self) -> &str {
+        match self {
+            Ask::Runs { repo, .. }
+            | Ask::Jobs { repo, .. }
+            | Ask::Log { repo, .. }
+            | Ask::Head { repo, .. }
+            | Ask::Rerun { repo, .. } => repo,
+        }
+    }
+}
+
+/// The daemon's `Gh` for one pass: the GitHub App's installation token for
+/// the repository first when an App is configured (ADR-070 step 3), so CI
+/// reads stop depending on this machine's gh logins; a read the App cannot
+/// make (`account_failed`: not installed on the repository, no Actions
+/// permission) or a token that cannot be minted falls back to `gh_ask` as
+/// `user`, the remembered-login rotation as before. Once the App has failed
+/// in a pass it is not asked again in that pass, and a token that could not
+/// be minted is written down once as `gitapp.fallback` (the reason, never a
+/// secret).
+fn gh_app_first<'a>(
+    s: &'a hive_store::Store,
+) -> impl Fn(&Ask, Option<&str>) -> Result<String, String> + 'a {
+    let app_failed = std::cell::Cell::new(false);
+    move |ask: &Ask, user: Option<&str>| {
+        if !app_failed.get() {
+            match crate::gitapp::gh_env(s, ask.repo()) {
+                None => {}
+                Some(Ok(env)) => match gh_run(ask, env, " as the GitHub App") {
+                    Err(e) if account_failed(&e) => app_failed.set(true),
+                    answer => return answer,
+                },
+                Some(Err(why)) => {
+                    app_failed.set(true);
+                    let _ = s.event(
+                        "daemon",
+                        "gitapp.fallback",
+                        ask.repo(),
+                        json!({
+                            "repo": ask.repo(),
+                            "why": hive_cred::redact(&crate::executor::redact_tokens(&why), &[]),
+                        }),
+                    );
+                }
+            }
+        }
+        gh_ask(ask, user)
+    }
+}
+
 /// Runs `gh` with the daemon's own environment - `gh` keeps its login in
 /// its own config, nothing of it reaches git - as the active login, or as
 /// `user` with that account's token in `GH_TOKEN`.
 fn gh_ask(ask: &Ask, user: Option<&str>) -> Result<String, String> {
-    let argv: Vec<String> = match ask {
+    let env = match user {
+        Some(user) => crate::gh_auth::env_as(user)
+            .map_err(|e| format!("{} as {user}: {e}", gh_what(&gh_argv(ask))))?,
+        None => crate::proc::environ(),
+    };
+    gh_run(ask, env, "")
+}
+
+/// `gh SUBCOMMAND VERB`, the words an error starts with.
+fn gh_what(argv: &[String]) -> String {
+    format!("gh {} {}", argv[1], argv[2])
+}
+
+/// The `gh` command line that answers `ask`.
+fn gh_argv(ask: &Ask) -> Vec<String> {
+    match ask {
         Ask::Runs { repo, sha } => vec![
             "gh".into(),
             "run".into(),
@@ -279,12 +349,14 @@ fn gh_ask(ask: &Ask, user: Option<&str>) -> Result<String, String> {
             repo.to_string(),
             "--failed".into(),
         ],
-    };
-    let what = format!("gh {} {}", argv[1], argv[2]);
-    let env = match user {
-        Some(user) => crate::gh_auth::env_as(user).map_err(|e| format!("{what} as {user}: {e}"))?,
-        None => crate::proc::environ(),
-    };
+    }
+}
+
+/// Runs the `gh` that answers `ask` with `env`; `who` follows the command
+/// in an error (` as the GitHub App`, or nothing).
+fn gh_run(ask: &Ask, env: Vec<String>, who: &str) -> Result<String, String> {
+    let argv = gh_argv(ask);
+    let what = format!("{}{who}", gh_what(&argv));
     match crate::proc::run_group(
         &hive_bus::CancellationToken::new(),
         &argv,
@@ -813,7 +885,14 @@ pub(crate) fn tend_pipeline(
     now: &str,
     actor: &str,
 ) -> Vec<String> {
-    tend_pipeline_as(s, slug, now, actor, &gh_ask, &crate::gh_auth::logins)
+    tend_pipeline_as(
+        s,
+        slug,
+        now,
+        actor,
+        &gh_app_first(s),
+        &crate::gh_auth::logins,
+    )
 }
 
 /// `tend_pipeline` with gh answered by `gh` and the active login the only
@@ -3279,5 +3358,203 @@ mod tests {
         let tail = log_tail(&long);
         assert!(tail.starts_with("line 180"), "{}", &tail[..20]);
         assert!(tail.ends_with("line 299"));
+    }
+
+    /// A gh on PATH that writes which token each read used (`app` for the
+    /// App's `ghs_` token, the account for a `tok-ACCOUNT` one) and answers
+    /// the runs of a commit with one green CI run and the branch head with
+    /// `SHA`; as the App it answers 404 while `dir/app-denied` exists.
+    fn token_logging_gh() -> (tempfile::TempDir, hive_testutil::SetenvGuard) {
+        let bin = tempfile::tempdir().expect("fake gh dir");
+        let d = bin.path();
+        std::fs::write(
+            d.join("runs.json"),
+            Value::Array(vec![run("CI", "push", "completed", "success", 1)]).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("head.json"),
+            head_json(SHA, "hive-bot", "2026-10-31T09:50:00Z").to_string(),
+        )
+        .unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+d='{d}'
+case "$1 $2" in
+  "auth token") echo "auth token $4" >> "$d/calls"; echo "tok-$4"; exit 0 ;;
+  "auth status") echo "auth status" >> "$d/calls"; exit 1 ;;
+esac
+case "$GH_TOKEN" in
+  ghs_*) who=app ;;
+  tok-*) who="${{GH_TOKEN#tok-}}" ;;
+  *) who=active ;;
+esac
+echo "$1 $2 as $who" >> "$d/calls"
+if [ "$who" = app ] && [ -e "$d/app-denied" ]; then
+  echo "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)" >&2
+  exit 1
+fi
+case "$1" in
+  run) cat "$d/runs.json" ;;
+  api) cat "$d/head.json" ;;
+esac
+"#,
+            d = d.display()
+        );
+        let path = d.join("gh");
+        std::fs::write(&path, script).expect("fake gh script");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod gh");
+        }
+        let guard = hive_testutil::setenv(
+            "PATH",
+            format!(
+                "{}:{}",
+                d.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+        (bin, guard)
+    }
+
+    fn gh_calls(bin: &tempfile::TempDir) -> Vec<String> {
+        std::fs::read_to_string(bin.path().join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The fake App API, the endpoint pointed at it and the App configured
+    /// on `s`; None without openssl.
+    fn app_on(
+        s: &hive_store::Store,
+        keys: &std::path::Path,
+    ) -> Option<(
+        hive_testutil::httptest::Server,
+        crate::gitapp::tests::Seen,
+        crate::gitapp::tests::EndpointGuard,
+    )> {
+        let (key, _) = crate::gitapp::tests::app_key(keys)?;
+        crate::gitapp::tests::configure(s, &key);
+        let clock: std::sync::Arc<dyn Fn() -> i64 + Send + Sync> = std::sync::Arc::new(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        });
+        let (api, seen) = crate::gitapp::tests::fake_github(clock);
+        let ep = crate::gitapp::tests::point_at(&api.url(), "https://github.com");
+        Some((api, seen, ep))
+    }
+
+    fn remember_login(s: &hive_store::Store, user: &str) {
+        let w = Watch {
+            gh_user: user.to_string(),
+            ..Watch::default()
+        };
+        save_watch(&s.conn().unwrap(), "proj", &w);
+    }
+
+    #[test]
+    fn with_a_github_app_ci_is_read_with_its_token_and_no_remembered_login_is_tried() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = setup();
+        let keys = tempfile::tempdir().unwrap();
+        let Some((_api, seen, _ep)) = app_on(&s, keys.path()) else {
+            return;
+        };
+        let (bin, _path) = token_logging_gh();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        remember_login(&s, "octocat");
+        let lines = tend_pipeline(&s, "proj", NOW, "daemon");
+        assert_eq!(
+            lines,
+            ["pipeline proj: green at 8f377827f6c6 on origin/main (CI)".to_string()]
+        );
+        // Both reads ran with the App's GH_TOKEN; the remembered login's
+        // token was never asked for, nor the machine's logins listed.
+        assert_eq!(
+            gh_calls(&bin),
+            ["run list as app", "api repos/o/r/branches/main as app"]
+        );
+        // One installation token, scoped to the one repository, minted once
+        // and reused for the second read.
+        let mints: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, uri, _, _)| m == "POST" && uri.ends_with("/access_tokens"))
+            .map(|(_, _, _, body)| body.clone())
+            .collect();
+        assert_eq!(mints.len(), 1, "{mints:?}");
+        assert!(mints[0].contains("\"r\""), "{mints:?}");
+        assert!(events(&s, "gitapp.fallback").is_empty());
+        // The token never reaches the log lines or the watch.
+        let watch = serde_json::to_string(&load_watch(&s, "proj")).unwrap();
+        assert!(!watch.contains("ghs_"), "{watch}");
+        assert!(!lines.concat().contains("ghs_"));
+    }
+
+    #[test]
+    fn a_read_the_github_app_cannot_make_falls_back_to_the_remembered_login() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = setup();
+        let keys = tempfile::tempdir().unwrap();
+        let Some((_api, _seen, _ep)) = app_on(&s, keys.path()) else {
+            return;
+        };
+        let (bin, _path) = token_logging_gh();
+        std::fs::write(bin.path().join("app-denied"), "").unwrap();
+        pushed(&s, "2026-10-31T09:50:00Z", SHA);
+        remember_login(&s, "octocat");
+        let lines = tend_pipeline(&s, "proj", NOW, "daemon");
+        assert_eq!(
+            lines,
+            ["pipeline proj: green at 8f377827f6c6 on origin/main (CI)".to_string()]
+        );
+        // The App is asked once; once it cannot see the repository the pass
+        // reads as the remembered login, which stays remembered.
+        let calls: Vec<String> = gh_calls(&bin)
+            .into_iter()
+            .filter(|c| !c.starts_with("auth "))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "run list as app",
+                "run list as octocat",
+                "api repos/o/r/branches/main as octocat"
+            ]
+        );
+        assert_eq!(load_watch(&s, "proj").gh_user, "octocat");
+
+        // A key that cannot be read is a `gitapp.fallback` with the reason,
+        // and the reads go to the remembered login without asking gh as the
+        // App at all.
+        std::fs::remove_file(bin.path().join("calls")).unwrap();
+        std::fs::remove_file(bin.path().join("app-denied")).unwrap();
+        crate::gitapp::clear_cache();
+        let key = keys.path().join("app.pem");
+        crate::test_helpers::run(".", &["chmod", "644", key.to_str().unwrap()]);
+        let sha2 = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+        pushed(&s, "2026-10-31T10:20:00Z", sha2);
+        let _ = tend_pipeline(&s, "proj", "2026-10-31T10:30:00Z", "daemon");
+        let calls: Vec<String> = gh_calls(&bin)
+            .into_iter()
+            .filter(|c| !c.starts_with("auth "))
+            .collect();
+        assert!(!calls.is_empty());
+        assert!(calls.iter().all(|c| c.ends_with("as octocat")), "{calls:?}");
+        let fallback = events(&s, "gitapp.fallback");
+        assert_eq!(fallback.len(), 1, "{fallback:?}");
+        assert_eq!(fallback[0]["repo"], "o/r");
+        let why = fallback[0]["why"].as_str().unwrap_or_default();
+        assert!(why.contains(crate::gitapp::PRIVATE_KEY_REF), "{why}");
+        assert!(!why.contains("BEGIN"), "{why}");
     }
 }

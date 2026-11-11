@@ -16,7 +16,10 @@
 //! inside the window: such a fixture neither breaks a streak (a difference it
 //! reports is noise) nor makes one (its tie was a verdict, not a reading).
 //! A fixture that flips the same commit both ways twice is retired by the
-//! healer ([`crate::heal`]), with an event and a finding on the board.
+//! healer ([`crate::heal`]), with an event and a finding on the board. A
+//! diff-scoped fixture's base is measured in each card's own scope, so its
+//! base score is never compared across cycles: two cards on one commit that
+//! touch different files score it two ways by design, not as noise.
 
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
@@ -107,6 +110,13 @@ fn within_tolerance(baseline: f64, variant: f64, tolerance: f64) -> bool {
 /// variant_score, tolerance, at, fixtures_json)`.
 type WindowRow = (String, f64, f64, f64, String, String);
 
+/// Whether a fixture counted inside the card's changed files on this
+/// measurement: its base score is the card's own (`0.5` when the card
+/// touched what it counts) and never comparable across cycles.
+fn diff_scoped(scores: &crate::api::Scores, name: &str) -> bool {
+    scores.diff_scoped.iter().any(|n| n == name)
+}
+
 /// The archived matrix of one row, as `(baseline, variant)`, when it has one.
 fn archived_pair(fixtures_json: &str) -> Option<(crate::api::Scores, crate::api::Scores)> {
     let pair = serde_json::from_str::<crate::archive::ScorePair>(fixtures_json).ok()?;
@@ -141,6 +151,9 @@ fn read_window(rows: Vec<WindowRow>) -> Vec<FlatCycle> {
             continue;
         }
         for b in &baseline.fixtures {
+            if diff_scoped(baseline, &b.name) {
+                continue;
+            }
             let key = (b.name.clone(), b.kind.clone());
             let first = *seen
                 .entry(key.clone())
@@ -412,6 +425,13 @@ pub fn fixture_evidence_since(
                 e.disputed += 1;
             } else if (v.score - b.score).abs() > 1e-9 {
                 e.told_apart += 1;
+            }
+            // A diff-scoped base is measured in the card's own scope, so its
+            // score belongs to that cycle alone: another card on the same
+            // commit scores it differently by design, which is neither a
+            // flip nor a move with the default branch.
+            if diff_scoped(&baseline, &b.name) {
+                continue;
             }
             let (commit, score) = &last[i];
             if !commit.is_empty() && *commit != baseline.ref_name && (b.score - score).abs() > 1e-9
@@ -1029,6 +1049,78 @@ mod tests {
             "{}",
             evidence_line(request)
         );
+    }
+
+    /// Two cards on one base commit that touch different files score a
+    /// diff-scoped fixture's base two ways (a count over each card's own
+    /// files), which is the scope at work, not judge noise: the fixture is
+    /// neither flaky nor left out, nor does the healer count flips on it.
+    #[test]
+    fn a_diff_scoped_base_is_per_card_and_never_a_flip() {
+        let _serial = crate::test_helpers::serial();
+        let s = gate_store("3");
+        let scoped = |id: &str, commit: &str, (rb, rv): (f64, f64), offset: i64| {
+            let tree = |r#ref: &str, request: f64| {
+                let fixtures = vec![crate::api::FixtureScore {
+                    name: "request".into(),
+                    kind: "public".into(),
+                    score: request,
+                    weight: 1.0,
+                    metric: true,
+                    note: String::new(),
+                    runs: Vec::new(),
+                }];
+                crate::api::Scores {
+                    project: "demo".into(),
+                    ref_name: r#ref.into(),
+                    total: crate::dispute::weighted_total(&fixtures),
+                    fixtures,
+                    diff_scoped: vec!["request".into()],
+                    ..Default::default()
+                }
+            };
+            let pair = crate::archive::ScorePair {
+                baseline: Some(tree(commit, rb)),
+                variant: Some(tree(&format!("v-{id}"), rv)),
+            };
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
+					baseline_score, variant_score, tolerance, kept, fixtures_json, at)
+					VALUES (?, 'demo', 'S-1', 'one constant', '', ?, ?, 0.02, 0, ?, ?)",
+                    params![
+                        id,
+                        rb,
+                        rv,
+                        serde_json::to_string(&pair).unwrap(),
+                        stamp(&s, offset)
+                    ],
+                )
+                .unwrap();
+        };
+        // The base scores 0.5 where the card touched what the fixture
+        // counts and 1.0 (nothing to count) where it did not.
+        scoped("B-001", "c1", (0.5, 0.5), -30);
+        scoped("B-002", "c1", (1.0, 1.0), -20);
+        scoped("B-003", "c1", (0.5, 0.5), -10);
+        let evidence = fixture_evidence(&s, "demo").unwrap();
+        let request = evidence.iter().find(|e| e.name == "request").unwrap();
+        assert_eq!(
+            (
+                request.cycles,
+                request.flaky,
+                request.flips,
+                request.moved_with_main
+            ),
+            (3, false, 0, 0)
+        );
+        let streak = flat_streak(&s, "demo").unwrap().expect("a flat window");
+        assert!(streak.cycles.iter().all(|c| c.skipped.is_empty()));
+        // A card that moves it inside its own scope breaks the streak: it is
+        // read, not left out as noise.
+        scoped("B-004", "c1", (0.5, 0.6), -5);
+        assert_eq!(flat_streak(&s, "demo").unwrap(), None);
     }
 
     #[test]

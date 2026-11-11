@@ -255,11 +255,12 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","brain.code"=>"clone","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","git.github_app.app_id"=>"","git.github_app.installation_id"=>"","git.github_app.private_key_ref"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","hub.allow_remote"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-        "daemon.self_update"=>("choice",None,["on","off"],None,"on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"),
+        "daemon.self_update"=>("choice",None,["on","off","release"],None,"on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - a hosted brain holds no Hive source (ADR-070 rule 1); off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"),
+        "brain.code"=>("choice",None,["clone","none"],None,"clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md)"),
         "daemon.self_update_retry_minutes"=>("count",Some(1),[],None,"minutes the daemon waits before building again after a failed build or smoke test"),
         "daemon.self_update_settle_minutes"=>("count",Some(0),[],None,"minutes the brain's HEAD must stand unchanged before the daemon rebuilds hive onto it, so a burst of landings builds once rather than once per landing (default 60: every rebuild ends in a restart window that refuses the long kinds of run); 0 builds as soon as HEAD differs"),
         "daemon.recover"=>("choice",None,["on","off"],None,"on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `hive job retry` (ADR-036)"),
@@ -318,11 +319,15 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "backup.keep"=>("count",Some(0),[],None,"copies of this machine's store kept at a directory or Azure destination, the newest first; older ones are removed after each backup; 0 keeps every copy"),
         "backup.subscription"=>("text",None,[],None,"the Azure subscription (name or id) that holds the az:// account in backup.to, when it is not the az CLI's default one: every az call a backup makes (keys list, upload, list, delete) carries it as --subscription, so the key is found and the login's token is cut for that tenant. Empty: the CLI's default subscription"),
         "update.channel"=>("choice",None,["auto","source","release"],None,"how this machine gets a newer Hive. source: the daemon rebuilds hive from the brain project's checkout after a landing (daemon.self_update); release: hive update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise"),
+        "hub.allow_remote"=>("text",None,[],None,"the hosted front's origin (https://team.example.com) the console may be reached through from anywhere (ADR-070 rule 5): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only"),
         "update.latest_url"=>("text",None,[],None,"where the daemon looks, at most once a day, for the latest Hive release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, hive version and the console say so with the release link. The check downloads and installs nothing; hive update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network"),
         "daemon.nice"=>("count",Some(0),[],None,"nice level the daemon's own process runs at from startup (setpriority), under the owner's foreground work at 0 and over its job children at 10, so planning, sweeps and landing passes yield to what the owner is doing while the loop still comes before the fleet's builds; 0 leaves the level the service started it at"),
         "daemon.build_jobs"=>("count",Some(0),[],None,"parallel compile jobs a build the daemon causes may use: exported as CARGO_BUILD_JOBS to its job children, their pre-commit verification and the landing verification when the environment does not set it, and passed as -j to the self-update build; 0 is half the physical cores, so no single build takes the whole machine"),
         "daemon.keep_awake"=>("choice",None,["off","on","always"],None,"on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say. A paused or stopped daemon holds nothing, and closing a laptop's lid still sleeps a Mac without an external display. Each tick the daemon also notices when the machine slept anyway (the wall clock jumped while the loop waited) and says for how long"),
         "push.credential"=>("reference",None,[],None,"where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `hive cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `hive cred set`, which probes the remote first (ADR-041)"),
+        "git.github_app.app_id"=>("identifier",None,[],None,"the numeric App ID of the GitHub App Hive reads and writes repositories as (ADR-070 step 3), from the App's settings page on GitHub; with git.github_app.installation_id and git.github_app.private_key_ref set, the brain mints a one-hour installation token scoped to the one repository a job needs, hands it to the run through a git credential helper that lives as long as the run, and pushes and opens pull requests with it before it tries this machine's own logins. Empty: no App, git and gh use what this machine is logged in to"),
+        "git.github_app.installation_id"=>("identifier",None,[],None,"the numeric id of the GitHub App's installation on your account or organization (the number at the end of github.com/settings/installations/N); the brain exchanges the App's signed JWT for tokens of this installation. Empty: no App"),
+        "git.github_app.private_key_ref"=>("reference",None,[],None,"where the GitHub App's private key (the .pem GitHub downloads once) lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD (1Password), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). Only the brain reads it, for the seconds it takes to sign a ten-minute JWT; jobs never see it, only the one-hour repository tokens it buys. Empty: no App"),
     }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
@@ -659,6 +664,46 @@ pub fn majority(value: &str) -> Result<(i64, i64)> {
     Ok((n, d))
 }
 
+/// `hub.allow_remote`: empty or `off` turns it off; otherwise an https
+/// origin - scheme, host and an optional port, nothing more - lower-cased,
+/// with a trailing slash dropped.
+fn allow_remote_origin(text: &str) -> Result<String> {
+    if text.is_empty() || text.eq_ignore_ascii_case("off") {
+        return Ok(String::new());
+    }
+    let refuse = || {
+        input_err(format!(
+            "hub.allow_remote takes the hosted front's https origin, such as https://team.example.com, or empty to keep the console 127.0.0.1-only; not {}",
+            py_repr(text)
+        ))
+    };
+    let lower = text.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .ok_or_else(refuse)?
+        .trim_end_matches('/');
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (rest, None),
+    };
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    if !host.contains('.') || !host.split('.').all(label_ok) {
+        return Err(refuse());
+    }
+    if let Some(p) = port
+        && !p.parse::<u16>().is_ok_and(|n| n > 0)
+    {
+        return Err(refuse());
+    }
+    Ok(format!("https://{rest}"))
+}
+
 pub fn validate_setting(name: &str, value: &str) -> Result<String> {
     if AUTOMATIC_SETTINGS.contains(&name) {
         return Err(input_err(format!(
@@ -741,6 +786,20 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
             )));
         }
         return Ok(name_text);
+    }
+    if name == "git.github_app.app_id" || name == "git.github_app.installation_id" {
+        // GitHub numbers its Apps and installations; anything else would
+        // only fail later, at the first token exchange.
+        if !text.is_empty() && (text.len() > 20 || !text.bytes().all(|b| b.is_ascii_digit())) {
+            return Err(input_err(format!(
+                "{name} takes the number GitHub shows for it, such as 123456, or empty for no App; not {}",
+                py_repr(text)
+            )));
+        }
+        return Ok(text.to_string());
+    }
+    if name == "hub.allow_remote" {
+        return allow_remote_origin(text);
     }
     if name == "update.latest_url" {
         let url = text.to_string();
@@ -1111,6 +1170,20 @@ impl Store {
         );
         matches!(row, Ok((ref v, ref by)) if v==OWNER_AWAY && human_actor(by))
     }
+    /// The front's origin when the owner set `hub.allow_remote` (ADR-070
+    /// rule 5); None while it is empty or an agent was the last to set it,
+    /// so no agent can open the console to the front.
+    pub fn hub_allow_remote(&self) -> Option<String> {
+        let conn = self.conn().ok()?;
+        let (value, by): (String, String) = conn
+            .query_row(
+                "SELECT value, updated_by FROM settings WHERE name = 'hub.allow_remote'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()?;
+        (!value.is_empty() && human_actor(&by)).then_some(value)
+    }
     pub fn settings(&self) -> Result<BTreeMap<String, String>> {
         let rows = self.setting_rows()?;
         Ok(rows.into_iter().map(|r| (r.name, r.value)).collect())
@@ -1170,6 +1243,62 @@ mod tests {
         assert!(!s.owner_away());
         assert_eq!(compute_size_setting("moon"), "compute.azure.vm_size");
         assert!(secret_shaped("ghp_abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn hub_allow_remote_takes_an_https_origin_and_counts_only_from_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(default_setting("hub.allow_remote"), "");
+        assert!(daemon_setting_names().contains(&"hub.allow_remote".to_string()));
+        for (given, want) in [
+            ("", ""),
+            ("off", ""),
+            (" https://Team.Example.com/ ", "https://team.example.com"),
+            (
+                "https://hive.example.co.uk:8443",
+                "https://hive.example.co.uk:8443",
+            ),
+        ] {
+            assert_eq!(
+                validate_setting("hub.allow_remote", given).unwrap(),
+                want,
+                "{given}"
+            );
+        }
+        for bad in [
+            "http://team.example.com",
+            "https://team.example.com/path",
+            "https://user@team.example.com",
+            "https://localhost",
+            "https://team.example.com:0",
+            "https://-bad.example.com",
+            "team.example.com",
+        ] {
+            let err = validate_setting("hub.allow_remote", bad)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("https origin"), "{bad}: {err}");
+        }
+        unsafe { std::env::set_var("HIVE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap();
+        assert_eq!(s.hub_allow_remote(), None);
+        s.set_setting("cinder", "hub.allow_remote", "https://team.example.com")
+            .unwrap();
+        assert_eq!(s.hub_allow_remote(), None, "an agent cannot open the hub");
+        s.set_setting("human", "hub.allow_remote", "https://team.example.com")
+            .unwrap();
+        assert_eq!(
+            s.hub_allow_remote().as_deref(),
+            Some("https://team.example.com")
+        );
+        s.set_setting("human", "hub.allow_remote", "").unwrap();
+        assert_eq!(s.hub_allow_remote(), None);
     }
 
     #[test]
@@ -1501,8 +1630,24 @@ mod go_settings_tests {
             s.set_setting("human", "daemon.self_update", "1")
                 .unwrap_err()
                 .to_string()
-                .contains("daemon.self_update takes one of on, off")
+                .contains("daemon.self_update takes one of on, off, release")
         );
+        // ADR-070 step 6: a hosted brain installs releases, never builds.
+        s.set_setting("human", "daemon.self_update", "Release")
+            .unwrap();
+        assert_eq!(s.setting("daemon.self_update", ""), "release");
+        s.set_setting("human", "daemon.self_update", "off").unwrap();
+        // brain.code: clone by default; none keeps project code off the brain.
+        assert_eq!(s.setting("brain.code", ""), "clone");
+        s.set_setting("human", "brain.code", "none").unwrap();
+        assert_eq!(s.setting("brain.code", ""), "none");
+        assert!(
+            s.set_setting("human", "brain.code", "shallow")
+                .unwrap_err()
+                .to_string()
+                .contains("brain.code takes one of clone, none")
+        );
+        assert!(DAEMON_RULES["brain.code"].description.contains("ADR-070"));
         assert!(
             s.set_setting("human", "daemon.self_update_retry_minutes", "0")
                 .is_err()
@@ -1600,6 +1745,55 @@ mod go_settings_tests {
         );
         s.set_setting("human", "push.credential", "").unwrap();
         assert_eq!(s.setting("push.credential", ""), "");
+    }
+
+    #[test]
+    fn github_app_settings_take_numbers_and_a_key_reference_only() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-11-10T10:00:00Z");
+        for name in [
+            "git.github_app.app_id",
+            "git.github_app.installation_id",
+            "git.github_app.private_key_ref",
+        ] {
+            assert_eq!(s.setting(name, ""), "", "{name} defaults to empty");
+            assert_eq!(DAEMON_SETTINGS[name], "", "{name} defaults to empty");
+            assert!(extra_setting_names().contains(&name.to_string()));
+        }
+        s.set_setting("human", "git.github_app.app_id", " 123456 ")
+            .unwrap();
+        assert_eq!(s.setting("git.github_app.app_id", ""), "123456");
+        assert!(
+            s.set_setting("human", "git.github_app.installation_id", "my-org")
+                .unwrap_err()
+                .to_string()
+                .contains("takes the number GitHub shows")
+        );
+        s.set_setting("human", "git.github_app.installation_id", "987")
+            .unwrap();
+        assert!(
+            s.set_setting(
+                "human",
+                "git.github_app.private_key_ref",
+                "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("never the key itself")
+        );
+        s.set_setting(
+            "human",
+            "git.github_app.private_key_ref",
+            "file:///etc/hive/app.pem",
+        )
+        .unwrap();
+        assert_eq!(
+            s.setting("git.github_app.private_key_ref", ""),
+            "file:///etc/hive/app.pem"
+        );
+        s.set_setting("human", "git.github_app.app_id", "").unwrap();
+        assert_eq!(s.setting("git.github_app.app_id", ""), "");
     }
 
     #[test]

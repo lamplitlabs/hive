@@ -81,12 +81,29 @@ fn remember(repo: &str, user: Option<&str>) {
 /// cannot see the repository, every other logged-in account once. Returns
 /// stdout, or the failure put into words.
 pub(crate) fn gh(
+    s: &hive_store::Store,
     root: &str,
     repo: &str,
     args: &[&str],
     timeout: Duration,
 ) -> Result<String, String> {
-    gh_with(root, repo, args, timeout, &crate::gh_auth::logins)
+    // The GitHub App's installation token for this one repository comes
+    // first when an App is configured (ADR-070 step 3); a call it cannot
+    // make (the App is not installed on the repository, its key cannot be
+    // read, GitHub is unreachable) falls back to this machine's logins.
+    let app_err = match crate::gitapp::gh_env(s, repo) {
+        None => None,
+        Some(Ok(env)) => match run_gh_env(root, repo, args, timeout, "as the GitHub App", env) {
+            Ok(out) => return Ok(out),
+            Err(e) if !crate::pipeline::account_failed(&e) => return Err(e),
+            Err(e) => Some(e),
+        },
+        Some(Err(e)) => Some(format!("the GitHub App token: {e}")),
+    };
+    gh_with(root, repo, args, timeout, &crate::gh_auth::logins).map_err(|e| match app_err {
+        Some(app) => format!("{e} (tried first: {app})"),
+        None => e,
+    })
 }
 
 /// `gh` with the machine's logins supplied by the caller, so tests name
@@ -154,19 +171,34 @@ fn run_gh(
     timeout: Duration,
     user: Option<&str>,
 ) -> Result<String, String> {
+    let who = user.map(|u| format!("as {u}")).unwrap_or_default();
+    let env = match user {
+        Some(u) => crate::gh_auth::env_as(u)
+            .map_err(|e| format!("gh {} {} {who}: {e}", args[0], args[1]))?,
+        None => crate::proc::environ(),
+    };
+    run_gh_env(root, repo, args, timeout, &who, env)
+}
+
+/// One gh call with `env`; `who` names the account in errors ("as X").
+fn run_gh_env(
+    root: &str,
+    repo: &str,
+    args: &[&str],
+    timeout: Duration,
+    who: &str,
+    env: Vec<String>,
+) -> Result<String, String> {
     let mut argv = vec!["gh".to_string()];
     argv.extend(args.iter().map(|a| a.to_string()));
     if !repo.is_empty() {
         argv.push("--repo".into());
         argv.push(repo.to_string());
     }
-    let what = match user {
-        Some(u) => format!("gh {} {} as {u}", args[0], args[1]),
-        None => format!("gh {} {}", args[0], args[1]),
-    };
-    let env = match user {
-        Some(u) => crate::gh_auth::env_as(u).map_err(|e| format!("{what}: {e}"))?,
-        None => crate::proc::environ(),
+    let what = if who.is_empty() {
+        format!("gh {} {}", args[0], args[1])
+    } else {
+        format!("gh {} {} {who}", args[0], args[1])
     };
     match crate::proc::run_group(
         &hive_bus::CancellationToken::new(),
@@ -192,12 +224,14 @@ fn run_gh(
 /// The pull request `gh` reports open from `head` into `base`, as
 /// (number, url).
 pub(crate) fn open_pull_request(
+    s: &hive_store::Store,
     root: &str,
     repo: &str,
     head: &str,
     base: &str,
 ) -> Result<Option<(i64, String)>, String> {
     let out = gh(
+        s,
         root,
         repo,
         &[
@@ -232,6 +266,7 @@ pub(crate) fn open_pull_request(
 /// Opens the pull request from `head` into `base` and returns its
 /// (number, url) as gh prints them.
 pub(crate) fn create_pull_request(
+    s: &hive_store::Store,
     root: &str,
     repo: &str,
     head: &str,
@@ -240,6 +275,7 @@ pub(crate) fn create_pull_request(
     body: &str,
 ) -> Result<(i64, String), String> {
     let out = gh(
+        s,
         root,
         repo,
         &[
@@ -277,12 +313,14 @@ pub(crate) fn create_pull_request(
 /// Points pull request `number` at `base`: a pull request stacked on one
 /// that merged or closed moves onto that one's base.
 pub(crate) fn retarget_pull_request(
+    s: &hive_store::Store,
     root: &str,
     repo: &str,
     number: i64,
     base: &str,
 ) -> Result<(), String> {
     gh(
+        s,
         root,
         repo,
         &["pr", "edit", &number.to_string(), "--base", base],
@@ -296,12 +334,14 @@ pub(crate) fn retarget_pull_request(
 /// deletes it with a lease on the head it judged, so a push made since is
 /// never lost.
 pub(crate) fn close_pull_request(
+    s: &hive_store::Store,
     root: &str,
     repo: &str,
     number: i64,
     comment: &str,
 ) -> Result<(), String> {
     gh(
+        s,
         root,
         repo,
         &["pr", "close", &number.to_string(), "--comment", comment],
@@ -433,8 +473,13 @@ fn pending_checks(rollup: Option<&serde_json::Value>) -> Vec<String> {
 /// per repository per pass instead of one `gh pr view` per open pull
 /// request (the daemon keeps a dozen open at a time; each gh call is
 /// 0.4-1 s).
-pub(crate) fn list_prs(root: &str, repo: &str) -> Result<BTreeMap<i64, PrState>, String> {
+pub(crate) fn list_prs(
+    s: &hive_store::Store,
+    root: &str,
+    repo: &str,
+) -> Result<BTreeMap<i64, PrState>, String> {
     let out = gh(
+        s,
         root,
         repo,
         &[
@@ -453,8 +498,14 @@ pub(crate) fn list_prs(root: &str, repo: &str) -> Result<BTreeMap<i64, PrState>,
 }
 
 /// One pull request as the forge has it, for a number the list missed.
-pub(crate) fn view_pr(root: &str, repo: &str, number: i64) -> Result<PrState, String> {
+pub(crate) fn view_pr(
+    s: &hive_store::Store,
+    root: &str,
+    repo: &str,
+    number: i64,
+) -> Result<PrState, String> {
     let out = gh(
+        s,
         root,
         repo,
         &["pr", "view", &number.to_string(), "--json", PR_FIELDS],

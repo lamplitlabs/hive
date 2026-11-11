@@ -1,5 +1,6 @@
 //! Shared test helpers for Hive crates.
 
+pub mod githttp;
 pub mod httptest;
 
 use std::process::Command;

@@ -1085,6 +1085,7 @@ name = "hive-hand-core"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "aws-lc-rs",
  "base64 0.23.1",
  "chrono",
  "crossbeam-channel",
@@ -1098,6 +1099,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "which",
+ "zeroize",
 ]
 
 [[package]]
