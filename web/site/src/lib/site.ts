@@ -15,7 +15,7 @@ export const SITE = {
   name: "Hive",
   domain: "hivefleet.dev",
   url: "https://hivefleet.dev",
-  tagline: "An agent-first control plane for software work",
+  tagline: "Coding agents for the whole team",
   description:
-    "Hive runs your software projects with a team of coding agents and keeps you in charge: one binary, one SQLite store, one owner console on your own machine.",
+    "One engineer with a good agent setup ships fast; the team around them does not. Hive gives a team one shared brain for its coding agents: sign in once, enrol every engineer's machine with one command, and every task, rule, skill and review belongs to the team.",
 } as const;

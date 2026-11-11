@@ -65,6 +65,8 @@
   --brand-sky: oklch(0.75 0.14 225);
   --brand-violet: oklch(0.65 0.18 285);
   --gradient-brand: linear-gradient(135deg, var(--brand-mint) 0%, var(--brand-sky) 52%, var(--brand-violet) 100%);
+  /* the same sweep as ink: deep enough to read as text on the paper */
+  --gradient-brand-ink: linear-gradient(135deg, oklch(0.55 0.12 172) 0%, oklch(0.5 0.13 228) 52%, oklch(0.5 0.18 285) 100%);
 
   /* paper and ink */
   --background: oklch(0.985 0.002 255);
@@ -114,6 +116,8 @@
     --you-soft: oklch(0.28 0.04 82);
     --shadow-card: 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 24px -12px oklch(0 0 0 / 0.5);
     --shadow-pop: 0 2px 6px oklch(0 0 0 / 0.4), 0 24px 48px -24px oklch(0 0 0 / 0.7);
+    /* on dark paper the bright sweep reads as text already */
+    --gradient-brand-ink: var(--gradient-brand);
   }
 }
 
@@ -143,7 +147,7 @@
   background-image: var(--gradient-brand);
 }
 @utility text-brand {
-  background-image: var(--gradient-brand);
+  background-image: var(--gradient-brand-ink);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

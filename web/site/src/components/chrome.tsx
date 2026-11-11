@@ -3,6 +3,7 @@ import { HiveTile } from "@/components/hive-mark";
 import { SignInControl } from "@/components/sign-in-control";
 
 const NAV = [
+  { href: "/#story", label: "Why Hive" },
   { href: "/#what", label: "What it does" },
   { href: "/#how", label: "How it works" },
   { href: "/#security", label: "Yours" },
@@ -46,6 +47,9 @@ export function Footer() {
           </span>
         </div>
         <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <Link href="/#story" className="hover:text-foreground">
+            Why Hive
+          </Link>
           <Link href="/#what" className="hover:text-foreground">
             What it does
           </Link>
