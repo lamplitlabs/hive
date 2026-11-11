@@ -151,6 +151,7 @@ import {
   STEERED_HINT,
   STEER_LABEL,
   STEER_TITLE,
+  blindModel,
   composeKeysHint,
   composeMode,
   composePlaceholder,
@@ -158,6 +159,7 @@ import {
   showsNow,
   steeredOf,
   turnOpen,
+  unseenImagesWarning,
   type ComposeMode,
 } from "@/components/chat/compose-mode";
 import type {
@@ -3260,6 +3262,7 @@ function ConversationBody({
         disabled={archived}
         closed={closed}
         tools={tools}
+        models={models.data?.models ?? []}
         picks={picks}
         onRemovePick={pickSink.remove}
         insert={asked}
@@ -4047,6 +4050,7 @@ function Composer({
   disabled,
   closed = false,
   tools,
+  models = [],
   picks = [],
   onRemovePick,
   insert,
@@ -4057,6 +4061,8 @@ function Composer({
   disabled: boolean;
   closed?: boolean;
   tools?: ReactNode;
+  /** The provider's models (harness/models), to warn when the conversation's cannot see images. */
+  models?: HarnessModel[];
   /** Elements picked in the Browser tab, sent with the next message. */
   picks?: ElementPick[];
   onRemovePick?: (key: string) => void;
@@ -4074,6 +4080,14 @@ function Composer({
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const running = turnOpen(live.status);
   const sealed = lockdownOf(conversation, live);
+  // Images attached for a model that cannot see them: say so before the
+  // owner sends, not after the agent answers without having looked.
+  const unseen = unseenImagesWarning(
+    blindModel(conversation.model, models),
+    picked
+      .map((p) => p.file.name)
+      .filter((name) => isChatImage({ name, size: 0, path: "" })),
+  );
   const canSend =
     (!!text.trim() || picked.length > 0 || picks.length > 0) &&
     !busy &&
@@ -4255,6 +4269,15 @@ function Composer({
               );
             })}
           </ul>
+        ) : null}
+        {unseen ? (
+          <p
+            role="status"
+            className="flex min-w-0 items-start gap-1.5 px-1 text-xs text-warn"
+          >
+            <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            <span className="min-w-0">{unseen}</span>
+          </p>
         ) : null}
         <Textarea
           ref={textarea}
