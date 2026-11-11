@@ -37,6 +37,9 @@ coverage/
 *.out
 # A stray `hive` binary at the repo root; install into ~/.hive/bin with `cargo install --root ~/.hive` instead.
 /hive
+# The same stray binary under its name from before the rename: a checkout that
+# still has one must read clean, or the daemon's self-update waits on it forever.
+/pulse
 
 # JavaScript / TypeScript
 node_modules/

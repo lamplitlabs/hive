@@ -68,35 +68,67 @@ pub(crate) fn scope_env(scope: &ScopeEnv, clone: &str) -> Vec<String> {
             }
         ));
     }
-    env
+    with_legacy_names(env)
+}
+
+/// Each `HIVE_MEASURE_*` entry again under its name from before the rename
+/// (`PULSE_MEASURE_*`): the fixtures a store already holds were written
+/// then, and a scorer that reads `PULSE_MEASURE_CHANGED` would otherwise see
+/// no diff scope and count the whole tree in every experiment.
+fn with_legacy_names(env: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(env.len() * 2);
+    for entry in env {
+        if let Some(rest) = entry.strip_prefix("HIVE_MEASURE_") {
+            out.push(format!(
+                "{}_MEASURE_{rest}",
+                hive_store::LEGACY_NAME.to_ascii_uppercase()
+            ));
+        }
+        out.push(entry);
+    }
+    out
+}
+
+/// The word a self-scorer starts with: `hive`, or `pulse` for a fixture
+/// stored before the rename. Both run through this executable, as the
+/// binary is not on the daemon's PATH under either name.
+fn self_word(scorer: &str) -> Option<&'static str> {
+    let trimmed = scorer.trim_start_matches([' ', '\t']);
+    ["hive", hive_store::LEGACY_NAME].into_iter().find(|word| {
+        trimmed
+            .strip_prefix(word)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+    })
 }
 
 pub(crate) fn hive_scorer(scorer: &str) -> bool {
-    let trimmed = scorer.trim_start_matches([' ', '\t']);
-    trimmed == "hive" || trimmed.starts_with("hive ") || trimmed.starts_with("hive\t")
+    self_word(scorer).is_some()
 }
 
 pub(crate) fn self_scorer(scorer: &str, exe: &str) -> String {
-    if !hive_scorer(scorer) {
+    let Some(word) = self_word(scorer) else {
         return scorer.to_string();
-    }
+    };
     let rest = scorer
         .trim_start_matches([' ', '\t'])
-        .strip_prefix("hive")
+        .strip_prefix(word)
         .unwrap_or("");
     format!("'{}'{rest}", exe.replace('\'', r#"'\''"#))
 }
 
 pub(crate) fn scorer_env(home: &str, commit: &str, exe: &str) -> Vec<String> {
     let mut env = crate::process::isolated_env(home);
-    env.push(format!("HIVE_MEASURE_COMMIT={commit}"));
-    env.push(format!(
-        "HIVE_MEASURE_SCRATCH={}",
-        Path::new(home).join("scratch").display()
-    ));
+    let mut own = vec![
+        format!("HIVE_MEASURE_COMMIT={commit}"),
+        format!(
+            "HIVE_MEASURE_SCRATCH={}",
+            Path::new(home).join("scratch").display()
+        ),
+    ];
     if !exe.is_empty() {
-        env.push(format!("HIVE_MEASURE_BINARY={exe}"));
+        own.push(format!("HIVE_MEASURE_BINARY={exe}"));
     }
+    env.extend(with_legacy_names(own));
     env
 }
 
@@ -1464,6 +1496,33 @@ fi
             },
         )
         .unwrap();
+    }
+
+    /// A fixture stored before the rename reads `PULSE_MEASURE_CHANGED`;
+    /// without it that scorer sees no scope and counts the whole tree.
+    #[test]
+    fn the_scope_reaches_scorers_under_the_names_from_before_the_rename() {
+        let scope = crate::measure::ScopeEnv {
+            base: "abc".into(),
+            changed: "/m/changed".into(),
+            base_tree: String::new(),
+        };
+        let env = crate::measure::scope_env(&scope, "/m/clone");
+        for want in [
+            "HIVE_MEASURE_BASE=abc",
+            "PULSE_MEASURE_BASE=abc",
+            "HIVE_MEASURE_CHANGED=/m/changed",
+            "PULSE_MEASURE_CHANGED=/m/changed",
+            "HIVE_MEASURE_BASE_TREE=/m/clone",
+            "PULSE_MEASURE_BASE_TREE=/m/clone",
+        ] {
+            assert!(env.iter().any(|e| e == want), "{want} missing: {env:?}");
+        }
+        let whole = crate::measure::scope_env(&crate::measure::ScopeEnv::default(), "/m/clone");
+        assert!(
+            !whole.iter().any(|e| e.contains("_MEASURE_CHANGED=")),
+            "{whole:?}"
+        );
     }
 
     /// A branch `exp` on the test project that changes `value.txt` and adds

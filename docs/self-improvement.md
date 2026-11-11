@@ -419,7 +419,17 @@ Retire the percentage fixture (`hive evolve fixture disable`) and add the
 count under a new name, one per RSI sitting, so each conversion is measured
 on its own; `behaviour-hub-untested-logic` was the first, and the healer
 retired it two cycles later as a flip until diff-scoped bases were exempted
-from that reading (below) - re-enable it with `hive evolve fixture enable`.
+from that reading (below). Its successor `behaviour-hub-untested-gaps`
+(sitting 25) prints the same count plus one. A card that touches no hub
+module counted 0 on the base, and a 0 scores `1.0` where a card's own count
+scores `0.5`, so two cards on one commit scored its base two ways. A daemon
+built before that exemption read this as a flip. With the `+ 1` every
+per-card base scores exactly `0.5`. The scorer reads `HIVE_MEASURE_CHANGED`
+and falls back to `PULSE_MEASURE_CHANGED`. The measurement exports each
+`HIVE_MEASURE_*` variable under its `PULSE_MEASURE_*` name too, and runs a
+scorer stored as `pulse evolve ...` through its own executable, like one
+stored as `hive evolve ...`, so fixtures added before the rename keep their
+scope.
 Such a fixture answers `scope: diff` after its score line, the log marks it
 `[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
