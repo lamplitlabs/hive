@@ -632,6 +632,16 @@ mod tests {
             ("hive", quoted.to_string()),
             ("  hive\tevolve", format!("{quoted}\tevolve")),
             ("hivex evolve", "hivex evolve".to_string()),
+            // A fixture stored before the rename still names `pulse`.
+            (
+                "pulse evolve score metric --higher --scale 5 -- true",
+                format!("{quoted} evolve score metric --higher --scale 5 -- true"),
+            ),
+            ("pulsex evolve", "pulsex evolve".to_string()),
+            (
+                "/usr/local/bin/pulse evolve",
+                "/usr/local/bin/pulse evolve".to_string(),
+            ),
             (
                 "/usr/local/bin/hive evolve",
                 "/usr/local/bin/hive evolve".to_string(),
@@ -647,6 +657,10 @@ mod tests {
         assert!(env.iter().any(|e| e == "HIVE_HOME=/tmp/home"));
         assert!(env.iter().any(|e| e == "HIVE_JOB=measurement"));
         assert!(env.iter().any(|e| e == "HIVE_MEASURE_BINARY=/opt/hive"));
+        // Scorers stored before the rename read the PULSE_ names.
+        assert!(env.iter().any(|e| e == "PULSE_MEASURE_COMMIT=abc123"));
+        assert!(env.iter().any(|e| e == "PULSE_MEASURE_BINARY=/opt/hive"));
+        assert!(env.iter().any(|e| e.starts_with("PULSE_MEASURE_SCRATCH=")));
         assert!(
             !crate::measure::scorer_env("/tmp/home", "abc123", "")
                 .iter()

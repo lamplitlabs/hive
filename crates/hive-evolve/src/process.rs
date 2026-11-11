@@ -253,7 +253,9 @@ pub(crate) fn seed_provider_logins(from_home: &str, to_home: &str) -> std::io::R
 pub(crate) fn isolated_env(home: &str) -> Vec<String> {
     let mut env = Vec::new();
     for (key, value) in std::env::vars() {
-        if key.starts_with("HIVE_") || key.starts_with("GIT_") {
+        // The legacy prefix too: an outer run's PULSE_HOME or
+        // PULSE_MEASURE_* would reach a scorer that reads the old names.
+        if key.starts_with("HIVE_") || key.starts_with("PULSE_") || key.starts_with("GIT_") {
             continue;
         }
         if MEASUREMENT_CACHE_KEYS.contains(&key.as_str()) {
