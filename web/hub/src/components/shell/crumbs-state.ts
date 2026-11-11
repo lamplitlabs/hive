@@ -82,6 +82,12 @@ export function defaultCrumbs(pathname: string, search: URLSearchParams, project
     ];
   }
 
+  // The passkey pages (ADR-070 hosted front) sit outside the nav; they set
+  // the same crumbs through useCrumbs, so the first render and the page's
+  // own crumbs agree instead of flashing "Page not found".
+  if (path === "/passkey/") return [{ label: "Passkey" }];
+  if (path === "/passkey/register/") return [{ label: "Passkey", href: "/passkey/" }, { label: "Register" }];
+
   // Every page the console has is in `pages` or handled above, so a path
   // that matches none is the 404 page; naming it from the path read "Nope"
   // for /nope/.
