@@ -1462,16 +1462,14 @@ mod tests {
         // minutes ago, cannot lease into the lane the fleet holds.
         let d = Live::start(false, 1);
         let task = add(&d.s, 31, "task", "task:TASK-079");
+        // The daemon posts the question before it logs the line, so wait
+        // for both: on a loaded host the line can trail the post.
         d.wait_for("the fleet-full hold never asked the owner", &|| {
             !open(&d.s, &FLEET_FULL).is_empty()
+                && d.out
+                    .string()
+                    .contains("the fleet's own work holds the owner's work: 1 owner job(s) queued")
         });
-        assert!(
-            d.out
-                .string()
-                .contains("the fleet's own work holds the owner's work: 1 owner job(s) queued"),
-            "{}",
-            d.out.string()
-        );
         let q = open(&d.s, &FLEET_FULL);
         assert!(q[0].str("body").contains("Raise `capacity`"), "{q:?}");
         d.another_pass();
@@ -1484,18 +1482,15 @@ mod tests {
         d.release();
         d.wait_for("the owner's task never ran", &|| d.status(&task) == "done");
         d.wait_for("the question was never answered", &|| {
+            let out = d.out.string();
             open(&d.s, &FLEET_FULL).is_empty()
+                && (out.contains(&format!(
+                    "the fleet's own work lifted: {}; 1 owner question(s) answered",
+                    FLEET_FULL.lifted
+                )) || out.contains(
+                    "the fleet's own work lifted: the owner's work no longer waits behind it; 1 owner question(s) answered"
+                ))
         });
-        let out = d.out.string();
-        assert!(
-            out.contains(&format!(
-                "the fleet's own work lifted: {}; 1 owner question(s) answered",
-                FLEET_FULL.lifted
-            )) || out.contains(
-                "the fleet's own work lifted: the owner's work no longer waits behind it; 1 owner question(s) answered"
-            ),
-            "{out}"
-        );
         assert_eq!(d.asked(&FLEET_FULL), 1, "{}", d.out.string());
         d.cancel.cancel();
         let _ = d.result();
@@ -1513,14 +1508,10 @@ mod tests {
         let task = add(&d.s, 0, "task", "task:TASK-078");
         d.wait_for("the drain never asked the owner", &|| {
             !open(&d.s, &RESTART_DRAIN).is_empty()
+                && d.out
+                    .string()
+                    .contains("the restart drain holds the owner's work: 1 owner job(s) queued")
         });
-        assert!(
-            d.out
-                .string()
-                .contains("the restart drain holds the owner's work: 1 owner job(s) queued"),
-            "{}",
-            d.out.string()
-        );
         let q = open(&d.s, &RESTART_DRAIN);
         assert!(
             q[0].str("body").contains("ask for the restart now"),
