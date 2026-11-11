@@ -30,9 +30,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Markdown } from "@/components/pulse/markdown";
-import { SkeletonRows } from "@/components/pulse/panel";
-import { When } from "@/components/pulse/who";
+import { Markdown } from "@/components/hive/markdown";
+import { SkeletonRows } from "@/components/hive/panel";
+import { When } from "@/components/hive/who";
 import type { ChatArtifact, ChatChanges } from "@/lib/api";
 import { artifactHref, enc, type ArtifactSource } from "@/lib/api";
 import {

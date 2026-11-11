@@ -2,7 +2,7 @@
 
 import { Suspense } from "react";
 import { HarnessPageClient } from "@/components/harness/harness";
-import { SkeletonPage } from "@/components/pulse/panel";
+import { SkeletonPage } from "@/components/hive/panel";
 
 export default function HarnessPage() {
   return (

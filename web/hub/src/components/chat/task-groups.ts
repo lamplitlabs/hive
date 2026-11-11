@@ -5,7 +5,7 @@
 // from the page so the rules can be tested without a browser.
 
 import type { ChatTask, ChatTaskSession } from "@/lib/api";
-import type { PipMood } from "@/components/pulse/mascots";
+import type { PipMood } from "@/components/hive/mascots";
 
 export type Tone = "run" | "wait" | "ok" | "neutral" | "bad";
 
@@ -37,7 +37,7 @@ export function relShort(d: string, now: number): string {
 }
 
 // Where a pull request's review stands (PrState.state from the hub): the
-// reviewer agent reads every pull request PULSE opens, merges the simple ones
+// reviewer agent reads every pull request Hive opens, merges the simple ones
 // and hands the rest to the owner. Two states are the owner's turn; four are
 // the reviewer's or the daemon's; merged and closed leave the entry to its
 // own status.

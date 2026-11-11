@@ -4,20 +4,20 @@ import { useEffect, useState } from "react";
 import { BellRingIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Notice } from "@/components/pulse/panel";
+import { Notice } from "@/components/hive/panel";
 import { appNotifier, notifyPermission, setNotifyPrefs, tryChime, useNotifyPrefs } from "@/components/shell/owner-notifier";
 import { notifyOn, notifyStatus, type NotifyPrefs } from "@/lib/owner-notify";
 import { cn } from "@/lib/utils";
 
 // Settings → Notifications: the owner's own choices for this browser (or
-// PULSE.app), kept in localStorage like the theme - not a PULSE setting,
+// Hive.app), kept in localStorage like the theme - not a Hive setting,
 // since another browser or another person on the console decides for
 // itself. The notifier in the shell reads the same choices.
 
 const ROWS: { key: keyof NotifyPrefs; title: string; help: string }[] = [
   { key: "waits", title: "When something waits for you", help: "A question, a decision, a proposal, a machine request or suggested work that needs your call; a task whose lead waits for your reply; an agent in a session that asks you something or asks to run a tool." },
   { key: "finished", title: "When a task or session finishes", help: "A task done, a session its agent finished, and an agent's reply that ended its turn. Not the session you are looking at, and not one you closed yourself." },
-  { key: "sound", title: "Play a sound", help: "A short chime with each notification. In PULSE.app, the Mac's notification sound." },
+  { key: "sound", title: "Play a sound", help: "A short chime with each notification. In Hive.app, the Mac's notification sound." },
 ];
 
 export function NotificationsCard() {
@@ -79,7 +79,7 @@ export function NotificationsCard() {
       <div className="grid gap-3 border-t px-4 py-4 sm:px-5">
         <Notice tone={status.tone}>{status.text}</Notice>
         <p className="text-[13px] leading-relaxed text-muted-foreground">
-          These choices belong to this {app ? "app" : "browser"}, not to PULSE: another browser decides for itself. A notification comes only while a console {app ? "window" : "tab"} is open, and each thing notifies once.
+          These choices belong to this {app ? "app" : "browser"}, not to Hive: another browser decides for itself. A notification comes only while a console {app ? "window" : "tab"} is open, and each thing notifies once.
         </p>
         {on && prefs.sound ? (
           <div>

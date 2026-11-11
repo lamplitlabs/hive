@@ -1,30 +1,30 @@
 "use client";
 
 import { CoffeeIcon, TriangleAlertIcon } from "lucide-react";
-import { daemonUpdateText, pendingUpdate } from "@/components/pulse/daemon-control-state";
+import { daemonUpdateText, pendingUpdate } from "@/components/hive/daemon-control-state";
 import { awakeText, sleptText, useAwake } from "@/components/shell/awake";
-import { Disclosure, Kv } from "@/components/pulse/panel";
-import { RestartNow } from "@/components/pulse/restart-now";
-import { Mono, ToneBadge } from "@/components/pulse/who";
+import { Disclosure, Kv } from "@/components/hive/panel";
+import { RestartNow } from "@/components/hive/restart-now";
+import { Mono, ToneBadge } from "@/components/hive/who";
 import type { RunningPayload, RunningState } from "@/lib/api";
 import { fmtDate, num, rel, type Tone } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 
-// "Which PULSE is running" at the top of the This machine section (ADR-035):
-// the version of this console and of the runner, whether PULSE is up to date
+// "Which Hive is running" at the top of the This machine section (ADR-035):
+// the version of this console and of the runner, whether Hive is up to date
 // with its own source, and what it will do about it. Read-only - turning
 // self-update off is the row underneath. Build ids and the event stream fold
 // into "Technical details".
 
 const STATE: Record<RunningState, { tone: Tone; label: string; text: string; terminal?: string; terminalWhat?: string }> = {
-  current: { tone: "ok", label: "Up to date", text: "This machine runs the latest PULSE. Nothing to do." },
-  behind: { tone: "info", label: "Updating", text: "A newer PULSE has been merged. The runner rebuilds itself and restarts once its current runs finish, or now if you ask: runs in progress hold and carry on under the new build. This console follows within a minute." },
-  waiting: { tone: "warn", label: "Update on hold", text: "PULSE's own source has uncommitted changes or is on another branch, so the update waits. Commit, or switch back to the default branch, and it carries on." },
+  current: { tone: "ok", label: "Up to date", text: "This machine runs the latest Hive. Nothing to do." },
+  behind: { tone: "info", label: "Updating", text: "A newer Hive has been merged. The runner rebuilds itself and restarts once its current runs finish, or now if you ask: runs in progress hold and carry on under the new build. This console follows within a minute." },
+  waiting: { tone: "warn", label: "Update on hold", text: "Hive's own source has uncommitted changes or is on another branch, so the update waits. Commit, or switch back to the default branch, and it carries on." },
   unstamped: { tone: "info", label: "Version not recorded", text: "This build doesn't record which version it came from. The runner rebuilds once after the next merge and records it from then on." },
-  off: { tone: "neutral", label: "Self-update off", text: "Self-update is off, so the runner keeps the build it has until you install a new one.", terminal: "cargo install --path crates/pulse --root ~/.pulse --locked", terminalWhat: "Install a new build" },
-  "no-daemon": { tone: "warn", label: "Runner not started", text: "The runner hasn't run on this machine yet. Use Keep PULSE running on the Home page to start it and this console in the background.", terminal: "pulse service install", terminalWhat: "Start the runner and this console in the background" },
-  "no-brain": { tone: "neutral", label: "Installed build", text: "None of your projects is PULSE's own source, so this build stays as it is. Everything works. Only people who develop PULSE itself connect its source.", terminal: "pulse init PATH --brain", terminalWhat: "Connect PULSE's own source" },
-  "no-store": { tone: "bad", label: "No data", text: "This console can't open PULSE's data on this machine." },
+  off: { tone: "neutral", label: "Self-update off", text: "Self-update is off, so the runner keeps the build it has until you install a new one.", terminal: "cargo install --path crates/hive --root ~/.hive --locked", terminalWhat: "Install a new build" },
+  "no-daemon": { tone: "warn", label: "Runner not started", text: "The runner hasn't run on this machine yet. Use Keep Hive running on the Home page to start it and this console in the background.", terminal: "hive service install", terminalWhat: "Start the runner and this console in the background" },
+  "no-brain": { tone: "neutral", label: "Installed build", text: "None of your projects is Hive's own source, so this build stays as it is. Everything works. Only people who develop Hive itself connect its source.", terminal: "hive init PATH --brain", terminalWhat: "Connect Hive's own source" },
+  "no-store": { tone: "bad", label: "No data", text: "This console can't open Hive's data on this machine." },
 };
 
 function short(rev: string): string {
@@ -57,7 +57,7 @@ export function RunningStrip() {
   const awake = useAwake();
   const d = q.data;
   if (!d) {
-    return <div className="px-4 py-3 text-sm text-muted-foreground sm:px-5">{q.error ? "Couldn't check which PULSE is running: " + q.error : "Checking which PULSE is running…"}</div>;
+    return <div className="px-4 py-3 text-sm text-muted-foreground sm:px-5">{q.error ? "Couldn't check which Hive is running: " + q.error : "Checking which Hive is running…"}</div>;
   }
   const st = STATE[d.state] ?? STATE["no-store"];
   const rows: [React.ReactNode, React.ReactNode][] = [
@@ -92,7 +92,7 @@ export function RunningStrip() {
     ]);
   }
   // Keep-awake (daemon.keep_awake): what holds this machine up, and the
-  // last time it slept under PULSE anyway.
+  // last time it slept under Hive anyway.
   rows.push([
     "Staying awake",
     <span key="aw" className="leading-relaxed">
@@ -110,7 +110,7 @@ export function RunningStrip() {
   ];
   if (d.brain) {
     tech.push([
-      "PULSE source",
+      "Hive source",
       <span key="b" className="inline-flex flex-wrap items-baseline gap-x-2">
         <span>{d.brain.slug}</span>
         <Mono className="text-muted-foreground">{d.brain.branch}</Mono>
@@ -134,7 +134,7 @@ export function RunningStrip() {
   // Commands for people who'd rather type them, kept out of the sentences above.
   const terminal: [string, string][] = [];
   if (st.terminal) terminal.push([st.terminalWhat ?? "Do it from a terminal", st.terminal]);
-  if (d.signed === false && st.terminal !== "pulse service install") terminal.push(["Sign PULSE so macOS remembers your folder answers", "pulse service install"]);
+  if (d.signed === false && st.terminal !== "hive service install") terminal.push(["Sign Hive so macOS remembers your folder answers", "hive service install"]);
   const bus = d.daemon?.bus;
   if (bus) {
     tech.push([
@@ -159,7 +159,7 @@ export function RunningStrip() {
       {d.signed === false ? (
         <p className="flex min-w-0 max-w-2xl items-start gap-2 leading-relaxed anywhere">
           <TriangleAlertIcon className="mt-[3px] size-4 shrink-0 text-warn" aria-hidden />
-          <span>PULSE isn&apos;t signed yet, so macOS asks again for your Desktop and Documents folders after each update. Signing it once makes macOS remember your answer.</span>
+          <span>Hive isn&apos;t signed yet, so macOS asks again for your Desktop and Documents folders after each update. Signing it once makes macOS remember your answer.</span>
         </p>
       ) : null}
       <div className="grid gap-1">

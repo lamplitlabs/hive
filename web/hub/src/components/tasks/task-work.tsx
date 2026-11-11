@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import { GitPullRequestIcon } from "lucide-react";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { Avatar } from "@/components/pulse/who";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { Avatar } from "@/components/hive/who";
 import { deliveryView } from "@/components/tasks/delivery-state";
 import { Button } from "@/components/ui/button";
 import { taskProgress, writes, type Task, type TaskDelivery, type TaskWorker } from "@/lib/api";
@@ -95,7 +95,7 @@ export function TaskWorkingLine({ t, compact, className }: { t: Task; compact?: 
 }
 
 // Where the task's code stands: each task gets one pull request on GitHub
-// (branch pulse/task-<id>), opened when its work is done; the reviewer agent
+// (branch hive/task-<id>), opened when its work is done; the reviewer agent
 // merges the simple ones and hands the rest to the owner, whose Merge is a
 // `review.ask` the daemon performs on its next pass - so the line only says
 // "Merging…" after the click, never "Merged" by itself. Older work may still

@@ -8,6 +8,6 @@
 # each connection its own page cache, the stock SQLite behaviour. Turning off
 # memory statistics likewise drops the global mutex around every sqlite3_malloc.
 #
-# pulse-store has a test that fails if a build loses these flags.
+# hive-store has a test that fails if a build loses these flags.
 [env]
 LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

@@ -8,7 +8,7 @@ import { createSuggestedMock, SUGGESTED_STATUSES } from "./suggested.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = JSON.parse(await readFile(join(here, "api", "suggested.json"), "utf8"));
 
-// The mock answers the shapes crates/pulse-hub/src/suggestions_api.rs
+// The mock answers the shapes crates/hive-hub/src/suggestions_api.rs
 // serializes and the owner console (web/hub/src/lib/api.ts) reads:
 // list -> { project, suggestions, statuses }, a single suggestion and every
 // verdict -> { suggestion, task }, suggest -> { suggestion }.

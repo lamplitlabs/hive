@@ -25,7 +25,7 @@
     "offers": "macos arm64 docker xcode"
   },
   {
-    "address": "agent@pulse-vm1.internal",
+    "address": "agent@hive-vm1.internal",
     "admin": "",
     "backoff_minutes": 0,
     "created_at": "2026-09-01T11:34:00Z",
@@ -35,7 +35,7 @@
     "healed_at": "",
     "kind": "ssh",
     "last_probe_at": "",
-    "name": "pulse-vm1",
+    "name": "hive-vm1",
     "next_probe_at": "",
     "probe_note": "",
     "projects": "demo-app,demo-lib",
@@ -43,7 +43,7 @@
     "runs_done": 0,
     "runs_failed": 0,
     "status": "drained",
-    "workdir": "/srv/pulse",
+    "workdir": "/srv/hive",
     "workers": 1,
     "os": "linux",
     "arch": "amd64",

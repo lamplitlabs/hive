@@ -1,0 +1,29 @@
+[package]
+name = "hive-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: the SQLite store: schema, additive DDL, records, settings, events, transactions"
+
+[dependencies]
+hive-hand-core.workspace = true
+hive-gitenv.workspace = true
+hive-cred.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+erased-serde.workspace = true
+chrono.workspace = true
+regex.workspace = true
+home.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true

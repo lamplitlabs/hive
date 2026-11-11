@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense } from "react";
-import { SkeletonPage } from "@/components/pulse/panel";
+import { SkeletonPage } from "@/components/hive/panel";
 import { VotesPageClient } from "@/components/votes/votes";
 
 export default function VotesPage() {

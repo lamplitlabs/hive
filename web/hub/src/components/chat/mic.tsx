@@ -426,7 +426,7 @@ export function VoiceSetupDialog({
             The hub transcribes on this machine with NVIDIA&apos;s Nemotron
             speech model through ONNX Runtime - the model GitHub Copilot
             dictates with. Nothing you say leaves the computer. The files are
-            fetched once into <code className="font-mono">{status?.root ?? "PULSE_HOME/voice"}</code>.
+            fetched once into <code className="font-mono">{status?.root ?? "HIVE_HOME/voice"}</code>.
           </DialogDescription>
         </DialogHeader>
         {!status ? (
@@ -486,7 +486,7 @@ export function VoiceSetupDialog({
               </p>
             )}
             <p className="text-xs text-muted-foreground">
-              The same from a terminal: <code className="font-mono">pulse voice setup</code>, <code className="font-mono">pulse voice status</code>.
+              The same from a terminal: <code className="font-mono">hive voice setup</code>, <code className="font-mono">hive voice status</code>.
               The <code className="font-mono">voice.model</code> and <code className="font-mono">voice.language</code> settings choose the model and the language it expects.
             </p>
           </div>

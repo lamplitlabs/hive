@@ -14,7 +14,7 @@ export function connectionState(c: { status?: string | null; auth?: string | nul
   if ((c.status || "").toLowerCase() === "disabled") return { kind: "off", status: "neutral", label: "Off", detail };
   if (c.auth === "oauth" && c.sign_in && c.sign_in.signed_in === false) return { kind: "sign_in", status: "waiting", label: "Needs sign-in", detail: c.sign_in.note || detail };
   if (c.last_check_ok === false) {
-    if (c.auth === "oauth" && /pulse mcp login|sign in|signed in|unauthori[sz]ed|401/i.test(detail)) return { kind: "sign_in", status: "waiting", label: "Needs sign-in", detail };
+    if (c.auth === "oauth" && /hive mcp login|sign in|signed in|unauthori[sz]ed|401/i.test(detail)) return { kind: "sign_in", status: "waiting", label: "Needs sign-in", detail };
     return { kind: "failed", status: "failed", label: "Failed", detail };
   }
   if (c.last_check_ok === true) return { kind: "connected", status: "connected", label: "Connected", detail };

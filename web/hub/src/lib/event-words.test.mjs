@@ -4,7 +4,7 @@ import { VERB, durationWords, eventDetailText, eventVerb } from "./event-words.t
 
 // The landing, review and runner events the Rust crates write (delivery.rs,
 // land.rs, landing_outcome.rs, review.rs, stage_budget.rs, awake.rs,
-// pulse-board jobs.rs, yield_lane.rs). Each must read as a sentence, not as
+// hive-board jobs.rs, yield_lane.rs). Each must read as a sentence, not as
 // its raw words.
 const ADDED = [
   "land.pr",
@@ -62,7 +62,7 @@ test("land.pr says whether it opened, refreshed or moved the pull request", () =
   const at = (d) => eventVerb({ action: "land.pr", subject: "demo-app", detail: { number: 5, base: "main", ...d } });
   assert.equal(at({ opened: true }), "opened pull request #5");
   assert.equal(at({ opened: false, refreshed: true }), "brought pull request #5 up to date with main");
-  assert.equal(at({ opened: false, retargeted_from: "pulse/task/TASK-1" }), "moved pull request #5 onto main");
+  assert.equal(at({ opened: false, retargeted_from: "hive/task/TASK-1" }), "moved pull request #5 onto main");
   assert.equal(at({ opened: false }), "updated pull request #5 with new work");
 });
 
@@ -113,9 +113,9 @@ test("durations read in words", () => {
 });
 
 // The self-improvement loop, schedule, lead and suggested-work events
-// (pulse-evolve archive.rs, feedback.rs, fixtures.rs, derive.rs, starter.rs,
-// heal.rs, fleet.rs; pulse-records seed.rs; pulse-tasks schedules.rs,
-// leads.rs, tasks.rs, suggestions.rs; pulse-runner lead.rs, recover.rs).
+// (hive-evolve archive.rs, feedback.rs, fixtures.rs, derive.rs, starter.rs,
+// heal.rs, fleet.rs; hive-records seed.rs; hive-tasks schedules.rs,
+// leads.rs, tasks.rs, suggestions.rs; hive-runner lead.rs, recover.rs).
 const LOOP = [
   "evolution.archived",
   "evolution.feedback",
@@ -188,9 +188,9 @@ test("schedule and suggestion events say how they went", () => {
 });
 
 // The tool connection, skill, record, project and agent events the Rust
-// crates write (pulse-store mcp_servers.rs, skills.rs, records.rs, forget.rs;
-// pulse-hub mcp.rs, lifecycle.rs; pulse-board projects.rs, agents.rs; the
-// runner's auto_adopt.rs; pulse-records drafts).
+// crates write (hive-store mcp_servers.rs, skills.rs, records.rs, forget.rs;
+// hive-hub mcp.rs, lifecycle.rs; hive-board projects.rs, agents.rs; the
+// runner's auto_adopt.rs; hive-records drafts).
 const SETUP = [
   "mcp.added",
   "mcp.updated",
@@ -228,10 +228,10 @@ test("every tool connection, skill, record, project and agent event has a plain-
     }
   });
 
-// Credential, conversation, goal, rules, hook, setting and PULSE-file events
-// (pulse-cred-setup setup.rs, pulse-harness conversation.rs, pulse-goals
-// review.rs, pulse-tally amend.rs, pulse-hooks hooks.rs, pulse-store store.rs,
-// pulse-tasks and pulse-runner manifest.rs).
+// Credential, conversation, goal, rules, hook, setting and Hive-file events
+// (hive-cred-setup setup.rs, hive-harness conversation.rs, hive-goals
+// review.rs, hive-tally amend.rs, hive-hooks hooks.rs, hive-store store.rs,
+// hive-tasks and hive-runner manifest.rs).
 const OWNER = [
   "cred.set",
   "cred.clear",
@@ -246,7 +246,7 @@ const OWNER = [
   "manifest.problems_cleared",
 ];
 
-test("every credential, goal, rules and PULSE-file event has a plain-words sentence", () => {
+test("every credential, goal, rules and Hive-file event has a plain-words sentence", () => {
   for (const action of OWNER) {
     assert.ok(VERB[action], action + " has a VERB entry");
     for (const detail of [null, {}, { project: "demo-app", applied: true, problems: [] }]) {
@@ -280,24 +280,24 @@ test("project and record events say what happened to them", () => {
   assert.equal(eventVerb({ action: "agent.join", subject: "cinder", detail: {} }), "joined as a new agent");
 });
 
-test("goal and PULSE-file events say how they went", () => {
+test("goal and Hive-file events say how they went", () => {
   assert.equal(eventVerb({ action: "goal.amend", subject: "demo-app", detail: { applied: true } }), "set the project\u2019s goal from an accepted proposal");
   assert.equal(eventVerb({ action: "goal.amend", subject: "demo-app", detail: { applied: false, why: "too long" } }), "could not set the project\u2019s goal from an accepted proposal");
   assert.equal(eventDetailText({ action: "goal.amend", detail: { applied: false, why: "too long" } }), "too long");
   assert.equal(eventDetailText({ action: "goal.amend", detail: { applied: true } }), "");
-  assert.equal(eventVerb({ action: "manifest.synced", subject: "demo-app", detail: { problems: [] } }), "applied the project\u2019s PULSE files from its default branch");
+  assert.equal(eventVerb({ action: "manifest.synced", subject: "demo-app", detail: { problems: [] } }), "applied the project\u2019s Hive files from its default branch");
   assert.equal(
     eventVerb({ action: "manifest.synced", subject: "demo-app", detail: { problems: ["nightly: unknown kind"] } }),
-    "applied the project\u2019s PULSE files from its default branch, some with problems",
+    "applied the project\u2019s Hive files from its default branch, some with problems",
   );
   assert.equal(eventDetailText({ action: "manifest.problems", detail: { problems: ["a: bad", "b: bad"] } }), "a: bad, b: bad");
   assert.equal(eventDetailText({ action: "manifest.problems_cleared", detail: { problems: [] } }), "");
 });
 
 // Store upgrade, record seeding, archive, machine, message and board-cleanup
-// events (pulse-store store.rs, records.rs, chat.rs, archive.rs,
-// pulse-records bundle.rs and import.rs, pulse-evolve starter.rs,
-// pulse-board remove.rs, pulse-runner pair.rs, pulse-tasks messages.rs).
+// events (hive-store store.rs, records.rs, chat.rs, archive.rs,
+// hive-records bundle.rs and import.rs, hive-evolve starter.rs,
+// hive-board remove.rs, hive-runner pair.rs, hive-tasks messages.rs).
 const UPKEEP = [
   "schema.records",
   "schema.superseded",

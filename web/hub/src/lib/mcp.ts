@@ -1,7 +1,7 @@
 // The Connections page's pure parts: which auth fits which transport, what
 // the form must say before it is sent, how a row's last check reads. No
 // React and no DOM, so mcp.test.mjs can drive it. The rules mirror
-// pulse_store::mcp_servers so the console refuses what the hub would refuse,
+// hive_store::mcp_servers so the console refuses what the hub would refuse,
 // with the same words.
 
 import type { McpAuth, McpAuthOption, McpOptions, McpServer, McpServerInput, McpServerPatch, McpTransport, Skill, SkillInput, SkillPatch } from "./api";
@@ -32,7 +32,7 @@ export interface McpForm {
 export const EMPTY_MCP_FORM: McpForm = { name: "", project: "", transport: "stdio", command: "", args: "", url: "", auth: "none", auth_header: "", secret_ref: "", env: [], note: "" };
 
 // Fallbacks for a hub without /mcp/options (an older build): the same
-// catalogue pulse_store::MCP_AUTHS carries.
+// catalogue hive_store::MCP_AUTHS carries.
 export const DEFAULT_OPTIONS: McpOptions = {
   transports: ["stdio", "http", "sse"],
   auths: [
@@ -42,7 +42,7 @@ export const DEFAULT_OPTIONS: McpOptions = {
     { name: "header", explain: "Sends the secret in a header of your choice (auth header name, e.g. X-Api-Key).", transports: ["http", "sse"] },
     { name: "query", explain: "Appends the secret as a query parameter of your choice (auth header name is the parameter).", transports: ["http", "sse"] },
     { name: "env", explain: "Passes the secret to the stdio command as an environment variable (auth header name is the variable).", transports: ["stdio"] },
-    { name: "oauth", explain: "Signs in with OAuth 2.1 once, from here or a terminal (pulse mcp login NAME); PULSE registers itself with the server's authorization server when it can, keeps the tokens on that machine and refreshes them. No secret reference.", transports: ["http", "sse"] },
+    { name: "oauth", explain: "Signs in with OAuth 2.1 once, from here or a terminal (hive mcp login NAME); Hive registers itself with the server's authorization server when it can, keeps the tokens on that machine and refreshes them. No secret reference.", transports: ["http", "sse"] },
   ],
   cred_shapes: "op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH",
 };
@@ -61,7 +61,7 @@ export const TRANSPORT_SHORT: Record<McpTransport, string> = {
 };
 
 export const TRANSPORT_BLURB: Record<McpTransport, string> = {
-  stdio: "PULSE starts a program on this machine and talks to it directly (stdio).",
+  stdio: "Hive starts a program on this machine and talks to it directly (stdio).",
   http: "The server answers at one web address. Most hosted servers work this way (HTTP).",
   sse: "An older style: an event stream plus an address the server announces (SSE).",
 };
@@ -79,12 +79,12 @@ export const AUTH_LABEL: Record<McpAuth, string> = {
 
 const AUTH_PLAIN: Record<McpAuth, string> = {
   none: "The server needs no secret: it is open, or trusts this machine.",
-  bearer: "PULSE sends the secret as an access token (Authorization: Bearer).",
-  basic: "PULSE signs in with a user name and password kept together as user:password.",
-  header: "PULSE sends the secret in a header you name, such as X-Api-Key.",
-  query: "PULSE adds the secret to the web address as a parameter you name.",
-  env: "PULSE hands the secret to the program as an environment variable you name.",
-  oauth: "You sign in once, from this page (Sign in) or a terminal (pulse mcp login NAME). PULSE registers itself with the server when it can - GitHub makes you create the app yourself - keeps the tokens on this machine and renews them; there is no secret to store.",
+  bearer: "Hive sends the secret as an access token (Authorization: Bearer).",
+  basic: "Hive signs in with a user name and password kept together as user:password.",
+  header: "Hive sends the secret in a header you name, such as X-Api-Key.",
+  query: "Hive adds the secret to the web address as a parameter you name.",
+  env: "Hive hands the secret to the program as an environment variable you name.",
+  oauth: "You sign in once, from this page (Sign in) or a terminal (hive mcp login NAME). Hive registers itself with the server when it can - GitHub makes you create the app yourself - keeps the tokens on this machine and renews them; there is no secret to store.",
 };
 
 // The auths a transport can use, in catalogue order.
@@ -243,12 +243,12 @@ export function lastCheck(s: Pick<McpServer, "last_check_at" | "last_check_ok" |
   return { tone: "neutral", label: "Checked", detail };
 }
 
-// Why a check failed, in words: a note about the credential means PULSE
+// Why a check failed, in words: a note about the credential means Hive
 // could not read the secret; anything else is the server's own message.
 export function checkReason(detail: string): string {
   const d = (detail || "").trim();
   if (!d) return "";
-  if (/^credential\b/i.test(d)) return "PULSE couldn't read the secret";
+  if (/^credential\b/i.test(d)) return "Hive couldn't read the secret";
   return d;
 }
 

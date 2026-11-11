@@ -11,9 +11,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Disclosure, ErrorNotice, Notice } from "@/components/pulse/panel";
-import { BrandLogo } from "@/components/pulse/logo";
-import { Mono, ToneBadge } from "@/components/pulse/who";
+import { Disclosure, ErrorNotice, Notice } from "@/components/hive/panel";
+import { BrandLogo } from "@/components/hive/logo";
+import { Mono, ToneBadge } from "@/components/hive/who";
 import { EMPTY_CHOICE, SettingKey } from "@/components/settings/setting-row";
 import { connectedWords, ProviderGlyph, ProviderWizard } from "@/components/settings/provider-wizard";
 import { contextChip, modelFamily } from "@/components/settings/settings-state";
@@ -118,7 +118,7 @@ function KeyName({ name }: { name: string }) {
 // The runner's login sentences name this very section ("Settings -> Harness")
 // and offer a command. Here they read as plain words; the command goes to
 // the "Prefer the terminal?" fold.
-const LOGIN_CLI = /[,;]?\s*or run\s+`?(pulse harness login[^`]*?)`?\s*\.?$/i;
+const LOGIN_CLI = /[,;]?\s*or run\s+`?(hive harness login[^`]*?)`?\s*\.?$/i;
 
 export function loginCommand(text: string): string {
   return LOGIN_CLI.exec(text.trim())?.[1]?.trim() ?? "";
@@ -421,7 +421,7 @@ function PromptEditor() {
         {prompt.error && !d ? <ErrorNotice error={prompt.error} onRetry={() => void prompt.reload()} /> : null}
         {d ? (
           <>
-            <p className="text-[13px] text-muted-foreground">PULSE fills in the parts in double braces for each run. Leave it as it is to keep the built-in text.</p>
+            <p className="text-[13px] text-muted-foreground">Hive fills in the parts in double braces for each run. Leave it as it is to keep the built-in text.</p>
             <Textarea
               aria-label="System prompt template"
               value={draft}

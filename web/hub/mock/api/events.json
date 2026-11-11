@@ -45,11 +45,11 @@
       "at": "2026-09-01T11:34:00Z",
       "actor": "human",
       "action": "executor.add",
-      "subject": "pulse-vm1",
+      "subject": "hive-vm1",
       "detail": {
-        "address": "agent@pulse-vm1.internal",
+        "address": "agent@hive-vm1.internal",
         "projects": "demo-app,demo-lib",
-        "workdir": "/srv/pulse",
+        "workdir": "/srv/hive",
         "workers": 1
       }
     },
@@ -62,7 +62,7 @@
       "detail": {
         "kind": "adr",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -75,7 +75,7 @@
       "detail": {
         "kind": "adr",
         "note": "Yes - one store, one export.",
-        "project": "pulse",
+        "project": "hive",
         "rev": 2
       }
     },
@@ -88,7 +88,7 @@
       "detail": {
         "kind": "adr",
         "note": "delivery: delivered",
-        "project": "pulse",
+        "project": "hive",
         "rev": 3
       }
     },
@@ -101,7 +101,7 @@
       "detail": {
         "kind": "adr",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -114,7 +114,7 @@
       "detail": {
         "kind": "adr",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -127,7 +127,7 @@
       "detail": {
         "kind": "plan",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -140,7 +140,7 @@
       "detail": {
         "kind": "wu",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -153,7 +153,7 @@
       "detail": {
         "kind": "guide",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -166,7 +166,7 @@
       "detail": {
         "kind": "memory",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -179,7 +179,7 @@
       "detail": {
         "kind": "evolution",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -192,7 +192,7 @@
       "detail": {
         "kind": "workflow",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -201,11 +201,11 @@
       "at": "2026-09-01T12:58:00Z",
       "actor": "human",
       "action": "record.created",
-      "subject": "SKILL-pulse-review",
+      "subject": "SKILL-hive-review",
       "detail": {
         "kind": "skill",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -218,7 +218,7 @@
       "detail": {
         "kind": "prompt",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -231,7 +231,7 @@
       "detail": {
         "kind": "instruction",
         "note": "",
-        "project": "pulse",
+        "project": "hive",
         "rev": 1
       }
     },
@@ -269,7 +269,7 @@
       "subject": "CTX-environment-demo-app",
       "detail": {
         "kind": "context",
-        "note": "pulse env set",
+        "note": "hive env set",
         "project": "demo-app",
         "rev": 1
       }
@@ -647,7 +647,7 @@
       "detail": {
         "agent": "borealis",
         "kind": "amendment",
-        "project": "pulse",
+        "project": "hive",
         "thread": "evolution/constitution-quorum"
       }
     },
@@ -660,7 +660,7 @@
       "detail": {
         "agent": "aurora",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "evolution/constitution-quorum"
       }
     },
@@ -673,7 +673,7 @@
       "detail": {
         "agent": "cinder",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "evolution/constitution-quorum"
       }
     },
@@ -686,7 +686,7 @@
       "detail": {
         "agent": "delta",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "evolution/constitution-quorum"
       }
     },
@@ -699,7 +699,7 @@
       "detail": {
         "agent": "fjord",
         "kind": "finding",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -712,7 +712,7 @@
       "detail": {
         "agent": "fjord",
         "kind": "suggestion",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -725,7 +725,7 @@
       "detail": {
         "agent": "borealis",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -738,7 +738,7 @@
       "detail": {
         "agent": "ember",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -751,7 +751,7 @@
       "detail": {
         "agent": "ember",
         "kind": "suggestion",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -764,7 +764,7 @@
       "detail": {
         "agent": "aurora",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -777,7 +777,7 @@
       "detail": {
         "agent": "cinder",
         "kind": "vote",
-        "project": "pulse",
+        "project": "hive",
         "thread": "store/schema-notes"
       }
     },
@@ -1214,7 +1214,7 @@
       "subject": "job-20260901T213600Z-2e1e4c",
       "detail": {
         "kind": "reflect",
-        "project": "pulse",
+        "project": "hive",
         "title": "Reflect on the last cycle"
       }
     },

@@ -1,0 +1,56 @@
+[package]
+name = "hive-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: daemon, planner, workers, landing, executors, leads, compute providers, experiments, recovery, hygiene sweep"
+
+[dependencies]
+hive-board.workspace = true
+hive-bus.workspace = true
+hive-cli.workspace = true
+hive-hand-core.workspace = true
+hive-codedelivery.workspace = true
+hive-cred.workspace = true
+hive-evolve.workspace = true
+hive-gitenv.workspace = true
+hive-goals.workspace = true
+hive-harness.workspace = true
+hive-hooks.workspace = true
+hive-provider.workspace = true
+hive-provider-copilot.workspace = true
+hive-provider-openai.workspace = true
+hive-provider-anthropic.workspace = true
+hive-provider-gemini.workspace = true
+hive-records.workspace = true
+hive-store.workspace = true
+hive-tally.workspace = true
+hive-tasks.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+nix.workspace = true
+libc.workspace = true
+signal-hook.workspace = true
+which.workspace = true
+sha2.workspace = true
+hex.workspace = true
+flate2.workspace = true
+base64.workspace = true
+rand.workspace = true
+uuid.workspace = true
+fs2.workspace = true
+crossbeam-channel.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true
+filetime.workspace = true

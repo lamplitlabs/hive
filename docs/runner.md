@@ -1,19 +1,19 @@
 # The runner (how the machine works)
 
-`pulse daemon` (the service) delivers verified branches as pull requests and
+`hive daemon` (the service) delivers verified branches as pull requests and
 follows the upstream ([Delivery](landing.md)), plans jobs from the
 tally, leases work to executors (this machine, paired Linux hands, or
 provisioned compute), and runs the lead of every project so owner tasks and
-messages get answers. `pulse work` runs one worker here; `pulse land`,
-`pulse plan`, `pulse executor`, `pulse pair`, `pulse hands`, `pulse env` and
-`pulse sweep` are the same pieces by hand. `pulse stop` / `pulse start` is the kill switch.
+messages get answers. `hive work` runs one worker here; `hive land`,
+`hive plan`, `hive executor`, `hive pair`, `hive hands`, `hive env` and
+`hive sweep` are the same pieces by hand. `hive stop` / `hive start` is the kill switch.
 
 ## The daemon loop
 
-Use `pulse daemon --interval S` (or `pulse service install --interval S`) to
+Use `hive daemon --interval S` (or `hive service install --interval S`) to
 set the idle wait and the retry pause after an all-error batch. The default
-is 300 seconds; zero or negative values use that default. `pulse daemon`
-takes flags only: a stray word (`pulse daemon start`) exits 2 with the usage
+is 300 seconds; zero or negative values use that default. `hive daemon`
+takes flags only: a stray word (`hive daemon start`) exits 2 with the usage
 instead of starting a loop. It also refuses to start (exit 3, naming the pid)
 while the store's heartbeat names another daemon whose pid is alive and whose
 beat is fresh; `--force` starts anyway. An `exited` or `restarting` beat, a
@@ -36,7 +36,7 @@ slots. Zero plans on every tick, and a shorter `--interval` caps the spacing.
 The heartbeat the hub shows counts `loops` and `passes` apart, and carries
 the body's own time as `tick` (the last body in milliseconds, the slowest
 since the start and how many ran over the fifteen-second dispatch cadence):
-`pulse status` prints it as `last tick 1200ms (slowest 41000ms, 2 over the
+`hive status` prints it as `last tick 1200ms (slowest 41000ms, 2 over the
 cadence)`. The daemon says `tick N took 40s, over the 15s dispatch cadence
 (planning pass); queued work waited that long for a slot` once when a body
 crosses the cadence and again only after one fits, so a slow pass is one
@@ -45,7 +45,7 @@ and how often, and a body that spent its cadence planning looked like a loop
 that merely beat late. The line ends with where the time went - `; longest:
 plan 14s, maintenance 9s, pipeline 3s`, the three longest stages of a second
 or more, a per-project tender summed across the projects - and the heartbeat
-carries the slowest body's stages as `tick.longest`, which `pulse status`
+carries the slowest body's stages as `tick.longest`, which `hive status`
 prints after the slowest time (`slowest 31000ms: plan 14000ms, pipeline
 9000ms`): the number alone said that seven passes after one restart took
 29-33 s each and nothing about which of the twenty tenders took them.
@@ -80,7 +80,7 @@ so the projects at the end of the list are not starved behind a slow one at
 the front. A project already started is never cut mid-write, and at least
 one project runs every pass. A stage that cannot be split (the sweep, the
 backup, compute) runs to its end and is recorded the same way when it went
-over. `pulse events --json` shows them among the other events.
+over. `hive events --json` shows them among the other events.
 
 The pipeline stage reads GitHub as whichever gh account on the machine can
 see the project's repository. `gh` keeps one login active per host and
@@ -133,20 +133,20 @@ Configured concurrency, daily limits and lead priority remain unchanged.
 
 When one of the owner's jobs (a lead's sitting, an answer, a job planned from
 an owner task, a security update) has waited in the queue for ten minutes
-(`pulse_tasks::OWNER_WAIT_MINUTES`), the daemon writes one `job.owner-wait`
+(`hive_tasks::OWNER_WAIT_MINUTES`), the daemon writes one `job.owner-wait`
 event on it naming every hold it saw while the job waited, short: `lanes
 full` (every slot busy with the fleet's work), `load 27 > 24`, `memory 300
 MB < 1024 MB`, `restart drain`, `disk floor`, `bulk disk away`, `daily cap
 reached` - or the tick's own idle reason when none of those held it - and
 logs `owner job <id> (<project>) waiting since 04:40 UTC: lanes full, load 27
-> 24`. `pulse status` lists the open ones as `waiting` lines, and the task's
+> 24`. `hive status` lists the open ones as `waiting` lines, and the task's
 wait line on the board and the task page reads `The next step has waited
 since 04:40 UTC: lanes full, load 27 > 24.` in place of "waiting for a free
 agent". A wait ends when the job is leased or queued again; the next wait
 gets its own event. On 2026-11-03 the owner's TASK-055 waited from 04:40 to
 15:18 behind full lanes, a load of 26-30 over the line 24 and a restart
 window, and only the daemon's deduped idle log said so
-(crates/pulse-runner/src/owner_wait.rs).
+(crates/hive-runner/src/owner_wait.rs).
 
 The slot count and the memory floor in those holds are not settings any more.
 `daemon.max_jobs` (local runs at once) and `daemon.min_free_mem_mb` (the
@@ -154,26 +154,26 @@ memory under which nothing new starts), like `workers`,
 `parallel_per_project` and `daemon.max_load`, are automatic now: each machine
 works out its slots from its cores and memory (`capacity.rs`), the memory
 floor is the internal 1024 MB (`MIN_FREE_MEM_MB` in `daemon_load.rs`), a
-stored value is swept at startup with a `setting.retired` event, and `pulse
+stored value is swept at startup with a `setting.retired` event, and `hive
 settings set daemon.max_jobs 2` is refused with `daemon.max_jobs is automatic
-now`. Set `capacity` to cap this machine (0 keeps it idle), pass `pulse daemon
---max-jobs N` for one daemon, or `pulse stop` to pause; see "The load
+now`. Set `capacity` to cap this machine (0 keeps it idle), pass `hive daemon
+--max-jobs N` for one daemon, or `hive stop` to pause; see "The load
 governor" in [landing.md](landing.md).
 
 ## Services and self-update
 
-`pulse service install` writes two units: `pulse.daemon` (the fleet) and
-`pulse.hub` (the console on `127.0.0.1:8765`; `--hub-port N` moves it,
-`--no-hub` skips it). Both restart themselves when a new `pulse` binary lands
+`hive service install` writes two units: `hive.daemon` (the fleet) and
+`hive.hub` (the console on `127.0.0.1:8765`; `--hub-port N` moves it,
+`--no-hub` skips it). Both restart themselves when a new `hive` binary lands
 on disk, so the console you keep open is always the build the daemon runs, and
-neither dies with a terminal. Running `pulse service install` again is safe: a
+neither dies with a terminal. Running `hive service install` again is safe: a
 unit whose file did not change and is loaded is left running.
 
 That install line is for the first install only. After it, the daemon keeps
 itself current (ADR-035): when the brain's `main` moves - a pull request
 merged on the forge and fast-forwarded into the checkout by the delivery
 pass ([Delivery](landing.md#the-local-default-branch-follows-the-upstream)) - it
-rebuilds `pulse` from that clean checkout, smoke-tests the new binary, installs it in
+rebuilds `hive` from that clean checkout, smoke-tests the new binary, installs it in
 place and restarts once its runs in flight finish - the console follows within
 a minute and shows the build it runs beside the daemon's under **Settings →
 Running**. The restart is a handover, not a pause: a daemon whose binary
@@ -271,8 +271,8 @@ revision, since it is the one the daemon runs next - and when every
 changed path lies outside the crates, the workspace `Cargo.toml` and
 `Cargo.lock`, the toolchain and `.cargo/` files and the console's sources
 under `web/hub/` (`src/`, `public/` and the package and config files;
-pulse-hub's build script builds the export from them and embeds it into the
-binary, so a console change does change `pulse`; the mock API does not), it
+hive-hub's build script builds the export from them and embeds it into the
+binary, so a console change does change `hive`; the mock API does not), it
 says `self-update: brain HEAD <rev> differs from the running <rev> only
 outside what the binary is built from (N file(s):
 a, b, c and K more); no build` (`the installed <rev>` when that was the
@@ -290,26 +290,26 @@ the daemon says `self-update: build of <rev> failed: cargo produced no output
 for 10m0s`. A bound on the length cut a full rebuild short (`cargo timed out
 after 10m0s` in the log, after a Cargo.lock bump) and tried again an hour
 later on the cached half, while a one-crate rebuild takes four minutes here,
-three of them the final link of `pulse`, which prints nothing: a build that
+three of them the final link of `hive`, which prints nothing: a build that
 still prints is still compiling. The smoke tests (`version`, `help`) answer
 within a second and keep the ten-minute bound on their length.
 A failed build or smoke test leaves the running binary untouched, posts a
-finding (`pulse <stage> of <rev> failed; the running binary is untouched`)
+finding (`hive <stage> of <rev> failed; the running binary is untouched`)
 and waits `daemon.self_update_retry_minutes` (default 60, at least 1) before
 the daemon builds again; the console's settings list it under **Updates**, and
 the hub's running report carries the same wait as `retry_minutes`
-(crates/pulse-runner/src/selfupdate.rs, crates/pulse-hub/src/running.rs).
-The install keeps a copy of the running binary as `pulse.prev` and puts the
+(crates/hive-runner/src/selfupdate.rs, crates/hive-hub/src/running.rs).
+The install keeps a copy of the running binary as `hive.prev` and puts the
 new file in its place; the running one is never renamed. macOS names a
 process by the current path of the file it runs from, so a daemon renamed to
-`pulse.prev` while it drained its restart hold had no Desktop-folder grant,
+`hive.prev` while it drained its restart hold had no Desktop-folder grant,
 and the prompt that raised (unanswered for eighty minutes, 2026-11-05) held
-every later pulse request behind it. A build that then exits three times early is put back to
+every later hive request behind it. A build that then exits three times early is put back to
 the previous one by the launcher, which turns `daemon.self_update` off and
 leaves a finding. A revision already installed by hand is not built again:
-when `~/.pulse/bin/pulse version` prints HEAD, the daemon says so once and
+when `~/.hive/bin/hive version` prints HEAD, the daemon says so once and
 restarts onto it after the runs in flight. Set `daemon.self_update` to `off` to keep the build you
-have and `cargo install --path crates/pulse --root ~/.pulse --locked` by hand.
+have and `cargo install --path crates/hive --root ~/.hive --locked` by hand.
 
 Self-update follows the brain's checkout; it does not say when a newer
 published release exists. For that, point `update.latest_url` at a JSON
@@ -319,20 +319,20 @@ releases list (drafts and pre-releases are skipped), or
 `{"version": "v1.2.3", "url": "https://..."}`. The maintenance pass then
 reads it at most once a day (at once after the setting changes), keeps what
 it found in the store's `meta` row `update`, and logs one line when a newer
-release first shows up. `pulse version` prints a second line,
-`A newer PULSE is available: v1.2.3 (running v1.2.2) - <release link>`
+release first shows up. `hive version` prints a second line,
+`A newer Hive is available: v1.2.3 (running v1.2.2) - <release link>`
 (`--json` adds an `update` object), and the console shows a banner above
 every page except chat, with the release link and a button that hides it
 until the next release (`GET /api/v1/update`). Versions compare by semver
 precedence, so a pseudo-version build after `v1.2.2` (`v1.2.3-0.<stamp>`)
 is behind `v1.2.3`, and a `dev` build is never told it is behind. A failed
 read keeps the release it last knew and logs the reason once. The check
-itself downloads and installs nothing; `pulse update` installs the release,
+itself downloads and installs nothing; `hive update` installs the release,
 checksum-verified, on a machine whose `update.channel` is `release`, and
 `update.channel release` also stops the source builds above
-([Releases and `pulse update`](release.md)). The setting is empty by
-default: no check and no network request (crates/pulse-cli/src/update.rs,
-crates/pulse-runner/src/update_check.rs).
+([Releases and `hive update`](release.md)). The setting is empty by
+default: no check and no network request (crates/hive-cli/src/update.rs,
+crates/hive-runner/src/update_check.rs).
 
 The owner need not wait for the drain. **Restart** (under **Settings →
 Running** and beside the update notice in the Home page's runner controls;
@@ -348,10 +348,10 @@ saves the agent's conversation and exits `held` (code 75), the run settles
 run's clone and push key kept. The next run of that job - under the same
 agent, which the runner dispatches first once it is free and which the queue
 waits for while that agent is active and free - picks
-the conversation back up (`pulse harness run --resume`) with a note of where
+the conversation back up (`hive harness run --resume`) with a note of where
 it was interrupted, in the same clone, and the agent carries on instead of
 starting over; the held session is marked `resumed`. A hold that reaches the
-harness after the worker finished the job (`pulse job finish`) is a stop
+harness after the worker finished the job (`hive job finish`) is a stop
 notice on a job already done: the finish stands, the held exit is not a
 verdict, the session is settled and the run is judged by the finish - taken
 as a hold, the requeue overwrote the `done` (2026-11-05: an owner's task
@@ -403,12 +403,12 @@ failing to start is logged instead of reading as a project missing from disk.
 ## Stall detection
 
 If the owner's pause is on, **Resume daemon** clears only the `stop` setting
-(`pulse start` in a terminal). It does not start a missing service, remove
+(`hive start` in a terminal). It does not start a missing service, remove
 file STOPs or change caps. **Silent** means the loop heartbeat is stale, not
 that the daemon is disabled: it may still be running or waiting. A loop that
 stays silent for half an hour (six intervals when the interval is longer) is
 treated as hung: the daemon writes its own thread's stack and thread count to
-`~/.pulse/logs/daemon-stall-<time>.log`, notes the stall in its heartbeat and
+`~/.hive/logs/daemon-stall-<time>.log`, notes the stall in its heartbeat and
 event log, cancels the runs in flight and exits 3, so the service starts it
 again; `kill -USR1 <pid>` writes the same dump without a restart. The controls
 show the recorded PID, service state and diagnostic commands rather than
@@ -418,40 +418,40 @@ automatic rebuilds; it is not the daemon's enable switch.
 ## macOS folder access
 
 On macOS, a checkout under `Desktop`, `Documents` or `Downloads` makes the
-system ask once whether `pulse` may access that folder the first time the
-daemon touches it; answer Allow (the loop waits on the dialog, and `pulse
+system ask once whether `hive` may access that folder the first time the
+daemon touches it; answer Allow (the loop waits on the dialog, and `hive
 status` reports the daemon as silent until then). macOS ties that answer to
 the binary's code-signing requirement, and a plain `cargo build`'s requirement
-is its own hash - so every rebuild would ask again. `pulse service install`
-therefore re-signs the installed `pulse` with a requirement every build meets,
-`identifier "pulse"`, and the daemon signs each build it installs the same way:
+is its own hash - so every rebuild would ask again. `hive service install`
+therefore re-signs the installed `hive` with a requirement every build meets,
+`identifier "hive"`, and the daemon signs each build it installs the same way:
 no certificate, no password, and the answer holds. Checkouts elsewhere never
-ask. The services run pulse through small `/bin/sh` launchers
-(`~/.pulse/bin/pulse-daemon.sh`, `pulse-hub.sh`) so that a restart is a loop
+ask. The services run hive through small `/bin/sh` launchers
+(`~/.hive/bin/hive-daemon.sh`, `hive-hub.sh`) so that a restart is a loop
 and the crash guard has a home.
 
 ## Bulk storage on another disk
 
-Most of what PULSE writes is regenerable bulk: the clones under `work/`, the
+Most of what Hive writes is regenerable bulk: the clones under `work/`, the
 build caches, the worktrees, and the `target/` of a checkout that builds
 itself. On a laptop with a small internal disk that bulk can live on an
 external drive; the board and its history never do.
 
 ```sh
-pulse bulk attach /Volumes/Kingston   # stop the service, move the bulk, link it, start again
-pulse bulk status                     # mounted at /Volumes/Kingston/pulse (103201 MB free); ...
-pulse bulk detach                     # bring everything back onto this disk
-pulse bulk detach --lost              # the drive is gone for good: start with empty dirs
+hive bulk attach /Volumes/Kingston   # stop the service, move the bulk, link it, start again
+hive bulk status                     # mounted at /Volumes/Kingston/hive (103201 MB free); ...
+hive bulk detach                     # bring everything back onto this disk
+hive bulk detach --lost              # the drive is gone for good: start with empty dirs
 ```
 
 `attach` formats nothing. It takes a mounted volume (a plain folder only with
-`--any-folder`), creates `<volume>/pulse` with a marker file carrying an id
-that `~/.pulse/bulk.id` repeats, moves `work`, `cache` and `worktrees`
-there, and leaves one symlink behind - `~/.pulse/bulk` - that the three names
-go through (`work -> bulk/work`). It also makes `<volume>/pulse/cargo-target/`
-for a checkout's build dir: `ln -s ~/.pulse/bulk/cargo-target/<name>
+`--any-folder`), creates `<volume>/hive` with a marker file carrying an id
+that `~/.hive/bulk.id` repeats, moves `work`, `cache` and `worktrees`
+there, and leaves one symlink behind - `~/.hive/bulk` - that the three names
+go through (`work -> bulk/work`). It also makes `<volume>/hive/cargo-target/`
+for a checkout's build dir: `ln -s ~/.hive/bulk/cargo-target/<name>
 <checkout>/target` keeps a self-building brain off the internal disk too.
-Everything else stays home: `pulse.sqlite` and its backups, patches,
+Everything else stays home: `hive.sqlite` and its backups, patches,
 measurements, the harness, the services' logs and launchers, and `tmp/` with
 the short-lived credential files - a removable disk has no reliable ownership
 bits, so secrets never go there. `attach` and `detach` refuse while a daemon
@@ -463,7 +463,7 @@ no `launchctl` first. The link simply dangles, and a dangling link creates
 nothing: `mkdir -p`, `git clone` and every `create_dir_all` fail on it instead
 of filling the internal disk. The daemon notices before each pass, holds every
 dispatch, delivery, sweep, reclaim, experiment lane and self-update with one
-line - `idle: bulk storage away: /Volumes/Kingston/pulse is not mounted; all
+line - `idle: bulk storage away: /Volumes/Kingston/hive is not mounted; all
 work waits for the disk` - and the console shows the same hold in red on the
 Overview with the one remedy, plug it back in. It never exits, so the service's
 crash guard never mistakes the missing disk for a bad build and rolls the binary
@@ -471,31 +471,31 @@ back. A run that the disk vanished under ends as an executor fault: the job
 keeps its attempt and runs again once the disk is back. When the volume returns
 the next pass logs `bulk storage back; resuming` and work continues; when
 macOS mounts it under a new name (`Kingston 1`) the daemon finds the marker on
-the sibling volume and repoints the link itself. `pulse status` prints a
-`bulk` line while anything is attached, and `pulse executor probe` names the
+the sibling volume and repoints the link itself. `hive status` prints a
+`bulk` line while anything is attached, and `hive executor probe` names the
 missing disk instead of measuring a 0 MB floor.
 
 ## Backups of the store
 
 The board, its history, every task and every job live in one file,
-`~/.pulse/pulse.sqlite`, and nothing above regenerates it. When a disk starts
+`~/.hive/hive.sqlite`, and nothing above regenerates it. When a disk starts
 failing the only copy must already be somewhere else, so the runner can keep
 one there. Name a place with `backup.to` and the maintenance pass copies the
 store to it every `backup.every_hours` (24 by default), keeping the newest
 `backup.keep` copies (14) and removing older ones of this host's:
 
 ```bash
-pulse settings set backup.to az://myaccount/pulse-backups/store   # an Azure blob container, with an optional prefix
-pulse settings set backup.to /Volumes/Backup/pulse                 # a folder that already exists (a mounted disk, a synced folder)
-pulse settings set backup.to 'run:rclone copyto {file} remote:pulse/{name}'   # any command; {file} and {name} are filled in
-pulse backup                       # one now, to backup.to
-pulse backup --to ~/Desktop --keep 3   # one now, somewhere else, pruning to 3 there
-pulse backup --status              # where copies go, the last outcome, when the next is due (also --json)
+hive settings set backup.to az://myaccount/hive-backups/store   # an Azure blob container, with an optional prefix
+hive settings set backup.to /Volumes/Backup/hive                 # a folder that already exists (a mounted disk, a synced folder)
+hive settings set backup.to 'run:rclone copyto {file} remote:hive/{name}'   # any command; {file} and {name} are filled in
+hive backup                       # one now, to backup.to
+hive backup --to ~/Desktop --keep 3   # one now, somewhere else, pruning to 3 there
+hive backup --status              # where copies go, the last outcome, when the next is due (also --json)
 ```
 
 Each copy is a `VACUUM INTO` snapshot (writers are never blocked), checked with
 `PRAGMA quick_check` before it leaves the machine, gzipped, hashed, and named
-`pulse-<host>-<stamp>.sqlite.gz`; the folder destination writes a `.part` file
+`hive-<host>-<stamp>.sqlite.gz`; the folder destination writes a `.part` file
 and renames it only after the size matches, so a half-written copy is never
 mistaken for a whole one. A folder destination must already exist: a missing
 mount must never turn into a new folder on the boot disk. The Azure destination
@@ -512,16 +512,16 @@ panel in the console; a failed backup is tried again within the hour regardless
 of the cadence. The Settings page has the three caps under **Backups**.
 
 Old ledger rows nothing reads any more are not deleted but moved, once a month,
-to `~/.pulse/pulse-archive.sqlite` next to the store (`daemon.archive_days`,
-90 by default; `pulse store archive --dry-run` shows what would go); see
-"Store archive" in [recovery.md](recovery.md). A backup copies `pulse.sqlite`
+to `~/.hive/hive-archive.sqlite` next to the store (`daemon.archive_days`,
+90 by default; `hive store archive --dry-run` shows what would go); see
+"Store archive" in [recovery.md](recovery.md). A backup copies `hive.sqlite`
 only, so the side file is a separate copy to keep if old history matters.
 
 ## Keeping the machine awake
 
 A laptop that dozes off takes its agents with it: a run that worked for an
 hour loses the whole hour when the lid closes or the idle timer fires, the
-timeline shows a gap, and the trends dip. `daemon.keep_awake` is PULSE's own
+timeline shows a gap, and the trends dip. `daemon.keep_awake` is Hive's own
 caffeination mode. `off` (the default) leaves the power settings alone. `on`
 holds the machine awake while the daemon runs and the machine is plugged in;
 `always` holds it on battery too. The hold is a child of the daemon - on
@@ -529,10 +529,10 @@ macOS `caffeinate -d -i -s -w <daemon pid>`, the same assertions Copilot
 CLI's `/keep-alive` takes (`-d` keeps the display awake, `-i` stops idle
 sleep, `-s` stops system sleep on AC power); on Linux a `systemd-inhibit
 --what=sleep:idle --mode=block` that waits on the daemon's pid - so it ends
-the moment the daemon exits, is paused with `pulse stop`, or restarts under a
-new build, and it never outlives PULSE. A closed lid still sleeps a Mac
+the moment the daemon exits, is paused with `hive stop`, or restarts under a
+new build, and it never outlives Hive. A closed lid still sleeps a Mac
 unless an external display is attached; the daemon's log line says so
-(`keeping this machine awake while PULSE runs (caffeinate -d -i -s -w <pid>,
+(`keeping this machine awake while Hive runs (caffeinate -d -i -s -w <pid>,
 pid …), while plugged in; the display stays on and the screen saver stays
 off; closing the lid still sleeps a Mac unless an external display is
 attached`). When the holder cannot start (no `caffeinate`, no systemd) the
@@ -556,7 +556,7 @@ daemon asks power management whether idle display sleep is blocked
 (`PMDisplaySleepIsBlocked`), and `caffeinate -d` is that block: the system
 log reads `IS blocked, by assertionType: PreventUserIdleDisplaySleep` …
 `do not launch screen saver`. A hold without `-d` - the plain `caffeinate -s`
-PULSE used before - stopped sleep but let the saver come on every three
+Hive used before - stopped sleep but let the saver come on every three
 minutes while the agents worked behind it. With the hold waiting for the
 charger or the setting off, the display rests as the Lock Screen settings
 say.

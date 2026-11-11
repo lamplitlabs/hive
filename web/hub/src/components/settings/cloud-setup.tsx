@@ -2,7 +2,7 @@
 
 // The cloud setup forms (ADR-070): where extra machines come from and where
 // backups go, drawn from the registry GET /api/v1/clouds sends - a new cloud
-// is a new descriptor in crates/pulse-store/src/clouds, not a new form. All
+// is a new descriptor in crates/hive-store/src/clouds, not a new form. All
 // state and rules live in lib/cloud-setup-state.ts; this file only renders.
 import { useMemo, useState } from "react";
 import { CheckIcon, CloudIcon, CopyIcon, DatabaseBackupIcon, KeyRoundIcon, Loader2Icon } from "lucide-react";
@@ -11,8 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { showApiError } from "@/components/pulse/confirm";
-import { Notice } from "@/components/pulse/panel";
+import { showApiError } from "@/components/hive/confirm";
+import { Notice } from "@/components/hive/panel";
 import { writes, type CloudField, type CloudsPayload } from "@/lib/api";
 import { authMode, backupTo, changes, cloudOf, initialDraft, missingFields, problems, readiness, signInCommand, visibleFields, type CloudDraft } from "@/lib/cloud-setup-state";
 import { invalidate, useApi } from "@/lib/use-api";
@@ -38,7 +38,7 @@ async function save(list: [string, string][], what: string) {
     try {
       await writes.setSetting(name, value);
     } catch (e) {
-      showApiError(e, "PULSE couldn't save " + name + ".");
+      showApiError(e, "Hive couldn't save " + name + ".");
       invalidate((x) => x.startsWith("clouds") || x.startsWith("settings"));
       return false;
     }
@@ -94,7 +94,7 @@ function Command({ text }: { text: string }) {
   if (!text) return null;
   return (
     <div className="grid gap-1.5">
-      <p className="text-sm font-medium">Sign in on this machine, as the user PULSE runs as</p>
+      <p className="text-sm font-medium">Sign in on this machine, as the user Hive runs as</p>
       <div className="flex items-start gap-2 rounded-lg bg-muted/50 p-2.5">
         <code className="min-w-0 flex-1 font-mono text-xs leading-relaxed break-all">{text}</code>
         <Tooltip>
@@ -117,7 +117,7 @@ function Command({ text }: { text: string }) {
           <TooltipContent>{copied ? "Copied" : "Copy the command"}</TooltipContent>
         </Tooltip>
       </div>
-      <p className={hint}>The secret is read from where it lives as the command runs; it is never shown here or saved by PULSE.</p>
+      <p className={hint}>The secret is read from where it lives as the command runs; it is never shown here or saved by Hive.</p>
     </div>
   );
 }
@@ -154,7 +154,7 @@ export function CloudSetup({ canEdit }: { canEdit: boolean }) {
           <CloudIcon className="size-4 text-muted-foreground" aria-hidden />
           Where machines come from
         </h3>
-        <p className={hint}>Pick a cloud and fill in what it asks. Sign-ins stay with the cloud&apos;s own tool on this machine; PULSE keeps names, ids and where a secret lives, never the secret.</p>
+        <p className={hint}>Pick a cloud and fill in what it asks. Sign-ins stay with the cloud&apos;s own tool on this machine; Hive keeps names, ids and where a secret lives, never the secret.</p>
       </div>
       <Choice name="Cloud" options={p.clouds} value={draft.provider} onPick={(id) => setDraft({ ...draft, provider: id })} disabled={off} />
       {cloud ? (
@@ -226,7 +226,7 @@ export function BackupSetup({ canEdit }: { canEdit: boolean }) {
           <DatabaseBackupIcon className="size-4 text-muted-foreground" aria-hidden />
           Where backups go
         </h3>
-        <p className={hint}>A checked, compressed copy of the PULSE database, off this machine.</p>
+        <p className={hint}>A checked, compressed copy of the Hive database, off this machine.</p>
       </div>
       <Choice name="Backup destination" options={options} value={draft.backupTarget} onPick={(id) => setDraft({ ...draft, backupTarget: id })} disabled={off} />
       {t ? (

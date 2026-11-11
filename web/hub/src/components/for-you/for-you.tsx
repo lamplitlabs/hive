@@ -6,17 +6,17 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ArrowRightIcon, CheckIcon, ChevronUpIcon, ClockIcon, ReplyIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { AnswerBox } from "@/components/pulse/decide-buttons";
-import { EmptyState, ErrorNotice, SkeletonRows } from "@/components/pulse/panel";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { PageHeader } from "@/components/pulse/page-header";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
-import { Markdown } from "@/components/pulse/markdown";
-import { When } from "@/components/pulse/who";
-import { useInbox, useInboxSources } from "@/components/pulse/inbox";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { AnswerBox } from "@/components/hive/decide-buttons";
+import { EmptyState, ErrorNotice, SkeletonRows } from "@/components/hive/panel";
+import { KindTile } from "@/components/hive/kind-tile";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { PageHeader } from "@/components/hive/page-header";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { SidePanel, useOpenItem } from "@/components/hive/side-panel";
+import { Markdown } from "@/components/hive/markdown";
+import { When } from "@/components/hive/who";
+import { useInbox, useInboxSources } from "@/components/hive/inbox";
 import { DecideRecordDialog } from "@/components/records/decide-record";
 import { DraftActions } from "@/components/records/draft-panel";
 import { AcceptSuggestionDialog, DeclineSuggestionDialog } from "@/components/tasks/suggested-work";
@@ -96,7 +96,7 @@ export function ForYou() {
         {loading ? (
           <SkeletonRows n={6} />
         ) : groups.length === 0 ? (
-          <EmptyState title={project ? "Nothing waits on you in " + nameOf(o, project) : "Nothing waits on you"} hint={inbox.downWhy.length ? "Nothing that PULSE can see, but " + inbox.downWhy.join(" and ") + "." : inbox.checking.length ? "Checking " + inbox.checking.join(" and ") + "…" : "New decisions, proposals and questions show up here the moment an agent needs your answer."} action={project ? <Button variant="outline" size="sm" onClick={() => setProject("")}>Show every project</Button> : undefined} />
+          <EmptyState title={project ? "Nothing waits on you in " + nameOf(o, project) : "Nothing waits on you"} hint={inbox.downWhy.length ? "Nothing that Hive can see, but " + inbox.downWhy.join(" and ") + "." : inbox.checking.length ? "Checking " + inbox.checking.join(" and ") + "…" : "New decisions, proposals and questions show up here the moment an agent needs your answer."} action={project ? <Button variant="outline" size="sm" onClick={() => setProject("")}>Show every project</Button> : undefined} />
         ) : (
           <div className="grid min-w-0 gap-8">
             {groups.map((g) => (
@@ -254,7 +254,7 @@ function ItemText({ text, post, empty }: { text?: string | null; post: string; e
     <div className="grid min-w-0 gap-1.5">
       {body ? (
         <article className="min-w-0">
-          {/* .prose-pulse reads long text at 16 px; under a row it keeps the list's 14 (hence the !). */}
+          {/* .prose-hive reads long text at 16 px; under a row it keeps the list's 14 (hence the !). */}
           <Markdown source={body} className="text-sm! leading-relaxed!" />
         </article>
       ) : empty ? (
@@ -311,7 +311,7 @@ function QuestionActions({ q, shape, brain, canDecide, register, answering, onAn
   const no = useCallback(() => setOpen("no"), []);
   useRegister(register, canDecide && !asksWords ? { yes, no, yesLabel: labels.yes, noLabel: labels.no } : null);
   const slug = q.slug || brain;
-  if (!canDecide) return <span className="text-xs text-muted-foreground">Answer on the machine that runs PULSE</span>;
+  if (!canDecide) return <span className="text-xs text-muted-foreground">Answer on the machine that runs Hive</span>;
   // The answer box opens under the row (Row's details), not in it.
   if (asksWords)
     return (
@@ -348,7 +348,7 @@ function ProposalActions({ p, canDecide, register }: { p: ReturnType<typeof useI
   const no = useCallback(() => setOpen("no"), []);
   const can = canDecide && p.can_decide !== false;
   useRegister(register, can ? { yes, no, yesLabel: "Accept", noLabel: "Decline" } : null);
-  if (!can) return <span className="text-xs text-muted-foreground">Answer on the machine that runs PULSE</span>;
+  if (!can) return <span className="text-xs text-muted-foreground">Answer on the machine that runs Hive</span>;
   const isYes = open === "yes";
   return (
     <>
@@ -392,13 +392,13 @@ function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>[
           <span>
             {agentName(r.requested_by)} asks for one extra machine ({r.size}) for {plural(r.hours, "hour")}
             {r.reason ? <>: &ldquo;{r.reason.trim()}&rdquo;</> : null}. {caps ? caps.vms_now + " of " + caps.max_vms + " extra machines are in use, " + caps.hours_today + " of " + plural(caps.max_hours_per_day, "hour") + " used today. " : ""}
-            {approve ? "PULSE starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
+            {approve ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
           </span>
         }
         action={approve ? "Approve" : "Deny"}
         destructive={!approve}
         words={{ label: approve ? "A note for the agent (optional)" : "Tell the agent why", placeholder: approve ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: !approve }}
-        success={approve ? "Approved. PULSE will start the machine." : "Denied. The agent will see your note."}
+        success={approve ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
         onConfirm={(w) => (approve ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
         invalidates={COMPUTE_CHANGES}
       />

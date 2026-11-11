@@ -9,7 +9,7 @@
     "executor": "",
     "provider": "copilot",
     "model": "gpt-4.1",
-    "cwd": "/home/owner/.pulse/work/job-legacy-docs",
+    "cwd": "/home/owner/.hive/work/job-legacy-docs",
     "status": "cancelled",
     "exit_status": "cancelled",
     "submission": "",
@@ -22,7 +22,7 @@
     "started_at": "2026-09-11T02:00:00Z",
     "updated_at": "2026-09-11T02:04:00Z",
     "ended_at": "2026-09-11T02:04:00Z",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-005.json",
+    "trajectory": "/home/owner/.hive/harness/run-20260911-005.json",
     "cancel_requested_at": "2026-09-11T02:03:00Z"
   },
   "steps": [

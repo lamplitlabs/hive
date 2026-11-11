@@ -104,7 +104,7 @@ test("the report link shows only for a folder that holds the before/after page",
   // The manifest and the pictures alone are not the page.
   assert.equal(hasReportPage([{ name: "report.json" }, { name: "before-home.png" }]), false);
   assert.equal(hasReportPage([{ name: "after.png" }, { name: "report.html" }]), true);
-  assert.match(reportTip("session"), /^The report PULSE built for this session: /);
+  assert.match(reportTip("session"), /^The report Hive built for this session: /);
   assert.match(reportTip("run"), /Opens in a new tab\.$/);
 });
 

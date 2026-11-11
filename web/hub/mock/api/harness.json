@@ -189,7 +189,7 @@
       "kind": "choice",
       "min": null,
       "choices": ["on", "off"],
-      "description": "on: a native-harness run with a store connects the project's enabled MCP servers at its start and offers their tools to the model as mcp__<server>__<tool>; off: workers call servers through pulse mcp call only",
+      "description": "on: a native-harness run with a store connects the project's enabled MCP servers at its start and offers their tools to the model as mcp__<server>__<tool>; off: workers call servers through hive mcp call only",
       "updated_at": "",
       "updated_by": "default",
       "secret": false
@@ -213,7 +213,7 @@
       "kind": "choice",
       "min": null,
       "choices": ["on", "off"],
-      "description": "on: a native-harness run runs the owner's hooks from the clone's .pulse/hooks.json and ~/.pulse/hooks.json; off: no hooks run",
+      "description": "on: a native-harness run runs the owner's hooks from the clone's .hive/hooks.json and ~/.hive/hooks.json; off: no hooks run",
       "updated_at": "",
       "updated_by": "default",
       "secret": false
@@ -225,7 +225,7 @@
       "kind": "choice",
       "min": null,
       "choices": ["on", "off"],
-      "description": "on: a native-harness run reads ~/.pulse/memory into its system prompt and offers the memory tool; off: nothing is read or offered",
+      "description": "on: a native-harness run reads ~/.hive/memory into its system prompt and offers the memory tool; off: nothing is read or offered",
       "updated_at": "",
       "updated_by": "default",
       "secret": false
@@ -237,7 +237,7 @@
       "kind": "choice",
       "min": null,
       "choices": ["chat", "on", "off"],
-      "description": "chat: pulse harness chat offers the web_search tool and jobs do not; on: jobs too; off: nowhere",
+      "description": "chat: hive harness chat offers the web_search tool and jobs do not; on: jobs too; off: nowhere",
       "updated_at": "",
       "updated_by": "default",
       "secret": false
@@ -285,7 +285,7 @@
       "kind": "text",
       "min": null,
       "choices": null,
-      "description": "permission rules pulse harness chat runs without asking (tool or tool(filter), comma- or newline-separated); deny rules win",
+      "description": "permission rules hive harness chat runs without asking (tool or tool(filter), comma- or newline-separated); deny rules win",
       "updated_at": "2026-09-10T18:02:00Z",
       "updated_by": "human",
       "secret": false

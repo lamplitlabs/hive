@@ -10,9 +10,9 @@ import { NeedsYou } from "@/components/home/needs-you";
 import { ProjectsList } from "@/components/home/projects-list";
 import { ThisWeek } from "@/components/home/this-week";
 import { WorkingNow } from "@/components/home/working-now";
-import { useInbox } from "@/components/pulse/inbox";
-import { ErrorNotice, SkeletonPage } from "@/components/pulse/panel";
-import { Mono } from "@/components/pulse/who";
+import { useInbox } from "@/components/hive/inbox";
+import { ErrorNotice, SkeletonPage } from "@/components/hive/panel";
+import { Mono } from "@/components/hive/who";
 import { registeredProjects, type HarnessStatus, type Org, type ServicePayload, type TasksPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
@@ -57,7 +57,7 @@ export default function HubPage() {
       <div className="mx-auto w-full max-w-[1280px] pt-5 sm:pt-6">
         <h1 className="mb-4 text-[32px] font-semibold leading-10 tracking-tight">Home</h1>
         <ErrorNotice error={org.error} onRetry={() => void org.reload()}>
-          PULSE didn&apos;t answer ({org.error}). Start it with <Mono>pulse hub</Mono> in a terminal, then try again.
+          Hive didn&apos;t answer ({org.error}). Start it with <Mono>hive hub</Mono> in a terminal, then try again.
         </ErrorNotice>
       </div>
     );

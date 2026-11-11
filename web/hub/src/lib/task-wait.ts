@@ -1,6 +1,6 @@
 // The wait line of an owner's task whose next step has sat in the queue past
 // ten minutes. The daemon writes one job.owner-wait event per such wait,
-// naming every hold it saw (crates/pulse-runner/src/owner_wait.rs: the
+// naming every hold it saw (crates/hive-runner/src/owner_wait.rs: the
 // machine's load over daemon.max_load, every slot busy with the fleet's work,
 // a restart drain, the disk, the daily cap); the hub hands the oldest open one
 // over as Task.waiting. So the page says "The next step has waited since
@@ -45,7 +45,7 @@ export function holdWords(reason: string): string {
     case "memory pressure":
       return "memory ran low";
     case "restart drain":
-      return "PULSE was restarting";
+      return "Hive was restarting";
     case "disk floor":
       return "the disk was nearly full";
     case "bulk disk away":

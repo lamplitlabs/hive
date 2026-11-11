@@ -5,16 +5,16 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { CheckIcon, GitMergeIcon, MessageSquarePlusIcon, PlusIcon, ReplyIcon, ScaleIcon, XIcon } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { DecideButtons } from "@/components/pulse/decide-buttons";
-import { CopyButton } from "@/components/pulse/evolve";
-import type { Inbox } from "@/components/pulse/inbox";
-import { KindTile, type Kind } from "@/components/pulse/kind-tile";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { EmptyState } from "@/components/pulse/panel";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { DecideButtons } from "@/components/hive/decide-buttons";
+import { CopyButton } from "@/components/hive/evolve";
+import type { Inbox } from "@/components/hive/inbox";
+import { KindTile, type Kind } from "@/components/hive/kind-tile";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { EmptyState } from "@/components/hive/panel";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { When } from "@/components/hive/who";
 import { ComputeDecide } from "@/components/compute/compute";
 import { awaitsDecision, DecideRecordDialog } from "@/components/records/decide-record";
 import { DraftActions } from "@/components/records/draft-panel";
@@ -250,7 +250,7 @@ function RecordPair({ record }: { record: RecordRow }) {
   );
 }
 
-// Yes / No for a proposal: the card's confirm (components/pulse/cards.tsx
+// Yes / No for a proposal: the card's confirm (components/hive/cards.tsx
 // ProposalCard) in row size.
 function ProposalDecide({ p }: { p: Proposal }) {
   const [open, setOpen] = useState<"yes" | "no" | null>(null);

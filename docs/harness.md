@@ -1,6 +1,6 @@
 # The harness (how an agent runs)
 
-Every job runs through PULSE's own agent harness, `pulse harness run` - a
+Every job runs through Hive's own agent harness, `hive harness run` - a
 small, readable loop in the lineage of
 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent): one model,
 seven typed tools (`bash`, `read`, `grep`, `glob`, `edit`, `write`, `plan`)
@@ -70,9 +70,9 @@ until its input ends; a `... | tail -40` that timed out used to come back
 empty), or start it with `bash background:true` and read it with the
 `process` tool. The system prompt says the same up front, with the scope
 rule that `grep`, `find` and `ls` stay in the project tree and never scan
-`~/.pulse` or the home directory: in three days of owner task runs, 22
+`~/.hive` or the home directory: in three days of owner task runs, 22
 commands ran the full 900-second live timeout, among them `grep -rl`
-over `~/.pulse` and long measurements piped through `tail`, for three
+over `~/.hive` and long measurements piped through `tail`, for three
 hours of wall time that returned nothing.
 
 ### Background processes
@@ -105,8 +105,8 @@ What a run learns the hard way - the test command that
 actually works, where the API lives, that the owner wants short replies -
 is gone when it ends, so the `memory` tool keeps it: `remember` with a
 `text` (one line, 600 characters at most) appends a dated bullet to the
-project's file, `~/.pulse/memory/<project>.md`, or with `scope: user` to
-`~/.pulse/memory/user.md`, which every project reads; `forget` with enough
+project's file, `~/.hive/memory/<project>.md`, or with `scope: user` to
+`~/.hive/memory/user.md`, which every project reads; `forget` with enough
 of a bullet's text to match exactly one takes it out (several matches are
 listed instead); `list` shows both files. The project is the fleet's
 project slug when the run is a job or the directory belongs to a
@@ -144,14 +144,14 @@ worth keeping as `LESSON:` lines in its report (three to seven; what any
 developer knows is skipped); the runner posts each as a `lesson` post on
 the project board, in the job's thread, under the `lessons` area, and
 lists them in the run report, so the why of a run stands beside its
-result where `pulse board` and `pulse ask` find it. The paragraph sits
+result where `hive board` and `hive ask` find it. The paragraph sits
 in the system prompt at the template's `{{.Teach}}` key, after the
 memory; a template without the key gets it appended.
 
 ### Repository instructions
 
 A run reads the owner's own
-`~/.pulse/AGENTS.md` first, then the clone's `AGENTS.md`, `CLAUDE.md`,
+`~/.hive/AGENTS.md` first, then the clone's `AGENTS.md`, `CLAUDE.md`,
 `GEMINI.md` and `.github/copilot-instructions.md` - each once (a copy of
 another is skipped), 16 KB per file with a marker where it was cut, 32 KB
 in all - and places them in the system prompt where the template's
@@ -159,7 +159,7 @@ in all - and places them in the system prompt where the template's
 the task; a custom template without the key gets them appended), under the
 sentence that the harness's own rules still win where they differ. The
 rule layouts of the other harnesses are read as they are: every Markdown
-file under `.pulse/rules`, `.claude/rules` (Claude Code) and
+file under `.hive/rules`, `.claude/rules` (Claude Code) and
 `.github/instructions` (Copilot's `*.instructions.md`), recursively, in
 path order. A rule without a scope - no `applyTo:` or `paths:` in its
 front matter, or one that says `**` - joins the system prompt under its
@@ -172,7 +172,7 @@ result with its source and scope named, and noted in the transcript
 directory below the root works the same way, for everything under that
 directory. `harness.instructions` (`on`; Settings → Harness **Run mode and
 transcript size**) turns all of it off for every run, `--no-instructions`
-for one; `pulse harness prompt -C <clone>` shows the prompt a run there
+for one; `hive harness prompt -C <clone>` shows the prompt a run there
 would start with, `/env` in a session lists the rules still waiting
 (`path rules: …`). The transcript's first `note` steps say which files
 were read and how many rules wait.
@@ -180,14 +180,14 @@ were read and how many rules wait.
 ### Custom agents
 
 The helper the `subagent` tool runs can be one the repository or the owner
-described: a Markdown file with front matter under `.pulse/agents`,
+described: a Markdown file with front matter under `.hive/agents`,
 `.claude/agents` (Claude Code's `<name>.md`), `.github/agents` (Copilot's
-`<name>.agent.md`) or `~/.pulse/agents`, or an `agent` record of the store (the
-importer makes one of each `.pulse/agents` file). A name belongs to its most
-trusted source - a store record, then `~/.pulse/agents`, then `.pulse/agents`,
+`<name>.agent.md`) or `~/.hive/agents`, or an `agent` record of the store (the
+importer makes one of each `.hive/agents` file). A name belongs to its most
+trusted source - a store record, then `~/.hive/agents`, then `.hive/agents`,
 `.claude/agents`, `.github/agents` - and a lower twin of the same name may only
 narrow it: fewer `tools`, more denies, a smaller `max_steps`, read-only;
-whatever else it says is dropped with a warning. `pulse agents list` (and the
+whatever else it says is dropped with a warning. `hive agents list` (and the
 hub) show which source won. Its `description` tells the model when to pick it
 (the tool lists them and takes `agent: NAME`), its body - up to 30,000
 characters - becomes the helper's standing instructions ahead of the sub-task,
@@ -200,49 +200,49 @@ may only lower the step cap), `permissionMode: plan` and `readonly: true` apply
 too; `permissionMode: bypassPermissions` keeps the file from loading, and so
 does a `hooks:` block or an `allow: "*"` in a repository file. A helper also
 inherits the run's permission rules and the path-scoped rules above. Under a
-`pulse:` key the file speaks to PULSE itself: `kinds` and `select: {tags,
+`hive:` key the file speaks to Hive itself: `kinds` and `select: {tags,
 files}` name the job cards it runs - a job whose kind is listed and whose
 `Tags:` (else `Class:`) words or `File:` paths match runs under that agent's
 model, tools, step cap and standing instructions, the runner handing the worker
-`pulse harness run --agent NAME` (a remote hand reads the clone's files; a
-store-only record is invisible to it); a job pinned to an agent by name (`pulse
+`hive harness run --agent NAME` (a remote hand reads the clone's files; a
+store-only record is invisible to it); a job pinned to an agent by name (`hive
 job add --run-as NAME`, or a schedule's or a job hook's `--run-as`) runs as it
 whatever its `kinds` say, so long as it still loads; `max_steps` and
 `max_subagents` cap the run and the helpers it may start; `brief`, `schedule`
 (`every`, 60 minutes or more), `quorum` and `project_scope` are read and linted
-for the phases that will consume them. `--agent NAME` runs any `pulse harness
+for the phases that will consume them. `--agent NAME` runs any `hive harness
 run` as that agent; its `model` applies only when `models.allowed` lets it
 (empty = any model the provider accepts; a comma or newline list, `claude-*`
-globs), else the run keeps the model it had and says so. `pulse agents lint
+globs), else the run keeps the model it had and says so. `hive agents lint
 [PATH…]` reads the files one by one - the keys, what each tool name became, the
 limits (1024 characters of description), the template, the Tier 0/1 rules, the
-twins - and exits 1 on an error; `pulse agents schema` prints the front
-matter's JSON Schema; `pulse agents list` what loads and from where (`pulse
+twins - and exits 1 on an error; `hive agents schema` prints the front
+matter's JSON Schema; `hive agents list` what loads and from where (`hive
 agent`, singular, manages the running workers). `--no-agents` leaves the agents
 out for one run; they follow `harness.subagents` otherwise.
 
 ### MCP servers as tools
 
 With a store at hand, a run connects the
-project's enabled [MCP servers](board.md#connecting-the-outside-world-pulse-mcp)
+project's enabled [MCP servers](board.md#connecting-the-outside-world-hive-mcp)
 when it starts and offers their tools to the model by name,
 `mcp__<server>__<tool>` (letters, digits, `-` and `_`; longer names are
 cut, clashes get a numeric suffix), described as the server describes them
-and called through the same client as `pulse mcp call`. Past 32 tools the
+and called through the same client as `hive mcp call`. Past 32 tools the
 run offers `mcp_search` instead - the model looks tools up by words in their
 name or description, the matches come back with their schema and are
 advertised from the next reply on, and any known tool is callable by name
 even before it was looked up. A server that does not answer within 45
 seconds is noted in the transcript and skipped; the run goes on without it.
 `harness.mcp_tools` (`on`) turns it off, `--no-mcp` for one run; the
-`pulse mcp` commands stay available from `bash` either way. Each MCP call is
+`hive mcp` commands stay available from `bash` either way. Each MCP call is
 an `mcp` step in the transcript with the arguments it sent and the text the
 server returned.
 
 A stdio server of a run does not start in the clone: a conversation's
-run in its artifacts folder (`$PULSE_ARTIFACTS`, the one the hub shows
+run in its artifacts folder (`$HIVE_ARTIFACTS`, the one the hub shows
 beside the conversation), a job's in the run's own `TMPDIR` beside the
-clone, and `pulse mcp call` from either shell does the same - so what a
+clone, and `hive mcp call` from either shell does the same - so what a
 server writes never lands in the checkout, and the sweep that ends what a
 command leaves running under a job's clone leaves the servers alone. A
 Playwright server (`@playwright/mcp`, `playwright-mcp`) also gets, unless
@@ -250,7 +250,7 @@ its registration says otherwise, `--headless`, `--isolated` (a fresh
 profile each start), absolute file paths, that folder as its output
 directory, and the browser this machine has - Chrome, Edge, a Chromium
 such as Brave, or Playwright's own download - instead of Playwright's
-assumption of Chrome; `pulse mcp show playwright` prints the line. So an
+assumption of Chrome; `hive mcp show playwright` prints the line. So an
 agent's `browser_take_screenshot` lands in the conversation's artifacts
 folder where the owner sees it, and a run on a machine with only Edge
 works out of the box. When the run ends, a stdio server gets its stdin
@@ -258,12 +258,12 @@ closed and a few seconds to shut its browser down before it is killed.
 
 ### Skills as tools
 
-A run finds the clone's skill folders - `.pulse/skills`,
+A run finds the clone's skill folders - `.hive/skills`,
 `.claude/skills`, `.github/skills`, `.agents/skills`, then
-`~/.pulse/skills` - each `<name>/SKILL.md` (front-matter `name:` and
+`~/.hive/skills` - each `<name>/SKILL.md` (front-matter `name:` and
 `description:` read when present, the folder name otherwise; the first
 folder to define a name wins) - and, with a store, the project's
-[`pulse skill`](board.md#shared-skills-pulse-skill) registry for the names the
+[`hive skill`](board.md#shared-skills-hive-skill) registry for the names the
 folders do not define. The model sees them as the `skill` tool, each name
 with its one-line description in the tool's schema, and loads one when the
 task calls for it: `skill(name)` returns the body (and the list of files
@@ -275,19 +275,19 @@ hundred tokens, not forty documents. `harness.skills` (`on`) turns it off,
 `--no-skills` for one run; the brief still carries the skills the lead
 chose, exactly as before. Each load is a `skill` step. With a daemon tending
 the project, the same folders on the default branch are also registered as
-`pulse skill`s of the project, so their names reach the brief, remote workers
-and schedules ([the project's own files](board.md#the-projects-own-files-pulse)).
+`hive skill`s of the project, so their names reach the brief, remote workers
+and schedules ([the project's own files](board.md#the-projects-own-files-hive)).
 
 ### Hooks
 
-The clone's `.pulse/hooks.json` and the owner's
-`~/.pulse/hooks.json` name commands the harness runs at six moments of a
+The clone's `.hive/hooks.json` and the owner's
+`~/.hive/hooks.json` name commands the harness runs at six moments of a
 run - `run_start`, `user_prompt`, `pre_tool`, `post_tool`, `pre_compact`,
 `run_end` - and the clone's hooks run first:
 
 ```json
 {"hooks": [
-  {"event": "pre_tool",  "tools": ["bash"],          "command": "pulse-guard --stdin", "timeout": 10},
+  {"event": "pre_tool",  "tools": ["bash"],          "command": "hive-guard --stdin", "timeout": 10},
   {"event": "post_tool", "tools": ["edit", "write"], "command": "npm run lint:changed"},
   {"event": "run_end",                               "command": "./scripts/after-run.sh"}
 ]}
@@ -298,7 +298,7 @@ defaults to 60 seconds, 600 at most). Each hook runs through `/bin/sh -c`
 in the clone root with the event as JSON on stdin (`event`, `cwd`, `tool`,
 `input` for the tool events; `task`, `model`, `depth` at the start;
 `exit_status`, `calls`, `steps`, `submission` at the end) and
-`PULSE_HOOK_EVENT` / `PULSE_TOOL` in the environment. A `pre_tool` hook
+`HIVE_HOOK_EVENT` / `HIVE_TOOL` in the environment. A `pre_tool` hook
 that exits `2` **blocks the call**: the model sees ``blocked by hook `cmd`:
 <its stderr or stdout>`` as the observation and the tool never runs; any other
 failure is noted and the call proceeds. A `post_tool` hook's output is
@@ -307,7 +307,7 @@ after every edit speaks to the model in the same turn. What a `run_start`
 hook prints is appended to the system prompt (a build number, the branch
 policy, today's date); `run_end` runs once, before the clone is released,
 whatever the exit status. Two moments belong to sessions: a `user_prompt`
-hook runs on every message you send in `pulse harness chat` (payload
+hook runs on every message you send in `hive harness chat` (payload
 `prompt`, `turn`, `messages`, `model`) before the model sees it - what it
 prints travels with the message under ``--- user_prompt hook `cmd` ---``
 (the current branch, the ticket the folder belongs to, a reminder), and exit
@@ -384,10 +384,10 @@ search tab before reading a page: `8 results for "tokio select
 cancellation" from duckduckgo:` then `1. … / https://… / …`, or `no
 results for … ; try other words`. Without a key it asks DuckDuckGo's HTML
 endpoint; with `BRAVE_SEARCH_API_KEY` in the environment, or a key saved
-in `~/.pulse/private/providers/brave.json` as `{"api_key": "…"}`, it asks
-Brave Search instead (the key never goes into settings - PULSE refuses
+in `~/.hive/private/providers/brave.json` as `{"api_key": "…"}`, it asks
+Brave Search instead (the key never goes into settings - Hive refuses
 secret-shaped values there). `harness.web_search` says where it is
-offered: `chat` (the default) in `pulse harness chat`, where the owner is
+offered: `chat` (the default) in `hive harness chat`, where the owner is
 there to read along, and not to jobs; `on` to jobs too; `off` nowhere -
 and `--web-search` / `--no-web-search` decide for one run. Searching
 changes nothing, so a read-only run keeps the tool, and a helper searches
@@ -398,13 +398,13 @@ observation like a fetched page, searches run in parallel beside reads
 and fetches, each is a `search` step with the query, and `/env` names the
 engine (`web search: duckduckgo`, `brave` or `off`). To read a result the
 model needs `fetch`, so its host has to be in `harness.fetch_allow`;
-`PULSE_WEB_SEARCH_URL` points the engine at another endpoint (tests and
+`HIVE_WEB_SEARCH_URL` points the engine at another endpoint (tests and
 proxies).
 
 ### Read-only runs
 
 The jobs that look but do not touch - `answer` and
-`ballot` - run with `--read-only`, and `pulse harness run --read-only`
+`ballot` - run with `--read-only`, and `hive harness run --read-only`
 gives any run the same discipline. "Read-only" is about the clone, not the
 machine: the `edit` and `write` tools are not offered (the model is told
 so in its prompt and in the run's first `note` step), and a `bash` command
@@ -512,10 +512,10 @@ nothing left to compact) collapses every older observation but one and asks
 once more, each step a `note` in the transcript; only then does the turn
 stop with the provider's error and a line on what helps (a new
 conversation, which carries this one over compacted, or `/compact` in
-`pulse harness chat`). The
+`hive harness chat`). The
 provider itself does not retry such a call - the body is the problem - so
 the shrinking lives in the harness. And a session that resumes an earlier
-one (a conversation whose agent was let go and comes back, `pulse harness
+one (a conversation whose agent was let go and comes back, `hive harness
 chat --resume`, a held run carried on) compacts the carried-over history
 before its first call when it is past either threshold, so a resumed
 conversation starts lean instead of sending everything it ever saw.
@@ -546,13 +546,13 @@ The `SUMMARY:` line opens with an **outcome code** - `done`, `nothing-to-do`,
 `SUMMARY: nothing-to-do - 4f09ccbc covers it`, `SUMMARY: blocked: no login`)
 - which both the job brief and the harness prompt ask for. The runner reads
 that code before any of the summary's words (`classify_outcome` in
-`crates/pulse-runner/src/brief.rs`); only a summary without a code falls back
+`crates/hive-runner/src/brief.rs`); only a summary without a code falls back
 to the old text rules (`blocked:`/`failed:` before the first colon, the
 "blocked" regex in recovery's failure classification). Every run writes the
 code and the path that classified it to `runs.outcome` and
 `runs.outcome_source` (`code`, `text` for the regex fallback, `none` without
 a summary), says it in the run log (`outcome: blocked (from the worker's
-SUMMARY outcome code)`) and on its `run.finish` event, and `pulse status`
+SUMMARY outcome code)`) and on its `run.finish` event, and `hive status`
 counts the day's runs by source - so the fallback rate can be watched fall.
 A `blocked` or `failed` code also fails the
 job, even when the worker exits zero, so unfinished work reaches recovery
@@ -561,7 +561,7 @@ only when that command succeeds without timing out; otherwise the error
 returns to the agent for diagnosis.
 
 **Three budgets** bound every run, all owner settings (Settings → Harness
-**Budgets**, or `pulse settings set`): `harness.max_steps` model calls (60), the wall
+**Budgets**, or `hive settings set`): `harness.max_steps` model calls (60), the wall
 clock (`minutes_per_job`, the harness stops one minute before the runner
 would kill it), and `harness.max_cost` - the provider-reported cost one run
 may spend, `0` meaning no cap. `harness.max_steps none` (also `off` or
@@ -647,7 +647,7 @@ provider lists for the model - Copilot's per-model limit, Anthropic's
 Fable and Mythos; 200k for the older models), Gemini's `inputTokenLimit`
 (a million) - or 128,000 tokens when it lists none, and
 `harness.context_window` (Settings → Harness **Run mode
-and transcript size**, or `--context-window` on `pulse harness run`)
+and transcript size**, or `--context-window` on `hive harness run`)
 overrides it when the list says nothing or less than the deployment really
 takes, `0` meaning "whatever the model lists". Each collapse leaves a `note`
 step in the transcript (`collapsed 4 older observations to make room in the
@@ -675,7 +675,7 @@ ranges, and returns numbered text lines; binary files report their size only.
 ````text
 ```grep
 TODO|FIXME
-crates/pulse-harness/src
+crates/hive-harness/src
 ```
 ````
 
@@ -699,7 +699,7 @@ clear match-count error. An empty SEARCH creates a new file only when the
 target does not exist. Absolute paths, `..`, symlinks that escape the clone,
 and paths denied by the harness policy are refused.
 
-The trajectory JSON under `~/.pulse/harness/<session>.json` is rewritten
+The trajectory JSON under `~/.hive/harness/<session>.json` is rewritten
 atomically every five steps and again at session end, on harness errors and on
 cancellation. A crash between flushes may lose up to four steps from the JSON
 file; the durable record is the per-step `harness_steps` store rows. Every
@@ -715,17 +715,17 @@ the Harness page.
 
 ### Testing the loop without a login
 
-`PULSE_HARNESS_FAKE=1` registers a
-scripted provider, `fake`: `pulse harness run --provider fake --model fake-1
+`HIVE_HARNESS_FAKE=1` registers a
+scripted provider, `fake`: `hive harness run --provider fake --model fake-1
 -p 'say hi' -C "$(mktemp -d)" --no-store` walks the whole loop on a built-in
-two-reply script, and `PULSE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
+two-reply script, and `HIVE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
 (`{"replies":[{"command":"echo hi"},{"report":"SUMMARY: done"}]}`; add
 `"loop":true` to repeat the last reply). It never appears in Settings; it is
 for tests and demos.
 Commands or native paths that would leave the clone (`git push`, changing
-`git remote`, any `gh` call) or touch credentials (`~/.ssh`, `.netrc`, the pulse home's
-`private/` directory under any spelling - `~/.pulse/private`,
-`$PULSE_HOME/private`, a measurement home's `private/providers` -
+`git remote`, any `gh` call) or touch credentials (`~/.ssh`, `.netrc`, the hive home's
+`private/` directory under any spelling - `~/.hive/private`,
+`$HIVE_HOME/private`, a measurement home's `private/providers` -
 `~/.copilot`, `~/.config/gh`) are refused without being run; the model is
 told why and continues. Native actions reuse the same deny rules as shell so
 the two paths cannot drift. The macOS filesystem root `/private/`, which
@@ -738,7 +738,7 @@ not signed in - one stderr line beginning `not logged in:` names the reason
 (no login, a token GitHub rejected, an account without a Copilot seat, a
 token that is not Copilot-enabled) and the fix. The runner marks a `4` as a
 login fault of the machine, never of the job - and while this machine has no
-login the daemon starts no worker here at all: the `capacity` line of `pulse
+login the daemon starts no worker here at all: the `capacity` line of `hive
 status` and the console's **The machine** panel say why (`workers held: …`
 with a **Sign in** link to Settings → Harness), one daily finding lands on
 the brain's board, and remote hands keep working. `5` means the owner
@@ -753,7 +753,7 @@ fresh clone.
 ### Stopping a run
 
 The **Cancel run** button on a session (a click, then a
-confirm - it posts `POST /api/v1/harness/sessions/ID/cancel`) or `pulse
+confirm - it posts `POST /api/v1/harness/sessions/ID/cancel`) or `hive
 harness cancel ID` writes `cancel_requested_at` on the session and emits a
 `harness.cancel` event. The harness polls its own session row every two
 seconds and stops between steps with exit status `cancelled` - the in-flight
@@ -764,14 +764,14 @@ that cannot reach the store is stopped from outside. The job fails as
 retry; the recovery note counts it as `cancelled by the owner`) - cancel the
 task, or queue it again, when you want. A second click while the first is
 pending answers `pending`; a session that already ended answers `409`. Off
-the store, `--cancel-file PATH` (or `PULSE_HARNESS_CANCEL=PATH`) stops a run
+the store, `--cancel-file PATH` (or `HIVE_HARNESS_CANCEL=PATH`) stops a run
 when the file appears.
 
 ### The system prompt is a setting
 
 `harness.system_prompt` holds the
 `{{.Field}}` template the harness renders before every run; empty means the
-built-in one. `pulse harness prompt --default` prints the template, `pulse
+built-in one. `hive harness prompt --default` prints the template, `hive
 harness prompt` the rendered prompt for the current settings and directory,
 `--raw` the stored template, and `GET /api/v1/harness/prompt` returns all of
 those for the console's **System prompt** editor (Settings → Harness:
@@ -783,21 +783,21 @@ without it gets them appended; their text is never scanned for keys, so an
 `AGENTS.md` that documents `{{.Something}}` is safe). A template that does
 not parse is refused when saved; one that fails to render fails the run with
 the template error rather than a silent default. `--prompt-file PATH` (or
-`PULSE_HARNESS_PROMPT_FILE`) overrides the setting for one run.
+`HIVE_HARNESS_PROMPT_FILE`) overrides the setting for one run.
 
 Each run is a **session** in the store (`harness_sessions`, `harness_steps`)
 keyed by the run id, streamed step by step while it runs - the console's
-**Harness** page and `pulse harness sessions` / `pulse harness show ID` read
+**Harness** page and `hive harness sessions` / `hive harness show ID` read
 them. A run on a remote hand streams the same way: the harness there appends
 begin, step and finish JSONL events to a steps file (`--steps-file PATH`, or
-`PULSE_HARNESS_STEPS`, which the runner sets for remote jobs; `--steps-file -`
+`HIVE_HARNESS_STEPS`, which the runner sets for remote jobs; `--steps-file -`
 streams them to stdout one object per line, with the command's own `--json`
 result as the last line, for a program that drives a run or a chat), the hands
 serve it by offset (`steps JOB SESSION OFFSET`, next to the heartbeat
 snapshot), and the daemon mirrors the lines into the brain's store as they
 arrive, tagged with the executor's name - so the Harness page shows every
 executor's steps before the job finishes. A trajectory JSON under
-`~/.pulse/harness/<session>.json` holds the full messages for replay or
+`~/.hive/harness/<session>.json` holds the full messages for replay or
 evaluation; **Download trajectory** on a session (`GET
 /api/v1/harness/sessions/ID/trajectory`, confined to that folder) hands you
 the file, and `GET /api/v1/harness/sessions/ID/file?path=REL` reads one file
@@ -807,7 +807,7 @@ the worktree is gone).
 
 The **Harness** page opens with the day's numbers - running, today,
 submitted, failed, and cost (a dash for providers that report none) - from
-the `counts` object every sessions list carries (`pulse harness status`
+the `counts` object every sessions list carries (`hive harness status`
 prints the same `submitted_today` and `cost_today`). The list pages backwards
 on a `(started_at, id)` cursor (`?before=…` from the previous page's
 `next_before`; **Load more**), so a fleet whose sessions all started in the
@@ -820,7 +820,7 @@ worked it.
 
 ## Chatting with the harness
 
-`pulse harness chat` is the same agent as a
+`hive harness chat` is the same agent as a
 conversation: it runs in your terminal, in the directory you point it at
 (`-C`), with the same tools, instruction files, skills, hooks, MCP servers
 and deny rules as a job - but it speaks to a person. Each line you type is a
@@ -856,7 +856,7 @@ everything from the start and `/approve` toggles it. Reads, searches, the
 `plan`, `skill`, `fetch` and `subagent` tools and commands that only look
 run without asking. The model may also **ask you** through a `question`
 tool (a question and optional choices; a number picks one). When the input
-is a pipe rather than a terminal - `echo 'what does this build?' | pulse
+is a pipe rather than a terminal - `echo 'what does this build?' | hive
 harness chat -C .` - every line is a turn, changes are declined unless
 `--yes`, questions go unanswered (the model is told to decide), and stdout
 carries only the model's replies, so the output is scriptable; `--json`
@@ -866,7 +866,7 @@ drives the chat sees the reads, commands and edits as well as the replies.
 
 In a terminal the prompt is a **line editor**: arrow keys and Emacs keys edit
 the line, Up/Down and Ctrl-R walk the input history (kept across sessions in
-`~/.pulse/harness/chat_history`), Tab completes `/commands` at the start of a
+`~/.hive/harness/chat_history`), Tab completes `/commands` at the start of a
 line and file paths after `@`, and a line ending in `\` continues on the next
 (the editor keeps asking until the backslash goes). Text typed while a turn
 runs is kept for the next prompt. **`@PATH`** anywhere in a message attaches
@@ -914,7 +914,7 @@ the branch's commits and diff, write the title and description, push and
 run `gh pr create` - the push and the create go through the usual command
 approval, and it refuses on `main` or with a detached HEAD; `/export
 [PATH]` writes the conversation as
-Markdown (default `~/.pulse/harness/ID.md`); `/env` prints what the agent
+Markdown (default `~/.hive/harness/ID.md`); `/env` prints what the agent
 has in hand - model, context window, budgets, mode, tools, instruction
 files, skills, hooks, MCP servers, deny rules, permission rules,
 background processes; `/init` asks the model to
@@ -923,11 +923,11 @@ write or improve the project's `AGENTS.md` from what it finds; `/delegate
 it on the board as a task for the fleet (the directory must be a
 registered project), so a chat that found the work hands it off; `/session`
 shows the session id. `-p TEXT` sends a first message before reading the
-rest. Every session is a store session like a run (`pulse harness
-sessions`, the Harness page, `pulse harness cancel ID` stops its current
+rest. Every session is a store session like a run (`hive harness
+sessions`, the Harness page, `hive harness cancel ID` stops its current
 turn) with status `ended` when you leave, and its trajectory under
-`~/.pulse/harness/ID.json` is rewritten after every turn with the full
-conversation, so a session survives a closed terminal: `pulse harness chat
+`~/.hive/harness/ID.json` is rewritten after every turn with the full
+conversation, so a session survives a closed terminal: `hive harness chat
 --resume ID` carries the conversation into a new session (the model is
 told time has passed and files may have changed) and `--continue` picks
 the newest session that ran in this directory. Sessions use the built-in
@@ -953,7 +953,7 @@ What a shell command changed is not recorded - `git` is the rewind for
 that. A rewound turn's copies are forgotten; after `/rewind N files` the
 turn stays in the list as `no file changes`, so the numbers do not shift.
 The copies live beside the trajectory in
-`~/.pulse/harness/ID.rewind/` and follow a session through `--resume`
+`~/.hive/harness/ID.rewind/` and follow a session through `--resume`
 (`resumed session ID: 6 messages carried over; 2 turns can still be
 rewound`). After compaction the messages of the turns folded into the
 summary cannot be dropped; their files can (`/rewind 1 files`). The
@@ -987,24 +987,24 @@ rules change nothing in a job, which asks nobody.
 ## Providers, sign-in and models
 
 ```bash
-pulse harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); for anthropic, Anthropic's own CLI opens the browser and there is no code; --with-token reads a key or token on stdin; --provider <name> picks the provider
-pulse harness status                    # harness, provider, who is signed in, the models and limits in force
-pulse harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
-pulse harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events (- for stdout, which implies --json), --max-cost 2 --keep-observations 3 override the budgets (--max-steps none lifts the call cap), --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages, again each time it fills back up (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
-pulse harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, #123 attaches a GitHub issue or pull request through gh, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /review /pr /export /env /init /delegate /new /sessions /help inside
-pulse harness sessions --project my-app # recent sessions; pulse harness show ID prints one transcript
-pulse harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
-pulse harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one
-pulse harness logout                    # forget the stored login
+hive harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); for anthropic, Anthropic's own CLI opens the browser and there is no code; --with-token reads a key or token on stdin; --provider <name> picks the provider
+hive harness status                    # harness, provider, who is signed in, the models and limits in force
+hive harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
+hive harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events (- for stdout, which implies --json), --max-cost 2 --keep-observations 3 override the budgets (--max-steps none lifts the call cap), --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages, again each time it fills back up (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
+hive harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, #123 attaches a GitHub issue or pull request through gh, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /review /pr /export /env /init /delegate /new /sessions /help inside
+hive harness sessions --project my-app # recent sessions; hive harness show ID prints one transcript
+hive harness cancel ID                 # stop a running session between steps (exit 5; the job is held from recovery)
+hive harness prompt                    # the rendered system prompt; --default the built-in template, --raw the stored one
+hive harness logout                    # forget the stored login
 ```
 
 ### Sign-in and where the token lives
 
 The default provider is GitHub Copilot: the
-console's *Sign in with GitHub* (or `pulse harness login`) runs GitHub's
+console's *Sign in with GitHub* (or `hive harness login`) runs GitHub's
 device flow with the Copilot editor app, checks that the account actually has
-Copilot, and stores the GitHub token in `~/.pulse/private/providers/copilot.json`
-(mode 0600, never echoed; `pulse harness logout` removes it). That file wins.
+Copilot, and stores the GitHub token in `~/.hive/private/providers/copilot.json`
+(mode 0600, never echoed; `hive harness logout` removes it). That file wins.
 Without it the harness borrows, in order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`
 or `GITHUB_TOKEN` from the environment; the login the Copilot editor plugins
 keep in `~/.config/github-copilot/apps.json` (or `hosts.json`); the Copilot
@@ -1022,7 +1022,7 @@ redacted of token shapes.
 ### Models
 
 `worker_model`, `light_model` and `measure_model` (Settings →
-Harness, or `pulse settings set`) choose among the models the provider lists
+Harness, or `hive settings set`) choose among the models the provider lists
 for the signed-in account; empty means the provider's default chat model. The console shows
 each model's vendor, tool-call support, premium multiplier and context window.
 Beside each sits its reasoning effort (`worker_reasoning`, `light_reasoning`,
@@ -1035,32 +1035,32 @@ the harness runs.
 
 ### Only harness
 
-The built-in harness is the only way PULSE runs workers,
-leads and measurements; nothing besides the `pulse` binary is installed on a
+The built-in harness is the only way Hive runs workers,
+leads and measurements; nothing besides the `hive` binary is installed on a
 machine that runs agents. The settings of the retired `copilot-cli` run mode
 (`harness`, `runner_cmd`, `max_ai_credits`) are swept out of an older store
 the first time a newer binary opens it, each one logged as a `setting.retired`
-event, and `pulse settings set` refuses them as unknown.
+event, and `hive settings set` refuses them as unknown.
 
-**Adding a provider** is one crate under `crates/pulse-provider-<name>`
-that implements `pulse_provider::Provider` (`chat`, `models`, `status`) and,
+**Adding a provider** is one crate under `crates/hive-provider-<name>`
+that implements `hive_provider::Provider` (`chat`, `models`, `status`) and,
 optionally, `DeviceLogin`, `TokenLogin` and `Logouter`, then registers
-itself with `pulse_provider::register` - the harness, the CLI verbs, the hub routes
+itself with `hive_provider::register` - the harness, the CLI verbs, the hub routes
 and the console's sign-in card pick it up through the `provider` setting.
 A vendor that speaks the OpenAI chat completions API is not a crate but one
-`Vendor` entry in `pulse-provider-openai` (name, label, default endpoint, the
+`Vendor` entry in `hive-provider-openai` (name, label, default endpoint, the
 key and base-URL environment variables, whether a key is optional, how the
 key travels, and which device login it offers, if any), which the crate's
 single `register()` turns into a provider; a native API (Anthropic, Gemini)
 gets its own crate. The shared pieces - the pasted-key file, the environment
-fallback, the status card wording, logout - live in `pulse_provider::apikey`,
+fallback, the status card wording, logout - live in `hive_provider::apikey`,
 and the RFC 8628 device code flow (begin, poll, refresh, the JWT helpers) in
-`pulse_provider::device`, so every key-based vendor behaves the same way and
+`hive_provider::device`, so every key-based vendor behaves the same way and
 a vendor with a device login stores it in the same file with its refresh
 token and expiry.
 A provider's own settings are named `provider.<name>.*`; `Store::provider_settings()`
-hands all of them to `pulse_provider::open` in one map. A provider hands the
-harness one assistant message per call: `pulse_provider::merge_choices`
+hands all of them to `hive_provider::open` in one map. A provider hands the
+harness one assistant message per call: `hive_provider::merge_choices`
 folds every `choices[i]` of a chat-completion reply into it, so a gateway
 that puts the narration in one choice and the tool call in the next (Copilot
 does) still yields a reply the harness acts on instead of a prose-only turn
@@ -1069,20 +1069,20 @@ that costs a `format_retry`.
 ### Other providers
 
 Every provider but Copilot takes an API key:
-`pulse settings set provider <name>`, then paste the key in the console's
-Harness card or run `pulse harness login --provider <name> --with-token`
-(reads stdin) - it lands in `~/.pulse/private/providers/<name>.json` (0600,
-never echoed; `pulse harness logout --provider <name>` removes it). Without
+`hive settings set provider <name>`, then paste the key in the console's
+Harness card or run `hive harness login --provider <name> --with-token`
+(reads stdin) - it lands in `~/.hive/private/providers/<name>.json` (0600,
+never echoed; `hive harness logout --provider <name>` removes it). Without
 the file the provider borrows the key from its environment variable, so
 `OPENAI_API_KEY` and the like work for one-off runs. Each provider calls the
 endpoint in `provider.<name>.base_url` (Settings → **Model provider**); while
-that keeps its default, its `*_BASE_URL` variable stands in when set. `pulse
+that keeps its default, its `*_BASE_URL` variable stands in when set. `hive
 harness models --provider <name>` lists what the endpoint serves. None of
 them reports a cost, so `harness.max_cost` does not apply to them - the step
 and time budgets do.
 
 To point a provider at a proxy, a gateway or a local server, set its key
-(`pulse settings set provider.<name>.base_url <url>`), or leave the setting
+(`hive settings set provider.<name>.base_url <url>`), or leave the setting
 at its default and export the environment variable beside it:
 
 | Setting | Default | Environment variable |
@@ -1106,7 +1106,7 @@ at its default and export the environment variable beside it:
 The variable is read only while the setting keeps its default; a value set
 in the store wins. `provider.azure-openai.base_url` and
 `provider.custom.base_url` have no default and read `AZURE_OPENAI_ENDPOINT`
-and `PULSE_CUSTOM_BASE_URL` while they are empty - both are described below.
+and `HIVE_CUSTOM_BASE_URL` while they are empty - both are described below.
 
 Two of them also sign in with a device code, the way Copilot does, so no key
 has to be minted or pasted: the Harness card shows *Sign in with GitHub* for
@@ -1115,7 +1115,7 @@ login is checked against the Models catalog and stored like a pasted token)
 and *Sign in with Microsoft* for `azure-openai` (the Microsoft Entra device
 code flow with the Azure CLI's public client in the tenant
 `provider.azure-openai.tenant`, default `organizations`; the account needs
-the *Cognitive Services OpenAI User* role on the resource). `pulse harness
+the *Cognitive Services OpenAI User* role on the resource). `hive harness
 login --provider github-models|azure-openai` is the same flow in a terminal.
 A Microsoft sign-in stores its refresh token with the access token and
 renews itself about five minutes before expiry, so workers never see an
@@ -1130,7 +1130,7 @@ flows are deliberately not wired up, so those stay on API keys - except for
 the Anthropic Console sign-in below, which goes through Anthropic's own CLI.
 
 The OpenAI-compatible vendors all speak the chat completions API with the
-same one bash tool and all live in `pulse-provider-openai`: `openai`
+same one bash tool and all live in `hive-provider-openai`: `openai`
 (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, default `https://api.openai.com/v1`),
 `azure-openai` (`AZURE_OPENAI_API_KEY` or *Sign in with Microsoft*,
 `AZURE_OPENAI_ENDPOINT`; no default - set `provider.azure-openai.base_url` to
@@ -1153,11 +1153,11 @@ which need no key - their status card says `no key needed` - though one in
 Every other base-URL variable is `<VENDOR>_BASE_URL` (`GROQ_BASE_URL`,
 `MISTRAL_BASE_URL`, …). Any other OpenAI-compatible server - a gateway, a
 proxy, a hosted model none of the names above covers - is the `custom`
-vendor, described by settings alone: `pulse settings set
-provider.custom.base_url https://<host>/v1` (or `PULSE_CUSTOM_BASE_URL`;
+vendor, described by settings alone: `hive settings set
+provider.custom.base_url https://<host>/v1` (or `HIVE_CUSTOM_BASE_URL`;
 there is no default, and a call without one fails before it is made), a key
-pasted in the Harness card, given to `pulse harness login --provider custom
---with-token` or read from `PULSE_CUSTOM_API_KEY`; `provider.custom.no_key
+pasted in the Harness card, given to `hive harness login --provider custom
+--with-token` or read from `HIVE_CUSTOM_API_KEY`; `provider.custom.no_key
 on` makes it keyless like the local servers, and
 `provider.custom.api_key_header x-api-key` sends the raw key in that header
 instead of `Authorization: Bearer`. Pick it like any vendor, `provider
@@ -1168,12 +1168,12 @@ one-liners).
 
 `anthropic` (Anthropic Claude; *Sign in with Anthropic*, a pasted Console
 API key, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
-default `https://api.anthropic.com`; crate `pulse-provider-anthropic`) speaks
+default `https://api.anthropic.com`; crate `hive-provider-anthropic`) speaks
 the native Messages API: the bash tool goes out as `tool_use` and its output
 comes back as `tool_result`, and `max_tokens` defaults to 8192. `gemini`
 (Google Gemini; `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `GEMINI_BASE_URL`,
 default `https://generativelanguage.googleapis.com`; crate
-`pulse-provider-gemini`) speaks the native `generateContent` API with
+`hive-provider-gemini`) speaks the native `generateContent` API with
 `functionCall` / `functionResponse`, and sanitizes the tool schemas to the
 OpenAPI subset Gemini accepts. Both report their models' context windows
 from the model list - Anthropic's `max_input_tokens` and `max_tokens` (a
@@ -1185,22 +1185,22 @@ tightens past 80% of it exactly as it does with Copilot, and
 
 ### Signing in with Anthropic
 
-*Sign in with Anthropic* (the Harness card, or `pulse harness login
+*Sign in with Anthropic* (the Harness card, or `hive harness login
 --provider anthropic`) is the Anthropic Console's OAuth sign-in, run by
 Anthropic's own CLI, `ant` (`brew install anthropics/tap/ant`, or a release
-from github.com/anthropics/anthropic-cli). PULSE starts `ant auth login`,
-which opens the browser on the machine PULSE runs on and finishes by itself
+from github.com/anthropics/anthropic-cli). Hive starts `ant auth login`,
+which opens the browser on the machine Hive runs on and finishes by itself
 once you approve; there is no code to type, and the console notices on its
-own. `ant` keeps the OAuth profile under `~/.config/anthropic`; PULSE keeps
-only a marker, `~/.pulse/private/providers/anthropic-signin.json` (the
+own. `ant` keeps the OAuth profile under `~/.config/anthropic`; Hive keeps
+only a marker, `~/.hive/private/providers/anthropic-signin.json` (the
 profile - `ANTHROPIC_PROFILE` at sign-in, empty for the active one - and a
-label, never a token). When a run needs a token PULSE asks `ant auth
+label, never a token). When a run needs a token Hive asks `ant auth
 print-credentials --access-token`, which refreshes the profile itself, keeps
 the answer in memory for four minutes and sends it as `Authorization: Bearer`
 with `anthropic-beta: oauth-2025-04-20`. A token refused mid-run is fetched
 again once; when `ant` can no longer hand one out, runs wait for a sign-in
 like any provider without a login and the card says "The Anthropic sign-in
-ended. Sign in again." The binary is found through `PULSE_ANT_BIN`, `PATH`,
+ended. Sign in again." The binary is found through `HIVE_ANT_BIN`, `PATH`,
 `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, since a daemon
 started by launchd runs with a thin `PATH`.
 

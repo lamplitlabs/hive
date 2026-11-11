@@ -2,7 +2,7 @@
 // contents list of a record and the filter arithmetic. No React, no DOM, so
 // node --test runs it as it is.
 
-import type { Kind } from "../pulse/kind-tile-state";
+import type { Kind } from "../hive/kind-tile-state";
 
 // The kinds an owner writes or decides on; every other kind is the
 // framework's own documentation ("Built-in guides").

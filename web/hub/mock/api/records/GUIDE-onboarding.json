@@ -1,5 +1,5 @@
 {
-  "body": "# Onboarding\n\nRead the board digest first (`pulse board`). Claim before you edit. Post a finding for every failed check and a result when you are done.\n",
+  "body": "# Onboarding\n\nRead the board digest first (`hive board`). Claim before you edit. Post a finding for every failed check and a result when you are done.\n",
   "frontmatter": {
     "areas": [],
     "date": "2026-09-01",
@@ -19,7 +19,7 @@
     "kind": "guide",
     "number": 0,
     "path": "",
-    "project": "pulse",
+    "project": "hive",
     "slug": "onboarding",
     "status": "Draft",
     "tags": [],

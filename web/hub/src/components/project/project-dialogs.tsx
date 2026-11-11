@@ -10,18 +10,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { showApiError } from "@/components/pulse/confirm";
-import { Disclosure, Notice } from "@/components/pulse/panel";
-import { Mono } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { Disclosure, Notice } from "@/components/hive/panel";
+import { Mono } from "@/components/hive/who";
 import { ApiError, api, enc, errorText, writes, type FoldersPayload, type InitResult, type MovedProject, type RemovePreview } from "@/lib/api";
 import { invalidate } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
 // The project lifecycle from the console (ADR-027): register a checkout
-// (`pulse init PATH`), rename a project (its display name; the slug in every
+// (`hive init PATH`), rename a project (its display name; the slug in every
 // URL, job and post stays), point a project at the folder it now lives in
-// (`pulse move SLUG PATH`), remove a project or an executor after a preview
-// (`pulse remove … --dry-run`, then for real), and restore an inactive
+// (`hive move SLUG PATH`), remove a project or an executor after a preview
+// (`hive remove … --dry-run`, then for real), and restore an inactive
 // project. Every write goes through the hub; nothing here touches disk.
 
 type Size = "xs" | "sm" | "default";
@@ -80,7 +80,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
         <DialogHeader>
           <DialogTitle>Add a project</DialogTitle>
           <DialogDescription>
-            Pick the folder of a git checkout on this machine. PULSE adds it as a project, and its lead agent starts on the tasks you give it.
+            Pick the folder of a git checkout on this machine. Hive adds it as a project, and its lead agent starts on the tasks you give it.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3">
@@ -131,7 +131,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
           <div className="rounded-xl border bg-muted/40 px-4 py-3">
             <div className="mb-1.5 text-[13px] font-medium text-foreground">What happens next</div>
             <ol className="grid list-decimal gap-1 pl-4 text-[13px] leading-relaxed text-muted-foreground marker:text-muted-foreground/70">
-              <li>PULSE adds the folder as a project. If it already knows the folder, it refreshes it instead.</li>
+              <li>Hive adds the folder as a project. If it already knows the folder, it refreshes it instead.</li>
               <li>
                 If the checkout has <Mono>docs/context/environment.md</Mono>, agents read it to learn how to build and run the project.
               </li>
@@ -140,7 +140,7 @@ export function AddProjectDialog({ open, onOpenChange, onRegistered }: { open: b
           </div>
           <Disclosure summary="Prefer the terminal?" contentClassName="mt-1.5 text-[13px] text-muted-foreground">
             <p>
-              Run <Mono>pulse init</Mono> in the folder. It does the same thing.
+              Run <Mono>hive init</Mono> in the folder. It does the same thing.
             </p>
           </Disclosure>
         </div>
@@ -417,7 +417,7 @@ function RenameBody({ slug, name, busy, setBusy, onOpenChange, onRenamed }: { sl
 // ----- move (change folder) -----------------------------------------------
 
 // A project follows its checkout to a new folder: the slug, posts, tasks and
-// history stay; only the path changes (`pulse move SLUG PATH`). The usual
+// history stay; only the path changes (`hive move SLUG PATH`). The usual
 // way in is the "Missing on disk" badge - a folder moved, a disk swapped, a
 // clone made again elsewhere. The hub refuses a folder that is no checkout
 // or another project's, and a checkout of a different repository until the
@@ -479,11 +479,11 @@ function MoveBody({ slug, name, path, present, busy, setBusy, onOpenChange, onMo
         <DialogDescription className="anywhere">
           {present ? (
             <>
-              PULSE works on this project in <Mono>{path}</Mono>. Pick the folder it should use from now on. Its tasks, posts and history stay with the project.
+              Hive works on this project in <Mono>{path}</Mono>. Pick the folder it should use from now on. Its tasks, posts and history stay with the project.
             </>
           ) : (
             <>
-              PULSE last saw this project at <Mono>{path}</Mono>, and that folder is not on this disk. Pick the folder it lives in now - the same checkout moved, or cloned again - and its tasks, posts and history stay with it.
+              Hive last saw this project at <Mono>{path}</Mono>, and that folder is not on this disk. Pick the folder it lives in now - the same checkout moved, or cloned again - and its tasks, posts and history stay with it.
             </>
           )}
         </DialogDescription>
@@ -521,13 +521,13 @@ function MoveBody({ slug, name, path, present, busy, setBusy, onOpenChange, onMo
             onClose={() => setBrowsing(false)}
           />
         ) : null}
-        {unchanged && next ? <p className="text-[13px] text-muted-foreground">That is the folder PULSE already uses.</p> : null}
+        {unchanged && next ? <p className="text-[13px] text-muted-foreground">That is the folder Hive already uses.</p> : null}
       </div>
       {otherRemote && otherRemote.path === next ? (
         <Notice tone="warn">
           <p className="font-medium">This folder is a checkout of another repository.</p>
           <p className="mt-1 text-muted-foreground">{otherRemote.why}</p>
-          <p className="mt-2 text-muted-foreground">If it really is where {label} lives now, PULSE can use it and take over its remote.</p>
+          <p className="mt-2 text-muted-foreground">If it really is where {label} lives now, Hive can use it and take over its remote.</p>
           <Button type="button" variant="outline" size="sm" className="mt-2.5" disabled={busy} onClick={() => void apply(true)}>
             {busy ? <Loader2Icon className="animate-spin" /> : <FolderInputIcon />}
             Use this folder anyway
@@ -536,7 +536,7 @@ function MoveBody({ slug, name, path, present, busy, setBusy, onOpenChange, onMo
       ) : null}
       <Disclosure summary="Prefer the terminal?" contentClassName="mt-1.5 text-[13px] text-muted-foreground">
         <p>
-          Run <Mono>{"pulse move " + slug + " " + (valid ? next : "/path/to/the/checkout")}</Mono>. It does the same thing.
+          Run <Mono>{"hive move " + slug + " " + (valid ? next : "/path/to/the/checkout")}</Mono>. It does the same thing.
         </p>
       </Disclosure>
       <DialogFooter className="items-center gap-2">
@@ -560,14 +560,14 @@ type RemoveKind = "project" | "executor";
 const REMOVE_TEXT: Record<RemoveKind, { title: string; description: string; action: string; keep: string; done: string }> = {
   project: {
     title: "Remove project",
-    description: "Nothing is deleted. PULSE stops working on this project: jobs waiting to start are cancelled and no machine takes its work. Its folder, posts, runs and records all stay, and you can restore it later from the project list.",
+    description: "Nothing is deleted. Hive stops working on this project: jobs waiting to start are cancelled and no machine takes its work. Its folder, posts, runs and records all stay, and you can restore it later from the project list.",
     action: "Remove project",
     keep: "Keep the project",
     done: "You can restore it from the project list any time.",
   },
   executor: {
     title: "Remove machine",
-    description: "PULSE forgets this machine and sends it no more work. Runs it made keep its name, and nothing on the machine itself changes.",
+    description: "Hive forgets this machine and sends it no more work. Runs it made keep its name, and nothing on the machine itself changes.",
     action: "Remove machine",
     keep: "Keep the machine",
     done: "Nothing on the machine itself changed.",
@@ -636,7 +636,7 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
       </DialogHeader>
       {refusal ? (
         <Notice tone="bad" className="text-[13px]">
-          <div className="font-medium">{refusal.error || "PULSE couldn't work out what removing it would change."}</div>
+          <div className="font-medium">{refusal.error || "Hive couldn't work out what removing it would change."}</div>
           {refusal.why ? <div className="mt-0.5 text-muted-foreground">Why: {refusal.why}</div> : null}
           {refusal.fix ? <div className="mt-0.5 text-muted-foreground">What to do: {refusal.fix}</div> : null}
         </Notice>
@@ -647,7 +647,7 @@ function RemoveBody({ kind, name, busy, setBusy, onOpenChange, onApplied }: { ki
           {preview.yours?.length ? (
             <section>
               <PreviewTitle>Left for you to do</PreviewTitle>
-              <p className="mb-1.5 text-[13px] text-muted-foreground">PULSE doesn&apos;t run these for you. Run them in a terminal if they apply.</p>
+              <p className="mb-1.5 text-[13px] text-muted-foreground">Hive doesn&apos;t run these for you. Run them in a terminal if they apply.</p>
               <ul className="grid gap-1">
                 {preview.yours.map((cmd, i) => (
                   <li key={i}>

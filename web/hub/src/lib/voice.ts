@@ -5,7 +5,7 @@
 // The hub route (`/api/v1/voice`) runs NVIDIA's Nemotron streaming ASR on
 // this machine through ONNX Runtime - the model GitHub Copilot's CLI uses
 // for its /voice - so the recording never leaves the computer. The first
-// press fetches the runtime and the model (about 2.5 GB) into PULSE_HOME.
+// press fetches the runtime and the model (about 2.5 GB) into HIVE_HOME.
 
 export interface VoiceFile {
   name: string;

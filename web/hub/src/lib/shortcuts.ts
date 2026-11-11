@@ -10,7 +10,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "G S", what: "Sessions", where: "Go to" },
   { keys: "G T", what: "Tasks", where: "Go to" },
   { keys: "⌘K", what: "Search", where: "Anywhere" },
-  { keys: "⌘J", what: "Ask PULSE", where: "Anywhere" },
+  { keys: "⌘J", what: "Ask Hive", where: "Anywhere" },
   { keys: "?", what: "Keyboard shortcuts", where: "Anywhere" },
   { keys: "J / K", what: "Move down / up", where: "In a list" },
   { keys: "Enter", what: "Open", where: "In a list" },

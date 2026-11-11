@@ -10,13 +10,13 @@ const base = {
   checked_at: "2026-11-09T02:00:00Z",
   error: "",
   newer: true,
-  notice: "A newer PULSE is available: v0.2.0 (running v0.1.0) - https://github.com/o/r/releases/tag/v0.2.0",
+  notice: "A newer Hive is available: v0.2.0 (running v0.1.0) - https://github.com/o/r/releases/tag/v0.2.0",
 };
 
 test("a newer release shows a banner with its link", () => {
   assert.deepEqual(updateBanner(base), {
     latest: "v0.2.0",
-    title: "PULSE v0.2.0 is available",
+    title: "Hive v0.2.0 is available",
     detail: "This machine runs v0.1.0.",
     href: "https://github.com/o/r/releases/tag/v0.2.0",
   });
@@ -32,7 +32,7 @@ test("no banner while the check is off, nothing is newer, or nothing is loaded",
 
 test("a dismissed release stays hidden; the next one shows again", () => {
   assert.equal(updateBanner(base, "v0.2.0"), null);
-  assert.equal(updateBanner({ ...base, latest: "v0.3.0" }, "v0.2.0")?.title, "PULSE v0.3.0 is available");
+  assert.equal(updateBanner({ ...base, latest: "v0.3.0" }, "v0.2.0")?.title, "Hive v0.3.0 is available");
 });
 
 test("only http(s) links are offered", () => {
@@ -79,7 +79,7 @@ test("on the release channel the banner offers Update now", () => {
 test("no button on the source channel, from an older hub, or with nothing loaded", () => {
   const source = updateApplyView({ ...onRelease, channel: "source" });
   assert.equal(source.button, null);
-  assert.match(source.line, /builds PULSE from source/);
+  assert.match(source.line, /builds Hive from source/);
   assert.equal(updateApplyView({ ...base }).button, null);
   assert.equal(updateApplyView(null).button, null);
   assert.equal(updateApplyView(undefined).line, null);

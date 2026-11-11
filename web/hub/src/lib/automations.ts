@@ -129,7 +129,7 @@ export function entryHints(
   e: AutomationEntry,
   minMinutes = 30,
   // The script the automation already runs (an edit): it may stay where it
-  // is, even outside .pulse/.
+  // is, even outside .hive/.
   keptScript = "",
 ): string[] {
   const out: string[] = [];
@@ -168,11 +168,11 @@ export function entryHints(
       out.push(
         "The script path is relative to the repository root, without a leading slash or ..",
       );
-    else if (!scriptInPulse(e.script) && e.script.trim() !== keptScript.trim())
+    else if (!scriptInHive(e.script) && e.script.trim() !== keptScript.trim())
       out.push(
-        "The script lives under .pulse/ so everything PULSE adds to the repository stays in one place: " +
+        "The script lives under .hive/ so everything Hive adds to the repository stays in one place: " +
           scriptHome(e.name) +
-          ", or anywhere under .pulse/.",
+          ", or anywhere under .hive/.",
       );
   } else if (!e.brief.trim() && !e.skill.trim())
     out.push("Say what each job does (a brief), or name the skill it follows.");
@@ -238,7 +238,7 @@ export function cleanEntry(e: AutomationEntry): AutomationEntry {
 }
 
 // The repository entry a schedule row came from, when the repository still
-// has it: its own file under .pulse/automations/ first, else the item of the
+// has it: its own file under .hive/automations/ first, else the item of the
 // `schedules:` list.
 export function fileEntryOf(
   p: AutomationProject,
@@ -253,19 +253,19 @@ export function fileEntryOf(
 
 // True for a path under the automations folder.
 export const inFolder = (path: string): boolean =>
-  path.startsWith(".pulse/automations/");
+  path.startsWith(".hive/automations/");
 
-// Whether a script path is under the project's .pulse/ folder - the rule a
-// new check's or watch's script meets (`schedules::script_in_pulse`).
-export const scriptInPulse = (path: string): boolean => {
+// Whether a script path is under the project's .hive/ folder - the rule a
+// new check's or watch's script meets (`schedules::script_in_hive`).
+export const scriptInHive = (path: string): boolean => {
   const t = path.trim().replace(/^\.\//, "");
-  return t.startsWith(".pulse/") && t.length > ".pulse/".length;
+  return t.startsWith(".hive/") && t.length > ".hive/".length;
 };
 
 // The place a check's or watch's script belongs: beside its automation
-// file, `.pulse/automations/<name>.sh`.
+// file, `.hive/automations/<name>.sh`.
 export const scriptHome = (name: string): string =>
-  ".pulse/automations/" + (name.trim() || "<name>") + ".sh";
+  ".hive/automations/" + (name.trim() || "<name>") + ".sh";
 
 // The label the daemon puts before a problem of one automation.
 const LABEL = /^schedule `([^`]*)`: /;
@@ -334,13 +334,13 @@ export function daemonProblems(p: AutomationProject): string[] {
 // The label the daemon puts before a problem of one skill folder.
 const SKILL_PROBLEM = /^skill \S+\/SKILL\.md: /;
 
-// A schedule whose script sits outside .pulse/ (set before the rule), with
+// A schedule whose script sits outside .hive/ (set before the rule), with
 // the place the script belongs.
 export function scriptOutside(
   s: Pick<AutomationSchedule, "kind" | "script" | "script_outside">,
 ): boolean {
   if (!isScriptKind(s.kind) || !s.script) return false;
-  return s.script_outside ?? !scriptInPulse(s.script);
+  return s.script_outside ?? !scriptInHive(s.script);
 }
 
 // ----- history -------------------------------------------------------------

@@ -5,9 +5,9 @@ import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, KeyRoundIcon
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SectionHeading } from "@/components/pulse/item-card";
-import { PageHeader } from "@/components/pulse/page-header";
-import { EmptyState, ErrorNotice, Notice, SkeletonPage } from "@/components/pulse/panel";
+import { SectionHeading } from "@/components/hive/item-card";
+import { PageHeader } from "@/components/hive/page-header";
+import { EmptyState, ErrorNotice, Notice, SkeletonPage } from "@/components/hive/panel";
 import { AppearanceSection } from "@/components/settings/appearance-section";
 import { RunningStrip } from "@/components/settings/running";
 import { BackupSetup, CloudSetup } from "@/components/settings/cloud-setup";
@@ -63,7 +63,7 @@ interface Group {
   clusters?: Cluster[];
   // The rows most people need. The rest wait behind "Show N more".
   primary?: string[];
-  // A read-only block above the rows (This machine's "which PULSE runs").
+  // A read-only block above the rows (This machine's "which Hive runs").
   strip?: (canEdit: boolean) => React.ReactNode;
 }
 
@@ -106,7 +106,7 @@ const GROUPS: Group[] = [
   {
     id: "owner",
     title: "You",
-    note: "Tell PULSE whether you're around to answer.",
+    note: "Tell Hive whether you're around to answer.",
     keys: ["owner.name", "owner.presence", "records.auto_adopt"],
     match: (n) => n.startsWith("owner.") || n.startsWith("records."),
   },
@@ -140,7 +140,7 @@ const GROUPS: Group[] = [
   {
     id: "daemon",
     title: "This machine",
-    note: "Which PULSE runs here, how it updates itself, retries failed work and cleans up after runs.",
+    note: "Which Hive runs here, how it updates itself, retries failed work and cleans up after runs.",
     keys: keysOf(DAEMON_CLUSTERS),
     match: (n) => n.startsWith("daemon.") || n.startsWith("heartbeat.") || n.startsWith("hygiene.") || n.startsWith("machine."),
     clusters: DAEMON_CLUSTERS,
@@ -173,7 +173,7 @@ const GROUPS: Group[] = [
     match: (n) => n.startsWith("provider."),
   },
 ];
-const OTHER: Group = { id: "other", title: "Other", note: "Settings this page doesn't group yet. Each one shows PULSE's own description.", keys: [] };
+const OTHER: Group = { id: "other", title: "Other", note: "Settings this page doesn't group yet. Each one shows Hive's own description.", keys: [] };
 
 // The section picker, in page order. Settings shows one section at a time
 // (the URL hash names it, so links like /settings/#harness land there); a
@@ -205,14 +205,14 @@ const useHash = () => useSyncExternalStore(subscribeHash, () => window.location.
 // What the Harness section answers to in the search box besides its own
 // settings (matched like every other row): the card's headings and words.
 // The same for the Notifications card, which keeps its choices in this
-// browser rather than in PULSE's settings.
+// browser rather than in Hive's settings.
 const NOTIFY_WORDS = "notifications notify notification alerts alert sound chime bell desktop browser mac question waits for you finished done reply";
 // Appearance is browser-only (no setting rows), so a search reaches it by its words.
 const APPEARANCE_WORDS = "appearance theme dark light system mode density compact comfortable font geist readable atkinson text size larger default look colours colors";
 
 const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in github microsoft entra tenant device code copilot token api key openai anthropic claude gemini google azure openrouter groq mistral deepseek xai grok together fireworks cerebras ollama lmstudio vllm model models model provider limits per run run mode and transcript size built-in native copilot cli credits cost system prompt preview context window 1m million tokens reasoning effort thinking";
 
-// Mirrors ModelSettings, ComputeSettings, EvolveSettings and DaemonSettings in the store (crates/pulse-store).
+// Mirrors ModelSettings, ComputeSettings, EvolveSettings and DaemonSettings in the store (crates/hive-store).
 // These rows are not inserted at Create, so when the hub omits one the
 // screen still lists it at its effective (default) value and the owner can
 // set it from here.
@@ -220,7 +220,7 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "owner.presence", value: "present", default: "present", kind: "choice", min: null, choices: ["present", "away"], description: "present: proposals, compute requests and owner questions wait for you; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you" },
   { name: "light_model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model" },
   { name: "measure_model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model the self-improvement loop measures fixtures with - every baseline, experiment and landing re-measure; empty means worker_model. It is part of the evaluator: a change re-measures every baseline, and a pinned value keeps the baselines when worker_model changes" },
-  { name: "ask.model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model Ask answers the owner's questions with (console Ask, pulse ask); empty means light_model, then worker_model, then the provider's default chat model" },
+  { name: "ask.model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model Ask answers the owner's questions with (console Ask, hive ask); empty means light_model, then worker_model, then the provider's default chat model" },
   { name: "worker_reasoning", value: "", default: "", kind: "choice", min: null, choices: ["", "default", "minimal", "low", "medium", "high", "xhigh"], description: "the reasoning effort of the runs that change code - task, improve and experiment jobs - and of a worker-class agent; empty means harness.reasoning; default sends nothing and leaves the model's own setting" },
   { name: "light_reasoning", value: "", default: "", kind: "choice", min: null, choices: ["", "default", "minimal", "low", "medium", "high", "xhigh"], description: "the reasoning effort of the light runs - lead, answer, ballot, reflect, onboard and clean jobs - and of a light-class agent; empty means harness.reasoning; default sends nothing" },
   { name: "measure_reasoning", value: "", default: "", kind: "choice", min: null, choices: ["", "default", "minimal", "low", "medium", "high", "xhigh"], description: "the reasoning effort the self-improvement loop measures fixtures with; empty means worker_reasoning, then harness.reasoning; default sends nothing. Like measure_model it is part of the evaluator: a change re-measures every baseline" },
@@ -229,9 +229,9 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "compute.max_hours_per_day", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "VM-hours the runner may approve per UTC day; 0 means none" },
   { name: "compute.auto_approve", value: "0", default: "0", kind: "switch", min: null, choices: null, description: "1 lets within-cap requests start without the owner; 0 holds every request for a decision" },
   { name: "compute.budget_credits", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "credits the compute requests may spend in total; 0 means no budget" },
-  { name: "compute.self_heal", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a refused login is replaced from the executor token on file (pulse executor token); 0: never" },
-  { name: "compute.self_retire", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a machine PULSE created whose login stays refused is stopped and retired, then deleted after the grace hours; 0: it is left as it is" },
-  { name: "compute.retire_grace_hours", value: "24", default: "24", kind: "count", min: 1, choices: null, description: "hours a retired machine stays stopped before it is deleted; starting it again at the provider (the finding names the command) and pulse executor activate within them keep it" },
+  { name: "compute.self_heal", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a refused login is replaced from the executor token on file (hive executor token); 0: never" },
+  { name: "compute.self_retire", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a machine Hive created whose login stays refused is stopped and retired, then deleted after the grace hours; 0: it is left as it is" },
+  { name: "compute.retire_grace_hours", value: "24", default: "24", kind: "count", min: 1, choices: null, description: "hours a retired machine stays stopped before it is deleted; starting it again at the provider (the finding names the command) and hive executor activate within them keep it" },
   { name: "compute.azure.subscription", value: "", default: "", kind: "identifier", min: null, choices: null, description: "Azure subscription id the VMs are created in" },
   { name: "compute.azure.resource_group", value: "", default: "", kind: "identifier", min: null, choices: null, description: "resource group that holds the executor VMs" },
   { name: "compute.azure.location", value: "", default: "", kind: "identifier", min: null, choices: null, description: "Azure region, e.g. westeurope" },
@@ -242,29 +242,29 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "compute.aws.instance_type", value: "t3.medium", default: "t3.medium", kind: "identifier", min: null, choices: null, description: "EC2 instance type for a provisioned hand, e.g. t3.medium" },
   { name: "compute.aws.image", value: "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id", default: "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id", kind: "identifier", min: null, choices: null, description: "AMI id (ami-...) or an SSM public parameter path resolved at launch; the default is Canonical's current Ubuntu 24.04 amd64 image" },
   { name: "compute.aws.subnet", value: "", default: "", kind: "identifier", min: null, choices: null, description: "subnet id the instances join; empty means the default VPC's default subnet in the region" },
-  { name: "compute.aws.security_group", value: "", default: "", kind: "identifier", min: null, choices: null, description: "security group id the instances get; empty means a group named pulse-hands that allows ssh in, created when missing" },
+  { name: "compute.aws.security_group", value: "", default: "", kind: "identifier", min: null, choices: null, description: "security group id the instances get; empty means a group named hive-hands that allows ssh in, created when missing" },
   { name: "compute.gcp.project", value: "", default: "", kind: "identifier", min: null, choices: null, description: "Google Cloud project the instances are created in; empty means gcloud's current project (auth is gcloud auth login on this machine)" },
   { name: "compute.gcp.zone", value: "", default: "", kind: "identifier", min: null, choices: null, description: "Compute Engine zone, e.g. europe-west4-a" },
   { name: "compute.gcp.machine_type", value: "e2-medium", default: "e2-medium", kind: "identifier", min: null, choices: null, description: "machine type for a provisioned hand, e.g. e2-medium" },
   { name: "compute.gcp.image", value: "ubuntu-2404-lts-amd64", default: "ubuntu-2404-lts-amd64", kind: "identifier", min: null, choices: null, description: "Ubuntu image family in ubuntu-os-cloud, e.g. ubuntu-2404-lts-amd64, or a full image path projects/P/global/images/I" },
-  { name: "compute.gcp.network", value: "", default: "", kind: "identifier", min: null, choices: null, description: "VPC network the instances join; empty means default. A firewall rule pulse-hands-ssh (tcp 22 to the tag pulse-hands) is created on it when missing" },
+  { name: "compute.gcp.network", value: "", default: "", kind: "identifier", min: null, choices: null, description: "VPC network the instances join; empty means default. A firewall rule hive-hands-ssh (tcp 22 to the tag hive-hands) is created on it when missing" },
   { name: "compute.multipass.size", value: "cpus=2,mem=4G,disk=32G", default: "cpus=2,mem=4G,disk=32G", kind: "identifier", min: null, choices: null, description: "size of a local multipass hand as cpus=N,mem=SIZE,disk=SIZE, e.g. cpus=2,mem=4G,disk=32G" },
   { name: "compute.multipass.image", value: "24.04", default: "24.04", kind: "identifier", min: null, choices: null, description: "multipass image a local hand launches from, e.g. 24.04" },
-  { name: "evolve.loop", value: "0", default: "0", kind: "switch", min: null, choices: null, description: "1 lets pulse-evolve run cycles back to back; 0 keeps the loop off" },
+  { name: "evolve.loop", value: "0", default: "0", kind: "switch", min: null, choices: null, description: "1 lets hive-evolve run cycles back to back; 0 keeps the loop off" },
   { name: "evolve.limits", value: "none", default: "none", kind: "text", min: null, choices: null, description: "caps the constitution writes for the loop, or none" },
   { name: "evolve.tolerance", value: "0.02", default: "0.02", kind: "text", min: null, choices: null, description: "fraction a measured check may regress before a cycle is discarded" },
   { name: "evolve.heldout", value: "auto", default: "auto", kind: "choice", min: null, choices: ["auto", "owner"], description: "auto: the daemon writes the private held-out set itself, sealed and labelled generated; owner: you write it from the console (ADR-033)" },
   // Owner-private: the hub answers "[owner-private]" instead of the real path once set.
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
   { name: "evolve.draft_hours", value: "24", default: "24", kind: "count", min: 0, choices: null, description: "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button" },
-  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds pulse from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
+  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off"], description: "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
   { name: "daemon.keep_awake", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "on", "always"], description: "on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say" },
-  { name: "machine.labels", value: "", default: "", kind: "text", min: null, choices: null, description: "what this machine offers beyond its OS and architecture, as words a project or job can need (pulse.yaml needs:, pulse job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name" },
+  { name: "machine.labels", value: "", default: "", kind: "text", min: null, choices: null, description: "what this machine offers beyond its OS and architecture, as words a project or job can need (hive.yaml needs:, hive job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name" },
   { name: "machine.reserve", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "on"], description: "on: this machine takes only the jobs that need something it offers (a project with needs: [macos] on the only Mac), so the rest of the queue goes to the other machines; off: it takes any job it can run" },
-  { name: "heartbeat.dead_after", value: "300", default: "300", kind: "count", min: 30, choices: null, description: "seconds an agent may go without a heartbeat before it counts as dead: every pulse command run as an agent beats, so do its hooks, its job lease and the runner supervising its run; a dead worker's run is closed as lost and its job queued again, a dead session simply shows as dead until it beats again; never under 30" },
-  { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main", "pr"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of pulse status and the hub. pr: the daemon pushes the default branch to the pulse/landed branch on the upstream instead and keeps one pull request open from it, so every landing waits for your merge on the forge. off: you push - or ask for a pull request from a task's sheet (ADR-037)" },
-  { name: "push.credential", value: "", default: "", kind: "reference", min: null, choices: null, description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `pulse cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `pulse cred set`, which probes the remote first (ADR-041)" },
+  { name: "heartbeat.dead_after", value: "300", default: "300", kind: "count", min: 30, choices: null, description: "seconds an agent may go without a heartbeat before it counts as dead: every hive command run as an agent beats, so do its hooks, its job lease and the runner supervising its run; a dead worker's run is closed as lost and its job queued again, a dead session simply shows as dead until it beats again; never under 30" },
+  { name: "landing.push", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "main", "pr"], description: "main: after a landing the daemon pushes the project's default branch to its upstream, fast-forward only, with the git credentials this machine already has - or with push.credential when it is set - and pushes what landed earlier and was not pushed yet; a failed push shows in the landing line of hive status and the hub. pr: the daemon pushes the default branch to the hive/landed branch on the upstream instead and keeps one pull request open from it, so every landing waits for your merge on the forge. off: you push - or ask for a pull request from a task's sheet (ADR-037)" },
+  { name: "push.credential", value: "", default: "", kind: "reference", min: null, choices: null, description: "where the daemon's own SSH push key lives, as a reference and never the key itself: op://VAULT/ITEM/FIELD?ssh-format=openssh (1Password, read with a service-account token kept by `hive cred token`), keychain://SERVICE/ACCOUNT (a macOS Keychain item) or file:///ABSOLUTE/PATH (a 0600 file). The key exists on disk only for the seconds of a push; when it cannot be resolved the landing is held with the reason and the daemon never falls back to your credentials. Empty: push with what git already uses. Set it with `hive cred set`, which probes the remote first (ADR-041)" },
 ];
 
 function withExtraDefaults(rows: Setting[]): Setting[] {
@@ -287,10 +287,10 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "review.merge": { choices: { auto: "Agents merge small, safe pull requests themselves", ask: "Ask me: every merge waits for me" } },
   "compute.provider": { choices: { azure: "Azure", aws: "AWS", gcp: "Google Cloud", multipass: "Multipass (on this computer)" } },
   "compute.auto_approve": { on: "On: requests within the limits start by themselves", off: "Off: every request waits for you" },
-  "compute.self_heal": { on: "On: PULSE gives it a fresh login", off: "Off: a refused login stays refused" },
-  "compute.self_retire": { on: "On: PULSE stops it, then deletes it later", off: "Off: the machine is left running" },
+  "compute.self_heal": { on: "On: Hive gives it a fresh login", off: "Off: a refused login stays refused" },
+  "compute.self_retire": { on: "On: Hive stops it, then deletes it later", off: "Off: the machine is left running" },
   "evolve.loop": { on: "On: experiments run back to back", off: "Off: no experiments run" },
-  "evolve.heldout": { choices: { auto: "PULSE writes them", owner: "I write them myself" } },
+  "evolve.heldout": { choices: { auto: "Hive writes them", owner: "I write them myself" } },
   "daemon.self_update": { choices: ON_OFF },
   "daemon.keep_awake": { choices: { off: "Off: the machine sleeps as usual", on: "On while plugged in", always: "On, even on battery" } },
   "machine.reserve": { choices: { off: "Off: takes any job it can run", on: "On: only the jobs that need what it offers" } },
@@ -559,7 +559,7 @@ export default function SettingsPage() {
     };
   }, [order]);
 
-  const title = <PageHeader title="Settings" subtitle="How PULSE runs" />;
+  const title = <PageHeader title="Settings" subtitle="How Hive runs" />;
   if (q.error && !d)
     return (
       <>
@@ -633,7 +633,7 @@ export default function SettingsPage() {
           {!d.available || (d.available && !d.can_edit) || (stopped && page !== "general") ? (
             <div className="grid gap-2 empty:hidden">
               {!d.available ? <Notice tone="warn">Settings aren&apos;t available on this console, so this page is read-only.</Notice> : null}
-              {d.available && !d.can_edit ? <Notice tone="info">This console can&apos;t change settings. Open the console on the machine PULSE runs on to change them.</Notice> : null}
+              {d.available && !d.can_edit ? <Notice tone="info">This console can&apos;t change settings. Open the console on the machine Hive runs on to change them.</Notice> : null}
               {stopped && page !== "general" ? (
                 <Notice tone="bad">
                   All work is paused. Agents won&apos;t start anything new until you resume it under{" "}

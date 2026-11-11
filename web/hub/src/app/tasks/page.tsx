@@ -7,12 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { DataTable } from "@/components/pulse/data-table";
-import { PageHeader } from "@/components/pulse/page-header";
-import { EmptyState, ErrorNotice, SkeletonPage, SkeletonRows } from "@/components/pulse/panel";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { useViewMode } from "@/components/pulse/view-toggle";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { DataTable } from "@/components/hive/data-table";
+import { PageHeader } from "@/components/hive/page-header";
+import { EmptyState, ErrorNotice, SkeletonPage, SkeletonRows } from "@/components/hive/panel";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { useViewMode } from "@/components/hive/view-toggle";
 import { TaskCard } from "@/components/tasks/task-card";
 import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS } from "@/components/tasks/task-columns";
@@ -237,7 +237,7 @@ function TasksScreen() {
       </div>
       {q.error && !q.data ? (
         <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
-          {"The task list didn't load (" + q.error + "). Check that PULSE is running, then try again."}
+          {"The task list didn't load (" + q.error + "). Check that Hive is running, then try again."}
         </ErrorNotice>
       ) : !q.data ? (
         <SkeletonRows n={8} />

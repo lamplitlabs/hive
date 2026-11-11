@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { CalendarRangeIcon } from "lucide-react";
-import { SectionHeading } from "@/components/pulse/section-heading";
+import { SectionHeading } from "@/components/hive/section-heading";
 import type { KpisPayload } from "@/lib/api";
 import { num } from "@/lib/format";
 import { kpiPath } from "@/lib/kpis";

@@ -106,7 +106,7 @@ function streamTail(stream: string, steps: HarnessStep[]): string {
   return rest.replace(/^\s+/, "");
 }
 
-// PULSE's own notes (an MCP server connected, skills offered, an earlier
+// Hive's own notes (an MCP server connected, skills offered, an earlier
 // session resumed, the context folded) are housekeeping, not the agent's
 // work: two or more in a row take one line and open on a click.
 function groupNotes(list: ActionItem[]): (ActionItem | ActionItem[])[] {

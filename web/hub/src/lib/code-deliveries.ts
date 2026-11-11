@@ -67,7 +67,7 @@ export function codeDeliveryCoverageText(d: CodeDeliveriesPayload): string {
 }
 
 // The reason the runner gives a pull request merged on the forge whose
-// changed files it has not gathered yet (pulse-codedelivery
+// changed files it has not gathered yet (hive-codedelivery
 // REASON_EVIDENCE_PENDING); it gathers them on its next passes.
 export const CODE_DELIVERY_PENDING_REASON = "The merged pull request's changed files are not gathered yet";
 

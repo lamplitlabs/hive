@@ -6,10 +6,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
 import { KpisPanel } from "@/components/home/kpis-panel";
-import { ActivityChart } from "@/components/pulse/charts";
-import { ErrorNotice, Kpi, KpiGrid, SkeletonRows } from "@/components/pulse/panel";
-import { PageHeader } from "@/components/pulse/page-header";
-import { ProjectAvatar } from "@/components/pulse/avatar";
+import { ActivityChart } from "@/components/hive/charts";
+import { ErrorNotice, Kpi, KpiGrid, SkeletonRows } from "@/components/hive/panel";
+import { PageHeader } from "@/components/hive/page-header";
+import { ProjectAvatar } from "@/components/hive/avatar";
 import { useCrumbs } from "@/components/shell/crumbs";
 import { allProjects, projectLabel, projectPath, type Org, type Timeline } from "@/lib/api";
 import { num, plural } from "@/lib/format";

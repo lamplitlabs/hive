@@ -10,8 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
-import { Markdown } from "@/components/pulse/markdown";
-import { Kbd } from "@/components/pulse/shortcut-help";
+import { Markdown } from "@/components/hive/markdown";
+import { Kbd } from "@/components/hive/shortcut-help";
 import { errorText, writes, type AskSource, type AskStatus, type Org } from "@/lib/api";
 import { ASK_MAX_QUESTION, ASK_STARTERS, type AskMessage, answerMessage, elapsedWord, factsOnlyHint, historyForRequest, readHistory, trimHistory, writeHistory } from "@/lib/ask";
 import { hrefs } from "@/lib/nav";
@@ -192,7 +192,7 @@ function AskConversation({ pageProject, projects, commonsSlug }: { pageProject: 
           <BotMessageSquareIcon aria-hidden className="size-5 text-primary" />
           Ask
         </SheetTitle>
-        <SheetDescription>A quick answer about {scope}, from what PULSE knows right now, with the posts, tasks and jobs it drew on. Nothing is changed by asking.</SheetDescription>
+        <SheetDescription>A quick answer about {scope}, from what Hive knows right now, with the posts, tasks and jobs it drew on. Nothing is changed by asking.</SheetDescription>
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <Select value={project || ALL} onValueChange={(v) => setProject(v === ALL ? "" : v)}>
             <SelectTrigger className="h-8 w-auto min-w-40 max-w-full" aria-label="Which project to ask about">

@@ -97,21 +97,21 @@ import {
   exitWords,
   mergeSteps,
 } from "@/components/harness/harness";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { Markdown } from "@/components/pulse/markdown";
-import { PulseMascot } from "@/components/pulse/mascots";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { Markdown } from "@/components/hive/markdown";
+import { HiveMascot } from "@/components/hive/mascots";
 import {
   EmptyState,
   ErrorNotice,
   Notice,
   SkeletonRows,
-} from "@/components/pulse/panel";
-import { PageHeader } from "@/components/pulse/page-header";
-import { Avatar, ProjectLink, When } from "@/components/pulse/who";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { BrandLogo } from "@/components/pulse/logo";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { StatusIcon } from "@/components/pulse/status-badge";
+} from "@/components/hive/panel";
+import { PageHeader } from "@/components/hive/page-header";
+import { Avatar, ProjectLink, When } from "@/components/hive/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { BrandLogo } from "@/components/hive/logo";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { StatusIcon } from "@/components/hive/status-badge";
 import {
   Tooltip,
   TooltipContent,
@@ -296,7 +296,7 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
       pip: "curious",
       dot: "bg-muted-foreground/60",
     };
-  // PULSE stopped the turn to restart and nothing carried it on: it waits
+  // Hive stopped the turn to restart and nothing carried it on: it waits
   // for a message ("continue" is enough), so it is the owner's turn.
   if (status === "idle" && c.note === RESTART_NOTE)
     return {
@@ -601,7 +601,7 @@ function NoteFold({ items }: { items: ActionItem[] }) {
             aria-hidden
           />
           <span className="shrink-0">
-            {plural(items.length, "note")} from PULSE
+            {plural(items.length, "note")} from Hive
           </span>
           <span
             className="min-w-0 flex-1 truncate text-muted-foreground/60 group-open/notes:hidden"
@@ -1372,7 +1372,7 @@ export function ChatPageClient() {
   // (the shell names the page; this only adds the count).
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const base = "Sessions · PULSE";
+    const base = "Sessions · Hive";
     document.title = attention ? `(${attention}) ${base}` : base;
   }, [attention]);
 
@@ -1438,8 +1438,8 @@ export function ChatPageClient() {
       />
       {unavailable ? (
         <Notice tone="warn">
-          Conversations need a hub built with this feature. Update PULSE (
-          <code>pulse update</code>) and restart the hub.
+          Conversations need a hub built with this feature. Update Hive (
+          <code>hive update</code>) and restart the hub.
         </Notice>
       ) : list.error && !list.data ? (
         <ErrorNotice error={list.error} onRetry={() => void list.reload()}>
@@ -1547,7 +1547,7 @@ function ConversationList({
         <SkeletonRows n={4} />
       ) : entries.length === 0 ? (
         <EmptyState
-          icon={<PulseMascot mood="happy" size={56} decorative />}
+          icon={<HiveMascot mood="happy" size={56} decorative />}
           hint="Start one on the right. What an agent hands on - a sub-session, a task's steps - is listed under it."
         >
           No sessions yet.
@@ -1972,7 +1972,7 @@ const NEW_SESSION_TIP: { icon: LucideIcon; title: string; body: string }[] = [
   {
     icon: GitBranchIcon,
     title: "Its own branch",
-    body: "Each session works in a worktree on pulse/chat-… so your checkout stays clean. Land it when you like.",
+    body: "Each session works in a worktree on hive/chat-… so your checkout stays clean. Land it when you like.",
   },
   {
     icon: ShieldCheckIcon,
@@ -2141,7 +2141,7 @@ function NewConversation({
     <div className="enter grid min-w-0 gap-4">
       <section className="relative overflow-hidden rounded-xl border bg-card p-5 shadow-card sm:p-6">
         <div className="flex min-w-0 flex-col gap-5 sm:flex-row sm:items-start">
-          <PulseMascot
+          <HiveMascot
             mood={busy ? "busy" : text.trim() ? "curious" : "happy"}
             size={84}
             className="float shrink-0 self-center sm:self-start"
@@ -2648,7 +2648,7 @@ function ConversationBody({
     ],
     ensure: d.changes ? [makeTab("changes")] : [],
   });
-  // A finished session shows its report (PULSE builds it as the session is
+  // A finished session shows its report (Hive builds it as the session is
   // shown finished): it opens in the canvas on the way in and the moment the
   // session is done.
   const reportReady = (closed || archived) && hasReportPage(d.artifacts);
@@ -2881,7 +2881,7 @@ function ConversationBody({
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
           {sealed ? (
             <span className="lockdown-ring shrink-0" aria-hidden>
-              <PulseMascot
+              <HiveMascot
                 mood={mood.pip}
                 size={44}
                 className={cn("shrink-0", running && "float")}
@@ -2889,7 +2889,7 @@ function ConversationBody({
               />
             </span>
           ) : (
-            <PulseMascot
+            <HiveMascot
               mood={mood.pip}
               size={44}
               className={cn("shrink-0", running && "float")}
@@ -3109,7 +3109,7 @@ function ConversationBody({
         <Notice tone="info">
           {closedBy === "owner"
             ? "You finished this session."
-            : (closedBy === "pulse" ? "PULSE" : "The agent") +
+            : (closedBy === "hive" ? "Hive" : "The agent") +
               " finished this session" +
               (c.note ? ": " + c.note.replace(/[.\s]*$/, "") + "." : ".")}{" "}
           Write below to reopen it, or archive it to put it away.
@@ -3354,7 +3354,7 @@ function Transcript({
   if (!d.messages.length && !d.sent.length) {
     return (
       <EmptyState
-        icon={<PulseMascot mood="busy" size={56} decorative />}
+        icon={<HiveMascot mood="busy" size={56} decorative />}
         hint="The first reply appears here."
       >
         Starting up…
@@ -4616,7 +4616,7 @@ function ChangesPanel({
     setBusy("land");
     try {
       const text =
-        "Please propose this branch for review: commit what is left, run the project's check, then run `pulse land --project " +
+        "Please propose this branch for review: commit what is left, run the project's check, then run `hive land --project " +
         ch.project +
         " --branch " +
         ch.branch +
@@ -4682,7 +4682,7 @@ function ChangesPanel({
               onClick={() => void askToLand()}
               disabled={!!busy}
               title={
-                "Asks the agent to run pulse land --project " +
+                "Asks the agent to run hive land --project " +
                 ch.project +
                 " --branch " +
                 ch.branch +
@@ -4738,7 +4738,7 @@ function ArtifactsPanel({
       ) : (
         <EmptyState
           icon={<PaperclipIcon className="size-[18px]" />}
-          hint="It knows the folder as $PULSE_ARTIFACTS."
+          hint="It knows the folder as $HIVE_ARTIFACTS."
         >
           Files the agent saves for you - screenshots, reports, pages - show up
           here.

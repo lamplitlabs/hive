@@ -1,0 +1,29 @@
+[package]
+name = "hive-hand-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: the executor path shared by the brain and the open hand (ADR-070): the hive-hands verbs, process groups, git helpers"
+
+# What a customer installs links this crate and nothing of the brain:
+# scripts/check-hand-deps.sh refuses the brain's crates here.
+[dependencies]
+hive-gitenv.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+nix.workspace = true
+libc.workspace = true
+which.workspace = true
+base64.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true

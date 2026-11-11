@@ -1,39 +1,39 @@
 #!/bin/sh
 # The hand stays free of the brain (ADR-070 rule 1).
 #
-# `pulse-hand` is the one binary a customer installs; the code that plans,
+# `hive-hand` is the one binary a customer installs; the code that plans,
 # leads, scores and briefs (the brain) stays hosted and must never ship to a
 # customer's machine. This check holds that line twice:
 #
-# 1. deps: `cargo tree -p pulse-hand -e normal` must not list a brain crate
-#    (pulse-runner with its lead/plan/evolve/tally/research/idle modules,
-#    pulse-evolve, pulse-tally, pulse-hub, pulse-goals, pulse-goals-command,
-#    pulse-ask, and the brain's store and board). A crate that pulls one in
+# 1. deps: `cargo tree -p hive-hand -e normal` must not list a brain crate
+#    (hive-runner with its lead/plan/evolve/tally/research/idle modules,
+#    hive-evolve, hive-tally, hive-hub, hive-goals, hive-goals-command,
+#    hive-ask, and the brain's store and board). A crate that pulls one in
 #    fails here, before it reaches a release.
-# 2. strings BINARY: a built `pulse-hand` must not carry the brain's prompt
+# 2. strings BINARY: a built `hive-hand` must not carry the brain's prompt
 #    text. Three sentinel phrases from the worker brief
-#    (crates/pulse-runner/src/brief.rs) must each be found 0 times by
+#    (crates/hive-runner/src/brief.rs) must each be found 0 times by
 #    `strings BINARY | grep -c`.
 #
-# Usage: scripts/check-hand-deps.sh [deps] [--manifest-path Cargo.toml] [--package pulse-hand]
-#        scripts/check-hand-deps.sh strings target/release/pulse-hand
+# Usage: scripts/check-hand-deps.sh [deps] [--manifest-path Cargo.toml] [--package hive-hand]
+#        scripts/check-hand-deps.sh strings target/release/hive-hand
 #        scripts/check-hand-deps.sh self-test   (the check fails on a bad manifest)
 # Exit 0: clean; 1: the brain leaked in (named on stderr); 2: usage or tool error.
 set -eu
 
 # The brain's crates. A line of `cargo tree --prefix none` starts with the
-# crate name and a space ("pulse-hub v0.1.0 (/path)").
-FORBIDDEN="pulse-runner pulse-evolve pulse-tally pulse-hub pulse-goals
-pulse-goals-command pulse-ask pulse-store pulse-board pulse-harness"
+# crate name and a space ("hive-hub v0.1.0 (/path)").
+FORBIDDEN="hive-runner hive-evolve hive-tally hive-hub hive-goals
+hive-goals-command hive-ask hive-store hive-board hive-harness"
 
-# Phrases only the brain's briefs hold (crates/pulse-runner/src/brief.rs).
+# Phrases only the brain's briefs hold (crates/hive-runner/src/brief.rs).
 SENTINELS="Show your work when it has a face
 Clean up after yourself before you finish
 Never edit"
 
 deps() {
   manifest=""
-  package=pulse-hand
+  package=hive-hand
   while [ $# -gt 0 ]; do
     case $1 in
     --manifest-path) manifest=$2; shift 2 ;;
@@ -60,7 +60,7 @@ deps() {
   if [ -n "$found" ]; then
     echo "check-hand-deps: $package links the brain:$found" >&2
     echo "  the hand must link the executor path alone (ADR-070 rule 1);" >&2
-    echo "  move what it needs into pulse-hand-core instead" >&2
+    echo "  move what it needs into hive-hand-core instead" >&2
     exit 1
   fi
   echo "check-hand-deps: $package links none of the brain ($(printf '%s\n' "$tree" | sort -u | wc -l | tr -d ' ') crates)"
@@ -94,41 +94,41 @@ EOF
 }
 
 # The check must fail on a manifest that pulls the brain in: a scratch
-# workspace whose `hand` crate depends on a crate named pulse-hub.
+# workspace whose `hand` crate depends on a crate named hive-hub.
 self_test() {
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/check-hand-deps.XXXXXX")
   trap 'rm -rf "$scratch"' EXIT INT TERM
-  mkdir -p "$scratch/hand/src" "$scratch/pulse-hub/src"
+  mkdir -p "$scratch/hand/src" "$scratch/hive-hub/src"
   cat > "$scratch/Cargo.toml" <<'EOF'
 [workspace]
-members = ["hand", "pulse-hub"]
+members = ["hand", "hive-hub"]
 resolver = "2"
 EOF
-  cat > "$scratch/pulse-hub/Cargo.toml" <<'EOF'
+  cat > "$scratch/hive-hub/Cargo.toml" <<'EOF'
 [package]
-name = "pulse-hub"
+name = "hive-hub"
 version = "0.1.0"
 edition = "2021"
 EOF
-  : > "$scratch/pulse-hub/src/lib.rs"
+  : > "$scratch/hive-hub/src/lib.rs"
   cat > "$scratch/hand/Cargo.toml" <<'EOF'
 [package]
-name = "pulse-hand"
+name = "hive-hand"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pulse-hub = { path = "../pulse-hub" }
+hive-hub = { path = "../hive-hub" }
 EOF
   echo 'fn main() {}' > "$scratch/hand/src/main.rs"
   rc=0
   (deps --manifest-path "$scratch/Cargo.toml") > /dev/null 2>&1 || rc=$?
   if [ "$rc" -ne 1 ]; then
-    echo "check-hand-deps: self-test: a hand that links pulse-hub passed (exit $rc)" >&2
+    echo "check-hand-deps: self-test: a hand that links hive-hub passed (exit $rc)" >&2
     exit 1
   fi
   # And a hand without it passes.
-  sed -i.bak '/pulse-hub = /d' "$scratch/hand/Cargo.toml"
+  sed -i.bak '/hive-hub = /d' "$scratch/hand/Cargo.toml"
   rc=0
   (deps --manifest-path "$scratch/Cargo.toml") > /dev/null 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then

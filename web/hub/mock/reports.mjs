@@ -1,5 +1,5 @@
 // The mock /api/v1/reports: the done tasks of mock/api/reports.json, newest
-// first, filtered by project and paged by limit the way pulse-hub's
+// first, filtered by project and paged by limit the way hive-hub's
 // reports.rs answers (unknown project 404, a bad limit 400, at most 200).
 export function createReportsMock(fixture, projects = []) {
   const reports = [...(fixture.reports || [])].sort((a, b) => String(b.done_at).localeCompare(String(a.done_at)));

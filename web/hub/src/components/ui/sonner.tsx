@@ -3,7 +3,7 @@
 import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { InfoIcon, TriangleAlertIcon, Loader2Icon } from "lucide-react"
-import { PulseMascot } from "@/components/pulse/mascots"
+import { HiveMascot } from "@/components/hive/mascots"
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const { theme = "system" } = useTheme()
@@ -14,7 +14,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       className="toaster group"
       icons={{
         success: (
-          <PulseMascot mood="happy" size={22} decorative />
+          <HiveMascot mood="happy" size={22} decorative />
         ),
         info: (
           <InfoIcon className="size-4" />
@@ -23,7 +23,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           <TriangleAlertIcon className="size-4" />
         ),
         error: (
-          <PulseMascot mood="worried" size={22} decorative />
+          <HiveMascot mood="worried" size={22} decorative />
         ),
         loading: (
           <Loader2Icon className="size-4 animate-spin" />

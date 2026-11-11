@@ -26,9 +26,9 @@
   "posts_without_kind": "0",
   "records_version": "1",
   "remote": "",
-  "repo": "/home/owner/.pulse/commons",
+  "repo": "/home/owner/.hive/commons",
   "repo_name": "commons",
   "schema_version": "3",
-  "store": "/home/owner/.pulse/pulse.sqlite",
-  "tool": "pulse v0.0.0-20260909100531-6a5be5c7240c+dirty"
+  "store": "/home/owner/.hive/hive.sqlite",
+  "tool": "hive v0.0.0-20260909100531-6a5be5c7240c+dirty"
 }

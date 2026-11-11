@@ -8,11 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { CardGrid, ItemCard, ItemCardActions, ItemCardTitle } from "@/components/pulse/item-card";
-import { EmptyState } from "@/components/pulse/panel";
-import { Avatar, StatusBadge } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardTitle } from "@/components/hive/item-card";
+import { EmptyState } from "@/components/hive/panel";
+import { Avatar, StatusBadge } from "@/components/hive/who";
 import { agentName, priorityWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { taskProgress, writes, type Task } from "@/lib/api";
@@ -51,7 +51,7 @@ export function CancelTaskDialog({ t, open, onOpenChange }: { t: Task; open: boo
 // it - without opening it first. At most two buttons show; the rest sit
 // under "…". Edit and Cancel confirm. `chat={false}` drops the Session
 // button when the card already offers one. A done task's reads "Report":
-// its page opens with the report PULSE built beside the session.
+// its page opens with the report Hive built beside the session.
 export function TaskQuickActions({ t, onOpen, size = "xs", showOpen, chat = true }: { t: Task; onOpen?: () => void; size?: "xs" | "sm"; showOpen?: boolean; chat?: boolean }) {
   const [amend, setAmend] = useState(false);
   const [cancel, setCancel] = useState(false);

@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { MessageCircleQuestionIcon, MessagesSquareIcon } from "lucide-react";
-import { type Column } from "@/components/pulse/data-table";
-import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { Markdown } from "@/components/pulse/markdown";
-import { SidePanel } from "@/components/pulse/side-panel";
-import { Disclosure, EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/pulse/panel";
-import { Avatar, KindBadge, Mono, PostLink, Provenance, StatusBadge, ToneBadge, VoteBadge, When } from "@/components/pulse/who";
+import { type Column } from "@/components/hive/data-table";
+import { CardGrid, ItemCard, ItemCardBody, ItemCardHeader, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
+import { KindTile } from "@/components/hive/kind-tile";
+import { Markdown } from "@/components/hive/markdown";
+import { SidePanel } from "@/components/hive/side-panel";
+import { Disclosure, EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/hive/panel";
+import { Avatar, KindBadge, Mono, PostLink, Provenance, StatusBadge, ToneBadge, VoteBadge, When } from "@/components/hive/who";
 import { hrefs } from "@/lib/nav";
 import { enc, projectPath, type PostDetail, type PostRef, type ThreadDetail, type ThreadRow } from "@/lib/api";
 import { useApi, type Loaded } from "@/lib/use-api";

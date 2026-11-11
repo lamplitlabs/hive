@@ -9,7 +9,7 @@
     "executor": "retired-vm",
     "provider": "copilot",
     "model": "gpt-4.1",
-    "cwd": "/home/owner/.pulse/work/job-retired-executor",
+    "cwd": "/home/owner/.hive/work/job-retired-executor",
     "status": "lost",
     "exit_status": "lost",
     "submission": "",
@@ -22,7 +22,7 @@
     "started_at": "2026-09-11T01:00:00Z",
     "updated_at": "2026-09-11T01:04:00Z",
     "ended_at": "",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-006.json",
+    "trajectory": "/home/owner/.hive/harness/run-20260911-006.json",
     "cancel_requested_at": ""
   },
   "steps": [

@@ -2,7 +2,7 @@
 // provider wizard (components/settings/provider-wizard.tsx) and the provider
 // card in Settings -> Harness: how a provider signs in, where its key comes
 // from, what its address is, and a one-line pitch in plain words. The hub's
-// own list (GET harness: `providers`) says which providers this pulse build
+// own list (GET harness: `providers`) says which providers this hive build
 // has and whether each offers a sign-in or a pasted key; this file only adds
 // the words and the links, so a provider the catalog doesn't know still
 // shows, under its own label. Kept free of `@/` imports so `node --test`
@@ -14,7 +14,7 @@
 // none, `custom` is any other OpenAI-compatible server.
 // Opens the Connect a provider wizard on the Settings page already open
 // (the command palette); elsewhere `/settings/?connect=1#harness` does it.
-export const CONNECT_PROVIDER_EVENT = "pulse:connect-provider";
+export const CONNECT_PROVIDER_EVENT = "hive:connect-provider";
 
 export type ProviderKind = "account" | "key" | "local" | "custom";
 
@@ -38,7 +38,7 @@ export interface ProviderInfo {
   defaultBaseUrl?: string;
   // True when the address can't stay empty (Azure, custom).
   needsAddress?: boolean;
-  // A sign-in that runs a program on the machine PULSE runs on.
+  // A sign-in that runs a program on the machine Hive runs on.
   signInNote?: string;
   // Shown under the picker card as a short badge.
   badge?: string;
@@ -64,7 +64,7 @@ export const PROVIDERS: ProviderInfo[] = [
     keyHint: "sk-ant-api03-…",
     baseUrlSetting: "provider.anthropic.base_url",
     defaultBaseUrl: "https://api.anthropic.com",
-    signInNote: "PULSE runs Anthropic's own command-line tool (ant) on the machine PULSE runs on, and a browser window opens there for you to approve.",
+    signInNote: "Hive runs Anthropic's own command-line tool (ant) on the machine Hive runs on, and a browser window opens there for you to approve.",
   },
   {
     name: "openai",
@@ -245,7 +245,7 @@ export function providerInfo(name: string, label?: string): ProviderInfo {
 
 // The picker's groups, in order, with the words that head each one.
 export const PROVIDER_GROUPS: { kind: ProviderKind; title: string; note: string }[] = [
-  { kind: "account", title: "Sign in with an account", note: "No key to copy: approve PULSE in your browser." },
+  { kind: "account", title: "Sign in with an account", note: "No key to copy: approve Hive in your browser." },
   { kind: "key", title: "Use an API key", note: "Paste a key from the provider's site. It stays on this machine." },
   { kind: "local", title: "Run models on this computer", note: "Free and private. The model server must be running." },
   { kind: "custom", title: "Something else", note: "" },

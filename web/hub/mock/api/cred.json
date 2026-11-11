@@ -17,7 +17,7 @@
       "browse": true,
       "generate": false,
       "fields": [],
-      "example": "op://Vault/pulse push key/private key?ssh-format=openssh"
+      "example": "op://Vault/hive push key/private key?ssh-format=openssh"
     },
     {
       "id": "keychain",
@@ -28,23 +28,23 @@
       "browse": false,
       "generate": false,
       "fields": [
-        { "name": "service", "label": "Service", "placeholder": "pulse-push" },
+        { "name": "service", "label": "Service", "placeholder": "hive-push" },
         { "name": "account", "label": "Account", "placeholder": "deploy" }
       ],
-      "example": "keychain://pulse-push/deploy"
+      "example": "keychain://hive-push/deploy"
     },
     {
       "id": "file",
       "title": "Key file",
-      "blurb": "A private key on this machine, readable only by you; PULSE can mint one for the daemon.",
+      "blurb": "A private key on this machine, readable only by you; Hive can mint one for the daemon.",
       "available": true,
       "needs_token": false,
       "browse": false,
       "generate": true,
       "fields": [
-        { "name": "path", "label": "Path", "placeholder": "/home/owner/.pulse/secrets/push_key" }
+        { "name": "path", "label": "Path", "placeholder": "/home/owner/.hive/secrets/push_key" }
       ],
-      "example": "file:///home/owner/.pulse/secrets/push_key"
+      "example": "file:///home/owner/.hive/secrets/push_key"
     }
   ],
   "shapes": "op://VAULT/ITEM/FIELD[?ssh-format=openssh], keychain://SERVICE/ACCOUNT, or file:///ABSOLUTE/PATH"

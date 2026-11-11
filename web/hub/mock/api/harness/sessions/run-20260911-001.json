@@ -9,7 +9,7 @@
     "executor": "",
     "provider": "copilot",
     "model": "claude-sonnet-4.5",
-    "cwd": "/home/owner/.pulse/work/job-429-retry",
+    "cwd": "/home/owner/.hive/work/job-429-retry",
     "status": "running",
     "exit_status": "",
     "submission": "",
@@ -22,7 +22,7 @@
     "started_at": "2026-09-11T06:58:00Z",
     "updated_at": "2026-09-11T07:26:02Z",
     "ended_at": "",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-001.json",
+    "trajectory": "/home/owner/.hive/harness/run-20260911-001.json",
     "cancel_requested_at": "2026-09-11T07:25:00Z"
   },
   "steps": [

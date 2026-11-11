@@ -6,9 +6,9 @@ import { FileTextIcon, FlaskConicalIcon, GitMergeIcon, ImageIcon, ListTodoIcon, 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { CardGrid, ItemCard, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
-import { EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Panel, SkeletonRows, Stack } from "@/components/pulse/panel";
-import { Mono, ProjectLink, StatusBadge, When } from "@/components/pulse/who";
+import { CardGrid, ItemCard, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading } from "@/components/hive/item-card";
+import { EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Panel, SkeletonRows, Stack } from "@/components/hive/panel";
+import { Mono, ProjectLink, StatusBadge, When } from "@/components/hive/who";
 import { jobArtifactHref, workReportsPath, type ProjectsPayload, type WorkReport, type WorkReportJob, type WorkReportsPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { plural, sentence, sizeText, truncate } from "@/lib/format";

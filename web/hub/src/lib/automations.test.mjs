@@ -14,7 +14,7 @@ import {
   historyWords,
   keptWords,
   scriptHome,
-  scriptInPulse,
+  scriptInHive,
   scriptOutside,
   slugify,
   sortRows,
@@ -141,14 +141,14 @@ test("entryHints names what is missing before the hub is asked", () => {
   );
 });
 
-test("a check's script lives under .pulse/, unless it is the one it already runs", () => {
-  assert.equal(scriptHome("site-check"), ".pulse/automations/site-check.sh");
-  assert.equal(scriptHome(" "), ".pulse/automations/<name>.sh");
-  assert.ok(scriptInPulse(".pulse/automations/x.sh"));
-  assert.ok(scriptInPulse("./.pulse/x.sh"));
-  assert.ok(!scriptInPulse(".pulse/"));
-  assert.ok(!scriptInPulse("scripts/check.sh"));
-  assert.ok(!scriptInPulse(".pulsey/check.sh"));
+test("a check's script lives under .hive/, unless it is the one it already runs", () => {
+  assert.equal(scriptHome("site-check"), ".hive/automations/site-check.sh");
+  assert.equal(scriptHome(" "), ".hive/automations/<name>.sh");
+  assert.ok(scriptInHive(".hive/automations/x.sh"));
+  assert.ok(scriptInHive("./.hive/x.sh"));
+  assert.ok(!scriptInHive(".hive/"));
+  assert.ok(!scriptInHive("scripts/check.sh"));
+  assert.ok(!scriptInHive(".hivey/check.sh"));
   const outside = entryHints({
     ...EMPTY_ENTRY,
     name: "site",
@@ -156,13 +156,13 @@ test("a check's script lives under .pulse/, unless it is the one it already runs
     script: "scripts/check.sh",
   });
   assert.equal(outside.length, 1, outside.join("|"));
-  assert.ok(outside[0].includes(".pulse/automations/site.sh"), outside[0]);
+  assert.ok(outside[0].includes(".hive/automations/site.sh"), outside[0]);
   assert.deepEqual(
     entryHints({
       ...EMPTY_ENTRY,
       name: "site",
       kind: "check",
-      script: ".pulse/automations/site.sh",
+      script: ".hive/automations/site.sh",
     }),
     [],
   );
@@ -178,7 +178,7 @@ test("a check's script lives under .pulse/, unless it is the one it already runs
   // The empty-script hint names the place.
   assert.ok(
     entryHints({ ...EMPTY_ENTRY, name: "site", kind: "watch" }).some((h) =>
-      h.includes(".pulse/automations/site.sh is the place"),
+      h.includes(".hive/automations/site.sh is the place"),
     ),
   );
   assert.equal(scriptOutside(sched()), false);
@@ -188,7 +188,7 @@ test("a check's script lives under .pulse/, unless it is the one it already runs
   );
   assert.equal(
     scriptOutside(
-      sched({ kind: "check", script: ".pulse/automations/check.sh" }),
+      sched({ kind: "check", script: ".hive/automations/check.sh" }),
     ),
     false,
   );
@@ -209,18 +209,18 @@ test("daemonProblems leaves the skill folders' problems to the Skills page", () 
     file: null,
     schedules: [],
     options: { skills: [], agents: [] },
-    automations: { dir: ".pulse/automations", files: [] },
+    automations: { dir: ".hive/automations", files: [] },
     applied: {
       problems: [
         "skill .github/skills/design-taste-frontend/SKILL.md: the file is 61 kB; a skill is at most 32 kB",
         "schedule `nightly`: needs `every`",
-        ".pulse/pulse.yaml: two items are named `tidy`",
+        ".hive/hive.yaml: two items are named `tidy`",
       ],
     },
   };
   assert.deepEqual(daemonProblems(p), [
     "schedule `nightly`: needs `every`",
-    ".pulse/pulse.yaml: two items are named `tidy`",
+    ".hive/hive.yaml: two items are named `tidy`",
   ]);
 });
 
@@ -304,10 +304,10 @@ test("historyWords and historySummary say what happened in the owner's words", (
   assert.equal(historyWords(entry({ what: "added", actor: "daemon" }), "task").title, "Added by the daemon");
   assert.equal(
     historyWords(
-      entry({ what: "added", actor: "daemon", origin: "repo:.pulse/automations/site.yaml#site" }),
+      entry({ what: "added", actor: "daemon", origin: "repo:.hive/automations/site.yaml#site" }),
       "check",
     ).title,
-    "Added from .pulse/automations/site.yaml",
+    "Added from .hive/automations/site.yaml",
   );
   assert.equal(
     historyWords(
@@ -315,11 +315,11 @@ test("historyWords and historySummary say what happened in the owner's words", (
         what: "updated",
         actor: "daemon",
         changed: ["every"],
-        origin: "repo:.pulse/automations/site.yaml#site",
+        origin: "repo:.hive/automations/site.yaml#site",
       }),
       "check",
     ).title,
-    "Changed by .pulse/automations/site.yaml",
+    "Changed by .hive/automations/site.yaml",
   );
   assert.equal(
     historyWords(entry({ what: "updated", actor: "demo-lead", changed: ["every", "at"] }), "task")
@@ -433,7 +433,7 @@ test("fileEntryOf finds the file entry a row came from", () => {
     schedules: [],
     options: { skills: [], agents: [] },
     file: {
-      path: ".pulse/pulse.yaml",
+      path: ".hive/hive.yaml",
       text: "",
       entries: [{ name: "nightly", title: "Nightly", every: "1d" }],
       needs: [],
@@ -443,7 +443,7 @@ test("fileEntryOf finds the file entry a row came from", () => {
   assert.equal(fileEntryOf(project, sched()), null);
   const e = fileEntryOf(
     project,
-    sched({ origin_name: "nightly", origin_path: ".pulse/pulse.yaml" }),
+    sched({ origin_name: "nightly", origin_path: ".hive/hive.yaml" }),
   );
   assert.equal(e?.title, "Nightly");
   assert.equal(e?.kind, "task");
@@ -460,8 +460,8 @@ test("keptWords and stateWords speak for the row", () => {
     "set by demo-app-lead-rsi",
   );
   assert.equal(
-    keptWords(sched({ origin_path: ".pulse/pulse.yaml" })),
-    "in .pulse/pulse.yaml",
+    keptWords(sched({ origin_path: ".hive/hive.yaml" })),
+    "in .hive/hive.yaml",
   );
   assert.equal(stateWords(sched()), null);
   assert.deepEqual(stateWords(sched({ kind: "check", state: "green" })), {
@@ -496,6 +496,6 @@ test("plainProblem turns the hub's field words into a sentence", () => {
     plainProblem("needs `every`, the cadence (30m, 6h, 1d, 2w, hourly, daily, weekly)"),
     "Needs how often it runs (30m, 6h, 1d, 2w, hourly, daily, weekly)",
   );
-  assert.equal(plainProblem("`script` must sit under .pulse/"), "Script must sit under .pulse/.");
+  assert.equal(plainProblem("`script` must sit under .hive/"), "Script must sit under .hive/.");
   assert.equal(plainProblem("needs a `brief` (what each job does) or a `skill` to follow"), "Needs a brief (what each job does) or a skill to follow.");
 });

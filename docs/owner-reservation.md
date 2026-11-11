@@ -87,10 +87,10 @@ tick the daemon notes, for every owner-driven job still queued, the holds that
 tick's dispatch saw, in the owner's words: `lanes full`, `load 27 > 24`,
 `memory 300 MB < 1024 MB`, `restart drain`, `disk floor`, `bulk disk away`,
 `daily cap reached`. Once a job has waited ten minutes
-(`pulse_tasks::OWNER_WAIT_MINUTES`) the daemon writes one `job.owner-wait`
+(`hive_tasks::OWNER_WAIT_MINUTES`) the daemon writes one `job.owner-wait`
 event on it with every reason seen so far and logs `owner job <id>
 (<project>) waiting since 04:40 UTC: lanes full, load 27 > 24`
-(`crates/pulse-runner/src/owner_wait.rs`). `pulse status` lists the open
+(`crates/hive-runner/src/owner_wait.rs`). `hive status` lists the open
 waits, and the task's wait line on the board and the hub names the reasons
 in place of "waiting for a free agent". A job queued again later is a new
 wait with its own event. The reading side is described in
@@ -120,9 +120,9 @@ kernel's critical memory pressure, a console drain, the disk, the daily cap.
     the load pinned at 60 (line 24), the owner's first job starts on the
     reservation and the owner's next step, queued twenty minutes earlier,
     gets one `job.owner-wait` event whose reasons read `load 60 > 24`; the
-    `pulse status` line says the same.
+    `hive status` line says the same.
 - `owner_wait` unit tests cover the short reasons, the ten-minute line, one
-  event per wait and the status lines; `pulse_tasks::owner_wait` the wait
+  event per wait and the status lines; `hive_tasks::owner_wait` the wait
   line the board and the hub show.
 - The existing `yield_lane` tests and
   `daemon_lends_the_owner_one_slot_over_a_cap_full_of_fleet_work` still pass.

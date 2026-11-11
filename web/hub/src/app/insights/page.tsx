@@ -2,7 +2,7 @@
 
 import { Suspense } from "react";
 import { Insights } from "@/components/insights/insights";
-import { SkeletonPage } from "@/components/pulse/panel";
+import { SkeletonPage } from "@/components/hive/panel";
 
 // /insights/: the over-time metrics that used to close the Home page. The
 // range and project filters live in the search params (hrefs.insights), so

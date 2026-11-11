@@ -1,7 +1,7 @@
 {
   "agent": "cinder",
   "area": "runner",
-  "body": "cinder asks for one Standard_D8s_v5 machine for 4 hours.\n\nReason: the browser test matrix needs eight cores for four hours\n\nCaps: 0 of 2 machines in use, auto_approve=false.\n\nApprove with `pulse compute approve CR-001 --words '...'` or deny with `pulse compute deny CR-001 --words '...'` (or from the hub's Compute page).",
+  "body": "cinder asks for one Standard_D8s_v5 machine for 4 hours.\n\nReason: the browser test matrix needs eight cores for four hours\n\nCaps: 0 of 2 machines in use, auto_approve=false.\n\nApprove with `hive compute approve CR-001 --words '...'` or deny with `hive compute deny CR-001 --words '...'` (or from the hub's Compute page).",
   "branch": "",
   "date": "2026-09-01T20:33:00Z",
   "expires": "",

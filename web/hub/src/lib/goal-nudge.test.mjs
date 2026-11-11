@@ -29,7 +29,7 @@ test("a dismissal is one key per project and reads back as one sorted line", () 
   dismissGoalNudge(storage, "two");
   dismissGoalNudge(storage, "one");
   assert.equal(storage.getItem(goalNudgeKey("one")), "dismissed");
-  assert.equal(goalNudgeKey("one"), "pulse.goal-nudge.one");
+  assert.equal(goalNudgeKey("one"), "hive.goal-nudge.one");
   const rows = [row("one"), row("two"), row("three")];
   assert.equal(readDismissed(storage, rows), "one\ntwo");
   assert.deepEqual([...dismissedSet(readDismissed(storage, rows))], ["one", "two"]);
@@ -43,15 +43,15 @@ test("a dismissal holds until the goal is the owner's, then the key goes so a la
   dismissGoalNudge(storage, "two");
   assert.equal(forgetOwnerDismissals(storage, [row("one"), row("two")]), false, "generated goals keep their dismissal");
   assert.equal(forgetOwnerDismissals(storage, [row("one", { goal_source: "owner" }), row("two")]), true);
-  assert.deepEqual(storage.keys(), ["pulse.goal-nudge.two"]);
+  assert.deepEqual(storage.keys(), ["hive.goal-nudge.two"]);
   assert.equal(forgetOwnerDismissals(storage, [row("one", { goal_source: "owner" })]), false, "nothing left to forget");
   const back = [row("one"), row("two")];
   assert.deepEqual(goalNudges(back, dismissedSet(readDismissed(storage, back))).map((p) => p.slug), ["one"]);
 });
 
 test("other values and other projects' keys are left alone", () => {
-  const storage = memory({ "pulse.goal-nudge.one": "later", "pulse.goal-nudge.gone": "dismissed", "pulse.home.details": "open" });
+  const storage = memory({ "hive.goal-nudge.one": "later", "hive.goal-nudge.gone": "dismissed", "hive.home.details": "open" });
   assert.equal(readDismissed(storage, [row("one"), row("two")]), "", "only the exact value counts");
   assert.equal(forgetOwnerDismissals(storage, [row("one", { goal_source: "owner" })]), true, "any stale value for an owner goal goes");
-  assert.deepEqual(storage.keys().sort(), ["pulse.goal-nudge.gone", "pulse.home.details"]);
+  assert.deepEqual(storage.keys().sort(), ["hive.goal-nudge.gone", "hive.home.details"]);
 });

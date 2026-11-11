@@ -5,11 +5,11 @@
     "job_id": "job-schema-index",
     "job_title": "Add events subject index",
     "agent": "fjord",
-    "project": "pulse",
+    "project": "hive",
     "executor": "",
     "provider": "copilot",
     "model": "gpt-4.1",
-    "cwd": "/home/owner/.pulse/work/job-schema-index",
+    "cwd": "/home/owner/.hive/work/job-schema-index",
     "status": "step_limit",
     "exit_status": "step_limit",
     "submission": "",
@@ -22,7 +22,7 @@
     "started_at": "2026-09-11T04:00:00Z",
     "updated_at": "2026-09-11T04:47:00Z",
     "ended_at": "2026-09-11T04:47:00Z",
-    "trajectory": "/home/owner/.pulse/harness/run-20260911-003.json",
+    "trajectory": "/home/owner/.hive/harness/run-20260911-003.json",
     "cancel_requested_at": ""
   },
   "steps": [

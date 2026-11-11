@@ -4,11 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 import { ArrowRightIcon, CheckIcon, ServerIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
-import { ListRow } from "@/components/pulse/list-row";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Avatar, Mono, ProjectLink, When } from "@/components/pulse/who";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
+import { ListRow } from "@/components/hive/list-row";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Avatar, Mono, ProjectLink, When } from "@/components/hive/who";
 import { agentName, statusWord } from "@/lib/words";
 import { writes, type ComputeCaps, type ComputeRequest } from "@/lib/api";
 import { num, plural } from "@/lib/format";
@@ -38,13 +38,13 @@ export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "x
         title={which === "approve" ? "Approve the extra machine?" : "Deny the extra machine?"}
         description={
           <span>
-            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {which === "approve" ? "PULSE starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
+            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {which === "approve" ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
           </span>
         }
         action={which === "approve" ? "Approve" : "Deny"}
         destructive={which === "deny"}
         words={{ label: which === "deny" ? "Tell the agent why" : "A note for the agent (optional)", placeholder: which === "approve" ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: which === "deny" }}
-        success={which === "approve" ? "Approved. PULSE will start the machine." : "Denied. The agent will see your note."}
+        success={which === "approve" ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
         onConfirm={(w) => (which === "approve" ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
         invalidates={CHANGES}
       />

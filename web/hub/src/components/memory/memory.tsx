@@ -12,13 +12,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { showApiError } from "@/components/pulse/confirm";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
-import { PageHeader } from "@/components/pulse/page-header";
-import { Disclosure, EmptyState, ErrorNotice, Notice, SkeletonRows } from "@/components/pulse/panel";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { Mono } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { ListRow, ListRows } from "@/components/hive/list-row";
+import { PageHeader } from "@/components/hive/page-header";
+import { Disclosure, EmptyState, ErrorNotice, Notice, SkeletonRows } from "@/components/hive/panel";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { Mono } from "@/components/hive/who";
 import { query, writes, type MemoryEntry, type MemoryFile, type MemoryPayload } from "@/lib/api";
 import { plural, rel } from "@/lib/format";
 import { dayWords, fileHint, fileTitle, textRoom } from "@/lib/memory";
@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { chosenFile, emptyWords, fileChoices, fileNote, shownEntries, sourceOf, sourceWords, undoNote, type EntrySource, type FileChoice } from "./memory-state";
 
 // Memory (spec "Memory"): what the agents kept for later - a Markdown file
-// of dated bullets per project under ~/.pulse/memory/, one for the owner
+// of dated bullets per project under ~/.hive/memory/, one for the owner
 // that every project reads, one shared by sessions without a project. The
 // harness reads them into every run's prompt, so what is here shapes what
 // agents do next. Two panes: the files on the left (the choice goes in the
@@ -114,7 +114,7 @@ export function MemoryPageClient() {
       />
       {q.error && !q.data ? (
         <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
-          {"The memory files didn't load (" + q.error + "). Check that PULSE is running, then try again."}
+          {"The memory files didn't load (" + q.error + "). Check that Hive is running, then try again."}
         </ErrorNotice>
       ) : null}
       {!q.data ? (
@@ -162,7 +162,7 @@ export function MemoryPageClient() {
               A run on a project reads that project&apos;s file and yours into its system prompt (up to 16 KB of each), and may call its <Mono>memory</Mono> tool to remember, forget or list. A chat not attached to a project shares the sessions file. The <Mono>harness.memory</Mono> setting turns all of it off.
             </p>
             <p>
-              In a terminal: <Mono>/memory</Mono> inside <Mono>pulse chat</Mono> lists, adds and forgets the same way.
+              In a terminal: <Mono>/memory</Mono> inside <Mono>hive chat</Mono> lists, adds and forgets the same way.
             </p>
           </Disclosure>
         </div>

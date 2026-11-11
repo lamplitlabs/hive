@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { PICK_DEFAULT_TEXT, askForHelper, elementName, pickBlock, pickLabel, pickPlace, pickRequest, pickSnippet, readPickMessage, splitPicks, withPicks } from "./pick.ts";
 
 const picked = (element = {}, over = {}) => ({
-  type: "pulse-pick-picked",
+  type: "hive-pick-picked",
   url: "http://localhost:3000/settings",
   title: "Settings",
   element: { tag: "BUTTON", id: "save", classes: ["btn", "primary"], text: "  Save\n changes ", html: '<button id="save" class="btn primary">Save changes</button>', selector: "main > form > button", role: "", label: "", href: "", src: "", components: ["SaveButton", "SettingsForm"], rect: { x: 812.4, y: 340, w: 160, h: 40 }, ...element },
@@ -12,12 +12,12 @@ const picked = (element = {}, over = {}) => ({
 
 test("readPickMessage accepts only the helper's messages and cuts every field", () => {
   assert.equal(readPickMessage(null), null);
-  assert.equal(readPickMessage("pulse-pick-picked"), null);
+  assert.equal(readPickMessage("hive-pick-picked"), null);
   assert.equal(readPickMessage({ type: "something-else" }), null);
-  assert.equal(readPickMessage({ type: "pulse-pick-picked" }), null, "a pick without an element is nothing");
+  assert.equal(readPickMessage({ type: "hive-pick-picked" }), null, "a pick without an element is nothing");
   assert.equal(readPickMessage(picked({ tag: "" })), null, "an element without a tag is nothing");
-  assert.deepEqual(readPickMessage({ type: "pulse-pick-hello", url: "http://localhost:3000/", title: "Blog" }), { type: "hello", url: "http://localhost:3000/", title: "Blog" });
-  assert.deepEqual(readPickMessage({ type: "pulse-pick-cancel" }), { type: "cancel" });
+  assert.deepEqual(readPickMessage({ type: "hive-pick-hello", url: "http://localhost:3000/", title: "Blog" }), { type: "hello", url: "http://localhost:3000/", title: "Blog" });
+  assert.deepEqual(readPickMessage({ type: "hive-pick-cancel" }), { type: "cancel" });
 
   const m = readPickMessage(picked());
   assert.equal(m.type, "picked");
@@ -50,7 +50,7 @@ test("names, labels and places read like the Copilot app's chips", () => {
   assert.equal(pickPlace("http://localhost:3000/settings/"), "localhost:3000/settings");
   assert.equal(pickPlace("http://localhost:3000/"), "localhost:3000");
   assert.equal(pickPlace("not a url"), "not a url");
-  assert.deepEqual(pickRequest(true), { type: "pulse-pick", on: true });
+  assert.deepEqual(pickRequest(true), { type: "hive-pick", on: true });
 });
 
 test("a pick travels as a fenced block the agent reads and the transcript folds back", () => {

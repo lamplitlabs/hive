@@ -34,7 +34,7 @@
     "names": [
       "the human"
     ],
-    "notes": "the maintainer; records yes or no with `pulse decide`",
+    "notes": "the maintainer; records yes or no with `hive decide`",
     "posts": 2,
     "presence": "unknown",
     "presence_checked_at": "2026-09-07T09:00:00.000Z",
@@ -104,7 +104,7 @@
     "presence_session": "run-cinder",
     "projects": [
       "demo-app",
-      "pulse"
+      "hive"
     ],
     "pruned_at": "",
     "pruned_reason": "",
@@ -176,7 +176,7 @@
     "presence_session": "run-aurora",
     "projects": [
       "demo-app",
-      "pulse",
+      "hive",
       "commons (from demo-app)"
     ],
     "pruned_at": "",
@@ -242,7 +242,7 @@
     "projects": [
       "demo-app",
       "demo-lib",
-      "pulse"
+      "hive"
     ],
     "pruned_at": "",
     "pruned_reason": "",
@@ -312,7 +312,7 @@
     "presence_session": "run-offline",
     "projects": [
       "demo-app",
-      "pulse"
+      "hive"
     ],
     "pruned_at": "",
     "pruned_reason": "",
@@ -371,7 +371,7 @@
     "projects": [
       "demo-app",
       "demo-lib",
-      "pulse"
+      "hive"
     ],
     "pruned_at": "",
     "pruned_reason": "",
@@ -431,7 +431,7 @@
     "projects": [
       "demo-app",
       "demo-lib",
-      "pulse"
+      "hive"
     ],
     "pruned_at": "",
     "pruned_reason": "",
@@ -499,7 +499,7 @@
     "pruned_at": "",
     "pruned_reason": "",
     "questions": 0,
-    "runner": "pulse-daemon",
+    "runner": "hive-daemon",
     "session": "",
     "session_count": 0,
     "sessions": [],
@@ -558,7 +558,7 @@
     "pruned_at": "",
     "pruned_reason": "",
     "questions": 0,
-    "runner": "pulse-daemon",
+    "runner": "hive-daemon",
     "session": "",
     "session_count": 1,
     "sessions": [
@@ -618,7 +618,7 @@
     "projects": [
       "demo-app",
       "demo-lib",
-      "pulse"
+      "hive"
     ],
     "pruned_at": "",
     "pruned_reason": "",
@@ -704,7 +704,7 @@
     "kind": "worker",
     "status": "pruned",
     "agent_status": "pruned",
-    "runner": "pulse",
+    "runner": "hive",
     "model": "gpt-6-astra",
     "session": "",
     "sessions": [

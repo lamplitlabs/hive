@@ -1,7 +1,7 @@
 // A task's conversation: how the flat lines of GET /tasks/{id}/activity
 // become a chat-like feed. Lines of one run gather into a chapter under the
 // worker's name; everything else (the owner's words, the lead's messages,
-// what PULSE landed) stands on its own between chapters, in time order.
+// what Hive landed) stands on its own between chapters, in time order.
 // Pure: no React and no DOM, so task-activity.test.mjs drives it.
 
 import type { ActivityItem, ActivityRun, TaskActivity } from "./api";
@@ -35,7 +35,7 @@ export function groupActivity(a: Pick<TaskActivity, "items" | "runs">): Activity
 
 export const isOwnerName = (who: string): boolean => who === "human" || who === "owner";
 
-export const whoWord = (who: string): string => (isOwnerName(who) ? "You" : who || "PULSE");
+export const whoWord = (who: string): string => (isOwnerName(who) ? "You" : who || "Hive");
 
 // How a run ended, as a person would say it.
 export function runOutcome(status: string): { text: string; tone: "ok" | "warn" | "bad" | "neutral" | "live" } {
@@ -140,38 +140,38 @@ export function systemLine(item: ActivityItem): string {
         case "cancelled":
           return who + " cancelled the task" + (item.text ? ": " + item.text : "") + ".";
         case "followup":
-          return "PULSE queued a follow-up" + (item.title ? " because the step " + item.title : "") + ".";
+          return "Hive queued a follow-up" + (item.title ? " because the step " + item.title : "") + ".";
         case "nudged":
-          return "PULSE nudged the lead" + (item.title ? " (" + item.title + ")" : "") + ".";
+          return "Hive nudged the lead" + (item.title ? " (" + item.title + ")" : "") + ".";
         default:
           return who + " " + item.what + ".";
       }
     case "job":
-      return (isOwnerName(item.who) ? "You" : item.who === "daemon" ? "PULSE" : item.who || "The lead") + " added a step: " + (item.title || item.job_id || "a step") + ".";
+      return (isOwnerName(item.who) ? "You" : item.who === "daemon" ? "Hive" : item.who || "The lead") + " added a step: " + (item.title || item.job_id || "a step") + ".";
     case "land":
       switch (item.what) {
         case "landed":
-          return "PULSE landed the work on the main branch" + (item.status ? " (" + item.status.slice(0, 12) + ")" : "") + ".";
+          return "Hive landed the work on the main branch" + (item.status ? " (" + item.status.slice(0, 12) + ")" : "") + ".";
         case "pushed":
-          return "PULSE pushed the main branch to the remote.";
+          return "Hive pushed the main branch to the remote.";
         case "pr":
-          return "PULSE put the landed work on a pull request" + (item.status ? " (" + item.status + ")" : "") + (item.text ? ": " + item.text : "") + ".";
+          return "Hive put the landed work on a pull request" + (item.status ? " (" + item.status + ")" : "") + (item.text ? ": " + item.text : "") + ".";
         case "pr-asked":
           return (isOwnerName(item.who) ? "You" : item.who || "Someone") + " asked for a pull request.";
         case "pr-answered":
-          return "PULSE found nothing to put on a pull request" + (item.text ? ": " + item.text : "") + ".";
+          return "Hive found nothing to put on a pull request" + (item.text ? ": " + item.text : "") + ".";
         case "pr_open":
-          return "PULSE opened the task's pull request" + (item.status ? " (" + item.status + ")" : "") + (item.text ? ": " + item.text : "") + ".";
+          return "Hive opened the task's pull request" + (item.status ? " (" + item.status + ")" : "") + (item.text ? ": " + item.text : "") + ".";
         case "merged":
           return "The task's pull request was merged" + (item.status ? " (" + item.status + ")" : "") + ".";
         case "held":
-          return "PULSE held the landing" + (item.text ? ": " + item.text : "") + ".";
+          return "Hive held the landing" + (item.text ? ": " + item.text : "") + ".";
         case "deferred":
-          return "PULSE put the landing aside for now" + (item.text ? ": " + item.text : "") + ".";
+          return "Hive put the landing aside for now" + (item.text ? ": " + item.text : "") + ".";
         case "conflict":
           return "The landing hit a conflict" + (item.text ? ": " + item.text : "") + ".";
         case "resumed":
-          return "PULSE resumed the landings.";
+          return "Hive resumed the landings.";
         default:
           return "Landing: " + item.what.replace(/[_-]+/g, " ") + (item.text ? " \u2014 " + item.text : "") + ".";
       }

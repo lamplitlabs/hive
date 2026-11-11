@@ -2,7 +2,7 @@
 
 import { Suspense } from "react";
 import { ChatPageClient } from "@/components/chat/chat";
-import { SkeletonPage } from "@/components/pulse/panel";
+import { SkeletonPage } from "@/components/hive/panel";
 
 export default function ChatPage() {
   return (

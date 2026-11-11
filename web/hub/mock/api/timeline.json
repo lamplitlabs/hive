@@ -873,7 +873,7 @@
       "unparsed": 0
     },
     {
-      "base": "/p/pulse",
+      "base": "/p/hive",
       "before_window": 0,
       "days": [
         {
@@ -1156,7 +1156,7 @@
       ],
       "kind": "project",
       "now": "2026-09-07T09:00:00Z",
-      "slug": "pulse",
+      "slug": "hive",
       "total": 11,
       "unparsed": 0
     },

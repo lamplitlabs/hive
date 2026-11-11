@@ -1,0 +1,32 @@
+[package]
+name = "hive-hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: store hooks (scripts, webhooks) and harness hooks (copilot, claude)"
+
+[dependencies]
+hive-board.workspace = true
+hive-bus.workspace = true
+hive-cli.workspace = true
+hive-evolve.workspace = true
+hive-store.workspace = true
+hive-tasks.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+crossbeam-channel.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true
+hive-tally.workspace = true
+hive-goals.workspace = true

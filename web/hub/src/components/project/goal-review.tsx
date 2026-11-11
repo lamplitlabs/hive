@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { GaugeIcon, LightbulbIcon, MessageSquareQuoteIcon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DecideButtons } from "@/components/pulse/decide-buttons";
-import { PulseMascot, type PipMood } from "@/components/pulse/mascots";
-import { ErrorNotice, SkeletonRows } from "@/components/pulse/panel";
-import { ToneBadge, When } from "@/components/pulse/who";
+import { DecideButtons } from "@/components/hive/decide-buttons";
+import { HiveMascot, type PipMood } from "@/components/hive/mascots";
+import { ErrorNotice, SkeletonRows } from "@/components/hive/panel";
+import { ToneBadge, When } from "@/components/hive/who";
 import { projectPath, type GoalAdvice, type GoalReview, type GoalReviewPayload, type GoalSignal, type GoalVerdict } from "@/lib/api";
 import type { Tone } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -72,7 +72,7 @@ export function GoalReviewCard({ slug, canEdit, onEdit }: { slug: string; canEdi
             {r.signals.map((s) => <SignalBar key={s.name} s={s} />)}
           </ul>
         </div>
-        <PulseMascot mood={v.mood} size={64} className="float hidden shrink-0 self-center sm:block" title={"Pip is " + v.word.toLowerCase()} />
+        <HiveMascot mood={v.mood} size={64} className="float hidden shrink-0 self-center sm:block" title={"Pip is " + v.word.toLowerCase()} />
       </div>
 
       {r.advice.length ? (

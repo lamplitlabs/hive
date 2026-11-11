@@ -53,7 +53,7 @@ test("an unknown stored word, or a storage that throws, falls back to the defaul
 });
 
 test("the keys and the accepted values are the three choices", () => {
-  assert.deepEqual(APPEARANCE_KEYS, { density: "pulse.density", font: "pulse.font", text: "pulse.text" });
+  assert.deepEqual(APPEARANCE_KEYS, { density: "hive.density", font: "hive.font", text: "hive.text" });
   assert.deepEqual(Object.keys(APPEARANCE_VALUES).sort(), ["density", "font", "text"]);
   for (const [choice, values] of Object.entries(APPEARANCE_VALUES)) {
     assert.ok(values.includes(DEFAULT_APPEARANCE[choice]), `${choice} default is accepted`);
@@ -78,15 +78,15 @@ test("applying leaves other data attributes on <html> alone", () => {
 });
 
 test("writing stores a choice and removes the key for a default", () => {
-  const storage = memory({ [APPEARANCE_KEYS.density]: "compact", "pulse.sidebar": "collapsed" });
+  const storage = memory({ [APPEARANCE_KEYS.density]: "compact", "hive.sidebar": "collapsed" });
   writeAppearance(storage, { density: "comfortable", font: "readable", text: "larger" });
   assert.deepEqual(storage.entries(), {
-    "pulse.sidebar": "collapsed",
+    "hive.sidebar": "collapsed",
     [APPEARANCE_KEYS.font]: "readable",
     [APPEARANCE_KEYS.text]: "larger",
   });
   writeAppearance(storage, DEFAULT_APPEARANCE);
-  assert.deepEqual(storage.entries(), { "pulse.sidebar": "collapsed" });
+  assert.deepEqual(storage.entries(), { "hive.sidebar": "collapsed" });
 });
 
 test("what is written reads back the same", () => {

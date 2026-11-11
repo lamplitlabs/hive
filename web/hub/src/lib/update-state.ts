@@ -1,7 +1,7 @@
-// "A newer PULSE is available" (TASK-087): the banner over every page when
+// "A newer Hive is available" (TASK-087): the banner over every page when
 // the daemon's daily check (setting update.latest_url) found a release newer
 // than the running build. The hub decides `newer` with the same semver
-// comparison `pulse version` uses (crates/pulse-cli/src/update.rs); this
+// comparison `hive version` uses (crates/hive-cli/src/update.rs); this
 // module only turns the payload into what the banner says, and remembers in
 // this browser which release the owner dismissed, so the notice comes back
 // for the next release but not on every page load for this one.
@@ -9,14 +9,14 @@
 //
 // "Update now" (TASK-093): on update.channel release the banner offers to
 // install the release through the hub (POST update/apply), which runs what
-// `pulse update` runs in the background; `apply` in the payload follows it.
+// `hive update` runs in the background; `apply` in the payload follows it.
 // Once it is in place the runner and the console restart on it when their
 // runs finish - the banner then shows the runner's own wait words
-// (daemonUpdateText in components/pulse/daemon-control-state.ts), handed in
+// (daemonUpdateText in components/hive/daemon-control-state.ts), handed in
 // as `waitText` so this module stays free of runtime imports.
 import type { UpdatePayload } from "./api";
 
-export const UPDATE_DISMISS_KEY = "pulse.update.dismissed";
+export const UPDATE_DISMISS_KEY = "hive.update.dismissed";
 
 // The subset of Storage the banner uses, so tests can pass a Map-backed one.
 export interface UpdateStorage {
@@ -54,7 +54,7 @@ export function updateBanner(p: UpdatePayload | null | undefined, dismissed: str
   const running = (p.running ?? "").trim();
   return {
     latest,
-    title: `PULSE ${latest} is available`,
+    title: `Hive ${latest} is available`,
     detail: running ? `This machine runs ${running}.` : "A newer release than this machine's is out.",
     href: webLink(p.url),
   };
@@ -144,7 +144,7 @@ export function updateApplyView(p: UpdatePayload | null | undefined, input: Upda
     return { ...none, line: `Nothing to install: the release source names ${applyLatest || latest}, which this build already runs.`, tone: "info" };
   }
   if (p.channel === "source") {
-    return { ...none, line: "This machine builds PULSE from source (update.channel), so the runner updates itself after each landing.", tone: null };
+    return { ...none, line: "This machine builds Hive from source (update.channel), so the runner updates itself after each landing.", tone: null };
   }
   if (release && latest) return { ...none, button: "Update now", buttonTitle };
   return none;

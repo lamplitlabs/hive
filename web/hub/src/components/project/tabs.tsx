@@ -7,22 +7,22 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ActivityChart } from "@/components/pulse/charts";
-import { FeedList, ProposalCard, QuestionCard, workingRows, workingSummary } from "@/components/pulse/cards";
+import { ActivityChart } from "@/components/hive/charts";
+import { FeedList, ProposalCard, QuestionCard, workingRows, workingSummary } from "@/components/hive/cards";
 import { AmendmentCard, SuggestionCard } from "@/components/board/vote-cards";
-import { HygienePanel } from "@/components/pulse/hygiene";
-import { Clamp } from "@/components/pulse/clamp";
-import { DataTable } from "@/components/pulse/data-table";
-import { DecideButtons } from "@/components/pulse/decide-buttons";
-import { DocRev, GateCard, SelfImprovementPanel } from "@/components/pulse/evolve";
-import { useInbox } from "@/components/pulse/inbox";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { ListRow, ListRows } from "@/components/pulse/list-row";
+import { HygienePanel } from "@/components/hive/hygiene";
+import { Clamp } from "@/components/hive/clamp";
+import { DataTable } from "@/components/hive/data-table";
+import { DecideButtons } from "@/components/hive/decide-buttons";
+import { DocRev, GateCard, SelfImprovementPanel } from "@/components/hive/evolve";
+import { useInbox } from "@/components/hive/inbox";
+import { KindTile } from "@/components/hive/kind-tile";
+import { ListRow, ListRows } from "@/components/hive/list-row";
 import { ComputeDecide, ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
-import { LiveFeed } from "@/components/pulse/live-feed";
-import { Markdown } from "@/components/pulse/markdown";
+import { LiveFeed } from "@/components/hive/live-feed";
+import { Markdown } from "@/components/hive/markdown";
 import { GOAL_ANCHOR, GoalEditor } from "@/components/project/goal";
 import { LeadsPanel } from "@/components/project/leads";
 import { MachinesPanel } from "@/components/project/machines";
@@ -30,12 +30,12 @@ import { healthLines, topThreads } from "@/components/project/project-state";
 import { alertTone, funnelLine, funnelStages, heldGroups, ruleLine, settledLine } from "@/components/project/funnel-state";
 import { AGENTS_DECIDED_HINT, AGENTS_DECIDED_SUMMARY, settledLabel, splitQuestions, waitingNote, whoSettled } from "@/components/project/tabs-state";
 import { ToolkitPanel } from "@/components/project/toolkit";
-import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/pulse/panel";
-import { useViewMode, ViewToggle } from "@/components/pulse/view-toggle";
-import { Avatar, Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/pulse/who";
+import { Count, Disclosure, EmptyState, ErrorNotice, Kpi, KpiGrid, Kv, Notice, Panel, SkeletonRows, Toolbar } from "@/components/hive/panel";
+import { useViewMode, ViewToggle } from "@/components/hive/view-toggle";
+import { Avatar, Mono, PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When, Who } from "@/components/hive/who";
 import { ThreadCards, ThreadParticipants, threadTitle } from "@/components/board/sheets";
 import { ChatPane } from "@/components/chat/chat-pane";
-import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardTitle, SectionHeading } from "@/components/pulse/item-card";
+import { CardGrid, ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardTitle, SectionHeading } from "@/components/hive/item-card";
 import { TaskCards } from "@/components/tasks/task-card";
 import { NewTaskButton } from "@/components/tasks/task-dialogs";
 import { SuggestedWorkPanel, WorkSuggestionCard } from "@/components/tasks/suggested-work";
@@ -434,7 +434,7 @@ function GoalPanel({ slug }: { slug: string }) {
     <section aria-label="Project goal" className="min-w-0" id={GOAL_ANCHOR}>
       <SectionHeading
         icon={TargetIcon}
-        note={goal ? (goal.source === "owner" ? "Set by you" : "Written by PULSE") : undefined}
+        note={goal ? (goal.source === "owner" ? "Set by you" : "Written by Hive") : undefined}
         action={
           goal && canEdit ? (
             <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
@@ -915,7 +915,7 @@ function ConstitutionPanel({ c, slug }: { c: Loaded<Constitution>; slug: string 
         <Markdown source={c.data.body} className="max-h-[60vh] overflow-y-auto" />
       ) : (
         <p className="text-sm leading-relaxed text-muted-foreground">
-          {slug} has no constitution yet. It holds the limits every agent works inside; PULSE writes one from its template when the project is set up.
+          {slug} has no constitution yet. It holds the limits every agent works inside; Hive writes one from its template when the project is set up.
         </p>
       )}
       {c.data?.amendments?.length ? (
@@ -971,13 +971,13 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
           !doc ? "Missing" : !doc.seeded ? (doc.draft ? "Your own text, with a new draft to review" : doc.seeded_from ? "Your edited copy of the template" : "Your own text") : doc.draft ? "Template text, with a draft to review" : doc.draft_job ? "Template text; an agent is drafting your own" : "Template text";
         const empty = (
           <EmptyState icon={<ActivityIcon className="size-[18px]" />} title="Self-improvement isn't set up">
-            Self-improvement lets agents try changes to {slug} on their own and keep only the ones that score better. It needs the project&apos;s rules and scoring rules. PULSE adds both when it sets a project up; for an older project, add them from a terminal. Then turn it on in{" "}
+            Self-improvement lets agents try changes to {slug} on their own and keep only the ones that score better. It needs the project&apos;s rules and scoring rules. Hive adds both when it sets a project up; for an older project, add them from a terminal. Then turn it on in{" "}
             <Link href={hrefs.settings("evolve")} className="font-medium text-foreground underline underline-offset-2">
               Settings
             </Link>
             .
             <Terminal>
-              For a project added before this existed, run <Mono>{"pulse evolve seed --project " + slug}</Mono>.
+              For a project added before this existed, run <Mono>{"hive evolve seed --project " + slug}</Mono>.
             </Terminal>
           </EmptyState>
         );
@@ -992,9 +992,9 @@ export function EvolutionTab({ slug, canDecide = true }: { slug: string; canDeci
                 {stopped ? <Notice tone="bad">Self-improvement is stopped. It stays stopped until you clear the stop in Settings.</Notice> : null}
                 {!e.constitution || !e.evaluators ? (
                   <Notice tone="warn">
-                    {"Self-improvement can't run yet: " + [!e.constitution ? "the rules (constitution)" : "", !e.evaluators ? "the scoring rules" : ""].filter(Boolean).join(" and ") + (!e.constitution && !e.evaluators ? " are" : " is") + " missing. " + (gated ? "Add them with the setup step above." : "PULSE adds them when it sets a project up.")}
+                    {"Self-improvement can't run yet: " + [!e.constitution ? "the rules (constitution)" : "", !e.evaluators ? "the scoring rules" : ""].filter(Boolean).join(" and ") + (!e.constitution && !e.evaluators ? " are" : " is") + " missing. " + (gated ? "Add them with the setup step above." : "Hive adds them when it sets a project up.")}
                     <Terminal>
-                      Run <Mono>{"pulse evolve seed --project " + slug}</Mono> to add what is missing, or write your own and add it with <Mono>pulse record new evolution</Mono>.
+                      Run <Mono>{"hive evolve seed --project " + slug}</Mono> to add what is missing, or write your own and add it with <Mono>hive record new evolution</Mono>.
                     </Terminal>
                   </Notice>
                 ) : null}
@@ -1206,7 +1206,7 @@ function NoticeStats({ n, slug }: { n: Notices; slug: string }) {
 export function CleanupTab({ slug }: { slug: string }) {
   return (
     <div className="grid gap-4">
-      <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">PULSE tidies up after agents on its own: old branches, finished worktrees and threads that went quiet. This is what it found and did.</p>
+      <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">Hive tidies up after agents on its own: old branches, finished worktrees and threads that went quiet. This is what it found and did.</p>
       <HygienePanel project={slug} limit={30} />
     </div>
   );
@@ -1307,7 +1307,7 @@ function ProjectRecords({ slug, q }: { slug: string; q: Loaded<RecordsPayload> }
           if (!all.length)
             return (
               <EmptyState title="No records yet">
-                Nothing is saved for {slug} yet. When PULSE sets a project up it reads the decisions, plans and notes in its docs folder; agents add more as they work.
+                Nothing is saved for {slug} yet. When Hive sets a project up it reads the decisions, plans and notes in its docs folder; agents add more as they work.
               </EmptyState>
             );
           if (!rows.length)

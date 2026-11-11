@@ -1,9 +1,9 @@
 "use client";
 
 import { CircleCheckIcon, CircleDashedIcon, CircleSlashIcon, ClockIcon, CopyIcon, FilePenLineIcon, LightbulbIcon, LoaderIcon, PauseCircleIcon } from "lucide-react";
-import { ItemCard, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/pulse/item-card";
+import { ItemCard, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
 import { Progress } from "@/components/ui/progress";
-import { PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When } from "@/components/pulse/who";
+import { PostLink, ProjectLink, StatusBadge, ThreadLink, ToneBadge, When } from "@/components/hive/who";
 import { agentName } from "@/lib/words";
 import { cn } from "@/lib/utils";
 import { expiresAt, num, plural, sentence, span } from "@/lib/format";

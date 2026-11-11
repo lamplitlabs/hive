@@ -16,12 +16,12 @@
 # Exit status is cargo's; the scratch copy is removed afterwards.
 set -eu
 
-LEAVES="pulse-gitenv pulse-cred pulse-store pulse-bus pulse-cli
-pulse-cred-setup pulse-cred-command pulse-provider pulse-provider-anthropic
-pulse-provider-copilot pulse-provider-gemini pulse-provider-openai
-pulse-provider-fake pulse-board pulse-tasks pulse-goals pulse-goals-command
-pulse-tally pulse-records pulse-codedelivery pulse-mcp pulse-voice pulse-hooks
-pulse-testutil"
+LEAVES="hive-gitenv hive-cred hive-store hive-bus hive-cli
+hive-cred-setup hive-cred-command hive-provider hive-provider-anthropic
+hive-provider-copilot hive-provider-gemini hive-provider-openai
+hive-provider-fake hive-board hive-tasks hive-goals hive-goals-command
+hive-tally hive-records hive-codedelivery hive-mcp hive-voice hive-hooks
+hive-testutil"
 
 targets=""
 crates=""
@@ -38,7 +38,7 @@ if [ -z "$crates" ]; then
 fi
 
 root=$(git rev-parse --show-toplevel)
-ws=$(mktemp -d "${TMPDIR:-/tmp}/pulse-not-unix.XXXXXX")
+ws=$(mktemp -d "${TMPDIR:-/tmp}/hive-not-unix.XXXXXX")
 trap 'rm -rf "$ws"' EXIT
 (cd "$root" && git ls-files -z Cargo.toml Cargo.lock crates | xargs -0 tar -cf - | tar -xf - -C "$ws")
 
@@ -50,16 +50,16 @@ for c in $crates; do
     exit 2
   fi
   find "$d/src" -name '*.rs' -exec perl -pi -e '
-    s/cfg\(unix\)/cfg(pulse_unix_off)/g;
-    s/cfg\(not\(unix\)\)/cfg(not(pulse_unix_off))/g;
-    s/cfg!\(unix\)/cfg!(pulse_unix_off)/g;
-    s/cfg_attr\(not\(unix\),/cfg_attr(not(pulse_unix_off),/g;
-    s/cfg_attr\(unix,/cfg_attr(pulse_unix_off,/g;
-    s/cfg\(all\(unix,/cfg(all(pulse_unix_off,/g;
-    s/cfg\(all\(test, unix\)\)/cfg(all(test, pulse_unix_off))/g;
-    s/target_os = "(macos|linux)"/target_os = "pulse_off"/g;
-    s/std::os::unix/std::os::pulse_unix_off/g;
-    s/signal_hook::iterator/signal_hook::pulse_iterator_off/g;
+    s/cfg\(unix\)/cfg(hive_unix_off)/g;
+    s/cfg\(not\(unix\)\)/cfg(not(hive_unix_off))/g;
+    s/cfg!\(unix\)/cfg!(hive_unix_off)/g;
+    s/cfg_attr\(not\(unix\),/cfg_attr(not(hive_unix_off),/g;
+    s/cfg_attr\(unix,/cfg_attr(hive_unix_off,/g;
+    s/cfg\(all\(unix,/cfg(all(hive_unix_off,/g;
+    s/cfg\(all\(test, unix\)\)/cfg(all(test, hive_unix_off))/g;
+    s/target_os = "(macos|linux)"/target_os = "hive_off"/g;
+    s/std::os::unix/std::os::hive_unix_off/g;
+    s/signal_hook::iterator/signal_hook::hive_iterator_off/g;
   ' {} +
   perl -ni -e 'print unless /^(nix|libc)\.workspace/' "$d/Cargo.toml"
   pkgs="$pkgs -p $c"

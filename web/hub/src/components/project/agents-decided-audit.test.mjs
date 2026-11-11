@@ -10,7 +10,7 @@ import { test } from "node:test";
 // audit's words and the count are pure and tested without react in
 // tabs-state.test.mjs; this suite only renders, so it needs react and the
 // typescript the loader transpiles .tsx with. A clone without node_modules
-// (the one pulse evolve measure scores the hub's coverage in) skips it
+// (the one hive evolve measure scores the hub's coverage in) skips it
 // instead of failing.
 register("./tsx-test-loader.mjs", import.meta.url);
 
@@ -19,7 +19,7 @@ const ts = await import("typescript").then(() => true, () => false);
 const skip = React && ts ? false : "react and typescript are not installed (npm ci)";
 const render = skip ? null : await import("react-dom/server");
 const tabs = skip ? null : await import("./tabs.tsx");
-const cards = skip ? null : await import("../pulse/cards.tsx");
+const cards = skip ? null : await import("../hive/cards.tsx");
 const { AGENTS_DECIDED_SUMMARY } = await import("./tabs-state.ts");
 
 const base = {

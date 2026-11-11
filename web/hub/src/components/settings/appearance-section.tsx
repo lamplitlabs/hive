@@ -2,13 +2,13 @@
 
 import { useMemo, useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
-import { SectionHeading } from "@/components/pulse/item-card";
+import { SectionHeading } from "@/components/hive/item-card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { applyAppearance, DEFAULT_APPEARANCE, readAppearance, writeAppearance, type Appearance } from "@/components/shell/appearance-state";
 
 // Settings > Appearance: how the console reads in this browser - the colour
 // theme (next-themes), density, font and text size (appearance-state). None
-// of it is a PULSE setting: each choice lives in localStorage and takes
+// of it is a Hive setting: each choice lives in localStorage and takes
 // effect at once, so the rows have no Save and no confirm.
 //
 // `icon` is the lucide component the page picks for the heading (groupIcon

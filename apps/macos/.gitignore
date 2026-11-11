@@ -1,4 +1,4 @@
-# SwiftPM and Xcode state; PULSE.app and the disk image land in build/.
+# SwiftPM and Xcode state; Hive.app and the disk image land in build/.
 .build/
 .swiftpm/
 build/

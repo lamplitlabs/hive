@@ -8,17 +8,17 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { showApiError } from "@/components/pulse/confirm";
-import { CardGrid, ItemCard, ItemCardTitle } from "@/components/pulse/item-card";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { BrandLogo, LogoTile } from "@/components/pulse/logo";
-import { PageHeader } from "@/components/pulse/page-header";
-import { Disclosure, EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/pulse/panel";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { SidePanel, useOpenItem } from "@/components/pulse/side-panel";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Mono, When } from "@/components/pulse/who";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { showApiError } from "@/components/hive/confirm";
+import { CardGrid, ItemCard, ItemCardTitle } from "@/components/hive/item-card";
+import { KindTile } from "@/components/hive/kind-tile";
+import { BrandLogo, LogoTile } from "@/components/hive/logo";
+import { PageHeader } from "@/components/hive/page-header";
+import { Disclosure, EmptyState, ErrorNotice, Kv, SkeletonRows } from "@/components/hive/panel";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { SidePanel, useOpenItem } from "@/components/hive/side-panel";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Mono, When } from "@/components/hive/who";
 import { ConnectDialog, McpServerDialog, SignInDialog, refreshMcp } from "@/components/connections/mcp-dialogs";
 import { SkillDialog, SkillViewDialog, refreshSkills } from "@/components/connections/skill-dialogs";
 import { connectionState, dedupeSuggestions, servesProjects, skillUseText, toolCountText, unconnectedSuggestions } from "@/components/connections/connections-state";
@@ -39,7 +39,7 @@ const MCP_28 = <BrandLogo id="modelcontextprotocol" size={16} title="MCP server"
 // issues, feedback, docs, environments; a skill is a reusable set of
 // instructions. Both are for every project unless one project is named -
 // the Add dialogs start at "All projects" whatever the page filter says -
-// and both reach agents through their brief. The page: what PULSE suggests
+// and both reach agents through their brief. The page: what Hive suggests
 // first (one click adds it), the tool cards, then the skills; a card opens
 // its details beside the list.
 
@@ -64,7 +64,7 @@ function toolForm(t: ToolSuggestion): Partial<McpForm> {
     url: t.url,
     auth: t.auth as McpAuth,
     auth_header: t.auth_header,
-    note: t.about + " Suggested by pulse toolkit for " + t.project + ".",
+    note: t.about + " Suggested by hive toolkit for " + t.project + ".",
   };
 }
 
@@ -117,7 +117,7 @@ function SuggestedSkills({ project }: { project: string }) {
   if (!rows.length) return null;
   const total = rows.reduce((n, g) => n + g.skills.length, 0);
   return (
-    <Disclosure variant="row" summary={<span className="text-sm font-medium">{"Skills PULSE suggests"}</span>} hint={plural(total, "drafted skill")} contentClassName="mt-3 grid gap-3">
+    <Disclosure variant="row" summary={<span className="text-sm font-medium">{"Skills Hive suggests"}</span>} hint={plural(total, "drafted skill")} contentClassName="mt-3 grid gap-3">
       {rows.map((g) => (
         <div key={g.project} className="grid gap-2">
           {rows.length > 1 ? <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{g.project}</p> : null}
@@ -216,7 +216,7 @@ export function ConnectionsPageClient() {
                   </Button>
                 }
               >
-                Connect the systems your agents should reach: issues, docs, a browser, your database. PULSE fills in the details for the usual ones.
+                Connect the systems your agents should reach: issues, docs, a browser, your database. Hive fills in the details for the usual ones.
               </EmptyState>
             ) : (
               <CardGrid cols={3}>
@@ -229,7 +229,7 @@ export function ConnectionsPageClient() {
               <div className="mt-3">
                 <Fold summary="How agents use these">
                   <p>
-                    Agents call a tool with <Mono>pulse mcp call NAME TOOL</Mono> and see what it offers with <Mono>pulse mcp tools NAME</Mono>. The tools that are on are named in every agent&apos;s brief.
+                    Agents call a tool with <Mono>hive mcp call NAME TOOL</Mono> and see what it offers with <Mono>hive mcp tools NAME</Mono>. The tools that are on are named in every agent&apos;s brief.
                   </p>
                 </Fold>
               </div>
@@ -275,7 +275,7 @@ export function ConnectionsPageClient() {
               {skillRows.length ? (
                 <Fold summary="How agents use these">
                   <p>
-                    Agents read a skill with <Mono>pulse skill show NAME</Mono>; each read is counted. They add their own with <Mono>pulse skill add</Mono>.
+                    Agents read a skill with <Mono>hive skill show NAME</Mono>; each read is counted. They add their own with <Mono>hive skill add</Mono>.
                   </p>
                 </Fold>
               ) : null}
@@ -566,7 +566,7 @@ function ServerDetails({ s, onConnect, onEdit, onSignIn }: { s: McpServer; onCon
 }
 
 // "Connected 1 month ago. 12 tools, including list_issues, get_issue and
-// create_issue." / "Failed 1 month ago: PULSE couldn't read the secret.";
+// create_issue." / "Failed 1 month ago: Hive couldn't read the secret.";
 // the raw note in the tooltip.
 function CheckLine({ server }: { server: McpServer }) {
   const c = lastCheck(server);

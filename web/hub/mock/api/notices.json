@@ -20,17 +20,17 @@
     },
     {
       "amendments": 1,
-      "base": "/p/pulse",
+      "base": "/p/hive",
       "brain": true,
-      "name": "pulse",
+      "name": "hive",
       "proposals": 0,
-      "slug": "pulse",
+      "slug": "hive",
       "suggestions": 2
     }
   ],
-  "brain": "pulse",
+  "brain": "hive",
   "brains": [
-    "pulse"
+    "hive"
   ],
   "commons_base": "/commons",
   "commons_present": true,

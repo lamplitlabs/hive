@@ -42,19 +42,19 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ConfirmDialog, showApiError } from "@/components/pulse/confirm";
-import { KindTile } from "@/components/pulse/kind-tile";
-import { PageHeader } from "@/components/pulse/page-header";
-import { SectionHeading } from "@/components/pulse/section-heading";
-import { StatusBadge, StatusIcon } from "@/components/pulse/status-badge";
+import { ConfirmDialog, showApiError } from "@/components/hive/confirm";
+import { KindTile } from "@/components/hive/kind-tile";
+import { PageHeader } from "@/components/hive/page-header";
+import { SectionHeading } from "@/components/hive/section-heading";
+import { StatusBadge, StatusIcon } from "@/components/hive/status-badge";
 import {
   Disclosure,
   EmptyState,
   ErrorNotice,
   Notice,
   SkeletonRows,
-} from "@/components/pulse/panel";
-import { Mono, ToneBadge, When } from "@/components/pulse/who";
+} from "@/components/hive/panel";
+import { Mono, ToneBadge, When } from "@/components/hive/who";
 import {
   ApiError,
   api,
@@ -91,7 +91,7 @@ import {
   isSlug,
   keptWords,
   scriptHome,
-  scriptInPulse,
+  scriptInHive,
   scriptOutside,
   slugify,
   stateWords,
@@ -124,10 +124,10 @@ import {
 // or failing sorts first with its problem in one sentence and a Fix button.
 //
 // The place to keep an automation is the project's repository, one file per
-// automation under `.pulse/automations/`; this page writes those files (one
+// automation under `.hive/automations/`; this page writes those files (one
 // commit on the default branch, never a push) through the same checks the
 // daemon applies them with. A schedule can also live in the store alone, the
-// way `pulse schedule add` makes one. The dialogs and the history panel at
+// way `hive schedule add` makes one. The dialogs and the history panel at
 // the bottom of this file are unchanged by the redesign.
 
 export const refreshAutomations = () =>
@@ -214,7 +214,7 @@ export function AutomationsPageClient() {
           <ErrorNotice error={q.error} onRetry={() => void q.reload()}>
             {"The automations didn't load (" +
               q.error +
-              "). Check that PULSE is running, then try again."}
+              "). Check that Hive is running, then try again."}
           </ErrorNotice>
         ) : null}
         {!q.data && !q.error ? (
@@ -235,7 +235,7 @@ export function AutomationsPageClient() {
           >
             {project
               ? "This project has no standing jobs and no checkout on this machine to keep them in. Register a checkout, or add one that lives in the store."
-              : "A standing job runs on a cadence without anyone asking: a nightly audit, a weekly dependency check, a watch on a page that must stay up. Add one and it is written into the project's repository as .pulse/automations/<name>.yaml."}
+              : "A standing job runs on a cadence without anyone asking: a nightly audit, a weekly dependency check, a watch on a page that must stay up. Add one and it is written into the project's repository as .hive/automations/<name>.yaml."}
           </EmptyState>
         ) : q.data ? (
           shown.map((p) => (
@@ -323,7 +323,7 @@ function WeekCell({ d }: { d: WeekDay }) {
 // ----- one project --------------------------------------------------------
 
 // One card's worth of an automation: a live schedule, or a file of
-// `.pulse/automations/` that no schedule runs from (held or not applied yet).
+// `.hive/automations/` that no schedule runs from (held or not applied yet).
 type Card =
   | { key: string; status: string; failing: boolean; kind: "schedule"; s: AutomationSchedule }
   | { key: string; status: string; failing: boolean; kind: "file"; f: AutomationRepoFile };
@@ -344,7 +344,7 @@ function ProjectGroup({
   const [showEnded, setShowEnded] = useState(false);
   const listProblems = p.file?.problems ?? [];
   const otherProblems = daemonProblems(p);
-  const dir = p.automations?.dir ?? ".pulse/automations";
+  const dir = p.automations?.dir ?? ".hive/automations";
   const cards = useMemo(() => {
     const out: Card[] = p.schedules.map((s) => ({ key: s.id, status: s.status, failing: !!problemOf(s), kind: "schedule", s }));
     // Files without a live schedule: held (the daemon refused them) or not
@@ -376,7 +376,7 @@ function ProjectGroup({
       {listProblems.length ? (
         <Notice tone="warn">
           <p className="font-medium">
-            {p.file?.path ?? ".pulse/pulse.yaml"} has problems the daemon will
+            {p.file?.path ?? ".hive/hive.yaml"} has problems the daemon will
             not apply:
           </p>
           <ul className="mt-1 list-disc pl-4">
@@ -453,7 +453,7 @@ function CardGrid({ children }: { children: React.ReactNode }) {
 function FileLine({ p }: { p: AutomationProject }) {
   if (!p.repo) return <span>No checkout on this machine</span>;
   const files = p.automations?.files ?? [];
-  const dir = p.automations?.dir ?? ".pulse/automations";
+  const dir = p.automations?.dir ?? ".hive/automations";
   if (!files.length && !p.file)
     return (
       <span>
@@ -584,7 +584,7 @@ function LastResults({ s }: { s: AutomationSchedule }) {
   );
 }
 
-// A file of `.pulse/automations/` that no schedule runs from: the daemon
+// A file of `.hive/automations/` that no schedule runs from: the daemon
 // holds it (something is wrong) or has not applied it yet. Its problems
 // show here, and Fix opens the form on it.
 function FileCard({
@@ -746,7 +746,7 @@ function ScheduleCard({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {"Its script " + s.script + " sits outside .pulse/. The place for it is " + (s.script_home || scriptHome(s.origin_name || s.id)) + "."}
+                  {"Its script " + s.script + " sits outside .hive/. The place for it is " + (s.script_home || scriptHome(s.origin_name || s.id)) + "."}
                 </TooltipContent>
               </Tooltip>
             ) : null}
@@ -1232,7 +1232,7 @@ function AutomationForm({
         : null;
   const clean = useMemo(() => cleanEntry(e), [e]);
   // The script the automation already runs: an edit may keep it where it
-  // is, even outside .pulse/.
+  // is, even outside .hive/.
   const keptScript = target?.schedule?.script ?? target?.entry.script ?? "";
   const hints = entryHints(clean, data.limits.min_minutes, keptScript);
   const minutes = everyMinutes(clean.every);
@@ -1354,7 +1354,7 @@ function AutomationForm({
           ? check.form === "list"
             ? "Paste it under schedules: in " + check.path + "."
             : "Save it as " + check.path + "."
-          : "Save it as .pulse/automations/<name>.yaml.",
+          : "Save it as .hive/automations/<name>.yaml.",
       });
     } catch {
       toast.error("Couldn't copy. Select the text and copy it by hand.");
@@ -1381,14 +1381,14 @@ function AutomationForm({
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>
           {mode === "new"
-            ? "A job that runs on a cadence. Written into the project's repository as .pulse/automations/<name>.yaml with one commit on its default branch (nothing is pushed), or kept in the store on this machine."
+            ? "A job that runs on a cadence. Written into the project's repository as .hive/automations/<name>.yaml with one commit on its default branch (nothing is pushed), or kept in the store on this machine."
             : mode === "move"
-              ? "The schedule becomes a file of the project's .pulse/automations folder, committed on its default branch (nothing is pushed); the hand-set copy ends."
+              ? "The schedule becomes a file of the project's .hive/automations folder, committed on its default branch (nothing is pushed); the hand-set copy ends."
               : where === "repo"
                 ? "Saved as a new commit on " +
                   (p?.repo?.branch ?? "the default branch") +
                   " (nothing is pushed); the daemon applies it at once."
-                : "Saved in the store on this machine, the way pulse schedule would."}
+                : "Saved in the store on this machine, the way hive schedule would."}
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
@@ -1416,7 +1416,7 @@ function AutomationForm({
               <p className="text-xs text-muted-foreground">
                 {p?.repo
                   ? "Its automations: " +
-                    (p.automations?.dir ?? ".pulse/automations") +
+                    (p.automations?.dir ?? ".hive/automations") +
                     "/ on " +
                     p.repo.branch +
                     "."
@@ -1575,7 +1575,7 @@ function AutomationForm({
                   spellCheck={false}
                 />
                 <p className="text-xs text-muted-foreground">
-                  {"Under .pulse/ in the repository, beside the automation's file (" +
+                  {"Under .hive/ in the repository, beside the automation's file (" +
                     scriptHome(clean.name) +
                     "), committed on " +
                     (p?.repo?.branch || "the default branch") +
@@ -1584,10 +1584,10 @@ function AutomationForm({
                       ? "Exit 0 is green; anything else is red and queues a job with its output."
                       : "Output means it fired; a job is queued with what it said.")}
                 </p>
-                {keptScript && !scriptInPulse(keptScript) ? (
+                {keptScript && !scriptInHive(keptScript) ? (
                   <p className="text-xs text-warn">
                     It runs <Mono className="text-xs">{keptScript}</Mono>{" "}
-                    from outside .pulse/ today; that keeps working. To move it,
+                    from outside .hive/ today; that keeps working. To move it,
                     commit the script at{" "}
                     <Mono className="text-xs">{scriptHome(clean.name)}</Mono>{" "}
                     first, then name that path here.
@@ -1767,7 +1767,7 @@ function AutomationForm({
 
         <aside className="grid min-w-0 content-start gap-3 md:border-l md:pl-5">
           <p className="text-sm font-medium">Before it&apos;s saved</p>
-          {!check && !checking ? <p className="text-xs text-muted-foreground">{project ? "Fill in a name and how often it runs; PULSE checks it as you type." : "Pick a project first."}</p> : checking && !check ? <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2Icon className="size-3.5 animate-spin" aria-hidden /> Checking…</p> : null}
+          {!check && !checking ? <p className="text-xs text-muted-foreground">{project ? "Fill in a name and how often it runs; Hive checks it as you type." : "Pick a project first."}</p> : checking && !check ? <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2Icon className="size-3.5 animate-spin" aria-hidden /> Checking…</p> : null}
           {problems.length &&
           (tried ||
             serverProblems ||
@@ -1796,13 +1796,13 @@ function AutomationForm({
           ) : null}
           {check?.warning ? <Notice tone="info">{check.warning}</Notice> : null}
           {/* The YAML is what a reviewer reads in the repository; most owners never need it, so it waits behind a fold. */}
-          <Disclosure summary={where === "store" ? "Show it as a PULSE file would" : "Show the PULSE file entry"} contentClassName="grid gap-2">
+          <Disclosure summary={where === "store" ? "Show it as a Hive file would" : "Show the Hive file entry"} contentClassName="grid gap-2">
             <div className="flex items-center justify-end">
               <Button size="sm" variant="ghost" onClick={() => void copy()} disabled={!check?.yaml}>
                 <CopyIcon /> Copy
               </Button>
             </div>
-            <pre className="max-h-72 min-w-0 max-w-full overflow-auto rounded-xl border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre" aria-live="polite" aria-label="The PULSE file entry">
+            <pre className="max-h-72 min-w-0 max-w-full overflow-auto rounded-xl border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre" aria-live="polite" aria-label="The Hive file entry">
               {check?.yaml || "# " + (checking ? "checking…" : project ? "fill in a name and how often it runs" : "pick a project")}
             </pre>
             {check?.path ? (
@@ -1832,7 +1832,7 @@ function AutomationForm({
                 variant="outline"
                 onClick={() => void submit("store")}
                 disabled={!!busy || !project || (tried && !ready)}
-                title="Lives in the store on this machine, like pulse schedule add"
+                title="Lives in the store on this machine, like hive schedule add"
               >
                 {busy === "store" ? (
                   <Loader2Icon className="animate-spin" />

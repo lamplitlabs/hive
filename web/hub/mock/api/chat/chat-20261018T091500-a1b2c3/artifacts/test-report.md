@@ -1,6 +1,6 @@
 # Test report - dark mode toggle
 
-Branch `pulse/chat-a1b2c3`, two commits plus one uncommitted stylesheet change.
+Branch `hive/chat-a1b2c3`, two commits plus one uncommitted stylesheet change.
 
 ## Summary
 

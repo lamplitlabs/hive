@@ -1,4 +1,4 @@
-// Suggested-work mock for `tasks/suggested` (crates/pulse-hub/src/suggestions_api.rs):
+// Suggested-work mock for `tasks/suggested` (crates/hive-hub/src/suggestions_api.rs):
 // the owner or an agent suggests the next work item, a daemon agent reviews it,
 // and an accepted suggestion becomes a task. Pure functions over in-memory
 // state, so the shape is testable without a server: createSuggestedMock({...})
@@ -34,7 +34,7 @@ export function createSuggestedMock({ suggestions = [], tasks = [], now = () => 
 
   function show(id) {
     const g = find(id);
-    if (!g) return failure(404, "No suggestion " + JSON.stringify(id), "the id is not in this store", "pulse task suggestions");
+    if (!g) return failure(404, "No suggestion " + JSON.stringify(id), "the id is not in this store", "hive task suggestions");
     const t = g.task_id ? tasks.find((x) => x.id === g.task_id) : null;
     return success({ suggestion: g, task: t ? strip(t) : null });
   }
@@ -75,9 +75,9 @@ export function createSuggestedMock({ suggestions = [], tasks = [], now = () => 
   // not change again.
   function act(id, action, body) {
     const g = find(id);
-    if (!g) return failure(404, "No suggestion " + JSON.stringify(id || ""), "the id is not in this store", "pulse task suggestions");
+    if (!g) return failure(404, "No suggestion " + JSON.stringify(id || ""), "the id is not in this store", "hive task suggestions");
     if (!["accept", "decline", "withdraw"].includes(action)) return failure(404, "Unknown API route", "That owner-console route does not exist.", "Use an /api/v1 route.");
-    if (!OPEN.includes(g.status)) return failure(400, g.id + " is already " + g.status, "a reviewed suggestion does not change", "pulse task show " + g.id);
+    if (!OPEN.includes(g.status)) return failure(400, g.id + " is already " + g.status, "a reviewed suggestion does not change", "hive task show " + g.id);
     const reason = (body.reason || "").trim();
     g.updated_at = now();
     g.reviewed_at = now();

@@ -54,15 +54,15 @@ test("a task takes the same section a conversation would", () => {
 
 test("work done without a pull request yet waits for one: a step by its branch, a task by its steps, a conversation by the hub's answer", () => {
   // A done job keeps its branch until the pull request is merged or closed.
-  assert.equal(jobWaitingForPr("done", "pulse/iris/job-1"), true);
+  assert.equal(jobWaitingForPr("done", "hive/iris/job-1"), true);
   assert.equal(jobWaitingForPr("done", ""), false);
   assert.equal(jobWaitingForPr("done", undefined), false);
-  assert.equal(jobWaitingForPr("failed", "pulse/iris/job-1"), false);
-  assert.equal(jobWaitingForPr("leased", "pulse/iris/job-1"), false);
-  const waiting = session({ job_status: "done", status: "ended", branch: "pulse/iris/job-1" });
+  assert.equal(jobWaitingForPr("failed", "hive/iris/job-1"), false);
+  assert.equal(jobWaitingForPr("leased", "hive/iris/job-1"), false);
+  const waiting = session({ job_status: "done", status: "ended", branch: "hive/iris/job-1" });
   assert.deepEqual(sessionWords(waiting), { word: "Waiting for its pull request", tone: "neutral" });
-  assert.deepEqual(stepWords("done", false, "pulse/iris/job-1"), { word: "Waiting for its pull request", tone: "neutral" });
-  assert.deepEqual(stepWords("done", true, "pulse/iris/job-1"), { word: "Working", tone: "run" }, "a session at it outranks the branch");
+  assert.deepEqual(stepWords("done", false, "hive/iris/job-1"), { word: "Waiting for its pull request", tone: "neutral" });
+  assert.deepEqual(stepWords("done", true, "hive/iris/job-1"), { word: "Working", tone: "run" }, "a session at it outranks the branch");
   assert.deepEqual(stepWords("done", false, ""), { word: "Done", tone: "ok" });
   // The task: the section sits between working and open; a step waiting for
   // the pull request outranks Done (the task is not on main yet) but not an
@@ -123,7 +123,7 @@ test("a pull request's review state groups the entry first: the owner's two stat
   // their branch, but an agent at a step or the lead's question comes
   // first; the owner's Merge comes before everything.
   const pr = (state) => ({ number: 7, url: "https://g/pr/7", state });
-  const waiting = session({ job_status: "done", status: "ended", branch: "pulse/iris/job-1" });
+  const waiting = session({ job_status: "done", status: "ended", branch: "hive/iris/job-1" });
   assert.equal(taskMood(task({ sessions: [waiting], pr: pr("pr_open") })).word, "Pull request open");
   assert.equal(taskGroup(task({ sessions: [waiting], pr: pr("pr_open") })), "review");
   assert.equal(taskMood(task({ status: "done", sessions: [waiting], pr: pr("in_review") })).word, "In review");
@@ -140,9 +140,9 @@ test("a pull request's review state groups the entry first: the owner's two stat
   assert.equal(taskMood(task({ status: "done", pr: pr("review_failed") })).word, "Review failed");
   // Its steps read the pull request's word instead of waiting for one.
   assert.deepEqual(sessionWords(waiting, "in_review"), { word: "In review", tone: "run" });
-  assert.deepEqual(stepWords("done", false, "pulse/x", "needs_owner"), { word: "Needs your review", tone: "wait" });
-  assert.deepEqual(stepWords("done", false, "pulse/x", "merged"), { word: "Waiting for its pull request", tone: "neutral" }, "a branch the daemon has not cleared yet");
-  assert.deepEqual(stepWords("done", true, "pulse/x", "needs_owner"), { word: "Working", tone: "run" });
+  assert.deepEqual(stepWords("done", false, "hive/x", "needs_owner"), { word: "Needs your review", tone: "wait" });
+  assert.deepEqual(stepWords("done", false, "hive/x", "merged"), { word: "Waiting for its pull request", tone: "neutral" }, "a branch the daemon has not cleared yet");
+  assert.deepEqual(stepWords("done", true, "hive/x", "needs_owner"), { word: "Working", tone: "run" });
   assert.deepEqual(stepWords("done", false, "", "needs_owner"), { word: "Done", tone: "ok" });
   // The task's own page reads the same from the delivery state.
   assert.equal(taskMoodOf({ status: "in_progress", lead: "", needs_you: false, working: false, pr: "merge_asked" }).word, "Merging");

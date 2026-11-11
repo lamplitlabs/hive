@@ -3,18 +3,18 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
 import { ArrowUpCircleIcon, DownloadIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { daemonUpdateText, pendingUpdate } from "@/components/pulse/daemon-control-state";
+import { daemonUpdateText, pendingUpdate } from "@/components/hive/daemon-control-state";
 import { errorText, writes, type RunningPayload, type UpdatePayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { UPDATE_POLL_IDLE_MS, UPDATE_POLL_INSTALLING_MS, readDismissed, updateApplyView, updateBanner, writeDismissed, type UpdateStorage } from "@/lib/update-state";
 import { useApi } from "@/lib/use-api";
 
-// "PULSE vX is available" over every page (TASK-087), when the daemon's daily
+// "Hive vX is available" over every page (TASK-087), when the daemon's daily
 // check (setting update.latest_url) found a release newer than this build.
 // Dismissing hides it for that release in this browser; the next release
 // shows again. With the setting empty (the default) nothing is ever shown.
 // On update.channel release it offers "Update now" (TASK-093): the hub
-// installs the release the way `pulse update` does, and the banner follows
+// installs the release the way `hive update` does, and the banner follows
 // it to the runner's restart. The words and the rules live in
 // lib/update-state.ts.
 const listeners = new Set<() => void>();

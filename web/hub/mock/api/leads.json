@@ -38,9 +38,9 @@
     },
     {
       "id": "LEAD-003",
-      "project": "pulse",
+      "project": "hive",
       "role": "security",
-      "agent": "pulse-lead-security",
+      "agent": "hive-lead-security",
       "title": "Security lead",
       "brief": "",
       "every_minutes": 10080,
@@ -63,7 +63,7 @@
         "title": "Monitoring lead",
         "about": "keeps the checks and watchers that tell when the product is broken, and reads what they say",
         "why": "1 of 2 checks or watchers are red or broken and nobody owns them",
-        "command": "pulse lead add --project demo-app --role monitor"
+        "command": "hive lead add --project demo-app --role monitor"
       },
       {
         "project": "demo-app",
@@ -71,7 +71,7 @@
         "title": "Accessibility lead",
         "about": "uses the product the way every user does - keyboard, screen reader, zoom, a phone - and fixes what gets in the way",
         "why": "the project ships a user interface (next) and nobody uses it the way every user does",
-        "command": "pulse lead add --project demo-app --role a11y"
+        "command": "hive lead add --project demo-app --role a11y"
       }
     ],
     "demo-lib": [
@@ -81,17 +81,17 @@
         "title": "Release lead",
         "about": "prepares each release: the changelog, the version, the notes a user reads, and what must be true before shipping",
         "why": "34 commits on the default branch since the last tag v2.3.0 and nobody prepares a release",
-        "command": "pulse lead add --project demo-lib --role release"
+        "command": "hive lead add --project demo-lib --role release"
       }
     ],
-    "pulse": [
+    "hive": [
       {
-        "project": "pulse",
+        "project": "hive",
         "role": "tidy",
         "title": "Tidy-up lead",
         "about": "keeps the code easy to change: lint findings, dead code, duplicates, TODOs that aged, files that grew past their name",
         "why": "the check `cargo test --workspace` runs no linter or formatter",
-        "command": "pulse lead add --project pulse --role tidy"
+        "command": "hive lead add --project hive --role tidy"
       }
     ]
   },

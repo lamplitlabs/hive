@@ -1,0 +1,31 @@
+[package]
+name = "hive-board"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive: posts, agents, projects, jobs, decide, init, export, remove"
+
+[dependencies]
+hive-bus.workspace = true
+hive-cli.workspace = true
+hive-gitenv.workspace = true
+hive-goals.workspace = true
+hive-store.workspace = true
+hive-hand-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true
+rand.workspace = true
+home.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hive-testutil.workspace = true

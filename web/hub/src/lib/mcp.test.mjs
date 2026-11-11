@@ -12,7 +12,7 @@ const server = {
   url: "",
   auth: "env",
   auth_header: "GITHUB_PERSONAL_ACCESS_TOKEN",
-  secret_ref: "op://PULSE/github-mcp/token",
+  secret_ref: "op://Hive/github-mcp/token",
   env: { GITHUB_HOST: "https://github.com" },
   note: "Issues and pull requests of every project.",
   status: "enabled",
@@ -71,7 +71,7 @@ test("the input drops what the transport and auth do not use", () => {
   assert.deepEqual(http.args, []);
   assert.deepEqual(http.env, {});
   assert.equal(http.auth_header, "");
-  assert.equal(http.secret_ref, "op://PULSE/github-mcp/token");
+  assert.equal(http.secret_ref, "op://Hive/github-mcp/token");
   const open = mcpInput(form({ auth: "none" }));
   assert.equal(open.secret_ref, "");
   assert.equal(mcpInput(form({ transport: "http", url: "https://x", auth: "oauth" })).secret_ref, "");

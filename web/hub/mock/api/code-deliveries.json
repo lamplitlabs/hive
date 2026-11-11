@@ -10,7 +10,7 @@
     {
       "type": "unavailable",
       "event_seq": 231,
-      "project": "pulse",
+      "project": "hive",
       "at": "2026-09-07T09:05:00Z",
       "reason": "The merged pull request's changed files are not gathered yet"
     },

@@ -8,7 +8,7 @@
 // Brand hexes follow the redesign brief (a few differ from the package data
 // where the brief picked a legible tint).
 //
-// Pure: no React, no DOM. The components live in components/pulse/logo.tsx.
+// Pure: no React, no DOM. The components live in components/hive/logo.tsx.
 
 export type LogoId =
   | "anthropic"

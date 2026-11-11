@@ -41,7 +41,7 @@
           "report": {
             "title": "Checkout shows its total after the price lookup",
             "summary": "The checkout read the total before the async price lookup had answered, so a slow lookup left the page showing $NaN.",
-            "status": "On pulse/cinder/job-20260901T190200Z-87e2d1; it lands with task TASK-014.",
+            "status": "On hive/cinder/job-20260901T190200Z-87e2d1; it lands with task TASK-014.",
             "checks": [
               "`checkout renders totals after the price lookup`: 20 of 20 runs passed (the old assertion failed 4 of 20)",
               "`npm test`: 212 passed"
@@ -53,7 +53,7 @@
     },
     {
       "id": "TASK-013",
-      "project": "pulse",
+      "project": "hive",
       "title": "Retry a provider call once on a dropped connection",
       "brief": "A dropped TLS connection fails the whole run. Retry the call once with jitter and say so in the run log.",
       "priority": 20,
@@ -68,7 +68,7 @@
           "status": "done",
           "agent": "quartz",
           "finished_at": "2026-08-31T13:10:00Z",
-          "summary": "SUMMARY: done - provider calls retry once on a reset connection; cargo test -p pulse-provider 118 passed",
+          "summary": "SUMMARY: done - provider calls retry once on a reset connection; cargo test -p hive-provider 118 passed",
           "verify": "verify exit 0",
           "commits": 1,
           "landing": {

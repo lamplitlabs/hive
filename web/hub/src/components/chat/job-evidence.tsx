@@ -5,7 +5,7 @@
 // owner's evidence for what is being landed. Where a canvas is near (the
 // task view) it opens the job's evidence tab; elsewhere (the project's
 // chat) it is a link to the newest file, in a new tab. Beside it, "See the
-// report" opens the before/after page the agent built with `pulse report`,
+// report" opens the before/after page the agent built with `hive report`,
 // when the folder has one. The words and rules are in job-evidence-state.ts.
 
 import { Columns2Icon, ImagesIcon } from "lucide-react";

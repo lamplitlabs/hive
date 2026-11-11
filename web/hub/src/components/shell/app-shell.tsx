@@ -26,13 +26,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { AskHost } from "@/components/ask/ask-panel";
-import { ProjectAvatar } from "@/components/pulse/avatar";
-import { useInbox } from "@/components/pulse/inbox";
+import { ProjectAvatar } from "@/components/hive/avatar";
+import { useInbox } from "@/components/hive/inbox";
 import {
   Kbd,
   ShortcutHelp,
   useGlobalShortcuts,
-} from "@/components/pulse/shortcut-help";
+} from "@/components/hive/shortcut-help";
 import { AddProjectDialog } from "@/components/project/project-dialogs";
 import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { openAsk } from "@/components/ask/ask-panel";
@@ -53,7 +53,7 @@ import {
 } from "./nav-items";
 import { OwnerNotifier } from "./owner-notifier";
 import { OwnerRow } from "./owner-row";
-import { PulseMark } from "./pulse-mark";
+import { HiveMark } from "./hive-mark";
 import { RailTip } from "./rail-tip";
 import { sidebarToggleLabel } from "./sidebar-state";
 import { SystemStatus } from "./system-status";
@@ -110,12 +110,12 @@ function SidebarHeader() {
           "brand-link flex h-10 min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 collapsed:justify-center collapsed:px-0",
           focusRing,
         )}
-        aria-label={"PULSE on " + name + ": home"}
+        aria-label={"Hive on " + name + ": home"}
       >
-        <PulseMark />
+        <HiveMark />
         <span className="min-w-0 collapsed:sr-only">
           <span className="block truncate text-base font-semibold leading-tight tracking-tight">
-            PULSE
+            Hive
           </span>
           <span
             className="block truncate text-xs leading-tight text-muted-foreground"
@@ -535,14 +535,14 @@ function SidebarProjects({ onAdd }: { onAdd: () => void }) {
 
 // ----- title ----------------------------------------------------------------
 
-// Each page names itself in the browser tab ("Tasks · PULSE", "demo-app · PULSE")
+// Each page names itself in the browser tab ("Tasks · Hive", "demo-app · Hive")
 // from its crumbs, so tabs, history and screen readers can tell pages apart.
 function DocumentTitle() {
   const crumbs = useCurrentCrumbs();
   const last = crumbs[crumbs.length - 1];
   const name = last && last.href !== "/" ? last.label : "";
   useEffect(() => {
-    document.title = name ? name + " · PULSE" : "PULSE";
+    document.title = name ? name + " · Hive" : "Hive";
   }, [name]);
   return null;
 }
@@ -670,7 +670,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             chat ? "max-w-[1680px] lg:px-6 lg:pb-4" : "max-w-[1240px]",
           )}
         >
-          {/* A newer PULSE release, when the daily check found one (update.latest_url). Chat fits the window, so it goes without. */}
+          {/* A newer Hive release, when the daily check found one (update.latest_url). Chat fits the window, so it goes without. */}
           {chat ? null : <UpdateBanner />}
           {children}
         </main>

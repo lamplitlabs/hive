@@ -71,7 +71,7 @@ export async function load(url, context, nextLoad) {
     // TypeScript is loaded only here, for a .tsx or a .ts that stripping
     // cannot run: a suite that reaches plain .ts modules alone (inbox-state,
     // job-repair) then runs in a clone without node_modules too, the way
-    // pulse evolve measure scores the hub's coverage fixtures.
+    // hive evolve measure scores the hub's coverage fixtures.
     const { default: ts } = await import("typescript");
     const source = await readFile(fileURLToPath(url), "utf8");
     const out = ts.transpileModule(source, {

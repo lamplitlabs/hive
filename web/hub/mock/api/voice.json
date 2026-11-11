@@ -4,7 +4,7 @@
   "runtime": {
     "version": "1.31.1",
     "platform": "osx-arm64",
-    "library": "/home/owner/.pulse/voice/runtime/1.31.1/libonnxruntime.1.31.1.dylib",
+    "library": "/home/owner/.hive/voice/runtime/1.31.1/libonnxruntime.1.31.1.dylib",
     "size": 44797256,
     "have": 0,
     "ready": false
@@ -136,7 +136,7 @@
   "loaded": null,
   "free_bytes": 66000000000,
   "setup": null,
-  "root": "/home/owner/.pulse/voice",
+  "root": "/home/owner/.hive/voice",
   "setting_up": false,
   "idle_release_minutes": 10,
   "languages": [

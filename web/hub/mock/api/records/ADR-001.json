@@ -25,7 +25,7 @@
     "kind": "adr",
     "number": 1,
     "path": "",
-    "project": "pulse",
+    "project": "hive",
     "slug": "keep-the-control-plane-in-one-sqlite-store",
     "status": "Accepted",
     "tags": [],

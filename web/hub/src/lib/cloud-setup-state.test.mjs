@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { backupTo, changes, composeBackup, fieldProblem, initialDraft, missingFields, problems, readiness, readReference, signInCommand, visibleFields } from "./cloud-setup-state.ts";
 
-// The shape GET /api/v1/clouds answers (crates/pulse-hub/src/clouds.rs),
+// The shape GET /api/v1/clouds answers (crates/hive-hub/src/clouds.rs),
 // cut down to Azure, Multipass and the three backup targets.
 const f = (setting, label, required = false, kind = "identifier") => ({ setting, label, help: "", kind, required, placeholder: "" });
 const payload = (over = {}) => ({
@@ -65,11 +65,11 @@ test("the form starts from what the store holds and shows the sign-in mode's fie
 test("a secret is held by reference and the sign-in command reads it without showing it", () => {
   const ref = f("compute.azure.client_secret", "Where the secret lives", true, "reference");
   assert.match(fieldProblem(ref, "s3cr3t-value~"), /never the secret itself/);
-  assert.equal(fieldProblem(ref, "op://Infra/pulse-sp/credential"), "");
-  assert.equal(fieldProblem(ref, "keychain://pulse/azure-sp"), "");
-  assert.equal(fieldProblem(ref, "file:///Users/me/.pulse/sp"), "");
+  assert.equal(fieldProblem(ref, "op://Infra/hive-sp/credential"), "");
+  assert.equal(fieldProblem(ref, "keychain://hive/azure-sp"), "");
+  assert.equal(fieldProblem(ref, "file:///Users/me/.hive/sp"), "");
   assert.match(fieldProblem(f("compute.azure.resource_group", "Resource group"), "ghp_abcdefghijklmnop"), /looks like a secret/);
-  assert.equal(readReference("keychain://pulse/azure-sp"), "$(security find-generic-password -s 'pulse' -a 'azure-sp' -w)");
+  assert.equal(readReference("keychain://hive/azure-sp"), "$(security find-generic-password -s 'hive' -a 'azure-sp' -w)");
   assert.equal(readReference("file:///Users/me/sp"), "$(cat '/Users/me/sp')");
 
   const p = payload();
@@ -77,24 +77,24 @@ test("a secret is held by reference and the sign-in command reads it without sho
   assert.equal(signInCommand(p.clouds[0], d), "az login");
   d.auth.azure = "service-principal";
   assert.equal(signInCommand(p.clouds[0], d), 'az login --service-principal --tenant <Tenant> --username <Client id> --password <Where the secret lives>');
-  Object.assign(d.values, { "compute.azure.tenant": "t-1", "compute.azure.client_id": "app-1", "compute.azure.client_secret": "op://Infra/pulse-sp/credential" });
-  assert.equal(signInCommand(p.clouds[0], d), "az login --service-principal --tenant t-1 --username app-1 --password \"$(op read 'op://Infra/pulse-sp/credential')\"");
+  Object.assign(d.values, { "compute.azure.tenant": "t-1", "compute.azure.client_id": "app-1", "compute.azure.client_secret": "op://Infra/hive-sp/credential" });
+  assert.equal(signInCommand(p.clouds[0], d), "az login --service-principal --tenant t-1 --username app-1 --password \"$(op read 'op://Infra/hive-sp/credential')\"");
 });
 
 test("saving writes only what changed, the chosen cloud first, then the backup", () => {
   const p = payload();
   const d = initialDraft(p);
   d.auth.azure = "service-principal";
-  Object.assign(d.values, { "compute.azure.tenant": "t-1", "compute.azure.client_id": "app-1", "compute.azure.client_secret": "keychain://pulse/azure-sp", "compute.azure.resource_group": "pulse-hands", "compute.multipass.size": "cpus=4" });
+  Object.assign(d.values, { "compute.azure.tenant": "t-1", "compute.azure.client_id": "app-1", "compute.azure.client_secret": "keychain://hive/azure-sp", "compute.azure.resource_group": "hive-hands", "compute.multipass.size": "cpus=4" });
   d.backupTarget = "azure-blob";
-  d.backupParts["azure-blob"] = { account: "acct", container: "/pulse-backups/", prefix: "" };
+  d.backupParts["azure-blob"] = { account: "acct", container: "/hive-backups/", prefix: "" };
   assert.deepEqual(changes(p, d), [
     ["compute.azure.auth", "service-principal"],
     ["compute.azure.tenant", "t-1"],
     ["compute.azure.client_id", "app-1"],
-    ["compute.azure.client_secret", "keychain://pulse/azure-sp"],
-    ["compute.azure.resource_group", "pulse-hands"],
-    ["backup.to", "az://acct/pulse-backups"],
+    ["compute.azure.client_secret", "keychain://hive/azure-sp"],
+    ["compute.azure.resource_group", "hive-hands"],
+    ["backup.to", "az://acct/hive-backups"],
   ]);
   assert.match(readiness(p, d), /Microsoft Azure is set up/);
   assert.deepEqual(problems(p, d), {});
@@ -107,10 +107,10 @@ test("saving writes only what changed, the chosen cloud first, then the backup",
 
 test("backup targets compose backup.to like the store splits it", () => {
   const [folder, blob, cmd] = payload().backup.targets;
-  assert.equal(composeBackup(folder, { path: "/Volumes/Kingston/pulse" }), "/Volumes/Kingston/pulse");
+  assert.equal(composeBackup(folder, { path: "/Volumes/Kingston/hive" }), "/Volumes/Kingston/hive");
   assert.equal(composeBackup(blob, { account: "acct", container: "c", prefix: "store/nightly" }), "az://acct/c/store/nightly");
   assert.equal(composeBackup(blob, { account: "acct", container: "c" }), "az://acct/c");
-  assert.equal(composeBackup(cmd, { command: "rclone copy {file} r:pulse" }), "run: rclone copy {file} r:pulse");
+  assert.equal(composeBackup(cmd, { command: "rclone copy {file} r:hive" }), "run: rclone copy {file} r:hive");
 
   const p = payload({ backup: { ...payload().backup, to: "az://acct/c/store", target: "azure-blob", parts: { account: "acct", container: "c", prefix: "store" } } });
   const d = initialDraft(p);

@@ -1,7 +1,7 @@
 {
   "agent": "delta",
   "area": "runner",
-  "body": "delta asks for one Standard_B2ms machine for 8 hours.\n\nReason: fuzzing the v2 parser overnight\n\nCaps: 1 of 2 machines in use, auto_approve=false.\n\nApprove with `pulse compute approve CR-002 --words '...'` or deny with `pulse compute deny CR-002 --words '...'` (or from the hub's Compute page).",
+  "body": "delta asks for one Standard_B2ms machine for 8 hours.\n\nReason: fuzzing the v2 parser overnight\n\nCaps: 1 of 2 machines in use, auto_approve=false.\n\nApprove with `hive compute approve CR-002 --words '...'` or deny with `hive compute deny CR-002 --words '...'` (or from the hub's Compute page).",
   "branch": "",
   "date": "2026-09-01T20:47:00Z",
   "expires": "",

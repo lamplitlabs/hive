@@ -1,5 +1,5 @@
 {
-  "body": "# Agents ask for compute through the board\n\n## Context\n\nA worker that needs more machines has no way to say so except failing.\n\n## Decision\n\n`pulse compute request` writes a request the owner approves or denies from the console; approved requests provision a hand under the configured caps.\n\n## Consequences\n\nCompute stays owner-bounded: caps, a daily hour budget and credits live in settings.\n",
+  "body": "# Agents ask for compute through the board\n\n## Context\n\nA worker that needs more machines has no way to say so except failing.\n\n## Decision\n\n`hive compute request` writes a request the owner approves or denies from the console; approved requests provision a hand under the configured caps.\n\n## Consequences\n\nCompute stays owner-bounded: caps, a daily hour budget and credits live in settings.\n",
   "frontmatter": {
     "areas": [
       "runner"
@@ -24,7 +24,7 @@
     "kind": "adr",
     "number": 2,
     "path": "",
-    "project": "pulse",
+    "project": "hive",
     "slug": "agents-ask-for-compute-through-the-board",
     "status": "Proposed",
     "tags": [],

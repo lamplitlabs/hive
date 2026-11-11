@@ -46,14 +46,14 @@ export function RoleMascot({ role, size = 64, mood = "idle", className, title, c
 }
 
 // Eyes, blush and a mouth, centred on (cx, cy). `w` spreads the eyes.
-function Face({ cx, cy, w = 7, mood, scale = 1, mouth = "smile" }: { cx: number; cy: number; w?: number; mood: MascotMood; scale?: number; mouth?: "smile" | "pulse" | "o" }) {
+function Face({ cx, cy, w = 7, mood, scale = 1, mouth = "smile" }: { cx: number; cy: number; w?: number; mood: MascotMood; scale?: number; mouth?: "smile" | "hive" | "o" }) {
   const s = scale;
   const eyeY = cy - 1.5 * s;
   const happy = mood === "picked";
   const asleep = mood === "asleep";
   const mouthPath = () => {
     const y = cy + 4.5 * s;
-    if (mouth === "pulse") return <path d={`M${cx - 6 * s} ${y} h${2 * s} l${1.3 * s} -${3 * s} l${1.7 * s} ${6 * s} l${1.7 * s} -${4.5 * s} l${1.3 * s} ${1.5 * s} h${2 * s}`} fill="none" stroke={INK} strokeWidth={1.5 * s} strokeLinecap="round" strokeLinejoin="round" />;
+    if (mouth === "hive") return <path d={`M${cx - 6 * s} ${y} h${2 * s} l${1.3 * s} -${3 * s} l${1.7 * s} ${6 * s} l${1.7 * s} -${4.5 * s} l${1.3 * s} ${1.5 * s} h${2 * s}`} fill="none" stroke={INK} strokeWidth={1.5 * s} strokeLinecap="round" strokeLinejoin="round" />;
     if (mouth === "o" || (happy && mouth !== "smile")) return <ellipse cx={cx} cy={y} rx={2.2 * s} ry={happy ? 3 * s : 2 * s} fill={INK} />;
     if (happy) return <path d={`M${cx - 4.5 * s} ${y - 1.5 * s} q${4.5 * s} ${6.5 * s} ${9 * s} 0 z`} fill={INK} />;
     if (asleep) return <path d={`M${cx - 2.5 * s} ${y} q${2.5 * s} ${1.5 * s} ${5 * s} 0`} fill="none" stroke={INK} strokeWidth={1.4 * s} strokeLinecap="round" />;
@@ -140,7 +140,7 @@ function Shield({ mood }: BodyProps) {
   );
 }
 
-// monitor: a screen on a stand; its mouth is a pulse line.
+// monitor: a screen on a stand; its mouth is a hive line.
 function Screen({ mood }: BodyProps) {
   return (
     <>
@@ -149,7 +149,7 @@ function Screen({ mood }: BodyProps) {
       <rect x={6} y={9} width={52} height={40} rx={6} fill="var(--m-deep)" />
       <rect x={10} y={13} width={44} height={32} rx={4} fill="var(--m)" />
       <circle cx={49} cy={18} r={2} fill={PAPER} opacity={0.8} className="mascot-beat" />
-      <Face cx={32} cy={29} w={7} mood={mood} mouth={mood === "picked" ? "smile" : "pulse"} />
+      <Face cx={32} cy={29} w={7} mood={mood} mouth={mood === "picked" ? "smile" : "hive"} />
     </>
   );
 }

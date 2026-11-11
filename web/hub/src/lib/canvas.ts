@@ -437,7 +437,7 @@ export function linkLabel(url: string): string {
   }
 }
 
-// Every link the texts mention, newest text first, each once; the pulse
+// Every link the texts mention, newest text first, each once; the hive
 // hub's own pages are left out (they are a click away already).
 export function extractLinks(texts: string[], ownHost = ""): CanvasLink[] {
   const seen = new Set<string>();

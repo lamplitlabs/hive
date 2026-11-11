@@ -38,7 +38,7 @@ export type PickMessage =
   | { type: "picked"; pick: ElementPick }
   | { type: "cancel" };
 
-const PREFIX = "pulse-pick";
+const PREFIX = "hive-pick";
 
 /** The message the hub sends down to start or stop picking. */
 export function pickRequest(on: boolean): { type: string; on: boolean } {
@@ -219,7 +219,7 @@ export function pickSnippet(origin: string): string {
 /** What the owner asks the agent when the page has no helper yet. */
 export function askForHelper(origin: string, url: string): string {
   return (
-    "Add the PULSE pick helper to this app's development build so I can pick elements on it from the hub's Browser tab: include " +
+    "Add the Hive pick helper to this app's development build so I can pick elements on it from the hub's Browser tab: include " +
     pickSnippet(origin) +
     " in the page (" +
     (url || "the app's pages") +

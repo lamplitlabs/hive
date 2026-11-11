@@ -21,7 +21,7 @@
 // seen, so turning notifications on never replays the backlog.
 
 import type { ChatListResponse, ChatTask, ComputeRequest, Conversation, OwnerQuestion, Proposal, RecordRow, WorkSuggestion } from "./api";
-import type { GateStep } from "../components/pulse/evolve";
+import type { GateStep } from "../components/hive/evolve";
 import type { DraftState } from "../components/records/draft-panel";
 
 export type NotifyGroup = "waits" | "finished";
@@ -110,7 +110,7 @@ const clip = (s: string, n: number) => {
 const isOwner = (who: string) => who === "human" || who === "owner";
 
 // The note the harness writes when the owner closes a conversation
-// (crates/pulse-harness/src/conversation.rs, CLOSED_BY_OWNER_NOTE): a
+// (crates/hive-harness/src/conversation.rs, CLOSED_BY_OWNER_NOTE): a
 // conversation the owner closed is no news to the owner.
 export const CLOSED_BY_OWNER_NOTE = "closed by you";
 
@@ -225,7 +225,7 @@ export const SEEN_MAX = 2000;
 export interface NotifyPrefs {
   waits: boolean; // tell me when something waits for me
   finished: boolean; // tell me when a task or conversation finishes
-  sound: boolean; // play the chime (in PULSE.app: the Mac's notification sound)
+  sound: boolean; // play the chime (in Hive.app: the Mac's notification sound)
 }
 
 export const DEFAULT_PREFS: NotifyPrefs = { waits: false, finished: false, sound: true };
@@ -285,7 +285,7 @@ export const noticeOf = (it: NotifyItem): Notice => ({ tag: it.id, title: it.tit
 export function summaryNotice(items: NotifyItem[]): Notice {
   const n = items.length;
   const waits = items.filter((it) => it.group === "waits").length;
-  const title = waits === n ? n + " things wait for you" : waits === 0 ? n + " things finished" : n + " updates from PULSE";
+  const title = waits === n ? n + " things wait for you" : waits === 0 ? n + " things finished" : n + " updates from Hive";
   const hrefs = new Set(items.map((it) => it.href));
   const allChat = items.every((it) => it.source === "chat");
   const href = hrefs.size === 1 ? items[0].href : allChat ? "/chat/" : waits === n ? "/#for-you" : "/";
@@ -310,10 +310,10 @@ export function pruneSeen(ids: Record<string, number>, current: ReadonlySet<stri
 // ----- how to deliver it ---------------------------------------------------
 
 export interface DeliveryContext {
-  app: boolean; // inside PULSE.app, whose bridge posts Mac notifications
+  app: boolean; // inside Hive.app, whose bridge posts Mac notifications
   focused: boolean; // the page is visible and has focus
   supported: boolean; // the browser has the Notification API
-  // Notification.permission (granted, denied or default); in PULSE.app what
+  // Notification.permission (granted, denied or default); in Hive.app what
   // macOS allows it, as the app last said (or unsupported outside its bundle).
   permission: string;
   sound: boolean;
@@ -322,13 +322,13 @@ export interface DeliveryContext {
 export interface Delivery {
   toast: boolean; // a note on the page
   system: boolean; // a browser notification
-  app: boolean; // handed to PULSE.app, which posts a Mac notification (or, while it is in front, only plays the sound)
+  app: boolean; // handed to Hive.app, which posts a Mac notification (or, while it is in front, only plays the sound)
   chime: boolean; // the page plays its own chime
 }
 
 // In front, a note on the page; behind, the browser's notification - or the
-// Mac's, in PULSE.app, which plays the sound itself. The chime plays
-// whenever sound is on, even where notifications are blocked (in PULSE.app
+// Mac's, in Hive.app, which plays the sound itself. The chime plays
+// whenever sound is on, even where notifications are blocked (in Hive.app
 // too, when macOS does not let it notify).
 export function delivery(c: DeliveryContext): Delivery {
   if (c.app && c.permission === "granted") return { toast: c.focused, system: false, app: true, chime: false };
@@ -350,8 +350,8 @@ export const CHIME_GAIN = 0.12;
 
 // ----- the choices, in localStorage ----------------------------------------
 
-export const NOTIFY_PREFS_KEY = "pulse.notify";
-export const NOTIFY_SEEN_KEY = "pulse.notify.seen";
+export const NOTIFY_PREFS_KEY = "hive.notify";
+export const NOTIFY_SEEN_KEY = "hive.notify.seen";
 
 // The subset of Storage used here, so tests can pass a Map-backed one.
 export interface NotifyStorage {
@@ -411,10 +411,10 @@ export interface NotifyStatus {
 // when the browser stands in the way.
 export function notifyStatus(c: { app: boolean; supported: boolean; permission: string; on: boolean }): NotifyStatus {
   if (c.app) {
-    if (c.permission === "denied") return { tone: "warn", text: "macOS doesn't let PULSE notify you. Allow it in System Settings → Notifications → PULSE. Until then: a note on the page while PULSE is in front." };
-    if (c.permission === "unsupported") return { tone: "warn", text: "This copy of PULSE runs outside its app bundle, so macOS won't take its notifications. While PULSE is in front you still get a note on the page." };
-    if (c.permission !== "granted") return { tone: "info", text: c.on ? "macOS hasn't been asked yet: turn a switch off and on again to ask it." : "Turning this on asks macOS whether PULSE may notify you." };
-    return { tone: "ok", text: "PULSE shows them as Mac notifications, with the Mac's notification sound; while its window is in front, a note on the page instead. System Settings → Notifications → PULSE decides how they look." };
+    if (c.permission === "denied") return { tone: "warn", text: "macOS doesn't let Hive notify you. Allow it in System Settings → Notifications → Hive. Until then: a note on the page while Hive is in front." };
+    if (c.permission === "unsupported") return { tone: "warn", text: "This copy of Hive runs outside its app bundle, so macOS won't take its notifications. While Hive is in front you still get a note on the page." };
+    if (c.permission !== "granted") return { tone: "info", text: c.on ? "macOS hasn't been asked yet: turn a switch off and on again to ask it." : "Turning this on asks macOS whether Hive may notify you." };
+    return { tone: "ok", text: "Hive shows them as Mac notifications, with the Mac's notification sound; while its window is in front, a note on the page instead. System Settings → Notifications → Hive decides how they look." };
   }
   if (!c.supported) return { tone: "warn", text: "This browser can't show notifications. While the console is in front you still get a note on the page and the sound." };
   if (c.permission === "denied")

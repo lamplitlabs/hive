@@ -6,10 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Clamp } from "@/components/pulse/clamp";
-import { ConfirmDialog } from "@/components/pulse/confirm";
-import { StatusBadge } from "@/components/pulse/status-badge";
-import { Mono, ToneBadge, When } from "@/components/pulse/who";
+import { Clamp } from "@/components/hive/clamp";
+import { ConfirmDialog } from "@/components/hive/confirm";
+import { StatusBadge } from "@/components/hive/status-badge";
+import { Mono, ToneBadge, When } from "@/components/hive/who";
 import { cn } from "@/lib/utils";
 import { writes, type Runner, type Setting } from "@/lib/api";
 import { settingHelp, settingLabel } from "@/lib/setting-labels";
@@ -52,7 +52,7 @@ function changedBy(who: string): string {
   return who === "human" || who === "owner" ? "you" : who;
 }
 
-const PULSE_SETTING = "Type this name after pulse setting set to change it from a terminal";
+const HIVE_SETTING = "Type this name after hive setting set to change it from a terminal";
 
 // The quiet last line of a row: who changed it and when (nothing while it
 // was never changed), the default when the value differs from it, then the
@@ -83,7 +83,7 @@ export function RowMeta({ s, className }: { s: Setting; className?: string }) {
 // viewer turns on "Show setting keys" at the top of Settings. A per-browser
 // choice (localStorage), read through a tiny store so every row follows the
 // switch at once; the search still finds a row by its key either way.
-const KEYS_PREF = "pulse.settings.show-keys";
+const KEYS_PREF = "hive.settings.show-keys";
 const keyListeners = new Set<() => void>();
 
 function readShowKeys(): boolean {
@@ -122,7 +122,7 @@ export function SettingKey({ name, className }: { name: string; className?: stri
   const show = useShowKeys();
   if (!show) return null;
   return (
-    <span className={cn("min-w-0 text-xs text-muted-foreground anywhere", className)} title={PULSE_SETTING}>
+    <span className={cn("min-w-0 text-xs text-muted-foreground anywhere", className)} title={HIVE_SETTING}>
       Key: <code className="font-mono text-xs text-muted-foreground/90">{name}</code>
     </span>
   );
@@ -156,7 +156,7 @@ export function RowHead({ s, title, badge, children }: { s: Setting; title?: Rea
 type SettingLabels = { on?: string; off?: string; choices?: Record<string, string> };
 
 const INVALIDATES = (p: string) => p.startsWith("settings") || p.startsWith("runner") || p.startsWith("compute") || p.startsWith("events") || p.startsWith("org");
-const SAVED_NOTE = "PULSE saves it right away and records that you changed it. The runner uses the new value from its next pass.";
+const SAVED_NOTE = "Hive saves it right away and records that you changed it. The runner uses the new value from its next pass.";
 
 export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; canEdit: boolean; labels?: SettingLabels; title?: React.ReactNode; warn?: (value: string) => string }) {
   const [draftState, setDraftState] = useState({ name: s.name, value: s.value, draft: s.value });

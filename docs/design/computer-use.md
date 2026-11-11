@@ -1,10 +1,10 @@
 # Computer use: the tool shape and where it plugs in
 
 Status: design note (Tier 1). Nothing here is built or enabled. Whether
-PULSE agents may control the desktop at all, and under which guards, is
+Hive agents may control the desktop at all, and under which guards, is
 decided by **ADR-048** ("Agents Control the Desktop Only Where the Owner
 Turned It On"). ADR-048 is a record in the store, not a file under
-`docs/decisions/`; read it with `pulse record show ADR-048`. The owner
+`docs/decisions/`; read it with `hive record show ADR-048`. The owner
 accepted it on 2026-11-02 and its delivery is "not started". This note
 maps the tool that ADR describes onto the harness as it stands, so the work
 that delivers it is plumbing, not new design. Where this note and the ADR
@@ -18,8 +18,8 @@ screenshot, mouse, keyboard).
 One native harness tool, `computer`, with an `action` argument. It is one
 tool rather than four so that a single permission rule (`computer`,
 `computer(click:*)`) and a single approval card cover it, the way `memory`
-and `process` work today (`crates/pulse-harness/src/memory.rs`
-`memory_tool`, `crates/pulse-harness/src/background.rs` `process_tool`).
+and `process` work today (`crates/hive-harness/src/memory.rs`
+`memory_tool`, `crates/hive-harness/src/background.rs` `process_tool`).
 
 ```json
 {
@@ -64,20 +64,20 @@ settings are out of scope.
 
 ## 2. Where it plugs into the harness
 
-All paths are `crates/pulse-harness/src/harness.rs` unless named.
+All paths are `crates/hive-harness/src/harness.rs` unless named.
 
 | Concern | Existing seam | What computer use adds |
 |---|---|---|
-| Tool name and schema | `NATIVE_TOOL_NAMES`, `process_tool`, `memory_tool` | `pub const COMPUTER_TOOL: &str = "computer"` and `computer_tool()` in a new module `crates/pulse-harness/src/computer.rs` |
+| Tool name and schema | `NATIVE_TOOL_NAMES`, `process_tool`, `memory_tool` | `pub const COMPUTER_TOOL: &str = "computer"` and `computer_tool()` in a new module `crates/hive-harness/src/computer.rs` |
 | Offering it | `Harness::tools()` and `tool_names()` push optional tools behind `offers_*` gates (`offers_question` = a `Ui` and depth 0) | `offers_computer()`: `owner.computer_use != off` **and** the project is on `owner.computer_use.allow` **and** `offers_question()` (an interactive session with a human; never a job, never a subagent at depth > 0) **and** `!cfg.read_only` **and** `!locked_down()` **and** the backend reports a GUI session **and** the model accepts images (section 5). Both `tools()` and `tool_names()` get the same line, like `fetch` and `web_search`. |
 | Dispatch | `dispatch_tool_call_inner` matches on `call.name` | an arm `COMPUTER_TOOL => self.computer_call(cancel, call)` returning a `ToolOutcome` plus images (section 3) |
 | Permission rules | `subjects_of(tool, arguments, cwd)`; `gates` refuses on `harness.deny_tools`; `permissions.withdraws` drops a tool denied whole | `subjects_of` gains an arm `COMPUTER_TOOL => vec![format!("{action}:{bundle_id}")]`, so `computer(type:*)` or `computer(*:com.apple.Terminal)` match. A deny rule wins as it does today. |
 | Hooks | `pre_tool_hooks` / `with_post_tool_hooks` run for every tool | nothing new: a `pre_tool` hook matching `computer` can block an action (exit `HOOK_BLOCK_EXIT`) |
 | Approval | `approval(tool, summary, detail, reason)` builds an `ApprovalRequest { tool, summary, detail, reason, always }` for the session's `Ui`; the conversation's `approve` (`conversation.rs`) returns `Allow` when **Auto** is on | `computer_call` calls `approval` for every action under `owner.computer_use = ask` with summary `click left at 412,233 in Safari`, detail the last screenshot's artifact path, reason `desktop control (ADR-048)`. The conversation's `approve` gets one guard: a `computer` request is never auto-allowed, and the `always` pattern it offers is `computer(<action>:<bundle_id>)`, never `computer(*)`. |
 | Steps the hub shows | `StepKind` (`Command`, `Fetch`, `Mcp`, ...) emitted through `self.emit(Step {...})` | `StepKind::Computer`, with `command` = the one-line summary and the screenshot's artifact name, so the conversation shows each action and its image |
-| Audit | `pulse_bus::emit(store, actor, action, target, json)` (as `harness.start` in `commands.rs`); events are append-only by trigger (`crates/pulse-store/src/ddl.rs`) | one `computer.action` event per action and per refusal. It is **not** added to `PRUNABLE_EVENT_ACTIONS`, so `daemon.transcript_keep_days` never removes it. Typed text goes through `crates/pulse-bus/src/redact.rs` and is cut to 200 characters. |
-| Kill switch | the `stop` setting (`pulse stop`; read by the runner in `crates/pulse-runner/src/run.rs`); the harness `CancelToken` (`watch_harness_cancel` in `commands.rs`) | `computer_call` reads `stop` and `owner.computer_use` from the store before **every** action and refuses on `stop = 1` or `off`; it checks `cancel` before posting events; and it refuses when the owner's HID idle time is shorter than the time since the last action ("the owner is using the machine") |
-| Settings | `crates/pulse-store/src/settings.rs` defaults and rules; `owner.` names refused for agents in `crates/pulse-inspect/src/settings.rs` | `owner.computer_use` (choice `off`/`ask`/`on`, default `off`) and `owner.computer_use.allow` (text, `project=bundle|bundle` entries; `*` and the never-allowed apps refused at validation). Each needs a label in `web/hub/src/lib/setting-labels.ts` in the same commit (`setting_labels_cover_catalogue`). |
+| Audit | `hive_bus::emit(store, actor, action, target, json)` (as `harness.start` in `commands.rs`); events are append-only by trigger (`crates/hive-store/src/ddl.rs`) | one `computer.action` event per action and per refusal. It is **not** added to `PRUNABLE_EVENT_ACTIONS`, so `daemon.transcript_keep_days` never removes it. Typed text goes through `crates/hive-bus/src/redact.rs` and is cut to 200 characters. |
+| Kill switch | the `stop` setting (`hive stop`; read by the runner in `crates/hive-runner/src/run.rs`); the harness `CancelToken` (`watch_harness_cancel` in `commands.rs`) | `computer_call` reads `stop` and `owner.computer_use` from the store before **every** action and refuses on `stop = 1` or `off`; it checks `cancel` before posting events; and it refuses when the owner's HID idle time is shorter than the time since the last action ("the owner is using the machine") |
+| Settings | `crates/hive-store/src/settings.rs` defaults and rules; `owner.` names refused for agents in `crates/hive-inspect/src/settings.rs` | `owner.computer_use` (choice `off`/`ask`/`on`, default `off`) and `owner.computer_use.allow` (text, `project=bundle|bundle` entries; `*` and the never-allowed apps refused at validation). Each needs a label in `web/hub/src/lib/setting-labels.ts` in the same commit (`setting_labels_cover_catalogue`). |
 
 The backend sits behind a trait so the harness logic is tested without a
 screen:
@@ -125,12 +125,12 @@ Tool results carry text only today. `tool_message(call, &text)` builds a
 message to text alone:
 
 - anthropic: `Role::Tool` becomes `Block::ToolResult { content: String }`
-  (`crates/pulse-provider-anthropic/src/lib.rs`).
-- gemini: `functionResponse.response.output` (`crates/pulse-provider-gemini/src/lib.rs`).
+  (`crates/hive-provider-anthropic/src/lib.rs`).
+- gemini: `functionResponse.response.output` (`crates/hive-provider-gemini/src/lib.rs`).
 - openai and copilot: the `tool` role's `content` is a string.
 
 The path that already carries images to every provider is a **user**
-message's `images` (`pulse_provider::Message.images: Vec<ImageContent>`,
+message's `images` (`hive_provider::Message.images: Vec<ImageContent>`,
 with `ImageContent { media_type, data }` base64). openai and copilot map it
 to `image_url` data-URL parts, anthropic to `Block::Image` before the text,
 and gemini to `inlineData` parts. The hub's attached images already use it
@@ -168,7 +168,7 @@ on every provider the harness speaks.
 - **Per image:** at most 1280 px on the long side, PNG. A typical desktop
   screenshot is 200-600 KB base64 at that size. The backend refuses
   anything over `IMAGE_LIMIT` (5 MB, `conversation.rs`).
-- **Request budget:** `estimate_request_bytes` (`crates/pulse-harness/src/compact.rs`)
+- **Request budget:** `estimate_request_bytes` (`crates/hive-harness/src/compact.rs`)
   already counts `images`, so `provider.max_request_mb` (default 1 MiB)
   already compacts a conversation that grows past it. One screenshot is a
   large part of that budget. The harness therefore keeps **only the
@@ -183,8 +183,8 @@ on every provider the harness speaks.
 - **Persistence:** `Message` serializes `images` (serde, skipped only when
   empty), so a trajectory or a resumed session would keep every
   screenshot's base64. The harness writes each screenshot to the
-  conversation's artifacts folder (`PULSE_ARTIFACTS`, the same folder the
-  `playwright` connection uses; `crates/pulse-mcp/src/browser.rs`) and
+  conversation's artifacts folder (`HIVE_ARTIFACTS`, the same folder the
+  `playwright` connection uses; `crates/hive-mcp/src/browser.rs`) and
   stores the message with the file name and SHA-256 in its text and **no**
   bytes. `resume_messages` then gives the model the text placeholder, and
   the model takes a fresh screenshot, which is what it should see after a
@@ -192,7 +192,7 @@ on every provider the harness speaks.
 
 ## 5. Models
 
-The `Model` record (`crates/pulse-provider/src/lib.rs`) has `chat` and
+The `Model` record (`crates/hive-provider/src/lib.rs`) has `chat` and
 `tool_calls` but no vision flag, and Copilot's `ModelSupports` reads only
 `tool_calls`. A model that cannot see images would click blind, and some
 gateways reject an image part outright. The first delivery adds
@@ -219,8 +219,8 @@ attachment should use; it currently sends images to any model.
   marked.
 - **Activity:** `computer.action` events with project, agent, action, app
   and outcome.
-- **macOS:** the system's own screen-recording indicator while `pulse`
-  captures. PULSE does not hide it.
+- **macOS:** the system's own screen-recording indicator while `hive`
+  captures. Hive does not hide it.
 
 ## 7. Tests the implementation will need
 
@@ -229,7 +229,7 @@ All against `FakeDesktop`, no screen and no TCC:
 - the tool is not offered when `owner.computer_use = off` (the default), in
   a job (no `Ui`), in a subagent, read-only, under lockdown, for a project
   missing from the allowlist, or for a model without vision;
-- an agent's `pulse settings set owner.computer_use on` is refused (the
+- an agent's `hive settings set owner.computer_use on` is refused (the
   existing `owner.` guard);
 - `click` and `type` are refused when the frontmost app is not allowlisted
   and for a never-allowed app (Terminal, System Settings, Keychain Access,

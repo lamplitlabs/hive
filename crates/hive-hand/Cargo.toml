@@ -1,0 +1,23 @@
+[package]
+name = "hive-hand"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hive hand: the open executor a machine installs once (ADR-070); runs the jobs the brain hands it and nothing else"
+
+[[bin]]
+name = "hive-hand"
+path = "src/main.rs"
+
+# The hand links the executor path and nothing of the brain (ADR-070 rule 1).
+# scripts/check-hand-deps.sh fails the verify when a brain crate appears in
+# `cargo tree -p hive-hand -e normal`; add nothing here that pulls one in.
+[dependencies]
+hive-hand-core.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

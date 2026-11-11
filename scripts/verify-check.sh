@@ -1,7 +1,7 @@
 #!/bin/sh
 # Scheduled check: the project's own verify command.
 #
-# The daemon runs this script in a throwaway worktree under PULSE_HOME/work
+# The daemon runs this script in a throwaway worktree under HIVE_HOME/work
 # that it removes when the run ends, and its environment carries no
 # CARGO_TARGET_DIR. A target directory inside that worktree is therefore cold
 # on every run: the whole workspace compiles from scratch (several GB written
@@ -21,8 +21,8 @@
 # from the brain (`scripts/check-hand-deps.sh`, ADR-070) and every test of
 # `cargo test --workspace`. Only the way the tests are run differs. Plain
 # `cargo test` runs one test binary after the other, and most tests of the
-# big crates hold a process-wide lock for their whole body (pulse-runner's
-# `serial()`, pulse-evolve's `e2_guard()`), so they run one at a time even
+# big crates hold a process-wide lock for their whole body (hive-runner's
+# `serial()`, hive-evolve's `e2_guard()`), so they run one at a time even
 # inside a binary: about 25 minutes of mostly waiting on this machine, past
 # the 20 minutes `schedule.script_timeout_minutes` gives the check. So the
 # tests are built once, each binary's tests are listed and striped into
@@ -36,14 +36,14 @@
 # What each chunk process gets, and why:
 # - One test thread. Several test binaries at once, each with a thread per
 #   core, starve the timing-sensitive tests, and tests that share a hook
-#   (pulse-provider's retry jitter, the hub's handlers) race in ways a
+#   (hive-provider's retry jitter, the hub's handlers) race in ways a
 #   binary's usual neighbours never trigger. Parallelism comes from the pool.
 # - Its own short TMPDIR, under /tmp and with symlinks resolved, removed when
 #   the check ends. Some tests clash on fixed names in the temp dir
-#   (pulse-runner's reclaim root) when two processes of one binary run, and
+#   (hive-runner's reclaim root) when two processes of one binary run, and
 #   some fail when the temp path is long (a clipped command line, a socket
 #   path), so a deep per-chunk directory would fail them for nothing.
-# - No PULSE_JOB, PULSE_AGENT or PULSE_SESSION, as the daemon runs the check
+# - No HIVE_JOB, HIVE_AGENT or HIVE_SESSION, as the daemon runs the check
 #   (schedule_script.rs script_env drops them), so a run by hand inside a job
 #   tests the same way. Some tests rely on an earlier test of their process
 #   to clear them, and a chunk has a different earlier test.
@@ -81,7 +81,7 @@ if [ "${1:-}" = "--chunk" ]; then
   start=$(date +%s)
   rc=0
   (
-    unset PULSE_JOB PULSE_AGENT PULSE_SESSION
+    unset HIVE_JOB HIVE_AGENT HIVE_SESSION
     cd "$dir" && CARGO_MANIFEST_DIR="$dir" TMPDIR="$tmp" exec "$@" --test-threads=1
   ) < /dev/null > "$log" 2>&1 || rc=$?
   secs=$(($(date +%s) - start))
@@ -108,8 +108,8 @@ fi
 
 if [ -n "${CARGO_TARGET_DIR:-}" ]; then
   CARGO_TARGET_DIR="$CARGO_TARGET_DIR/verify-check"
-elif [ -n "${PULSE_HOME:-}" ]; then
-  CARGO_TARGET_DIR="$PULSE_HOME/cache/cargo-target-check/${PULSE_PROJECT:-amistio-template}/${PULSE_SCHEDULE:-verify-check}"
+elif [ -n "${HIVE_HOME:-}" ]; then
+  CARGO_TARGET_DIR="$HIVE_HOME/cache/cargo-target-check/${HIVE_PROJECT:-amistio-template}/${HIVE_SCHEDULE:-verify-check}"
 else
   CARGO_TARGET_DIR="target/verify-check"
 fi
@@ -128,13 +128,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 # manifest, and the release binary a customer installs.
 sh scripts/check-hand-deps.sh deps
 sh scripts/check-hand-deps.sh self-test
-cargo build -q -p pulse-hand --release
-sh scripts/check-hand-deps.sh strings "$CARGO_TARGET_DIR/release/pulse-hand"
+cargo build -q -p hive-hand --release
+sh scripts/check-hand-deps.sh strings "$CARGO_TARGET_DIR/release/hive-hand"
 
 # A check killed outright (the daemon's timeout) cannot run its trap; its
 # directory is swept by a later run once it is a day old.
-find /tmp -maxdepth 1 -name 'pulse-vc.*' -type d -mmin +1440 -exec rm -rf {} + 2> /dev/null || true
-work=$(mktemp -d /tmp/pulse-vc.XXXXXX)
+find /tmp -maxdepth 1 -name 'hive-vc.*' -type d -mmin +1440 -exec rm -rf {} + 2> /dev/null || true
+work=$(mktemp -d /tmp/hive-vc.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 work=$(cd "$work" && pwd -P)
 trap 'exit 130' INT TERM HUP

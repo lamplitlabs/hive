@@ -73,14 +73,14 @@
       "count": 0,
       "generated": 0,
       "pending": 0,
-      "problem": "private fixture validation failed; owner: pulse evolve setup DIR"
+      "problem": "private fixture validation failed; owner: hive evolve setup DIR"
     },
     "hours": 0,
     "kept": 0,
     "level": "B",
     "limits": "none",
     "loop": false,
-    "next_human_step": "pulse evolve seed --project demo-app  (template copy), or pulse record new evolution --project demo-app --title Constitution --body-file FILE",
+    "next_human_step": "hive evolve seed --project demo-app  (template copy), or hive record new evolution --project demo-app --title Constitution --body-file FILE",
     "product_scope": {
       "allowed": false,
       "reason": "operating layer only; owner: add Product scope: allowed to EVO-evaluators"

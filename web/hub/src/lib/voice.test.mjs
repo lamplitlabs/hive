@@ -24,7 +24,7 @@ const base = {
   loaded: null,
   free_bytes: 60e9,
   setup: null,
-  root: "/home/owner/.pulse/voice",
+  root: "/home/owner/.hive/voice",
   setting_up: false,
   idle_release_minutes: 10,
   languages: ["auto", "en-US"],

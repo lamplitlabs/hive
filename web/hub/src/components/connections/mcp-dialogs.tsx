@@ -11,13 +11,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { showApiError } from "@/components/pulse/confirm";
-import { copyText } from "@/components/pulse/evolve";
-import { PulseMascot } from "@/components/pulse/mascots";
-import { Disclosure, Notice } from "@/components/pulse/panel";
-import { BrandLogo, LogoTile } from "@/components/pulse/logo";
-import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, useWizardLock, type WizardStep } from "@/components/pulse/stepper";
-import { Mono } from "@/components/pulse/who";
+import { showApiError } from "@/components/hive/confirm";
+import { copyText } from "@/components/hive/evolve";
+import { HiveMascot } from "@/components/hive/mascots";
+import { Disclosure, Notice } from "@/components/hive/panel";
+import { BrandLogo, LogoTile } from "@/components/hive/logo";
+import { ChoiceCard, WizardBody, WizardDialog, WizardFooter, WizardHeader, useWizardLock, type WizardStep } from "@/components/hive/stepper";
+import { Mono } from "@/components/hive/who";
 import { api, enc, errorText, writes, type McpAuth, type McpConnectResult, type McpLoginFlow, type McpLoginInput, type McpLoginState, type McpOptions, type McpServer, type McpServersPayload, type McpTransport, type ProjectsPayload, type ToolkitPayload, type ToolSuggestion } from "@/lib/api";
 import { EMPTY_MCP_FORM, TRANSPORT_BLURB, TRANSPORT_LABEL, authExplain, authLabel, authFieldLabel, authFieldPlaceholder, authsFor, formFromServer, mcpInput, mcpPatch, mcpFormReady, needsSecret, secretHint, validateMcpForm, type EnvRow, type McpForm } from "@/lib/mcp";
 import { formFromPreset, presetAccess, toolChoices, type McpPreset } from "@/lib/mcp-presets";
@@ -25,13 +25,13 @@ import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-// The owner registers an MCP server the way `pulse mcp add` does: a name,
+// The owner registers an MCP server the way `hive mcp add` does: a name,
 // the project it serves (or every project), how to reach it, how it
-// authenticates, and where the secret lives - a pulse-cred reference like
+// authenticates, and where the secret lives - a hive-cred reference like
 // the push key's, never the secret. The hub validates again and records
 // mcp.added / mcp.updated. A new tool goes through a short wizard: pick a
 // well-known one (or start blank), check the details it filled in, then
-// PULSE saves it and connects to it, so the owner sees what it offers
+// Hive saves it and connects to it, so the owner sees what it offers
 // before closing. Editing a saved one is the plain form.
 
 export const refreshMcp = () => invalidate((p) => p === "mcp" || p.startsWith("mcp?") || p.startsWith("mcp/") || p.startsWith("events"));
@@ -92,7 +92,7 @@ function McpFormBody({ options, server, close }: { options: McpOptions; server: 
     <>
       <DialogHeader>
         <DialogTitle>{"Edit " + server.name}</DialogTitle>
-        <DialogDescription>How PULSE reaches the tool and signs in to it. If it needs a secret, the secret stays where you keep it; PULSE only stores where to find it.</DialogDescription>
+        <DialogDescription>How Hive reaches the tool and signs in to it. If it needs a secret, the secret stays where you keep it; Hive only stores where to find it.</DialogDescription>
       </DialogHeader>
       <McpFields f={f} setF={setF} options={options} />
       {touched && errors.length ? <Problems errors={errors} /> : null}
@@ -123,7 +123,7 @@ function Problems({ errors }: { errors: string[] }) {
 
 // The fields of a tool. `simple` (a well-known tool, already filled in)
 // keeps the parts the owner rarely changes - how it is started or reached,
-// the sign-in method - folded under "How PULSE reaches it"; what still
+// the sign-in method - folded under "How Hive reaches it"; what still
 // needs the owner (the secret's place, who may use it) stays open.
 function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispatch<React.SetStateAction<McpForm>>; options: McpOptions; simple?: boolean }) {
   const { data: projects } = useApi<ProjectsPayload>("projects", { refresh: false });
@@ -140,7 +140,7 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
   const reach = (
     <>
       <fieldset className="grid gap-2">
-        <legend className="mb-1.5 text-sm font-medium">How PULSE reaches it</legend>
+        <legend className="mb-1.5 text-sm font-medium">How Hive reaches it</legend>
         <div className="grid gap-2 sm:grid-cols-3">
           {options.transports.map((t) => (
             <label key={t} className={cn("flex cursor-pointer items-start gap-2.5 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors has-[:checked]:border-primary/60 has-[:checked]:bg-primary/5", "hover:bg-muted/50")}>
@@ -159,7 +159,7 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
           <div className="grid content-start gap-1.5">
             <Label htmlFor="mcp-command">Program</Label>
             <Input id="mcp-command" value={f.command} onChange={(e) => set("command", e.target.value)} placeholder="e.g. npx" spellCheck={false} className="font-mono text-[13px]" />
-            <p className="text-xs text-muted-foreground">The program PULSE starts on this machine, by name or full path. A whole line such as <code>npx -y @azure/mcp@latest server start</code> works too.</p>
+            <p className="text-xs text-muted-foreground">The program Hive starts on this machine, by name or full path. A whole line such as <code>npx -y @azure/mcp@latest server start</code> works too.</p>
           </div>
           <div className="grid content-start gap-1.5">
             <Label htmlFor="mcp-args">What follows it</Label>
@@ -197,7 +197,7 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
             <Label htmlFor="mcp-auth-header">{fieldLabel}</Label>
             <Input id="mcp-auth-header" value={f.auth_header} onChange={(e) => set("auth_header", e.target.value)} placeholder={"e.g. " + authFieldPlaceholder(f.auth)} spellCheck={false} className="font-mono text-[13px]" />
             <p className="text-xs text-muted-foreground">
-              {f.auth === "env" ? "PULSE sets this variable for the program, with the secret as its value." : f.auth === "query" ? "PULSE adds this parameter to the address, with the secret as its value." : "PULSE sends this header with every request, with the secret as its value."}
+              {f.auth === "env" ? "Hive sets this variable for the program, with the secret as its value." : f.auth === "query" ? "Hive adds this parameter to the address, with the secret as its value." : "Hive sends this header with every request, with the secret as its value."}
             </p>
           </div>
         ) : null}
@@ -235,7 +235,7 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
       </div>
 
       {simple ? (
-        <Disclosure summary="How PULSE reaches it" hint={f.transport === "stdio" ? "Starts " + (f.command || "a program") + " here" : f.url ? hostOf(f.url) : ""} contentClassName="grid gap-4">
+        <Disclosure summary="How Hive reaches it" hint={f.transport === "stdio" ? "Starts " + (f.command || "a program") + " here" : f.url ? hostOf(f.url) : ""} contentClassName="grid gap-4">
           {reach}
         </Disclosure>
       ) : (
@@ -244,14 +244,14 @@ function McpFields({ f, setF, options, simple }: { f: McpForm; setF: React.Dispa
 
       {f.auth === "oauth" ? (
         <Notice tone="info">
-          You sign in once after saving: PULSE opens the sign-in page and keeps the tokens on this machine, renewing them itself. There&apos;s no secret to store.
+          You sign in once after saving: Hive opens the sign-in page and keeps the tokens on this machine, renewing them itself. There&apos;s no secret to store.
         </Notice>
       ) : null}
 
       {needsSecret(f.auth) ? (
         <div className="grid content-start gap-1.5">
           <Label htmlFor="mcp-secret">Where the secret is kept</Label>
-          <Input id="mcp-secret" value={f.secret_ref} onChange={(e) => set("secret_ref", e.target.value)} placeholder="e.g. op://PULSE/github-mcp/token" spellCheck={false} className="font-mono text-[13px]" />
+          <Input id="mcp-secret" value={f.secret_ref} onChange={(e) => set("secret_ref", e.target.value)} placeholder="e.g. op://Hive/github-mcp/token" spellCheck={false} className="font-mono text-[13px]" />
           <p className="text-xs text-muted-foreground anywhere">
             Where to find it, never the secret itself: <span className="font-mono text-xs">{options.cred_shapes}</span>. {secretHint(f.auth)} The 1Password token saved in{" "}
             <Link href={hrefs.settings("runner")} className="underline underline-offset-2">
@@ -356,13 +356,13 @@ function ToolWizard({ options, project, initial, close, lockRef, onSignIn }: { o
   const title = step === "pick" ? "Add a tool" : step === "details" ? (chosen ? "Add " + chosen.title : f.name ? "Add " + f.name : "Describe the tool") : step === "check" ? (saved?.auth === "oauth" ? "Sign in to " + saved.name : "Connect " + (saved?.name ?? "the tool")) : "Done";
   const description =
     step === "pick"
-      ? "A tool lets agents reach another system: issues, docs, a browser, your database. Pick one and PULSE fills in the details."
+      ? "A tool lets agents reach another system: issues, docs, a browser, your database. Pick one and Hive fills in the details."
       : step === "details"
         ? simple
-          ? "PULSE filled this in. Check who may use it" + (needsSecret(f.auth) ? " and say where the secret is kept." : ".")
-          : "How PULSE starts or reaches the server, and how it signs in."
+          ? "Hive filled this in. Check who may use it" + (needsSecret(f.auth) ? " and say where the secret is kept." : ".")
+          : "How Hive starts or reaches the server, and how it signs in."
         : step === "check"
-          ? "Saved. PULSE asks the tool what it offers; agents see the answer in their brief."
+          ? "Saved. Hive asks the tool what it offers; agents see the answer in their brief."
           : "";
   const why = step === "pick" ? (!choice ? "Pick a tool, or start blank." : "") : step === "details" ? (!mcpFormReady(f) ? (f.transport === "stdio" ? "Name it and say which program starts it." : "Name it and give its web address.") : touched && errors.length ? "Fix what's listed above." : "") : "";
 
@@ -415,10 +415,10 @@ function ToolWizard({ options, project, initial, close, lockRef, onSignIn }: { o
           saved.auth === "oauth" ? (
             <div className="grid gap-3">
               <Notice tone="ok">{saved.name} is saved.</Notice>
-              <p className="text-sm leading-relaxed text-muted-foreground">One step left: sign in once, so PULSE can call it as you. PULSE keeps the tokens on this machine and renews them.</p>
+              <p className="text-sm leading-relaxed text-muted-foreground">One step left: sign in once, so Hive can call it as you. Hive keeps the tokens on this machine and renews them.</p>
               {onSignIn ? null : (
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Use <span className="font-medium text-foreground">Sign in</span> on its card, or run <Mono>{"pulse mcp login " + saved.name}</Mono> on this machine.
+                  Use <span className="font-medium text-foreground">Sign in</span> on its card, or run <Mono>{"hive mcp login " + saved.name}</Mono> on this machine.
                 </p>
               )}
             </div>
@@ -597,7 +597,7 @@ function ConnectCheck({ server, onFix }: { server: McpServer; onFix: () => void 
   );
 }
 
-// Environment for a stdio command. A value may be a pulse-cred reference,
+// Environment for a stdio command. A value may be a hive-cred reference,
 // resolved when the server starts, so a token never sits in the store.
 function EnvEditor({ rows, onChange }: { rows: EnvRow[]; onChange: (rows: EnvRow[]) => void }) {
   const update = (i: number, patch: Partial<EnvRow>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -622,7 +622,7 @@ function EnvEditor({ rows, onChange }: { rows: EnvRow[]; onChange: (rows: EnvRow
           ))}
         </div>
       ) : null}
-      <p className="text-xs text-muted-foreground">Plain values, or references (op://, keychain://, file://) PULSE reads when the program starts. A value that looks like a token is refused: use a reference instead.</p>
+      <p className="text-xs text-muted-foreground">Plain values, or references (op://, keychain://, file://) Hive reads when the program starts. A value that looks like a token is refused: use a reference instead.</p>
     </div>
   );
 }
@@ -642,9 +642,9 @@ export function ConnectDialog({ server, onOpenChange, onSignIn }: { server: McpS
   );
 }
 
-// A failed check of an `auth: oauth` server that points at `pulse mcp login`
+// A failed check of an `auth: oauth` server that points at `hive mcp login`
 // is a missing or expired sign-in; the dialog offers to run it here.
-const wantsSignIn = (server: McpServer, fix: string): boolean => server.auth === "oauth" && /pulse mcp login/.test(fix);
+const wantsSignIn = (server: McpServer, fix: string): boolean => server.auth === "oauth" && /hive mcp login/.test(fix);
 
 function ConnectBody({ server, onSignIn }: { server: McpServer; onSignIn?: (s: McpServer) => void }) {
   // One attempt per (server, counter); "Try again" bumps the counter and
@@ -676,7 +676,7 @@ function ConnectBody({ server, onSignIn }: { server: McpServer; onSignIn?: (s: M
         <DialogTitle className="flex items-center gap-2">
           <PlugZapIcon className="size-4 text-primary" aria-hidden /> Checking {server.name}
         </DialogTitle>
-        <DialogDescription>PULSE connects to the tool and asks what it offers. The answer is saved with the tool and shown to agents in their brief.</DialogDescription>
+        <DialogDescription>Hive connects to the tool and asks what it offers. The answer is saved with the tool and shown to agents in their brief.</DialogDescription>
       </DialogHeader>
       {state.kind === "running" ? (
         <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status" aria-live="polite">
@@ -712,7 +712,7 @@ function ConnectBody({ server, onSignIn }: { server: McpServer; onSignIn?: (s: M
             <p>
               Agents call a tool with{" "}
               <Mono>
-                pulse mcp call {server.name} TOOL --args &apos;{"{...}"}&apos;
+                hive mcp call {server.name} TOOL --args &apos;{"{...}"}&apos;
               </Mono>
               .
             </p>
@@ -743,7 +743,7 @@ function ConnectBody({ server, onSignIn }: { server: McpServer; onSignIn?: (s: M
 
 // ----- OAuth sign-in -----------------------------------------------------------
 
-// The sign-in `pulse mcp login` runs, from the browser. The hub does the
+// The sign-in `hive mcp login` runs, from the browser. The hub does the
 // discovery and registration, then waits on a thread while the person takes
 // the one step: approve in a new tab (code flow) or type a short code on
 // the provider's page (device flow). GitHub registers no clients, so for it
@@ -786,7 +786,7 @@ function SignInBody({ server, close, onSignedIn }: { server: McpServer; close: (
   useEffect(() => {
     signedIn.current = onSignedIn;
   }, [onSignedIn]);
-  const terminal = "pulse mcp login " + server.name;
+  const terminal = "hive mcp login " + server.name;
 
   // One start per attempt: POST, then settle on what the hub said.
   useEffect(() => {
@@ -828,7 +828,7 @@ function SignInBody({ server, close, onSignedIn }: { server: McpServer; close: (
           if (cancelled) return;
           if (next.state === "ok") {
             setState({ kind: "ok", login: next });
-            toast.success("Signed in to " + server.name + ".", { description: "PULSE keeps the tokens on this machine and renews them." });
+            toast.success("Signed in to " + server.name + ".", { description: "Hive keeps the tokens on this machine and renews them." });
             refreshMcp();
             signedIn.current?.(next.sign_in ? { ...server, sign_in: next.sign_in } : server);
           } else if (next.state === "failed") {
@@ -862,10 +862,10 @@ function SignInBody({ server, close, onSignedIn }: { server: McpServer; close: (
         <DialogTitle className="flex items-center gap-2">
           <KeyRoundIcon className="size-4 text-primary" aria-hidden /> Sign in to {server.name}
         </DialogTitle>
-        <DialogDescription>Once. PULSE keeps the tokens on this machine, renews them itself, and agents call the tool from then on.</DialogDescription>
+        <DialogDescription>Once. Hive keeps the tokens on this machine, renews them itself, and agents call the tool from then on.</DialogDescription>
       </DialogHeader>
       <div className="flex items-start gap-4">
-        <PulseMascot mood={mood} size={64} decorative className="mt-1 hidden shrink-0 sm:block" />
+        <HiveMascot mood={mood} size={64} decorative className="mt-1 hidden shrink-0 sm:block" />
         <div className="min-w-0 flex-1">
           {state.kind === "starting" ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status" aria-live="polite">
@@ -879,7 +879,7 @@ function SignInBody({ server, close, onSignedIn }: { server: McpServer; close: (
                 <span className="font-medium">Signed in.</span>
                 {state.login.note ? <span className="block text-xs text-muted-foreground anywhere">{state.login.note}</span> : null}
               </Notice>
-              <p className="text-sm text-muted-foreground">Next, check the connection: PULSE asks the tool what it offers and shows it to agents.</p>
+              <p className="text-sm text-muted-foreground">Next, check the connection: Hive asks the tool what it offers and shows it to agents.</p>
             </div>
           ) : state.kind === "needs_client" ? (
             <ClientForm login={state.login} server={server} initial={input} onStart={restart} />
@@ -895,7 +895,7 @@ function SignInBody({ server, close, onSignedIn }: { server: McpServer; close: (
           {state.kind !== "needs_client" ? (
             <Disclosure summary="Prefer the terminal?" className="mt-3" contentClassName="mt-1.5 text-xs leading-relaxed text-muted-foreground">
               <p>
-                The same sign-in runs with <Mono>{terminal}</Mono> on this machine; <Mono>pulse mcp logout {server.name}</Mono> forgets the tokens.
+                The same sign-in runs with <Mono>{terminal}</Mono> on this machine; <Mono>hive mcp logout {server.name}</Mono> forgets the tokens.
               </p>
             </Disclosure>
           ) : null}
@@ -937,13 +937,13 @@ function PendingStep({ login, server }: { login: McpLoginState; server: McpServe
           <UserCode code={login.user_code ?? ""} />
           {login.built_in && login.client_label ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              The page asks you to authorize <strong className="font-medium text-foreground">{login.client_label}</strong>, not PULSE: that is the public app PULSE signs in through, so there is nothing for you to register. The token stays on this machine, in PULSE&apos;s own grant file.
+              The page asks you to authorize <strong className="font-medium text-foreground">{login.client_label}</strong>, not Hive: that is the public app Hive signs in through, so there is nothing for you to register. The token stays on this machine, in Hive&apos;s own grant file.
             </p>
           ) : null}
         </>
       ) : (
         <p className="text-sm leading-relaxed">
-          A new tab asks you to approve PULSE at <span className="font-mono text-[13px]">{hostOf(at)}</span>. Approve it there and come back; this window notices by itself.
+          A new tab asks you to approve Hive at <span className="font-mono text-[13px]">{hostOf(at)}</span>. Approve it there and come back; this window notices by itself.
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
@@ -956,7 +956,7 @@ function PendingStep({ login, server }: { login: McpLoginState; server: McpServe
           <Loader2Icon className="size-3.5 motion-safe:animate-spin" aria-hidden /> Waiting for {server.name}… up to {minutes} min.
         </span>
       </div>
-      {!device && login.redirect_uri ? <p className="text-xs leading-relaxed text-muted-foreground anywhere">The provider sends the approval back to {login.redirect_uri}, a door PULSE opened on this machine just for this sign-in.</p> : null}
+      {!device && login.redirect_uri ? <p className="text-xs leading-relaxed text-muted-foreground anywhere">The provider sends the approval back to {login.redirect_uri}, a door Hive opened on this machine just for this sign-in.</p> : null}
     </div>
   );
 }
@@ -1074,7 +1074,7 @@ function ClientForm({ login, server, initial, onStart }: { login: McpLoginState;
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="mcp-client-secret">Client secret, as a reference (optional)</Label>
-            <Input id="mcp-client-secret" value={secretRef} onChange={(e) => setSecretRef(e.target.value)} placeholder="keychain://pulse/github-oauth-secret" spellCheck={false} className="font-mono text-[13px]" />
+            <Input id="mcp-client-secret" value={secretRef} onChange={(e) => setSecretRef(e.target.value)} placeholder="keychain://hive/github-oauth-secret" spellCheck={false} className="font-mono text-[13px]" />
             <p className="text-xs leading-relaxed text-muted-foreground">Never the secret itself: op://, keychain:// or file:// pointing at it on this machine.</p>
           </div>
         </>
@@ -1090,7 +1090,7 @@ function ClientForm({ login, server, initial, onStart }: { login: McpLoginState;
         </Button>
       </div>
       <Disclosure summary="Prefer the terminal?" contentClassName="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-        <p className="anywhere">{login.command || "pulse mcp login " + server.name + " --client-id ID"}</p>
+        <p className="anywhere">{login.command || "hive mcp login " + server.name + " --client-id ID"}</p>
       </Disclosure>
     </div>
   );

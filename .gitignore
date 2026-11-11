@@ -35,8 +35,8 @@ dist/
 build/
 coverage/
 *.out
-# A stray `pulse` binary at the repo root; install into ~/.pulse/bin with `cargo install --root ~/.pulse` instead.
-/pulse
+# A stray `hive` binary at the repo root; install into ~/.hive/bin with `cargo install --root ~/.hive` instead.
+/hive
 
 # JavaScript / TypeScript
 node_modules/
@@ -65,7 +65,7 @@ venv/
 .coverage
 htmlcov/
 
-# Tool-specific agent directories (never committed; `pulse hooks install` writes them per machine)
+# Tool-specific agent directories (never committed; `hive hooks install` writes them per machine)
 .claude/
 .cursor/
 .codex/

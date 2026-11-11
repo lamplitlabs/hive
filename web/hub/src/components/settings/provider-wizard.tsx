@@ -7,14 +7,14 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { Stepper, useWizardLock, WizardDialog } from "@/components/pulse/stepper";
+import { Stepper, useWizardLock, WizardDialog } from "@/components/hive/stepper";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Disclosure, Notice } from "@/components/pulse/panel";
-import { BrandLogo } from "@/components/pulse/logo";
-import { Mono } from "@/components/pulse/who";
+import { Disclosure, Notice } from "@/components/hive/panel";
+import { BrandLogo } from "@/components/hive/logo";
+import { Mono } from "@/components/hive/who";
 import { errorText, harnessModelsPath, harnessProviderPath, writes, type HarnessDeviceFlow, type HarnessLogin, type HarnessModel, type HarnessModelsResponse, type HarnessProviderInfo, type HarnessStatus } from "@/lib/api";
 import { num } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
@@ -169,7 +169,7 @@ function darkMark(hex: string): boolean {
 
 // The provider's face, the same on the wizard's cards, its review and the
 // Settings card: the brand mark in its own colour on a neutral tile when
-// PULSE ships one (spec "Logo rules": full colour only in the wizard and on
+// Hive ships one (spec "Logo rules": full colour only in the wizard and on
 // connection cards), else the initials in a hue of their own. A near-black
 // mark takes the text colour in dark mode, where its own would vanish.
 export function ProviderGlyph({ name, title, size = 28, className }: { name: string; title: string; size?: 24 | 28 | 40; className?: string }) {
@@ -199,7 +199,7 @@ export function ProviderGlyph({ name, title, size = 28, className }: { name: str
 
 // A browser sign-in: a device code to type at the provider (GitHub,
 // Microsoft), or - with no code - a sign-in Anthropic's CLI opened in a
-// browser on the machine PULSE runs on. Polls until done.
+// browser on the machine Hive runs on. Polls until done.
 function BrowserSignIn({ provider, info, onSignedIn, before }: { provider: string; info: ProviderInfo; onSignedIn: (login: HarnessLogin) => void; before: () => Promise<void> }) {
   const idp = info.idp || info.title;
   const [flow, setFlow] = useState<HarnessDeviceFlow | null>(null);
@@ -262,7 +262,7 @@ function BrowserSignIn({ provider, info, onSignedIn, before }: { provider: strin
           <Button type="button" onClick={start} disabled={status === "starting"}>
             {status === "starting" ? <RefreshCwIcon className="animate-spin" /> : <ShieldCheckIcon />} Sign in with {idp}
           </Button>
-          <span className="text-[13px] text-muted-foreground">{info.signInNote ? "Opens a browser window to approve PULSE." : "You'll get a short code to enter on " + idp + "."}</span>
+          <span className="text-[13px] text-muted-foreground">{info.signInNote ? "Opens a browser window to approve Hive." : "You'll get a short code to enter on " + idp + "."}</span>
         </div>
         {info.signInNote ? <p className="text-[13px] leading-relaxed text-muted-foreground">{info.signInNote}</p> : null}
         {error ? (
@@ -277,9 +277,9 @@ function BrowserSignIn({ provider, info, onSignedIn, before }: { provider: strin
     <div className="grid gap-3 rounded-lg border bg-muted/40 p-4" aria-live="polite">
       {codeless ? (
         <>
-          <p className="text-sm font-medium">Approve PULSE in the browser window that just opened.</p>
+          <p className="text-sm font-medium">Approve Hive in the browser window that just opened.</p>
           <p className="text-[13px] leading-relaxed text-muted-foreground">
-            It opened on the machine PULSE runs on. Pick your organization and workspace, approve, and come back. This page notices by itself.
+            It opened on the machine Hive runs on. Pick your organization and workspace, approve, and come back. This page notices by itself.
           </p>
           {flow.verification_uri ? (
             <Button asChild size="sm" variant="outline" className="w-fit">
@@ -397,7 +397,7 @@ function KeyForm({ provider, info, optional, onSignedIn, before }: { provider: s
         </Button>
       </div>
       <p id={"key-" + provider + "-help"} className={cn("text-[13px] leading-relaxed", problem || error ? "text-bad" : "text-muted-foreground")}>
-        {problem || error || "PULSE checks the " + word + " with " + info.title + " before keeping it. It stays on this machine and never goes to agents."}
+        {problem || error || "Hive checks the " + word + " with " + info.title + " before keeping it. It stays on this machine and never goes to agents."}
       </p>
     </div>
   );
@@ -552,7 +552,7 @@ function ConnectStep({ h, provider, address, setAddress, addressError, login, on
           {models.error && !models.data ? (
             <Notice tone="warn" className="text-[13px]">
               <span className="grid gap-1">
-                <span>PULSE couldn&apos;t reach the server: {models.error}</span>
+                <span>Hive couldn&apos;t reach the server: {models.error}</span>
                 <span>
                   {info.name === "ollama" ? (
                     <>
@@ -598,7 +598,7 @@ function ConnectStep({ h, provider, address, setAddress, addressError, login, on
           ) : null}
           {device && (way === "signin" || !token) ? <BrowserSignIn provider={provider} info={info} onSignedIn={signedIn} before={saveAddress} /> : null}
           {token && (way === "key" || !device) ? <KeyForm provider={provider} info={info} onSignedIn={signedIn} before={saveAddress} /> : null}
-          {!device && !token ? <Notice tone="warn">This provider can&apos;t be connected from the console. Use the terminal: <Mono>{"pulse harness login --provider " + provider}</Mono></Notice> : null}
+          {!device && !token ? <Notice tone="warn">This provider can&apos;t be connected from the console. Use the terminal: <Mono>{"hive harness login --provider " + provider}</Mono></Notice> : null}
           {provider === "anthropic" ? (
             <Disclosure summary="Can I use my Claude Pro or Max plan?">
               <p className="text-[13px] leading-relaxed text-muted-foreground">
@@ -609,7 +609,7 @@ function ConnectStep({ h, provider, address, setAddress, addressError, login, on
           {provider === "anthropic" && device ? (
             <Disclosure summary="The sign-in needs Anthropic's command-line tool">
               <p className="text-[13px] leading-relaxed text-muted-foreground">
-                PULSE asks Anthropic&apos;s CLI (<Mono>ant</Mono>) for short-lived sign-in tokens, so no key is stored here. If it isn&apos;t installed on the machine PULSE runs on, install it there (on a Mac: <Mono>brew install anthropics/tap/ant</Mono>; elsewhere a release from github.com/anthropics/anthropic-cli) and try again, or paste an API key instead. Signing out here doesn&apos;t sign the CLI out, so your other tools keep working.
+                Hive asks Anthropic&apos;s CLI (<Mono>ant</Mono>) for short-lived sign-in tokens, so no key is stored here. If it isn&apos;t installed on the machine Hive runs on, install it there (on a Mac: <Mono>brew install anthropics/tap/ant</Mono>; elsewhere a release from github.com/anthropics/anthropic-cli) and try again, or paste an API key instead. Signing out here doesn&apos;t sign the CLI out, so your other tools keep working.
               </p>
             </Disclosure>
           ) : null}
@@ -683,7 +683,7 @@ function ModelsStep({ provider, title, main, setMain, light, setLight, onModels 
         </Notice>
       ) : (
         <p className="text-sm text-muted-foreground">
-          {title} offers {num(models.length)} {models.length === 1 ? "model" : "models"}. PULSE picked a strong one for the coding work and a cheaper one for the small jobs; change them if you like.
+          {title} offers {num(models.length)} {models.length === 1 ? "model" : "models"}. Hive picked a strong one for the coding work and a cheaper one for the small jobs; change them if you like.
         </p>
       )}
       <div className="grid gap-5 sm:grid-cols-2">
@@ -716,7 +716,7 @@ function ReviewRow({ label, children }: { label: string; children: React.ReactNo
 
 // The address field starts from the saved setting of a provider: empty
 // when it is the provider's own address (the field says "leave it empty"),
-// the default for a local server, so the owner sees where PULSE will look.
+// the default for a local server, so the owner sees where Hive will look.
 function startAddress(h: HarnessStatus, name: string): string {
   const info = providerInfo(name);
   const saved = info.baseUrlSetting ? (settingValue(h, info.baseUrlSetting) ?? "") : "";
@@ -818,7 +818,7 @@ function ProviderSteps({ h, start, onClose, busyRef }: { h: HarnessStatus; start
     step === "pick"
       ? "Where agents get their models. You can change it any time; runs that already started finish as they are."
       : step === "connect"
-        ? "PULSE checks the connection before anything changes."
+        ? "Hive checks the connection before anything changes."
         : step === "models"
           ? "Pick from " + info.title + "'s own list."
           : step === "review"

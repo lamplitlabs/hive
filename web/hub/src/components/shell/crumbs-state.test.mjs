@@ -49,9 +49,9 @@ test("a route the console doesn't have is the 404 page", () => {
 });
 
 test("the phone title is the last crumb, else the document title without the suffix", () => {
-  assert.equal(phoneTitle([{ label: "Records" }, { label: "ADR-1" }], "Records · PULSE"), "ADR-1");
-  assert.equal(phoneTitle([], "Tasks · PULSE"), "Tasks");
-  assert.equal(phoneTitle([], ""), "PULSE");
+  assert.equal(phoneTitle([{ label: "Records" }, { label: "ADR-1" }], "Records · Hive"), "ADR-1");
+  assert.equal(phoneTitle([], "Tasks · Hive"), "Tasks");
+  assert.equal(phoneTitle([], ""), "Hive");
 });
 
 test("back goes to the nearest earlier crumb with a link", () => {

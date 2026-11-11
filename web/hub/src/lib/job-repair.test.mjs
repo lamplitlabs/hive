@@ -74,7 +74,7 @@ test("repairFailedJobs POSTs the selection with its intent header", async () => 
     assert.equal(url, "/api/v1/jobs/repair");
     assert.equal(init.method, "POST");
     assert.equal(init.cache, "no-store");
-    assert.deepEqual(init.headers, { "Content-Type": "application/json", "X-Pulse-Job-Repair": "yes" });
+    assert.deepEqual(init.headers, { "Content-Type": "application/json", "X-Hive-Job-Repair": "yes" });
     assert.deepEqual(JSON.parse(init.body), { job_ids: ["job-a", "job-b"], project: "demo-app" });
   });
 });

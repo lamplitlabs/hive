@@ -17,7 +17,7 @@ const suggestion = (over = {}) => ({
   auth_header: "",
   secret: "",
   scope: "project",
-  add: "pulse mcp add sentry",
+  add: "hive mcp add sentry",
   after: "",
   ...over,
 });
