@@ -5243,9 +5243,16 @@ mod tests {
             1,
             "{events:?}"
         );
+        // Every file the run left under the home. A finished run parks its
+        // clone in `work/.trash` for the background remover, so a directory
+        // queued here may be gone by the time it is read: that is the
+        // remover's work, not a leak, and it is skipped.
         let mut stack = vec![std::path::PathBuf::from(&s.home)];
         while let Some(dir) = stack.pop() {
-            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
                 let p = e.path();
                 if p == seen_path {
                     continue;
