@@ -1373,6 +1373,21 @@
         "off"
       ],
       "default": "on",
+      "description": "on: before a task's pull request opens, the daemon compiles the tree its finished branches make together (cargo check --workspace --all-targets, Cargo projects only); a tree that does not compile goes to a fix job on the task, then to you, instead of onto the forge where every job built on it fails its check. off: branches that merge without a conflict open the pull request as they are",
+      "kind": "choice",
+      "min": null,
+      "name": "landing.merge_check",
+      "secret": false,
+      "updated_at": "",
+      "updated_by": "default",
+      "value": "on"
+    },
+    {
+      "choices": [
+        "on",
+        "off"
+      ],
+      "default": "on",
       "description": "on: before landing, the daemon stashes uncommitted changes in the checkout with a clear message so the landing can proceed; off: a dirty checkout defers landing (ADR-024)",
       "kind": "choice",
       "min": null,
