@@ -127,7 +127,7 @@ test("evidence reads report first, then pictures, data and text", () => {
 
 test("a landed commit links to its forge, and nowhere for an unknown remote", () => {
   const sha = "c".repeat(40);
-  assert.equal(commitURL("git@github.com:lamplitlabs/pulse.git", sha), "https://github.com/lamplitlabs/pulse/commit/" + sha);
+  assert.equal(commitURL("git@github.com:lamplitlabs/hive.git", sha), "https://github.com/lamplitlabs/hive/commit/" + sha);
   assert.equal(commitURL("https://gitlab.com/g/p.git", sha), "https://gitlab.com/g/p/-/commit/" + sha);
   assert.equal(commitURL("https://bitbucket.org/t/r", sha), "https://bitbucket.org/t/r/commits/" + sha);
   assert.equal(commitURL("https://example.com/x/y.git", sha), null);

@@ -49,7 +49,7 @@ and every build falls back to `v0.0.0-...`.
 
 ```sh
 mkdir -p ~/.hive/bin && cd "$(mktemp -d)"
-gh release download --repo lamplitlabs/pulse --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+gh release download --repo lamplitlabs/hive --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
 tar -xzf hive-*.tar.gz && install -m 755 hive-*/hive ~/.hive/bin/hive
 hive version
 ```
