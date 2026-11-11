@@ -11,6 +11,11 @@ use std::time::{Duration, Instant};
 
 pub const TOKEN_ENV: &str = "OP_SERVICE_ACCOUNT_TOKEN";
 pub const KEYCHAIN_SERVICE: &str = "hive";
+/// The keychain service `cred token` wrote to before the product was called
+/// Hive. `token` falls back to it while no `hive` item exists, so a token
+/// stored then keeps working without a hand step, and `clear_token` removes
+/// it too; nothing writes to it any more.
+pub const LEGACY_KEYCHAIN_SERVICE: &str = "pulse";
 const TOKEN_FILE_NAME: &str = "op-service-account-token";
 
 pub fn token_file_name() -> &'static str {
@@ -261,18 +266,20 @@ impl Resolver {
             return Ok((env, "the environment".to_string()));
         }
         if self.goos() == "darwin" {
-            let args = vec![
-                "find-generic-password".to_string(),
-                "-s".to_string(),
-                KEYCHAIN_SERVICE.to_string(),
-                "-a".to_string(),
-                TOKEN_ENV.to_string(),
-                "-w".to_string(),
-            ];
-            if let Ok((out, _)) = self.run()("security", &args, "", None) {
-                let out = out.trim();
-                if !out.is_empty() {
-                    return Ok((out.to_string(), "the keychain".to_string()));
+            for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+                let args = vec![
+                    "find-generic-password".to_string(),
+                    "-s".to_string(),
+                    service.to_string(),
+                    "-a".to_string(),
+                    TOKEN_ENV.to_string(),
+                    "-w".to_string(),
+                ];
+                if let Ok((out, _)) = self.run()("security", &args, "", None) {
+                    let out = out.trim();
+                    if !out.is_empty() {
+                        return Ok((out.to_string(), "the keychain".to_string()));
+                    }
                 }
             }
         }
@@ -330,15 +337,21 @@ impl Resolver {
     pub fn clear_token(&self) -> Result<Vec<String>> {
         let mut removed = Vec::new();
         if self.goos() == "darwin" {
-            let args = vec![
-                "delete-generic-password".to_string(),
-                "-s".to_string(),
-                KEYCHAIN_SERVICE.to_string(),
-                "-a".to_string(),
-                TOKEN_ENV.to_string(),
-            ];
-            if self.run()("security", &args, "", None).is_ok() {
-                removed.push("the keychain item".to_string());
+            for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+                let args = vec![
+                    "delete-generic-password".to_string(),
+                    "-s".to_string(),
+                    service.to_string(),
+                    "-a".to_string(),
+                    TOKEN_ENV.to_string(),
+                ];
+                if self.run()("security", &args, "", None).is_ok() {
+                    removed.push(if service == KEYCHAIN_SERVICE {
+                        "the keychain item".to_string()
+                    } else {
+                        format!("the keychain item from before the rename (service {service})")
+                    });
+                }
             }
         }
         match fs::remove_file(self.token_file()) {
@@ -985,6 +998,69 @@ mod tests {
         ] {
             assert!(lin.store_token(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// A keychain whose items are keyed by "service account", answering
+    /// `security` the way macOS does.
+    fn keychain_with(items: &[(&str, &str)]) -> (Fake, Arc<Mutex<BTreeMap<String, String>>>) {
+        let store: Arc<Mutex<BTreeMap<String, String>>> = Arc::new(Mutex::new(
+            items
+                .iter()
+                .map(|(service, token)| (format!("{service} {TOKEN_ENV}"), token.to_string()))
+                .collect(),
+        ));
+        let held = Arc::clone(&store);
+        let mut replies: BTreeMap<String, Reply> = BTreeMap::new();
+        replies.insert(
+            "security".to_string(),
+            Box::new(move |args, _, _| {
+                let key = format!("{} {}", args[2], args[4]);
+                let mut items = held.lock().unwrap();
+                let found = match args[0].as_str() {
+                    "find-generic-password" => items.get(&key).cloned(),
+                    "delete-generic-password" => items.remove(&key),
+                    _ => None,
+                };
+                found
+                    .map(|t| (format!("{t}\n"), String::new()))
+                    .ok_or_else(|| {
+                        RunError::new("The specified item could not be found in the keychain.")
+                    })
+            }),
+        );
+        (fake_with(replies), store)
+    }
+
+    #[test]
+    fn a_token_stored_before_the_rename_is_still_found_and_cleared() {
+        let _serial = crate::test_helpers::serial();
+        let (fake, items) = keychain_with(&[("pulse", "ops_legacy_0123456789abcdefghij")]);
+        let r = resolver(&fake, "darwin", BTreeMap::new());
+        let (tok, src) = r.token().unwrap();
+        assert_eq!(tok, "ops_legacy_0123456789abcdefghij");
+        assert_eq!(src, "the keychain");
+
+        let removed = r.clear_token().unwrap();
+        assert_eq!(
+            removed,
+            vec!["the keychain item from before the rename (service pulse)".to_string()]
+        );
+        assert!(items.lock().unwrap().is_empty());
+        assert!(r.token().is_err());
+    }
+
+    #[test]
+    fn the_hive_keychain_item_wins_over_the_one_from_before_the_rename() {
+        let _serial = crate::test_helpers::serial();
+        let (fake, items) = keychain_with(&[
+            ("hive", "ops_current_0123456789abcdefghij"),
+            ("pulse", "ops_legacy_0123456789abcdefghij"),
+        ]);
+        let r = resolver(&fake, "darwin", BTreeMap::new());
+        let (tok, _) = r.token().unwrap();
+        assert_eq!(tok, "ops_current_0123456789abcdefghij");
+        assert_eq!(r.clear_token().unwrap().len(), 2);
+        assert!(items.lock().unwrap().is_empty());
     }
 
     #[test]
