@@ -2096,7 +2096,7 @@ fn last_word_has_choices(s: &hive_store::Store, task_id: String) -> bool {
     };
     let last = must_one(
         &conn,
-        "SELECT author, choices FROM messages WHERE task_id = ? AND job_id = '' ORDER BY id DESC LIMIT 1",
+        "SELECT author, choices FROM messages WHERE task_id = ? AND job_id = '' ORDER BY at DESC, id DESC LIMIT 1",
         &[&task_id],
     );
     last.str("author") != crate::util::HUMAN_AGENT
@@ -2157,7 +2157,7 @@ fn ensure_hold_choices(s: &hive_store::Store, t: &hive_tasks::Task, lead: &str) 
         .map(|conn| {
             must_one(
                 &conn,
-                "SELECT body FROM messages WHERE task_id = ? AND author = ? AND job_id = '' AND at > ? ORDER BY id DESC LIMIT 1",
+                "SELECT body FROM messages WHERE task_id = ? AND author = ? AND job_id = '' AND at > ? ORDER BY at DESC, id DESC LIMIT 1",
                 &[&t.id, &lead, &owner_at],
             )
             .str("body")
@@ -4616,5 +4616,46 @@ mod tests {
                 "{name}: queued lead was duplicated"
             );
         }
+    }
+
+    // A message whose id is not the store's MSG-<stamp>-<n> (one imported or
+    // written by hand) sorts after every real id ('i' > 'M'), so reading the
+    // last word by id alone took that old note for the newest and asked the
+    // owner again on every pass. The last word is the newest by time.
+    #[test]
+    fn a_message_with_a_foreign_id_does_not_pass_for_the_last_word() {
+        let _serial = serial();
+        let s = new_store();
+        new_repo(&s);
+        ensure_lead(&s, "proj".into()).unwrap();
+        let t = hive_tasks::new(
+            &s,
+            "proj",
+            "Hold",
+            "a decision",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        hive_tasks::set_status(&s, &t.id, "in_progress", "daemon").unwrap();
+        hive_tasks::set_status(&s, &t.id, "review", "proj-lead").unwrap();
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO messages (id, project, task_id, author, body, at, read_by) VALUES ('imported-1', 'proj', ?, 'proj-lead', 'Looking into it.', '2026-09-06T08:00:00Z', '[\"proj-lead\"]')",
+            &[&t.id],
+        );
+        let task = || hive_tasks::get(&s, &t.id).unwrap().0;
+        assert!(ensure_hold_choices(&s, &task(), "proj-lead").is_some());
+        assert_eq!(
+            ensure_hold_choices(&s, &task(), "proj-lead"),
+            None,
+            "the ask with choices is the last word"
+        );
+        let asks = hive_tasks::messages(&s, "proj", &t.id, "", "")
+            .unwrap()
+            .into_iter()
+            .filter(|m| !m.choices.is_empty())
+            .count();
+        assert_eq!(asks, 1);
     }
 }
