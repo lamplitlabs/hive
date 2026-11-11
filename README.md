@@ -93,7 +93,7 @@ Nothing else: no Python, no other agent tool to install or keep logged in.
 
    ```bash
    mkdir -p ~/.hive/bin && cd "$(mktemp -d)"
-   gh release download --repo lamplitlabs/pulse --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+   gh release download --repo lamplitlabs/hive --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
    tar -xzf hive-*.tar.gz && install -m 755 hive-*/hive ~/.hive/bin/hive
    export PATH="$HOME/.hive/bin:$PATH"                          # add to your shell profile
    hive version
@@ -102,7 +102,7 @@ Nothing else: no Python, no other agent tool to install or keep logged in.
    Or build from source (any platform with Rust and Node):
 
    ```bash
-   git clone https://github.com/lamplitlabs/pulse.git hive && cd hive
+   git clone https://github.com/lamplitlabs/hive.git hive && cd hive
    cargo install --path crates/hive --root ~/.hive --locked   # a release build; lands ~/.hive/bin/hive
    export PATH="$HOME/.hive/bin:$PATH"                          # add to your shell profile
    hive version

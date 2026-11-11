@@ -22,7 +22,7 @@ pub(crate) const ALERT_CHECK_MINUTES: &str = "dependencies.alert_check_minutes";
 pub(crate) const MAJOR_UPDATES: &str = "dependencies.major_updates";
 
 const REGISTRY_TIMEOUT: Duration = Duration::from_secs(20);
-const USER_AGENT: &str = "hive (https://github.com/manishtiwari25/pulse)";
+const USER_AGENT: &str = "hive (https://github.com/lamplitlabs/hive)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Ecosystem {

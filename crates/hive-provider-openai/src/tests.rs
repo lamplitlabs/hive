@@ -1187,7 +1187,7 @@ fn openrouter_sends_its_attribution_headers() {
     for (referer, title) in &saw {
         assert_eq!(
             referer.as_deref(),
-            Some("https://github.com/manishtiwari25/pulse")
+            Some("https://github.com/lamplitlabs/hive")
         );
         assert_eq!(title.as_deref(), Some("Hive"));
     }

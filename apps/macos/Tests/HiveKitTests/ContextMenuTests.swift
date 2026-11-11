@@ -5,7 +5,7 @@ import Testing
 @Suite struct ContextMenuTests {
     static let policy = LinkPolicy(console: URL(string: "http://127.0.0.1:8765/")!)
     static let consoleLink = URL(string: "http://127.0.0.1:8765/tasks/abc")!
-    static let webLink = URL(string: "https://github.com/manishtiwari25/pulse/pull/37")!
+    static let webLink = URL(string: "https://github.com/lamplitlabs/hive/pull/37")!
 
     @Test func keepsTheTextCommandsAndDropsTheBrowsers() {
         for kept in ["WKMenuItemIdentifierCopy", "WKMenuItemIdentifierPaste", "WKMenuItemIdentifierLookUp",

@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 homepage = "https://hivefleet.dev"
-repository = "https://github.com/manishtiwari25/pulse"
+repository = "https://github.com/lamplitlabs/hive"
 publish = false
 
 [workspace.dependencies]
