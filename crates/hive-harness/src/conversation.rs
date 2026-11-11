@@ -333,14 +333,19 @@ pub struct ImageAttachment {
 
 impl ImageAttachment {
     /// The decoded bytes, or why this image is refused: a mime that is not
-    /// png, jpeg or webp, data over [`IMAGE_LIMIT`], or bad base64.
+    /// png, jpeg, webp or gif, data over [`IMAGE_LIMIT`], or bad base64.
+    /// GIF is taken here as uploads take it, so a picture is accepted the
+    /// same way whether it is sent inline or uploaded.
     pub fn decode(&self) -> Result<Vec<u8>> {
         use base64::Engine;
         use base64::engine::general_purpose::STANDARD;
         let mime = self.mime.trim().to_ascii_lowercase();
-        if !matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/webp") {
+        if !matches!(
+            mime.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) {
             bail!(
-                "Invalid images: mime must be image/png, image/jpeg or image/webp, got {:?}",
+                "Invalid images: mime must be image/png, image/jpeg, image/webp or image/gif, got {:?}",
                 self.mime
             );
         }
@@ -362,6 +367,7 @@ impl ImageAttachment {
             "image/png" => "png",
             "image/jpeg" => "jpeg",
             "image/webp" => "webp",
+            "image/gif" => "gif",
             _ => "bin",
         }
     }
@@ -5209,7 +5215,7 @@ mod tests {
         // Bad shapes are refused before anything is stored.
         for bad in [
             ImageAttachment {
-                mime: "image/gif".into(),
+                mime: "image/bmp".into(),
                 ..image.clone()
             },
             ImageAttachment {
@@ -5280,6 +5286,53 @@ mod tests {
         let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
         assert_eq!(user.content, "Look at the attached file.");
         assert_eq!(user.extra["images"][0]["name"], "shot.webp");
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    #[test]
+    fn inline_images_accept_gif() {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD;
+        let gif = b"GIF89a fake bytes".to_vec();
+        let image = ImageAttachment {
+            mime: "IMAGE/GIF ".into(),
+            name: "".into(),
+            data: STANDARD.encode(&gif),
+        };
+        assert_eq!(image.decode().expect("a gif decodes"), gif);
+        assert_eq!(image.ext(), "gif");
+        // Sent inline, a GIF is saved and the agent answers it.
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(home.path(), json!([{"content": "A cat."}]));
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m =
+            Manager::new(&home.path().display().to_string(), s.clone()).with_provider("fake", "");
+        let row = m
+            .create_with("", "", "fake", "", true, "watch out", "owner")
+            .expect("create");
+        let row = wait_idle(&m, &row.id);
+        m.send_with_images(&row.id, "what is this?", &[], std::slice::from_ref(&image))
+            .expect("send gif");
+        let row = wait_idle(&m, &row.id);
+        let msgs = s.chat_messages(&row.id, 0).unwrap();
+        let user = msgs.iter().rev().find(|m| m.role == "user").unwrap();
+        assert_eq!(user.extra["images"][0]["name"], "image-1.gif");
+        assert_eq!(user.extra["images"][0]["mime"], "image/gif");
+        let (mime, data) = m
+            .image(&row.id, user.n, 0)
+            .expect("image")
+            .expect("present");
+        assert_eq!(mime, "image/gif");
+        assert_eq!(data, gif);
+        assert!(
+            msgs.iter()
+                .any(|m| m.role == "assistant" && m.content.contains("A cat.")),
+            "the agent answered: {msgs:?}"
+        );
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
     }
