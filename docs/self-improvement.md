@@ -351,9 +351,44 @@ takes the base's count as the scale in place of `--scale` (twice the count for
 `--higher`, the count itself for `--lower`, never below 1), so the base scores
 `0.5` and the variant's delta is relative to what the card touched; the derived
 fixtures' scripts count only inside the listed files, and your own `CMD` does
-the same by reading that list. Such a fixture answers `scope: diff` after its
-score line, the log marks it `[diff-scoped]` and the archive row records it
-(`diff_scoped` in the measurement and in the `evolution.archived` event). A
+the same by reading that list. A whole-tree percentage gains nothing from
+the scope: `CMD` still prints the tree's share (90.9% of the hub's view
+branches covered), the base scale becomes twice that, and a card that covers
+three more branches moves it from `0.4995` to `0.5`, a tie at any tolerance:
+on amistio-template `behaviour-hub-view-branches`,
+`behaviour-hub-lib-coverage`, `behaviour-feed-events-worded` and
+`behaviour-settings-documented` told a variant from its base in at most 2 of
+the last 20 cycles, and none of those cycles was improved. Write such a
+fixture as a lower-is-better count of what is still wrong inside the listed files -
+uncovered lines and branches in each changed module (a changed test file
+stands for the module it tests), event actions a changed file emits that no
+hub label words, settings a changed `settings.rs` declares that no changed or
+existing doc names - and print the whole-tree count when the list is empty or
+missing, so the project-level report still reads a number:
+
+```sh
+pulse evolve score metric --lower --scale 400 -- sh -c 'cd web/hub &&
+  node --test --experimental-test-isolation=none --experimental-test-coverage \
+    --test-reporter=lcov --test-reporter-destination=stdout \
+    "src/**/*.test.mjs" "mock/*.test.mjs" 2>/dev/null | python3 count_gaps.py'
+# count_gaps.py (inline it with -c): read LF/LH/BRF/BRH per SF from lcov;
+# scope = the web/hub/src/components/*.ts paths in $PULSE_MEASURE_CHANGED
+# (X.test.mjs -> X.ts), else every module; print the sum of
+# (LF-LH)+(BRF-BRH), counting an untested module's non-blank lines.
+```
+
+The base then scores `0.5` on the card's own count and a card that closes
+half the gaps in what it touched scores about `0.67` - a step of `0.17` on
+the fixture, where the percentage moved `0.0005`; the composite carries it
+weighted, so two such fixtures moving together, or the card's own check
+rising, is what lands the card.
+Retire the percentage fixture (`pulse evolve fixture disable`) and add the
+count under a new name, one per RSI sitting, so each conversion is measured
+on its own; `behaviour-hub-untested-logic` was the first, and the healer
+retired it two cycles later as a flip until diff-scoped bases were exempted
+from that reading (below) - re-enable it with `pulse evolve fixture enable`.
+Such a fixture answers `scope: diff` after its score line, the log marks it
+`[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
 those fixtures are measured again on the base in the same scope inside the same
 cycle, and the whole-tree numbers stay for the project-level report. A diff
@@ -596,7 +631,11 @@ that flips the same baseline commit both ways twice is retired by the
 healer below (disabled, event `evolution.fixture.retired`, one finding
 `Evolution fixture retired: it scored the same commit both ways twice`);
 `pulse evolve fixture enable NAME` brings it back and only later cycles
-count for it again.
+count for it again. A diff-scoped fixture is exempt from both readings: its
+base is measured in each card's own scope (`0.5` where the card touched what
+it counts, `1.0` where it found nothing to count), so two cards on one commit
+score it two ways by design - it is read in every cycle and never retired as
+a flip, nor counted as moving with the default branch.
 `pulse evolve status` shows the same reason on its `Experiment planning`
 line (`blocked - …; only NAME told a variant from its baseline in 26 cycles;
 NAME scored the same baseline commit two ways`) and the step as `Next human
