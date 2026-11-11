@@ -59,6 +59,22 @@ if ! command -v node >/dev/null 2>&1; then
   exit 0
 fi
 
+# The mock serves the console's static export (MOCK_STATIC=out), which is a
+# build product nobody commits: on a fresh clone web/hub/out is missing, every
+# page is a 404 and the app would only time out on its way to Tasks. Build it
+# here when it is missing, or say what to run.
+hub="$repo/web/hub"
+if [ ! -f "$hub/out/index.html" ]; then
+  if [ ! -d "$hub/node_modules" ] || ! command -v npm >/dev/null 2>&1; then
+    fail "web/hub/out/index.html is missing: run npm ci && npm run build in web/hub"
+  fi
+  say "== console export (web/hub/out is missing: npm run build)"
+  (cd "$hub" && npm run build) > "$scratch/console-build.log" 2>&1 ||
+    fail "npm run build in web/hub failed (see console-build.log)"
+  [ -f "$hub/out/index.html" ] ||
+    fail "npm run build in web/hub wrote no out/index.html (see console-build.log)"
+fi
+
 port=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
 console="http://127.0.0.1:$port/"
 subsystem='subsystem == "io.github.manishtiwari25.pulse"'
