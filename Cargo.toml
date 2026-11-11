@@ -7,6 +7,7 @@ version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
+homepage = "https://hivefleet.dev"
 repository = "https://github.com/manishtiwari25/pulse"
 publish = false
 

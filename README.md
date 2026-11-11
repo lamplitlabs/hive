@@ -6,6 +6,10 @@
   An agent-first control plane for software work: one Rust binary, one SQLite store, one owner console.
 </p>
 
+<p align="center">
+  <a href="https://hivefleet.dev">hivefleet.dev</a>
+</p>
+
 # Hive
 
 **Hive** (Planning & Unified Lifecycle for Software Engineering) runs your
