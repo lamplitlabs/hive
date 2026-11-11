@@ -1503,7 +1503,7 @@ mod tests {
     use std::cell::Cell;
 
     const NOW: &str = "2026-10-26T14:00:00Z";
-    const REPO: &str = "manishtiwari25/pulse";
+    const REPO: &str = "lamplitlabs/hive";
     const LOCK: &str = "web/hub/package-lock.json";
 
     fn setup() -> (TestStore, String) {
@@ -1511,7 +1511,7 @@ mod tests {
         let (_, root) = new_repo(&s);
         exec1(
             &s,
-            "UPDATE projects SET remote = 'https://github.com/manishtiwari25/pulse.git', verify_cmd = 'make check' WHERE slug = 'proj'",
+            "UPDATE projects SET remote = 'https://github.com/lamplitlabs/hive.git', verify_cmd = 'make check' WHERE slug = 'proj'",
             &[],
         );
         let hub = std::path::Path::new(&root).join("web/hub");
@@ -1733,8 +1733,8 @@ mod tests {
     #[test]
     fn github_repos_come_from_https_and_ssh_remotes() {
         assert_eq!(
-            github_repo("https://github.com/manishtiwari25/pulse.git").as_deref(),
-            Some("manishtiwari25/pulse")
+            github_repo("https://github.com/lamplitlabs/hive.git").as_deref(),
+            Some("lamplitlabs/hive")
         );
         assert_eq!(
             github_repo("git@github.com:lamplitlabs/website.git").as_deref(),

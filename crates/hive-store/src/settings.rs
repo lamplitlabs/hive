@@ -2248,7 +2248,7 @@ mod go_settings_tests {
         assert_eq!(DAEMON_SETTINGS["update.latest_url"], "");
         assert!(daemon_setting_names().contains(&"update.latest_url".to_string()));
         assert_eq!(validate_setting("update.latest_url", "  ").unwrap(), "");
-        let gh = "https://api.github.com/repos/lamplitlabs/pulse/releases/latest";
+        let gh = "https://api.github.com/repos/lamplitlabs/hive/releases/latest";
         assert_eq!(
             validate_setting("update.latest_url", &format!(" {gh} ")).unwrap(),
             gh

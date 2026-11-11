@@ -27,7 +27,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
-bundle_id=io.github.manishtiwari25.pulse
+bundle_id=io.github.manishtiwari25.hive
 out="$here/build"
 app="$out/Hive.app"
 

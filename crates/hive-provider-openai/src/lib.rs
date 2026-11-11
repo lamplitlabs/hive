@@ -177,7 +177,7 @@ pub const VENDORS: &[Vendor] = &[
         api_key_env: &["OPENROUTER_API_KEY"],
         base_url_env: &["OPENROUTER_BASE_URL"],
         extra_headers: &[
-            ("HTTP-Referer", "https://github.com/manishtiwari25/pulse"),
+            ("HTTP-Referer", "https://github.com/lamplitlabs/hive"),
             ("X-Title", "Hive"),
         ],
         default_model_prefixes: &[

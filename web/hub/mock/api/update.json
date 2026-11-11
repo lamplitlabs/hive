@@ -13,7 +13,7 @@
   "error": "",
   "latest": "v0.2.0",
   "newer": true,
-  "notice": "A newer Hive is available: v0.2.0 (running v0.0.0-20260909100531-6a5be5c7240c+dirty) - https://github.com/lamplitlabs/pulse/releases/tag/v0.2.0",
+  "notice": "A newer Hive is available: v0.2.0 (running v0.0.0-20260909100531-6a5be5c7240c+dirty) - https://github.com/lamplitlabs/hive/releases/tag/v0.2.0",
   "running": "v0.0.0-20260909100531-6a5be5c7240c+dirty",
-  "url": "https://github.com/lamplitlabs/pulse/releases/tag/v0.2.0"
+  "url": "https://github.com/lamplitlabs/hive/releases/tag/v0.2.0"
 }

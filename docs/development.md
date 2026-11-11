@@ -157,7 +157,7 @@ their loops seed a constitution from the bundled template, their agents read
 the same guide.
 
 ```bash
-git clone https://github.com/manishtiwari25/pulse.git hive && cd hive
+git clone https://github.com/lamplitlabs/hive.git hive && cd hive
 cargo install --path crates/hive --root ~/.hive --locked
 hive hub                # add a project, click Keep Hive running - that is the whole setup
 hive seed status        # what this build carries against what the store has
