@@ -79,7 +79,7 @@ What the app does on its own:
   the next launch.
 
 Settings for unusual set-ups, all optional (`defaults write
-io.github.manishtiwari25.hive <key> <value>`):
+dev.hivefleet.hive <key> <value>`):
 
 | Key | What it does |
 | --- | --- |
@@ -91,18 +91,21 @@ io.github.manishtiwari25.hive <key> <value>`):
 | `HiveHandBinary` | another `hive-hand` than the one inside the app |
 | `DeveloperExtras` | `-bool YES` lets Safari's Develop menu inspect the app's pages |
 
-Before the rename to Hive the app was `io.github.manishtiwari25.pulse`. Its
-first launch under the new identifier copies that domain's settings (the keys
-above, the last page, the window frames) into the new one, keeping any key the
-new domain already holds, and marks it done with `MigratedFromLegacyBundleID`
-so a setting you delete later does not come back; the old domain is left as it
-was (`HiveKit/DefaultsMigration.swift`, tested in `DefaultsMigrationTests`). The
-`PulseHome`/`PulseBinary` keys, PULSE_HOME and `~/.pulse` are still read.
+The app was `io.github.manishtiwari25.pulse` before the rename to Hive, then
+`io.github.manishtiwari25.hive` before the move to hivefleet.dev; it is
+`dev.hivefleet.hive` now. Its first launch under the new identifier copies both
+old domains' settings (the keys above, the last page, the window frames) into
+the new one - the more recent domain's key wins over the older one's, and any
+key the new domain already holds is kept - and marks it done with
+`MigratedFromLegacyBundleID` so a setting you delete later does not come back;
+the old domains are left as they were (`HiveKit/DefaultsMigration.swift`, tested
+in `DefaultsMigrationTests`). The `PulseHome`/`PulseBinary` keys, PULSE_HOME and
+`~/.pulse` are still read.
 
 The app keeps its own copy of the console's browser storage (theme, view
 toggles, *seen* marks), separate from your browser's. It logs to the unified
-log under `io.github.manishtiwari25.hive` (`/usr/bin/log show --predicate
-'subsystem == "io.github.manishtiwari25.hive"'`; the path, because zsh has a
+log under `dev.hivefleet.hive` (`/usr/bin/log show --predicate
+'subsystem == "dev.hivefleet.hive"'`; the path, because zsh has a
 `log` builtin of its own); **Help → Show Console Log** opens the console's own
 log. There is no Dock badge for the **For you** count yet: that count is
 worked out in the page, which stops refreshing while its window is hidden.
@@ -176,7 +179,7 @@ hand bundled in the app when that hand knows `join`.
 ## Building and checking
 
 `build.sh` signs ad hoc with a requirement every build meets (`designated =>
-identifier "io.github.manishtiwari25.hive"`), the idea hive's own signature
+identifier "dev.hivefleet.hive"`), the idea hive's own signature
 follows (ADR-035), so macOS keeps the app's answers across rebuilds, and it
 links against the installed SDK rather than the deployment target. Like
 hive's, that requirement names no team: any program signed ad hoc with the

@@ -130,7 +130,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
         webView.pageZoom = app.pageZoom
         webView.underPageBackgroundColor = Palette.paper
         // Web Inspector on request, as in Safari:
-        // `defaults write io.github.manishtiwari25.hive DeveloperExtras -bool YES`.
+        // `defaults write dev.hivefleet.hive DeveloperExtras -bool YES`.
         if #available(macOS 13.3, *), UserDefaults.standard.bool(forKey: "DeveloperExtras") {
             webView.isInspectable = true
         }

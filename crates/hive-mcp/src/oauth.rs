@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const CLIENT_NAME: &str = "Hive";
-pub const CLIENT_URI: &str = "https://github.com/lamplitlabs/hive";
+pub const CLIENT_URI: &str = "https://hivefleet.dev";
 pub const SOFTWARE_ID: &str = "hive";
 /// Where grants live under the Hive home.
 pub const GRANT_DIR: &str = "secrets/mcp-oauth";

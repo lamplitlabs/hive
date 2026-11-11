@@ -103,20 +103,21 @@ fn rust_string(value: &str) -> String {
 /// stay stable. The constant is written as one string literal and the binary hands a reference
 /// to it to `install_build_info`, so the whole block lands in rodata as one contiguous run of
 /// bytes, which is what the inspection's grep over a hand's binary relies on.
-/// The module path is `github.com/lamplitlabs/hive` since the hive rename (TASK-115); the
-/// inspection (`hive-runner` pair_inspect.rs) still reads hands stamped with the old
-/// `github.com/manishtiwari25/pulse` path, so changing it again needs a legacy alias there too.
+/// The module path is `hivefleet.dev/hive` since the move to hivefleet.dev (it was
+/// `github.com/lamplitlabs/hive` from the hive rename, TASK-115, and `github.com/manishtiwari25/pulse`
+/// before that); the inspection (`hive-runner` pair_inspect.rs, `PAIR_LEGACY_HANDS_MODULES`) still
+/// reads hands stamped with either old path, so changing it again needs a legacy alias there too.
 fn write_build_info(version: &str, rev: &str, dirty: Option<bool>) {
     let module_version = if rev.is_empty() { "(devel)" } else { version };
     let mut text = format!(
-        "\npath\tgithub.com/lamplitlabs/hive/cmd/hive\nmod\tgithub.com/lamplitlabs/hive\t{module_version}\t\n"
+        "\npath\thivefleet.dev/hive/cmd/hive\nmod\thivefleet.dev/hive\t{module_version}\t\n"
     );
     if let Ok(v) = std::env::var("HIVE_VERSION")
         && !v.is_empty()
     {
         text.push_str("build\t-ldflags=");
         text.push_str(&strconv_quote(&format!(
-            "-X github.com/lamplitlabs/hive/internal/cli.version={v}"
+            "-X hivefleet.dev/hive/internal/cli.version={v}"
         )));
         text.push('\n');
     }
