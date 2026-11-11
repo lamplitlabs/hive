@@ -227,6 +227,52 @@ pub(crate) struct Dispatch {
     pub(crate) started_at: String,
 }
 
+/// Set when a daemon run thread ends, however it ends (a return, an error
+/// before the run row, a panic), so the lease line never waits on a run
+/// that will not write its row.
+struct ReturnedFlag(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ReturnedFlag {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// How long the lease line waits for its run row at most; run_job writes
+/// it within milliseconds of starting, so this only bounds a stuck store.
+const RUN_ROW_WAIT: Duration = Duration::from_secs(10);
+
+/// Waits until the run the daemon just started for `job_id` at `started_at`
+/// has its row in `runs`, or the run thread has ended without one, or
+/// RUN_ROW_WAIT passed - so "leased <job>" is printed once the run exists.
+fn wait_for_run_row(
+    s: &hive_store::Store,
+    job_id: &str,
+    started_at: &str,
+    returned: &std::sync::atomic::AtomicBool,
+) {
+    let since = std::time::Instant::now();
+    loop {
+        let found = s.conn().ok().is_some_and(|c| {
+            crate::util::query_one(
+                &*c,
+                "SELECT 1 AS x FROM runs WHERE job_id = ? AND started_at = ? LIMIT 1",
+                &[&job_id, &started_at],
+            )
+            .ok()
+            .flatten()
+            .is_some()
+        });
+        if found
+            || returned.load(std::sync::atomic::Ordering::SeqCst)
+            || since.elapsed() >= RUN_ROW_WAIT
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Shared with worker/maintenance threads, so it sits behind a
 /// mutex; None writes to stdout.
 pub(crate) type DaemonOut = std::sync::Arc<std::sync::Mutex<dyn std::io::Write + Send>>;
@@ -2644,7 +2690,7 @@ pub(crate) fn daemon(
                             &job,
                             &now,
                         );
-                        say(&o, format!("leased {} after {}s", job.str("id"), wait_s));
+                        let leased_line = format!("leased {} after {}s", job.str("id"), wait_s);
                         let d = Dispatch {
                             slot: slot.clone(),
                             worker,
@@ -2665,10 +2711,14 @@ pub(crate) fn daemon(
                         let now_run = now.clone();
                         let actor_run = actor.clone();
                         let run_parent = run_ctx.child();
+                        let run_returned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let returned_run = Arc::clone(&run_returned);
+                        let (lease_job, lease_at) = (d.job.str("id"), d.started_at.clone());
                         std::thread::Builder::new()
                             .name("daemon-run".into())
                             .spawn(move || {
                                 let mut d = d;
+                                let _returned = ReturnedFlag(returned_run);
                                 let result =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         let dctx = run_parent.with_timeout(
@@ -2716,6 +2766,11 @@ pub(crate) fn daemon(
                                 let _ = tx.send(d);
                             })
                             .expect("spawn daemon run");
+                        // The lease line means the run exists: whoever reacts
+                        // to it (the hub, a test reading the runs table) finds
+                        // the run's row, not a gap before run_job writes it.
+                        wait_for_run_row(s, &lease_job, &lease_at, &run_returned);
+                        say(&o, leased_line);
                     }
                     let mut reason = crate::proc::sorted_keys(&bool_keys(reasons)).join("; ");
                     if !disk_room_note.is_empty()
@@ -4572,6 +4627,54 @@ mod tests {
         out: OutBuf,
         cancel: hive_bus::CancellationToken,
         done: crossbeam_channel::Receiver<String>,
+        /// The jobs whose "leased" line was written while their run had no
+        /// row yet (LeaseLineWriter).
+        rowless: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    /// The daemon's output, checked the way the hub reads it: the moment a
+    /// "leased <job>" line is written, the job's run row is looked up and a
+    /// job without one is noted in `rowless`.
+    struct LeaseLineWriter {
+        out: OutBuf,
+        s: hive_store::Store,
+        rowless: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Write for LeaseLineWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let text = String::from_utf8_lossy(buf);
+            for line in text.lines() {
+                let Some(rest) = line.strip_prefix("leased ") else {
+                    continue;
+                };
+                let job = rest.split_whitespace().next().unwrap_or_default();
+                let conn = self.s.conn().unwrap();
+                let found = crate::util::query_one(
+                    &*conn,
+                    "SELECT 1 AS x FROM runs WHERE job_id = ? LIMIT 1",
+                    &[&job],
+                )
+                .unwrap()
+                .is_some();
+                if !found {
+                    self.rowless
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(job.to_string());
+                }
+            }
+            self.out
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     impl LiveGovernor {
@@ -4596,9 +4699,15 @@ mod tests {
             }
             crate::capacity::pin_per_project(&s, 4);
             let out = OutBuf::new();
+            let rowless = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(LeaseLineWriter {
+                out: out.clone(),
+                s: (*s).clone(),
+                rowless: std::sync::Arc::clone(&rowless),
+            }));
             let opts = DaemonOpts {
                 interval: 300,
-                out: Some(out.writer()),
+                out: Some(writer),
                 worker_cmd: format!(
                     "sh -c 'i=0; while [ ! -f {gate} ] && [ $i -lt 1500 ]; do sleep 0.2; i=$((i+1)); done; echo SUMMARY: ok'",
                     gate = Self::gate_of(&s).display()
@@ -4617,6 +4726,7 @@ mod tests {
                 out,
                 cancel,
                 done,
+                rowless,
             }
         }
 
@@ -4744,6 +4854,14 @@ mod tests {
                         && t.contains(&format!("leased {fleet}"))
                 },
                 "the owner's and the fleet's runs",
+            );
+            // The lease line means the run exists: each run's row was there
+            // the moment its "leased" line was written.
+            assert_eq!(
+                *live.rowless.lock().unwrap(),
+                Vec::<String>::new(),
+                "a leased line came before its run row:\n{}",
+                live.out.string()
             );
             // Then the project's checks take turns and one lane fits the
             // commit cap: the fleet's run holds the lane the owner's next
