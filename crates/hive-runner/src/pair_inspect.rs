@@ -6,7 +6,26 @@ use std::sync::LazyLock;
 #[cfg(test)]
 use std::sync::RwLock;
 
-pub(crate) const PAIR_HANDS_MODULE: &str = "github.com/manishtiwari25/pulse";
+/// The module path a hand's build-info block names since the hive rename (TASK-115); the `hive`
+/// crate's build script writes it into the `path`, `mod` and `-X` lines.
+pub(crate) const PAIR_HANDS_MODULE: &str = "github.com/lamplitlabs/hive";
+/// Module paths hands built before the rename still carry. An installed hand keeps its binary
+/// until it is updated, so the inspection reads these exactly like the current path, the way
+/// `PAIR_LEGACY_HANDS` keeps recognising shell hands of older revisions.
+pub(crate) static PAIR_LEGACY_HANDS_MODULES: &[&str] = &["github.com/manishtiwari25/pulse"];
+
+/// Every module path a hand's build info may name: the current one first, then the legacy ones.
+pub(crate) fn pair_hands_modules() -> impl Iterator<Item = &'static str> {
+    std::iter::once(PAIR_HANDS_MODULE).chain(PAIR_LEGACY_HANDS_MODULES.iter().copied())
+}
+
+/// The grep -E alternation of `pair_hands_modules`, dots escaped.
+fn pair_hands_modules_ere() -> String {
+    pair_hands_modules()
+        .map(|m| m.replace('.', "\\."))
+        .collect::<Vec<_>>()
+        .join("|")
+}
 pub(crate) static PAIR_HANDS_VERSION_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}$").unwrap());
 pub(crate) static PAIR_HANDS_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -106,7 +125,7 @@ if [ -f "$HANDS_FILE" ]; then
   fi
   printf 'hands_sha256=%s\n' "$hands_sha256"
   printf 'hands_version=%s\n' "$(head -c 4096 "$HANDS_FILE" | LC_ALL=C sed -n 's/^# hive-hands \([A-Za-z0-9][A-Za-z0-9.+_-]*\)[[:space:]]*$/\1/p' | head -n 1)"
-  printf 'hands_buildinfo=%s\n' "$(LC_ALL=C grep -aE '^(mod[[:space:]]github.com/manishtiwari25/pulse[[:space:]]|build[[:space:]](-ldflags=|vcs\.revision=|vcs\.modified=))' "$HANDS_FILE" | head -c 8192 | base64 | tr -d '\n')"
+  printf 'hands_buildinfo=%s\n' "$(LC_ALL=C grep -aE '^(mod[[:space:]]({modules})[[:space:]]|build[[:space:]](-ldflags=|vcs\.revision=|vcs\.modified=))' "$HANDS_FILE" | head -c 8192 | base64 | tr -d '\n')"
   if [ -n "$HANDS_HASH" ] && [ "$hands_sha256" = "$HANDS_HASH" ]; then
     echo hands=present
   else
@@ -117,12 +136,13 @@ else
 fi
 "#,
         path_q = crate::util::shell_quote(&path),
-        hash_q = crate::util::shell_quote(&hash)
+        hash_q = crate::util::shell_quote(&hash),
+        modules = pair_hands_modules_ere()
     )
 }
 
 pub(crate) fn pair_hands_build_version(info: &hive_cli::BuildInfo) -> String {
-    if info.main.path != PAIR_HANDS_MODULE {
+    if !pair_hands_modules().any(|m| m == info.main.path) {
         return "unknown".into();
     }
     let mut version = hive_cli::build_version(info);
@@ -143,8 +163,10 @@ pub(crate) fn pair_hands_build_version(info: &hive_cli::BuildInfo) -> String {
                 i += 1;
                 continue;
             }
-            if let Some(v) = arg.strip_prefix(&format!("{PAIR_HANDS_MODULE}/internal/cli.version="))
-            {
+            if let Some(v) = pair_hands_modules().find_map(|m| {
+                arg.strip_prefix(m)
+                    .and_then(|rest| rest.strip_prefix("/internal/cli.version="))
+            }) {
                 version = if v.is_empty() {
                     hive_cli::build_version(info)
                 } else {
@@ -168,7 +190,7 @@ fn pair_buildinfo_from_grep_bytes(data: &[u8]) -> Option<hive_cli::BuildInfo> {
         if let Some(i) = line.iter().position(|b| *b == 0) {
             line = &line[..i];
         }
-        if line.starts_with(format!("mod\t{PAIR_HANDS_MODULE}\t").as_bytes())
+        if pair_hands_modules().any(|m| line.starts_with(format!("mod\t{m}\t").as_bytes()))
             || line.starts_with(b"build\t-ldflags=")
             || line.starts_with(b"build\tvcs.revision=")
             || line.starts_with(b"build\tvcs.modified=")
@@ -269,11 +291,16 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(text)
     }
 
-    fn build_info(module_version: &str, flags: &str, revision: &str) -> hive_cli::BuildInfo {
+    fn build_info(
+        module: &str,
+        module_version: &str,
+        flags: &str,
+        revision: &str,
+    ) -> hive_cli::BuildInfo {
         hive_cli::BuildInfo {
             path: String::new(),
             main: hive_cli::Module {
-                path: PAIR_HANDS_MODULE.to_string(),
+                path: module.to_string(),
                 version: module_version.to_string(),
                 sum: String::new(),
             },
@@ -309,66 +336,84 @@ mod tests {
     fn pair_hands_build_version() {
         let _serial = crate::test_helpers::serial();
         let revision = "abcdef01".repeat(5);
-        for (name, module_version, flags, want) in [
-            ("release", "v2.3.4", "", "v2.3.4"),
-            ("development", "(devel)", "", "dev-abcdef01abcd-dirty"),
-            (
-                "linked",
-                "(devel)",
-                "-s -w -X github.com/manishtiwari25/pulse/internal/cli.version=v2.4.0",
-                "v2.4.0",
-            ),
-            (
-                "linked-equals",
-                "(devel)",
-                "-X=github.com/manishtiwari25/pulse/internal/cli.version=v2.4.1",
-                "v2.4.1",
-            ),
-            (
-                "linked-quoted",
-                "(devel)",
-                "-X 'github.com/manishtiwari25/pulse/internal/cli.version=v2.4.2'",
-                "v2.4.2",
-            ),
-            (
-                "linked-precedence",
-                "v2.3.4",
-                "-X github.com/manishtiwari25/pulse/internal/cli.version=v2.4.3",
-                "v2.4.3",
-            ),
-            (
-                "linked-empty",
-                "v2.3.4",
-                "-X github.com/manishtiwari25/pulse/internal/cli.version=",
-                "v2.3.4",
-            ),
-            (
-                "unrelated-override",
-                "v2.3.4",
-                "-X another/package.version=v9.0.0",
-                "v2.3.4",
-            ),
-            (
-                "unsafe-version",
-                "(devel)",
-                "-X 'github.com/manishtiwari25/pulse/internal/cli.version=v2.4.3\nhands=present'",
-                "unknown",
-            ),
-        ] {
-            let info = build_info(module_version, flags, &revision);
-            assert_eq!(super::pair_hands_build_version(&info), want, "{name}");
-            let text = format!(
-                "mod\t{PAIR_HANDS_MODULE}\t{module_version}\t\nbuild\t-ldflags=\"{flags}\"\nbuild\tvcs.revision={revision}\nbuild\tvcs.modified=true\n"
-            );
-            assert_eq!(
-                super::pair_installed_hands_version(BTreeMap::from([(
-                    "hands_buildinfo".into(),
-                    base64_std(&text)
-                )])),
-                want,
-                "{name} installed"
-            );
+        // A hand built after the rename and one built before it both report their version.
+        for module in [PAIR_HANDS_MODULE, "github.com/manishtiwari25/pulse"] {
+            for (name, module_version, flags, want) in [
+                ("release", "v2.3.4", "", "v2.3.4"),
+                ("development", "(devel)", "", "dev-abcdef01abcd-dirty"),
+                (
+                    "linked",
+                    "(devel)",
+                    "-s -w -X {MODULE}/internal/cli.version=v2.4.0",
+                    "v2.4.0",
+                ),
+                (
+                    "linked-equals",
+                    "(devel)",
+                    "-X={MODULE}/internal/cli.version=v2.4.1",
+                    "v2.4.1",
+                ),
+                (
+                    "linked-quoted",
+                    "(devel)",
+                    "-X '{MODULE}/internal/cli.version=v2.4.2'",
+                    "v2.4.2",
+                ),
+                (
+                    "linked-precedence",
+                    "v2.3.4",
+                    "-X {MODULE}/internal/cli.version=v2.4.3",
+                    "v2.4.3",
+                ),
+                (
+                    "linked-empty",
+                    "v2.3.4",
+                    "-X {MODULE}/internal/cli.version=",
+                    "v2.3.4",
+                ),
+                (
+                    "unrelated-override",
+                    "v2.3.4",
+                    "-X another/package.version=v9.0.0",
+                    "v2.3.4",
+                ),
+                (
+                    "unsafe-version",
+                    "(devel)",
+                    "-X '{MODULE}/internal/cli.version=v2.4.3\nhands=present'",
+                    "unknown",
+                ),
+            ] {
+                let flags = flags.replace("{MODULE}", module);
+                let info = build_info(module, module_version, &flags, &revision);
+                assert_eq!(
+                    super::pair_hands_build_version(&info),
+                    want,
+                    "{module} {name}"
+                );
+                let text = format!(
+                    "mod\t{module}\t{module_version}\t\nbuild\t-ldflags=\"{flags}\"\nbuild\tvcs.revision={revision}\nbuild\tvcs.modified=true\n"
+                );
+                assert_eq!(
+                    super::pair_installed_hands_version(BTreeMap::from([(
+                        "hands_buildinfo".into(),
+                        base64_std(&text)
+                    )])),
+                    want,
+                    "{module} {name} installed"
+                );
+            }
         }
+        assert_eq!(
+            super::pair_hands_build_version(&build_info(
+                "github.com/someone/else",
+                "v2.3.4",
+                "",
+                &revision
+            )),
+            "unknown",
+            "a module that is neither the current nor a legacy hive path"
+        );
         for encoded in [
             "not base64".to_string(),
             base64_std("mod\tnot-hive\tv9.0.0\n"),
@@ -419,6 +464,12 @@ mod tests {
             "mod\t{PAIR_HANDS_MODULE}\t(devel)\t\nbuild\t-ldflags=\"-X {PAIR_HANDS_MODULE}/internal/cli.version=v3.2.1\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
             "ab".repeat(20)
         );
+        // A hand built before the hive rename names the old module path; it still reports.
+        let legacy_build_info = format!(
+            "mod\t{legacy}\t(devel)\t\nbuild\t-ldflags=\"-X {legacy}/internal/cli.version=v3.1.0\"\nbuild\tvcs.revision={}\nbuild\tvcs.modified=false\n",
+            "cd".repeat(20),
+            legacy = "github.com/manishtiwari25/pulse"
+        );
         for tc in [
             (
                 "script",
@@ -464,6 +515,16 @@ mod tests {
                 "go-build-info",
                 &format!("\u{7f}ELF\u{0}\n{build_info}\u{0}"),
                 "v3.2.1",
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                "go-build-info-legacy-module",
+                &format!("\u{7f}ELF\u{0}\n{legacy_build_info}\u{0}"),
+                "v3.1.0",
                 false,
                 false,
                 false,
