@@ -11,6 +11,14 @@ test("the site names hivefleet.dev and nothing of GitHub", () => {
   for (const v of Object.values(site.SITE)) assert.doesNotMatch(v, /github/i);
 });
 
+test("the headline speaks of the team, not of one machine (web-first, ADR-070)", () => {
+  assert.match(site.SITE.tagline, /team/i);
+  assert.match(site.SITE.description, /team/i);
+  for (const v of [site.SITE.tagline, site.SITE.description]) {
+    assert.doesNotMatch(v, /your own machine|one binary|one SQLite store|control plane/i);
+  }
+});
+
 test("without a Clerk key the sign-in is not ready", () => {
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
     assert.equal(site.SIGN_IN_READY, false);
