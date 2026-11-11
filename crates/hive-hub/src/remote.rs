@@ -478,6 +478,120 @@ mod tests {
         assert_eq!(body["error"], "Nonce refused");
     }
 
+    /// web/hub/src/lib/passkey-wire.json: one signed write the console's
+    /// passkey-state.ts made (its npm test checks the same file). The brain
+    /// must compute the same challenge and accept the write as sent.
+    fn wire_fixture() -> Value {
+        let path = hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/hub/src/lib/passkey-wire.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        serde_json::from_str(&text).expect("passkey-wire.json is JSON")
+    }
+
+    #[test]
+    fn the_consoles_signed_write_fixture_is_accepted_by_the_brain() {
+        let _serial = crate::test_helpers::serial();
+        let f = wire_fixture();
+        let str_of = |v: &Value| v.as_str().unwrap().to_string();
+        let (nonce, method, path, body) = (
+            str_of(&f["write"]["nonce"]),
+            str_of(&f["write"]["method"]),
+            str_of(&f["write"]["path"]),
+            str_of(&f["write"]["body"]),
+        );
+        assert_eq!(f["nonce_route"], "GET /api/v1/nonce");
+        assert_eq!(f["origin"], FRONT);
+
+        // The challenge: the same bytes, the same hash.
+        let challenge = webauthn::write_challenge(&nonce, &method, &path, body.as_bytes());
+        assert_eq!(b64url(&challenge), f["challenge"], "the challenge differs");
+        let mut bytes =
+            format!("{}\n{nonce}\n{method} {path}\n", webauthn::CHALLENGE_DOMAIN).into_bytes();
+        bytes.extend_from_slice(body.as_bytes());
+        assert_eq!(b64url(&bytes), f["signed_bytes"], "the signed bytes differ");
+
+        // The registration: the members route takes the console's body as is.
+        let s = additions_store(false);
+        s.set_setting("human", "hub.allow_remote", FRONT).unwrap();
+        let member = f["member"]["body"].to_string();
+        let confirm: Vec<(&str, &str)> = f["member"]["headers"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str().unwrap()))
+            .collect();
+        assert_eq!(confirm, [(MEMBERS_HEADER, "yes")]);
+        let (status, reply, _) = crate::test_helpers_http::request(
+            handler(&s),
+            "POST",
+            "/api/v1/members",
+            &member,
+            &confirm,
+        );
+        assert_eq!(status, 200, "{reply:?}");
+        let credential = str_of(&f["member"]["body"]["credential_id"]);
+        assert_eq!(s.member(&credential).unwrap().unwrap().role, "owner");
+
+        // The write through the front, with the five headers as the console
+        // sent them, over a nonce this brain issued.
+        assert!(
+            s.nonce_issue(&nonce, webauthn::NONCE_SECONDS)
+                .unwrap()
+                .is_some()
+        );
+        let headers = f["headers"].as_object().unwrap();
+        let mut names: Vec<&str> = headers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        let mut want = [
+            webauthn::NONCE_HEADER,
+            webauthn::CREDENTIAL_HEADER,
+            webauthn::AUTHENTICATOR_HEADER,
+            webauthn::CLIENT_DATA_HEADER,
+            webauthn::SIGNATURE_HEADER,
+        ];
+        want.sort_unstable();
+        assert_eq!(names, want, "the header names differ");
+        let h = Arc::new(handler(&s));
+        let hf: HandlerFn = Arc::new(move |w, r| h.serve_http(w, r));
+        let srv = crate::test_helpers::TestServer::start_on(hf, true);
+        let send = || {
+            let mut req = crate::test_helpers::client()
+                .request(
+                    reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("{}{path}", srv.url),
+                )
+                .header("Origin", FRONT)
+                .body(body.clone());
+            for (k, v) in f["write"]["headers"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .chain(headers)
+            {
+                req = req.header(k.as_str(), v.as_str().unwrap());
+            }
+            let resp = req.send().unwrap();
+            (
+                resp.status().as_u16(),
+                resp.json::<Value>().unwrap_or(Value::Null),
+            )
+        };
+        let (status, reply) = send();
+        assert_eq!(
+            status, 200,
+            "the brain refused the console's write: {reply}"
+        );
+        assert_eq!(s.settings().unwrap()["daemon.pass_seconds"], "90");
+        assert_eq!(
+            s.member(&credential).unwrap().unwrap().sign_count,
+            f["sign_count"].as_i64().unwrap()
+        );
+        // Sent again, it is a replay.
+        let (status, reply) = send();
+        assert_eq!(status, 403, "{reply}");
+    }
+
     #[test]
     fn a_replayed_assertion_is_refused() {
         let _serial = crate::test_helpers::serial();
