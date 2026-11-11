@@ -2217,7 +2217,7 @@ mod tests {
         // Bad shapes are refused before anything is stored.
         for body in [
             json!({"text": "x", "images": "one.png"}),
-            json!({"text": "x", "images": [{"mime": "image/gif", "data": b64}]}),
+            json!({"text": "x", "images": [{"mime": "image/bmp", "data": b64}]}),
             json!({"text": "x", "images": [{"mime": "image/png", "data": "nope!!!"}]}),
             json!({"text": "x", "images": [{"mime": "image/png", "data": STANDARD.encode(vec![0u8; hive_harness::conversation::IMAGE_LIMIT + 1])}]}),
         ] {
