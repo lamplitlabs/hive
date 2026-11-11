@@ -70,7 +70,8 @@ fn usage() -> &'static str {
      and dials in. HIVE_BRAIN is the brain's URL when --brain is not given.\n\
      \n\
      verbs: probe, prepare, key, hook, brief, run, result, count, dirty,\n\
-     changed, bundle, drop-result, verify, tool, clean, steps, git-upload-pack\n\
+     changed, bundle, drop-result, verify, tool, clean, heartbeat, steps,\n\
+     git-upload-pack\n\
      \n\
      HIVE_HANDS_WORKDIR names the directory jobs run under (default /srv/hive).\n"
 }
