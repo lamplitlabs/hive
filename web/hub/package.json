@@ -55,7 +55,7 @@
   },
   "overrides": {
     "body-parser": "2.4.0",
-    "hono": "4.13.13",
+    "hono": "4.13.17",
     "zod": "4.6.6",
     "minimatch": "11.0.3"
   }
