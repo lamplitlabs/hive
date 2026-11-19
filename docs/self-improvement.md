@@ -429,7 +429,31 @@ and falls back to `PULSE_MEASURE_CHANGED`. The measurement exports each
 `HIVE_MEASURE_*` variable under its `PULSE_MEASURE_*` name too, and runs a
 scorer stored as `pulse evolve ...` through its own executable, like one
 stored as `hive evolve ...`, so fixtures added before the rename keep their
-scope.
+scope. The rename still breaks a scorer that opens a path by its old name:
+`behaviour-settings-documented` read `crates/pulse-store/src/settings.rs`,
+printed no number on every tree after `crates/hive-store` replaced it, and
+scored `0` on base and variant alike. It was disabled in sitting 26. Check a
+fixture's paths against the tree with `sh -c "$SCORER"` from a checkout. A
+scorer that always prints the same number makes no sound.
+
+A count gains reach when it reads the project's own check output rather than
+the source text. `behaviour-hub-pinned-tests-pass` (sitting 26, weight 2) runs
+the hub's `node --test` on the test files that pin the changed hub modules
+(`src/**/X.ts`, `X.tsx` or `X.mjs` maps to `X.test.mjs`, `mock/X.mjs` to
+`mock/X.test.mjs`, and a changed `X.test.mjs` counts as itself). It prints the
+`# pass N` count plus one, higher is better. With no scope it runs the whole
+hub suite (679 at `91a70dff`). The offset holds every per-card base at `0.5`,
+even when the card touches no hub module, so no two cards on one commit score
+its base two ways. A card that adds the first test file for a hub module
+counts 1 on the base and N+1 on the variant, so the fixture scores `1.0`. A
+card that adds tests to an existing file scores above `0.5`, and one that
+breaks a pinned test scores below it. Only passing tests count, so the check
+must stay green for the card to gain. Like `behaviour-hub-console-tests` it
+runs node's own runner from `web/hub` without `node_modules`. A test that
+needs a package fails there and does not count on either tree. Its first form,
+without the offset (`behaviour-hub-changed-tests-pass`), was disabled before
+it ran a cycle.
+
 Such a fixture answers `scope: diff` after its score line, the log marks it
 `[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
