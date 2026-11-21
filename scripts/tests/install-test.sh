@@ -47,7 +47,10 @@ esac
 stride=${HIVE_TEST_CUT_STRIDE:-97}
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/hive-install-test.XXXXXX") || exit 2
-work=$(CDPATH='' cd -- "$work" && pwd) || exit 2
+# The path with its symlinks resolved: the installer runs with a clean
+# environment (no PWD), so its shell names the working directory that way,
+# and macOS's own temporary directory is behind a symlink (/var).
+work=$(CDPATH='' cd -- "$work" && pwd -P) || exit 2
 server_pid=""
 
 clean_up() {
