@@ -47,8 +47,8 @@ export default function MachinesPage() {
           code={[
             "hive settings set machine.labels gpu,android   # what this machine offers, beyond what Hive finds",
             "hive executor label gpu-box +cuda              # add a word on a paired machine",
+            "hive executor label gpu-box -cuda              # remove a word",
             "hive executor label gpu-box +cuda,-gpu         # add one word and remove another",
-            "hive executor label gpu-box -- -gpu            # remove only: the two dashes come first",
             "hive executor list                             # every machine, its slots and what it offers",
           ].join("\n")}
         />

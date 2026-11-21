@@ -457,18 +457,9 @@ run_installer
 want_status 0
 want_out "$t_home/.hive/bin is not on your PATH"
 want_out "  export PATH=\"\$HOME/.hive/bin:\$PATH\""
-want_out "  hive init --store-only"
 want_out "  hive hub"
-want_out "http://127.0.0.1:8765"
-finish
-
-begin "with a store already there, the next step is the console alone"
-mkdir -p "$t_home/.hive"
-: > "$t_home/.hive/hive.sqlite"
-run_installer
-want_status 0
 want_no_out "hive init"
-want_out "  hive hub"
+want_out "http://127.0.0.1:8765"
 finish
 
 begin "it says so when the directory is on the PATH, and prints no line to add"
@@ -949,6 +940,93 @@ EOF
     fi
   elif grep -q -- --no-hsts "$work/wget-calls"; then
     wrong "the installer gave --no-hsts to a wget that has no such option"
+  fi
+  finish
+fi
+
+# A stand-in for BusyBox's wget, which does not check a server's certificate.
+# Its --help opens the way BusyBox's does, it notes every call in $bb_calls,
+# and it downloads (wget -q -O FILE URL) with the curl or the wget this
+# machine has. A shell that brings its own wget, BusyBox's shell, runs that
+# one whatever the PATH holds: the two cases below then meet the real thing.
+bb_calls="$work/busybox-wget-calls"
+bb_real=""
+bare_bin "$work/bin-busybox"
+add_tool "$work/bin-busybox" sha256sum || add_tool "$work/bin-busybox" shasum
+if bb_at=$(command -v curl 2> /dev/null); then
+  case "$bb_at" in
+    /*)
+      bb_real=curl
+      bb_run="exec \"$bb_at\" -fsS -o \"\$3\" \"\$4\""
+      ;;
+  esac
+fi
+if [ -z "$bb_real" ] && bb_at=$(command -v wget 2> /dev/null); then
+  case "$bb_at" in
+    /*)
+      bb_real=wget
+      bb_run="exec \"$bb_at\" \"\$@\""
+      ;;
+  esac
+fi
+if [ -n "$bb_real" ]; then
+  cat > "$work/bin-busybox/wget" << EOF
+#!/bin/sh
+echo "\$*" >> "$bb_calls"
+if [ "\$1" = --help ]; then
+  echo "BusyBox v1.36.1 (2024-06-10 07:11:47 UTC) multi-call binary." >&2
+  echo >&2
+  echo "Usage: wget [-cqS] [--spider] [-O FILE] [-o LOGFILE] [--header STR] URL..." >&2
+  exit 0
+fi
+$bb_run
+EOF
+  chmod 755 "$work/bin-busybox/wget"
+fi
+
+begin "with only BusyBox's wget it stops before an https download and installs nothing"
+if shell_brings curl; then
+  skip "the shell under test brings its own curl, which a PATH cannot hide"
+elif [ -z "$bb_real" ] && ! shell_brings wget; then
+  skip "no curl and no wget here to put behind the stand-in"
+else
+  rm -f "$bb_calls"
+  t_path="$work/bin-busybox"
+  t_base=https://releases.invalid/x
+  run_installer
+  want_status 1
+  want_err "install.sh: this machine has only BusyBox's wget, which does not check a server's certificate,"
+  want_err "so the download could not be trusted. Install curl or GNU wget and run this again."
+  want_err "Nothing was installed."
+  want_empty "$t_home"
+  # It may ask the wget what it is, and nothing more.
+  if [ -f "$bb_calls" ] && grep -qvx -e '--help' "$bb_calls"; then
+    wrong "the installer asked BusyBox's wget to download: $(grep -vx -e '--help' "$bb_calls" | tr '\n' ' ')"
+  fi
+  finish
+fi
+
+begin "with BusyBox's wget and a base that is not https it installs as before"
+if shell_brings curl; then
+  skip "the shell under test brings its own curl, which a PATH cannot hide"
+elif [ -z "$bb_real" ] && ! shell_brings wget; then
+  skip "no curl and no wget here to put behind the stand-in"
+elif { shell_brings wget || [ "$bb_real" = wget ]; } && ! start_server; then
+  skip "no python3 here to serve the release over http, or no free port"
+else
+  rm -f "$bb_calls"
+  t_path="$work/bin-busybox"
+  # A wget reads http and no file:// address. The stand-in with curl behind
+  # it reads whatever the other cases read.
+  if shell_brings wget || [ "$bb_real" = wget ]; then
+    t_base=$http_base
+  fi
+  run_installer
+  want_status 0
+  want_runs "$t_home/.hive/bin/hive" "hive v9.9.9 $mac"
+  want_no_err "BusyBox"
+  if ! shell_brings wget && ! grep -q -- "-q -O " "$bb_calls" 2> /dev/null; then
+    wrong "the installer did not download with the wget on its PATH"
   fi
   finish
 fi

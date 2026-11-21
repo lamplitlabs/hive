@@ -32,7 +32,6 @@ test("the install lines are the contract's, character for character", () => {
     [
       'export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile',
       "hive version",
-      "hive init --store-only                 # once: makes the store, ~/.hive/hive.sqlite",
       "hive hub                               # the console, at http://127.0.0.1:8765",
     ].join("\n"),
   );

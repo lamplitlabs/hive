@@ -10,6 +10,8 @@
 //   here by page and address; src/lib/docs.test.mjs names the Markdown file);
 //   every link has text, and every link that leaves the site carries
 //   rel="noopener noreferrer";
+// - every file a stylesheet names (the fonts) is in the export, and a page
+//   preloads only a font the stylesheets use;
 // - every page has one <title> (at most 60 characters), one description (70
 //   to 160), its own canonical address, one h1, the link preview tags and
 //   JSON-LD that parses; no two pages share a title or a description;
@@ -71,7 +73,7 @@ const attr = (node, name) => {
 
 function read(file) {
   const tree = parser.parse(fs.readFileSync(file, "utf8"));
-  const page = { file, path: pagePath(file), ids: new Map(), links: [], assets: [], titles: [], h1: [], meta: [], jsonld: [], imgs: [], lang: undefined, canonical: [], text: "" };
+  const page = { file, path: pagePath(file), ids: new Map(), links: [], assets: [], titles: [], h1: [], meta: [], jsonld: [], imgs: [], lang: undefined, canonical: [], text: "", styles: [], fontPreloads: [] };
   visit(tree, "element", (node) => {
     const id = attr(node, "id");
     if (id) page.ids.set(id, (page.ids.get(id) ?? 0) + 1);
@@ -110,8 +112,12 @@ function read(file) {
         const href = attr(node, "href");
         if (relValue.includes("canonical")) page.canonical.push(href);
         else if (href) page.assets.push(href);
+        if (href && relValue.includes("preload") && attr(node, "as") === "font") page.fontPreloads.push(href);
         break;
       }
+      case "style":
+        page.styles.push(toString(node));
+        break;
       case "meta":
         page.meta.push({ name: attr(node, "name") ?? attr(node, "property"), content: attr(node, "content") ?? "" });
         break;
@@ -198,6 +204,55 @@ for (const page of all) {
     }
   }
   for (const src of page.assets) resolve(page, src, "asset");
+}
+
+// ---- what the stylesheets load ----------------------------------------------
+
+// A font the CSS names and the export lacks is an error nowhere else: the page
+// would be set in another typeface. A page should preload only a font it will
+// use: one whose face holds plain Latin letters, not the face kept for other
+// scripts.
+const cssUrls = new Set();
+const latinFonts = new Set();
+const urlsIn = (css) => [...css.matchAll(/url\(\s*(["']?)([^"')]+)\1\s*\)/g)].map((m) => m[2]).filter((ref) => !/^(data:|#)/i.test(ref));
+/** Whether a unicode-range (U+61, U+0-FF, U+4??) holds the code point. */
+function rangeHolds(range, point) {
+  return range.split(",").some((part) => {
+    const [from, to = from] = part.trim().replace(/^u\+/i, "").split("-");
+    return parseInt(from.replace(/\?/g, "0"), 16) <= point && point <= parseInt(to.replace(/\?/g, "F"), 16);
+  });
+}
+function readCss(css, where, base) {
+  const missing = new Set();
+  const local = (ref) => {
+    const url = new URL(ref, base);
+    if (url.origin !== SITE) {
+      fail(where, `a stylesheet loads ${ref} from another site`);
+      return null;
+    }
+    const pathname = decodeURIComponent(url.pathname);
+    cssUrls.add(pathname);
+    if (!isFile(path.join(OUT, pathname))) missing.add(ref);
+    return pathname;
+  };
+  for (const ref of urlsIn(css)) local(ref);
+  for (const [, face] of css.matchAll(/@font-face\s*{([^}]*)}/g)) {
+    const range = /unicode-range\s*:\s*([^;]+)/i.exec(face)?.[1];
+    if (range && !rangeHolds(range, 0x61)) continue;
+    for (const ref of urlsIn(face)) {
+      const pathname = local(ref);
+      if (pathname) latinFonts.add(pathname);
+    }
+  }
+  for (const ref of missing) fail(where, `a stylesheet names ${ref}, which is not in the export`);
+}
+for (const file of files.filter((f) => f.endsWith(".css"))) readCss(fs.readFileSync(file, "utf8"), `/${rel(file)}`, `${SITE}/${rel(file)}`);
+for (const page of all) for (const css of page.styles) readCss(css, page.path ?? `/${rel(page.file)}`, `${SITE}${page.path ?? "/"}`);
+for (const page of all) {
+  for (const href of page.fontPreloads) {
+    const pathname = decodeURIComponent(new URL(href, `${SITE}${page.path ?? "/"}`).pathname);
+    if (!latinFonts.has(pathname)) fail(page.path ?? `/${rel(page.file)}`, `preloads the font ${href}, which no stylesheet uses for Latin text`);
+  }
 }
 
 // ---- each page, as a search engine reads it ---------------------------------
@@ -339,5 +394,5 @@ if (errors.length) {
   process.exit(1);
 }
 console.log(
-  `check-out: ${pages.length} pages, ${linkCount} internal links and assets, ${anchorCount} anchors: every one resolves (${externalCount} external links were not followed). Titles, descriptions, canonical addresses, JSON-LD, sitemap, robots, llms.txt and the manifest are in order.`,
+  `check-out: ${pages.length} pages, ${linkCount} internal links and assets, ${anchorCount} anchors, ${cssUrls.size} files the stylesheets name: every one resolves (${externalCount} external links were not followed). Titles, descriptions, canonical addresses, JSON-LD, sitemap, robots, llms.txt and the manifest are in order.`,
 );

@@ -1062,7 +1062,7 @@ rules change nothing in a job, which asks nobody.
 ```bash
 hive harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); for anthropic, Anthropic's own CLI opens the browser and there is no code; --with-token reads a key or token on stdin; --provider <name> picks the provider
 hive harness status                    # harness, provider, who is signed in, the models and limits in force
-hive harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
+hive harness models                    # the models the provider you chose (the `provider` setting) offers this login (id, vendor, tools, premium, context); --provider NAME lists another provider's
 hive harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events (- for stdout, which implies --json), --max-cost 2 --keep-observations 3 override the budgets (--max-steps none lifts the call cap), --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages, again each time it fills back up (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
 hive harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, #123 attaches a GitHub issue or pull request through gh, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /review /pr /export /env /init /delegate /new /sessions /help inside
 hive harness sessions --project my-app # recent sessions; hive harness show ID prints one transcript
@@ -1150,9 +1150,10 @@ the file the provider borrows the key from its environment variable, so
 `OPENAI_API_KEY` and the like work for one-off runs. Each provider calls the
 endpoint in `provider.<name>.base_url` (Settings → **Model provider**); while
 that keeps its default, its `*_BASE_URL` variable stands in when set. `hive
-harness models --provider <name>` lists what the endpoint serves. None of
-them reports a cost, so `harness.max_cost` does not apply to them - the step
-and time budgets do.
+harness models` lists what the endpoint of the provider you chose serves,
+and `--provider <name>` lists another provider's without changing the
+setting. None of them reports a cost, so `harness.max_cost` does not apply
+to them - the step and time budgets do.
 
 To point a provider at a proxy, a gateway or a local server, set its key
 (`hive settings set provider.<name>.base_url <url>`), or leave the setting

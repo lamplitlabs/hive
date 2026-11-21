@@ -29,8 +29,9 @@ machine.labels gpu,android`). A paired hand reports its OS and chip and what
 it found on every probe (`hive executor probe NAME`; hands paired before
 this count as Linux until their next probe, the only platform `hive pair`
 takes), and you label it with `hive executor label NAME gpu,android`
-(replaces your words, keeps the found ones) or `hive executor label NAME
-+cuda,-gpu` (adds and removes); `hive executor add NAME --labels a,b`
+(replaces your words, keeps the found ones), `hive executor label NAME
++cuda,-gpu` (adds and removes) or `hive executor label NAME -gpu` (removes
+one); `hive executor add NAME --labels a,b`
 labels it from the start, and so does the console's **Add machine** dialog
 (its *Labels* field). `hive executor list` shows every machine's
 `offers …` line, and the hub's Machines page the same.
@@ -105,7 +106,7 @@ hive settings set machine.reserve on                  # this machine takes only 
 hive settings set executor.transport local-hand      # this machine's jobs go to its hive-hand, which pushes their branch
 hive executor add gpu-box --ssh hive@gpu-box --workdir /srv/hive --labels gpu
 hive executor label gpu-box +cuda                     # add a word; a plain list replaces yours
-hive executor label gpu-box -- -cuda                  # remove a word; without the -- a leading -cuda is read as a flag
+hive executor label gpu-box -cuda                     # remove a word
 hive executor reserve gpu-box                         # keep it for the jobs that need it; --off to release
 hive executor list                                    # every machine, its slots and an `offers …` line
 hive init ~/code/ios-app --needs macos,xcode          # every job of the project needs a Mac with Xcode
@@ -492,6 +493,14 @@ machine: an SSH tunnel, or a proxy with TLS there. A private network alone
 does not reach a port bound to 127.0.0.1. What you put there reaches the
 whole console, not only the hand's routes
 ([security.md](security.md#the-machines-you-pair)).
+
+The console answers only to the host names `localhost`, an IP address or a
+name listed in the setting `hub.hosts` (empty by default), and any other
+`Host` header gets 403: a guard against DNS rebinding, not a login. The
+routes a hand calls are exempt, so
+`hive-hand join --brain https://hive.example.com` through a proxy works as
+it is, while opening the console in a browser under that name needs the
+name in `hub.hosts`.
 
 An SSH tunnel is the short way. On the machine that joins, forward a port
 of its own to the console and name that port. Keep the tunnel up for as

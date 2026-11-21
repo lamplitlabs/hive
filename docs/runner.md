@@ -339,7 +339,9 @@ itself downloads and installs nothing; `hive update` installs the release,
 checksum-verified, on a machine whose `update.channel` is `release`, and
 `update.channel release` also stops the source builds above
 ([Releases and `hive update`](release.md)). The setting is empty by
-default: no check and no network request (crates/hive-cli/src/update.rs,
+default: no check and no network request by the daemon. `hive update` and
+`hive update --check`, run by hand, then look at Hive's own releases for
+that one run (crates/hive-cli/src/update.rs,
 crates/hive-runner/src/update_check.rs).
 
 The owner need not wait for the drain. **Restart** (under **Settings →

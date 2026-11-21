@@ -185,8 +185,6 @@ export default function Home() {
               title="a first session"
               lines={[
                 { cmd: INSTALL.script },
-                { cmd: "hive init --store-only" },
-                { note: "once: makes the store, ~/.hive/hive.sqlite" },
                 { cmd: "hive hub" },
                 { note: "the console, at http://127.0.0.1:8765" },
                 { cmd: "hive harness login" },

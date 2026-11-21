@@ -58,7 +58,7 @@ one agent) is offered web search and sends the search words to DuckDuckGo.
 Jobs do not search unless you set `harness.web_search` to `on`, and `off`
 turns it off everywhere.
 
-Off until you turn them on: backups (`backup.to`), the check for new
+Off until you turn them on: backups (`backup.to`), the daily check for new
 releases (`update.latest_url`), fetching web pages (`harness.fetch_allow`),
 rented machines, and store hooks with a URL
 (`hive hook add EVENT --url URL`).
@@ -222,15 +222,22 @@ shows the tokens each run used, and its cost when the provider reports one.
 
 `hive update` installs the newest release: it downloads the archive for
 your machine, checks it against the release's `SHA256SUMS`, tries the new
-binary and keeps the old one as `hive.prev`. It reads the release from the
-address in `update.latest_url`, which is empty on a fresh install. Until
-you set it, `hive update` prints that it does not know where its releases
-are and ends with status 1. Set it once:
+binary and keeps the old one as `hive.prev`.
+
+```bash
+hive update --check     # is there a newer release?
+hive update             # install it
+```
+
+Run by hand, both work on a fresh install: while the setting
+`update.latest_url` is empty they look at the project's own releases on
+GitHub for that one run, and say so. Hive hears of a new release without
+being asked only once that setting names where releases are. The daily
+check, the console's **Update now** button and `daemon.self_update release`
+all wait for it. Set it once:
 
 ```bash
 hive settings set update.latest_url https://api.github.com/repos/lamplitlabs/hive/releases/latest
-hive update --check     # is there a newer release?
-hive update             # install it
 ```
 
 The services notice the new binary and restart on it by themselves: the
@@ -284,13 +291,13 @@ cannot do yet.
 ## Where is my data, and how do I remove it?
 
 In the hive home, `~/.hive` by default. The store is one SQLite file there,
-`hive.sqlite`. Once a month rows older than `daemon.archive_days` (90) that
-nothing reads back move to `hive-archive.sqlite` beside it. The logs, the
-model logins and the work directories are in the same folder. `backup.to`
-names where a daily copy of the store goes. `hive remove project <slug>`
-deactivates a project, and `--forget` deletes the rows of one that is
-already inactive and whose checkout is gone. See
-[Removing your data](security.md#removing-your-data).
+`hive.sqlite`; the first `hive hub` on a machine makes it. Once a month
+rows older than `daemon.archive_days` (90) that nothing reads back move to
+`hive-archive.sqlite` beside it. The logs, the model logins and the work
+directories are in the same folder. `backup.to` names where a daily copy
+of the store goes. `hive remove project <slug>` deactivates a project, and
+`--forget` deletes the rows of one that is already inactive and whose
+checkout is gone. See [Removing your data](security.md#removing-your-data).
 
 ## Something is stuck. Where do I look?
 

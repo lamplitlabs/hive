@@ -565,17 +565,9 @@ report() {
   info ""
 
   if [ "$program" = hive ]; then
-    # hive hub needs a store and does not make one; hive init does.
-    if [ -f "${HIVE_HOME:-${HOME:-}/.hive}/hive.sqlite" ]; then
-      info "$next start the console:"
-      info ""
-      info "  hive hub"
-    else
-      info "$next make the store, once, and start the console:"
-      info ""
-      info "  hive init --store-only"
-      info "  hive hub"
-    fi
+    info "$next start the console:"
+    info ""
+    info "  hive hub"
     info ""
     info "and open http://127.0.0.1:8765 in your browser."
   else
@@ -652,14 +644,33 @@ main() {
     check_linux
   fi
 
+  base=${HIVE_RELEASE_BASE:-$REPO/releases}
+  base=${base%/}
+
   if has curl; then
     fetcher=curl
   elif has wget; then
     fetcher=wget
+    wget_help=$(wget --help 2>&1 || true)
     wget_no_hsts=""
-    case "$(wget --help 2>&1 || true)" in
+    case "$wget_help" in
       *--no-hsts*)
         wget_no_hsts=--no-hsts
+        ;;
+    esac
+    # BusyBox's wget does not check a server's certificate. The archive and
+    # its checksums would come over that one connection, so a match between
+    # them would prove nothing, and the program is run once it is unpacked.
+    case "$wget_help" in
+      *BusyBox*)
+        case "$base" in
+          [Hh][Tt][Tt][Pp][Ss]://*)
+            warn "install.sh: this machine has only BusyBox's wget, which does not check a server's certificate,"
+            warn "so the download could not be trusted. Install curl or GNU wget and run this again."
+            warn "Nothing was installed."
+            exit 1
+            ;;
+        esac
         ;;
     esac
   else
@@ -686,9 +697,6 @@ main() {
       dir="$HOME/.hive-hand/bin"
     fi
   fi
-
-  base=${HIVE_RELEASE_BASE:-$REPO/releases}
-  base=${base%/}
 
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/hive-install.XXXXXX") || {
     tmp=""

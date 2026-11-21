@@ -220,10 +220,27 @@ test("GitHub's flavour: tables scroll in their own box, task lists, strikethroug
   assert.equal(wrap.properties.tabIndex, 0);
   assert.equal(wrap.properties.role, undefined);
   assert.equal(wrap.children[0].tagName, "table");
-  assert.equal(elements(r.html, "input").length, 2);
+  const boxes = elements(r.html, "input");
+  // A screen reader says "Done, checkbox, checked" or "not checked", not a bare checkbox.
+  assert.deepEqual(boxes.map((b) => [b.properties.ariaLabel, Boolean(b.properties.checked)]), [["Done", true], ["Done", false]]);
   assert.equal(elements(r.html, "del").length, 1);
   assert.equal(elements(r.html, "a")[0].properties.href, "http://www.example.com");
   assert.equal(elements(r.html, "pre").length, 0);
+});
+
+test("a table with an empty first heading names its rows in its first column; any other table is left alone", () => {
+  const cells = (html) => elements(html, "tr").map((row) => row.children.filter((c) => c.type === "element").map((c) => `${c.tagName}${c.properties.scope ? `[${c.properties.scope}]` : ""}`));
+  const matrix = render("# T\n\n| | `require` | `off` |\n| --- | --- | --- |\n| The brief | asks | does not ask |\n| A pull request | waits | merges |\n");
+  assert.deepEqual(cells(matrix.html), [
+    ["td", "th", "th"],
+    ["th[row]", "td", "td"],
+    ["th[row]", "td", "td"],
+  ]);
+  const plain = render("# T\n\n| Setting | Default |\n| --- | --- |\n| `a.b` | `1` |\n");
+  assert.deepEqual(cells(plain.html), [
+    ["th", "th"],
+    ["td", "td"],
+  ]);
 });
 
 test("raw HTML in a doc is shown as the text it is: a placeholder is never dropped and never run", () => {

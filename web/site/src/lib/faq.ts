@@ -26,7 +26,7 @@ export const FAQS: readonly FaqEntry[] = [
   },
   {
     q: "What leaves my machine?",
-    a: "Hive has no server of its own. In ordinary use the machine talks to the model provider you chose, to your git host for fetches, pushes and pull requests (through `gh`), and to package registries for the release dates of dependencies. A job's own commands reach whatever they reach: an agent's shell commands and the project's build and check run with the network open. A session with an agent is offered web search and sends the search words to DuckDuckGo; jobs do not search unless you set `harness.web_search` to `on`, and `off` turns it off everywhere. Backups, the check for new releases, fetching web pages, rented machines and store hooks with a URL stay off until you turn them on. The store is one SQLite file under `~/.hive`, and the console listens on `127.0.0.1` only.",
+    a: "Hive has no server of its own. In ordinary use the machine talks to the model provider you chose, to your git host for fetches, pushes and pull requests (through `gh`), and to package registries for the release dates of dependencies. A job's own commands reach whatever they reach: an agent's shell commands and the project's build and check run with the network open. A session with an agent is offered web search and sends the search words to DuckDuckGo; jobs do not search unless you set `harness.web_search` to `on`, and `off` turns it off everywhere. Backups, the daily check for new releases, fetching web pages, rented machines and store hooks with a URL stay off until you turn them on. The store is one SQLite file under `~/.hive`, and the console listens on `127.0.0.1` only.",
     more: { label: "Security notes", href: "/docs/security/" },
   },
   {
