@@ -11,8 +11,10 @@
 #
 # Build from the repository root:
 #   docker build -f deploy/Dockerfile --build-arg HIVE_VERSION=v0.2.0 -t hive-brain .
-# Run one brain (deploy/compose.yaml does this with a named volume):
-#   docker run -v hive-team-a:/data -p 127.0.0.1:8765:8765 hive-brain
+# Run one brain (deploy/compose.yaml does this with a named volume). The hub
+# listens on loopback only, and a container's loopback is its own, so the
+# brain runs on the host's network; a published port would reach nothing:
+#   docker run -v hive-team-a:/data --network host hive-brain
 #
 # Everything the brain keeps - the store, its WAL, the work dir, logs, keys -
 # lives under HIVE_HOME=/data/hive on the one volume, which the host

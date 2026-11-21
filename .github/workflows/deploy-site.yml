@@ -57,6 +57,12 @@ jobs:
           cache-dependency-path: web/site/package-lock.json
       - run: npm ci
       - run: npm run check
+      # The site serves scripts/install.sh at /install.sh, and people pipe it
+      # into a shell: its own test passes before it is deployed. The test is
+      # offline (a release it builds itself, served from a local address).
+      - name: The installer's test
+        working-directory: .
+        run: sh scripts/tests/install-test.sh
 
   deploy:
     needs: check
