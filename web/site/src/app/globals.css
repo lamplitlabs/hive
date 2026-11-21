@@ -298,7 +298,12 @@
     font: inherit;
   }
 
-  /* The few colours of the highlighter (highlight.js classes, written at build time). */
+  /*
+    The few colours of the highlighter (highlight.js classes, written at build
+    time). Shell built-ins keep the text colour on purpose: the highlighter
+    takes the `set` of `hive settings set` and the `test` of `npm test` for
+    them, and a coloured word in the middle of a command reads as emphasis.
+  */
   .hljs-comment,
   .hljs-quote {
     color: var(--code-comment);
@@ -319,7 +324,6 @@
   .hljs-section {
     color: var(--code-keyword);
   }
-  .hljs-built_in,
   .hljs-title,
   .hljs-attr,
   .hljs-attribute,
