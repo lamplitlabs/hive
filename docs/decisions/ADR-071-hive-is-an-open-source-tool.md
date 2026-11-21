@@ -83,17 +83,19 @@ hand is the only thing a team installs. The front signs people in and
 relays them to their brain.
 
 - Pros: the path is partly built, on the default branch and on
-  `feat/web-first`; a team installs one small program per machine and
-  nothing else; one brain per team gives every machine of a team the same
-  board; the code of the brain is never downloaded.
+  `feat/web-first`; a team would install one small program per machine;
+  one brain per team gives every machine of a team the same board; the
+  code of the brain would never be downloaded.
 - Cons: the owner becomes an operator, every day: containers, a sign-in
   service, backups, and other people's code and data (ADR-070 names this
   itself: "New operational surface for the owner"); a team's code passes
   through a brain the team does not run and has to be held to a written
   promise; the front is a new trust point that must be built and kept
   unable to act as the owner; a closed brain cannot be read, audited or
-  fixed by the people whose agents it runs; delivery steps 5 to 7 are still
-  to finish, and then to run.
+  fixed by the people whose agents it runs; as built, a machine that runs
+  agents needs `hive` beside `hive-hand`, because the harness is in `hive`,
+  so the rule that nothing of the brain is installed at a customer does
+  not hold yet; delivery steps 5 to 7 are still to finish, and then to run.
 
 ### Option 2: keep Hive closed and local
 
@@ -226,8 +228,8 @@ Option 3, with these rules.
 - [ ] The site is rebuilt without a sign-in, renders `docs/` and serves
       the installer (`web/site`).
 - [ ] Close ADR-070: mark what was delivered, close steps 5 to 7
-      (`hive record deliver`), and amend the records it pointed at a
-      hosted brain (ADR-019, ADR-020, ADR-021, ADR-041, ADR-042).
+      (`hive record deliver`), and settle the amendments it announced for
+      ADR-019, ADR-020, ADR-021, ADR-041 and ADR-042.
 - [ ] Reword what still speaks of a hosted product and is outside this
       change: the comments in `deploy/` and `scripts/check-hand-deps.sh`,
       the setting descriptions and the hand's usage text in `crates/`, and
