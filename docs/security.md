@@ -41,8 +41,8 @@ And only when you turn it on or use it:
   the `fetch` tool is not offered);
 - web search (`harness.web_search`; by default it is offered in a
   conversation and not to jobs);
-- the MCP servers in the registry (`hive mcp list` shows each one and who
-  added it);
+- the MCP servers in the registry (`hive mcp list` names them, and
+  `hive mcp show NAME` says who added each);
 - backups, to the place `backup.to` names (empty by default);
 - the release check, at the address `update.latest_url` names (empty by
   default: no check and no network);
