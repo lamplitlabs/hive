@@ -121,11 +121,12 @@ On the Machines page, **Add a machine**. There are two main ways:
 - **Pair a Linux machine over SSH.** `hive pair ADMIN@HOST --name NAME`
   does it in one run from the machine that runs Hive. The admin account
   needs passwordless sudo.
-- **Enrol any machine that has `hive-hand`.** The page shows a six-word
-  join code and the line to run there: `hive-hand join --brain URL CODE`.
-  Keep `hive-hand dial` running on that machine. To run agents it also
-  needs `hive` and a model sign-in of its own, and it must be able to
-  reach your console's address ([Security notes](security.md#the-machines-you-pair)).
+- **Enrol any machine that has `hive-hand`.** Each release carries it as
+  `hand-<tag>-<target>.tar.gz`. The page shows a six-word join code and the
+  line to run there: `hive-hand join --brain URL CODE`. Then keep
+  `hive-hand dial` running on that machine. To run agents it also needs
+  `hive` and a model sign-in of its own, and it must be able to reach your
+  console's address ([Security notes](security.md#the-machines-you-pair)).
 
 The same page registers a machine you prepared by hand, and asks a cloud
 for one once you have set a provider and caps. Then say what a project's
