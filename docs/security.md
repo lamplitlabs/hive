@@ -115,13 +115,13 @@ On that listener:
   ([Agents](#agents) says what that check rests on). List only names you
   control. Whoever decides where a listed name points can reach the console
   under it.
-- Two kinds of request are not held to the Host rule. The routes a hand
-  calls (`/api/v1/hands/`) are checked by join code and device key instead,
-  so a hand can reach the brain through a proxy under a name of yours.
-  Requests on the relay listener are checked as
+- Two kinds of request are not held to the console's Host rule. The routes
+  a hand calls (`/api/v1/hands/`) are checked by join code and device key
+  instead, so a hand can reach the brain through a proxy under a name of
+  yours. Requests on the relay listener are held to that listener's own
+  Host rule, which
   [the next section](#a-relay-in-front-of-the-console-huballow_remote)
-  says, and `Host` is not part of that check
-  ([What is not built](#what-is-not-built)).
+  describes.
 - Every write from the console also passes the **same-origin guard**: when
   the browser sends an `Origin`, its host and port must equal the request's
   `Host`, and a request the browser marks `Sec-Fetch-Site: cross-site` is
@@ -154,9 +154,15 @@ writes. Reads it serves without a signature, as the list says.
   marked as coming through the front. Request headers cannot change that,
   so a forged `Host: 127.0.0.1` does not unlock the loopback-only routes.
   While `hub.allow_remote` is empty, every request on that listener gets 403.
-  A browser `Origin` other than the front's also gets 403. Once the
-  setting is set, reads (`GET` and `HEAD`) on that listener pass without a
-  signature.
+  Once the setting is set, the listener answers only when `Host` is the
+  front's own name (the host of `hub.allow_remote`), `localhost`, a name
+  that ends in `.localhost`, or an IP address. The port is not compared.
+  Any other `Host`, and a missing or empty one, gets 403, so a web page
+  that points a name of its own at 127.0.0.1 cannot read the console
+  through the relay port
+  (`cargo test -p hive-hub --lib remote::tests::the_relay_answers_only_to_the_fronts_name_localhost_and_ip_addresses`).
+  A browser `Origin` other than the front's also gets 403. Reads (`GET` and
+  `HEAD`) that pass these checks need no signature.
 - **Passkey-signed writes.** Each write through the front carries a
   WebAuthn assertion from a registered member's passkey. The passkey signs
   over a nonce the brain issued (`GET /api/v1/nonce`: five minutes,
@@ -585,13 +591,6 @@ run yourself.
   deny rules are rules on the text of a command: other spellings of the
   same command pass ([Agents](#agents)). Lockdown covers conversations, and
   the operating system enforces it on macOS only.
-- **A check of the `Host` header on the relay listener.** The Host rule
-  covers the console's own listener. The relay listener
-  (`hive hub --front-port N`) answers nothing while `hub.allow_remote` is
-  empty. Once it is set, that listener serves reads whatever `Host` they
-  carry, so a web page whose name was pointed at 127.0.0.1 can read the
-  console through that port. It cannot write there: a write needs a
-  member's passkey.
 - **The vault on hands.** A hand cannot open the vault, model logins are
   not vault names, and there are no `vault://NAME` references for MCP and
   cloud credentials.

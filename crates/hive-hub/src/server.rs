@@ -395,9 +395,10 @@ impl Handler {
     /// missing one, gets 403 here, a page as plain text and the API as JSON.
     ///
     /// Two kinds of request are checked in their own way instead: one that
-    /// came through the front's relay listener ([`Handler::front_gate`]),
-    /// and the routes a hand calls, which go by join code and device key
-    /// because a hand may reach the console under a name of the owner's.
+    /// came through the front's relay listener, which
+    /// [`Handler::front_gate`] holds to a Host rule of its own, and the
+    /// routes a hand calls, which go by join code and device key because a
+    /// hand may reach the console under a name of the owner's.
     /// The routes that call [`crate::folders::loopback_host`] stay stricter:
     /// a listed name or a non-loopback address does not reach them.
     pub(crate) fn host_gate(&self, w: &mut ResponseWriter, r: &Request) -> bool {
@@ -449,7 +450,7 @@ fn hand_route(path: &str) -> bool {
 
 /// The name in a Host header: lower-cased, without the port. An IPv6
 /// literal keeps its brackets.
-fn host_name(host: &str) -> String {
+pub(crate) fn host_name(host: &str) -> String {
     let host = host.trim();
     let name = match host.rsplit_once(':') {
         Some((name, port))
@@ -467,7 +468,7 @@ fn host_name(host: &str) -> String {
 /// address literal, v4 or bracketed v6: neither can be a name a web page
 /// re-pointed at 127.0.0.1. No one owns a name under `.localhost` (RFC
 /// 6761 reserves it), and an IP address literal is never looked up.
-fn local_name(name: &str) -> bool {
+pub(crate) fn local_name(name: &str) -> bool {
     if let Some(v6) = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')) {
         return v6.parse::<std::net::Ipv6Addr>().is_ok();
     }
@@ -1769,19 +1770,24 @@ mod tests {
         }
     }
 
+    /// The relay listener goes by a Host rule of its own (`front_gate`):
+    /// the front's name passes there without being in `hub.hosts`, a name
+    /// in `hub.hosts` does not, and on the console's own listener it is the
+    /// other way round.
     #[test]
-    fn a_request_through_the_front_is_not_held_to_the_host_rule() {
+    fn the_relay_listener_goes_by_the_fronts_name_not_by_hub_hosts() {
+        use crate::test_helpers_http as http;
         let _serial = crate::test_helpers::serial();
-        let s = crate::test_helpers_http::additions_store(false);
+        let s = http::additions_store(false);
         let h = Arc::new(console_on_8765(&s));
         let front = crate::test_helpers::TestServer::start_on(
             Arc::new(move |w, r| h.serve_http(w, r)),
             true,
         );
-        let read = || {
+        let relay = |host: &str| {
             let resp = crate::test_helpers::client()
                 .get(format!("{}/api/v1/settings", front.url))
-                .header("Host", "team.example.com")
+                .header("Host", host)
                 .send()
                 .unwrap();
             (
@@ -1789,12 +1795,32 @@ mod tests {
                 resp.json::<Value>().unwrap_or(Value::Null),
             )
         };
-        // Closed, the front's own gate answers; the Host rule says nothing.
-        let (code, body) = read();
+        // Closed, the front's own gate says so.
+        let (code, body) = relay("team.example.com");
         assert_eq!(code, 403);
         assert_eq!(body["error"], "This console is not open to the front");
         s.set_setting("human", "hub.allow_remote", "https://team.example.com")
             .unwrap();
-        assert_eq!(read().0, 200);
+        s.set_setting("human", "hub.hosts", "hive.example.com")
+            .unwrap();
+        assert_eq!(relay("team.example.com").0, 200);
+        let (code, body) = relay("hive.example.com");
+        assert_eq!(code, 403);
+        assert_eq!(
+            body["error"],
+            "This relay does not answer to the name hive.example.com"
+        );
+        let console = |host: &str| {
+            http::request(
+                console_on_8765(&s),
+                "GET",
+                "/api/v1/settings",
+                "",
+                &[("Host", host)],
+            )
+            .0
+        };
+        assert_eq!(console("hive.example.com"), 200);
+        assert_eq!(console("team.example.com"), 403);
     }
 }
