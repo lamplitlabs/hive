@@ -60,7 +60,10 @@ link or anchor). It has no sign-in and no account: Hive is a tool you run
 yourself
 ([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)). At build
 time it renders this repository's `docs/**/*.md` under `/docs/` and serves
-the installer, `scripts/install.sh`, at `/install.sh`.
+the installer, `scripts/install.sh`, at `/install.sh`. Its two fonts are
+committed whole and cut down to Latin and the signs the pages use; every
+page loads the cut files, and `web/site/scripts/subset-fonts.py` writes
+them (its first lines say how).
 
 `.github/workflows/deploy-site.yml` deploys on every push to `main` that
 touches `web/site/`, `docs/` or `scripts/install.sh`: it runs
