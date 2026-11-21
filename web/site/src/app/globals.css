@@ -549,11 +549,27 @@
     min-width: 6.5rem;
     border-top: 1px solid var(--border);
   }
+  /*
+    A table that names its rows down its first column (src/lib/markdown.ts):
+    those cells are headers to a screen reader and cells to the eye, and the
+    empty corner above them is a cell that looks like the headings beside it.
+  */
+  .prose tbody th {
+    min-width: 6.5rem;
+    border-top: 1px solid var(--border);
+    background: none;
+    font-weight: inherit;
+    white-space: normal;
+  }
+  .prose thead td {
+    border-top: 0;
+    background: var(--muted);
+  }
   /* The last column is where a table explains itself: give it room, and let the box scroll. */
   .prose td:last-child:not(:first-child) {
     min-width: 17rem;
   }
-  .prose td:first-child code {
+  .prose :where(td, tbody th):first-child code {
     overflow-wrap: normal;
   }
 }

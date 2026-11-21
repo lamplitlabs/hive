@@ -279,6 +279,7 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
       if (node.tagName === "pre") {
         node.properties.tabIndex = 0;
       } else if (node.tagName === "table" && parent && index !== undefined) {
+        nameRows(node);
         // Focusable, so a keyboard can scroll it; no landmark of its own, or a page of tables would be a page of regions.
         parent.children[index] = el("div", { className: ["table-scroll"], tabIndex: 0 }, [node]);
       } else if (node.tagName === "input" && node.properties.type === "checkbox") {
@@ -300,6 +301,36 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
     .processSync(body);
   out.html = String(file);
   return out;
+}
+
+const isElement = (node: ElementContent): node is Element => node.type === "element";
+
+/** The rows of a table's head or body, each as its cells. */
+function rowsOf(table: Element, section: "thead" | "tbody"): Element[][] {
+  return table.children
+    .filter(isElement)
+    .filter((part) => part.tagName === section)
+    .flatMap((part) => part.children.filter(isElement))
+    .map((row) => row.children.filter(isElement));
+}
+
+/**
+ * A table whose first heading is empty names its rows in its first column
+ * (a setting down the side, its values across the top). Those cells become
+ * the rows' headers, so a screen reader says which row a value belongs to,
+ * and the empty corner stops being a heading that says nothing. The
+ * stylesheet keeps all of them looking as they did.
+ */
+function nameRows(table: Element): void {
+  const corner = rowsOf(table, "thead")[0]?.[0];
+  if (!corner || corner.tagName !== "th" || hastToString(corner).trim() !== "") return;
+  corner.tagName = "td";
+  for (const [first] of rowsOf(table, "tbody")) {
+    if (first?.tagName === "td") {
+      first.tagName = "th";
+      first.properties.scope = "row";
+    }
+  }
 }
 
 function isAnchorLink(node: Element): boolean {
