@@ -11,10 +11,11 @@
 //! restarts on it after its runs in flight (restart.rs); nothing here stops
 //! a run.
 //!
-//! While `update.latest_url` is empty, the command run by hand reads the
+//! While `update.latest_url` is empty, the command the owner runs reads the
 //! project's own releases for that one run and says so first. The setting
 //! stays empty, so the daily check, the daemon's self-update and the
-//! console still do not look anywhere.
+//! console still do not look anywhere. Under an agent's name or inside a
+//! job the command refuses, as it always did, and reads nothing.
 //!
 //! A private repository answers 404 to an anonymous request, so a GitHub
 //! address that fails over HTTP is read again through `gh api` when gh is
@@ -695,10 +696,10 @@ pub(crate) fn update_flags(fs: &mut hive_cli::FlagSet) {
     );
 }
 
-/// Where Hive's own releases are listed. `hive update`, run by hand while
-/// `update.latest_url` is empty, reads it for that one run. Nothing else
-/// reads it: to the daily check, the daemon's self-update and the console
-/// an empty setting still means "do not look".
+/// Where Hive's own releases are listed. `hive update`, run by the owner
+/// while `update.latest_url` is empty, reads it for that one run. Nothing
+/// else reads it: to the daily check, the daemon's self-update, the console,
+/// an agent and a job an empty setting still means "do not look".
 const PROJECT_RELEASES_URL: &str = "https://api.github.com/repos/lamplitlabs/hive/releases/latest";
 
 /// What `hive update` says before it reads [`PROJECT_RELEASES_URL`] in place
@@ -743,6 +744,14 @@ pub(crate) fn cmd_update(
     update_on(c, fs, UpdateHost::this_process())
 }
 
+/// Whether the command runs under an agent's name or inside a job, and so
+/// not for the owner: the agent as `hive settings set` tells one from the
+/// owner for the owner's settings, the job by `HIVE_JOB`.
+fn agent_or_job(c: &hive_cli::Context) -> bool {
+    (!c.agent.is_empty() && c.agent != hive_store::HUMAN_AGENT)
+        || std::env::var("HIVE_JOB").is_ok_and(|job| !job.is_empty())
+}
+
 /// `hive update [--check]` on `host`.
 pub(crate) fn update_on(
     c: &mut hive_cli::Context,
@@ -754,6 +763,15 @@ pub(crate) fn update_on(
         .store
         .clone()
         .ok_or_else(|| anyhow!("hive update needs the store"))?;
+    let mut url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
+    // Looking at the project's own releases is for the owner who runs the
+    // command. An agent and a job get the refusal an empty setting always
+    // gave, before anything else, and nothing is read.
+    if url.is_empty() && agent_or_job(c) {
+        bail!(
+            "{LATEST_URL_SETTING} is empty, so Hive does not know where its releases are; set it first: hive settings set {LATEST_URL_SETTING} https://api.github.com/repos/OWNER/REPO/releases/latest"
+        );
+    }
     let only_check = fs.get_bool("check");
     let channel = channel(&s);
     if channel == Channel::Source && !only_check {
@@ -768,10 +786,9 @@ pub(crate) fn update_on(
             std::env::consts::OS
         )
     })?;
-    let mut url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
     if url.is_empty() {
-        // Asked by hand, the command looks at the project's own releases
-        // for this run and says so first; the setting stays empty.
+        // Asked by the owner, the command looks at the project's own
+        // releases for this run and says so first; the setting stays empty.
         writeln!(c.err, "{}", one_run_notice())?;
         url = PROJECT_RELEASES_URL.to_string();
     }
@@ -1294,10 +1311,22 @@ mod tests {
         }
     }
 
-    /// `hive update ARGS` on `host`: stdout, stderr and the exit status, a
-    /// failure reported the way the binary reports it.
+    /// `hive update ARGS` on `host`, run by the owner with no name given.
     fn update(
         s: &hive_store::Store,
+        args: &[&str],
+        json: bool,
+        host: UpdateHost,
+    ) -> (String, String, i32) {
+        update_as(s, "", args, json, host)
+    }
+
+    /// `hive update ARGS` on `host` under the name `agent` (`--agent` or
+    /// `HIVE_AGENT`; empty for none): stdout, stderr and the exit status, a
+    /// failure reported the way the binary reports it.
+    fn update_as(
+        s: &hive_store::Store,
+        agent: &str,
         args: &[&str],
         json: bool,
         host: UpdateHost,
@@ -1316,7 +1345,7 @@ mod tests {
             json,
             quiet: false,
             color: false,
-            agent: String::new(),
+            agent: agent.to_string(),
             project: String::new(),
             session: String::new(),
             now: crate::test_helpers::TEST_NOW.to_string(),
@@ -1445,6 +1474,73 @@ mod tests {
             "old binary"
         );
         assert_eq!(s.setting(LATEST_URL_SETTING, ""), "");
+    }
+
+    /// The fallback is for the owner. Under an agent's name or inside a job
+    /// an empty setting is the refusal it always was, and nothing is read.
+    #[test]
+    fn update_under_an_agents_name_or_inside_a_job_keeps_the_old_refusal() {
+        let _serial = serial();
+        let s = new_store();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        hand_answers(project_release());
+        let refusal = "hive update: update.latest_url is empty, so Hive does not know where its releases are; set it first: hive settings set update.latest_url https://api.github.com/repos/OWNER/REPO/releases/latest\n";
+        let refused = |agent: &str, args: &[&str], what: &str| {
+            let (out, err, code) = update_as(&s, agent, args, false, hand_host(""));
+            assert_eq!(
+                (code, out.as_str(), err.as_str()),
+                (1, "", refusal),
+                "{what}"
+            );
+        };
+
+        refused("aurora", &["--check"], "an agent, --check");
+        refused("aurora", &[], "an agent");
+        {
+            let _job = hive_testutil::setenv("HIVE_JOB", "job-1");
+            refused("", &["--check"], "a job, --check");
+            refused("", &[], "a job");
+            refused("human", &[], "a job under the owner's name");
+            refused("aurora", &[], "an agent's job");
+        }
+        // As before the fallback existed, the refusal comes before the one
+        // of the source channel.
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        refused("aurora", &[], "an agent on the source channel");
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        // Nothing was read and nothing kept.
+        assert!(hand_asked().is_empty(), "{:?}", hand_asked());
+        assert!(!s.meta(META_KEY).unwrap().1);
+
+        // The owner, named or not, gets the project's releases.
+        let (_, err, code) = update_as(&s, "human", &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ONE_RUN_NOTICE));
+        assert_eq!(hand_asked(), vec![PROJECT_RELEASES_URL.to_string()]);
+
+        // A setting that holds an address is read by an agent and by a job
+        // as it always was.
+        let own = "https://releases.test/latest.json";
+        s.set_setting("human", LATEST_URL_SETTING, own).unwrap();
+        let (out, err, code) = update_as(&s, "aurora", &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert!(
+            out.starts_with("A newer Hive is available: v0.3.0"),
+            "{out}"
+        );
+        assert_eq!(
+            hand_asked(),
+            vec![PROJECT_RELEASES_URL.to_string(), own.to_string()]
+        );
+        let _job = hive_testutil::setenv("HIVE_JOB", "job-1");
+        let (out, err, code) = update(&s, &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert!(
+            out.starts_with("A newer Hive is available: v0.3.0"),
+            "{out}"
+        );
     }
 
     #[test]

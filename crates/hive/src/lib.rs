@@ -1200,6 +1200,57 @@ mod tests {
         );
     }
 
+    /// `hive update` looks at Hive's own releases only for the owner. Under
+    /// an agent's name (`--agent` or HIVE_AGENT) or inside a job, an empty
+    /// `update.latest_url` is refused first. The store follows the source
+    /// channel here, so no run of this test can reach the network: the owner
+    /// is refused too, by the channel.
+    #[test]
+    fn update_with_no_latest_url_is_refused_for_an_agent_and_inside_a_job() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        hive_store::create(home.join(hive_store::STORE_NAME)).unwrap();
+        let store = hive_store::Store::open(hive_store::Options {
+            home: home.to_str().unwrap().to_string(),
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap();
+        store
+            .set_setting("human", hive_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        let update = |args: &[&str]| -> (i32, String, String) {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run(args, &mut out, &mut errb);
+            (code, s(&out), s(&errb))
+        };
+        let empty = "hive update: update.latest_url is empty, so Hive does not know where its releases are; set it first: hive settings set update.latest_url https://api.github.com/repos/OWNER/REPO/releases/latest\n";
+        let refused = (1, String::new(), empty.to_string());
+
+        assert_eq!(update(&["--agent", "aurora", "update"]), refused);
+        {
+            let _agent = setenv("HIVE_AGENT", "aurora");
+            assert_eq!(update(&["update"]), refused);
+        }
+        {
+            let _job = setenv("HIVE_JOB", "job-test");
+            assert_eq!(update(&["update"]), refused);
+        }
+        // The owner is past that refusal, named or not.
+        for args in [vec!["update"], vec!["--agent", "human", "update"]] {
+            let (code, out, err) = update(&args);
+            assert_eq!((code, out.as_str()), (1, ""), "{args:?}");
+            assert!(
+                err.starts_with("hive update: update.channel resolves to source here"),
+                "{args:?}: {err:?}"
+            );
+        }
+    }
+
     #[test]
     fn settings_help_without_store() {
         let _serial = crate::test_helpers::serial();
