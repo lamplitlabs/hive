@@ -162,8 +162,10 @@ export default function MachinesPage() {
           <code>--brain</code> is the address the machine reaches your Hive on. The line the console shows carries the address your browser used, so it
           usually reads <code>http://127.0.0.1:8765</code>: change it to an address the other machine can reach. The console listens on{" "}
           <code>127.0.0.1</code> only, so another machine reaches it only through something you set up on the machine Hive runs on: an SSH tunnel, or a
-          proxy with TLS there. A private network alone does not reach a port bound to <code>127.0.0.1</code>. What you put there reaches the whole
-          console, not only the routes <code>hive-hand</code> uses, so keep it between your own machines.
+          proxy with TLS there. A private network alone does not reach a port bound to <code>127.0.0.1</code>. A tunnel reaches the whole console,
+          not only the routes <code>hive-hand</code> uses, so keep it between your own machines. Under a name of your own, through a proxy, the
+          console answers the routes <code>hive-hand</code> uses and nothing else, until you list that name in the setting <code>hub.hosts</code>:
+          it refuses every other host name, so that a web page cannot reach it by pointing a name at <code>127.0.0.1</code>.
         </p>
         <p>
           An SSH tunnel is the short way. On the machine that joins, forward a port of its own to the console and name that port. Keep the tunnel up for

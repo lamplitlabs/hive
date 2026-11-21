@@ -134,7 +134,7 @@ Some of this is a rule and not a lock. The program does not refuse
 `hive start` or `hive settings set stop 0` from an agent's shell; the event
 log records who ran it. A `hive` command run under an agent's name is
 refused only the `owner.*` settings and `push.credential`, and a value an
-agent wrote for `hub.allow_remote` or `owner.presence` is ignored. Every
+agent wrote for `hub.allow_remote`, `hub.hosts` or `owner.presence` is ignored. Every
 other setting, the caps and `evolve.*` included, can be changed with
 `hive settings set` from an agent's shell. Votes and variants are held to
 the rule in code: no vote can touch the protected sections, and no variant

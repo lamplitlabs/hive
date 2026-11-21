@@ -497,6 +497,11 @@ release's `SHA256SUMS`, smoke-runs the new binary, swaps it in and keeps
 the old one as `hive.prev` ([release.md](release.md)). A release with no
 `SHA256SUMS`, or with a digest that differs, is refused.
 
+The installer (`scripts/install.sh`) checks the same way. It downloads over
+https with curl, or with GNU wget, and stops before it downloads anything
+when the only downloader is BusyBox's `wget`: that `wget` does not check a
+server's certificate, so a checksum fetched over it would prove nothing.
+
 A brain that holds no Hive source cannot rebuild itself the way a
 development machine does. `daemon.self_update release` makes the daemon
 read the release document `update.latest_url` names once an hour. When a

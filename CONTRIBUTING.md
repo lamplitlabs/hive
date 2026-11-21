@@ -87,7 +87,10 @@ A pull request is easy to accept when:
 - the page in `docs/` that describes the behaviour is updated in the same
   pull request. The docs are the reference, and they say only what the code
   does. `docs/commands.md` and `docs/settings.md` are generated: change the
-  help text or the setting's description in the code, not the page.
+  help text or the setting's description in the code, not the page, then
+  write the pages again with `sh scripts/gen-reference.sh`. The check has a
+  test that fails while they differ from what the program prints, and it
+  names that command.
 
 Write docs and messages in plain words and short sentences. Leave out what
 you cannot confirm.

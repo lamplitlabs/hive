@@ -490,8 +490,9 @@ is the machine itself and not the brain, so change it to an address the
 machine can reach. The console listens on 127.0.0.1 only, so another
 machine reaches it only through something you set up on the brain's
 machine: an SSH tunnel, or a proxy with TLS there. A private network alone
-does not reach a port bound to 127.0.0.1. What you put there reaches the
-whole console, not only the hand's routes
+does not reach a port bound to 127.0.0.1. A tunnel reaches the whole
+console, not only the hand's routes; a proxy under a name of your own
+reaches the hand's routes only, until you list that name
 ([security.md](security.md#the-machines-you-pair)).
 
 The console answers only to the host names `localhost`, an IP address or a

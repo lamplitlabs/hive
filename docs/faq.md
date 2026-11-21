@@ -268,7 +268,7 @@ rules, and the program checks only part of them:
   `hive start` or `hive settings set stop 0` from an agent's shell; the
   event log records who ran it. A `hive` command run under an agent's name
   is refused only the `owner.*` settings and `push.credential`, and a
-  value an agent wrote for `hub.allow_remote` or `owner.presence` is
+  value an agent wrote for `hub.allow_remote`, `hub.hosts` or `owner.presence` is
   ignored.
 - **Votes and variants.** These are held to the rule in code: no vote can
   touch the constitution's protected sections, and no variant can change
