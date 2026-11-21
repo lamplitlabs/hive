@@ -54,7 +54,9 @@ What it does, in order:
    `curl` (or `wget` where there is no `curl`) into a temporary directory,
    and compares the archive's SHA-256 with its line in `SHA256SUMS`, using
    `sha256sum` or `shasum`. A digest that differs stops it. So does a
-   machine with neither tool: nothing is installed unchecked.
+   machine with neither tool: nothing is installed unchecked. With only
+   BusyBox's `wget` to download with it stops before it downloads anything,
+   because that `wget` does not check a server's certificate.
 4. **Tries the program.** It writes the program beside the place it will
    go and runs it once (`hive version`). A program that does not start on
    this machine is removed again, and the script says why: on Linux the
