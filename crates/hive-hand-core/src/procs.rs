@@ -797,22 +797,34 @@ mod tests {
         );
         // Everything of ours that `ps` shows must be in the listing, or the
         // sweep would miss stragglers (an earlier cut listed a quarter).
-        let ps = Command::new("ps")
-            .args(["-axo", "pid=,uid="])
-            .output()
-            .unwrap();
+        // "Shows" means before the listing and after it: a process that
+        // ended in between (this `ps` itself, a neighbour test's `sh`) is not
+        // one the listing missed, and neither is one that has exited and
+        // waits to be reaped. On a machine with few processes of ours, such
+        // as a fresh VM, two of those were already more than the tenth this
+        // test allows.
         let uid = unsafe { libc::getuid() };
-        let ours: Vec<i32> = String::from_utf8_lossy(&ps.stdout)
-            .lines()
-            .filter_map(|l| {
-                let mut it = l.split_whitespace();
-                let pid: i32 = it.next()?.parse().ok()?;
-                let owner: u32 = it.next()?.parse().ok()?;
-                (owner == uid && pid > 1).then_some(pid)
-            })
-            .collect();
+        let ours_now = || -> std::collections::HashSet<i32> {
+            let ps = Command::new("ps")
+                .args(["-axo", "pid=,uid=,state="])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&ps.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let mut it = l.split_whitespace();
+                    let pid: i32 = it.next()?.parse().ok()?;
+                    let owner: u32 = it.next()?.parse().ok()?;
+                    let exited = it.next().is_some_and(|state| state.starts_with('Z'));
+                    (owner == uid && pid > 1 && !exited).then_some(pid)
+                })
+                .collect()
+        };
+        let before = ours_now();
         let listed: std::collections::HashSet<i32> =
             list_processes().into_iter().map(|p| p.pid).collect();
+        let after = ours_now();
+        let ours: Vec<i32> = before.intersection(&after).copied().collect();
         let missing = ours.iter().filter(|p| !listed.contains(p)).count();
         assert!(
             ours.len() >= 2 && missing * 10 <= ours.len(),
