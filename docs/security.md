@@ -55,7 +55,9 @@ Off until it is turned on or used:
   one is added;
 - backups, to the place `backup.to` names (empty by default);
 - the release check, at the address `update.latest_url` names (empty by
-  default: no check and no network);
+  default: no check and no network by itself). `hive update`, when you run
+  it yourself, then looks at Hive's own releases on GitHub for that one run
+  and says so first; under an agent's name or inside a job it does not;
 - machines rented through the cloud CLI you are logged in to
   (`compute.max_vms` is `0` by default, which means agents cannot get
   compute; Hive stores no cloud credential);

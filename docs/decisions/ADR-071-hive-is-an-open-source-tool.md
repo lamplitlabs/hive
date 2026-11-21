@@ -223,11 +223,13 @@ Option 3, with these rules.
       owner).
 - [ ] Before the repository is public, decide what to do about the limits
       `docs/security.md` lists under "What is not built", since publishing
-      the code publishes them too (the owner): the console answers a request
-      whatever its `Host` header says, so the write guard does not stop DNS
-      rebinding; the kill switch and most settings are not locked against a
-      command an agent runs in its own shell; and a job's deny rules match
-      the text of a command, with no sandbox behind them.
+      the code publishes them too (the owner): the kill switch and most
+      settings are not locked against a command an agent runs in its own
+      shell; and a job's deny rules match the text of a command, with no
+      sandbox behind them. (A third limit is closed on this branch: the
+      console and the relay listener now refuse a `Host` that is not this
+      machine, an IP address or a name the owner listed in `hub.hosts`, so
+      a web page cannot reach them through DNS rebinding.)
 - [ ] Turn on GitHub's private vulnerability reporting for the
       repository; `SECURITY.md` points at it (the owner).
 - [ ] The release workflow publishes archives for macOS and Linux and the
