@@ -565,17 +565,9 @@ report() {
   info ""
 
   if [ "$program" = hive ]; then
-    # hive hub needs a store and does not make one; hive init does.
-    if [ -f "${HIVE_HOME:-${HOME:-}/.hive}/hive.sqlite" ]; then
-      info "$next start the console:"
-      info ""
-      info "  hive hub"
-    else
-      info "$next make the store, once, and start the console:"
-      info ""
-      info "  hive init --store-only"
-      info "  hive hub"
-    fi
+    info "$next start the console:"
+    info ""
+    info "  hive hub"
     info ""
     info "and open http://127.0.0.1:8765 in your browser."
   else

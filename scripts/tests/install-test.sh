@@ -457,18 +457,9 @@ run_installer
 want_status 0
 want_out "$t_home/.hive/bin is not on your PATH"
 want_out "  export PATH=\"\$HOME/.hive/bin:\$PATH\""
-want_out "  hive init --store-only"
 want_out "  hive hub"
-want_out "http://127.0.0.1:8765"
-finish
-
-begin "with a store already there, the next step is the console alone"
-mkdir -p "$t_home/.hive"
-: > "$t_home/.hive/hive.sqlite"
-run_installer
-want_status 0
 want_no_out "hive init"
-want_out "  hive hub"
+want_out "http://127.0.0.1:8765"
 finish
 
 begin "it says so when the directory is on the PATH, and prints no line to add"
