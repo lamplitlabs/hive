@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { DocText } from "@/components/hive/doc-text";
 import { Disclosure, ErrorNotice, Notice } from "@/components/hive/panel";
 import { BrandLogo } from "@/components/hive/logo";
 import { Mono, ToneBadge } from "@/components/hive/who";
@@ -240,7 +241,9 @@ function OnOffSwitch({ s, onSave }: { s: Setting; onSave: (name: string, value: 
         </label>
         <KeyName name={s.name} />
       </div>
-      <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp(s.name, s.description)}</p>
+      <p className="text-[13px] leading-snug text-muted-foreground">
+        <DocText>{settingHelp(s.name, s.description)}</DocText>
+      </p>
     </div>
   );
 }
@@ -267,7 +270,11 @@ function ChoiceSelect({ s, onSave, labels, note }: { s: Setting; onSave: (name: 
         </Select>
         {note ? null : <KeyName name={s.name} />}
       </div>
-      {note ? null : <p className="text-[13px] leading-snug text-muted-foreground">{settingHelp(s.name, s.description)}</p>}
+      {note ? null : (
+        <p className="text-[13px] leading-snug text-muted-foreground">
+          <DocText>{settingHelp(s.name, s.description)}</DocText>
+        </p>
+      )}
     </div>
   );
 }
@@ -334,7 +341,7 @@ function LimitInput({ s }: { s: Setting }) {
         className="w-32 tnum"
       />
       <p id={"harness-" + s.name + "-help"} className={cn("text-[13px] leading-snug", error ? "text-bad" : "text-muted-foreground")}>
-        {error || settingHelp(s.name, s.description)}
+        {error || <DocText>{settingHelp(s.name, s.description)}</DocText>}
       </p>
       <KeyName name={s.name} />
     </div>
@@ -376,7 +383,7 @@ function TextInput({ s, placeholder }: { s: Setting; placeholder?: string }) {
         className="max-w-xl font-mono text-[13px]"
       />
       <p id={"harness-" + s.name + "-help"} className={cn("text-[13px] leading-snug", error ? "text-bad" : "text-muted-foreground")}>
-        {error || settingHelp(s.name, s.description)}
+        {error || <DocText>{settingHelp(s.name, s.description)}</DocText>}
       </p>
       <KeyName name={s.name} />
     </div>
