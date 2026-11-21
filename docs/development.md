@@ -55,7 +55,9 @@ whatever `out/` already holds, for work on the Rust side.
 Next.js static export in the console's look that is not part of the binary.
 It runs the same way as the console (`cd web/site && npm install && npm run dev`
 serves http://localhost:3000; `npm run check` is typecheck + lint + build +
-test). It has no sign-in and no account: Hive is a tool you run yourself
+test, then `check:out`, which reads the built pages and fails on a broken
+link or anchor). It has no sign-in and no account: Hive is a tool you run
+yourself
 ([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)). At build
 time it renders this repository's `docs/**/*.md` under `/docs/` and serves
 the installer, `scripts/install.sh`, at `/install.sh`.

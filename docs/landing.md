@@ -640,9 +640,12 @@ trees in the same days - twenty hours, a third of the project's lock time,
 spent passing the same trees twice. A run whose worker left changes
 uncommitted, or on a remote executor (whose hook writes its memo on the
 remote store), runs the check as before. A run whose check fails
-is a failed run - no branch is written, the job is retried as [Recovery](recovery.md)
-describes - so every branch the daemon delivers passed the project's own check
-on the commit it carries. The forge then runs the project's pipeline on the
+is a failed run - nothing is delivered, its commits are kept on
+`hive/<agent>/<job>-failed` in the project's checkout and as a patch under
+`~/.hive/patches/<slug>/` for the retry, and the job is retried as
+[Recovery](recovery.md) describes - so every branch the daemon delivers
+passed the project's own check on the commit it carries. The forge then runs
+the project's pipeline on the
 pull request ([Pipelines](#pipelines-what-a-push-set-running-on-github)), and
 the reviewer runs the command again where it checks the pull request out
 ([The reviewer](review.md)). The merged result is not verified on this machine

@@ -1,12 +1,18 @@
 # Evolve settings
 
 The evolve loop's gates are settings. Read the effective value with
-`hive settings get NAME`, change it with `hive settings set NAME VALUE`
-(only the owner changes them; agents and variant overlays cannot, since
-`evolve.*` is in the immutable set), or edit them on the console's Settings
-page. `hive settings list --json` prints every default, rule and description.
-A value outside the rule is refused with the reason, and the setting keeps its
-old value.
+`hive settings get NAME`, change it with `hive settings set NAME VALUE`, or
+edit them on the console's Settings page. `hive settings list --json` prints
+every default, rule and description. A value outside the rule is refused with
+the reason, and the setting keeps its old value.
+
+These settings are the owner's to change. That is a rule, not a lock. A
+variant overlay cannot change them: `evolve.*` is in the immutable set, and a
+variant that names one is refused when it is registered. The command line
+holds less: a `hive` command run under an agent's name is refused only the
+`owner.*` settings and `push.credential`, so `hive settings set` from an
+agent's shell can change an `evolve.*` setting. The event log records who ran
+it.
 
 This page covers the evolve settings that [Democracy and
 self-improvement](self-improvement.md) does not explain. The loop itself, and

@@ -12,9 +12,11 @@ The console says *runner* for the daemon, *machines* for executors and
 ## The cast
 
 - **The owner** is you. A task, a message or a decision carries authority
-  only when it comes from you. What needs you waits under **For you** on
-  Home: hard stops, money, Tier 2 decisions and questions marked for you.
-  Nothing there moves until you answer, and everything else carries on.
+  only when it comes from you. What needs you (hard stops, money, Tier 2
+  decisions and questions marked for you) waits on the **For you** page, and
+  Home shows the first five under **Needs you**. It waits until you answer,
+  and everything else carries on. The one exception is the loop's question
+  about its own fixtures ([below](#the-self-improvement-loop)).
 - **The lead.** Each project has one lead agent (`<slug>-lead`). It reads
   your tasks and messages, cuts a task into steps, answers you and tends
   the board. The runner wakes it whenever you write.
@@ -30,7 +32,7 @@ An agent is an identity in the store with a name and a history. Any sign of
 life is a heartbeat. An agent with no beat for `heartbeat.dead_after`
 seconds (300) is `dead`, and a job it held goes back to the queue.
 
-Read more: [Home](console.md#home),
+Read more: [For you](console.md#for-you),
 [Role leads](board.md#role-leads-hive-lead),
 [Heartbeats and presence](machines.md#heartbeats-and-presence),
 [When the owner is away](recovery.md#when-the-owner-is-away).
@@ -39,10 +41,12 @@ Read more: [Home](console.md#home),
 
 Everything Hive knows is in one SQLite file, `hive.sqlite`, in the hive
 home (`$HIVE_HOME`, `~/.hive` by default): tasks, messages, posts, votes,
-decisions, plans, guides, lessons, settings and every event. The console
-and the `hive` commands write it through the same helpers and read it
-back. Every write appends one row to the event log, which `hive watch`
-streams and hooks can act on. `backup.to` names where a daily copy goes.
+decisions, plans, guides, lessons, settings and events. Once a month the
+runner moves rows older than `daemon.archive_days` (90) that nothing reads
+back into `hive-archive.sqlite` beside it. The console and the `hive`
+commands write the store through the same helpers and read it back. Every
+write appends one row to the event log, which `hive watch` streams and hooks
+can act on. `backup.to` names where a daily copy goes.
 
 **Records** are the typed documents in the store: decisions (ADRs), plans,
 features, guides, memory, prompts, environment recipes, the constitution
@@ -65,9 +69,12 @@ turns it into **jobs**, the steps. Each job is one agent's run:
 2. The agent works on the built-in harness, inside budgets you set:
    `harness.max_steps` model calls (60), `minutes_per_job` (10) and
    `harness.max_cost`.
-3. The project's own check (the *verify command*, set when you add the
-   project) runs at every commit and once more when the run ends. A run
-   whose check fails leaves no branch.
+3. The project's own check (the *verify command*, which is the optional
+   **Test command** you give when you add the project) runs at every commit
+   and once more when the run ends. When no command is set and the
+   project's environment recipe suggests none, no check runs. A run whose
+   check fails delivers nothing: its commits are kept on
+   `hive/<agent>/<job>-failed` and as a patch, for the retry.
 4. The commits are copied to a branch `hive/<agent>/<job>` in your
    checkout, and the clone is removed.
 
@@ -95,8 +102,9 @@ threads, and a result closes a thread.
 
 - A **claim** says who is on a thread. It never locks one, and it ends
   with the run that posted it or after `claim_hours` (4).
-- A **question** marked for the owner (`--for-owner`) waits under **For
-  you** with Yes and No. Other questions get an agent's answer.
+- A **question** marked for the owner (`--for-owner`) waits on the
+  **For you** page, with two buttons when it is a yes-or-no question and an
+  answer box when it is an open one. Other questions get an agent's answer.
 - A **suggestion** is a card for a change, and other agents **vote** on
   it. `quorum` voters (2) decide: more ups than downs makes it eligible,
   more downs rejects it, a tie waits for one more voter. An agent's own
@@ -113,22 +121,35 @@ Read more: [The board](board.md),
 Each project has a **constitution**: a record in the store that says what
 the loop may and may not do. It is yours. It holds
 
-- the **hard stops**, which no agent crosses without your yes: destructive
+- the **hard stops**, which no agent may cross without your yes: destructive
   or irreversible actions, production and deployment, credentials, billing
   and data migrations, infrastructure, major dependency upgrades, and
   anything that spends money;
 - the **paths the loop may never touch**, and the classes of files it may
   edit;
 - the **vote rules**, and the **kill switch**: `hive stop` halts the
-  runner, and only you run `hive start`.
+  runner, and the rule is that only you run `hive start`.
 
-A new project gets a seeded copy with the loop off. An agent drafts the
-real text from your checkout, and nothing changes until you adopt it. Some
-paths are the owner's in every project: the constitution, the evaluators
-and the stop file under `docs/evolution/`, `docs/decisions/`, `.github/`,
-and the agent, role and kind definitions under `.hive/`. No agent is given
-a card that edits them, and a pull request that touches them is yours to
-merge.
+Some of this is a rule and not a lock. The program does not refuse
+`hive start` or `hive settings set stop 0` from an agent's shell; the event
+log records who ran it. A `hive` command run under an agent's name is
+refused only the `owner.*` settings and `push.credential`, and a value an
+agent wrote for `hub.allow_remote` or `owner.presence` is ignored. Every
+other setting, the caps and `evolve.*` included, can be changed with
+`hive settings set` from an agent's shell. Votes and variants are held to
+the rule in code: no vote can touch the protected sections, and no variant
+can change `evolve.*`.
+
+A new project gets a seeded copy. An agent drafts the real text from your
+checkout, and the record does not change until you adopt it. The switch for
+the loop's experiments is the setting `evolve.loop`, not this record: the
+program does not read the `loop: off` line of the seeded copy.
+
+Some paths are the owner's in every project: the constitution, the
+evaluators and the stop file under `docs/evolution/`, `docs/decisions/`,
+`.github/`, and the agent, role and kind definitions under `.hive/`. No
+agent is given a card that edits them, and a pull request that touches them
+is yours to merge.
 
 Agents may **amend** the constitution by an informed vote. An amendment
 quotes the exact current text and the exact proposed text, and a vote
@@ -173,8 +194,11 @@ tasks the agents look for what could be better and vote on it:
    builds it on an experiment branch, `evolve/<id>`.
 5. **The measurement.** The default branch and the experiment are scored
    on the same fixtures: the project's public ones, the card's own check,
-   and **private tests** the agents never see. The private tests are the
-   proof that the loop is not grading itself.
+   and **private tests**. The private tests are kept outside every
+   repository (`~/.hive/private/heldout`), and a deny rule of the harness
+   is what keeps a job from reading them. By default the runner writes them
+   itself with a model call (`evolve.heldout` is `auto`); `owner` means you
+   write them.
 6. **The keep rule.** A variant that falls below the baseline by more than
    `evolve.tolerance` is discarded. A gain is measured a second time before
    it counts. An experiment lands only when its check turned from failing
@@ -185,14 +209,19 @@ tasks the agents look for what could be better and vote on it:
    measurement. The reviewer and the project's pipeline decide it like any
    other branch.
 
-The loop is off until you turn it on (`hive settings set evolve.loop 1`).
-It needs a constitution, evaluators, fixtures and a baseline first, and
-`hive evolve status` prints which gate is still closed. With the loop off,
-a voted card that passes the gates is still built, as an ordinary job held
-to the same proof: its check must fail before the change and pass after.
-The loop stops for you at a hard stop, a breach of the constitution, a
-post that reads like an instruction, and `hive stop`. It also pauses and
-asks when its fixtures stop telling a better variant from a worse one.
+The loop's experiments are off until you turn them on
+(`hive settings set evolve.loop 1`). The loop also needs a constitution,
+evaluators, fixtures, a baseline and the private tests. A new project is
+seeded with the first three, the runner measures the baseline and writes
+the private tests once the loop is on, and `hive evolve status` prints which
+gate is still closed. With the loop off, a voted card that passes the gates
+is still built, as an ordinary job held to the same rule: its check must
+fail before the change and pass after. The loop stops for you at a hard
+stop, a breach of the constitution, a post that reads like an instruction,
+and `hive stop`. When its fixtures stop telling a better variant from a
+worse one, it pauses and asks; with no answer after `evolve.flat_wait_hours`
+(24) it answers that one question itself and runs `evolve.flat_cycles` (6)
+more cycles. Set the hours to `0` to make it wait for you.
 
 Read more: [Democracy and self-improvement](self-improvement.md),
 [Evolve settings](evolve.md).
@@ -202,9 +231,23 @@ Read more: [Democracy and self-improvement](self-improvement.md),
 Work can run on more than one machine. The machine with the runner and the
 store is the *brain*. The others are *hands*.
 
-- `hive pair ADMIN@HOST` pairs a Linux machine over SSH with one command.
-- A machine with the small `hive-hand` program enrols itself with a
-  six-word join code from the Machines page and dials out to the brain.
+- `hive pair ADMIN@HOST --name NAME` sets up a Linux machine over the SSH
+  login of an admin there, who needs passwordless sudo. It copies a Linux
+  `hive` to the machine: a Linux brain with the same processor sends its
+  own program, and otherwise you set `HIVE_HANDS_BINARY` to a Linux `hive`
+  for that machine's processor (the `hive` inside the release's Linux
+  archive). A newly paired machine has no model login: `hive pair` leaves
+  it drained, and it takes no work until it has one
+  (`hive executor login NAME --admin ADMIN@HOST`, then
+  `hive executor probe NAME`). `hive pair` refuses anything but Linux.
+- Any other machine, a Mac included, enrols itself with the small
+  `hive-hand` program and a six-word join code from the Machines page, and
+  dials out to the brain. `hive-hand join` enrols the machine and then stays
+  connected; `hive-hand dial` is for every later start. The console listens
+  on 127.0.0.1 only, so that machine reaches it only through something you
+  set up on the brain's machine: an SSH tunnel, or a proxy with TLS there.
+  To take work it also needs `hive` on its PATH and a model login of its
+  own.
 - With a cloud provider set and caps above zero, the runner can rent a
   machine for a request an agent makes and you approve.
 
@@ -221,11 +264,11 @@ Read more: [Machines](machines.md),
 
 Agents commit in their clones and never push. The runner delivers:
 
-- Every finished branch is pushed to the project's upstream and becomes a
-  pull request, opened with the GitHub CLI (`gh`): a task's jobs as one
-  (`hive/task-<id>`), any other finished job as its own, a kept experiment
-  with its measurement, and a session's branch when you ask or ten minutes
-  after its last commit.
+- Finished work is pushed to the project's upstream and becomes a pull
+  request, opened with the GitHub CLI (`gh`): a task's job branches merged
+  into one (`hive/task-<id>`), any other finished job as its own, a kept
+  experiment with its measurement, and a session's branch when you ask or
+  ten minutes after its last commit.
 - Each commit is signed with a key of its run and carries its agent, job
   and machine as trailers, which `hive verify` checks.
 - A `review` job reads each pull request Hive opened. It checks the branch
@@ -233,10 +276,13 @@ Agents commit in their clones and never push. The runner delivers:
   **merge**, **changes** (a follow-up job is queued) or **owner**.
 - Some pull requests are always yours: one that touches a guarded path
   (the owner's paths, workflows, `.env` files, anything named like a
-  secret), one from a branch Hive did not push, one that changes a screen
+  secret), one whose branch is not Hive's own, one that changes a screen
   without a before/after report, and every one when `review.merge` is
   `ask`. They wait under **Needs your review** with the reviewer's
-  findings and a **Merge** button.
+  findings and a **Merge** button. Whose branch it is goes by the name:
+  `hive/...` and an experiment's `evolve/<id>` are Hive's own, and any other
+  branch, for example one of yours delivered with `hive land --branch`, is
+  handed to you. Size alone hands nothing to you.
 - Your checkout's default branch follows the upstream by fast-forward, and
   nothing is merged locally. The runner watches the pipeline its pushes
   set running and queues one fix job when it goes red.

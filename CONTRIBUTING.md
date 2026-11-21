@@ -41,12 +41,13 @@ cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p hive-harness            # one crate
 ```
 
-The two web packages and the Mac app have checks of their own:
+The two web packages and the Mac app have checks of their own. Run each
+line from the root of the repository:
 
 ```bash
-cd web/hub && npm install && npm run check     # the console: typecheck, lint, build, test
-cd web/site && npm install && npm run check    # the site: the same four steps
-apps/macos/scripts/check.sh                    # the Mac app (needs Xcode or the command line tools)
+(cd web/hub && npm install && npm run check)     # the console: typecheck, lint, build, test
+(cd web/site && npm install && npm run check)    # the site: the same four, then a check of the built pages
+apps/macos/scripts/check.sh                      # the Mac app (needs Xcode or the command line tools)
 ```
 
 ## Commit messages
@@ -101,7 +102,9 @@ a yes before you change
 - `docs/decisions/` (the decision records: propose a decision in an issue,
   and the owner writes or accepts the record);
 - the evolution records: the constitution, the evaluators and the stop file
-  (`docs/evolution/` where a repository keeps them as files).
+  (`docs/evolution/` where a repository keeps them as files);
+- `.hive/agents/`, `.hive/roles/` and `.hive/kinds/` (the files that define
+  agents, roles and job kinds, where a repository keeps them).
 
 `.github/CODEOWNERS` also asks for the owner's review on the store's schema
 (`crates/hive-store/`) and the console (`web/hub/`). A new dependency or a

@@ -34,15 +34,25 @@ What leaves the machine in ordinary use:
 - **Package registries.** The publish date of a dependency version, asked
   of npm, crates.io, PyPI, the Go module proxy or RubyGems for the
   release-age rule ([landing.md](landing.md#dependencies-security-alerts-and-the-release-age-rule)).
+- **Whatever a job's own commands reach.** An agent's shell commands and
+  the project's build and check run with the network open: package
+  installs, downloads, any `curl`. Only a conversation in lockdown has the
+  network taken away ([Agents](#agents)).
+- **Web search, in a session.** `harness.web_search` is `chat` by default:
+  a session (a conversation with an agent) is offered web search and sends
+  the search words to DuckDuckGo, or to Brave Search when you gave Hive a
+  key for it. Jobs do not search unless the setting is `on`, and `off`
+  turns it off everywhere.
 
-And only when you turn it on or use it:
+Off until it is turned on or used:
 
 - web pages from the hosts in `harness.fetch_allow` (empty by default, so
   the `fetch` tool is not offered);
-- web search (`harness.web_search`; by default it is offered in a
-  conversation and not to jobs);
 - the MCP servers in the registry (`hive mcp list` names them, and
   `hive mcp show NAME` says who added each);
+- store hooks with a web address (`hive hook add EVENT --url URL`): each
+  matching event of the store is posted there as JSON. None exists until
+  one is added;
 - backups, to the place `backup.to` names (empty by default);
 - the release check, at the address `update.latest_url` names (empty by
   default: no check and no network);
@@ -52,10 +62,19 @@ And only when you turn it on or use it:
 - the dictation model, fetched once when you first use the microphone. The
   speech is recognised on the machine and no audio leaves it.
 
+These switches are settings and commands. The rule is that the owner turns
+them on. The program does not refuse `hive settings set` from an agent's
+shell for them: [Agents](#agents) says which rules the program checks and
+which it does not.
+
 The sign-in under **Settings → Harness** is your model provider's, not
 Hive's. The login is a file under `~/.hive/private/providers/` with mode
 0600, and `hive harness logout` removes it
-([harness.md](harness.md#sign-in-and-where-the-token-lives)).
+([harness.md](harness.md#sign-in-and-where-the-token-lives)). Without that
+file the Copilot provider uses a GitHub token it finds in the environment
+(`COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN`), in the Copilot
+editor plugins' own login or in the Copilot CLI's config, and checks it
+against GitHub.
 
 ## The console
 
@@ -67,38 +86,49 @@ The HTTP layer also refuses a listener that is not on loopback
 
 The console has no login of its own. The loopback address is the boundary:
 a program on this computer can reach the port, and nothing outside it can.
-Treat anything you put in front of that port, a tunnel or a proxy, as a
-door to the whole console.
+An agent's shell commands are programs on this computer too
+([Agents](#agents)). Treat anything you put in front of that port, a tunnel
+or a proxy, as a door to the whole console.
 
 On that listener:
 
-- Every write passes the **same-origin guard**: when the browser sends an
-  `Origin`, it must name this hub, and a request the browser marks
-  `Sec-Fetch-Site: cross-site` is refused. This stops a web page you have
-  open from writing to your console.
+- Every write from the console passes the **same-origin guard**: when the
+  browser sends an `Origin`, its host and port must equal the request's
+  `Host`, and a request the browser marks `Sec-Fetch-Site: cross-site` is
+  refused. This stops a page of another site from writing to your console.
+  The routes a hand calls (`/api/v1/hands/`) are checked by join code and
+  device key instead.
 - The writes that change the most also need an **explicit confirmation
   header**: `X-Hive-Settings: yes` for settings, `X-Hive-Decide: yes` for
   decisions, `X-Hive-Members: yes` for members, and one each for the push
   key, the private tests and job repair.
-- Some routes also refuse any `Host` that is not this machine. These are
-  folders, credentials, held-out fixtures and job repair. This protects
-  them against DNS rebinding.
+- Four route groups also refuse any `Host` that is not this machine:
+  browsing folders, credentials, held-out fixtures and job repair. Only
+  these are protected against DNS rebinding. The guard above compares
+  `Origin` with the request's own `Host`, so it does not stop a page whose
+  name was rebound to 127.0.0.1
+  ([What is not built](#what-is-not-built)).
 
 ### A relay in front of the console (`hub.allow_remote`)
 
 Hive ships no relay and nobody runs one for you. The brain's side of one is
 built, for someone who wants to reach their console from another machine
-through a web front of their own. The brain does not trust that front.
+through a web front of their own. The brain does not trust that front with
+writes. Reads it serves without a signature, as the list says.
 
 - **Owner-only switch.** `hub.allow_remote` holds the front's `https://`
-  origin. It counts only when the owner set it. A value an agent wrote is
-  ignored. Empty is the default and means this machine only.
+  origin. It counts only when the store names the owner as the one who set
+  it: a value written under an agent's name is ignored
+  ([Agents](#agents) says what that check rests on). Empty is the default
+  and means this machine only.
 - **A separate listener.** `hive hub --front-port N` opens a second
   listener, also on 127.0.0.1, for the relay. Every request on it is
   marked as coming through the front. Request headers cannot change that,
   so a forged `Host: 127.0.0.1` does not unlock the loopback-only routes.
   While `hub.allow_remote` is empty, every request on that listener gets 403.
-  A browser `Origin` other than the front's also gets 403.
+  A browser `Origin` other than the front's also gets 403. Once the
+  setting is set, reads (`GET` and `HEAD`) on that listener pass without a
+  signature.
 - **Passkey-signed writes.** Each write through the front carries a
   WebAuthn assertion from a registered member's passkey. The passkey signs
   over a nonce the brain issued (`GET /api/v1/nonce`: five minutes,
@@ -107,14 +137,17 @@ through a web front of their own. The brain does not trust that front.
   verifies the assertion itself (`hive_runner::webauthn`, ES256 on P-256)
   and checks:
   - the type, challenge and origin in the client data;
-  - the RP ID hash of the front's host;
+  - the RP ID hash, which must be that of the front's host or of a parent
+    domain of it;
   - the user-present and user-verified flags;
-  - that the signature counter moved forward;
+  - that the signature counter moved forward, for a passkey that keeps one
+    (a passkey that always reports 0 is accepted);
   - the signature under the member's registered key.
 
-  It then spends the nonce and records the counter in one step each, so a
-  replayed write is refused. A wrong key, another body or path, an
-  unregistered or revoked passkey, or a missing signature all get 403.
+  It then spends the nonce and records the counter in one step each. The
+  spent nonce is what refuses a replayed write, also for a passkey that
+  keeps no counter. A wrong key, another body or path, an unregistered or
+  revoked passkey, or a missing signature all get 403.
 - **Roles.** A member is `owner` or `member`. Settings and members changes
   through the front need an owner's passkey.
 - **What is stored.** The `members` table holds each passkey's credential
@@ -123,10 +156,11 @@ through a web front of their own. The brain does not trust that front.
   session token or password is ever stored. Registering and revoking a
   member is recorded as an event (`member.added`, `member.revoked`).
 
-What a front can and cannot do: it can deny service, and it can see the
-pages it relays. It cannot change anything on the brain, because it cannot
+What a front can and cannot do: it can deny service, and it can read
+everything the console can show, because reads through the relay port carry
+no signature. It cannot change anything on the brain, because it cannot
 produce a member's passkey signature. It cannot reuse a write it saw,
-because the nonce is spent and the counter has moved. The test
+because the nonce is spent. The test
 `the_consoles_signed_write_fixture_is_accepted_by_the_brain` in `hive-hub`
 holds the console's signing and the brain's check to one format
 ([console.md](console.md#reaching-the-console-from-anywhere)).
@@ -137,37 +171,66 @@ port.
 ## The machines you pair
 
 A hand has no store. It cannot read the board, the settings or another
-project on its own. It is given one job at a time, with a brief that
-carries what the brain chose to tell it.
+project on its own. Each job comes to it on its own, with a brief that
+carries what the brain chose to tell it. A hand with more than one worker
+slot runs several jobs at the same time, each in a clone of its own.
 
-**A machine paired over SSH** (`hive pair ADMIN@HOST`, Linux) holds a
-`hive` user, the hands binary, a work directory with the clones of the jobs
-it runs, and one line in that user's `authorized_keys`. The line is a
-forced command with `restrict`, so the brain's key can run the hands verbs
-on that machine and nothing else. The key is the brain's own,
-`~/.ssh/hive_hands_ed25519`. The machine also holds a model sign-in, which
-you place there (`hive executor login NAME --admin ADMIN@HOST`).
+**A machine paired over SSH** (`hive pair ADMIN@HOST --name NAME`, Linux
+only) is set up over the SSH login of an admin there, who needs
+passwordless sudo. Pairing copies a Linux `hive` to the machine and leaves
+these on it:
+
+- a `hive` user;
+- the program, as `/usr/local/bin/hive-hands` with `/usr/local/bin/hive`
+  linked to it;
+- a git config and `mise` in that user's home. `mise` is downloaded on the
+  machine from its release on GitHub and checked against a SHA-256 that
+  Hive carries;
+- a work directory with the clones of the jobs it runs;
+- one line in that user's `authorized_keys`. The line is a forced command
+  with `restrict`, so the brain's key can run the hands verbs on that
+  machine and nothing else;
+- an sshd drop-in, `/etc/ssh/sshd_config.d/60-hive-hands.conf`, which turns
+  off passwords, forwarding and terminals for that user. sshd is reloaded
+  after it is written.
+
+On the brain, pairing adds a `Host` block to `~/.ssh/config` and the
+machine's host keys to `~/.ssh/known_hosts`. The key is the brain's own,
+`~/.ssh/hive_hands_ed25519`. A newly paired machine has no model sign-in
+and takes no work until it has one:
+`hive executor login NAME --admin ADMIN@HOST`, then
+`hive executor probe NAME`. The login command places the token you stored
+with `hive executor token`, or else the brain's own Copilot login when that
+login reaches no repository; with `--with-token` it takes a token from
+stdin. [machines.md](machines.md#pairing-hands) has every step.
 
 **A machine enrolled with a join code** (`hive-hand join`) holds an ed25519
 device key in its own directory (`~/.hive-hand`, mode 0700; the private key
-0600) and a small `device.json`. It opens no port and gets no key from the
-brain. The join code is six words, good for ten minutes and one join; the
-brain keeps only its SHA-256 and the public half of the device key. To
-connect, the hand signs a nonce from the brain (good for two minutes and
-one use) and gets a session token for twelve hours. A tampered signature, a
-used or lapsed nonce and a revoked device are refused
+0600) and a small `device.json`. It opens no port, and enrolling puts no
+key of the brain's on it. The join code is six words, good for ten minutes
+and one join; the brain keeps only its SHA-256 and the public half of the
+device key. To connect, the hand signs a nonce from the brain (good for two
+minutes and one use) and gets a session token for twelve hours. A tampered
+signature, a used or lapsed nonce and a revoked device are refused
 ([machines.md](machines.md#enrolling-a-hand)). The test
 `dial::end_to_end::a_hive_hand_joins_a_brain_and_completes_a_job_over_the_dial_channel`
-in `hive-runner` runs a real `hive-hand` through a join and one job. To run
-an agent's job the machine also needs `hive` on its PATH and a model
-sign-in of its own, like any machine that runs the harness.
+in `hive-runner` runs a real `hive-hand` through a join and one job.
+`hive-hand join` enrols the machine and then stays connected. On every
+later start `hive-hand dial` holds the connection, so keep that running on
+the machine. To run an agent's job the machine also needs `hive` on its
+PATH and a model sign-in of its own, like any machine that runs the
+harness.
 
-The hand reaches the brain at the address you give it (`--brain`). The
-console listens on loopback only, so getting from the hand to that port is
-yours to set up: an SSH tunnel, a private network, or a proxy with TLS in
-front of it. The hand speaks HTTP through the system `curl`, and TLS is
-whatever fronts the hub. What you put there reaches the whole console, not
-only the hand's routes, so keep it between your own machines.
+The hand reaches the brain at the address you give it (`--brain`). The line
+the Machines page shows carries the address your browser used, so it
+usually reads `http://127.0.0.1:8765`; change it to an address the machine
+can reach. The console listens on 127.0.0.1 only, so another machine
+reaches it only through something you set up on the brain's machine: an
+SSH tunnel, or a proxy with TLS there. A private network alone does not
+reach a port bound to 127.0.0.1. The hand speaks HTTP through the system
+`curl`, and TLS is whatever fronts the hub. What you put there reaches the
+whole console, not only the hand's routes, so keep it between your own
+machines.
 
 **What the brain sends a hand.** For each job: the code as a git bundle of
 the branch the job starts from, the brief, the run's signing key, the
@@ -187,7 +250,11 @@ the roster; the hand's next call is refused, and coming back takes a new
 code. `hive remove executor NAME` takes a paired machine out: after a
 preview, the store marks it removed and no job is sent there again. The
 preview also prints the commands that remove the `hive` user and the work
-directory on the machine itself. Those are yours to run.
+directory on the machine itself. Those are yours to run, over the admin's
+login. The printed line goes through `ssh NAME`, which is the login held to
+the hands verbs, and that login refuses it. The commands leave the program
+under `/usr/local/bin` and the sshd drop-in in place, so remove those by
+hand too.
 
 ## Secrets
 
@@ -214,30 +281,40 @@ proves the same path with the push key.
 **The vault.** `hive secret set NAME` seals a value in the brain's store
 ([harness.md](harness.md#team-secrets-the-vault)). What is built:
 
-- The `secrets` table holds only ciphertext: ChaCha20-Poly1305 under one
-  data key, a fresh nonce per write, the name bound as associated data.
-- The data key is stored wrapped to its holder's key (X25519, then
-  HKDF-SHA256 and ChaCha20-Poly1305). The brain is the only holder. Its key
-  is a mode-0600 file in the brain's private directory, outside the store.
-- A value comes in on stdin only. It is refused from a terminal and from
-  inside a job. `hive secret list` shows names, never values.
+- The `vault_secrets` table holds only ciphertext: ChaCha20-Poly1305 under
+  one data key, a fresh nonce per write, the name bound as associated data.
+- The data key is stored in `vault_keys`, wrapped to its holder's key
+  (X25519, then HKDF-SHA256 and ChaCha20-Poly1305). The brain is the only
+  holder. Its key is a mode-0600 file in the brain's private directory,
+  outside the store.
+- A value comes in on stdin (`hive secret set NAME`) or through
+  **Settings → Secrets** in the console. The command refuses a value typed
+  at a terminal and refuses to run inside a job. `hive secret list` shows
+  names, never values, and so does the console.
 - A project's recipe declares the names its jobs may have (`secrets:`). The
   brain grants them per run and records `secret.granted`, `secret.refused`
   and `secret.read`. On the brain's own executor the values are handed to
   the worker as environment variables for that run only, and replaced by
-  `[secret NAME]` in the run log and the result before either is stored.
+  `[secret NAME]` in the run log and the result before either is stored. A
+  value shorter than four characters is not replaced.
 
 What is not built: a hand cannot open the vault. A project whose recipe
 declares `secrets:` is marked unfit on every hand, so its jobs run on the
 brain.
 
 **Other places a secret can rest.** Model logins are files under
-`~/.hive/private/providers/`. An MCP sign-in is a file under
+`~/.hive/private/providers/`. The token `hive executor token` stores for
+the machines' model sign-in is a 0600 file, `private/executor-token`, in
+the hive home. An MCP sign-in is a file under
 `~/.hive/secrets/mcp-oauth/` with mode 0600. The token that reads a push
 key from 1Password rests in the login Keychain on macOS and in a 0600 file
 under `$HIVE_HOME/secrets/` elsewhere. The console never echoes a setting
-value shaped like a secret. The folder of private tests
-(`evolve.heldout_dir`) is masked in every view and event an agent can read.
+value shaped like a secret. The private tests are kept outside every
+repository, in `~/.hive/private/heldout` unless `evolve.heldout_dir` names
+another folder, and that setting is masked in every view and event an agent
+can read. In the default place, what keeps a job from reading the tests is
+the deny rule on the hive home's `private/` directory. That is a rule on
+the text of a command and not a barrier ([Agents](#agents)).
 
 ## A brain without the code: `brain.code none`
 
@@ -246,7 +323,7 @@ One setting says whether the brain keeps a copy of your code:
 | `brain.code` | What the brain holds | Who runs what |
 |---|---|---|
 | `clone` (the default) | A clone of each project, as a laptop brain always has | The brain may run any job itself. Hands run what is routed to them. |
-| `none` | **No checkout of any project, ever** | The brain runs only the jobs that plan from the board: the project lead and the reflection (`reflect`). They work in an empty workspace and read the task text and what the hands report. Every other job (task, improve, review, evolve, check scripts) waits for a hand. |
+| `none` | **No checkout of any project, ever** | The brain runs only the jobs that plan from the board: the project lead and the reflection (`reflect`). They work in an empty workspace and read the task text and what the hands report. Jobs that work in the code (task, improve, experiment and the rest) wait for a hand. A `review` job has no machine to run on: it needs the code, which this brain lacks, and the store, which a hand lacks. Check and watch scripts are held. |
 
 ```
 hive settings set brain.code none
@@ -259,12 +336,15 @@ container image in `deploy/` sets it on every start
 What `none` changes, and the test that holds each part:
 
 - **Leasing.** The brain's own executor leases only `lead` and `reflect`
-  jobs. Anything else stays queued for a hand (`crates/hive-runner/src/jobs.rs`
-  `lease_job`, `needs_code_here`).
-- **Running.** A run started by hand (`hive run JOB`) for a job that needs
-  the code is refused with "brain.code is none". A lead or reflection gets
-  an empty git repository with one empty commit, never a clone
-  (`crates/hive-runner/src/exec.rs` `prepare_no_code_workspace`).
+  jobs. Anything else stays queued (`crates/hive-runner/src/jobs.rs`
+  `lease_job`, `needs_code_here`). A hand takes the jobs that work in the
+  code. It never takes a `review` job, which also needs the store, so with
+  `none` a review stays queued.
+- **Running.** A run asked for by hand (`hive work --job ID`) is not
+  started for a job that needs the code: the lease leaves it queued, and
+  the executor would refuse it with "brain.code is none". A lead or
+  reflection gets an empty git repository with one empty commit, never a
+  clone (`crates/hive-runner/src/exec.rs` `prepare_no_code_workspace`).
 - **Schedules.** Check and watch scripts run in a worktree of the project,
   so on a brain without code they are held and the hold is said once
   (`crates/hive-runner/src/schedule_script.rs`).
@@ -277,7 +357,8 @@ What `none` changes, and the test that holds each part:
   one full daemon pass. It checks three things: the reflection ran in a
   workspace with no project files, the task is still queued, and the
   brain's work directory holds no checkout of the project. It also checks
-  that `hive run` of the task is refused.
+  that the executor refuses to run the task on this machine ("brain.code is
+  none").
 
 This option is not finished. "What is not built" below says what a brain
 without code cannot do yet.
@@ -294,17 +375,22 @@ A brain in a container is one container with one volume
 (`deploy/Dockerfile`, `deploy/brain.sh`). `deploy/brain.sh up NAME VERSION
 PORT` starts one, and each name gets its own container and its own volume,
 so two brains never share a container, a volume, a store or a key.
-Everything a brain keeps is on that volume, under `HIVE_HOME=/data/hive`.
-That covers the SQLite store and its WAL, the work directory, the logs, the
-run keys and the console's state. The image itself holds no Hive source and
-no project code. The source tree stays in the build stage, and
-`.dockerignore` keeps `.git`, build output, env files, keys and stores out
-of the build context.
+What a brain keeps under the hive home is on that volume, under
+`HIVE_HOME=/data/hive`: the SQLite store and its WAL, the work directory,
+the logs, the run keys, the model login and the console's state. Three
+things live in the container's own home and go when the container goes:
+`gh`'s login (`~/.config/gh`), the SSH key and config that pairing writes
+(`~/.ssh`), and a binary swapped in by a release update. The image itself
+holds no Hive source and no project code. The source tree stays in the
+build stage, and `.dockerignore` keeps `.git`, build output, env files,
+keys and stores out of the build context.
 
 The container runs as an unprivileged user (uid 10001) with every Linux
 capability dropped and `no-new-privileges` set (`deploy/compose.yaml`,
-`deploy/brain.sh up`). It ships `git`, `gh` and `hive`, and no other coding
-harness. The brain's own lead uses Hive's built-in harness.
+`deploy/brain.sh up`). It ships `hive`, `git`, `gh`, the OpenSSH client
+(the brain signs and checks with `ssh-keygen`) and `openssl`, and no other
+coding harness. It holds no `az`. The brain's own lead uses Hive's built-in
+harness.
 
 The console stays on loopback there too. The container runs on the host's
 network (`network_mode: host`), so its console is on the host's
@@ -334,11 +420,14 @@ brain makes (none with `brain.code none`).
 ## Backups
 
 `backup.to` copies the store once a day ([runner.md](runner.md#backups-of-the-store)).
-The image passes `HIVE_BACKUP_TO` through to it, for example
-`az://ACCOUNT/CONTAINER/PREFIX`. Azure Storage encrypts blobs at rest on
-its side. A backup is the store (`hive.sqlite`), so it holds the board,
-the jobs and their results, but no project checkout. A copy is as readable
-as the store it came from: put it somewhere you trust.
+The image passes `HIVE_BACKUP_TO` through to it. An
+`az://ACCOUNT/CONTAINER/PREFIX` destination is uploaded with the `az`
+program, which the image does not hold, so it works there only after you
+add the Azure CLI and a login to the image. Azure Storage encrypts blobs at
+rest on its side. A backup is the store (`hive.sqlite`), so it holds the
+board, the jobs and their results, but no project checkout. The archive
+file beside the store, `hive-archive.sqlite`, is not in a backup. A copy is
+as readable as the store it came from: put it somewhere you trust.
 
 ## Removing your data
 
@@ -350,9 +439,10 @@ Your data is on your machines, so removing it is yours to do:
   it deletes the project's rows (posts, jobs, runs, briefs, records,
   events) in one transaction ([machines.md](machines.md#removing-projects-and-executors)).
 - `hive service uninstall` stops and removes the two user services.
-- The store is one file, `hive.sqlite`, in the hive home (`$HIVE_HOME`,
-  `~/.hive` by default), beside the logs, the model logins and the work
-  directories.
+- The store is `hive.sqlite`, in the hive home (`$HIVE_HOME`, `~/.hive` by
+  default). Once a month rows older than `daemon.archive_days` (90) that
+  nothing reads back move to `hive-archive.sqlite` beside it. The logs, the
+  model logins and the work directories are in the same folder.
 - `deploy/brain.sh delete NAME --yes` removes a container brain and its
   volume: the store, the work directory and the keys. It prints where that
   brain's backups were going.
@@ -387,39 +477,73 @@ keeps the binary it has.
 
 ## Agents
 
-Agents run as the user who runs Hive on that machine (on a hand, the
-enrolled user), under the constitution's hard stops and the owner-only
-paths. They cannot open the console to a front, since their
-`hub.allow_remote` is ignored. They cannot write the owner's presence or
-other owner-only settings either. Credentials are never resolved inside a
-job (ADR-041 D4). In lockdown, a conversation's commands run in a sandbox:
-no network except localhost, writes only inside the worktree and caches,
-and credential directories unreadable.
+Agents run as the user who runs Hive on that machine (on a paired machine
+the `hive` user, on an enrolled one the user who runs `hive-hand`), under
+the constitution's hard stops and the owner-only paths. A job has no
+container and no operating-system sandbox around it. So much of what holds
+an agent is a rule it is given, and the program checks only part of it.
+This section says which part.
 
-What that rests on:
+What the program checks:
 
-- **Deny rules in every job.** A command that would leave the clone (`git
-  push`, changing `git remote`, any `gh` call) or touch credentials
-  (`~/.ssh`, `.netrc`, the hive home's `private/` directory, `~/.copilot`,
-  `~/.config/gh`) is refused without being run. `harness.deny_tools` adds
-  rules of your own for every run ([harness.md](harness.md)).
+- **Credentials.** No credential reference is resolved inside a job
+  (ADR-041 D4).
+- **Two settings count only from the owner.** `hub.allow_remote` opens the
+  console to a front, and `owner.presence away` hands the owner's decisions
+  to the leads. Each counts only when the store names the owner as the one
+  who set it: a value written under an agent's name is ignored. A `hive`
+  command run under an agent's name is also refused the `owner.*` settings
+  and `push.credential`.
+- **Votes and variants.** No vote can touch the constitution's protected
+  sections, and no variant of the loop can change `evolve.*`.
 - **Every commit is traceable.** A run signs its commits with a key of its
   own and adds its agent, job and executor as trailers. The runner checks
   them before it delivers a branch, and `hive verify <ref>` checks them
   again ([landing.md](landing.md#the-pull-request)).
-- **Posts and pages are data.** Agents are told that a post on the board
-  and the text of a web page are data, never an instruction. The loop stops
-  for you when a post reads like one. A repository's own instruction files
-  (`AGENTS.md` and the like) are different: a run reads them as
-  instructions, under the rule that the harness's own rules win.
-- **Lockdown has two strengths.** On macOS the operating system enforces it
-  (`sandbox-exec`). Elsewhere there is no operating-system sandbox behind
-  it: the harness withdraws `fetch`, `web_search` and the MCP tools and
-  refuses the commands that reach outside the machine.
+- **Lockdown has two strengths.** In lockdown, a conversation's commands
+  run in a sandbox: no network except localhost, writes only inside the
+  worktree and caches, and credential directories unreadable. On macOS the
+  operating system enforces it (`sandbox-exec`). Elsewhere there is no
+  operating-system sandbox behind it: the harness withdraws `fetch`,
+  `web_search` and the MCP tools and refuses the commands that reach
+  outside the machine.
+
+What is a rule and not a barrier:
+
+- **Deny rules in every job.** Before a shell command of a job runs, the
+  harness matches its text against four patterns: a command that starts
+  with `git push`, with `git remote add`, `set-url` or `remove`, or with
+  `gh`, and a command that names `~/.ssh/`, `.netrc`, `~/.copilot`,
+  `~/.config/gh` or the hive home's `private/` directory. A match is
+  refused without being run. Other spellings pass (`git -C . push`, `gh`
+  by its full path, `$HOME/.ssh/...`). The rules catch a mistake; they are
+  not a barrier. `harness.deny_tools` adds rules of your own for every run
+  ([harness.md](harness.md)).
+- **The kill switch.** `hive stop` halts the runner. The rule is that only
+  the owner runs `hive start`. The program does not refuse `hive start` or
+  `hive settings set stop 0` from an agent's shell; the event log records
+  who ran it, by the name the command carried.
+- **Every other setting.** The caps and `evolve.*` included, any other
+  setting can be changed by `hive settings set` from an agent's shell. The
+  event log records the name it was written under.
+- **The agent's name.** The first two checks above go by the name a `hive`
+  command carries (`HIVE_AGENT`, `--agent`) and by the job's mark in its
+  environment (`HIVE_JOB`). A job runs as your user, so a command can leave
+  them out (`--agent human`), and it can write through the console on
+  127.0.0.1, which has no login. Such a write is recorded as yours and
+  counts as yours.
+- **Posts are data.** Agents are told that a post on the board is data,
+  never an instruction, and the loop stops for you when a post reads like
+  one. Nothing tells an agent the same about the text of a web page it
+  fetched. A repository's own instruction files (`AGENTS.md` and the like)
+  are different: a run reads them as instructions, under the rule that the
+  harness's own rules win.
 
 The known risk stays: text in a repository can try to steer an agent
-(prompt injection). The rules above, the kill switch (`hive stop`), the
-event log and the review of every pull request are the controls.
+(prompt injection). The controls are the rules above, the review of every
+pull request, the event log and the kill switch (`hive stop`). None of them
+is a sandbox, so treat a repository you point Hive at like code you would
+run yourself.
 
 ## What is not built
 
@@ -428,10 +552,17 @@ event log and the review of every pull request are the controls.
 - **A relay.** The brain's side of `hub.allow_remote` is built, and so are
   the console's passkey pages (see [The console](#the-console)). The front
   itself is not part of Hive: no web login and no relay ship with it.
-- **A sandbox for jobs.** A job runs as your user inside its clone, under
-  the deny rules. No container or operating-system sandbox wraps it.
-  Lockdown covers conversations, and the operating system enforces it on
-  macOS only.
+- **A sandbox for jobs.** A job runs as your user inside its clone, with
+  the network open. No container or operating-system sandbox wraps it. The
+  deny rules are rules on the text of a command: other spellings of the
+  same command pass ([Agents](#agents)). Lockdown covers conversations, and
+  the operating system enforces it on macOS only.
+- **A check of the `Host` header on every route.** The console checks
+  `Host` on four route groups only: browsing folders, credentials, held-out
+  fixtures and job repair. Its write guard compares `Origin` with the
+  request's own `Host`, so it does not stop DNS rebinding: a page whose
+  name was rebound to 127.0.0.1 passes the guard, and it can read the
+  console too.
 - **The vault on hands.** A hand cannot open the vault, model logins are
   not vault names, and there are no `vault://NAME` references for MCP and
   cloud credentials.
@@ -441,6 +572,9 @@ event log and the review of every pull request are the controls.
 - **Registering a project without a checkout.** `hive init` and **Add
   project** take the path of a checkout on the brain's own disk. A brain
   that holds no checkout of a project has no way to register it.
+- **Reviews on a brain without code.** A `review` job needs the code and
+  the store both. A brain with `brain.code none` has no code and a hand has
+  no store, so no machine takes it.
 - **Landing without a checkout.** The lander merges in a worktree of the
   project's registered checkout. A brain with `brain.code none` has none,
   so it holds every finished branch instead (`land.held`, reason

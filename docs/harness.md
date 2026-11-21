@@ -20,8 +20,12 @@ system prompt (+ the clone's AGENTS.md) + the job's brief
 ### The tool set
 
 Every run offers the same typed tools, each a JSON
-schema the provider's tool-calling API sees, each confined to the clone
-and subject to the same deny rules and output cap as a shell command:
+schema the provider's tool-calling API sees, and subject to the same deny
+rules and output cap as a shell command. The file tools (`read`, `grep`,
+`glob`, `edit`, `write`) take paths inside the clone only. A `bash`
+command is not confined to the clone: it runs as your user with the clone
+as its working directory, and the deny rules match the text of the command
+([security.md](security.md#agents)). The tools:
 
 | tool | what it does |
 |------|--------------|
@@ -44,7 +48,7 @@ A reply may carry **several calls**, and every one gets its own
 observation, so a model reads three files in one turn instead of three.
 The calls that only look - `read`, `grep`, `glob` and `fetch` - run **at
 the same time** when a reply carries two or more of them (eight threads at
-most), each confined to the clone as before; `bash`, `edit`, `write`,
+most), the file tools confined to the clone as before; `bash`, `edit`, `write`,
 `plan`, `skill`, `subagent` and MCP calls run one after another in the
 order the model gave, after the batch, and the results go back in the
 order of the calls, so the model sees nothing of the scheduling but the
@@ -373,8 +377,9 @@ for one run. Empty means the tool is not offered; a URL whose host is not
 listed, or that redirects off the list, is refused with the list named
 (`refused by policy: host "x" is not in harness.fetch_allow …`) as an
 `error` step. The deny rules for credentials do not apply to a page the
-model reads, but a page's text is observation, never instruction - the
-system prompt says so. Each fetch is a `fetch` step with the URL.
+model reads. A page's text is meant to be read as observation, never as
+instruction, but nothing in the system prompt or in the tool's description
+tells the model so today. Each fetch is a `fetch` step with the URL.
 
 ### Web search
 
@@ -443,13 +448,14 @@ helper started by a read-only run is read-only too, and the fenced
 
 A job that needs an API key or token gets it from the team vault (ADR-070
 rule 4, step 4), never from a file in its clone. The brain keeps the
-vault in its store: the `secrets` table holds only ciphertext
+vault in its store: the `vault_secrets` table holds only ciphertext
 (ChaCha20-Poly1305 under one team data key, a fresh nonce per write and the
-name bound as associated data). The data key is stored wrapped, once per
-holder: X25519 to the holder's key, then HKDF-SHA256 and ChaCha20-Poly1305.
-Today the brain is the only holder. Its key is a mode-0600 file in the
-brain's private directory, outside the store. The step 2 device registry
-adds a holder per paired device.
+name bound as associated data). The data key is stored wrapped in the
+`vault_keys` table, once per holder: X25519 to the holder's key, then
+HKDF-SHA256 and ChaCha20-Poly1305. Today the brain is the only holder. Its
+key is a mode-0600 file in the brain's private directory, outside the
+store. Nothing adds a paired or enrolled machine as a holder yet (see "Not
+built yet" below).
 
 - `printf %s "$TOKEN" | hive secret set NAME` seals a value. The value
   comes on stdin only. It is refused from a terminal and from inside a job,
@@ -471,9 +477,10 @@ adds a holder per paired device.
 - On the brain's own executor (LocalExec), the granted values are opened
   in memory and handed to the worker process as environment variables for
   that run only, with one `secret.read` event per name. They are wiped when
-  the worker ends. Every value is replaced by `[secret NAME]` in the run
-  log and in the parsed result before either is stored. Events carry names,
-  never values. Setting and removing a value record `secret.set` and
+  the worker ends. Every value of four characters or more is replaced by
+  `[secret NAME]` in the run log and in the parsed result before either is
+  stored; a shorter value is not replaced. Events carry names, never
+  values. Setting and removing a value record `secret.set` and
   `secret.removed`.
 - Remote hands cannot open the vault yet. A project whose recipe declares
   `secrets:` is marked unfit on them ("needs vault secrets, which only the
@@ -605,8 +612,11 @@ instead of silently closing a task. A command's completion marker is accepted
 only when that command succeeds without timing out; otherwise the error
 returns to the agent for diagnosis.
 
-**Three budgets** bound every run, all owner settings (Settings → Harness
-**Budgets**, or `hive settings set`): `harness.max_steps` model calls (60), the wall
+**Three budgets** bound every run. They are settings (Settings → Harness
+**Budgets**, or `hive settings set`), and the rule is that the owner sets
+them: the program does not refuse `hive settings set` for them from an
+agent's shell ([security.md](security.md#agents)). They are
+`harness.max_steps` model calls (60), the wall
 clock (`minutes_per_job`, the harness stops one minute before the runner
 would kill it), and `harness.max_cost` - the provider-reported cost one run
 may spend, `0` meaning no cap. `harness.max_steps none` (also `off` or
@@ -767,15 +777,24 @@ two-reply script, and `HIVE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
 (`{"replies":[{"command":"echo hi"},{"report":"SUMMARY: done"}]}`; add
 `"loop":true` to repeat the last reply). It never appears in Settings; it is
 for tests and demos.
-Commands or native paths that would leave the clone (`git push`, changing
-`git remote`, any `gh` call) or touch credentials (`~/.ssh`, `.netrc`, the hive home's
-`private/` directory under any spelling - `~/.hive/private`,
-`$HIVE_HOME/private`, a measurement home's `private/providers` -
-`~/.copilot`, `~/.config/gh`) are refused without being run; the model is
-told why and continues. Native actions reuse the same deny rules as shell so
-the two paths cannot drift. The macOS filesystem root `/private/`, which
-`/tmp` and `/var` resolve to, is not a credential path.
-A run never holds a git login either. With a GitHub App configured
+Before a command or a native path of a run is used, the harness matches
+its text against four deny rules: a command that starts with `git push`,
+with `git remote add`, `set-url` or `remove`, or with `gh`, and a command
+or path that names `~/.ssh/`, `.netrc`, `~/.copilot`, `~/.config/gh` or the
+hive home's `private/` directory (written as `.hive/private`,
+`$HIVE_HOME/private`, or a path with `/private/providers` or
+`/private/heldout` in it, as a measurement home's has). A
+match is refused without being run; the model is told why and continues.
+Other spellings pass (`git -C . push`, `gh` by its full path,
+`$HOME/.ssh/...`). The rules catch a mistake; they are not a barrier
+([security.md](security.md#agents)). Native actions reuse the same deny
+rules as shell so the two paths cannot drift. The macOS filesystem root
+`/private/`, which `/tmp` and `/var` resolve to, is not a credential path.
+Hive hands a run no git login of its own. That is not a wall around the
+run: a job runs as your user and inherits the runner's environment, so a
+git login that user has on the machine (an SSH key, a credential helper,
+`gh`'s login, a token in the environment) is within reach of its commands.
+With a GitHub App configured
 (Settings → Git, [Credentials](landing.md#credentials)), the brain mints a
 one-hour installation token for the job's one repository after the run
 has ended and its commits passed the identity check; the hand that pushes

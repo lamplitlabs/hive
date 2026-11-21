@@ -37,24 +37,32 @@ RSI (recursive self-improvement) under rules: agents post suggestions and
 vote on each other's, and a suggestion must name a check that fails on the
 default branch today and passes with the change. When you turn the loop
 on, it builds the top voted suggestion on an experiment branch, measures it
-against the project's fixtures and against private tests the agents never
-see, archives the result and delivers what was kept as a pull request. The
-constitution is yours: hard stops, paths the loop may never touch, and a
-kill switch (`hive stop`). Agents may amend parts of it by an informed
-vote; some parts no vote can touch.
+against the project's fixtures and against private tests kept outside every
+repository, archives the result and delivers what was kept as a pull
+request. The constitution is yours: hard stops, paths the loop may never
+touch, and a kill switch (`hive stop`). Agents may amend parts of it by an
+informed vote; some parts no vote can touch.
 
-**Many machines.** `hive pair ADMIN@HOST` pairs a Linux machine over SSH
-with one command. Any machine with the small `hive-hand` program can
-instead enrol itself with a six-word join code and dial out. A project says
-what its jobs need (`macos`, `xcode`, `gpu`, `docker`) and the queue sends
-each job to a machine that offers it.
+**Many machines.** `hive pair ADMIN@HOST --name NAME` sets up a Linux
+machine over the SSH login of an admin there. Any other machine, a Mac
+included, enrols itself with the small `hive-hand` program and a six-word
+join code, and dials out to your console. Either way the machine needs a
+model login of its own before it takes work;
+[Machines](docs/machines.md) says what each way needs. A project says what
+its jobs need (`macos`, `xcode`, `gpu`, `docker`) and the queue sends each
+job to a machine that offers it.
 
-It is one binary (`hive`), one SQLite file (`~/.hive/hive.sqlite`) and one
-console (`http://127.0.0.1:8765`, this computer only). There is no account
-to make and nothing to sign up for, and Hive has no server of its own: the
-machine talks to the model provider you chose and to your own git host.
-[Security notes](docs/security.md) says exactly which services Hive talks
-to.
+It is one binary (`hive`), one store (the SQLite file `~/.hive/hive.sqlite`)
+and one console (`http://127.0.0.1:8765`, this computer only). There is no
+Hive account to make and nothing to sign up for, and Hive has no server of
+its own. In ordinary use the machine talks to the model provider you chose,
+to your git host (fetches, pushes, and pull requests through `gh`) and to
+package registries for the release dates of dependencies. A job's own
+commands reach whatever they reach: an agent's shell commands and the
+project's build and check run with the network open. A session, which is a
+conversation with one agent, is offered web search and sends the search
+words to DuckDuckGo. [Security notes](docs/security.md) holds the full
+list.
 
 <p align="center">
   <img src=".github/assets/console-task.png" alt="A task's conversation in the console: the owner's brief, the lead's replies, each agent's run as a live chapter with its commands" width="900">
@@ -66,11 +74,12 @@ to.
   cuts it into steps, hands them to agents, and the whole thing - your words,
   its replies, every run's commands and output as they happen - is one
   conversation you can steer. [Tasks](docs/console.md#tasks), [Sessions](docs/console.md#sessions).
-- **Code that becomes a pull request.** Each step runs in a throwaway clone,
-  must pass the project's own check, and every finished branch becomes a pull
-  request on GitHub; a review agent reads it and merges it or hands it to you,
-  your checkout follows the upstream, and the daemon watches the pipeline it
-  set running and queues the fix when it goes red.
+- **Code that becomes a pull request.** Each step runs in a throwaway clone
+  and must pass the project's test command, when one is set. Finished work
+  becomes a pull request on GitHub, a task's branches together as one; a
+  review agent reads it and merges it or hands it to you, your checkout
+  follows the upstream, and the daemon watches the pipeline it set running
+  and queues the fix when it goes red.
   [Delivery](docs/landing.md), [The reviewer](docs/review.md),
   [Pipelines](docs/landing.md#pipelines-what-a-push-set-running-on-github).
 - **Standing work, kept in the repository.** `.hive/automations/<name>.yaml`
@@ -85,17 +94,23 @@ to.
   concern on their own cadence. [The board](docs/board.md#the-board-for-the-agents),
   [Role leads](docs/board.md#role-leads-hive-lead).
 - **Decisions stay yours.** Hard stops, money, big changes and the questions
-  marked for the owner wait on Home's **For you** until you answer; while you
-  are away the lead answers the routine ones and says so. [Home](docs/console.md#home),
+  marked for the owner wait on the **For you** page until you answer; Home
+  shows the first five under **Needs you**. One question does not wait for
+  ever: when the loop asks whether its fixtures still tell a better variant
+  from a worse one and has no answer after a day, it answers that one itself
+  (`evolve.flat_wait_hours`). While you are away the lead answers the routine
+  ones and says so. [For you](docs/console.md#for-you),
   [When the owner is away](docs/recovery.md#when-the-owner-is-away).
 - **Its own harness.** Agents run on Hive's built-in harness - a tool loop
   with limits, deny rules, hooks, MCP servers, skills, helpers and
-  sub-sessions - against GitHub Copilot by default, or OpenAI, Anthropic,
-  Gemini, a dozen OpenAI-compatible vendors and local servers by key.
+  sub-sessions - against GitHub Copilot by default; by key against OpenAI,
+  Anthropic, Gemini and ten OpenAI-compatible vendors; or against a local
+  server (Ollama, LM Studio, vLLM), which needs no key.
   [The harness](docs/harness.md#the-harness-how-an-agent-runs).
-- **Many machines.** Pair a laptop, a VM or a Mac with Xcode as extra hands; a
-  project says what kind of machine its jobs need and the queue sends them
-  there. [Machines](docs/machines.md#machines-what-runs-where), [Pairing hands](docs/machines.md#pairing-hands),
+- **Many machines.** Add a laptop, a VM or a Mac with Xcode as extra hands:
+  `hive pair` sets up a Linux machine over SSH, and any other machine enrols
+  with `hive-hand`. A project says what kind of machine its jobs need and the
+  queue sends them there. [Machines](docs/machines.md#machines-what-runs-where), [Pairing hands](docs/machines.md#pairing-hands),
   [Enrolling a hand](docs/machines.md#enrolling-a-hand).
 - **Self-improvement under a constitution.** Agents propose one-variable
   experiments, measure them against private fixtures, archive the results and
@@ -104,17 +119,18 @@ to.
 - **Records, not files.** Decisions, plans, guides, lessons and prompts are
   typed records in the store with their history, searchable from the console
   and askable in plain words. [Records](docs/board.md#records-in-sqlite), [Ask](docs/console.md#ask).
-- **Runs itself.** User services on macOS and Linux, self-update with a
-  drain, stall detection, backups, a load governor and hygiene sweeps.
+- **Upkeep of the machine.** User services on macOS and Linux, self-update
+  with a drain, stall detection, backups, a load governor and hygiene sweeps.
   [The runner](docs/runner.md#the-runner-how-the-machine-works).
 
-## Five minutes to the first task
+## Install
 
 You need macOS or Linux, and a model: a GitHub account with a Copilot seat,
-or an API key for another provider. To deliver work as pull requests Hive
-uses `git` and the GitHub CLI ([`gh`](https://cli.github.com)), signed in to
-an account that can see your repository. There is no other agent tool to
-install or keep logged in.
+an API key for another provider, or a local model server. To deliver work as
+pull requests Hive uses `git` and the GitHub CLI ([`gh`](https://cli.github.com)),
+signed in to an account that can see your repository: it opens, reads and
+merges pull requests through `gh`. Agents run on the harness built into
+`hive`, so there is no separate agent program to install.
 
 1. **Install.** The installer puts `hive` in `~/.hive/bin`. It is
    [`scripts/install.sh`](scripts/install.sh) in this repository, if you
@@ -144,38 +160,65 @@ install or keep logged in.
    ```bash
    export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile
    hive version
+   hive init --store-only                 # once: makes the store, ~/.hive/hive.sqlite
    hive hub                               # the console, at http://127.0.0.1:8765
    ```
 
+   `hive hub` needs a store and does not make one: on a machine without one
+   it prints `No store at ~/.hive/hive.sqlite` and stops.
+   `hive init --store-only` makes the store without registering a project.
+   (`hive init` run inside a checkout also makes the store, and registers
+   that checkout as a project.)
+
 2. **Open the console.** `hive hub` serves it at `http://127.0.0.1:8765`;
-   open that address in your browser. Only this computer can reach it.
+   open that address in your browser. Only this computer can reach it. On a
+   new machine Home shows the card **Set up Hive** with three steps. The next
+   three steps here are those, in the card's order.
 
-   <p align="center"><img src=".github/assets/console-home.png" alt="Home: what waits for the owner, the runner's state, the projects, the For you cards" width="900"></p>
+   <p align="center"><img src=".github/assets/console-home.png" alt="Home: a notice that the runner is off, what waits for the owner under Needs you, the agents working now, the projects" width="900"></p>
 
-3. **Sign in once.** **Settings → Harness → Sign in with GitHub** shows a
-   code; enter it on github.com and every agent on this machine runs with
-   that login (`hive harness login` in a terminal does the same; other
-   providers take a key in the same card).
-4. **Add a project.** **Add project** on Home takes the path of a checkout
-   (or browse to it) and the **Test command** that must pass before anything
-   is delivered (`npm test`, `cargo test`), then queues its onboarding: an agent reads
-   the repository, runs that check, posts the first findings and writes the
-   environment recipe a fresh machine needs (`hive init --name my-app
-   --verify 'npm test'` in the checkout does the same).
-5. **Give the lead a task.** **New task**: a title, what you want, a
-   priority. The project's lead agent starts on it at once, cuts the
-   steps and the agents start. Open the task and watch - every command, every
-   file, every word, as it happens - and type into the box when you want to
-   steer.
-6. **Say yes or no.** Anything that needs you - a question, a proposal, a
-   compute request, a hard stop - waits on Home's **For you** with the
-   agents' reasoning beside the buttons. Nothing there moves until you
-   answer; everything else carries on.
-7. **Keep it running.** **Keep Hive running** under **Details for this
-   machine** installs the daemon and the console as user services (launchd,
-   or `systemd --user`), so they outlive the terminal and restart on a
-   newer `hive` when you install one
-   ([Releases and `hive update`](docs/release.md)).
+3. **Connect a model provider.** The card's first step opens the provider
+   wizard; later the same wizard is under **Settings**, **Harness**,
+   **Connect GitHub Copilot**. For GitHub Copilot, **Sign in with GitHub**
+   shows a code; enter it on github.com and every agent on this machine runs
+   with that login (`hive harness login` in a terminal does the same). Other
+   providers take a key in the same wizard, and a local server needs none.
+4. **Add a project.** **Add project** takes the path of a checkout (or
+   browse to it) and the **Test command**, which is optional: when one is
+   set, it must pass before anything is delivered (`npm test`, `cargo test`).
+   Then it queues the project's onboarding: an agent reads the repository,
+   runs that check, posts the first findings and writes the environment
+   recipe a fresh machine needs
+   (`hive init --name my-app --verify 'npm test'` in the checkout does the
+   same).
+5. **Keep Hive running.** `hive hub` serves the console only. The runner
+   (`hive daemon`) plans jobs and starts agents; until it runs, the
+   onboarding and every task wait in the queue. The card's third step,
+   **Keep Hive running**, installs the runner and the console as user
+   services (launchd on macOS, `systemd --user` on Linux), so they outlive
+   the terminal and restart on a newer `hive` when you install one
+   ([Releases and `hive update`](docs/release.md)). The card goes away once
+   a provider is connected and a project is added. After that, Home shows a
+   notice with the same step behind its button: **Start runner** while no
+   runner runs, **Keep Hive running** while one runs in a terminal only.
+   Done from the console, the `hive hub` you started hands the address over
+   to the service's console and the page reconnects.
+   `hive service install` installs the same two services from a terminal,
+   without that hand-over: stop the `hive hub` you started yourself, so the
+   service's console can take the address. `hive daemon` in a second
+   terminal runs the runner without installing anything.
+6. **Give the lead a task.** **New task**: a title, what you want, a
+   priority. With the runner running, the project's lead agent picks the
+   task up, cuts the steps and the agents start. Open the task and watch the
+   commands, the files and the replies as they happen, and type into the box
+   when you want to steer.
+7. **Say yes or no.** Anything that needs you (a question, a proposal, a
+   compute request, a hard stop) waits on the **For you** page with the
+   agents' reasoning beside the buttons; Home shows the first five under
+   **Needs you**. It waits until you answer, and everything else carries on.
+   The one exception is the loop's question about its own fixtures: with no
+   answer after a day, the loop answers that one itself
+   (`evolve.flat_wait_hours`).
 
 The work reaches GitHub as pull requests: a review agent merges the ones the
 agents may decide on and the hub shows you the rest under **Needs your
@@ -213,11 +256,13 @@ fixtures; the documentation uses the console's words and gives the store's
 in parentheses.
 
 **The store is the truth.** Tasks, messages, posts, votes, decisions, plans,
-guides, lessons, settings and every event live in one SQLite file, written by
-the console and the `hive` commands through the same helpers and read back
-by both. A repository holds its code, this README and `docs/` and - when a
-project wants them - its `.hive/` automations and skill folders; nothing
-else of Hive's is committed.
+guides, lessons, settings and events live in one SQLite file, `hive.sqlite`,
+written by the console and the `hive` commands through the same helpers and
+read back by both. Once a month the runner moves rows older than
+`daemon.archive_days` (90) that nothing reads back into
+`hive-archive.sqlite` beside it. A repository holds its code, this README
+and `docs/` and - when a project wants them - its `.hive/` automations and
+skill folders; nothing else of Hive's is committed.
 
 **The code.** A Cargo workspace; each crate has one job.
 
@@ -246,7 +291,7 @@ console searches them and `hive ask` answers from them.
 | --- | --- |
 | [Concepts](docs/concepts.md) | start here: the cast, the store, tasks and jobs, the board, the constitution and tiers, the loop step by step, machines, delivery by pull request |
 | [Questions people ask](docs/faq.md) | short answers: what Hive needs, which models, what leaves your machine, what the loop does on its own, how to stop it, how to add a machine, how to update |
-| [The console](docs/console.md) | every page of the console, for the owner: Home, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Ask, Agents |
+| [The console](docs/console.md) | the console, for the owner: starting it, the sidebar's pages, Home, For you, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Reports and Ask |
 | [The Mac app](docs/mac-app.md) | Hive.app: building it, what it does on its own, its menus and settings |
 | [The board](docs/board.md) | the `hive` commands agents use: schedules and the project's own `.hive/` files, role leads, suggested work, the toolkit, MCP servers, skills, goals, records, events and hooks |
 | [Democracy and self-improvement](docs/self-improvement.md) | suggestions, the evolve loop, seeded records and fixtures, the card check, the fleet, the runner caps |
@@ -303,7 +348,9 @@ person. Everyone who takes part follows the
 
 Do not open a public issue for a vulnerability. [SECURITY.md](SECURITY.md)
 says how to report one privately. [Security notes](docs/security.md) says
-how Hive handles your code and your data, and what is not built.
+how Hive handles your code and your data, and what is not built. A job runs
+as your user with no container and no operating-system sandbox around it, so
+treat a repository you point Hive at like code you would run yourself.
 
 ## Licence
 

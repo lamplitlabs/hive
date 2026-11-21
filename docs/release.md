@@ -22,6 +22,7 @@ then
 ```bash
 export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile
 hive version
+hive init --store-only                 # once: makes the store, ~/.hive/hive.sqlite
 hive hub                               # the console, at http://127.0.0.1:8765
 ```
 
@@ -63,8 +64,9 @@ What it does, in order:
    The temporary directory is removed when the script ends, and a run that
    fails leaves nothing behind.
 6. **Says what is next.** Where the program is, whether that directory is
-   on your `PATH` (with the line to add when it is not), and the command
-   to run.
+   on your `PATH` (with the line to add when it is not), and the commands
+   to run: `hive init --store-only` when there is no store yet, then
+   `hive hub`.
 
 Options go after `sh -s --` when the script is piped, or after the file
 name (`sh install.sh --hand`):
@@ -99,13 +101,19 @@ signature of its maker.
 
 **Upgrading.** Run the same line again, or use [`hive update`](#hive-update).
 Hive's services (`hive service install`) notice the new program on disk
-and restart on it by themselves once their runs in flight have ended
-([runner.md](runner.md#services-and-self-update)). To go back to an older
-release, run the line with `--version` and its tag.
+and restart on it by themselves: the runner once its runs in flight have
+ended or been put on hold, the console once no conversation is at work
+([`hive update`](#hive-update) has the details, and
+[runner.md](runner.md#services-and-self-update) the services). A `hive hub`
+you started by hand keeps running the old program until you start it
+again. To go back to an older release, run the line with `--version` and
+its tag.
 
 **Hearing about new releases.** A fresh install does not look for
 releases: `update.latest_url` is empty until you set it
-([below](#where-releases-are-found-updatelatest_url)).
+([below](#where-releases-are-found-updatelatest_url)). Until then
+`hive update` prints that it does not know where releases are and ends
+with status 1. Set it once:
 
 ```sh
 hive settings set update.latest_url https://api.github.com/repos/lamplitlabs/hive/releases/latest
@@ -165,6 +173,9 @@ then joins your Hive with the line the console shows under **Machines**,
 hive-hand join --brain URL CODE
 ```
 
+That line enrols the machine and then stays connected, so it does not
+return by itself. `hive-hand dial` is for every later start.
+
 ### Checking a download by hand
 
 Every release has one `SHA256SUMS` file beside its archives. To do by
@@ -199,7 +210,9 @@ Two workflows in `.github/workflows/`:
   release tag. Run it by hand from the Actions tab (**Run workflow**) for a
   release now, picking `patch`, `minor` or `major`. The nightly run bumps the
   patch unless a pull request merged since the last tag carries the label
-  `release: minor` or `release: major`.
+  `release: minor` or `release: major`. It looks only at merge commits, so
+  the label counts on a pull request merged with a merge commit and not on
+  one that was squashed or rebased.
 - **release.yml** runs when a `vX.Y.Z` tag is pushed (cut-release starts it
   explicitly, since a push made with the workflow token starts no workflow on
   its own). For each of the four targets it builds `hive` with the console
@@ -262,8 +275,8 @@ and every build falls back to `v0.0.0-...`.
 ## Windows
 
 Not built yet. The runner and daemon use unix-only process, signal and file
-APIs (`std::os::unix` in ~140 places; services via launchd/systemd), so a
-Windows release means porting those first (TASK-091,
+APIs (`std::os::unix` on about 160 lines in 84 files; services via
+launchd/systemd), so a Windows release means porting those first (TASK-091,
 [windows-port.md](windows-port.md)), not just adding a build target. The
 installer says so on Windows and stops.
 
@@ -275,8 +288,8 @@ installer says so on Windows and stops.
 | `source` | the daemon rebuilds hive from the brain's checkout after each landing (`daemon.self_update`); `hive update` only reports (`--check`) |
 | `release` | the daemon never builds from source; `hive update` installs the newest published release, and every command says once per release that one is out |
 
-Set it with `hive settings set update.channel release` or under
-**Settings → Updates** in the console.
+Set it with `hive settings set update.channel release`, or in the console
+under **Settings → Other**.
 
 ## Where releases are found: `update.latest_url`
 
@@ -349,9 +362,20 @@ hive update [--check] [--json]
   `hive.new help` must exit 0. Then it copies the running binary to
   `hive.prev` and renames `hive.new` into its place. Any failure before
   the rename leaves the running binary as it was and removes `hive.new`.
-- The daemon sees its binary change on disk and restarts on it after its
-  runs in flight (the restart drain, `daemon.restart_drain_minutes`); the
-  hub restarts within a minute. Nothing in flight is stopped.
+- The daemon sees its binary change on disk and restarts on it: as soon as
+  nothing is in flight, and otherwise when the restart drain ends
+  (`daemon.restart_drain_minutes`, 30 by default). A run whose harness is
+  still at work then is asked to hold (`daemon.restart_hold`, `on` by
+  default): the harness saves its conversation, and the next daemon
+  carries the job on in the same clone. A run that is past its harness, in
+  its check for one, runs to its end first.
+- The hub looks at its binary every 30 seconds and restarts when no
+  conversation is at work. Otherwise it waits for the turns in flight, for
+  up to 30 minutes, and then stops them and restarts.
+- The two services (`hive service install`) do this by themselves. A
+  daemon you started by hand exits with code 3 and is yours to start
+  again. A `hive hub` you started by hand keeps running the old program
+  until you start it again, unless you gave it `--restart-on-change`.
 - Roll back with `mv ~/.hive/bin/hive.prev ~/.hive/bin/hive`.
 - An install writes the event `hive.update` (from, to, binary, asset,
   sha256).
@@ -373,7 +397,7 @@ on its own:
 - when a newer release exists, it installs it exactly as above: the archive
   for the running target, its `SHA256SUMS` line, signed, smoke-tested,
   swapped in with the old binary kept as `hive.prev`;
-- it restarts after its runs in flight, the same way the source
+- it then restarts the way `hive update` above describes, as the source
   self-update does (exit 3; the service or `deploy/entrypoint.sh` starts it
   again). A failed install leaves the running binary alone, says why in the
   daemon's log and is tried again after `daemon.self_update_retry_minutes`.

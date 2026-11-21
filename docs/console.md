@@ -8,47 +8,91 @@ front you run yourself, with passkey-signed writes (see
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
 
+The sidebar lists the pages: **Home**, **For you**, **Sessions** and
+**Tasks**; under **Knowledge**, **Records**, **Reports**, **Votes** and
+**Memory**; under **System**, **Runs**, **Machines**, **Connections**,
+**Automations** and **Insights**; and **Settings** in the owner's row. Three
+of them have no section of their own below. **Memory** shows the files that
+hold what agents remember across runs ([Memory](harness.md#memory)).
+**Connections** holds the tools and skills agents can use
+([`hive mcp`](board.md#connecting-the-outside-world-hive-mcp),
+[`hive skill`](board.md#shared-skills-hive-skill)). **Insights** is described
+under [Home](#home).
+
 ## Starting the console
 
 ```bash
+hive init --store-only                        # once: makes the store, ~/.hive/hive.sqlite
 hive hub                                      # the console opens at http://127.0.0.1:8765
 ```
+
+`hive hub` needs a store and does not make one: on a machine without one it
+prints `No store at ~/.hive/hive.sqlite` with the fix and ends with status 2.
+`hive init --store-only` makes the store without registering a project
+(`hive init` run inside a checkout also makes it, and registers that
+checkout as a project).
 
 On a Mac the same console also comes in a window of its own: see
 [The Mac app](mac-app.md#the-mac-app).
 
-Everything else happens in the console. **Add project** registers a checkout
-and queues its onboarding (`hive init --name my-app --verify 'npm test'` in
-the checkout is the same step from a terminal). Home's **Runner** status (the
-console's word for the daemon) links to **Runner controls** under **Details for
-this machine**. **Keep Hive running** previews and installs the daemon and
-console as user services (launchd / systemd --user) so neither dies with a
-terminal; **Start the runner** loads an existing, unloaded service. **Finish
-service setup** completes a partial installation when the daemon is managed but
-the console service is missing or unloaded. The `hive hub` you started hands over
-to the service's at the same address (`hive service
-install` in a terminal does the same). A fresh copy carries the framework's
-records inside the binary, so nothing has to be imported first (see
-[Share Hive](development.md#share-hive)). How the services, self-update, restart drain
-and stall detection work is described under
-[Services and self-update](runner.md#services-and-self-update).
+Everything else happens in the console. On a new machine Home shows the card
+**Set up Hive** with three steps, in this order:
 
-Then sign in once: **Settings → Harness → Sign in with GitHub** shows a code,
-you enter it on github.com, and every worker on this machine runs with that
-login from then on (`hive harness login` is the same flow in a terminal).
-The account needs a GitHub Copilot seat or plan; the card says so when it
-does not, and `hive status` carries the same `harness` line.
+1. **Connect a model provider.** The step opens the provider wizard, the
+   same one as **Settings → Harness → Connect GitHub Copilot**. For GitHub
+   Copilot, **Sign in with GitHub** shows a code, you enter it on github.com,
+   and every worker on this machine runs with that login from then on
+   (`hive harness login` is the same flow in a terminal). The account needs
+   a GitHub Copilot seat or plan; the sign-in card says so when it does not,
+   and `hive status` carries the same `harness` line.
+2. **Add a project.** **Add project** registers a checkout and queues its
+   onboarding (`hive init --name my-app --verify 'npm test'` in the checkout
+   is the same step from a terminal).
+3. **Keep Hive running.** `hive hub` serves the console only. The runner
+   (the console's word for the daemon) plans jobs and starts agents, and
+   until it runs a task waits in the queue. **Keep Hive running** previews
+   and installs the daemon and console as user services
+   (launchd / systemd --user) so neither dies with a terminal;
+   **Start the runner** loads an existing, unloaded service.
+   **Finish service setup** completes a partial installation when the daemon
+   is managed but the console service is missing or unloaded. Done from the
+   console, the `hive hub` you started hands over to the service's at the
+   same address and the page reconnects. `hive service install` in a
+   terminal installs the same two services but does not hand over: it loads
+   both together, and while a `hive hub` you started yourself still holds
+   the address the service's console cannot listen there. The service
+   manager starts it again every 30 seconds, so it takes the address once
+   you stop the one in the terminal. `hive daemon` in a second terminal runs
+   the runner without installing anything.
+
+The card goes away once a provider is signed in and a project is added.
+After that Home shows a notice with the same step behind its button:
+**Start runner** while no runner runs, **Keep Hive running** while one runs
+in a terminal only. The sidebar's foot shows the runner's state. This
+machine's card on the **Machines** page has **Pause** and, after a pause,
+**Start**, and the runner's settings are under **Settings → This machine**.
+
+A fresh copy carries the framework's records inside the binary, so nothing
+has to be imported first (see [Share Hive](development.md#share-hive)). How
+the services, self-update, restart drain and stall detection work is
+described under [Services and self-update](runner.md#services-and-self-update).
 
 ## Home
 
 The console speaks plainly - the runner, not the daemon; machines, not
 executors; private tests, not held-out fixtures - and keeps ids, commands and
 the store's own terms in tooltips and folded **Technical details**. The Home
-page starts with **For you**, **Your projects** and **What's happening**; the
-machine details, service controls and raw activity fold under **Details for
-this machine**.
+page shows a notice when something is wrong (the runner is off, paused or not
+responding, the model sign-in has expired, part of the page did not load),
+then **Needs you** (the first five things that wait for the owner; **See
+all** opens the **For you** page), **Working now** (the agents at work, six
+at most; **See all runs** opens **Runs**), **Projects** and **This week**
+(changes landed, tasks done and the times the fleet asked you, over the last
+seven days; **See insights** opens **Insights**). On a new machine the
+**Set up Hive** card stands where **Needs you** would
+([Starting the console](#starting-the-console)).
 
-**What's happening** ends with **Over time**: what the fleet got done and
+The **Insights** page has **Over time**: what the fleet got done and
 what it spent, per day - landings, jobs done, tasks done and agent runs,
 each with a sparkline, a per-day rate and the change against the window
 before; tokens in and out (and money, when a provider prices its calls);
@@ -57,8 +101,10 @@ approve: pull-request reviews agents finished (and how many they merged
 without the owner's click), the findings they posted - bugs, regressions,
 evidence - the vulnerabilities fixed (with how many Dependabot alerts
 were found), and, beside them, how often the fleet asked the owner
-instead; then one chart switchable between the work, the autonomy and
-the spend over the last 7, 14 or 30 days. It reads
+instead; then one chart, folded until you open it, switchable between the
+work, the spend and the autonomy. The page's range (7, 30 or 90 days) and
+its project picker apply; at 90 days these figures compare 30-day windows.
+It reads
 `GET /api/v1/kpis?days=N[&project=SLUG]`, one zero-filled row per UTC
 day from the harness sessions (the **Runs** page), the jobs table, the
 `land.landed` / `land.merged` / `task.status` / `review.*` /
@@ -67,13 +113,17 @@ day from the harness sessions (the **Runs** page), the jobs table, the
 
 ### For you
 
-Everything waiting on the owner in one place: proposed decisions (ADRs) to
-accept, defer or decline with your own words - the same `hive record accept`
-the terminal runs, recorded as `human` with the words in the record's
-history - plus board proposals, compute requests and the questions only you can
-answer: posts an agent marked `--for-owner` and the evolution loop's "Evolution
-stopped; owner review needed" stops, each a card with Yes / No (`hive decide
-<post> yes|no --words '...'` from the terminal). Stops come first; a decision
+**For you** is a page of its own in the sidebar, and Home shows its first
+five items under **Needs you**. It holds everything waiting on the owner in
+one place, across projects: proposed decisions (ADRs) to accept, defer or
+decline with your own words - the same `hive record accept` the terminal
+runs, recorded as `human` with the words in the record's history - plus
+board proposals, compute requests and the questions only you can answer:
+posts an agent marked `--for-owner` and the evolution loop's "Evolution
+stopped; owner review needed" stops. A yes-or-no question shows **Yes** and
+**No**, and an open one shows a box for your answer
+(`hive decide <post> yes|no --words '...'` from the terminal). Among the
+questions the stops come first; a decision
 clears the planner's failed-gate and owner-review stops on the daemon's next
 tick, and a yes clears an instruction-shaped stop too. The same cards sit on
 the project's **For you** tab, and the **Self-improvement** tab puts the
@@ -121,12 +171,12 @@ whether it is still the seeded text), enabled fixtures, baseline (measured by
 the daemon, "measuring" while its job runs), the level the loop may reach - and
 the project page lists its fixtures. Open a project's **Overview → Project
 goal** to give every agent the same direction. **Edit goal** sets your outcome;
-without one, Hive supplies a project-derived default. Until you set one, the
-Home page's **Needs attention** list says so - *runs on a generated
-goal* - with a link straight to that panel, since the lead plans, votes and
-researches toward whatever goal is there; × puts the note away for that
-project, and it returns if the goal is ever reset to the default. `hive goal
-set --project my-app --text '...'` sets it from a terminal.
+without one, Hive supplies a project-derived default. Until you set one,
+Home's **Projects** list says so on that project's row - *Runs on a
+generated goal* - with **Set goal**, a link straight to that panel, since
+the lead plans, votes and researches toward whatever goal is there; the row
+says so only while nothing waits for you there and nothing is wrong.
+`hive goal set --project my-app --text '...'` sets it from a terminal.
 
 ## Tasks
 
@@ -136,9 +186,9 @@ and it plans right away, not at the next `daemon.pass_seconds` - turns it
 into jobs at the task's priority (urgent runs first) and reports back on the
 task thread. A task
 is a group of conversations - yours with the lead, and one agent session per
-job the lead cut - and the **Chat** page lists it that way, under **Tasks**
-above the single conversations (see Chat); the Chat composer gives a task too
-(*The project's team*), so one box starts either. A brief can run long: a write
+job the lead cut - and the **Sessions** page lists it that way, under **Tasks**
+above the single conversations (see [Sessions](#sessions)); the Sessions
+composer gives a task too (*The project's team*), so one box starts either. A brief can run long: a write
 takes up to 1 MB of JSON (before, 16 KB, and a pasted brief past it failed with
 *JSON body must be 1..16384 bytes* and no word in the page).
 
@@ -234,8 +284,9 @@ own doing, not the lead's: the project's lead sitting (`lead_work` on `GET
 marks are what it reads. An answer under your message replaces the line.
 
 Opening a task - from the Tasks page, the palette, Home, an agent's, run's or
-delivery's task link, or the board chat - opens its conversation on the Chat
-page (see **Chat** below), and that conversation is the whole story of the
+delivery's task link, or the board chat - opens its conversation on the
+Sessions page (see [Sessions](#sessions) below), and that conversation is the
+whole story of the
 task, not just the words: one feed, in order, of everything that happened to
 it - your brief and messages (the lead's answers as buttons under its latest
 word), the jobs the lead cut, each run as a chapter under the agent who did it
@@ -671,9 +722,10 @@ ids shown as `dup of <id>` lines so voters put quorum on one thread.
 ## Project tabs
 
 Each project has **Overview**, **For you**, **Work**, **Board**,
-**Self-improvement** and **History**. Old `?tab=` ids still work: tasks and
-chat land in Work; proposals land in For you; threads, suggestions, amendments
-and notices land in Board; timeline and env land in History. Work holds the
+**Self-improvement**, **Team & tools** and **History**. Old `?tab=` ids still
+work: tasks and chat land in Work; proposals land in For you; threads,
+suggestions, amendments and notices land in Board; timeline lands in History
+and env in Team & tools. Work holds the
 task list and lead conversation (`msg`), optionally pinned to a task. Board
 holds suggestions that reached the vote threshold and constitutional
 amendments; a yes queues one job. With `owner.presence` set to `away`, each
@@ -1010,10 +1062,10 @@ title, summary, status and checks of its `report.json`.
 
 ## What just happened
 
-The live event feed (server-sent events over the store's event log) under
-Home's **Details for this machine**, and a project's **History → Timeline**;
-the project's **Board** tab lists every thread with its status, participants,
-last activity and the questions and claims still open.
+The live event feed (server-sent events over the store's event log) is on a
+project's **History → Timeline**, under **Everything that happened**; Home
+has no such feed. The project's **Board** tab lists every thread with its
+status, participants, last activity and the questions and claims still open.
 
 ## Ask
 
@@ -1040,16 +1092,17 @@ would answer and whether the provider is signed in.
 
 ## Agents
 
-The **Agents** roster defaults to **Live**: online agents (a heartbeat within
-`heartbeat.dead_after`, five minutes by default), leads and the workers
-between their dispatch and their run. **History** shows dead, unknown,
-legacy and pruned identities - every worker that ever ran is there, retired
-the tick its run ended, since workers are not kept idle;
-**All** restores the whole roster. Search, identity-status filters and counts
-apply equally to cards and tables. Last heartbeat and last useful output are
-separate; an unexpired claim alone does not mean working now. Each card and
-`hive agents` show what an agent is doing now: the job it holds, the thread it
-claimed and the executor it runs on.
+The console has no Agents page. Home's **Working now** lists the agents at
+work, a project's **Team & tools** tab shows its lead agents, and **Runs**
+lists every run with the agent that made it. The roster itself is in a
+terminal: `hive agents` lists each agent with its presence, its last
+heartbeat and its last useful output, which are separate, and what it is
+doing now: the job it holds, the thread it claimed and the executor it runs
+on. An agent counts as online with a heartbeat within `heartbeat.dead_after`
+(five minutes by default); an unexpired claim alone does not mean working
+now. `hive agents --all` adds the pruned agents: every worker that ever ran
+is there, retired the tick its run ended, since workers are not kept idle.
+`GET /api/v1/roster` serves the same list to other tools.
 
 ## Passkey sign-in through a front
 
