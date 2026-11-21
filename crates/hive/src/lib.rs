@@ -1142,6 +1142,64 @@ mod tests {
         }
     }
 
+    /// `hive executor label NAME -word` through the whole command line: the
+    /// word with a dash is removed, and the flags around it are still flags.
+    #[test]
+    fn executor_label_removes_a_word_written_with_a_leading_dash() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        hive_store::create(home.join(hive_store::STORE_NAME)).unwrap();
+        let ok = |args: &[&str]| -> String {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run(args, &mut out, &mut errb);
+            assert_eq!(code, 0, "{args:?}: {}", s(&errb));
+            s(&out)
+        };
+        ok(&[
+            "executor",
+            "add",
+            "gpu-box",
+            "--ssh",
+            "hive@gpu-box",
+            "--workdir",
+            "/srv/hive",
+            "--labels",
+            "gpu,cuda,android",
+        ]);
+        assert_eq!(
+            ok(&["executor", "label", "gpu-box", "-cuda"]),
+            "gpu-box offers linux android gpu\n"
+        );
+        // A global flag after the word is still a flag: nothing is printed.
+        assert_eq!(ok(&["executor", "label", "gpu-box", "-gpu", "--quiet"]), "");
+        assert_eq!(
+            ok(&["executor", "label", "gpu-box", "--", "-android"]),
+            "gpu-box offers linux\n"
+        );
+        assert_eq!(
+            ok(&["executor", "label", "gpu-box", "+a,-b"]),
+            "gpu-box offers linux a\n"
+        );
+        // Two dashes still ask for a flag, and there is none of that name.
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run(
+            &["executor", "label", "gpu-box", "--cuda"],
+            &mut out,
+            &mut errb,
+        );
+        assert_eq!(
+            (code, s(&errb).as_str()),
+            (
+                2,
+                "hive executor: flag provided but not defined: -cuda\n  fix: hive help executor\n"
+            )
+        );
+    }
+
     #[test]
     fn settings_help_without_store() {
         let _serial = crate::test_helpers::serial();
