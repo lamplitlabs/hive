@@ -1,10 +1,18 @@
 name: Deploy site (hivefleet.dev)
 
-# Builds web/site (the landing page and sign-in at https://hivefleet.dev) and
-# deploys it to Vercel from CI, the way Lamplit Labs' other sites deploy: the
-# Vercel project is NOT connected to the repository; this workflow pulls its
-# settings and production environment (NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY lives
-# there), builds the export with the Vercel CLI and uploads the prebuilt output.
+# Builds web/site (https://hivefleet.dev: what Hive is, how to install it, and
+# the repository's docs/ rendered as pages) and deploys it to Vercel from CI,
+# the way Lamplit Labs' other sites deploy: the Vercel project is NOT connected
+# to the repository; this workflow pulls its settings and production
+# environment, builds the export with the Vercel CLI and uploads the prebuilt
+# output. The site needs no secret of its own: the one variable it reads,
+# NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION, is optional and public by nature
+# (web/site/.env.example).
+#
+# The build reads two things outside web/site: every Markdown file under docs/
+# becomes a page, and scripts/install.sh is served at /install.sh. A change to
+# either starts this workflow, so the site never shows older docs or an older
+# installer than main holds.
 #
 # Secrets the repository needs (Settings -> Secrets -> Actions):
 #   VERCEL_ORG_ID        the team id (Vercel: Settings -> General)
@@ -17,6 +25,8 @@ on:
     branches: [main]
     paths:
       - "web/site/**"
+      - "docs/**"
+      - "scripts/install.sh"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
 
