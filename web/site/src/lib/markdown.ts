@@ -281,6 +281,9 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
       } else if (node.tagName === "table" && parent && index !== undefined) {
         // Focusable, so a keyboard can scroll it; no landmark of its own, or a page of tables would be a page of regions.
         parent.children[index] = el("div", { className: ["table-scroll"], tabIndex: 0 }, [node]);
+      } else if (node.tagName === "input" && node.properties.type === "checkbox") {
+        // The box of a task list item says whether the item is done; without a name a screen reader reads a bare checkbox.
+        node.properties.ariaLabel = "Done";
       }
     });
   };
