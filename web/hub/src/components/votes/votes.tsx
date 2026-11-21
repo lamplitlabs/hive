@@ -182,7 +182,8 @@ export function VotesPageClient() {
 
   return (
     <div className="flex min-w-0 items-start gap-0">
-      <main className="min-w-0 flex-1">
+      {/* The page's column beside its side panel. The shell holds the one <main>. */}
+      <div className="min-w-0 flex-1">
         <PageHeader title="Votes" subtitle="Ideas your agents are voting on" tabs={kindTabs} />
         {q.error && !q.data ? (
           <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
@@ -220,7 +221,7 @@ export function VotesPageClient() {
             )}
           </>
         )}
-      </main>
+      </div>
       <SidePanel
         open={!!openId}
         onClose={() => setOpenId(null)}

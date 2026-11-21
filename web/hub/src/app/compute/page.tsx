@@ -73,9 +73,10 @@ export default function ComputePage() {
       <PageHeader title="Machines" subtitle={SUB} action={<AddMachineButton caps={c.caps} size="default" variant="default" />} />
 
       <div className="grid min-w-0 gap-8 [&>*]:min-w-0">
-        <section aria-label="This machine">
+        {/* The card is the section named "This machine"; a second one around it would name the same landmark twice. */}
+        <div>
           <ThisMachineCard runner={runner.data === undefined && runner.error ? null : runner.data} host={org.data?.host} local={local} />
-        </section>
+        </div>
 
         {waiting ? (
           <section aria-label="Waiting for you">

@@ -78,7 +78,8 @@ export function ForYou() {
 
   return (
     <div className="flex items-start gap-6">
-      <main className="min-w-0 flex-1">
+      {/* The page's column beside its side panel. The shell holds the one <main>. */}
+      <div className="min-w-0 flex-1">
         <PageHeader title="For you" subtitle={subtitle} />
         {chips.length > 1 ? (
           <div className="mb-5 flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by project">
@@ -115,7 +116,7 @@ export function ForYou() {
             ))}
           </div>
         )}
-      </main>
+      </div>
       <SidePanel open={!!openDecision} onClose={close} width="reading" title={openDecision ? sentence(openDecision.title) : "Decision"} subtitle={openDecision ? openDecision.id + " · " + nameOf(o, openDecision.project) : undefined} lead={<KindTile kind="decision" size={28} waiting />} actions={openDecision ? <Link href={hrefs.record(openDecision.id, openDecision.project)} className="text-xs font-medium text-link hover:underline">Open page</Link> : undefined} footer={openDecision ? <RecordDecide record={openDecision} onDone={close} /> : undefined}>
         {openDecision ? <RecordReading key={openDecision.id} record={openDecision} /> : null}
       </SidePanel>

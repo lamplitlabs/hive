@@ -179,7 +179,8 @@ export function ConnectionsPageClient() {
 
   return (
     <div className="flex min-w-0 items-start gap-0">
-      <main className="min-w-0 flex-1">
+      {/* The page's column beside its side panel. The shell holds the one <main>. */}
+      <div className="min-w-0 flex-1">
         <PageHeader
           title="Connections"
           subtitle="Tools and skills your agents can use"
@@ -282,7 +283,7 @@ export function ConnectionsPageClient() {
             </div>
           </section>
         </div>
-      </main>
+      </div>
 
       <SidePanel open={!!open} onClose={() => setOpenId(null)} width="detail" title={open?.name ?? "Tool"} subtitle={open ? scopeTitle(open.project) : undefined} lead={open ? <LogoTile name={open.name} size={28} fallback={MCP_28} /> : undefined}>
         {open ? <ServerDetails s={open} onConnect={setConnecting} onEdit={setEditMcp} onSignIn={setSigningIn} /> : null}
