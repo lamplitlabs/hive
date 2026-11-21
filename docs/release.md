@@ -22,9 +22,12 @@ then
 ```bash
 export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile
 hive version
-hive init --store-only                 # once: makes the store, ~/.hive/hive.sqlite
 hive hub                               # the console, at http://127.0.0.1:8765
 ```
+
+The first `hive hub` on a machine makes the store, `~/.hive/hive.sqlite`,
+and says so in one line. `hive init --store-only` makes one without
+starting the console, for a service or a script.
 
 The script is `scripts/install.sh` in the repository, and the site serves
 the same file. To read it before you run it, end the line with `| less`
@@ -64,9 +67,8 @@ What it does, in order:
    The temporary directory is removed when the script ends, and a run that
    fails leaves nothing behind.
 6. **Says what is next.** Where the program is, whether that directory is
-   on your `PATH` (with the line to add when it is not), and the commands
-   to run: `hive init --store-only` when there is no store yet, then
-   `hive hub`.
+   on your `PATH` (with the line to add when it is not), and the command
+   to run: `hive hub`.
 
 Options go after `sh -s --` when the script is piped, or after the file
 name (`sh install.sh --hand`):

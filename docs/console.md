@@ -22,15 +22,17 @@ under [Home](#home).
 ## Starting the console
 
 ```bash
-hive init --store-only                        # once: makes the store, ~/.hive/hive.sqlite
 hive hub                                      # the console opens at http://127.0.0.1:8765
 ```
 
-`hive hub` needs a store and does not make one: on a machine without one it
-prints `No store at ~/.hive/hive.sqlite` with the fix and ends with status 2.
-`hive init --store-only` makes the store without registering a project
-(`hive init` run inside a checkout also makes it, and registers that
-checkout as a project).
+The first `hive hub` on a machine makes the store, `~/.hive/hive.sqlite`:
+started by a person in a terminal, it prints
+`No store yet: made one at <path>` and carries on. Started without a
+terminal, as a service does, it makes none: it stops with `No store` and
+names the fix, `hive init --store-only`. That command makes a store
+without starting the console, for a service or a script (`hive init` run
+inside a checkout also makes the store, and registers that checkout as a
+project).
 
 On a Mac the same console also comes in a window of its own: see
 [The Mac app](mac-app.md#the-mac-app).

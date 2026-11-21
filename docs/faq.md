@@ -284,13 +284,13 @@ cannot do yet.
 ## Where is my data, and how do I remove it?
 
 In the hive home, `~/.hive` by default. The store is one SQLite file there,
-`hive.sqlite`. Once a month rows older than `daemon.archive_days` (90) that
-nothing reads back move to `hive-archive.sqlite` beside it. The logs, the
-model logins and the work directories are in the same folder. `backup.to`
-names where a daily copy of the store goes. `hive remove project <slug>`
-deactivates a project, and `--forget` deletes the rows of one that is
-already inactive and whose checkout is gone. See
-[Removing your data](security.md#removing-your-data).
+`hive.sqlite`; the first `hive hub` on a machine makes it. Once a month
+rows older than `daemon.archive_days` (90) that nothing reads back move to
+`hive-archive.sqlite` beside it. The logs, the model logins and the work
+directories are in the same folder. `backup.to` names where a daily copy
+of the store goes. `hive remove project <slug>` deactivates a project, and
+`--forget` deletes the rows of one that is already inactive and whose
+checkout is gone. See [Removing your data](security.md#removing-your-data).
 
 ## Something is stuck. Where do I look?
 

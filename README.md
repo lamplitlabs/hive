@@ -160,15 +160,13 @@ merges pull requests through `gh`. Agents run on the harness built into
    ```bash
    export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile
    hive version
-   hive init --store-only                 # once: makes the store, ~/.hive/hive.sqlite
    hive hub                               # the console, at http://127.0.0.1:8765
    ```
 
-   `hive hub` needs a store and does not make one: on a machine without one
-   it prints `No store at ~/.hive/hive.sqlite` and stops.
-   `hive init --store-only` makes the store without registering a project.
-   (`hive init` run inside a checkout also makes the store, and registers
-   that checkout as a project.)
+   The first `hive hub` on a machine makes the store,
+   `~/.hive/hive.sqlite`, and says so in one line.
+   `hive init --store-only` makes one without starting the console, for a
+   service or a script.
 
 2. **Open the console.** `hive hub` serves it at `http://127.0.0.1:8765`;
    open that address in your browser. Only this computer can reach it. On a
