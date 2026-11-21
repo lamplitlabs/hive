@@ -168,6 +168,11 @@ merges pull requests through `gh`. Agents run on the harness built into
    `hive init --store-only` makes one without starting the console, for a
    service or a script.
 
+   Later, `hive update` installs the newest release. Run by hand, it looks
+   at the project's releases on GitHub without any setting. To hear of a
+   new release without asking, set `update.latest_url`
+   ([Releases and `hive update`](docs/release.md#hive-update)).
+
 2. **Open the console.** `hive hub` serves it at `http://127.0.0.1:8765`;
    open that address in your browser. Only this computer can reach it. On a
    new machine Home shows the card **Set up Hive** with three steps. The next

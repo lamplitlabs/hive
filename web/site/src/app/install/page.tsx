@@ -74,7 +74,8 @@ export default function InstallPage() {
         <CodeBlock code={INSTALL.blocks.source} title="From source" copy={INSTALL.source} copyWhat="the command that builds from source" />
         <p>
           Later, <code>hive update</code> installs a newer release: it checks the download against the release&apos;s checksums, tries the new binary, and
-          keeps the old one beside it as <code>hive.prev</code>. On a fresh install it does not know where releases are, and says so. Tell it once:
+          keeps the old one beside it as <code>hive.prev</code>. Run by hand on a fresh install, it looks at the project&apos;s own releases on GitHub for
+          that one run, and says so. To have Hive look once a day by itself, tell it where the releases are:
         </p>
         <CodeBlock code="hive settings set update.latest_url https://api.github.com/repos/lamplitlabs/hive/releases/latest" />
         <p>

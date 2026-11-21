@@ -112,21 +112,23 @@ again. To go back to an older release, run the line with `--version` and
 its tag.
 
 **Hearing about new releases.** A fresh install does not look for
-releases: `update.latest_url` is empty until you set it
-([below](#where-releases-are-found-updatelatest_url)). Until then
-`hive update` prints that it does not know where releases are and ends
-with status 1. Set it once:
+releases by itself: `update.latest_url` is empty until you set it
+([below](#where-releases-are-found-updatelatest_url)). `hive update` and
+`hive update --check` do not wait for the setting when you run them by
+hand: while it is empty they look at the project's own releases,
+`https://api.github.com/repos/lamplitlabs/hive/releases/latest`, for that
+one run, and say so. To hear of a release without asking, set it once:
 
 ```sh
 hive settings set update.latest_url https://api.github.com/repos/lamplitlabs/hive/releases/latest
-hive update --check
 ```
 
-From then on Hive says when a release is out, and `hive update` installs
-it on a machine that follows the release channel
-([the two channels](#the-two-channels-updatechannel)). To have the runner
-install each release by itself, see
-[`daemon.self_update release`](#daemonself_update-release-a-machine-without-source).
+From then on Hive looks once a day and says when a release is out. The
+console's **Update now** button needs the setting too, and so does
+[`daemon.self_update release`](#daemonself_update-release-a-machine-without-source),
+which has the runner install each release by itself. `hive update`
+installs a release on a machine that follows the release channel
+([the two channels](#the-two-channels-updatechannel)).
 
 The test of the installer is `scripts/tests/install-test.sh`. It makes up
 a release of stub programs in a temporary directory, runs the installer
@@ -314,7 +316,13 @@ document:
 ```
 
 GitHub's answer lists the same `assets` (`name`, `browser_download_url`,
-and the API `url`). The setting is empty by default: no check, no network.
+and the API `url`). The setting is empty by default: Hive then makes no
+check of its own and no network request for one. `hive update` and
+`hive update --check`, run by hand while it is empty, read Hive's own
+releases (`https://api.github.com/repos/lamplitlabs/hive/releases/latest`)
+for that one run and say so. The setting stays empty, so the daily check,
+`daemon.self_update release` and the console's **Update now** button
+still wait for you to set it.
 
 **When GitHub turns the request away.** GitHub limits how many API calls
 one address may make in an hour without an account, and it answers 404
@@ -364,6 +372,9 @@ hive update [--check] [--json]
   `hive.new help` must exit 0. Then it copies the running binary to
   `hive.prev` and renames `hive.new` into its place. Any failure before
   the rename leaves the running binary as it was and removes `hive.new`.
+- While `update.latest_url` is empty, both forms look at Hive's own
+  releases, `https://api.github.com/repos/lamplitlabs/hive/releases/latest`,
+  for that one run, and say so. Nothing is written to the setting.
 - The daemon sees its binary change on disk and restarts on it: as soon as
   nothing is in flight, and otherwise when the restart drain ends
   (`daemon.restart_drain_minutes`, 30 by default). A run whose harness is
