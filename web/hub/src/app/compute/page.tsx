@@ -85,7 +85,9 @@ export default function ComputePage() {
             {pending.length ? (
               <ul className="grid gap-2" aria-label="Requests">
                 {pending.map((r) => (
-                  <ComputeRequestListRow key={r.id} r={r} />
+                  <li key={r.id}>
+                    <ComputeRequestListRow r={r} />
+                  </li>
                 ))}
               </ul>
             ) : null}

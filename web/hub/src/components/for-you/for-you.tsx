@@ -10,7 +10,7 @@ import { ConfirmDialog } from "@/components/hive/confirm";
 import { AnswerBox } from "@/components/hive/decide-buttons";
 import { EmptyState, ErrorNotice, SkeletonRows } from "@/components/hive/panel";
 import { KindTile } from "@/components/hive/kind-tile";
-import { ListRow, ListRows } from "@/components/hive/list-row";
+import { ListItem, ListRow, ListRows, RowCue } from "@/components/hive/list-row";
 import { PageHeader } from "@/components/hive/page-header";
 import { SectionHeading } from "@/components/hive/section-heading";
 import { SidePanel, useOpenItem } from "@/components/hive/side-panel";
@@ -181,13 +181,12 @@ function Row({ r, inbox, brain, canDecide, caps, startOpen, selected, onOpen, pr
     const d = inbox.drafts.find((x) => x.slug + ":" + x.r.id === id);
     if (d) actions = <DraftActions r={d.r} size="xs" />;
   } else if (kind === "step" || kind === "machine" || kind === "provider") {
-    // The row itself is the link to the fix; this is only its visible cue,
-    // drawn as a button (an <a> or a <button> inside the row's <a> would be
-    // invalid HTML).
+    // The row's title is the link to the fix; this is only its visible cue,
+    // drawn as a button. A press on it opens the row.
     actions = (
-      <span className={buttonVariants({ variant: kind === "step" ? "outline" : "default", size: "xs" })}>
+      <RowCue className={buttonVariants({ variant: kind === "step" ? "outline" : "default", size: "xs" })}>
         {r.fix || "Open"} <ArrowRightIcon aria-hidden />
-      </span>
+      </RowCue>
     );
   }
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -206,13 +205,13 @@ function Row({ r, inbox, brain, canDecide, caps, startOpen, selected, onOpen, pr
   const href = onOpen || opensInPlace || kind === "compute" || kind === "work" ? undefined : rowHref(r);
   return (
     // One list item: the row and, while it is open, its details under it.
-    <div ref={item} onKeyDown={onKeyDown}>
+    <ListItem ref={item} onKeyDown={onKeyDown}>
       <ListRow
         lead={<KindTile kind={r.kind} size={28} waiting={r.urgent} />}
         title={r.title}
         meta={
           <>
-            {/* Plain text, not a link: a row with an href is itself an <a>. */}
+            {/* Plain text, not a link: the row's title already leads there. */}
             {projectName ? <span className="truncate">{projectName}</span> : null}
             {r.meta ? <span className="truncate">{r.meta}</span> : null}
           </>
@@ -232,7 +231,7 @@ function Row({ r, inbox, brain, canDecide, caps, startOpen, selected, onOpen, pr
           {details}
         </div>
       ) : null}
-    </div>
+    </ListItem>
   );
 }
 
