@@ -1081,7 +1081,7 @@ List, add, probe, drain, activate, remove or log in the executors (remote hands)
 ```text
 hive executor  list, add, probe, drain, activate, remove or log in the executors (remote hands)
 
-Usage: hive executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] [--labels a,b] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | label NAME WORDS|+a,-b | reserve NAME [--off] | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]
+Usage: hive executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] [--labels a,b] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | label NAME WORDS|+a,-b|-b | reserve NAME [--off] | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]
 
 Flags:
   -admin string
@@ -1361,10 +1361,10 @@ Flags:
 
 ### update
 
-Install the newer Hive release update.latest_url names (checksum-verified); --check only says whether one exists.
+Install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists.
 
 ```text
-hive update  install the newer Hive release update.latest_url names (checksum-verified); --check only says whether one exists
+hive update  install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists
 
 Usage: hive update [--check] [--json]
 

@@ -246,6 +246,7 @@ Each section below is one family: the settings that share the part of their name
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `hub.allow_remote` | empty | the origin of a front you run yourself (`https://team.example.com`) the console may be reached through from anywhere; Hive ships no front (ADR-071): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only |
+| `hub.hosts` | empty | extra host names the console answers to, comma-separated (for example hive.example.com, when a proxy of yours forwards that name to 127.0.0.1); empty: localhost and IP addresses only. The console refuses every other Host header, so a web page that points a name of its own at 127.0.0.1 (DNS rebinding) cannot reach it; the routes a hand calls are exempt. Counts only when the owner set it |
 
 ## hygiene
 
@@ -405,7 +406,7 @@ Each section below is one family: the settings that share the part of their name
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `update.channel` | `auto` | how this machine gets a newer Hive. source: the daemon rebuilds hive from the brain project's checkout after a landing (daemon.self_update); release: hive update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise |
-| `update.latest_url` | empty | where the daemon looks, at most once a day, for the latest Hive release: an http(s) URL answering JSON - a GitHub releases/latest URL (`https://api.github.com/repos/OWNER/REPO/releases/latest`), a GitHub releases list, or \{"version": "v1.2.3", "url": "`https://...`"\}. When it names a version newer than the running one, hive version and the console say so with the release link. The check downloads and installs nothing; hive update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network |
+| `update.latest_url` | empty | where the daemon looks, at most once a day, for the latest Hive release: an http(s) URL answering JSON - a GitHub releases/latest URL (`https://api.github.com/repos/OWNER/REPO/releases/latest`), a GitHub releases list, or \{"version": "v1.2.3", "url": "`https://...`"\}. When it names a version newer than the running one, hive version and the console say so with the release link. The check downloads and installs nothing; hive update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network by itself; only hive update, when you run it yourself, then looks at Hive's own releases (`https://api.github.com/repos/lamplitlabs/hive/releases/latest`) for that one run, and says so first |
 
 ## verify
 
