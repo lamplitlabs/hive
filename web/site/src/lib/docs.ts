@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { cutClean, cutTitle, renderMarkdown } from "./markdown.ts";
 import type { DocLink, TocEntry } from "./markdown.ts";
+import type { SearchEntry } from "./search.ts";
 import { SITE } from "./site.ts";
 
 /** Files under docs/ that get no page: the repository's own environment recipe is for its runner, not for a reader. */
@@ -311,9 +312,7 @@ export function optionalDoc(slug: string): Doc | undefined {
   return loadDocs().bySlug.get(slug);
 }
 
-/** What the search box loads: every page's title and its h2 and h3 headings. Short keys keep the file small. */
-export type SearchEntry = { u: string; t: string; g: string; h: [id: string, text: string][] };
-
+/** What the search box loads: every page's title and its h2 and h3 headings. */
 export function searchIndex(docs: Docs): SearchEntry[] {
   return docs.docs.map((d) => ({ u: d.path, t: d.title, g: d.group, h: d.toc.map((e) => [e.id, e.text]) }));
 }
