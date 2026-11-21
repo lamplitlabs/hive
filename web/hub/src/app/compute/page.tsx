@@ -6,6 +6,7 @@ import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { MachineCard, RevokeDeviceButton } from "@/components/compute/machine";
 import { ThisMachineCard } from "@/components/compute/this-machine";
 import { CapsPanel, ComputeRequestCard, ComputeRequestListRow, ComputeRequestRow } from "@/components/compute/compute";
+import { waitingNote } from "@/components/compute/compute-state";
 import { HygienePanel } from "@/components/hive/hygiene";
 import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/hive/runners";
 import { Button } from "@/components/ui/button";
@@ -78,7 +79,7 @@ export default function ComputePage() {
 
         {waiting ? (
           <section aria-label="Waiting for you">
-            <SectionHeading count={waiting} note="An agent asked for an extra machine. It starts only if you approve.">
+            <SectionHeading count={waiting} note={waitingNote(pending.length, asking)}>
               Waiting for you
             </SectionHeading>
             {asking ? <RunnersQuestion note={runnersNote} className={pending.length ? "mb-3" : undefined} /> : null}

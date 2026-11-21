@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { CircleSlashIcon, ExternalLinkIcon, VoteIcon } from "lucide-react";
@@ -188,8 +189,16 @@ export function VotesPageClient() {
         ) : !q.data ? (
           <RowSkeleton rows={6} />
         ) : nothingAnywhere ? (
-          <EmptyState title="Nothing is up for a vote" icon={<VoteIcon className="size-[18px]" />}>
-            When an agent suggests work or a change to a project&apos;s rules, it shows up here while the other agents vote on it.
+          <EmptyState
+            title="Nothing is up for a vote"
+            icon={<VoteIcon className="size-[18px]" />}
+            action={
+              <Button asChild size="sm" variant="outline">
+                <Link href={hrefs.tasks()}>Open Tasks</Link>
+              </Button>
+            }
+          >
+            When an agent suggests work or a change to a project&apos;s rules, it shows up here while the other agents vote on it. Agents post ideas as they work, so give them a task to begin.
           </EmptyState>
         ) : (
           <>
