@@ -137,7 +137,7 @@ test("a link into the repository becomes its file on GitHub", () => {
 });
 
 test("a README section the site covers points at the site's page", () => {
-  assert.deepEqual(md.rewriteHref("../README.md#five-minutes-to-the-first-task", ctx("console.md")), { href: "/install/", kind: "site" });
+  assert.deepEqual(md.rewriteHref("../README.md#install", ctx("console.md")), { href: "/install/", kind: "site" });
 });
 
 test("a link that is broken in the Markdown is rendered and reported, not hidden", () => {

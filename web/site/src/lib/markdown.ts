@@ -44,7 +44,6 @@ export type LinkContext = {
 
 /** Sections of the README that a page of this site covers; a doc that links to one lands here instead. */
 export const README_ON_SITE: Readonly<Record<string, string>> = {
-  "five-minutes-to-the-first-task": "/install/",
   install: "/install/",
   installing: "/install/",
   "quick-start": "/install/",

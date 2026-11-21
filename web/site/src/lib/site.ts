@@ -39,6 +39,7 @@ export const INSTALL = {
     after: [
       'export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile',
       "hive version",
+      "hive init --store-only                 # once: makes the store, ~/.hive/hive.sqlite",
       "hive hub                               # the console, at http://127.0.0.1:8765",
     ].join("\n"),
   },
@@ -70,7 +71,7 @@ export const PAGES = {
     path: "/install/",
     title: "Install Hive and run your first task",
     description:
-      "Install Hive on macOS or Linux with one command, open the console on 127.0.0.1:8765, connect a model and give a project's lead agent its first task.",
+      "Install Hive on macOS or Linux, open the console on 127.0.0.1:8765, connect a model, add a project, start the runner and give its lead agent a first task.",
     nav: "Install",
     summary: "The install line, building from source, and the first task step by step.",
   },

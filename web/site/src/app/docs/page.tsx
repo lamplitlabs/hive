@@ -25,7 +25,7 @@ export default function DocsIndex() {
       <PageHero
         eyebrow="Documentation"
         title="Hive documentation"
-        lead="The reference for every part of Hive, one page per part. These pages are the Markdown files of the repository's docs folder, rendered as they are, so the site and the repository never say different things."
+        lead="The reference for every part of Hive, one page per part. These pages are rendered from the Markdown files of the repository's docs folder when the site is built."
       >
         <DocsSearch className="mt-8 max-w-xl" />
       </PageHero>

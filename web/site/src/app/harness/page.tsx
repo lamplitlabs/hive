@@ -52,7 +52,7 @@ export default function HarnessPage() {
       <PageHero
         eyebrow="The harness"
         title="How an agent runs."
-        lead="Hive does not wrap another agent tool. Every job runs on its own harness: one model, a small set of typed tools, a linear history and limits you set. Nothing besides the hive binary is installed on a machine that runs agents."
+        lead="Hive does not wrap another agent tool. Every job runs on its own harness: one model, a small set of typed tools, a linear history and limits you set. The harness is part of the hive binary, so a machine that runs agents needs no other agent tool."
       />
 
       <Article sections={SECTIONS}>
@@ -70,7 +70,11 @@ export default function HarnessPage() {
         </p>
 
         <H2 id="tools">The tools</H2>
-        <p>Every run is offered the same seven typed tools. Each is confined to the clone and bound by the same deny rules and the same output cap.</p>
+        <p>
+          A run that may change code is offered seven typed tools; a read-only run gets them without <code>edit</code> and <code>write</code>. The file
+          tools take paths inside the clone only. <code>bash</code> starts in the clone and runs as your user. All of them pass the same deny rules and the
+          same output cap.
+        </p>
         <div className="table-scroll" role="region" aria-label="The seven tools" tabIndex={0}>
           <table>
             <thead>
@@ -92,13 +96,14 @@ export default function HarnessPage() {
           </table>
         </div>
         <p>
-          Beside them: <code>process</code> for the run&apos;s background processes, <code>memory</code> for what should be kept for later runs, and, where
-          you allow them, <code>skill</code>, <code>fetch</code>, <code>web_search</code>, <code>subagent</code> and the tools of the project&apos;s MCP
-          servers.
+          Beside them: <code>process</code> for the run&apos;s background processes, <code>memory</code> for what should be kept for later runs,{" "}
+          <code>skill</code>, <code>subagent</code> and the tools of the project&apos;s MCP servers, each of which a setting can take away. <code>fetch</code>{" "}
+          is offered once you name the hosts it may read. <code>web_search</code> is offered in a session and not in a job, unless you set{" "}
+          <code>harness.web_search</code> to <code>on</code>.
         </p>
 
         <H2 id="limits">Limits</H2>
-        <p>Three budgets bound every run, and all three are settings you own.</p>
+        <p>Three budgets bound every run, and all three are settings.</p>
         <ul>
           <li>
             <code>harness.max_steps</code>: the model calls one run may make. 60 by default.
@@ -118,19 +123,33 @@ export default function HarnessPage() {
         </p>
 
         <H2 id="deny">Deny rules</H2>
-        <p>A job&apos;s harness refuses some things before they run, and tells the model why:</p>
+        <p>
+          Before a shell command of a job runs, the harness matches its text against four patterns. A match is refused without being run, and the model is
+          told why:
+        </p>
         <ul>
           <li>
-            Commands that would leave the clone: <code>git push</code>, a change to <code>git remote</code>, any <code>gh</code> call.
+            a command that starts with <code>git push</code>;
           </li>
           <li>
-            Paths that hold credentials: <code>~/.ssh</code>, <code>.netrc</code>, Hive&apos;s own <code>private/</code> folder, <code>~/.copilot</code>,{" "}
-            <code>~/.config/gh</code>.
+            a command that starts with <code>git remote add</code>, <code>set-url</code> or <code>remove</code>;
+          </li>
+          <li>
+            a command that starts with <code>gh</code>;
+          </li>
+          <li>
+            a command that names <code>~/.ssh/</code>, <code>.netrc</code>, <code>~/.copilot</code>, <code>~/.config/gh</code> or Hive&apos;s own{" "}
+            <code>private/</code> folder.
           </li>
         </ul>
         <p>
-          A run never holds a git login either. Agents commit in their clones and never push; the runner delivers the branch after the run has ended. You
-          add rules of your own in the <code>tool(filter)</code> form:
+          Other spellings pass: <code>git -C . push</code>, <code>gh</code> by its full path, <code>$HOME/.ssh/...</code>. The rules catch a mistake; they
+          are not a barrier. A job runs as your user, with no container and no operating-system sandbox around it, so treat a repository you point Hive
+          at like code you would run yourself.
+        </p>
+        <p>
+          Hive hands a run no git login of its own. The rule is that agents commit in their clones and do not push; the runner delivers the branch after
+          the run has ended. You add rules of your own in the <code>tool(filter)</code> form:
         </p>
         <CodeBlock code={"hive settings set harness.deny_tools 'bash(rm *), read(.env*), write(*.lock)'"} />
         <p>
@@ -163,8 +182,8 @@ export default function HarnessPage() {
         <p>
           A skill is a folder with a <code>SKILL.md</code>. The harness finds skills in <code>.hive/skills</code>, <code>.claude/skills</code>,{" "}
           <code>.github/skills</code> and <code>.agents/skills</code> in the repository, then in <code>~/.hive/skills</code>. The model sees each name with
-          its one-line description and loads a skill only when the task calls for it, so a project with forty skills costs the context a few hundred
-          tokens, not forty documents.
+          its one-line description, cut at 240 characters, and loads a skill only when the task calls for it, so a project with forty skills costs the
+          context forty short lines, not forty documents.
         </p>
 
         <H2 id="helpers">Helpers and sub-sessions</H2>
@@ -201,7 +220,7 @@ export default function HarnessPage() {
             "hive harness login                                  # GitHub's device flow, for the default provider",
             "hive settings set provider openai                   # or anthropic, gemini, ollama, custom, ...",
             "hive harness login --provider openai --with-token   # reads the key on stdin",
-            "hive harness models                                 # the models the provider offers this login",
+            "hive harness models --provider openai               # that provider's models; without --provider it lists Copilot's",
             "hive harness status                                 # the provider, the login, the models and limits in force",
           ].join("\n")}
         />
@@ -213,9 +232,10 @@ export default function HarnessPage() {
 
         <H2 id="chat">Talk to it yourself</H2>
         <p>
-          <code>hive harness chat</code> is the same agent as a conversation in your terminal, with the same tools, instruction files, skills, hooks, MCP
-          servers and deny rules as a job. Each line you type is a turn. A call that would change something is shown first, and you answer yes, no or
-          always.
+          <code>hive harness chat</code> is the same agent as a conversation in your terminal, with the same instruction files, skills, hooks and MCP
+          servers as a job, and your own deny rules. Two things differ: web search is offered, and a command a job would refuse, such as{" "}
+          <code>git push</code> or a <code>gh</code> call, is shown to you and runs if you say yes. Each line you type is a turn. A call that would change
+          something is shown first, and you answer yes, no or always.
         </p>
         <CodeBlock code="hive harness chat -C ~/src/my-app" />
 

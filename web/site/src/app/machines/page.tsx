@@ -46,7 +46,9 @@ export default function MachinesPage() {
         <CodeBlock
           code={[
             "hive settings set machine.labels gpu,android   # what this machine offers, beyond what Hive finds",
-            "hive executor label gpu-box +cuda              # add a word on a paired machine; -word removes one",
+            "hive executor label gpu-box +cuda              # add a word on a paired machine",
+            "hive executor label gpu-box +cuda,-gpu         # add one word and remove another",
+            "hive executor label gpu-box -- -gpu            # remove only: the two dashes come first",
             "hive executor list                             # every machine, its slots and what it offers",
           ].join("\n")}
         />
@@ -87,24 +89,45 @@ export default function MachinesPage() {
 
         <H2 id="pair">Pair a Linux machine over SSH: hive pair</H2>
         <p>
-          <code>hive pair</code> turns a Linux machine into one of yours in one run, over the SSH login of an admin on that machine.
+          <code>hive pair</code> sets up a Linux machine as one of yours, over the SSH login of an admin on that machine. The name is required, and the
+          admin needs passwordless sudo. It refuses anything but Linux: a Mac, or any other machine, joins with <code>hive-hand</code>, in the next
+          section.
         </p>
         <CodeBlock code="hive pair ADMIN@HOST --name NAME [--workdir /srv/hive] [--workers N] [--projects a,b|*]" />
         <p>
           It reads the machine first and refuses, before it changes anything, when the machine is not fit: not Linux, no passwordless sudo, a work folder
-          that already holds clones. Then it creates a <code>hive</code> user there, installs the small program that runs jobs, and writes one line in that
-          user&apos;s <code>authorized_keys</code> that lets Hive&apos;s key run that program and nothing else. Every step reports <code>kept</code> or{" "}
-          <code>done</code>, so pairing again is safe.
+          that already holds clones.
         </p>
         <p>
-          A probe then checks the machine, and a machine that passes takes work. <code>--workers</code> is only the starting count: each probe reads the
-          machine&apos;s cores and memory and sets its slots to the smaller of the cores and one run per 3 GB.
+          It copies a Linux <code>hive</code> to the machine. When Hive itself runs on Linux with the same processor, it sends its own program. Otherwise
+          it needs one from you: set <code>HIVE_HANDS_BINARY</code> to a Linux <code>hive</code> for that machine&apos;s processor (the{" "}
+          <code>hive</code> inside the release&apos;s Linux archive), or put that file beside your <code>hive</code> as <code>hive-linux-amd64</code> or{" "}
+          <code>hive-linux-arm64</code>. From a checkout of Hive&apos;s source it can cross-build one. With none of these it stops and says so.
+        </p>
+        <p>Then it changes these things, and every step reports <code>kept</code> or <code>done</code>, so pairing again is safe:</p>
+        <ul>
+          <li>
+            On the machine: a <code>hive</code> user; the program as <code>/usr/local/bin/hive-hands</code>, with <code>/usr/local/bin/hive</code> linked
+            to it; a git config and <code>mise</code> in that user&apos;s home; a work directory; one line in that user&apos;s{" "}
+            <code>authorized_keys</code> that lets Hive&apos;s key run the hands commands and nothing else; and an sshd drop-in,{" "}
+            <code>/etc/ssh/sshd_config.d/60-hive-hands.conf</code>, after which sshd is reloaded.
+          </li>
+          <li>
+            On your machine: a <code>Host</code> block in <code>~/.ssh/config</code>, and the machine&apos;s host keys in{" "}
+            <code>~/.ssh/known_hosts</code>.
+          </li>
+        </ul>
+        <p>
+          A newly paired machine has no model login and takes no work until it has one. Log it in, then probe it: a machine that passes the probe takes
+          work. <code>--workers</code> is only the starting count: each probe reads the machine&apos;s cores and memory and sets its slots to the smaller
+          of the cores and one run per 3 GB.
         </p>
         <CodeBlock
           code={[
-            "hive pair ADMIN@HOST --name NAME --inspect   # read the machine and print the scripts; apply nothing",
-            "hive executor probe NAME                     # check a machine again",
-            "hive remove executor NAME                    # the undo",
+            "hive pair ADMIN@HOST --name NAME --inspect    # read the machine and print the scripts; apply nothing",
+            "hive executor login NAME --admin ADMIN@HOST   # give the machine a model login; --with-token reads a token on stdin",
+            "hive executor probe NAME                      # check a machine again",
+            "hive remove executor NAME                     # the undo",
           ].join("\n")}
         />
 
@@ -116,18 +139,19 @@ export default function MachinesPage() {
         </p>
         <p>
           In the console, <strong>Machines → Add a machine → Run one command on it → Get a join code</strong> shows a six-word code, good for ten minutes
-          and one join, with the line to run on the machine:
+          and one join, with the line to run on the machine. Here it is with an address the machine can reach in place of the one the console shows:
         </p>
         <CodeBlock
           code={[
             "hive-hand join --brain https://hive.example.com amber-river-cobalt-maple-orbit-lantern",
-            "hive-hand dial          # keep it running (a launchd or systemd service)",
+            "hive-hand dial          # every later start: keep this running (a launchd or systemd service)",
           ].join("\n")}
         />
         <p>
-          <code>join</code> makes a device key on the machine and sends only its public half. <code>dial</code> signs a one-time challenge with that key
-          and then waits for work. The Machines page shows the machine&apos;s last call and a <strong>Revoke</strong> button: a revoked machine is refused,
-          and coming back takes a new code.
+          <code>join</code> makes a device key on the machine, sends only its public half, and then dials in itself: it stays connected and does not
+          return. <code>dial</code> is what you keep running on every later start. It signs a one-time challenge with that key and then waits for work;
+          while the console cannot be reached it tries again, waiting longer each time. The Machines page shows the machine&apos;s last call and a{" "}
+          <strong>Revoke</strong> button: a revoked machine is refused, and coming back takes a new code.
         </p>
         <p>
           <code>hive-hand</code> enrols the machine and carries the jobs. An agent itself runs on the harness, which is in <code>hive</code>, so a machine
@@ -135,10 +159,22 @@ export default function MachinesPage() {
           it is, once with <code>--hand</code>.
         </p>
         <p>
-          <code>--brain</code> is the address the machine reaches your Hive on; the line the console shows carries the address your browser used. The
-          console listens on <code>127.0.0.1</code> only, so a machine elsewhere needs a way to that address that you set up. TLS is whatever stands in
-          front of it.
+          <code>--brain</code> is the address the machine reaches your Hive on. The line the console shows carries the address your browser used, so it
+          usually reads <code>http://127.0.0.1:8765</code>: change it to an address the other machine can reach. The console listens on{" "}
+          <code>127.0.0.1</code> only, so another machine reaches it only through something you set up on the machine Hive runs on: an SSH tunnel, or a
+          proxy with TLS there. A private network alone does not reach a port bound to <code>127.0.0.1</code>. What you put there reaches the whole
+          console, not only the routes <code>hive-hand</code> uses, so keep it between your own machines.
         </p>
+        <p>
+          An SSH tunnel is the short way. On the machine that joins, forward a port of its own to the console and name that port. Keep the tunnel up for
+          as long as the machine should take work:
+        </p>
+        <CodeBlock
+          code={[
+            "ssh -N -L 8765:127.0.0.1:8765 YOU@HOST &                # HOST is the machine Hive runs on",
+            "hive-hand join --brain http://127.0.0.1:8765 CODE       # this machine's port 8765 now reaches the console",
+          ].join("\n")}
+        />
 
         <H2 id="quiet">When a machine goes quiet</H2>
         <p>
@@ -150,7 +186,8 @@ export default function MachinesPage() {
         <H2 id="reference">The full reference</H2>
         <ul>
           <li>
-            <Link href="/docs/machines/">Machines</Link>: needs and offers, pairing, the join protocol, heartbeats, moving and removing machines.
+            <Link href="/docs/machines/">Machines</Link>: needs and offers, pairing, the join protocol, heartbeats, moving a project, removing projects
+            and machines.
           </li>
           <li>
             <Link href="/docs/console/#machines">The Machines page</Link> of the console.

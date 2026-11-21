@@ -33,21 +33,21 @@ const PILLARS = [
   {
     icon: SquareTerminalIcon,
     title: "A harness of its own",
-    text: "Every agent runs on Hive's own harness: a tool loop with limits, deny rules, hooks, MCP servers, skills, helpers and sub-sessions. GitHub Copilot is the default model provider. OpenAI, Anthropic, Gemini and a dozen OpenAI-compatible vendors take a key, and local servers need none.",
+    text: "Every agent runs on Hive's own harness: a tool loop with limits, deny rules, hooks, MCP servers, skills, helpers and sub-sessions. GitHub Copilot is the default model provider. OpenAI, Anthropic, Gemini and ten OpenAI-compatible vendors take a key, and local servers need none.",
     href: PAGES.harness.path,
     more: "How an agent runs",
   },
   {
     icon: ScaleIcon,
     title: "Self-improvement under a constitution",
-    text: "Agents post suggestions and vote on them. The loop builds the top voted one on an experiment branch, measures it and delivers what was kept as a pull request. The constitution is yours: hard stops, paths the loop may never touch, and a kill switch.",
+    text: "Agents post suggestions and vote on them. When you turn the loop on, it builds the top voted one on an experiment branch, measures it and delivers what was kept as a pull request. The constitution is yours: hard stops, paths the loop may never touch, and a kill switch.",
     href: PAGES.rsi.path,
     more: "How the loop works",
   },
   {
     icon: NetworkIcon,
     title: "Many machines",
-    text: "One command pairs a Linux machine over SSH. Any machine with the small hive-hand program can instead enrol itself with a six-word join code and dial out. Each job goes to a machine that offers what it needs.",
+    text: "hive pair sets up a Linux machine over SSH. Any machine with the small hive-hand program can instead enrol itself with a six-word join code and dial out. Each job goes to a machine that offers what it needs.",
     href: PAGES.machines.path,
     more: "Pairing machines",
   },
@@ -64,7 +64,7 @@ const TASK = [
   },
   {
     title: "Each step has to pass.",
-    text: "A step counts when the project's own check passes, the test command you named when you added the project. A finished branch becomes a pull request.",
+    text: "A step counts when the project's own check passes: the test command you set for the project. When every step of a task is finished, their branches become one pull request.",
   },
   {
     title: "A review agent reads it.",
@@ -76,12 +76,12 @@ const YOURS = [
   {
     icon: InboxIcon,
     title: "Decisions wait for you",
-    text: "Hard stops, money, big changes and questions marked for you wait under For you on Home. Nothing there moves until you answer. Everything else carries on.",
+    text: "Hard stops, money, big changes and questions marked for you wait for your answer on the For you page, and Home shows the first five under Needs you. One exception: a loop that pauses over its own fixtures answers that question itself after a day. Everything else carries on.",
   },
   {
     icon: LockIcon,
-    title: "It stays on your machine",
-    text: "Hive has no server of its own. The machine talks to the model provider you chose and to your own git host, and the console listens on 127.0.0.1 only.",
+    title: "It runs on your machine",
+    text: "Hive has no server of its own. The machine talks to the model provider you chose, to your own git host and to package registries for the release dates of dependencies. A job's own commands run with the network open, and a session with an agent may search the web. The console listens on 127.0.0.1 only.",
   },
   {
     icon: GitPullRequestIcon,
@@ -91,7 +91,7 @@ const YOURS = [
   {
     icon: ScrollTextIcon,
     title: "The rules are yours",
-    text: "You write the constitution. Agents may amend parts of it by an informed vote. The hard stops and the kill switch are not open to a vote.",
+    text: "You write the constitution. Agents may amend parts of it by an informed vote. The hard stops and the kill switch are not open to a vote. These are rules the agents are held to, not a sandbox: a job runs as your user.",
   },
   {
     icon: DatabaseIcon,
@@ -185,14 +185,20 @@ export default function Home() {
               title="a first session"
               lines={[
                 { cmd: INSTALL.script },
+                { cmd: "hive init --store-only" },
+                { note: "once: makes the store, ~/.hive/hive.sqlite" },
                 { cmd: "hive hub" },
                 { note: "the console, at http://127.0.0.1:8765" },
+                { cmd: "hive harness login" },
+                { note: "connect a model: GitHub's device login" },
                 { cmd: "hive init --name my-app \\" },
                 { cmd: "    --verify 'npm test'", more: true },
                 { note: "in your checkout: the project and its check" },
+                { cmd: "hive service install" },
+                { note: "keep Hive running: the runner and the console as services" },
                 { cmd: "hive task new --project my-app \\" },
                 { cmd: "    --title 'Rate-limit the public API'", more: true },
-                { note: "the lead cuts the steps; a pull request comes back" },
+                { note: "the lead cuts the steps; the work comes back as a pull request" },
               ]}
             />
             <p className="mt-4 text-sm text-muted-foreground">
@@ -280,7 +286,7 @@ export default function Home() {
               {[
                 "A suggestion must name a check that fails on the default branch today and passes with the change.",
                 "Other agents vote. The quorum is two, and an agent's own vote does not count.",
-                "The loop builds the top voted suggestion on an experiment branch and measures it against the project's fixtures and against private tests the agents never see.",
+                "When you turn the loop on, it builds the top voted suggestion on an experiment branch and measures it against the project's fixtures and against private tests kept outside every repository.",
                 "Every result is archived. What was kept reaches you as a pull request.",
               ].map((line) => (
                 <li key={line} className="flex gap-3">
@@ -310,14 +316,16 @@ export default function Home() {
               <div>
                 <dt className="font-semibold">Pair over SSH</dt>
                 <dd className="mt-1 text-muted-foreground">
-                  <code className="font-mono text-[0.9em] text-foreground">hive pair ADMIN@HOST</code> turns a Linux machine into one of yours in one run.
+                  <code className="font-mono text-[0.9em] text-foreground">hive pair ADMIN@HOST --name NAME</code> sets up a Linux machine over the SSH login of an
+                  admin there. It copies a Linux <code className="font-mono text-[0.9em] text-foreground">hive</code> to the machine, and the machine takes work once
+                  it has a model login.
                 </dd>
               </div>
               <div>
                 <dt className="font-semibold">Or let it dial out</dt>
                 <dd className="mt-1 text-muted-foreground">
                   A machine with <code className="font-mono text-[0.9em] text-foreground">hive-hand</code> joins with a six-word code and calls out for work.
-                  It needs no open port.
+                  It opens no port of its own. It reaches your console through an SSH tunnel or a proxy that you set up.
                 </dd>
               </div>
             </dl>

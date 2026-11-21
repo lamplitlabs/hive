@@ -34,6 +34,17 @@ const LABELS: Readonly<Record<string, string>> = {
   recovery: "Recovery and hygiene",
 };
 
+/**
+ * Descriptions the site words itself. A page's description is its first
+ * paragraph; where a later decision overtook the page and that paragraph no
+ * longer says what holds, the description says so. The Markdown is left as
+ * the repository has it.
+ */
+const DESCRIPTIONS: Readonly<Record<string, string>> = {
+  "decisions/adr-070-web-first-hive-hosted-brain-open-hand":
+    "Superseded in part by ADR-071: the hosted product is withdrawn. What this ADR built stays as options for someone who runs Hive themselves.",
+};
+
 export type PlannedDoc = {
   /** Relative to docs/, forward slashes: "decisions/ADR-069-….md". */
   file: string;
@@ -117,7 +128,7 @@ export type Doc = PlannedDoc & {
   label: string;
   /** The whole <title>: at most 60 characters. */
   metaTitle: string;
-  /** From the first paragraph: 70 to 155 characters. */
+  /** From the first paragraph, or the site's own words for a page a later decision overtook: 70 to 155 characters. */
   description: string;
   html: string;
   toc: TocEntry[];
@@ -197,7 +208,7 @@ export function buildDocs(sources: readonly DocSource[], repoHas?: (path: string
       titleId: r.titleId,
       label: docLabel(planned.slug, title),
       metaTitle: docMetaTitle(title),
-      description: describeDoc(title, r.paragraphs),
+      description: DESCRIPTIONS[planned.slug] ?? describeDoc(title, r.paragraphs),
       html: r.html,
       toc: r.toc,
       ids: r.ids,

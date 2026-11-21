@@ -171,6 +171,13 @@ test("descriptions: the first paragraph, more of the page when it is too short, 
   assert.ok(cut.length >= 70 && cut.length <= 155 && cut.endsWith("…"));
 });
 
+test("a page a later decision overtook says so in its description (ADR-070)", () => {
+  const adr = docs.loadDocs().bySlug.get("decisions/adr-070-web-first-hive-hosted-brain-open-hand");
+  assert.ok(adr, "the description in docs.ts names a file that exists");
+  assert.match(adr.description, /^Superseded in part by ADR-071: the hosted product is withdrawn\./);
+  assert.ok(adr.description.length >= 70 && adr.description.length <= 155, adr.description);
+});
+
 test("two docs with the same words still get different titles and descriptions", () => {
   const same = "# Notes\n\nThe same opening paragraph, long enough to stand as a description of the page it opens.\n";
   const built = docs.buildDocs([
