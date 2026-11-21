@@ -174,7 +174,7 @@ pub fn register() {
 pub(crate) fn front_line(address: &str, store: Option<&hive_store::Store>) -> String {
     match store.and_then(|s| s.hub_allow_remote()) {
         Some(origin) => format!(
-            "Front relay on http://{address} for {origin} (reads need the front's session; every write needs a member's passkey)"
+            "Front relay on http://{address} for {origin} (reads pass unsigned, so the front's own login is what guards them; every write needs a member's passkey)"
         ),
         None => format!(
             "Front relay on http://{address} (closed: hub.allow_remote is empty; every request through it gets 403)"

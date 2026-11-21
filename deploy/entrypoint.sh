@@ -7,7 +7,8 @@
 # 2. Every start pins the two settings a brain in this image must hold:
 #      brain.code         none     no project clone on the brain
 #      daemon.self_update release  update from published releases, never build
-#    and, when HIVE_BACKUP_TO is set, backup.to (az://ACCOUNT/CONTAINER/PREFIX).
+#    and, when HIVE_BACKUP_TO is set, backup.to (az://ACCOUNT/CONTAINER/PREFIX;
+#    an az:// backup needs the Azure CLI, which the image does not hold).
 # 3. The hub and the daemon run side by side. Each exits 3 when the hive
 #    binary changes (a release was installed); this script starts it again,
 #    as the user service does on a laptop. Any other exit of either ends the

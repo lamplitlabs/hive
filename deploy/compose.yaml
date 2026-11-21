@@ -21,6 +21,7 @@ services:
     environment:
       HIVE_HUB_PORT: ${HIVE_HUB_PORT:-8765}
       # az://ACCOUNT/CONTAINER/PREFIX: daily store backups (docs/security.md "Backups").
+      # An az:// backup runs the Azure CLI, which the image does not hold.
       HIVE_BACKUP_TO: ${HIVE_BACKUP_TO:-}
       # Where `daemon.self_update release` looks for releases; empty keeps the default.
       HIVE_UPDATE_LATEST_URL: ${HIVE_UPDATE_LATEST_URL:-}

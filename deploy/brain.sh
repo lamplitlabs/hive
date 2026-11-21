@@ -17,7 +17,9 @@
 # reached over an SSH tunnel (ssh -L PORT:127.0.0.1:PORT host). Give each
 # team its own PORT.
 #
-# Environment for `up`: HIVE_BACKUP_TO (az://ACCOUNT/CONTAINER/PREFIX),
+# Environment for `up`: HIVE_BACKUP_TO (az://ACCOUNT/CONTAINER/PREFIX; an
+# az:// backup runs the Azure CLI, which the image does not hold: add it and
+# a login to the image first),
 # HIVE_UPDATE_LATEST_URL (the release document daemon.self_update release
 # reads). DOCKER overrides the docker command (podman works).
 set -eu

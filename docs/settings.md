@@ -59,7 +59,7 @@ Each section below is one family: the settings that share the part of their name
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `brain.code` | `clone` | clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md) |
+| `brain.code` | `clone` | clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the project lead's jobs and the reflection (kinds lead and reflect), which run in an empty workspace and plan from the board, the task text and the diffs hands report; every job that works in the code waits for a hand, check and watch scripts are held, and a review job, which needs the code and the store both, has no machine to run on yet (ADR-070 rule 6, docs/security.md) |
 
 ## chat
 
@@ -381,9 +381,9 @@ Each section below is one family: the settings that share the part of their name
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `review.max_files` | `20` | files a pull request may touch and still be merged by the review agent; above it the review goes to the owner with the agent's findings |
-| `review.max_lines` | `600` | lines (added plus deleted, not counting generated files such as lockfiles and build output) a pull request may change and still be merged by the review agent; above it the review goes to the owner |
-| `review.merge` | `auto` | auto: the review agent merges a Hive pull request itself when it is small, stays off guarded paths and the check is green; anything else goes to the owner with the review's findings. ask: the agent still reviews every pull request and leaves its findings, but every merge waits for the owner |
+| `review.max_files` | `20` | files a pull request may touch before the review agent reads it file by file; it still merges one whose every file is what the title and body say, and hands the owner what it cannot account for (size alone hands nothing to the owner) |
+| `review.max_lines` | `600` | lines (added plus deleted, not counting generated files such as lockfiles and build output) a pull request may change before the review agent reads it file by file, as for review.max_files |
+| `review.merge` | `auto` | auto: the review agent merges a Hive pull request itself when it stays off guarded paths, the check is green and the whole diff is what the title and body say; anything else goes to the owner with the review's findings (size alone hands nothing to the owner). ask: the agent still reviews every pull request and leaves its findings, but every merge waits for the owner |
 
 ## schedule
 

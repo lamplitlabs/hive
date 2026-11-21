@@ -1440,7 +1440,7 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
             let Some(change) = args.get(2) else {
                 return Err(crate::util::fail(
                     2,
-                    "executor label NAME WORDS (a comma-separated list replaces the labels; +word and -word add and remove)",
+                    "executor label NAME WORDS (a comma-separated list replaces the labels; +a,-b adds a and removes b; to remove only, write -- -b)",
                 )
                 .into());
             };

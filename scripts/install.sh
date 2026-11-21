@@ -533,7 +533,7 @@ report() {
     info "Installed $program $tag at $dest, in place of the one that was there."
     if [ "$program" = hive ]; then
       info "Hive's services (hive service install) restart on it by themselves,"
-      info "once their runs in flight have ended."
+      info "once their runs in flight have ended or been put on hold."
     fi
   else
     info "Installed $program $tag at $dest"

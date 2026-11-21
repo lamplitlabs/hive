@@ -1255,7 +1255,7 @@
         "none"
       ],
       "default": "clone",
-      "description": "clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md)",
+      "description": "clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the project lead's jobs and the reflection (kinds lead and reflect), which run in an empty workspace and plan from the board, the task text and the diffs hands report; every job that works in the code waits for a hand, check and watch scripts are held, and a review job, which needs the code and the store both, has no machine to run on yet (ADR-070 rule 6, docs/security.md)",
       "kind": "choice",
       "min": null,
       "name": "brain.code",
