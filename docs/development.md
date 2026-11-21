@@ -61,10 +61,14 @@ time it renders this repository's `docs/**/*.md` under `/docs/` and serves
 the installer, `scripts/install.sh`, at `/install.sh`.
 
 `.github/workflows/deploy-site.yml` deploys on every push to `main` that
-touches `web/site/`: it runs `npm run check`, then `vercel pull`,
-`vercel build --prod` and `vercel deploy --prebuilt --prod` with the
-repository secrets `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and
-`VERCEL_DEPLOY_TOKEN`.
+touches `web/site/`, `docs/` or `scripts/install.sh`: it runs
+`npm run check`, then `vercel pull`, `vercel build --prod` and
+`vercel deploy --prebuilt --prod` with the repository secrets
+`VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `VERCEL_DEPLOY_TOKEN`. Its last
+step downloads `https://hivefleet.dev/install.sh` and fails unless that is
+this commit's `scripts/install.sh`, byte for byte: the install line hands
+that address to a shell, so a domain that does not point at the Vercel
+project must not go unnoticed.
 The Mac app has its own check, `apps/macos/scripts/check.sh` (see
 [The Mac app](mac-app.md#the-mac-app)); it is outside the Cargo workspace and the verify
 command.

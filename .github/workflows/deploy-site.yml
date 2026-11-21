@@ -39,6 +39,8 @@ permissions:
 
 env:
   VERCEL_CLI: vercel@65.14.0
+  # The address the README and the site give for the installer.
+  INSTALLER_URL: https://hivefleet.dev/install.sh
 
 jobs:
   check:
@@ -94,3 +96,30 @@ jobs:
             echo "Transient deploy failure. Retrying in ${sleep_seconds}s..."
             sleep "$sleep_seconds"
           done
+      # People are told to run `curl -fsSL https://hivefleet.dev/install.sh | sh`,
+      # so that address must serve this commit's installer, byte for byte. A
+      # domain that does not point at this project fails here and not on
+      # someone's machine: a parked domain answers 200 with a page of its own
+      # to every path, which curl would hand to the shell.
+      - name: Check the installer at the public address
+        shell: bash
+        working-directory: .
+        run: |
+          set -uo pipefail
+          served="$RUNNER_TEMP/served-install.sh"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsSL --proto '=https' --tlsv1.2 -o "$served" "$INSTALLER_URL" \
+              && cmp -s "$served" scripts/install.sh; then
+              echo "$INSTALLER_URL serves scripts/install.sh of this commit"
+              exit 0
+            fi
+            echo "attempt $attempt/6: $INSTALLER_URL does not serve this commit's scripts/install.sh yet"
+            sleep 20
+          done
+          echo "::error::$INSTALLER_URL does not serve scripts/install.sh. Does the domain point at this Vercel project? Until it does, the install line in the README hands whatever that address serves to a shell."
+          if [[ -s "$served" ]]; then
+            echo "It served, to begin with:"
+            head -c 300 "$served"
+            echo
+          fi
+          exit 1

@@ -28,6 +28,13 @@ hive hub                               # the console, at http://127.0.0.1:8765
 The script is `scripts/install.sh` in the repository, and the site serves
 the same file. To read it before you run it, end the line with `| less`
 in place of `| sh`. It never runs `sudo` and never edits a shell profile.
+The same file can be taken straight from the repository, for when the site
+cannot be reached:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lamplitlabs/hive/main/scripts/install.sh | sh
+```
+
 What it does, in order:
 
 1. **Finds the machine.** macOS or Linux, on arm64 or x86_64
