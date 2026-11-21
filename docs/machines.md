@@ -494,8 +494,9 @@ routes.
 
 ## A brain without code: `brain.code none`
 
-A brain that should never hold a team's code - the hosted brain of ADR-070
-rule 6 (`deploy/Dockerfile`), or any machine whose review needs that -
+A brain that should never hold the projects' code - a brain you run on a
+server of your own from the image in `deploy/` (`deploy/Dockerfile`), or
+any machine whose review needs that -
 sets `hive settings set brain.code none`. This machine's own slot then
 leases only the `lead` and `reflect` jobs. Those run in an empty
 workspace and plan from the board, the task text and what the hands
@@ -507,12 +508,13 @@ this disk too. The source self-update stands down; `daemon.self_update
 release` installs releases instead ([release.md](release.md)). What this
 promises, and the test that holds it, is in [security.md](security.md).
 
-Two things a code-less brain does not do yet. Its hands still reach it
-through `hive pair` over SSH, because the dial-in channel is ADR-070
-step 2. And landing merges in a worktree of the registered checkout, so
-with no checkout the lander holds a finished branch (`land.held`, reason
-`brain-code-none`: "brain.code is none") without making a worktree, and the
-branch waits for a pull request merged through the forge.
+A code-less brain is not finished. Landing merges in a worktree of the
+registered checkout, so with no checkout the lander holds a finished branch
+(`land.held`, reason `brain-code-none`: "brain.code is none") without
+making a worktree, and the branch waits for a pull request merged through
+the forge. A machine reaches such a brain as it reaches any other: paired
+over SSH, or enrolled with a join code ([Enrolling a hand](#enrolling-a-hand)).
+[security.md](security.md#what-is-not-built) lists what else is not built.
 
 ## Heartbeats and presence
 
