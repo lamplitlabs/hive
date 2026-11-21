@@ -62,7 +62,7 @@ export function Provenance({ ok, missing }: { ok?: number; missing?: string[] })
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span tabIndex={0} aria-label={text} className="inline-flex rounded-sm text-muted-foreground">
+        <span tabIndex={0} role="img" aria-label={text} className="inline-flex rounded-sm text-muted-foreground">
           <ShieldAlertIcon className="size-3.5" />
         </span>
       </TooltipTrigger>

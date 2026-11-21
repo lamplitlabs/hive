@@ -73,14 +73,17 @@ export function commandOnly(s: string): string {
   return s.trim().split(/\s{2,}/)[0] ?? "";
 }
 
-export function CopyButton({ text, label = "Copy", size = "sm", variant = "default", className }: { text: string; label?: string; size?: "xs" | "sm" | "default"; variant?: "default" | "outline" | "ghost"; className?: string }) {
+// `exact` copies the text as it is (several lines, say) instead of its
+// first command; `done` is what the toast says when the text is not for a
+// terminal on this machine.
+export function CopyButton({ text, label = "Copy", size = "sm", variant = "default", className, exact, done = "Copied. Paste it in a terminal on this machine." }: { text: string; label?: string; size?: "xs" | "sm" | "default"; variant?: "default" | "outline" | "ghost"; className?: string; exact?: boolean; done?: string }) {
   const [copied, setCopied] = useState(false);
-  const cmd = commandOnly(text);
+  const cmd = exact ? text : commandOnly(text);
   const onClick = () => {
     void copyText(cmd)
       .then(() => {
         setCopied(true);
-        toast.success("Copied. Paste it in a terminal on this machine.");
+        toast.success(done);
         setTimeout(() => setCopied(false), 1800);
       })
       .catch(() => toast.error("Couldn't copy. Select the command and copy it yourself."));

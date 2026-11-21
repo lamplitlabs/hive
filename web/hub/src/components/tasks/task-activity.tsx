@@ -412,8 +412,11 @@ function RunChapter({ block, expanded, task }: { block: Extract<ActivityBlock, {
             );
           })}
           {live ? (
-            <li className="flex items-center gap-2 px-1 text-xs text-primary" role="status">
-              <TypingDots /> <span>{run.agent + " is working…"}</span>
+            // The list's item stays an item; the live words inside it are the status.
+            <li className="px-1 text-xs text-primary">
+              <span className="flex items-center gap-2" role="status">
+                <TypingDots /> <span>{run.agent + " is working…"}</span>
+              </span>
             </li>
           ) : null}
         </ol>
