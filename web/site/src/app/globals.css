@@ -431,6 +431,12 @@
     font-size: 0.86em;
     overflow-wrap: anywhere;
   }
+  /* Code inside a link keeps the link's colour on the page's own ground: the tinted box would cost it contrast. */
+  .prose a:not(.anchor, .btn) > code {
+    background: none;
+    padding-left: 0;
+    padding-right: 0;
+  }
   .prose > pre,
   .prose > figure {
     margin-top: 1.3em;
