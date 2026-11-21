@@ -126,9 +126,13 @@ against it with a home of its own, and needs no network.
 
 The Linux programs are built on Debian 12, and the release workflow fails
 when one of them asks for a glibc newer than 2.36. So they run on Debian
-12, on Ubuntu 24.04 and on anything with a glibc that new or newer. On an
-older Linux, on a Linux with another C library, and on any other
-processor, build from source:
+12, on Ubuntu 24.04 and on anything with a glibc that new or newer. That
+number is what a release promises, and a build may ask for less: the
+workflow prints what each binary asks for, and the installer does not read
+the version, it tries the program, so a somewhat older Linux where the
+program starts is not turned away. On a Linux where it does not start, on
+a Linux with another C library, and on any other processor, build from
+source:
 
 ```bash
 cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+

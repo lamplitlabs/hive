@@ -1018,7 +1018,7 @@ When the clones share a build cache (a `CARGO_TARGET_DIR`, a Gradle or Bazel
 cache: the usual way to keep a large build fast and the disk small) two
 overlapping runs rewrite each other's artifacts mid-run and both fail for
 reasons neither branch contains, so a good branch is charged or the default
-branch is judged red. `hive settings verify.lock project` makes the
+branch is judged red. `hive settings set verify.lock project` makes the
 verifications of one project take turns on the machine (`machine`: every
 verification does); the command runs under an atomic lock in
 `$HIVE_HOME/locks/`, a later arrival prints that it is waiting and for whom, a

@@ -176,8 +176,9 @@ pipeline decide it there like any other branch, the lane's state reads `pr`
 and the result post on the suggestion thread names the pull request until
 the merge finalizes the experiment (a project without an upstream lands it
 locally as before). The experiment branch keeps its `evolve/<id>` name on
-the forge, which the reviewer's rule reads as a branch not of Hive's own
-making and hands to you ([The complexity rule](review.md#the-complexity-rule)).
+the forge, and the reviewer's rule reads it as one of Hive's own branches,
+so the reviewer may merge it like any other
+([The complexity rule](review.md#the-complexity-rule)).
 When the gates allow, the
 daemon runs the cycle by itself; the command is the by-hand alternative.
 
@@ -898,7 +899,7 @@ record, read with `hive record show WF-evolve`.
 | `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`hive toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `hive goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
-| `hub.allow_remote` | empty (this machine only) | The team front's `https://` origin (ADR-070 rule 5). While set, the hub's front relay listener (`hive hub --front-port N`, 127.0.0.1 only) serves reads and accepts a write only when a registered member's passkey signed it over a nonce from `GET /api/v1/nonce`; empty closes the relay (403). Counts only when the owner set it - an agent's value is ignored. See [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere) and [security](security.md). |
+| `hub.allow_remote` | empty (this machine only) | The `https://` origin of a front you run yourself; Hive ships none (ADR-071). While set, the hub's front relay listener (`hive hub --front-port N`, 127.0.0.1 only) serves reads and accepts a write only when a registered member's passkey signed it over a nonce from `GET /api/v1/nonce`; empty closes the relay (403). Counts only when the owner set it - an agent's value is ignored. See [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere) and [security](security.md). |
 
 The team secret vault (ADR-070 step 4) adds no setting. What a job may be
 granted is the project's recipe `secrets:` list, and values are set with

@@ -2,9 +2,9 @@
 
 The console is where the owner lives: every page below is a view of the
 store, and every button calls the same helper the matching `hive` command
-does. It binds to `127.0.0.1` only; a team reaches it from elsewhere only
-through its front, with passkey-signed writes (see
-[Passkey sign-in through the team's front](#passkey-sign-in-through-the-teams-front)). Page URLs without a trailing slash,
+does. It binds to `127.0.0.1` only; other machines reach it only through a
+front you run yourself, with passkey-signed writes (see
+[Passkey sign-in through a front](#passkey-sign-in-through-a-front)). Page URLs without a trailing slash,
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
 
@@ -763,11 +763,13 @@ in every agent-facing view and event.
 ### Reaching the console from anywhere
 
 The console listens on 127.0.0.1 and nowhere else; `hive hub --host`
-refuses any other address. Other machines and phones reach it through the
-team's hosted **front** (ADR-070 rule 5), which signs members in on the web
-and relays their requests to this machine. The brain does not trust the
-front: every write that comes through it must carry a member's passkey
-signature, and the brain checks that signature itself.
+refuses any other address. Other machines and phones can reach it through
+a **front**: a web address you run yourself that decides who may come in
+and relays their requests to this machine. Hive ships no front and nobody
+runs one for you ([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)); what is built is the brain's side of
+one. The brain does not trust the front: every write that comes through it
+must carry a member's passkey signature, and the brain checks that
+signature itself.
 
 What this machine does today:
 
@@ -815,12 +817,12 @@ What this machine does today:
    or a counter that did not move gets 403 with the reason. Settings and
    members changes need a member whose role is `owner`.
 
-Not built yet: the hosted front itself. That means the web login (Clerk),
-team = organization, the members sync from it, the enrolment relay, and
-serving the console at `https://<team>.<domain>`. It waits on your choice
-of domain, hosting and Clerk account. Until it exists, nothing outside
-this machine reaches the relay port. See [security](security.md) for the
-model.
+Not part of Hive: the front itself. No web login and no relay ship with
+it, and the hosted one that ADR-070 planned was withdrawn
+([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)). Until you put a relay there, nothing outside this
+machine reaches the relay port. See
+[Security notes](security.md#a-relay-in-front-of-the-console-huballow_remote)
+for the model.
 
 ### Notifications
 
@@ -1049,9 +1051,10 @@ separate; an unexpired claim alone does not mean working now. Each card and
 `hive agents` show what an agent is doing now: the job it holds, the thread it
 claimed and the executor it runs on.
 
-## Passkey sign-in through the team's front
+## Passkey sign-in through a front
 
-ADR-070 step 5. Through the hosted **front**, a team member uses the same
+Built as ADR-070 step 5 and kept for a front you run yourself
+([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)). Through a **front**, a member uses the same
 console as the owner does on `127.0.0.1`, and the front still cannot act for
 anyone. Every write (POST, PUT, PATCH, DELETE) that comes through the front
 carries the member's **passkey** signature. The brain checks that signature
@@ -1119,16 +1122,15 @@ need an account. None of these steps can be done by a worker:
    `console.example.com`. Passkeys are tied to that domain (the WebAuthn
    relying party), so a passkey made on one domain does not work on another.
    Pick the domain before members register.
-2. **Hosting.** Run the front on that domain over HTTPS. Browsers only offer
-   passkeys on a secure origin. The front relays requests to the team's
-   brain. It serves this console's static export (`web/hub/out/`) and passes
-   `/api/v1/*` through unchanged, including the `X-Hive-Nonce` and
-   `X-Hive-Passkey-*` headers and the exact request body.
-3. **Clerk account.** Members log in to the front with Clerk (ADR-070
-   rule 7). Create the Clerk application and its production instance on the
-   front's domain; the `clerk-new-application` skill walks through it. Clerk
-   decides who may reach the front. The passkey decides what that person may
-   change on the brain.
+2. **Hosting.** Run a front of your own on that domain over HTTPS; Hive
+   ships none. Browsers only offer passkeys on a secure origin. The front
+   relays requests to the brain's relay port. It serves this console's
+   static export (`web/hub/out/`) and passes `/api/v1/*` through unchanged,
+   including the `X-Hive-Nonce` and `X-Hive-Passkey-*` headers and the exact
+   request body.
+3. **A login of your choice.** Put the login you trust on the front: it
+   decides who may reach the front at all. The passkey decides what that
+   person may change on the brain.
 4. **Turn on remote access on the brain.** `hub.allow_remote` is owner-only
    and empty by default. While it is empty the brain only listens on this
    machine. Set it to the front's address, in **Settings** or with

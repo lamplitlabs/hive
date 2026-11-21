@@ -443,6 +443,14 @@ hive-hand join --brain https://hive.example.com amber-river-cobalt-maple-orbit-l
 hive-hand dial          # keep it running (a launchd or systemd service)
 ```
 
+**What the machine needs to take work.** `hive-hand` enrols the machine and
+carries the jobs. An agent itself runs on the harness, and the harness is
+in `hive`: the only worker a hand starts is `hive harness run`. So the
+machine also needs `hive` on its PATH and a model login of its own
+(`hive harness login` there, or a provider key). The installer puts both
+programs in place: once as it is for `hive`, once with `--hand`
+([release.md](release.md)).
+
 `join [--brain URL] [--name NAME] [--labels a,b] [--workers N] [--workdir
 DIR] CODE` makes an ed25519 device key in the hand's own directory
 (`HIVE_HAND_HOME`, default `~/.hive-hand`, mode 0700; the private key

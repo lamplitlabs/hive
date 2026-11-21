@@ -51,8 +51,8 @@ each job to a machine that offers it.
 
 It is one binary (`hive`), one SQLite file (`~/.hive/hive.sqlite`) and one
 console (`http://127.0.0.1:8765`, this computer only). There is no account
-to make and nothing to sign up for. Nothing leaves the machine except the
-model calls and the git pushes you allowed;
+to make and nothing to sign up for, and Hive has no server of its own: the
+machine talks to the model provider you chose and to your own git host.
 [Security notes](docs/security.md) says exactly which services Hive talks
 to.
 

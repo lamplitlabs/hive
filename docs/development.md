@@ -49,7 +49,7 @@ is not cached, so the first build after Node is installed makes the console
 needs Node). `HIVE_HUB_SKIP_BUILD=1 cargo build` skips npm and embeds
 whatever `out/` already holds, for work on the Rust side.
 
-### The site, hivefleet.dev
+## The site, hivefleet.dev
 
 `web/site/` is the public site: the landing page and the docs, a second
 Next.js static export in the console's look that is not part of the binary.
