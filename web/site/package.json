@@ -2,34 +2,51 @@
   "name": "hive-site",
   "type": "module",
   "//": [
-    "hivefleet.dev - the public landing page for Hive and the door to the team sign-in. Next.js App Router + Tailwind v4, exported statically to out/ (the same toolchain as web/hub). Vercel builds and serves it (.github/workflows/deploy-site-vercel.yml); nothing here is embedded in the hive binary.",
-    "Sign-in: Clerk, through @clerk/clerk-react (client only: the export has no server, so no middleware and no server auth). The publishable key comes from NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY at build time (.env.example); without it the page builds and the sign-in says it is not set up yet. SignIn/SignUp use hash routing so /sign-in/ and /sign-up/ are plain static pages.",
-    "check: `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + build + test."
+    "hivefleet.dev - the public site for Hive, the open-source tool: what it is, how to install it, and the repository's documentation. Next.js App Router + Tailwind v4, exported statically to out/ (the same toolchain as web/hub). Vercel builds and serves it (.github/workflows/deploy-site.yml); nothing here is embedded in the hive binary.",
+    "No server, nothing to log in to, no secrets: every page is plain HTML written at build time. The docs pages are the repository's docs/**/*.md (../../docs), rendered by src/lib/markdown.ts and ordered by src/lib/docs.ts; a new file there gets a page without a change here.",
+    "prebuild: scripts/prebuild.mjs copies ../../scripts/install.sh to public/install.sh (git-ignored), which the site serves at /install.sh; without the file it says so and the build goes on.",
+    "check: `npm run check` = typecheck (next typegen, then tsc --noEmit, so a removed route never fails on stale .next/types) + lint (eslint) + build + test (node --test) + check:out (scripts/check-out.mjs: every internal link and #anchor of the export resolves, every page has its title, description, canonical address and JSON-LD, the sitemap lists exactly what was exported).",
+    "dependencies: the Markdown packages (unified, remark-*, rehype-*) run at build time only; none of them reaches the browser. The lockfile holds versions published before 2026-11-17 (the three-day release-age rule): add or update with `npm install --before=<date three days back>`."
   ],
   "private": true,
   "scripts": {
+    "predev": "node scripts/prebuild.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/prebuild.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test 'src/**/*.test.mjs'",
-    "check": "npm run typecheck && npm run lint && npm run build && npm run test"
+    "check:out": "node scripts/check-out.mjs",
+    "check": "npm run typecheck && npm run lint && npm run build && npm run test && npm run check:out"
   },
   "dependencies": {
-    "@clerk/clerk-react": "^5.61.3",
+    "github-slugger": "^2.0.0",
+    "hast-util-to-string": "^3.0.1",
     "lucide-react": "^1.41.0",
+    "mdast-util-to-string": "^4.0.0",
     "next": "16.4.6",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "rehype-highlight": "^7.0.2",
+    "rehype-stringify": "^10.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.2.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/hast": "^3.0.5",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "rehype-parse": "^9.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   },
