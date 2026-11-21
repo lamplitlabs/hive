@@ -595,7 +595,10 @@ impl Handler {
         crate::write_json(w, 200, Value::Object(out.into_iter().collect()));
     }
 
-    pub(crate) fn addition_harness_cancel(&self, w: &mut ResponseWriter, _r: &Request, id: String) {
+    pub(crate) fn addition_harness_cancel(&self, w: &mut ResponseWriter, r: &Request, id: String) {
+        if !crate::server::same_origin_write(w, r) {
+            return;
+        }
         let Some(store) = self.store.as_deref() else {
             crate::addition_failure(w, anyhow::anyhow!("store is not available"));
             return;

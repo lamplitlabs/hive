@@ -1386,4 +1386,50 @@ mod tests {
             );
         }
     }
+
+    /// The three writes that carry no JSON body pass the guard every other
+    /// write passes: a page of another site cannot merge a pull request,
+    /// cancel a run or remove a secret from the vault.
+    #[test]
+    fn writes_without_a_body_refuse_a_page_of_another_site() {
+        use crate::test_helpers_http as http;
+        let s = http::additions_store(false);
+        let (code, _, raw) = http::request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/secrets",
+            r#"{"name":"NPM_TOKEN","value":"npm_guard-value-0123"}"#,
+            &[],
+        );
+        assert_eq!(code, 201, "{raw}");
+        for path in [
+            "/api/v1/secrets/NPM_TOKEN/remove",
+            "/api/v1/harness/sessions/hs-none/cancel",
+            "/api/v1/projects/one/prs/7/merge",
+        ] {
+            for header in [
+                ("Origin", "http://evil.example"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ] {
+                let (code, body, raw) =
+                    http::request(http::handler(&s), "POST", path, "", &[header]);
+                assert_eq!(code, 403, "{path} with {header:?}: {raw}");
+                assert_eq!(
+                    body["error"], "Cross-origin writes are not allowed",
+                    "{path} with {header:?}: {raw}"
+                );
+            }
+        }
+        // Refused before anything was done: the secret is still in the vault.
+        assert_eq!(s.vault_open(&["NPM_TOKEN".to_string()]).unwrap().len(), 1);
+        // The console's own page still removes it.
+        let (code, _, raw) = http::request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/secrets/NPM_TOKEN/remove",
+            "",
+            &[],
+        );
+        assert_eq!(code, 200, "{raw}");
+    }
 }

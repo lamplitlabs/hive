@@ -29,6 +29,7 @@ impl Handler {
         }
         let methods = if merge { vec!["POST"] } else { vec!["GET"] };
         if !addition_method(w, r, methods.into_iter().map(String::from).collect())
+            || (merge && !crate::server::same_origin_write(w, r))
             || !self.addition_available(w, r, vec!["projects".into()])
         {
             return;
