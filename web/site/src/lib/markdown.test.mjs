@@ -23,6 +23,7 @@ const inRepo = new Map([
   ["scripts/install.sh", "file"],
   ["docs/context/environment.md", "file"],
   ["LICENSE", "file"],
+  [".github/assets/console-task.png", "file"],
 ]);
 const ctx = (file) => ({ file, pages, repoHas: (p) => inRepo.get(p) ?? null });
 const render = (source, file = "harness.md") => md.renderMarkdown(source, ctx(file));
@@ -168,6 +169,26 @@ test("external links keep their address and get rel=noopener noreferrer; the sit
   );
 });
 
+test("a link with a scheme a public page should not carry is taken off and reported", () => {
+  const r = render("# T\n\n[run](javascript:alert(1)) and [file](file:///etc/passwd) and [data](data:text/html,x) stay words; [mail](mailto:a@example.com) stays a link.\n");
+  const links = elements(r.html, "a").map((a) => a.properties.href);
+  assert.deepEqual(links, [undefined, undefined, undefined, "mailto:a@example.com"]);
+  assert.doesNotMatch(r.html, /javascript:|file:\/\/|data:text/);
+  assert.equal(r.links.filter((l) => /uses a scheme the site does not link to/.test(l.problem ?? "")).length, 3);
+});
+
+test("a picture kept in the repository is served by GitHub, with its alt text", () => {
+  const r = render("# T\n\n![The console's Home page](img/home.png) ![](../.github/assets/console-task.png) ![logo](https://example.com/logo.svg)\n", "console.md");
+  const imgs = elements(r.html, "img").map((i) => [i.properties.src, i.properties.alt, i.properties.loading]);
+  assert.deepEqual(imgs, [
+    ["https://github.com/lamplitlabs/hive/raw/main/docs/img/home.png", "The console's Home page", "lazy"],
+    ["https://github.com/lamplitlabs/hive/raw/main/.github/assets/console-task.png", "", "lazy"],
+    ["https://example.com/logo.svg", "logo", "lazy"],
+  ]);
+  // The first is not in the test's repository: reported, and still rendered.
+  assert.match(r.links[0].problem, /docs\/img\/home\.png, which is not in the repository/);
+});
+
 test("code blocks keep their text exactly, highlighted or not", () => {
   const bash = `hive settings set machine.labels gpu,android   # what <this> machine offers & more\nexport PATH="$HOME/.hive/bin:$PATH"\n\tif [ -z "$X" ]; then echo 'a  b'; fi`;
   const plain = `system prompt (+ the clone's AGENTS.md) + the job's brief\n  ─► model answers <one> & "two"\n`;
@@ -197,6 +218,7 @@ test("GitHub's flavour: tables scroll in their own box, task lists, strikethroug
   const wrap = elements(r.html, "div")[0];
   assert.deepEqual(wrap.properties.className, ["table-scroll"]);
   assert.equal(wrap.properties.tabIndex, 0);
+  assert.equal(wrap.properties.role, undefined);
   assert.equal(wrap.children[0].tagName, "table");
   assert.equal(elements(r.html, "input").length, 2);
   assert.equal(elements(r.html, "del").length, 1);

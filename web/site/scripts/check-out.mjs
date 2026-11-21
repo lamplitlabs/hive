@@ -136,7 +136,7 @@ let externalCount = 0;
 
 function resolve(page, href, what) {
   const where = page.path ?? `/${rel(page.file)}`;
-  if (/^(mailto:|tel:|data:)/i.test(href)) return;
+  if (/^(mailto:|tel:)/i.test(href) || (what === "asset" && /^data:/i.test(href))) return;
   let url;
   try {
     url = new URL(href, `${SITE}${page.path ?? "/"}`);

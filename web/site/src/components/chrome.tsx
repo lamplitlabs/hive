@@ -10,7 +10,7 @@ import { PAGES, repoFile, SITE } from "@/lib/site";
 const NAV = [PAGES.install, PAGES.harness, PAGES.rsi, PAGES.machines, PAGES.docs];
 
 /** The docs the footer names, in this order; one that is not there (yet) is left out. */
-const FOOTER_DOCS = ["concepts", "console", "board", "landing", "review", "runner", "security", "faq", "commands", "settings"];
+const FOOTER_DOCS = ["concepts", "faq", "console", "commands", "settings", "board", "landing", "runner", "security", "review"];
 
 /**
  * Every page: the skip link, the header with this page marked in it, the

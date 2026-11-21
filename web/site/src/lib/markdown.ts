@@ -67,7 +67,9 @@ export function rewriteHref(href: string, ctx: LinkContext): Rewritten {
   }
   if (href.startsWith("//")) return { href, kind: "external" };
   if (SCHEME.test(href)) {
-    if (!/^https?:/i.test(href)) return { href, kind: "other" };
+    if (/^(mailto|tel):/i.test(href)) return { href, kind: "other" };
+    // javascript:, data:, file: and the like are never linked from a public page, whatever a doc says.
+    if (!/^https?:/i.test(href)) return { href: "", kind: "other", problem: `${href.slice(0, 60)} uses a scheme the site does not link to` };
     // The site's own address, written out in full: keep the visitor here.
     if (href === SITE.url || href.startsWith(`${SITE.url}/`)) {
       const rest = href.slice(SITE.url.length) || "/";
@@ -258,7 +260,8 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
         const written = node.properties.href;
         const to = rewriteHref(written, ctx);
         out.links.push({ ...to, written });
-        node.properties.href = to.href;
+        if (to.href === "" && to.problem) delete node.properties.href;
+        else node.properties.href = to.href;
         if (to.kind === "external" || to.kind === "repo") node.properties.rel = ["noopener", "noreferrer"];
       } else if (node.tagName === "img" && typeof node.properties.src === "string") {
         const written = node.properties.src;
@@ -277,7 +280,8 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
       if (node.tagName === "pre") {
         node.properties.tabIndex = 0;
       } else if (node.tagName === "table" && parent && index !== undefined) {
-        parent.children[index] = el("div", { className: ["table-scroll"], role: "region", ariaLabel: "Table", tabIndex: 0 }, [node]);
+        // Focusable, so a keyboard can scroll it; no landmark of its own, or a page of tables would be a page of regions.
+        parent.children[index] = el("div", { className: ["table-scroll"], tabIndex: 0 }, [node]);
       }
     });
   };
