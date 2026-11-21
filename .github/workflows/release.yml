@@ -1,6 +1,16 @@
-# Build the hive executable for macOS when a release tag is pushed and attach
-# it to a GitHub Release. The tag commit is what crates/hive/build.rs stamps,
-# so the binary reports exactly vX.Y.Z in `hive version`.
+# Build the release archives when a release tag is pushed and attach them to
+# a GitHub Release. The tag commit is what crates/hive/build.rs stamps, so
+# the binary reports exactly vX.Y.Z in `hive version`.
+#
+# A release carries, for macOS and Linux on arm64 and x86_64 (four targets):
+#   hive-<tag>-<target>.tar.gz    hive
+#   hand-<tag>-<target>.tar.gz    hive-hand
+#   SHA256SUMS                    one line per archive
+# scripts/install.sh and `hive update` read exactly these names
+# (docs/release.md), so a name changed here must change there too. Only
+# hive's archives may start with `hive`: when `hive update` finds no archive
+# under the exact name, it takes the one asset that starts with `hive` and
+# names its target (crates/hive-cli/src/update.rs, pick_asset).
 #
 # Tags come from cut-release.yml (or `git tag vX.Y.Z && git push --tags` by
 # hand). Windows is not built here yet: the runner and daemon use unix-only
@@ -16,106 +26,299 @@ on:
         description: "Existing tag to build (vX.Y.Z)"
         required: true
 
+# Reading is enough to build; publish alone asks to write.
 permissions:
-  contents: write
+  contents: read
+
+# Two runs for one tag (a tag pushed by hand and then built again by hand)
+# take turns, so they never publish over each other.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # Scripts read the tag from here and never have it pasted into them: on a
+  # manual run it is text somebody typed.
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # The newest glibc a Linux binary may ask for: the one Debian 12 has, the
+  # oldest system the Linux archives promise to run on. scripts/install.sh
+  # says the same number (GLIBC_FLOOR) and docs/release.md names it.
+  GLIBC_MAX: "2.36"
+
+# One shell everywhere: a container job would otherwise run its steps in sh.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    # A build that hangs must not hold the release for the six hours a job
+    # may run.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # These two were built on macos-14 and macos-13 until those images
+          # left GitHub's list of runners.
+          - os: macos-15
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
+          # Linux is built natively on each architecture, inside Debian 12:
+          # a binary linked against a newer glibc than the one it finds does
+          # not start, and Debian 12 is also what the image in deploy/ runs.
+          # The container's Rust must be at least the workspace's
+          # rust-version (Cargo.toml).
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            container: rust:1.95-bookworm
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            container: rust:1.95-bookworm
+    env:
+      TARGET: ${{ matrix.target }}
     steps:
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a release tag (vX.Y.Z)"
+            exit 1
+          fi
+      # On a manual run, the tag itself and never a branch of the same name.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0 # build.rs reads tags to stamp the version
+          persist-credentials: false
+      # In a container the checkout belongs to another user and git refuses
+      # to read it: build.rs would find no tag and stamp `dev`.
+      - name: Trust the checkout
+        if: ${{ matrix.container }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/hub/package-lock.json
+      # The container brings its own Rust.
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.container }}
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: Build
-        run: cargo build --release --locked --bin hive --target ${{ matrix.target }}
+      # One job builds both binaries of a target, so they share the compile
+      # of the crates they have in common. Each is built by its own command:
+      # built together, a crate would get every feature a neighbour turns on.
+      - name: Build hive
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin hive --target "$TARGET"
       - name: Check the stamp
         run: |
-          set -eu
-          tag="${{ inputs.tag || github.ref_name }}"
-          out="$(target/${{ matrix.target }}/release/hive version)"
+          set -euo pipefail
+          out="$("target/$TARGET/release/hive" version)"
           echo "$out"
-          case "$out" in *"$tag"*) ;; *) echo "binary does not report $tag" >&2; exit 1 ;; esac
+          case "$out" in *"$TAG"*) ;; *) echo "binary does not report $TAG" >&2; exit 1 ;; esac
+      # Without npm on PATH the build still succeeds and embeds one page
+      # that says the console was not built (crates/hive-hub/build.rs). A
+      # release must never carry that page.
+      - name: Check the console is in it
+        run: |
+          set -euo pipefail
+          if [[ ! -d web/hub/out/_next ]] || grep -q "The Hive console was not built" web/hub/out/index.html; then
+            echo "::error::hive was built without the console (was npm on PATH?)"
+            exit 1
+          fi
+      - name: Build hive-hand
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p hive-hand --target "$TARGET"
+      # The hand is what another machine installs: it must not carry the
+      # brain's brief text (ADR-070 rule 1).
+      - name: Check the hand
+        run: |
+          set -euo pipefail
+          "target/$TARGET/release/hive-hand" --version
+          sh scripts/check-hand-deps.sh strings "target/$TARGET/release/hive-hand"
+      # The container keeps this true today; the check is here for the day
+      # its image is moved to a newer Debian.
+      - name: Check the glibc the Linux binaries ask for
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for bin in hive hive-hand; do
+            newest="$(objdump -T "target/$TARGET/release/$bin" \
+              | { grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' || true; } \
+              | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
+            if [[ -z "$newest" ]]; then
+              echo "::error::$bin names no glibc version"
+              exit 1
+            fi
+            if [[ "$(printf '%s\n' "$newest" "$GLIBC_MAX" | sort -V | tail -n 1)" != "$GLIBC_MAX" ]]; then
+              echo "::error::$bin asks for glibc $newest; Debian 12 has $GLIBC_MAX"
+              exit 1
+            fi
+            echo "$bin runs on glibc $newest and newer"
+          done
       - name: Package
         run: |
-          set -eu
-          tag="${{ inputs.tag || github.ref_name }}"
-          name="hive-$tag-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/hive" "dist/$name/hive"
-          cp README.md LICENSE* "dist/$name/" 2>/dev/null || true
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          set -euo pipefail
+          # KIND PROGRAM: dist/KIND-<tag>-<target>.tar.gz holding KIND-<tag>-<target>/PROGRAM
+          pack() {
+            local name="$1-$TAG-$TARGET"
+            mkdir -p "dist/$name"
+            cp "target/$TARGET/release/$2" "dist/$name/$2"
+            # The licence goes with every copy, the README with hive.
+            cp LICENSE* "dist/$name/" 2>/dev/null || true
+            if [[ "$1" == hive ]]; then
+              cp README.md "dist/$name/" 2>/dev/null || true
+            fi
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          }
+          pack hive hive
+          pack hand hive-hand
+          ls -l dist
       - uses: actions/upload-artifact@v4
         with:
-          name: hive-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
+          name: assets-${{ matrix.target }}
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   publish:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a release tag (vX.Y.Z)"
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
+          pattern: assets-*
           path: dist
           merge-multiple: true
+      # A release goes out whole: both programs for all four targets, and
+      # nothing else.
       - name: Checksums
         run: |
-          set -eu
+          set -euo pipefail
           cd dist
-          cat *.sha256 > SHA256SUMS
-          rm -f *.sha256
-          ls -l
+          missing=0
+          for name in \
+            "hive-$TAG-aarch64-apple-darwin.tar.gz" \
+            "hand-$TAG-aarch64-apple-darwin.tar.gz" \
+            "hive-$TAG-x86_64-apple-darwin.tar.gz" \
+            "hand-$TAG-x86_64-apple-darwin.tar.gz" \
+            "hive-$TAG-x86_64-unknown-linux-gnu.tar.gz" \
+            "hand-$TAG-x86_64-unknown-linux-gnu.tar.gz" \
+            "hive-$TAG-aarch64-unknown-linux-gnu.tar.gz" \
+            "hand-$TAG-aarch64-unknown-linux-gnu.tar.gz"; do
+            if [[ ! -s "$name" ]]; then
+              echo "::error::$name was not built"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+          archives=(*.tar.gz)
+          if [[ "${#archives[@]}" -ne 8 ]]; then
+            echo "::error::dist holds ${#archives[@]} archives, not the eight a release carries: ${archives[*]}"
+            exit 1
+          fi
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      # What is about to be published must install with the installer: the
+      # names, the checksums file and the layout are the ones it reads, and
+      # the Linux programs start on a stock Ubuntu. Run as `sh`, which is
+      # dash here, with a HOME of its own.
+      - name: Install from these archives
+        run: |
+          set -euo pipefail
+          if [[ ! -f scripts/install.sh ]]; then
+            echo "::notice::$TAG has no scripts/install.sh, so the installer was not tried"
+            exit 0
+          fi
+          release="$RUNNER_TEMP/releases"
+          mkdir -p "$release/download/$TAG" "$release/latest/download" "$RUNNER_TEMP/home"
+          cp dist/*.tar.gz dist/SHA256SUMS "$release/download/$TAG/"
+          cp dist/SHA256SUMS "$release/latest/download/"
+          export HOME="$RUNNER_TEMP/home"
+          export HIVE_RELEASE_BASE="file://$release"
+          sh scripts/install.sh
+          out="$("$HOME/.hive/bin/hive" version)"
+          case "$out" in *"$TAG"*) ;; *) echo "::error::the installed hive reports $out, not $TAG"; exit 1 ;; esac
+          sh scripts/install.sh --hand --version "$TAG"
+          "$HOME/.hive-hand/bin/hive-hand" --version
       - name: Release notes
         run: |
-          set -eu
-          tag="${{ inputs.tag || github.ref_name }}"
-          prev="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$tag" | head -1 || true)"
+          set -euo pipefail
+          prev="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          files="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG"
           {
-            echo "## Hive $tag"
+            echo "## Hive $TAG"
             echo
-            echo "Install (macOS):"
+            echo "Install or upgrade, on macOS and Linux:"
             echo
             echo '```sh'
-            echo "gh release download $tag --repo ${{ github.repository }} --pattern \"hive-$tag-\$(uname -m | sed 's/arm64/aarch64/')-apple-darwin.tar.gz\""
-            echo "tar -xzf hive-$tag-*-apple-darwin.tar.gz && install -m 755 hive-$tag-*/hive ~/.hive/bin/hive"
+            echo "curl -fsSL https://hivefleet.dev/install.sh | sh"
             echo '```'
+            echo
+            echo "That takes the latest release and puts \`hive\` in \`~/.hive/bin\`. For this release once a later one is out, and for \`hive-hand\`, the small program another machine runs to take work from your Hive:"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --version $TAG"
+            echo "curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand"
+            echo '```'
+            echo
+            echo "| Machine | Target |"
+            echo "| --- | --- |"
+            echo "| macOS, Apple silicon | \`aarch64-apple-darwin\` |"
+            echo "| macOS, Intel | \`x86_64-apple-darwin\` |"
+            echo "| Linux, x86_64 | \`x86_64-unknown-linux-gnu\` |"
+            echo "| Linux, arm64 | \`aarch64-unknown-linux-gnu\` |"
+            echo
+            echo "The Linux programs run on glibc $GLIBC_MAX and newer."
+            echo
+            echo "By hand, with the target of your machine from the table:"
+            echo
+            echo '```sh'
+            echo "target=aarch64-apple-darwin"
+            echo "curl -fsSLO $files/hive-$TAG-\$target.tar.gz"
+            echo "curl -fsSLO $files/SHA256SUMS"
+            echo "shasum -a 256 -c SHA256SUMS --ignore-missing    # on Linux: sha256sum -c SHA256SUMS --ignore-missing"
+            echo "tar -xzf hive-$TAG-\$target.tar.gz"
+            echo "mkdir -p ~/.hive/bin && install -m 755 hive-$TAG-\$target/hive ~/.hive/bin/hive"
+            echo '```'
+            echo
+            echo "\`hive-hand\` is in \`hand-$TAG-<target>.tar.gz\`, checked the same way."
             echo
             if [ -n "$prev" ]; then
               echo "### Changes since $prev"
               echo
-              git log --no-merges --format='- %s' "$prev..$tag" | head -200
+              git log --no-merges --format='- %s' -n 200 "$prev..$TAG"
             fi
           } > notes.md
           cat notes.md
@@ -123,10 +326,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -eu
-          tag="${{ inputs.tag || github.ref_name }}"
-          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/* --clobber --repo "${{ github.repository }}"
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$tag" dist/* --title "Hive $tag" --notes-file notes.md --repo "${{ github.repository }}"
+            gh release create "$TAG" dist/* --title "Hive $TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
           fi
