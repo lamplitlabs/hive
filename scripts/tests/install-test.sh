@@ -255,6 +255,14 @@ skip() {
   printf 'skip  %s (%s)\n' "$case_name" "$1"
 }
 
+# shell_brings TOOL: whether the shell under test runs TOOL itself, whatever
+# the PATH holds. BusyBox's shell does that for its own tools (sha256sum,
+# wget, tar): a case that hides a tool by leaving it off the PATH, or that
+# puts a stand-in for it on the PATH, cannot be set up under such a shell.
+shell_brings() {
+  env -i PATH=/nonexistent "$test_shell" -c "command -v $1" > /dev/null 2>&1
+}
+
 # clean_env COMMAND...: COMMAND in an emptied environment that holds only
 # what the case set.
 clean_env() {
@@ -842,7 +850,9 @@ fi
 
 begin "with neither sha256sum nor shasum it stops and installs nothing"
 bare_bin "$work/bin-nohash"
-if add_tool "$work/bin-nohash" curl || add_tool "$work/bin-nohash" wget; then
+if shell_brings sha256sum || shell_brings shasum; then
+  skip "the shell under test brings its own checksum tool, which a PATH cannot hide"
+elif add_tool "$work/bin-nohash" curl || add_tool "$work/bin-nohash" wget; then
   t_path="$work/bin-nohash"
   run_installer
   want_status 1
@@ -876,12 +886,16 @@ done
 begin "with neither curl nor wget it says that it needs one"
 bare_bin "$work/bin-nofetch"
 add_tool "$work/bin-nofetch" sha256sum || add_tool "$work/bin-nofetch" shasum
-t_path="$work/bin-nofetch"
-run_installer
-want_status 1
-want_err "this needs curl or wget to download"
-want_empty "$t_home"
-finish
+if shell_brings curl || shell_brings wget; then
+  skip "the shell under test brings its own download tool, which a PATH cannot hide"
+else
+  t_path="$work/bin-nofetch"
+  run_installer
+  want_status 1
+  want_err "this needs curl or wget to download"
+  want_empty "$t_home"
+  finish
+fi
 
 begin "with wget and no curl it installs over http, and still refuses a bad checksum"
 bare_bin "$work/bin-wget"
@@ -914,8 +928,12 @@ EOF
   want_status 1
   want_err "could not download $http_base/download/v1.2.3/SHA256SUMS"
   want_runs "$t_home/.hive/bin/hive" "hive v9.9.9 $mac"
-  # GNU wget would leave ~/.wget-hsts behind after an https download.
-  if "$real_wget" --help 2>&1 | grep -q -- --no-hsts; then
+  # GNU wget would leave ~/.wget-hsts behind after an https download. A
+  # shell that brings its own wget ran that one and not the stand-in, so
+  # there is no note of how it was called.
+  if shell_brings wget; then
+    :
+  elif "$real_wget" --help 2>&1 | grep -q -- --no-hsts; then
     if ! grep -q -- "-q --no-hsts -O " "$work/wget-calls"; then
       wrong "wget has --no-hsts and the installer did not use it"
     fi
