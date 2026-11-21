@@ -190,7 +190,7 @@ export default function HarnessPage() {
 
         <H2 id="providers">Providers</H2>
         <p>
-          GitHub Copilot is the default provider and logs in with GitHub&apos;s device flow. The hosted ones take an API key: <code>openai</code>,{" "}
+          GitHub Copilot is the default provider and logs in with GitHub&apos;s device flow. These take an API key: <code>openai</code>,{" "}
           <code>anthropic</code>, <code>gemini</code>, and the OpenAI-compatible vendors <code>openrouter</code>, <code>groq</code>, <code>mistral</code>,{" "}
           <code>deepseek</code>, <code>xai</code>, <code>together</code>, <code>fireworks</code>, <code>cerebras</code>, <code>github-models</code> and{" "}
           <code>azure-openai</code>. The local servers <code>ollama</code>, <code>lmstudio</code> and <code>vllm</code> need no key, and{" "}
