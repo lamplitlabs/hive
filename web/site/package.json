@@ -5,7 +5,7 @@
     "hivefleet.dev - the public site for Hive, the open-source tool: what it is, how to install it, and the repository's documentation. Next.js App Router + Tailwind v4, exported statically to out/ (the same toolchain as web/hub). Vercel builds and serves it (.github/workflows/deploy-site.yml); nothing here is embedded in the hive binary.",
     "No server, nothing to log in to, no secrets: every page is plain HTML written at build time. The docs pages are the repository's docs/**/*.md (../../docs), rendered by src/lib/markdown.ts and ordered by src/lib/docs.ts; a new file there gets a page without a change here.",
     "prebuild: scripts/prebuild.mjs copies ../../scripts/install.sh to public/install.sh (git-ignored), which the site serves at /install.sh; without the file it says so and the build goes on.",
-    "check: `npm run check` = typecheck (next typegen, then tsc --noEmit, so a removed route never fails on stale .next/types) + lint (eslint) + build + test (node --test).",
+    "check: `npm run check` = typecheck (next typegen, then tsc --noEmit, so a removed route never fails on stale .next/types) + lint (eslint) + build + test (node --test) + check:out (scripts/check-out.mjs: every internal link and #anchor of the export resolves, every page has its title, description, canonical address and JSON-LD, the sitemap lists exactly what was exported).",
     "dependencies: the Markdown packages (unified, remark-*, rehype-*) run at build time only; none of them reaches the browser. The lockfile holds versions published before 2026-11-17 (the three-day release-age rule): add or update with `npm install --before=<date three days back>`."
   ],
   "private": true,
@@ -18,7 +18,8 @@
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test 'src/**/*.test.mjs'",
-    "check": "npm run typecheck && npm run lint && npm run build && npm run test"
+    "check:out": "node scripts/check-out.mjs",
+    "check": "npm run typecheck && npm run lint && npm run build && npm run test && npm run check:out"
   },
   "dependencies": {
     "github-slugger": "^2.0.0",
