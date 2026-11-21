@@ -85,7 +85,8 @@ A pull request is easy to accept when:
 - the check passes;
 - the page in `docs/` that describes the behaviour is updated in the same
   pull request. The docs are the reference, and they say only what the code
-  does.
+  does. `docs/commands.md` and `docs/settings.md` are generated: change the
+  help text or the setting's description in the code, not the page.
 
 Write docs and messages in plain words and short sentences. Leave out what
 you cannot confirm.
