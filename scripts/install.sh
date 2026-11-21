@@ -40,36 +40,36 @@ has() {
   command -v "$1" > /dev/null 2>&1
 }
 
+# Printed line by line and not from a here-document: ksh93 never returns
+# from one that a cut-off download leaves open.
 usage() {
-  cat << 'EOF'
-Install Hive on macOS or Linux.
-
-  curl -fsSL https://hivefleet.dev/install.sh | sh
-  curl -fsSL https://hivefleet.dev/install.sh | sh -s -- [options]
-  sh install.sh [options]
-
-Options:
-  --hand          install hive-hand, the small program a machine runs to
-                  take work from your Hive, and not hive
-  --version TAG   install the release TAG (v0.2.0) and not the latest one
-  --dir DIR       install into DIR
-  --help          print this
-
-Where the program goes when you give no --dir:
-  hive        ~/.hive/bin        (or $HIVE_INSTALL_DIR)
-  hive-hand   ~/.hive-hand/bin   (or $HIVE_HAND_INSTALL_DIR)
-
-Other variables:
-  HIVE_VERSION        the same as --version
-  HIVE_RELEASE_BASE   where the releases are, in place of
-                      https://github.com/lamplitlabs/hive/releases
-  HIVE_INSTALL_OS, HIVE_INSTALL_ARCH
-                      the system and the processor to install for, in place
-                      of what uname says (the tests use them)
-
-The download is checked against the release's SHA256SUMS before anything is
-installed. Nothing runs with sudo and no shell profile is changed.
-EOF
+  info "Install Hive on macOS or Linux."
+  info ""
+  info "  curl -fsSL https://hivefleet.dev/install.sh | sh"
+  info "  curl -fsSL https://hivefleet.dev/install.sh | sh -s -- [options]"
+  info "  sh install.sh [options]"
+  info ""
+  info "Options:"
+  info "  --hand          install hive-hand, the small program a machine runs to"
+  info "                  take work from your Hive, and not hive"
+  info "  --version TAG   install the release TAG (v0.2.0) and not the latest one"
+  info "  --dir DIR       install into DIR"
+  info "  --help          print this"
+  info ""
+  info "Where the program goes when you give no --dir:"
+  info "  hive        ~/.hive/bin        (or \$HIVE_INSTALL_DIR)"
+  info "  hive-hand   ~/.hive-hand/bin   (or \$HIVE_HAND_INSTALL_DIR)"
+  info ""
+  info "Other variables:"
+  info "  HIVE_VERSION        the same as --version"
+  info "  HIVE_RELEASE_BASE   where the releases are, in place of"
+  info "                      https://github.com/lamplitlabs/hive/releases"
+  info "  HIVE_INSTALL_OS, HIVE_INSTALL_ARCH"
+  info "                      the system and the processor to install for, in place"
+  info "                      of what uname says (the tests use them)"
+  info ""
+  info "The download is checked against the release's SHA256SUMS before anything is"
+  info "installed. Nothing runs with sudo and no shell profile is changed."
 }
 
 # Removes what a run leaves behind: the download directory and a program
