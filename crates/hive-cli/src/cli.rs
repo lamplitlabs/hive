@@ -382,9 +382,9 @@ mod tests {
             2,
             "No store at /x",
             "this machine has no Hive store yet",
-            "hive init <project-path>",
+            "hive init --store-only (or hive init <project-path> to register a project as well)",
         );
-        let want = "No store at /x\n  why: this machine has no Hive store yet\n  fix: hive init <project-path>";
+        let want = "No store at /x\n  why: this machine has no Hive store yet\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)";
         if e.to_string() != want || e.exit_code() != 2 {
             panic!("Error() = {:?} code {}", e.to_string(), e.exit_code());
         }
