@@ -51,29 +51,20 @@ whatever `out/` already holds, for work on the Rust side.
 
 ### The site, hivefleet.dev
 
-`web/site/` is the public site: the landing page and the sign-in, a second
+`web/site/` is the public site: the landing page and the docs, a second
 Next.js static export in the console's look that is not part of the binary.
 It runs the same way as the console (`cd web/site && npm install && npm run dev`
 serves http://localhost:3000; `npm run check` is typecheck + lint + build +
-test). Sign-in is [Clerk](https://clerk.com): the Clerk application is
-"Hive" in the Lamplit Labs workspace, and the page reads the publishable
-key from `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (`.env.example` lists the
-variables; copy it to `.env.local` for the development instance key).
-Without the key the build still succeeds and `/sign-in` says sign-in is
-not configured, so the site builds in any checkout. The export has no
-server, so Clerk runs client-side with hash routing (`/sign-in/#/factor-one`
-and so on) and the landing links to the console address
-`NEXT_PUBLIC_HIVE_CONSOLE_URL` once signed in.
+test). It has no sign-in and no account: Hive is a tool you run yourself
+([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)). At build
+time it renders this repository's `docs/**/*.md` under `/docs/` and serves
+the installer, `scripts/install.sh`, at `/install.sh`.
 
 `.github/workflows/deploy-site.yml` deploys on every push to `main` that
 touches `web/site/`: it runs `npm run check`, then `vercel pull`,
 `vercel build --prod` and `vercel deploy --prebuilt --prod` with the
 repository secrets `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and
-`VERCEL_DEPLOY_TOKEN`; the production publishable key lives in the Vercel
-project's environment, not in the repository. Clerk's production instance
-runs on the `clerk.hivefleet.dev` / `accounts.hivefleet.dev` subdomains
-(five CNAME records at the DNS host, then a certificate wait), so moving
-from the development instance to production is a DNS step for the owner.
+`VERCEL_DEPLOY_TOKEN`.
 The Mac app has its own check, `apps/macos/scripts/check.sh` (see
 [The Mac app](mac-app.md#the-mac-app)); it is outside the Cargo workspace and the verify
 command.
@@ -151,7 +142,7 @@ crates/hive-inspect           status, projects, jobs, agents, events, settings, 
 crates/hive-hub               the HTTP API and SSE the console uses; its build.rs builds and it embeds the console export, web/hub/out
 crates/hive-testutil          shared test helpers
 web/hub/                       the console (source, mock API; the static export out/ is built by cargo, not committed)
-web/site/                      hivefleet.dev: the landing page and the sign-in (Next.js static export, deployed to Vercel by .github/workflows/deploy-site.yml; not part of the binary)
+web/site/                      hivefleet.dev: the landing page and the docs (Next.js static export, deployed to Vercel by .github/workflows/deploy-site.yml; not part of the binary)
 apps/macos/                    the Mac app: a Swift package (HiveKit decides, the AppKit shell shows), build.sh, check.sh
 docs/                          the reference, one file per part (the README's Documentation table lists them)
 docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)
