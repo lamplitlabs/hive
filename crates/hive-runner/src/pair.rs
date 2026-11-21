@@ -2908,6 +2908,121 @@ mod tests {
         }
     }
 
+    /// With no Linux `hive` to send, the message names the file to get for
+    /// the machine's processor and what to do with it, then the two other
+    /// ways.
+    #[test]
+    fn hands_binary_missing_names_the_release_archive_for_the_processor() {
+        assert_eq!(
+            hands_binary_missing("amd64"),
+            "no Linux hive to send to that machine (linux/amd64): download hive-<tag>-x86_64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-amd64, or run the command from a checkout of Hive's source, where it builds one"
+        );
+        assert_eq!(
+            hands_binary_missing("arm64"),
+            "no Linux hive to send to that machine (linux/arm64): download hive-<tag>-aarch64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-arm64, or run the command from a checkout of Hive's source, where it builds one"
+        );
+        // The names are the ones a release carries.
+        for (arch, target) in [
+            ("amd64", "x86_64-unknown-linux-gnu"),
+            ("arm64", "aarch64-unknown-linux-gnu"),
+        ] {
+            assert_eq!(
+                linux_release_archive(arch)
+                    .expect("archive")
+                    .replace("<tag>", "v1.2.3"),
+                hive_cli::update::archive_name("v1.2.3", target)
+            );
+        }
+        // A processor no release is built for gets no archive to look for.
+        assert_eq!(
+            hands_binary_missing("riscv64"),
+            "no Linux hive to send to that machine (linux/riscv64), and no release is built for its processor: set HIVE_HANDS_BINARY to a Linux hive built for it, or put one beside this program as hive-linux-riscv64"
+        );
+    }
+
+    /// `hive pair` with nothing to send stops after the inspection, before
+    /// it changes the machine or this one, and says that message.
+    #[test]
+    fn pair_without_a_linux_hive_to_send_says_what_to_get_and_changes_nothing() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = PAIR_TEST_LOCK.lock().expect("pair test lock");
+        let s = new_store();
+        let hub = tempfile::tempdir().expect("hub");
+        let events = count(&s, "SELECT COUNT(*) AS n FROM events", &[]);
+        let old_ssh = crate::executor::run_ssh_hook();
+        // What the resolver answers where there is nothing to send. This
+        // suite runs inside a checkout, where the resolver would build one.
+        let old_binary = set_hands_binary(Box::new(|arch| {
+            Err(crate::util::fail(1, hands_binary_missing(arch)).into())
+        }));
+        crate::executor::set_run_ssh(fake_run_ssh);
+        {
+            let mut fake = FAKE_SSH.lock().expect("fake ssh");
+            *fake = FakeSsh {
+                calls: 0,
+                out:
+                    "uname=Linux\narch=aarch64\nsudo=yes\nhands=absent\ndropin_dir=yes\nremotes=0\n"
+                        .into(),
+                require_metadata: false,
+            };
+        }
+        let err = pair_executor(
+            &s,
+            "admin@example.invalid".into(),
+            "hands-two".into(),
+            TEST_NOW.into(),
+            PairOpts {
+                workdir: "/srv/hive".into(),
+                workers: 1,
+                projects: "*".into(),
+                hub_home: hub.path().display().to_string(),
+                ..Default::default()
+            },
+        )
+        .expect_err("nothing to send");
+        crate::executor::restore_run_ssh(old_ssh);
+        let _ = set_hands_binary(old_binary);
+        assert_eq!(err.to_string(), hands_binary_missing("arm64"));
+        let code = err.downcast_ref::<hive_cli::Error>().map(|e| e.exit_code());
+        assert_eq!(code, Some(1));
+        assert_eq!(FAKE_SSH.lock().expect("fake ssh").calls, 1);
+        assert!(
+            crate::executor::executor_row(&s, "hands-two").is_empty()
+                && count(&s, "SELECT COUNT(*) AS n FROM events", &[]) == events,
+            "the store changed"
+        );
+        assert!(
+            std::fs::read_dir(hub.path())
+                .expect("hub read")
+                .next()
+                .is_none(),
+            "the hub home changed"
+        );
+    }
+
+    /// The plan line for the same case names the same file first, then what
+    /// it always said.
+    #[test]
+    fn the_plan_line_for_no_hands_binary_names_the_release_archive_first() {
+        let hint = "install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary";
+        assert_eq!(
+            plan_line("amd64", &HandsBinaryPlan::Missing(hint)),
+            "hands binary linux/amd64: none; download hive-<tag>-x86_64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it and put its hive beside this program as hive-linux-amd64; or install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary"
+        );
+        assert_eq!(
+            plan_line("arm64", &HandsBinaryPlan::Missing("add the rust target")),
+            "hands binary linux/arm64: none; download hive-<tag>-aarch64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it and put its hive beside this program as hive-linux-arm64; or add the rust target"
+        );
+        assert_eq!(
+            plan_line("riscv64", &HandsBinaryPlan::Missing(hint)),
+            format!("hands binary linux/riscv64: none; {hint}")
+        );
+        assert_eq!(
+            plan_line("amd64", &HandsBinaryPlan::EnvVar),
+            "hands binary linux/amd64: HIVE_HANDS_BINARY is set"
+        );
+    }
+
     #[test]
     fn cross_build_prefers_zigbuild_when_present() {
         let plain = cross_build_args("x86_64-unknown-linux-musl", "/src/hive", false);
@@ -2986,9 +3101,13 @@ pub(crate) fn hands_binary_plan(arch: &str) -> HandsBinaryPlan {
 }
 
 /// One sentence for a finding, a refused compute request or a doctor line:
-/// where the hands binary comes from, or what to install.
+/// where the hands binary comes from, or what to get or install.
 pub(crate) fn hands_binary_plan_line(arch: &str) -> String {
-    match hands_binary_plan(arch) {
+    plan_line(arch, &hands_binary_plan(arch))
+}
+
+fn plan_line(arch: &str, plan: &HandsBinaryPlan) -> String {
+    match plan {
         HandsBinaryPlan::EnvVar => {
             format!("hands binary linux/{arch}: HIVE_HANDS_BINARY is set")
         }
@@ -3001,7 +3120,15 @@ pub(crate) fn hands_binary_plan_line(arch: &str) -> String {
         HandsBinaryPlan::CrossBuild => {
             format!("hands binary linux/{arch}: cross-built with cargo-zigbuild (target installed)")
         }
-        HandsBinaryPlan::Missing(hint) => format!("hands binary linux/{arch}: none; {hint}"),
+        // The file `hands_binary_missing` names comes first here too. It
+        // goes beside the program, where the daemon finds it as well: a
+        // variable set in a shell does not reach the daemon.
+        HandsBinaryPlan::Missing(hint) => match linux_release_archive(arch) {
+            Some(archive) => format!(
+                "hands binary linux/{arch}: none; download {archive} from {RELEASES_PAGE}, unpack it and put its hive beside this program as hive-linux-{arch}; or {hint}"
+            ),
+            None => format!("hands binary linux/{arch}: none; {hint}"),
+        },
     }
 }
 
@@ -3038,14 +3165,14 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
     };
     let root = module_root();
     if root.is_empty() || triple.is_empty() {
-        return Err(crate::util::fail(1, hands_binary_missing(arch, triple)).into());
+        return Err(crate::util::fail(1, hands_binary_missing(arch)).into());
     }
     if !rustup_target_installed(triple) {
         return Err(crate::util::fail(
             1,
             format!(
-                "{}; the checkout at {root} cannot cross-build it: the Rust target {triple} is not installed (rustup target add {triple}; linking it from macOS needs cargo-zigbuild and zig)",
-                hands_binary_missing(arch, triple)
+                "{}; the checkout at {root} cannot build one yet: the Rust target {triple} is not installed (rustup target add {triple}; linking it from macOS needs cargo-zigbuild and zig)",
+                hands_binary_missing(arch)
             ),
         )
         .into());
@@ -3088,16 +3215,29 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
     ))
 }
 
-fn hands_binary_missing(arch: &str, triple: &str) -> String {
-    let mut s = format!(
-        "no linux/{arch} hive binary to ship: set HIVE_HANDS_BINARY, place hive-linux-{arch} beside this binary, or run from the hive source tree"
-    );
-    if !triple.is_empty() {
-        s.push_str(&format!(
-            " with the {triple} target installed (the daemon builds from the brain project's checkout)"
-        ));
-    }
-    s
+/// Where Hive's releases are published, for a person to open.
+const RELEASES_PAGE: &str = "https://github.com/lamplitlabs/hive/releases";
+
+/// The release archive that holds the Linux `hive` for a machine of `arch`
+/// (`amd64` or `arm64`), with `<tag>` where the release's tag goes. None
+/// for a processor no release is built for.
+fn linux_release_archive(arch: &str) -> Option<String> {
+    let target = hive_cli::update::target_for(arch, "linux")?;
+    Some(format!("hive-<tag>-{target}.tar.gz"))
+}
+
+/// What `hive pair` says when it has no Linux `hive` to send: the way that
+/// needs nothing but a download first (the release archive for the
+/// machine's processor), then the two other ways.
+fn hands_binary_missing(arch: &str) -> String {
+    let Some(archive) = linux_release_archive(arch) else {
+        return format!(
+            "no Linux hive to send to that machine (linux/{arch}), and no release is built for its processor: set HIVE_HANDS_BINARY to a Linux hive built for it, or put one beside this program as hive-linux-{arch}"
+        );
+    };
+    format!(
+        "no Linux hive to send to that machine (linux/{arch}): download {archive} from {RELEASES_PAGE}, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-{arch}, or run the command from a checkout of Hive's source, where it builds one"
+    )
 }
 
 /// `cargo zigbuild` links a musl target from any host; plain `cargo build` needs a linker for it.
