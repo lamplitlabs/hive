@@ -58,14 +58,13 @@ export default function InstallPage() {
           <a href={repoFile("scripts/install.sh")} rel="noopener noreferrer">
             <code>scripts/install.sh</code>
           </a>{" "}
-          in the repository, and this site serves the same file, so you can read it before you run it. Then put the binary on your path, check it, make the
-          store and start the console:
+          in the repository, and this site serves the same file, so you can read it before you run it. Then put the binary on your path, check it and
+          start the console:
         </p>
         <CodeBlock code={INSTALL.blocks.after} title="Then" />
         <p>
-          <code>hive hub</code> needs a store and does not make one: without it the command says <code>No store</code> and stops.{" "}
-          <code>hive init --store-only</code> makes the store once, without registering a project. (<code>hive init</code> run inside a checkout also makes
-          the store, and registers that checkout as a project.)
+          The first <code>hive hub</code> on a machine makes the store, <code>~/.hive/hive.sqlite</code>, and says so in one line.{" "}
+          <code>hive init --store-only</code> makes one without starting the console, for a service or a script.
         </p>
         <h3 id="from-source">From source</h3>
         <p>
