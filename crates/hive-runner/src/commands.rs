@@ -58,7 +58,7 @@ pub fn register() {
         cli_register(Command { name:"secret".into(), group:"runner".into(), summary:"the team secret vault (ADR-070 rule 4): set a value from stdin, list names (never values), remove; a project's recipe `secrets:` names what its jobs are granted".into(), usage:"hive secret list [--json] | set NAME  (value on stdin) | rm NAME".into(), aliases:vec!["secrets".into()], no_store:false, read_only:false, raw:false, run:crate::secrets::cmd_secret, flags:None });
         cli_register(Command { name:"hands".into(), group:"runner".into(), summary:"the forced command on a paired machine (probe, prepare, key, run, ...)".into(), usage:"hive hands VERB [ARGS]  (or via SSH_ORIGINAL_COMMAND)".into(), aliases:vec![], no_store:true, read_only:false, raw:true, run:cmd_hands, flags:None });
         cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"pair a Linux machine as hands over its admin ssh session: inspect it, apply as root (sudo -n), register and probe the executor; --dry-run only prints the scripts".into(), usage:"hive pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
-        cli_register(Command { name:"update".into(), group:"runner".into(), summary:"install the newer Hive release update.latest_url names (checksum-verified); --check only says whether one exists".into(), usage:"hive update [--check] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::release_update::cmd_update, flags:Some(crate::release_update::update_flags) });
+        cli_register(Command { name:"update".into(), group:"runner".into(), summary:"install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists".into(), usage:"hive update [--check] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::release_update::cmd_update, flags:Some(crate::release_update::update_flags) });
         cli_register(Command { name:"onboard".into(), group:"runner".into(), summary:"register a project (init) and queue its onboarding job; prints what stays human".into(), usage:"hive onboard [PATH] [--name N] [--remote URL] [--verify CMD] [--brain] [--now T]".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:cmd_onboard, flags:Some(onboard_flags) });
     });
 }
@@ -1940,6 +1940,19 @@ mod tests {
         );
         let o = hive_cli::lookup("onboard").expect("onboard registered");
         assert!(o.no_store, "onboard opens its own store with Create");
+    }
+
+    /// The summary of `hive update` says what it reads while the setting
+    /// is empty, as the command does for the owner (release_update.rs).
+    #[test]
+    fn update_summary_says_what_an_empty_setting_means() {
+        let _serial = crate::test_helpers::serial();
+        register();
+        let update = hive_cli::lookup("update").expect("update registered");
+        assert_eq!(
+            update.summary,
+            "install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists"
+        );
     }
 
     #[test]
