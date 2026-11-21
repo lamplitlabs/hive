@@ -136,7 +136,8 @@ export function ListRow({
       aria-label={name}
       title={text}
       className={cn(TITLE, "cursor-pointer text-left outline-none")}
-      onClick={onOpen}
+      // Called bare, as before: a caller's onOpen may take an argument of its own, and must not get the click.
+      onClick={() => onOpen()}
     >
       {title}
     </button>
