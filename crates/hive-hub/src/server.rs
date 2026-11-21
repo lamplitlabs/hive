@@ -448,20 +448,27 @@ fn hand_route(path: &str) -> bool {
         == Some("hands")
 }
 
-/// The name in a Host header: lower-cased, without the port. An IPv6
-/// literal keeps its brackets.
-pub(crate) fn host_name(host: &str) -> String {
+/// A Host header as its name and its port. The name is lower-cased and an
+/// IPv6 literal keeps its brackets; the port is None when the header
+/// carries none.
+fn host_parts(host: &str) -> (String, Option<&str>) {
     let host = host.trim();
-    let name = match host.rsplit_once(':') {
+    let (name, port) = match host.rsplit_once(':') {
         Some((name, port))
             if port.bytes().all(|b| b.is_ascii_digit())
                 && (name.ends_with(']') || !name.contains(':')) =>
         {
-            name
+            (name, Some(port))
         }
-        _ => host,
+        _ => (host, None),
     };
-    name.to_ascii_lowercase()
+    (name.to_ascii_lowercase(), port)
+}
+
+/// The name in a Host header: lower-cased, without the port. An IPv6
+/// literal keeps its brackets.
+pub(crate) fn host_name(host: &str) -> String {
+    host_parts(host).0
 }
 
 /// Whether `name` (from [`host_name`]) is this machine by name or an IP
@@ -481,6 +488,14 @@ pub(crate) fn local_name(name: &str) -> bool {
 /// Whether a write came from a page this hub served: the Origin header
 /// (when the browser sends one) names this host, and the request is not
 /// cross-site. Writes an error and returns false otherwise.
+///
+/// The Origin and the Host are compared as a browser means them: the names
+/// without regard to case, the ports as numbers. A Host without a port
+/// stands for the scheme's own port, and the hub speaks plain HTTP itself:
+/// that is port 80, or 443 when a proxy in front says so with
+/// `X-Forwarded-Proto: https`. So `http://name` and `https://name` stay two
+/// origins: a page served over plain HTTP under the console's name does not
+/// pass for a console reached over https.
 pub(crate) fn same_origin_write(w: &mut ResponseWriter, r: &Request) -> bool {
     // A write through the front passed `Handler::front_gate` already: its
     // Origin is the front's and a member's passkey signed it.
@@ -489,15 +504,18 @@ pub(crate) fn same_origin_write(w: &mut ResponseWriter, r: &Request) -> bool {
     }
     let origin = r.header("Origin");
     if !origin.is_empty() {
-        let ok = url::Url::parse(&origin)
-            .map(|u| {
-                u.host_str()
-                    .zip(u.port_or_known_default())
-                    .map(|(host, port)| format!("{host}:{port}"))
-                    .is_some_and(|h| h == r.host())
-                    && matches!(u.scheme(), "http" | "https")
-            })
-            .unwrap_or(false);
+        let host = r.host();
+        let (name, port) = host_parts(&host);
+        let port = match port {
+            Some(port) => port.parse::<u16>().ok(),
+            None if r.header("X-Forwarded-Proto") == "https" => Some(443),
+            None => Some(80),
+        };
+        let ok = url::Url::parse(&origin).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.host_str().is_some_and(|h| h.eq_ignore_ascii_case(&name))
+                && port.is_some_and(|port| u.port_or_known_default() == Some(port))
+        });
         if !ok {
             write_error(
                 w,
@@ -1767,6 +1785,80 @@ mod tests {
         ] {
             let (code, _, raw) = http::request(console_on_8765(&s), method, path, "{}", &proxied);
             assert_eq!(code, want, "{method} {path}: {raw}");
+        }
+    }
+
+    /// The write guard compares the Origin with the Host as a browser means
+    /// them: names without regard to case, ports as numbers, and a Host
+    /// without a port on the scheme's own port, which is https only when a
+    /// proxy in front says so (the hub itself speaks plain HTTP).
+    #[test]
+    fn the_write_guard_compares_names_and_ports_as_a_browser_means_them() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        s.set_setting("human", "hub.hosts", "hive.example.com")
+            .unwrap();
+        let https = Some("https");
+        for (origin, host, forwarded, want) in [
+            // The console behind a proxy of the owner's, on the default ports.
+            ("https://hive.example.com", "hive.example.com", https, 200),
+            ("https://hive.example.com", "hive.example.com", None, 403),
+            ("http://hive.example.com", "hive.example.com", None, 200),
+            ("http://hive.example.com", "hive.example.com", https, 403),
+            // Upper and lower case in the name do not matter.
+            ("https://HIVE.Example.com", "Hive.EXAMPLE.com", https, 200),
+            // A port named on either side counts as a number.
+            (
+                "https://hive.example.com",
+                "hive.example.com:443",
+                None,
+                200,
+            ),
+            (
+                "http://hive.example.com:8080",
+                "hive.example.com:8080",
+                https,
+                200,
+            ),
+            (
+                "http://hive.example.com:8080",
+                "hive.example.com",
+                None,
+                403,
+            ),
+            // The console on this machine, as before.
+            ("http://127.0.0.1:8765", "127.0.0.1:8765", None, 200),
+            ("http://127.0.0.1:8765", "127.0.0.1:9999", None, 403),
+            ("http://[::1]:8765", "[::1]:8765", None, 200),
+            ("http://localhost:8765", "127.0.0.1:8765", None, 403),
+            // A hub on port 80: the browser names no port on either side.
+            ("http://127.0.0.1", "127.0.0.1", None, 200),
+            // Another name is another origin, whatever the ports.
+            ("https://evil.example", "hive.example.com", https, 403),
+        ] {
+            let mut headers = vec![
+                ("Host", host),
+                ("Origin", origin),
+                ("X-Hive-Settings", "yes"),
+            ];
+            if let Some(proto) = forwarded {
+                headers.push(("X-Forwarded-Proto", proto));
+            }
+            let (code, body, raw) = http::request(
+                console_on_8765(&s),
+                "POST",
+                "/api/v1/settings",
+                r#"{"name":"capacity","value":"3"}"#,
+                &headers,
+            );
+            assert_eq!(code, want, "{origin} to {host}, {forwarded:?}: {raw}");
+            if want == 403 {
+                assert_eq!(
+                    body["error"], "Cross-origin writes are not allowed",
+                    "{origin} to {host}, {forwarded:?}: {raw}"
+                );
+            }
         }
     }
 

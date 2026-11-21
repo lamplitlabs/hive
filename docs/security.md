@@ -126,7 +126,11 @@ On that listener:
   the browser sends an `Origin`, its host and port must equal the request's
   `Host`, and a request the browser marks `Sec-Fetch-Site: cross-site` is
   refused. This stops a page of another site from writing to your console.
-  The routes a hand calls are checked by join code and device key instead.
+  A proxy of yours that serves the console over https must send
+  `X-Forwarded-Proto: https`, or writes are refused as cross-origin: the
+  console itself speaks plain HTTP, so it reads a `Host` without a port as
+  port 80 unless that header says https. The routes a hand calls are
+  checked by join code and device key instead.
 - The writes that change the most also need an **explicit confirmation
   header**: `X-Hive-Settings: yes` for settings, `X-Hive-Decide: yes` for
   decisions, `X-Hive-Members: yes` for members, and one each for the push
