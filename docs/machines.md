@@ -494,6 +494,14 @@ does not reach a port bound to 127.0.0.1. What you put there reaches the
 whole console, not only the hand's routes
 ([security.md](security.md#the-machines-you-pair)).
 
+The console answers only to the host names `localhost`, an IP address or a
+name listed in the setting `hub.hosts` (empty by default), and any other
+`Host` header gets 403: a guard against DNS rebinding, not a login. The
+routes a hand calls are exempt, so
+`hive-hand join --brain https://hive.example.com` through a proxy works as
+it is, while opening the console in a browser under that name needs the
+name in `hub.hosts`.
+
 An SSH tunnel is the short way. On the machine that joins, forward a port
 of its own to the console and name that port. Keep the tunnel up for as
 long as the machine should take work: while the console cannot be reached,

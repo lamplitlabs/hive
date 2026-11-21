@@ -825,6 +825,13 @@ one. The brain does not trust the front: every write that comes through it
 must carry a member's passkey signature, and the brain checks that
 signature itself.
 
+The console answers only to the host names `localhost`, an IP address or a
+name listed in the setting `hub.hosts` (empty by default); any other `Host`
+header gets 403, which stops DNS rebinding. To open the console in a
+browser under a name of your own, through a tunnel or a proxy, add that
+name first (`hive settings set hub.hosts hive.example.com`); the routes a
+hand calls are exempt ([Enrolling a hand](machines.md#enrolling-a-hand)).
+
 What this machine does today:
 
 1. **Open it.** Set **Settings → Reaching the console from anywhere →
