@@ -59,7 +59,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> &'static str {
-    "hive-hand: runs the jobs the Hive brain hands this machine (ADR-070).\n\
+    "hive-hand: runs the jobs the Hive brain hands this machine.\n\
      \n\
      usage: hive-hand join [--brain URL] [--name NAME] [--labels a,b] [--workers N] [--workdir DIR] CODE\n\
      \x20      hive-hand dial   (hold the outbound channel to the brain)\n\

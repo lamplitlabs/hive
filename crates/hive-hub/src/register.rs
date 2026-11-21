@@ -205,7 +205,7 @@ fn hub_flags(fs: &mut FlagSet) {
     fs.int_var(
         "front-port",
         -1,
-        "also listen on 127.0.0.1:N for the team front's relay (hub.allow_remote; 0 chooses a free port)",
+        "also listen on 127.0.0.1:N for the relay of a front you run (hub.allow_remote; 0 chooses a free port)",
     );
     fs.bool_var("no-browser", false, "do not open the browser");
     fs.bool_var(
@@ -239,7 +239,7 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
         return Err(hive_cli::errorf(
             2,
             "The hub listens on 127.0.0.1 only",
-            "Other machines reach the console through the team's front: set hub.allow_remote to the front's origin and give the relay a loopback port; every write through it is passkey-signed",
+            "Other machines reach the console through a front you run yourself: set hub.allow_remote to the front's origin and give its relay a loopback port; every write through it is passkey-signed",
             &format!("hive {name} --host 127.0.0.1 --front-port 8766"),
         )
         .into());

@@ -105,7 +105,7 @@ impl Handler {
             forbidden(
                 w,
                 "Cross-origin requests are not allowed",
-                "The browser names another origin than the team's front.",
+                "The browser names another origin than the front's (hub.allow_remote).",
                 "Open the console at the front's address.",
             );
             return false;

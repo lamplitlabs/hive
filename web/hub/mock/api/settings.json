@@ -187,7 +187,7 @@
     {
       "choices": null,
       "default": "",
-      "description": "the hosted front's origin (https://team.example.com) the console may be reached through from anywhere (ADR-070 rule 5): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only",
+      "description": "the origin of a front you run yourself (https://team.example.com) the console may be reached through from anywhere; Hive ships no front (ADR-071): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only",
       "kind": "text",
       "min": null,
       "name": "hub.allow_remote",
@@ -1240,7 +1240,7 @@
         "release"
       ],
       "default": "on",
-      "description": "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - a hosted brain holds no Hive source (ADR-070 rule 1); off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
+      "description": "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - for a machine that holds no Hive source, such as one installed from a release; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)",
       "kind": "choice",
       "min": null,
       "name": "daemon.self_update",

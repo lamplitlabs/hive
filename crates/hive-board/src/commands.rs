@@ -199,7 +199,7 @@ fn init_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "store-only",
         false,
-        "create this machine's store and register no project (a hosted brain with brain.code none holds no checkout)",
+        "create this machine's store and register no project (a brain with brain.code none holds no checkout)",
     );
 }
 fn move_flags(fs: &mut FlagSet) {
