@@ -32,11 +32,35 @@ struct JoinFields: Equatable {
     var firstLaunch = false
 }
 
-/// The console's brand mark (web/hub/src/components/shell/hive-mark.tsx):
-/// the hive cell: a hexagon with a dot at its centre, on the mint-sky-violet tile.
+/// The console's brand mark (web/hub/src/components/shell/hive-mark.tsx): a
+/// hexagon cut into three brackets around a core, with a node in each gap,
+/// on the mint-sky-violet tile. The geometry is scripts/brand.py's.
 final class HiveMarkView: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: 56, height: 56) }
     override var isFlipped: Bool { true }
+
+    /// The mark on a 256-unit box: each bracket as three points.
+    static let brackets: [[(CGFloat, CGFloat)]] = [
+        [(77.77, 61), (128, 32), (178.23, 61)],
+        [(211.14, 118), (211.14, 176), (160.91, 205)],
+        [(95.09, 205), (44.86, 176), (44.86, 118)],
+    ]
+    /// The centres of the three nodes, and the radius of a node's hexagon.
+    static let nodes: [(CGFloat, CGFloat)] = [(211.14, 80), (128, 224), (44.86, 80)]
+    static let nodeRadius: CGFloat = 13.5
+    static let coreRadius: CGFloat = 28
+
+    /// A hexagon standing on a corner, as the mark's own outline does.
+    static func hexagon(centre: CGPoint, radius: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        for index in 0..<6 {
+            let angle = (CGFloat(index) * 60 - 90) * .pi / 180
+            let p = CGPoint(x: centre.x + radius * cos(angle), y: centre.y + radius * sin(angle))
+            if index == 0 { path.move(to: p) } else { path.addLine(to: p) }
+        }
+        path.closeSubpath()
+        return path
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -62,28 +86,33 @@ final class HiveMarkView: NSView {
         context.setLineWidth(1)
         context.strokePath()
 
-        // The cell at 78% of the tile, from a 256-unit box: a hexagon outline
-        // with a dot at its centre.
+        // The mark at 78% of the tile, from a 256-unit box.
         let scale = side * 0.78 / 256
         let origin = CGPoint(x: tile.midX - 128 * scale, y: tile.midY - 128 * scale)
-        let corners: [(CGFloat, CGFloat)] = [(128, 36), (206, 81), (206, 171), (128, 216), (50, 171), (50, 81)]
-        let hexagon = CGMutablePath()
-        for (index, corner) in corners.enumerated() {
-            let p = CGPoint(x: origin.x + corner.0 * scale, y: origin.y + corner.1 * scale)
-            if index == 0 { hexagon.move(to: p) } else { hexagon.addLine(to: p) }
+        func place(_ point: (CGFloat, CGFloat)) -> CGPoint {
+            CGPoint(x: origin.x + point.0 * scale, y: origin.y + point.1 * scale)
         }
-        hexagon.closeSubpath()
-        context.addPath(hexagon)
+
         context.setStrokeColor(NSColor.white.cgColor)
         context.setLineWidth(22 * scale)
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-        context.strokePath()
+        context.setLineCap(.butt)
+        context.setLineJoin(.miter)
+        context.setMiterLimit(6)
+        for bracket in Self.brackets {
+            let path = CGMutablePath()
+            path.move(to: place(bracket[0]))
+            path.addLine(to: place(bracket[1]))
+            path.addLine(to: place(bracket[2]))
+            context.addPath(path)
+            context.strokePath()
+        }
 
-        let dotRadius = 14 * scale
-        let dotCentre = CGPoint(x: origin.x + 128 * scale, y: origin.y + 126 * scale)
         context.setFillColor(NSColor.white.cgColor)
-        context.fillEllipse(in: CGRect(x: dotCentre.x - dotRadius, y: dotCentre.y - dotRadius, width: dotRadius * 2, height: dotRadius * 2))
+        for node in Self.nodes {
+            context.addPath(Self.hexagon(centre: place(node), radius: Self.nodeRadius * scale))
+        }
+        context.addPath(Self.hexagon(centre: place((128, 128)), radius: Self.coreRadius * scale))
+        context.fillPath()
     }
 }
 

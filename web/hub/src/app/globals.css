@@ -665,7 +665,7 @@ html[data-awake="holding"] body::before {
   }
 }
 
-/* The hive cell draws itself once, the console's one moment of motion on load. */
+/* The mark's brackets draw themselves once, the console's one moment of motion on load. */
 @keyframes hive-draw {
   from {
     stroke-dashoffset: var(--hive-length, 320);
@@ -1151,7 +1151,7 @@ html[data-awake="holding"] body::before {
   }
 }
 .hive-mark-path {
-  stroke-dasharray: 545;
+  stroke-dasharray: 116;
   stroke-dashoffset: 0;
 }
 @media (prefers-reduced-motion: no-preference) {
@@ -1192,7 +1192,7 @@ html[data-awake="holding"] body::before {
   }
   .brand-link:hover .hive-mark-path {
     animation: hive-draw 0.9s var(--ease-out-soft) 1;
-    --hive-length: 545;
+    --hive-length: 116;
   }
   .lift:hover {
     transform: translateY(-2px);

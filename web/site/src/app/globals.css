@@ -169,7 +169,7 @@
   box-shadow: var(--shadow-pop);
 }
 
-/* The hive cell draws itself once when the page opens. */
+/* The mark's brackets draw themselves once when the page opens. */
 @keyframes hive-draw {
   from {
     stroke-dashoffset: 1;
