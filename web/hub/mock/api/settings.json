@@ -197,6 +197,18 @@
       "value": ""
     },
     {
+      "choices": null,
+      "default": "",
+      "description": "extra host names the console answers to, comma-separated (for example hive.example.com, when a proxy of yours forwards that name to 127.0.0.1); empty: localhost and IP addresses only. The console refuses every other Host header, so a web page that points a name of its own at 127.0.0.1 (DNS rebinding) cannot reach it; the routes a hand calls are exempt. Counts only when the owner set it",
+      "kind": "text",
+      "min": null,
+      "name": "hub.hosts",
+      "secret": false,
+      "updated_at": "2026-09-09T10:00:00Z",
+      "updated_by": "init",
+      "value": ""
+    },
+    {
       "choices": [
         "off",
         "on"

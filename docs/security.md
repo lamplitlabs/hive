@@ -92,22 +92,54 @@ or a proxy, as a door to the whole console.
 
 On that listener:
 
-- Every write from the console passes the **same-origin guard**: when the
-  browser sends an `Origin`, its host and port must equal the request's
+- Every request passes the **Host rule** before any page or API route. The
+  console answers only when the request's `Host` header is one of:
+  - `localhost`, or a name that ends in `.localhost`;
+  - an IP address, v4 or v6;
+  - a name you listed in the setting `hub.hosts`.
+
+  The port is not compared. Any other `Host`, and a missing or empty one,
+  gets 403. This stops DNS rebinding: a web page can point a name of its
+  own at 127.0.0.1, and its requests then pass the same-origin guard below,
+  but they carry that name as `Host`. An IP address passes because a name
+  that was pointed at this machine is never an IP address, so a tunnel or a
+  port forward that you open by address keeps working
+  (`cargo test -p hive-hub --lib server::tests::a_rebound_name_gets_403_on_a_page_a_read_and_a_write`).
+- **`hub.hosts`** holds the extra names, separated by commas: for example
+  `hive.example.com`, when a proxy of yours forwards that name to
+  127.0.0.1. It is empty by default. Set it with
+  `hive settings set hub.hosts hive.example.com` or under **Settings →
+  Reaching the console from anywhere**; the 403 names the host that came
+  and this command. It counts only when the store names the owner as the
+  one who set it: a value written under an agent's name is ignored
+  ([Agents](#agents) says what that check rests on). List only names you
+  control. Whoever decides where a listed name points can reach the console
+  under it.
+- Two kinds of request are not held to the console's Host rule. The routes
+  a hand calls (`/api/v1/hands/`) are checked by join code and device key
+  instead, so a hand can reach the brain through a proxy under a name of
+  yours. Requests on the relay listener are held to that listener's own
+  Host rule, which
+  [the next section](#a-relay-in-front-of-the-console-huballow_remote)
+  describes.
+- Every write from the console also passes the **same-origin guard**: when
+  the browser sends an `Origin`, its host and port must equal the request's
   `Host`, and a request the browser marks `Sec-Fetch-Site: cross-site` is
   refused. This stops a page of another site from writing to your console.
-  The routes a hand calls (`/api/v1/hands/`) are checked by join code and
-  device key instead.
+  A proxy of yours that serves the console over https must send
+  `X-Forwarded-Proto: https`, or writes are refused as cross-origin: the
+  console itself speaks plain HTTP, so it reads a `Host` without a port as
+  port 80 unless that header says https. The routes a hand calls are
+  checked by join code and device key instead.
 - The writes that change the most also need an **explicit confirmation
   header**: `X-Hive-Settings: yes` for settings, `X-Hive-Decide: yes` for
   decisions, `X-Hive-Members: yes` for members, and one each for the push
   key, the private tests and job repair.
-- Four route groups also refuse any `Host` that is not this machine:
-  browsing folders, credentials, held-out fixtures and job repair. Only
-  these are protected against DNS rebinding. The guard above compares
-  `Origin` with the request's own `Host`, so it does not stop a page whose
-  name was rebound to 127.0.0.1
-  ([What is not built](#what-is-not-built)).
+- Four route groups stay stricter than the Host rule: browsing folders, and
+  the writes of credentials, held-out fixtures and job repair. They answer
+  only when `Host` is `localhost` or a loopback address. A name in
+  `hub.hosts` does not reach them, and neither does an IP address that is
+  not loopback.
 
 ### A relay in front of the console (`hub.allow_remote`)
 
@@ -126,9 +158,15 @@ writes. Reads it serves without a signature, as the list says.
   marked as coming through the front. Request headers cannot change that,
   so a forged `Host: 127.0.0.1` does not unlock the loopback-only routes.
   While `hub.allow_remote` is empty, every request on that listener gets 403.
-  A browser `Origin` other than the front's also gets 403. Once the
-  setting is set, reads (`GET` and `HEAD`) on that listener pass without a
-  signature.
+  Once the setting is set, the listener answers only when `Host` is the
+  front's own name (the host of `hub.allow_remote`), `localhost`, a name
+  that ends in `.localhost`, or an IP address. The port is not compared.
+  Any other `Host`, and a missing or empty one, gets 403, so a web page
+  that points a name of its own at 127.0.0.1 cannot read the console
+  through the relay port
+  (`cargo test -p hive-hub --lib remote::tests::the_relay_answers_only_to_the_fronts_name_localhost_and_ip_addresses`).
+  A browser `Origin` other than the front's also gets 403. Reads (`GET` and
+  `HEAD`) that pass these checks need no signature.
 - **Passkey-signed writes.** Each write through the front carries a
   WebAuthn assertion from a registered member's passkey. The passkey signs
   over a nonce the brain issued (`GET /api/v1/nonce`: five minutes,
@@ -488,12 +526,12 @@ What the program checks:
 
 - **Credentials.** No credential reference is resolved inside a job
   (ADR-041 D4).
-- **Two settings count only from the owner.** `hub.allow_remote` opens the
-  console to a front, and `owner.presence away` hands the owner's decisions
-  to the leads. Each counts only when the store names the owner as the one
-  who set it: a value written under an agent's name is ignored. A `hive`
-  command run under an agent's name is also refused the `owner.*` settings
-  and `push.credential`.
+- **Three settings count only from the owner.** `hub.allow_remote` opens
+  the console to a front, `hub.hosts` adds names the console answers to,
+  and `owner.presence away` hands the owner's decisions to the leads. Each
+  counts only when the store names the owner as the one who set it: a value
+  written under an agent's name is ignored. A `hive` command run under an
+  agent's name is also refused the `owner.*` settings and `push.credential`.
 - **Votes and variants.** No vote can touch the constitution's protected
   sections, and no variant of the loop can change `evolve.*`.
 - **Every commit is traceable.** A run signs its commits with a key of its
@@ -557,12 +595,6 @@ run yourself.
   deny rules are rules on the text of a command: other spellings of the
   same command pass ([Agents](#agents)). Lockdown covers conversations, and
   the operating system enforces it on macOS only.
-- **A check of the `Host` header on every route.** The console checks
-  `Host` on four route groups only: browsing folders, credentials, held-out
-  fixtures and job repair. Its write guard compares `Origin` with the
-  request's own `Host`, so it does not stop DNS rebinding: a page whose
-  name was rebound to 127.0.0.1 passes the guard, and it can read the
-  console too.
 - **The vault on hands.** A hand cannot open the vault, model logins are
   not vault names, and there are no `vault://NAME` references for MCP and
   cloud credentials.
