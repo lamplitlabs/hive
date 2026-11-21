@@ -1,4 +1,5 @@
-# The hosted brain: one container per team (ADR-070 rule 6, docs/security.md).
+# A brain in a container, one per team, for a server of your own (ADR-070
+# rule 6, ADR-071, docs/security.md).
 #
 # It runs the Hive daemon and its hub from a `hive` binary built here in
 # release mode, with the console embedded. The image carries no Hive source:

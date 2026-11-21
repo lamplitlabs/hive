@@ -1,10 +1,10 @@
 #!/bin/sh
-# The hosted brain's entrypoint (deploy/Dockerfile, docs/security.md).
+# The entrypoint of the brain's container (deploy/Dockerfile, docs/security.md).
 #
 # 1. The first start makes an empty store under HIVE_HOME (`hive init
 #    --store-only`: no project is registered; the owner adds them from the
 #    console once hands dial in).
-# 2. Every start pins the two settings a hosted brain must hold:
+# 2. Every start pins the two settings a brain in this image must hold:
 #      brain.code         none     no project clone on the brain
 #      daemon.self_update release  update from published releases, never build
 #    and, when HIVE_BACKUP_TO is set, backup.to (az://ACCOUNT/CONTAINER/PREFIX).

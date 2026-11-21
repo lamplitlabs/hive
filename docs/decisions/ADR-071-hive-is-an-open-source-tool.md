@@ -227,14 +227,20 @@ Option 3, with these rules.
       installer downloads them (`scripts/install.sh`, `docs/release.md`).
 - [ ] The site is rebuilt without a sign-in, renders `docs/` and serves
       the installer (`web/site`).
+- [ ] Point `hivefleet.dev` at the site's Vercel project (the owner). The
+      install line hands `https://hivefleet.dev/install.sh` to a shell, so
+      the deploy workflow's last step fails until that address serves
+      `scripts/install.sh`.
 - [ ] Close ADR-070: mark what was delivered, close steps 5 to 7
       (`hive record deliver`), and settle the amendments it announced for
       ADR-019, ADR-020, ADR-021, ADR-041 and ADR-042.
-- [ ] Reword what still speaks of a hosted product and is outside this
-      change: the comments in `deploy/` and `scripts/check-hand-deps.sh`,
-      the setting descriptions and the hand's usage text in `crates/`, and
-      the pages `docs/console.md`, `docs/harness.md`, `docs/landing.md`,
-      `docs/mac-app.md` and `docs/self-improvement.md`.
+- [ ] Reword the code comments that still say "hosted front" or "hosted
+      brain" (`crates/hive-hub`, `crates/hive-runner`, `crates/hive-store`,
+      `web/hub/src`). What a person reads when using Hive is reworded: the
+      setting descriptions, the help texts, the console's labels, the
+      comments in `deploy/` and `scripts/check-hand-deps.sh`, and the
+      pages `docs/console.md`, `docs/mac-app.md`, `docs/machines.md` and
+      `docs/self-improvement.md`.
 - [ ] Decide, one by one, what becomes of the unfinished options that
       `docs/security.md` lists (the vault on other machines, landing
       without a checkout, a relay).
