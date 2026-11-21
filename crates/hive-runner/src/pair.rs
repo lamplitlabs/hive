@@ -2913,12 +2913,13 @@ mod tests {
     /// ways.
     #[test]
     fn hands_binary_missing_names_the_release_archive_for_the_processor() {
+        // A program that is no plain release leaves the tag open.
         assert_eq!(
-            hands_binary_missing("amd64"),
+            hands_binary_missing_for("amd64", "dev"),
             "no Linux hive to send to that machine (linux/amd64): download hive-<tag>-x86_64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-amd64, or run the command from a checkout of Hive's source, where it builds one"
         );
         assert_eq!(
-            hands_binary_missing("arm64"),
+            hands_binary_missing_for("arm64", "dev"),
             "no Linux hive to send to that machine (linux/arm64): download hive-<tag>-aarch64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-arm64, or run the command from a checkout of Hive's source, where it builds one"
         );
         // The names are the ones a release carries.
@@ -2927,16 +2928,73 @@ mod tests {
             ("arm64", "aarch64-unknown-linux-gnu"),
         ] {
             assert_eq!(
-                linux_release_archive(arch)
+                linux_release_archive(arch, "dev")
                     .expect("archive")
                     .replace("<tag>", "v1.2.3"),
                 hive_cli::update::archive_name("v1.2.3", target)
             );
         }
         // A processor no release is built for gets no archive to look for.
+        for version in ["dev", "v0.1.4"] {
+            assert_eq!(
+                hands_binary_missing_for("riscv64", version),
+                "no Linux hive to send to that machine (linux/riscv64), and no release is built for its processor: set HIVE_HANDS_BINARY to a Linux hive built for it, or put one beside this program as hive-linux-riscv64"
+            );
+        }
+        // What `hive pair` says is that message for the running program.
         assert_eq!(
-            hands_binary_missing("riscv64"),
-            "no Linux hive to send to that machine (linux/riscv64), and no release is built for its processor: set HIVE_HANDS_BINARY to a Linux hive built for it, or put one beside this program as hive-linux-riscv64"
+            hands_binary_missing("amd64"),
+            hands_binary_missing_for("amd64", &hive_cli::version())
+        );
+    }
+
+    /// A program that is a plain release names that release's archive: the
+    /// Linux `hive` should be the release the brain is.
+    #[test]
+    fn hands_binary_missing_names_the_brains_own_release_when_it_is_one() {
+        assert_eq!(
+            hands_binary_missing_for("amd64", "v0.1.4"),
+            "no Linux hive to send to that machine (linux/amd64): download hive-v0.1.4-x86_64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-amd64, or run the command from a checkout of Hive's source, where it builds one"
+        );
+        assert_eq!(
+            hands_binary_missing_for("arm64", "v12.0.3"),
+            "no Linux hive to send to that machine (linux/arm64): download hive-v12.0.3-aarch64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it, and run the same command again with HIVE_HANDS_BINARY=/path/to/hive in front of it. Two other ways: put the unpacked hive beside this program as hive-linux-arm64, or run the command from a checkout of Hive's source, where it builds one"
+        );
+
+        // A plain release tag is vX.Y.Z and nothing after it.
+        for (version, tag) in [
+            ("v0.1.4", Some("v0.1.4")),
+            (" v0.1.4\n", Some("v0.1.4")),
+            ("0.1.4", Some("v0.1.4")),
+            // a build between two releases, and one before any
+            ("v0.1.5-0.20261121171242-4f51d427c39e", None),
+            ("v0.0.0-20261108024000-5189a0b73dbe", None),
+            // a pre-release
+            ("v0.2.0-rc.1", None),
+            // a tree with changes
+            ("v0.1.4+dirty", None),
+            // not a release at all
+            ("dev", None),
+            ("dev-4f51d427c39e", None),
+            ("v0.1", None),
+            ("v0.1.4.1", None),
+            ("", None),
+        ] {
+            assert_eq!(plain_release_tag(version).as_deref(), tag, "{version:?}");
+            let archive = linux_release_archive("amd64", version).expect("archive");
+            assert_eq!(
+                archive,
+                format!(
+                    "hive-{}-x86_64-unknown-linux-gnu.tar.gz",
+                    tag.unwrap_or("<tag>")
+                ),
+                "{version:?}"
+            );
+        }
+        // The name is the one that release carries.
+        assert_eq!(
+            linux_release_archive("arm64", "v0.1.4").expect("archive"),
+            hive_cli::update::archive_name("v0.1.4", "aarch64-unknown-linux-gnu")
         );
     }
 
@@ -3005,21 +3063,44 @@ mod tests {
     #[test]
     fn the_plan_line_for_no_hands_binary_names_the_release_archive_first() {
         let hint = "install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary";
+        let none = HandsBinaryPlan::Missing(hint);
         assert_eq!(
-            plan_line("amd64", &HandsBinaryPlan::Missing(hint)),
+            plan_line("amd64", &none, "dev"),
             "hands binary linux/amd64: none; download hive-<tag>-x86_64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it and put its hive beside this program as hive-linux-amd64; or install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary"
         );
         assert_eq!(
-            plan_line("arm64", &HandsBinaryPlan::Missing("add the rust target")),
+            plan_line(
+                "arm64",
+                &HandsBinaryPlan::Missing("add the rust target"),
+                "v0.1.5-0.20261121171242-4f51d427c39e"
+            ),
             "hands binary linux/arm64: none; download hive-<tag>-aarch64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it and put its hive beside this program as hive-linux-arm64; or add the rust target"
         );
+        // A program that is a plain release names that release's archive.
         assert_eq!(
-            plan_line("riscv64", &HandsBinaryPlan::Missing(hint)),
-            format!("hands binary linux/riscv64: none; {hint}")
+            plan_line("amd64", &none, "v0.1.4"),
+            "hands binary linux/amd64: none; download hive-v0.1.4-x86_64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it and put its hive beside this program as hive-linux-amd64; or install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary"
         );
         assert_eq!(
-            plan_line("amd64", &HandsBinaryPlan::EnvVar),
-            "hands binary linux/amd64: HIVE_HANDS_BINARY is set"
+            plan_line("arm64", &none, "v0.1.4"),
+            "hands binary linux/arm64: none; download hive-v0.1.4-aarch64-unknown-linux-gnu.tar.gz from https://github.com/lamplitlabs/hive/releases, unpack it and put its hive beside this program as hive-linux-arm64; or install cargo-zigbuild (cargo install cargo-zigbuild) to cross-build the linux hands binary"
+        );
+        for version in ["dev", "v0.1.4"] {
+            assert_eq!(
+                plan_line("riscv64", &none, version),
+                format!("hands binary linux/riscv64: none; {hint}")
+            );
+            assert_eq!(
+                plan_line("amd64", &HandsBinaryPlan::EnvVar, version),
+                "hands binary linux/amd64: HIVE_HANDS_BINARY is set"
+            );
+        }
+        // The line a command prints is that line for the running program.
+        // (The lock holds HIVE_HANDS_BINARY still between the two readings.)
+        let _env = hive_testutil::env_lock();
+        assert_eq!(
+            hands_binary_plan_line("amd64"),
+            plan_line("amd64", &hands_binary_plan("amd64"), &hive_cli::version())
         );
     }
 
@@ -3103,10 +3184,11 @@ pub(crate) fn hands_binary_plan(arch: &str) -> HandsBinaryPlan {
 /// One sentence for a finding, a refused compute request or a doctor line:
 /// where the hands binary comes from, or what to get or install.
 pub(crate) fn hands_binary_plan_line(arch: &str) -> String {
-    plan_line(arch, &hands_binary_plan(arch))
+    plan_line(arch, &hands_binary_plan(arch), &hive_cli::version())
 }
 
-fn plan_line(arch: &str, plan: &HandsBinaryPlan) -> String {
+/// The plan line on a program whose version is `version`.
+fn plan_line(arch: &str, plan: &HandsBinaryPlan, version: &str) -> String {
     match plan {
         HandsBinaryPlan::EnvVar => {
             format!("hands binary linux/{arch}: HIVE_HANDS_BINARY is set")
@@ -3123,7 +3205,7 @@ fn plan_line(arch: &str, plan: &HandsBinaryPlan) -> String {
         // The file `hands_binary_missing` names comes first here too. It
         // goes beside the program, where the daemon finds it as well: a
         // variable set in a shell does not reach the daemon.
-        HandsBinaryPlan::Missing(hint) => match linux_release_archive(arch) {
+        HandsBinaryPlan::Missing(hint) => match linux_release_archive(arch, version) {
             Some(archive) => format!(
                 "hands binary linux/{arch}: none; download {archive} from {RELEASES_PAGE}, unpack it and put its hive beside this program as hive-linux-{arch}; or {hint}"
             ),
@@ -3218,19 +3300,40 @@ fn default_hands_binary(arch: &str) -> anyhow::Result<(Vec<u8>, String)> {
 /// Where Hive's releases are published, for a person to open.
 const RELEASES_PAGE: &str = "https://github.com/lamplitlabs/hive/releases";
 
+/// The tag of the release a program of `version` is, when the version is a
+/// plain release tag: `vX.Y.Z` and nothing after it. None for a build
+/// between two releases, a pre-release, a build of a tree with changes
+/// (`+dirty`) and a `dev` build.
+fn plain_release_tag(version: &str) -> Option<String> {
+    let version = version.trim();
+    let release = hive_cli::update::parse_semver(version)?;
+    (release.pre.is_empty() && !version.contains('+'))
+        .then(|| format!("v{}.{}.{}", release.major, release.minor, release.patch))
+}
+
 /// The release archive that holds the Linux `hive` for a machine of `arch`
-/// (`amd64` or `arm64`), with `<tag>` where the release's tag goes. None
-/// for a processor no release is built for.
-fn linux_release_archive(arch: &str) -> Option<String> {
+/// (`amd64` or `arm64`). The Linux `hive` should be the release the brain
+/// is, so a program whose `version` is a plain release tag names that
+/// release's archive; any other names it with `<tag>` where the tag goes.
+/// None for a processor no release is built for.
+fn linux_release_archive(arch: &str, version: &str) -> Option<String> {
     let target = hive_cli::update::target_for(arch, "linux")?;
-    Some(format!("hive-<tag>-{target}.tar.gz"))
+    Some(match plain_release_tag(version) {
+        Some(tag) => hive_cli::update::archive_name(&tag, &target),
+        None => format!("hive-<tag>-{target}.tar.gz"),
+    })
 }
 
 /// What `hive pair` says when it has no Linux `hive` to send: the way that
 /// needs nothing but a download first (the release archive for the
 /// machine's processor), then the two other ways.
 fn hands_binary_missing(arch: &str) -> String {
-    let Some(archive) = linux_release_archive(arch) else {
+    hands_binary_missing_for(arch, &hive_cli::version())
+}
+
+/// [`hands_binary_missing`] on a program whose version is `version`.
+fn hands_binary_missing_for(arch: &str, version: &str) -> String {
+    let Some(archive) = linux_release_archive(arch, version) else {
         return format!(
             "no Linux hive to send to that machine (linux/{arch}), and no release is built for its processor: set HIVE_HANDS_BINARY to a Linux hive built for it, or put one beside this program as hive-linux-{arch}"
         );
