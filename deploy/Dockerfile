@@ -48,10 +48,16 @@ FROM debian:bookworm-slim
 
 # git: the daemon reads and lands branches the hands push; gh: GitHub reads,
 # pull requests and merges; tini: signals reach the daemon and the hub, and
-# their children are reaped. No coding harness (copilot, claude, codex): those
-# run on hands. The built-in harness the brain's own lead uses is `hive`.
+# their children are reaped.
+# openssh-client: ssh-keygen, which the brain runs to give each run its
+# signing key, to check commit signatures and to check the signature of a
+# machine that dials in (and ssh, for git remotes that use it). git only
+# recommends it, so it is named here.
+# openssl: the brain signs its GitHub App tokens with the openssl command.
+# No coding harness (copilot, claude, codex): those run on hands. The
+# built-in harness the brain's own lead uses is `hive`.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git gnupg tini \
+ && apt-get install -y --no-install-recommends ca-certificates curl git gnupg openssh-client openssl tini \
  && install -d -m 0755 /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
