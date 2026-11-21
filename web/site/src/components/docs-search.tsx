@@ -8,14 +8,15 @@ import { searchDocs } from "@/lib/search";
 import type { SearchEntry } from "@/lib/search";
 
 const MAX = 10;
-let index: Promise<SearchEntry[]> | undefined;
+let index: Promise<SearchEntry[] | null> | undefined;
 
-function load(): Promise<SearchEntry[]> {
+/** The index, fetched once per page load; null when it did not arrive (the next try asks again). */
+function load(): Promise<SearchEntry[] | null> {
   index ??= fetch("/docs/search.json")
     .then((r) => (r.ok ? (r.json() as Promise<SearchEntry[]>) : Promise.reject(new Error(String(r.status)))))
     .catch(() => {
       index = undefined;
-      return [];
+      return null;
     });
   return index;
 }
@@ -24,6 +25,7 @@ export function DocsSearch({ className = "" }: { className?: string }) {
   const id = useId();
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<SearchEntry[] | null>(null);
+  const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const closing = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -36,7 +38,12 @@ export function DocsSearch({ className = "" }: { className?: string }) {
   function ready() {
     clearTimeout(closing.current);
     setOpen(true);
-    if (!entries) void load().then(setEntries);
+    if (!entries) {
+      void load().then((found) => {
+        setEntries(found);
+        setFailed(found === null);
+      });
+    }
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -99,6 +106,8 @@ export function DocsSearch({ className = "" }: { className?: string }) {
         role="listbox"
         aria-label="Search results"
         hidden={!show}
+        // A press on a result must not take the focus from the box, or the list would close under the pointer.
+        onMouseDown={(e) => e.preventDefault()}
         className="absolute top-12 right-0 left-0 z-40 max-h-[60dvh] overflow-y-auto rounded-xl border border-border bg-background p-1.5 shadow-pop"
       >
         {hits.map((h, i) => (
@@ -117,7 +126,9 @@ export function DocsSearch({ className = "" }: { className?: string }) {
           </a>
         ))}
         {show && hits.length === 0 && (
-          <p className="px-3 py-2 text-sm text-muted-foreground">{entries ? "No title or heading in the docs has these words." : "Loading the index."}</p>
+          <p className="px-3 py-2 text-sm text-muted-foreground">
+            {entries ? "No title or heading in the docs has these words." : failed ? "The search index did not load. Try again in a moment." : "Loading the index."}
+          </p>
         )}
       </div>
       <p role="status" className="sr-only">

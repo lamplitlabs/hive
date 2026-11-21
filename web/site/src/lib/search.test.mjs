@@ -29,8 +29,21 @@ test("a heading is found by its words and its page's together, and a page's name
   assert.equal(searchDocs(index, "harness").length, 1);
 });
 
+test("a word of the query matches from the start of a word, whatever the punctuation around it", () => {
+  // "kill" is not in "Skills"; "skill" is.
+  assert.deepEqual(searchDocs(index, "kill"), []);
+  assert.deepEqual(
+    searchDocs(index, "skill").map((h) => h.href),
+    ["/docs/harness/#skills-as-tools", "/docs/board/#shared-skills-hive-skill"],
+  );
+  assert.equal(searchDocs(index, "pair")[0].href, "/docs/machines/");
+  assert.equal(searchDocs(index, "(how an agent runs)")[0].href, "/docs/harness/");
+  assert.equal(searchDocs(index, "hive-skill")[0].href, "/docs/board/#shared-skills-hive-skill");
+});
+
 test("nothing typed finds nothing, and the list stops at its limit", () => {
   assert.deepEqual(searchDocs(index, "   "), []);
+  assert.deepEqual(searchDocs(index, " - "), []);
   assert.deepEqual(searchDocs(index, "zzz"), []);
   assert.equal(searchDocs(index, "the", 2).length, 2);
   assert.ok(searchDocs(docs.searchIndex(docs.loadDocs()), "the").length <= 10);
