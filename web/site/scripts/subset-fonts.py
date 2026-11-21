@@ -69,6 +69,12 @@ def subset_bytes(source: pathlib.Path) -> bytes:
     return out.getvalue()
 
 
+def tables(data: bytes) -> dict[str, bytes]:
+    """A font file's tables as they are once unpacked: two files that differ only in how hard they were packed are the same font."""
+    font = TTFont(io.BytesIO(data))
+    return {tag: font.getTableData(tag) for tag in font.reader.keys()}
+
+
 def rest_range(source: pathlib.Path) -> str:
     """What the whole font holds outside LATIN, as a unicode-range."""
     latin = set(subset.parse_unicodes(LATIN.replace(" ", "")))
@@ -103,7 +109,7 @@ def main() -> int:
         data = subset_bytes(whole)
         rest = rest_range(whole)
         if check:
-            if not target.exists() or target.read_bytes() != data:
+            if not target.exists() or tables(target.read_bytes()) != tables(data):
                 wrong.append(f"{target.relative_to(SITE)} is not what this script writes")
             if css_ranges(css, family) != [LATIN, rest]:
                 wrong.append(f'the two unicode-range lines of "{family}" in {CSS.relative_to(SITE)} are not the ones below')
