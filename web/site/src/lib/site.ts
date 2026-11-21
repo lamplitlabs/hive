@@ -25,17 +25,23 @@ export function repoFile(path: string): string {
   return `${SITE.repo}/blob/main/${path.replace(/^\/+/, "")}`;
 }
 
-/** The exact install lines (the contract's section 4); every package prints the same ones. */
+/**
+ * The install lines (the contract's section 4). `blocks` are the three code
+ * blocks as every package prints them, character for character; `script` and
+ * `source` are the bare commands a copy button puts on the clipboard.
+ */
 export const INSTALL = {
   script: "curl -fsSL https://hivefleet.dev/install.sh | sh",
-  scriptNote: "macOS and Linux; installs ~/.hive/bin/hive",
   source: "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive",
-  sourceNote: "from source: Rust 1.95+, Node.js 22+",
-  after: [
-    { line: 'export PATH="$HOME/.hive/bin:$PATH"', note: "add to your shell profile" },
-    { line: "hive version", note: "" },
-    { line: "hive hub", note: "the console, at http://127.0.0.1:8765" },
-  ],
+  blocks: {
+    script: "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive",
+    source: "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+",
+    after: [
+      'export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile',
+      "hive version",
+      "hive hub                               # the console, at http://127.0.0.1:8765",
+    ].join("\n"),
+  },
 } as const;
 
 /** One static page: where it lives, what the tab and the search result say, and one line for llms.txt. */

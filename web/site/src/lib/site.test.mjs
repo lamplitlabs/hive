@@ -22,10 +22,22 @@ test("the words are the open tool's: the category line and the one sentence", ()
 test("the install lines are the contract's, character for character", () => {
   assert.equal(site.INSTALL.script, "curl -fsSL https://hivefleet.dev/install.sh | sh");
   assert.equal(site.INSTALL.source, "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive");
-  assert.deepEqual(
-    site.INSTALL.after.map((l) => l.line),
-    ['export PATH="$HOME/.hive/bin:$PATH"', "hive version", "hive hub"],
+  assert.equal(site.INSTALL.blocks.script, "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive");
+  assert.equal(
+    site.INSTALL.blocks.source,
+    "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+",
   );
+  assert.equal(
+    site.INSTALL.blocks.after,
+    [
+      'export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile',
+      "hive version",
+      "hive hub                               # the console, at http://127.0.0.1:8765",
+    ].join("\n"),
+  );
+  // The block is the bare command and its note, nothing else.
+  assert.ok(site.INSTALL.blocks.script.startsWith(`${site.INSTALL.script} `));
+  assert.ok(site.INSTALL.blocks.source.startsWith(`${site.INSTALL.source} `));
 });
 
 test("nothing of the hosted product is left in the site's own words", () => {
