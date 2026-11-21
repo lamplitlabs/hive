@@ -8,6 +8,8 @@
 //   leads to a file of the export, and every #anchor to an element with that
 //   id on the page it points at (a link a doc's Markdown got wrong shows up
 //   here by page and address; src/lib/docs.test.mjs names the Markdown file);
+//   every link has text, and every link that leaves the site carries
+//   rel="noopener noreferrer";
 // - every page has one <title> (at most 60 characters), one description (70
 //   to 160), its own canonical address, one h1, the link preview tags and
 //   JSON-LD that parses; no two pages share a title or a description;
@@ -85,7 +87,14 @@ function read(file) {
         page.h1.push(toString(node).trim());
         break;
       case "a":
-        if (attr(node, "href") !== undefined) page.links.push({ href: attr(node, "href"), rel: attr(node, "rel") ?? "", text: toString(node).trim() });
+        if (attr(node, "href") !== undefined) {
+          page.links.push({
+            href: attr(node, "href"),
+            rel: attr(node, "rel") ?? "",
+            name: toString(node).trim() || (attr(node, "ariaLabel") ?? ""),
+            hidden: attr(node, "ariaHidden") === "true",
+          });
+        }
         if (attr(node, "name")) page.ids.set(attr(node, "name"), 1);
         break;
       case "img":
@@ -146,7 +155,7 @@ function resolve(page, href, what) {
   }
   if (url.origin !== SITE) {
     if (/^https?:$/.test(url.protocol)) externalCount += 1;
-    else fail(where, `${what} ${href} has a scheme a browser will not follow`);
+    else fail(where, `${what} ${href} has a scheme this site does not link to`);
     return;
   }
   linkCount += 1;
@@ -179,7 +188,15 @@ function resolve(page, href, what) {
 }
 
 for (const page of all) {
-  for (const link of page.links) resolve(page, link.href, "link");
+  const where = page.path ?? `/${rel(page.file)}`;
+  for (const link of page.links) {
+    resolve(page, link.href, "link");
+    if (!link.hidden && !link.name) fail(where, `link ${link.href} has no text`);
+    // A link that leaves the site tells the other side nothing about where the reader came from.
+    if (/^https?:\/\//i.test(link.href) && !link.href.startsWith(`${SITE}/`) && link.href !== SITE) {
+      if (!/\bnoopener\b/.test(link.rel) || !/\bnoreferrer\b/.test(link.rel)) fail(where, `external link ${link.href} lacks rel="noopener noreferrer"`);
+    }
+  }
   for (const src of page.assets) resolve(page, src, "asset");
 }
 

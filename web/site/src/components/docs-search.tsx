@@ -56,6 +56,7 @@ export function DocsSearch({ className = "" }: { className?: string }) {
       setActive((a) => (a + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length);
     } else if (e.key === "Enter" && show && hits[active]) {
       e.preventDefault();
+      setOpen(false);
       window.location.assign(hits[active].href);
     }
   }
@@ -118,6 +119,8 @@ export function DocsSearch({ className = "" }: { className?: string }) {
             aria-selected={i === active}
             href={h.href}
             tabIndex={-1}
+            // A heading of the page you are on is only a jump: the list must not stay open over it.
+            onClick={() => setOpen(false)}
             onMouseEnter={() => setActive(i)}
             className="block rounded-lg px-3 py-2 text-sm aria-selected:bg-muted"
           >

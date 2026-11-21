@@ -14,11 +14,13 @@ const FOOTER_DOCS = ["concepts", "faq", "console", "commands", "settings", "boar
 
 /**
  * Every page: the skip link, the header with this page marked in it, the
- * content as the page's one <main>, the footer. The id of <main> has a dot in
- * it because no heading of a doc can: GitHub's heading ids drop dots, so the
- * skip link's target never collides with an anchor of the page. A page passes the path it is
+ * content as the page's one <main>, the footer. A page passes the path it is
  * (or the section it belongs to), so the header is plain HTML with
  * aria-current where it belongs and needs no script to know where it is.
+ *
+ * The id of <main> has a dot in it because no heading of a doc can: GitHub's
+ * heading ids drop dots, so the skip link's target never collides with an
+ * anchor of the page.
  */
 export function Frame({ current, children }: { current?: string; children: ReactNode }) {
   return (
