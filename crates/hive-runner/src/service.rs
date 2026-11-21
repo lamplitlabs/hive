@@ -968,6 +968,16 @@ mod tests {
             }
             "daemon".into()
         };
+        // The verb of a service command, wherever it stands: `bootstrap` in
+        // `launchctl bootstrap ...`, `enable` in `systemctl --user enable
+        // --now ...`.
+        fn verb(argv: &[String]) -> &str {
+            argv.iter()
+                .skip(1)
+                .find(|a| !a.starts_with('-'))
+                .map(String::as_str)
+                .unwrap_or("")
+        }
         let _ = set_run_service(Box::new({
             let calls = calls.clone();
             let loaded = loaded.clone();
@@ -976,7 +986,7 @@ mod tests {
                 if argv.len() < 2 {
                     return (0, String::new());
                 }
-                match argv[1].as_str() {
+                match verb(&argv) {
                     // launchctl print / systemctl status: exit 0 once the unit's load ran
                     "print" | "status" => {
                         if loaded
@@ -1138,12 +1148,7 @@ mod tests {
         };
         let _ = again;
         for argv in calls.lock().unwrap().iter() {
-            if argv.len() > 1
-                && (argv[1] == "bootstrap"
-                    || argv[1] == "bootout"
-                    || argv[1] == "enable"
-                    || argv[1] == "restart")
-            {
+            if matches!(verb(argv), "bootstrap" | "bootout" | "enable" | "restart") {
                 panic!(
                     "an unchanged install reloaded a unit: {:?}",
                     calls.lock().unwrap()
