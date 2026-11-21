@@ -1,13 +1,181 @@
 # Releases and `hive update`
 
-How a machine gets a newer Hive: by rebuilding from the brain project's
-checkout (the **source** channel, [self-update](runner.md#services-and-self-update)),
-or by installing a published release (the **release** channel, this page).
+How a machine gets Hive, and a newer Hive after that: by installing a
+published release (the **release** channel, this page), or by rebuilding
+from the brain project's checkout (the **source** channel,
+[self-update](runner.md#services-and-self-update)).
 
-Hive is released as a tagged version `vX.Y.Z` with a prebuilt `hive`
-executable for macOS attached to a GitHub Release. The repository is
-private, so reading or downloading a release needs a GitHub account that can
-see it (`gh` signed in).
+Hive is released as a tagged version `vX.Y.Z`. Each release is a public
+download at <https://github.com/lamplitlabs/hive/releases>, with prebuilt
+programs for macOS and Linux: `hive`, and `hive-hand`, the small program
+another machine runs to take work from your Hive
+([machines.md](machines.md#the-hand)).
+
+## Installing
+
+```bash
+curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive
+```
+
+then
+
+```bash
+export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile
+hive version
+hive hub                               # the console, at http://127.0.0.1:8765
+```
+
+The script is `scripts/install.sh` in the repository, and the site serves
+the same file. To read it before you run it, end the line with `| less`
+in place of `| sh`. It never runs `sudo` and never edits a shell profile.
+What it does, in order:
+
+1. **Finds the machine.** macOS or Linux, on arm64 or x86_64
+   ([the targets](#the-targets)). On anything else it names the machine,
+   prints the line that builds Hive from source and stops. A Linux whose
+   C library is musl (Alpine, for one) is told that the release is built
+   for glibc.
+2. **Finds the release.** The latest one, or the one you name. It reads
+   the release's `SHA256SUMS` first, and that file names the release's
+   archives. So it makes no call to the GitHub API, and GitHub's hourly
+   limit on API calls from one address does not stop an install.
+3. **Downloads and checks.** It downloads the archive for the machine with
+   `curl` (or `wget` where there is no `curl`) into a temporary directory,
+   and compares the archive's SHA-256 with its line in `SHA256SUMS`, using
+   `sha256sum` or `shasum`. A digest that differs stops it. So does a
+   machine with neither tool: nothing is installed unchecked.
+4. **Tries the program.** It writes the program beside the place it will
+   go and runs it once (`hive version`). A program that does not start on
+   this machine is removed again, and the script says why: on Linux the
+   usual reason is an older glibc than the release is built for. On macOS
+   it first signs `hive` on your machine the way `hive update` does, with
+   no certificate, so macOS does not ask about your folders again after an
+   upgrade ([runner.md](runner.md#macos-folder-access)).
+5. **Puts it in place.** `~/.hive/bin/hive`, mode 755, moved there in one
+   step, so an older `hive` stays whole until the new one takes its place.
+   The temporary directory is removed when the script ends, and a run that
+   fails leaves nothing behind.
+6. **Says what is next.** Where the program is, whether that directory is
+   on your `PATH` (with the line to add when it is not), and the command
+   to run.
+
+Options go after `sh -s --` when the script is piped, or after the file
+name (`sh install.sh --hand`):
+
+| Option | Variable | What it does |
+| --- | --- | --- |
+| `--hand` | | installs `hive-hand` in `~/.hive-hand/bin`, and not `hive` |
+| `--version TAG` | `HIVE_VERSION` | installs the release `TAG` (`v0.2.0`), and not the latest one |
+| `--dir DIR` | `HIVE_INSTALL_DIR` for `hive`, `HIVE_HAND_INSTALL_DIR` for `hive-hand` | installs into `DIR` |
+| `--help` | | prints the options |
+| | `HIVE_RELEASE_BASE` | reads releases from another address than `https://github.com/lamplitlabs/hive/releases`: a mirror, or with `curl` a folder (`file:///...`), laid out as below |
+
+```sh
+curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --version v0.2.0
+curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand
+```
+
+Give `HIVE_VERSION` to that one command (`... | HIVE_VERSION=v0.2.0 sh`)
+and do not export it: a build from source reads the same variable to stamp
+the binary. `HIVE_INSTALL_OS` and `HIVE_INSTALL_ARCH` stand in for what
+`uname` says; the installer's own test uses them.
+
+Under `HIVE_RELEASE_BASE` the script reads three addresses:
+`latest/download/SHA256SUMS` for the latest release, and for a release
+`TAG`, `download/TAG/SHA256SUMS` and `download/TAG/<archive>`.
+
+**What the check proves.** The archive you got is the one the release
+lists: a download that was damaged, cut short or swapped on the way is
+refused. It does not prove who built the release, because the checksums
+come from the same place as the archive, and a release carries no
+signature of its maker.
+
+**Upgrading.** Run the same line again, or use [`hive update`](#hive-update).
+Hive's services (`hive service install`) notice the new program on disk
+and restart on it by themselves once their runs in flight have ended
+([runner.md](runner.md#services-and-self-update)). To go back to an older
+release, run the line with `--version` and its tag.
+
+**Hearing about new releases.** A fresh install does not look for
+releases: `update.latest_url` is empty until you set it
+([below](#where-releases-are-found-updatelatest_url)).
+
+```sh
+hive settings set update.latest_url https://api.github.com/repos/lamplitlabs/hive/releases/latest
+hive update --check
+```
+
+From then on Hive says when a release is out, and `hive update` installs
+it on a machine that follows the release channel
+([the two channels](#the-two-channels-updatechannel)). To have the runner
+install each release by itself, see
+[`daemon.self_update release`](#daemonself_update-release-a-machine-without-source).
+
+The test of the installer is `scripts/tests/install-test.sh`. It makes up
+a release of stub programs in a temporary directory, runs the installer
+against it with a home of its own, and needs no network.
+
+### The targets
+
+| Machine | Target |
+| --- | --- |
+| macOS on Apple silicon | `aarch64-apple-darwin` |
+| macOS on Intel | `x86_64-apple-darwin` |
+| Linux on x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux on arm64 | `aarch64-unknown-linux-gnu` |
+
+The Linux programs are built on Debian 12, and the release workflow fails
+when one of them asks for a glibc newer than 2.36. So they run on Debian
+12, on Ubuntu 24.04 and on anything with a glibc that new or newer. On an
+older Linux, on a Linux with another C library, and on any other
+processor, build from source:
+
+```bash
+cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+
+```
+
+The macOS programs are not notarized. Gatekeeper does not check a program
+that `curl` downloads and the installer copies, but Finder may refuse one
+that a browser downloaded (`xattr -d com.apple.quarantine hive` clears
+that).
+
+### `hive-hand`
+
+```sh
+curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand
+```
+
+puts `hive-hand` in `~/.hive-hand/bin`, checked the same way. The machine
+then joins your Hive with the line the console shows under **Machines**,
+**Add a machine**, **Run one command on it**, **Get a join code**
+([machines.md](machines.md#enrolling-a-hand)):
+
+```sh
+hive-hand join --brain URL CODE
+```
+
+### Checking a download by hand
+
+Every release has one `SHA256SUMS` file beside its archives. To do by
+hand what the installer does:
+
+```sh
+tag=v0.2.0
+target=aarch64-apple-darwin
+files=https://github.com/lamplitlabs/hive/releases/download/$tag
+curl -fsSLO "$files/hive-$tag-$target.tar.gz"
+curl -fsSLO "$files/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS --ignore-missing    # on Linux: sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf "hive-$tag-$target.tar.gz"
+mkdir -p ~/.hive/bin && install -m 755 "hive-$tag-$target/hive" ~/.hive/bin/hive
+hive version
+```
+
+The check prints `hive-v0.2.0-aarch64-apple-darwin.tar.gz: OK` and fails
+when the digest differs. `--ignore-missing` passes over the lines of the
+archives you did not download. For `hive-hand` the archive is
+`hand-$tag-$target.tar.gz` and the program inside it `hive-hand`. Once
+`hive` is installed, `hive update` (below) takes over.
 
 ## How a release is cut
 
@@ -23,20 +191,55 @@ Two workflows in `.github/workflows/`:
   `release: minor` or `release: major`.
 - **release.yml** runs when a `vX.Y.Z` tag is pushed (cut-release starts it
   explicitly, since a push made with the workflow token starts no workflow on
-  its own). It builds `hive` with the console embedded on
-  `aarch64-apple-darwin` (Apple silicon) and `x86_64-apple-darwin` (Intel),
-  checks that the binary reports the tag in `hive version`, packs each as
-  `hive-vX.Y.Z-<target>.tar.gz`, and publishes a GitHub Release with the
-  archives, a `SHA256SUMS` file and notes listing the commits since the
-  previous tag.
+  its own). For each of the four targets it builds `hive` with the console
+  embedded, checks that the binary reports the tag in `hive version` and
+  that the console is in it, builds `hive-hand`, checks that it carries
+  none of the brain's brief text (`scripts/check-hand-deps.sh`), and packs
+  each program in an archive of its own. It then makes sure all eight
+  archives are there, writes one `SHA256SUMS`, installs both programs from
+  those files with `scripts/install.sh`, and publishes a GitHub Release
+  with the archives, `SHA256SUMS` and notes that say how to install and
+  list the commits since the previous tag.
 
-By hand, the same thing is:
+What a release carries:
+
+| Asset | Holds | Targets |
+| --- | --- | --- |
+| `hive-<tag>-<target>.tar.gz` | `hive-<tag>-<target>/hive` | [the four](#the-targets) |
+| `hand-<tag>-<target>.tar.gz` | `hand-<tag>-<target>/hive-hand` | the same four |
+| `SHA256SUMS` | one `sha256sum` line for each archive above | |
+
+- **Only hive's archives start with `hive`.** When `hive update` finds no
+  archive under the exact name, it takes the one asset that starts with
+  `hive` and names its target, so no other asset may.
+- **Linux is built inside Debian 12**, natively on each architecture, on
+  GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` runners in the
+  `rust:1.95-bookworm` image. A binary linked against a newer C library
+  than the one it finds does not start, and Debian 12 is also what the
+  image in `deploy/` runs. A step fails the build when a binary asks for
+  more than glibc 2.36; the installer names the same number when a
+  program does not start on a Linux.
+- **macOS** is built on the `macos-15` (Apple silicon) and
+  `macos-15-intel` runners.
+- **A release goes out whole.** When one target does not build, nothing
+  is published: no release lacks an archive the installer would ask for.
+- **Rights.** The workflow uses no secret but its own token, and only the
+  job that publishes may write to the repository.
+- Releases cut before this workflow built Linux carry `hive` for macOS
+  only. The installer says so when you ask one of them for another
+  target.
+
+By hand, a release is a tag:
 
 ```sh
 git checkout main && git pull
 git tag -a v0.2.0 -m "Hive v0.2.0" && git push origin v0.2.0
-gh workflow run release.yml -f tag=v0.2.0
 ```
+
+A tag you push yourself starts release.yml. To build a tag again, after a
+run that failed for example, start it from the Actions tab or with
+`gh workflow run release.yml -f tag=v0.2.0`. Two runs for one tag take
+turns.
 
 The version a binary prints comes from `crates/hive/build.rs`: an exact
 release tag at HEAD gives `vX.Y.Z`; a later commit on `main` gives
@@ -45,29 +248,13 @@ treat as newer than `vX.Y.Z` and older than the next release. Release tags
 must stay reachable from `main`: squashing `main` to a new root orphans them
 and every build falls back to `v0.0.0-...`.
 
-## Installing a release on a Mac by hand
-
-```sh
-mkdir -p ~/.hive/bin && cd "$(mktemp -d)"
-gh release download --repo lamplitlabs/hive --pattern "*-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
-tar -xzf hive-*.tar.gz && install -m 755 hive-*/hive ~/.hive/bin/hive
-hive version
-```
-
-`gh release download` without a tag takes the latest release; add `vX.Y.Z`
-for a particular one. Verify the archive against `SHA256SUMS` with
-`shasum -a 256 -c SHA256SUMS --ignore-missing`. Once installed, `hive
-update` (below) takes over. The binaries are not notarized; Gatekeeper does
-not check a binary `gh` downloads and `install` copies, but Finder may
-refuse one dragged in from a browser (`xattr -d com.apple.quarantine hive`
-clears that).
-
 ## Windows
 
 Not built yet. The runner and daemon use unix-only process, signal and file
 APIs (`std::os::unix` in ~140 places; services via launchd/systemd), so a
-Windows release means porting those first (TASK-091), not just adding a
-build target.
+Windows release means porting those first (TASK-091,
+[windows-port.md](windows-port.md)), not just adding a build target. The
+installer says so on Windows and stops.
 
 ## The two channels: `update.channel`
 
@@ -84,8 +271,10 @@ Set it with `hive settings set update.channel release` or under
 
 Both the daily check and `hive update` read the JSON document
 `update.latest_url` names: a GitHub `releases/latest` answer
-(`https://api.github.com/repos/OWNER/REPO/releases/latest`), a GitHub
-releases list (drafts and pre-releases skipped), or a plain document:
+(`https://api.github.com/repos/OWNER/REPO/releases/latest`; for Hive's own
+releases, `https://api.github.com/repos/lamplitlabs/hive/releases/latest`),
+a GitHub releases list (drafts and pre-releases skipped), or a plain
+document:
 
 ```json
 {
@@ -101,12 +290,16 @@ releases list (drafts and pre-releases skipped), or a plain document:
 GitHub's answer lists the same `assets` (`name`, `browser_download_url`,
 and the API `url`). The setting is empty by default: no check, no network.
 
-**A private repository.** GitHub answers 404 to an anonymous request for a
-private repository's releases. When an `api.github.com` address fails over
-HTTP and `gh` is on PATH, Hive reads it again with `gh api` as the account
-gh is signed in with, and downloads the assets through their API addresses
-the same way. Hive never stores a token: the setting refuses a URL that
-carries a credential, and gh keeps its own login.
+**When GitHub turns the request away.** GitHub limits how many API calls
+one address may make in an hour without an account, and it answers 404
+for the releases of a repository that is not public, such as a fork you
+keep to yourself. When an `api.github.com` address fails over HTTP and
+`gh` is on PATH, Hive reads it again with `gh api` as the account gh is
+signed in with, and downloads the assets through their API addresses the
+same way. Without `gh` the read fails: `hive update` says why, and the
+daily check tries again a day later. Hive never stores a token: the
+setting refuses a URL that carries a credential, and gh keeps its own
+login.
 
 ## What a release must carry
 
@@ -114,12 +307,16 @@ For each target it ships, one archive named
 `hive-vX.Y.Z-<target>.tar.gz` holding the `hive` binary at its top (or one
 folder down), plus one `SHA256SUMS` file listing every archive in
 `sha256sum` form (`<64 hex digits>  <file name>`). The targets Hive asks
-for are `aarch64-apple-darwin` and `x86_64-apple-darwin` (and
-`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` on Linux). The
+for are `aarch64-apple-darwin` and `x86_64-apple-darwin` on macOS, and
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` on Linux. The
 binary inside must print the release's version from `hive version --json`;
 a build at the exact tag does (`crates/hive/build.rs`), and
 `HIVE_VERSION=vX.Y.Z cargo build --release -p hive --locked` forces it
-elsewhere. `release.yml` above produces exactly this layout.
+elsewhere. `release.yml` above produces exactly this layout. `hive update`
+does not read the `hand-` archives, and none of their names starts with
+`hive`. The installer reads the same names and the same `SHA256SUMS`, so
+a release that `hive update` can install is one the installer can
+install.
 
 ## `hive update`
 
@@ -136,11 +333,11 @@ hive update [--check] [--json]
   go on when the release has no `SHA256SUMS`, lists no digest for the
   archive, or the digest differs. It then unpacks the archive, writes the
   binary beside the running one as `hive.new`, signs it on macOS (the same
-  ad-hoc requirement the self-update gives every build), smoke-tests it -
-  `hive.new version --json` must print the release's version, `hive.new
-  help` must exit 0 - copies the running binary to `hive.prev` and renames
-  `hive.new` into its place. Any failure before the rename leaves the
-  running binary as it was and removes `hive.new`.
+  ad-hoc requirement the self-update gives every build) and smoke-tests
+  it: `hive.new version --json` must print the release's version and
+  `hive.new help` must exit 0. Then it copies the running binary to
+  `hive.prev` and renames `hive.new` into its place. Any failure before
+  the rename leaves the running binary as it was and removes `hive.new`.
 - The daemon sees its binary change on disk and restarts on it after its
   runs in flight (the restart drain, `daemon.restart_drain_minutes`); the
   hub restarts within a minute. Nothing in flight is stopped.
@@ -153,8 +350,10 @@ switch; `hive update --check` still reports.
 
 ## `daemon.self_update release`: a machine without source
 
-A hosted brain ([security.md](security.md)) holds no Hive source, so the
-source self-update has nothing to build. `hive settings set
+A machine can run Hive without holding its source: one that got Hive from
+the installer need not have a checkout of it, and the container image in
+`deploy/` is built to hold none ([security.md](security.md)). The source
+self-update has nothing to build there. `hive settings set
 daemon.self_update release` makes the daemon do what `hive update` does,
 on its own:
 
@@ -174,11 +373,13 @@ whatever `update.channel` says. With `brain.code none` the source mode
 `release_update::tests::self_update_release_mode_installs_the_release_and_never_runs_cargo`
 in `crates/hive-runner`.
 
-**A Linux brain needs a Linux archive.** The release workflow attaches
-macOS archives today. Until it also builds `x86_64-unknown-linux-gnu`
-(and `aarch64-unknown-linux-gnu`), a hosted brain finds no archive for its
-target, says so, and keeps the binary its image was built with. Rebuild
-the image (`deploy/brain.sh build vX.Y.Z`) to update it in the meantime.
+**Linux needs a Linux archive.** A release cut by the workflow above
+carries `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, built
+against the C library of Debian 12, which the image in `deploy/` runs. A
+container started by `deploy/brain.sh` therefore finds an archive for its
+target in such a release. A release cut before the workflow built Linux
+carries none: the daemon says so and keeps the binary it has. Rebuild the
+image (`deploy/brain.sh build vX.Y.Z`) to update it then.
 
 ## The once-per-release line
 
@@ -198,11 +399,15 @@ printing its own notice line every time.
 ## The console
 
 The banner above every page (except chat) shows the stored notice with the
-release link. An **Update now** button that asks the daemon to install the
-release (`POST /api/v1/update/apply`) is proposed, not built: `web/hub` is
-owner-owned.
+release link. On the `release` channel it also has an **Update now**
+button, which asks the hub to install the release the way `hive update`
+does (`POST /api/v1/update/apply`) and then shows how the install went.
+The hub refuses, and says why, on the `source` channel, while
+`update.latest_url` is empty and while an install is already running.
 
-Code: crates/hive-cli/src/update.rs (the pure parts: assets, checksums,
-channel, the prompt), crates/hive-runner/src/release_update.rs (download,
-verify, install, `hive update`), crates/hive-runner/src/update_check.rs
-(the daily check).
+Code: scripts/install.sh (the installer), scripts/tests/install-test.sh
+(its test), .github/workflows/release.yml (what a release carries),
+crates/hive-cli/src/update.rs (the pure parts: assets, checksums, channel,
+the prompt), crates/hive-runner/src/release_update.rs (download, verify,
+install, `hive update`), crates/hive-runner/src/update_check.rs (the daily
+check).
