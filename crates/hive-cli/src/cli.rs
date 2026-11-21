@@ -224,6 +224,12 @@ pub fn write_json(w: &mut dyn Write, v: &impl Serialize) -> Result<()> {
 
 pub use hive_hand_core::error::{Error, errorf};
 
+/// The fix line of a "No store" error, wherever a command prints one: the
+/// command that makes a store without a project, then the one that
+/// registers a project as well.
+pub const NO_STORE_FIX: &str =
+    "hive init --store-only (or hive init <project-path> to register a project as well)";
+
 pub fn binary_stamp() -> String {
     // The path is taken once, at the first stamp: a self-update replaces
     // the file under it, after which Linux reports the running inode as
@@ -382,7 +388,7 @@ mod tests {
             2,
             "No store at /x",
             "this machine has no Hive store yet",
-            "hive init --store-only (or hive init <project-path> to register a project as well)",
+            NO_STORE_FIX,
         );
         let want = "No store at /x\n  why: this machine has no Hive store yet\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)";
         if e.to_string() != want || e.exit_code() != 2 {

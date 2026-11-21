@@ -1935,7 +1935,7 @@ fn require_harness_store(c: &Context) -> Result<(Store, StoreClose)> {
                 Path::new(&c.home).join(STORE_NAME).display()
             ),
             "",
-            "hive init <project-path>",
+            hive_cli::NO_STORE_FIX,
         )
         .into()
     })
@@ -4386,6 +4386,30 @@ done
         assert_eq!(models_provider("", Some(&fresh)), hive_provider::DEFAULT);
         assert_eq!(models_provider("", None), hive_provider::DEFAULT);
         assert_eq!(models_provider("ollama", Some(&s)), "ollama");
+    }
+
+    /// The verbs that read sessions need a store. On a machine with none
+    /// they say where it would be and how to make one.
+    #[test]
+    fn harness_verbs_that_need_a_store_say_how_to_make_one() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("hive");
+        let home_text = home.display().to_string();
+        for args in [vec!["sessions"], vec!["show", "s-1"], vec!["cancel", "s-1"]] {
+            let (out, stderr, code) = invoke(&home_text, &args);
+            assert_eq!((code, out.as_str()), (2, ""), "{args:?}");
+            assert_eq!(
+                stderr,
+                format!(
+                    "hive harness: no store at {}\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)",
+                    home.join(STORE_NAME).display()
+                ),
+                "{args:?}"
+            );
+        }
+        assert!(!home.exists());
     }
 
     #[test]

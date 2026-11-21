@@ -35,7 +35,9 @@ pub const JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 pub const MAX_POOL: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
-#[error("No store at {path}. Run `hive init` in a project first.")]
+#[error(
+    "No store at {path}. Run `hive init --store-only` first, or `hive init <project-path>` to register a project as well."
+)]
 pub struct NotFoundError {
     pub path: String,
 }
@@ -1701,6 +1703,15 @@ mod tests {
         let nf = err.downcast_ref::<NotFoundError>().unwrap();
         assert_eq!(nf.path, store_path(home.path().to_str().unwrap()).unwrap());
         assert!(!Path::new(&nf.path).exists());
+        // Its own words name the command that makes a store without a
+        // project first, as the fix line of the command line does.
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "No store at {}. Run `hive init --store-only` first, or `hive init <project-path>` to register a project as well.",
+                nf.path
+            )
+        );
     }
 
     #[test]

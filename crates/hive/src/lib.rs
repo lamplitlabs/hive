@@ -574,10 +574,6 @@ fn unknown(name: &str, err: &mut dyn Write) -> i32 {
     2
 }
 
-/// The fix line of the "No store" error, for every command.
-const NO_STORE_FIX: &str =
-    "hive init --store-only (or hive init <project-path> to register a project as well)";
-
 fn is_no_store(e: &AnyError) -> bool {
     e.downcast_ref::<hive_store::NotFoundError>().is_some()
 }
@@ -610,7 +606,7 @@ fn report(name: &str, errv: AnyError, err: &mut dyn Write) -> i32 {
                 2,
                 &format!("No store at {}", nf.path),
                 "this machine has no Hive store yet",
-                NO_STORE_FIX,
+                hive_cli::NO_STORE_FIX,
             )
         };
         let _ = writeln!(err, "{e}");
