@@ -97,10 +97,14 @@ jobs:
             sleep "$sleep_seconds"
           done
       # People are told to run `curl -fsSL https://hivefleet.dev/install.sh | sh`,
-      # so that address must serve this commit's installer, byte for byte. A
-      # domain that does not point at this project fails here and not on
-      # someone's machine: a parked domain answers 200 with a page of its own
-      # to every path, which curl would hand to the shell.
+      # so that address must serve this commit's installer, byte for byte.
+      # - An older installer there fails the run: the deploy did not reach the
+      #   public address.
+      # - Anything else there means the domain does not point at this project
+      #   (a parked domain answers 200 with a page of its own to every path,
+      #   which curl would hand to the shell). That is a warning and not a
+      #   failure: no commit can fix it, and a red run on the default branch
+      #   would only send an agent after it (pipeline.watch).
       - name: Check the installer at the public address
         shell: bash
         working-directory: .
@@ -116,10 +120,17 @@ jobs:
             echo "attempt $attempt/6: $INSTALLER_URL does not serve this commit's scripts/install.sh yet"
             sleep 20
           done
-          echo "::error::$INSTALLER_URL does not serve scripts/install.sh. Does the domain point at this Vercel project? Until it does, the install line in the README hands whatever that address serves to a shell."
+          second=""
+          if [[ -s "$served" ]]; then
+            second="$(sed -n '2p' "$served")"
+          fi
+          if [[ "$second" == "# The Hive installer"* ]]; then
+            echo "::error::$INSTALLER_URL serves an installer, but not scripts/install.sh of this commit: the deploy did not reach the public address."
+            exit 1
+          fi
+          echo "::warning::$INSTALLER_URL does not serve Hive's installer, so the domain does not point at this Vercel project. Until it does, the install line in the README hands whatever that address serves to a shell. Pointing the domain is the owner's step; no commit fixes it."
           if [[ -s "$served" ]]; then
             echo "It served, to begin with:"
             head -c 300 "$served"
             echo
           fi
-          exit 1

@@ -67,10 +67,13 @@ touches `web/site/`, `docs/` or `scripts/install.sh`: it runs
 `npm run check`, then `vercel pull`, `vercel build --prod` and
 `vercel deploy --prebuilt --prod` with the repository secrets
 `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `VERCEL_DEPLOY_TOKEN`. Its last
-step downloads `https://hivefleet.dev/install.sh` and fails unless that is
-this commit's `scripts/install.sh`, byte for byte: the install line hands
-that address to a shell, so a domain that does not point at the Vercel
-project must not go unnoticed.
+step downloads `https://hivefleet.dev/install.sh` and compares it with this
+commit's `scripts/install.sh`, byte for byte, because the install line hands
+that address to a shell. An older installer there fails the run: the deploy
+did not reach the public address. Anything else there, such as a parked
+domain's page, is a warning on the run and not a failure: pointing the
+domain is not something a commit can fix, and a red run would only send an
+agent after it.
 The Mac app has its own check, `apps/macos/scripts/check.sh` (see
 [The Mac app](mac-app.md#the-mac-app)); it is outside the Cargo workspace and the verify
 command.

@@ -234,10 +234,12 @@ Option 3, with these rules.
       installer downloads them (`scripts/install.sh`, `docs/release.md`).
 - [ ] The site is rebuilt without a sign-in, renders `docs/` and serves
       the installer (`web/site`).
-- [ ] Point `hivefleet.dev` at the site's Vercel project (the owner). The
-      install line hands `https://hivefleet.dev/install.sh` to a shell, so
-      the deploy workflow's last step fails until that address serves
-      `scripts/install.sh`.
+- [ ] Point `hivefleet.dev` at the site's Vercel project, before the
+      repository is public (the owner). The install line hands
+      `https://hivefleet.dev/install.sh` to a shell, and on 21 November 2026
+      the domain is parked at its registrar. Until it serves
+      `scripts/install.sh`, the deploy workflow's last step warns on every
+      run.
 - [ ] Close ADR-070: mark what was delivered, close steps 5 to 7
       (`hive record deliver`), and settle the amendments it announced for
       ADR-019, ADR-020, ADR-021, ADR-041 and ADR-042.
