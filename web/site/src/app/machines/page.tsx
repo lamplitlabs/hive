@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock } from "@/components/code";
-import { Article, H2, PageHero } from "@/components/page-hero";
+import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
 
@@ -20,6 +20,7 @@ const SECTIONS = [
 export default function MachinesPage() {
   return (
     <Frame current={PAGES.machines.path}>
+      <PageCrumbs page={PAGES.machines} />
       <PageHero
         eyebrow="Machines"
         title="Pair more machines."

@@ -3,7 +3,7 @@ import Link from "@/components/link";
 import { ArrowRightIcon } from "lucide-react";
 import { Frame } from "@/components/chrome";
 import { DocsSearch } from "@/components/docs-search";
-import { PageHero } from "@/components/page-hero";
+import { PageCrumbs, PageHero } from "@/components/page-hero";
 import { loadDocs } from "@/lib/docs";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES, SITE } from "@/lib/site";
@@ -21,6 +21,7 @@ export default function DocsIndex() {
   const { groups, docs } = loadDocs();
   return (
     <Frame current={PAGES.docs.path}>
+      <PageCrumbs page={PAGES.docs} />
       <PageHero
         eyebrow="Documentation"
         title="Hive documentation"

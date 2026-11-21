@@ -404,6 +404,9 @@
   .prose a:not(.anchor, .btn):hover {
     text-decoration-thickness: 2px;
   }
+  .prose .anchor::before {
+    content: "#";
+  }
   .prose .anchor {
     margin-left: 0.4em;
     font-weight: 400;
@@ -411,8 +414,7 @@
     text-decoration: none;
     opacity: 0;
   }
-  .prose :where(h2, h3, h4, h5, h6):hover .anchor,
-  .prose .anchor:focus-visible {
+  .prose :where(h2, h3, h4, h5, h6):hover .anchor {
     opacity: 1;
   }
   @media (hover: none) {
@@ -437,10 +439,13 @@
     padding-left: 0;
     padding-right: 0;
   }
-  .prose > pre,
-  .prose > figure {
+  .prose pre,
+  .prose figure {
     margin-top: 1.3em;
     margin-bottom: 1.3em;
+  }
+  .prose figure > pre {
+    margin: 0;
   }
   .prose ul {
     list-style: disc;

@@ -39,7 +39,7 @@ export function CopyButton({ text, what = "the command", className = "" }: { tex
           )}
         </svg>
         <span className="min-w-[3.1em] text-left">{copied ? "Copied" : "Copy"}</span>
-        <span className="sr-only">{what}</span>
+        <span className="sr-only"> {what}</span>
       </button>
       <span role="status" className="sr-only">
         {copied ? "Copied to the clipboard." : ""}

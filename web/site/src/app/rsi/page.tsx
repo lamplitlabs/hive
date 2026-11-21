@@ -3,7 +3,7 @@ import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock } from "@/components/code";
 import { LoopDiagram } from "@/components/loop-diagram";
-import { Article, H2, PageHero } from "@/components/page-hero";
+import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
 
@@ -31,6 +31,7 @@ Signal: check:cargo test -p demo empty_line`;
 export default function RsiPage() {
   return (
     <Frame current={PAGES.rsi.path}>
+      <PageCrumbs page={PAGES.rsi} />
       <PageHero
         eyebrow="Self-improvement"
         title="Self-improvement, under a constitution."
@@ -154,13 +155,14 @@ export default function RsiPage() {
           </li>
           <li>
             When six cycles in a row end in a tie, the fixtures are not telling a better variant from a worse one. The loop first tries to repair its own
-            fixtures, says what it did, and otherwise pauses with one question for you.
+            fixtures, says what it did, and otherwise pauses with one question for you. If nobody answers within a day it reviews the question itself
+            and runs six more cycles, never more than that on its own say-so.
           </li>
           <li>
             Hard stops, money, big changes and questions marked for you wait under <strong>For you</strong> on Home, each as a card with Yes and No.
           </li>
         </ul>
-        <p>A reply never authorises going around a stop. Only your decision clears it.</p>
+        <p>A reply does not authorise going around a stop: a hard stop waits for your decision.</p>
 
         <H2 id="by-hand">By hand</H2>
         <CodeBlock

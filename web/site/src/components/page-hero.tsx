@@ -1,4 +1,7 @@
 import type { ReactNode } from "react";
+import { JsonLd } from "@/components/json-ld";
+import { breadcrumbJsonLd } from "@/lib/seo";
+import type { SitePage } from "@/lib/site";
 
 /** The top band of a page, on the night field: what the page is about, in one heading and one paragraph. */
 export function PageHero({ eyebrow, title, lead, children }: { eyebrow: string; title: ReactNode; lead: ReactNode; children?: ReactNode }) {
@@ -11,6 +14,18 @@ export function PageHero({ eyebrow, title, lead, children }: { eyebrow: string; 
         {children}
       </div>
     </section>
+  );
+}
+
+/** Where a page one step under the front page sits, for search engines. */
+export function PageCrumbs({ page }: { page: SitePage }) {
+  return (
+    <JsonLd
+      data={breadcrumbJsonLd([
+        { name: "Hive", path: "/" },
+        { name: page.nav, path: page.path },
+      ])}
+    />
   );
 }
 
@@ -47,9 +62,7 @@ export function H2({ id, children }: { id: string; children: string }) {
   return (
     <h2 id={id}>
       {children}
-      <a className="anchor" href={`#${id}`} aria-label={`Permalink: ${children}`}>
-        #
-      </a>
+      <a className="anchor" href={`#${id}`} aria-hidden="true" tabIndex={-1} />
     </h2>
   );
 }

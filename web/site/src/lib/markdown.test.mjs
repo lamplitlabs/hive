@@ -68,6 +68,13 @@ test("headings get the ids GitHub gives them", () => {
   assert.deepEqual(r.ids, ["the-harness-how-an-agent-runs", ...r.toc.map((e) => e.id)]);
   // Every heading left in the body carries its id and a permalink to itself.
   for (const e of r.toc) assert.match(r.html, new RegExp(`<h[23] id="${e.id}">[^]*?<a class="anchor" href="#${e.id}"`));
+  // The permalink is for the eye: it adds no text to the heading and no stop to the Tab key.
+  const headings = [...elements(r.html, "h2"), ...elements(r.html, "h3")];
+  assert.deepEqual(headings.map((h) => toString(h)).sort(), r.toc.map((e) => e.text).sort());
+  for (const h of headings) {
+    const a = h.children.at(-1);
+    assert.deepEqual([a.tagName, a.properties.ariaHidden, a.properties.tabIndex, a.children.length], ["a", "true", -1, 0]);
+  }
 });
 
 test("the first heading is the title and leaves the body; the page keeps one h1", () => {

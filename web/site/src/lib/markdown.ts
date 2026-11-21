@@ -242,9 +242,9 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
         level = 2;
       }
       if (level === 2 || level === 3) out.toc.push({ id, text, level });
-      node.children.push(
-        el("a", { className: ["anchor"], href: `#${id}`, ariaLabel: `Permalink: ${text}` }, [{ type: "text", value: "#" }]),
-      );
+      // A permalink for the eye and the mouse. It stays out of the heading's text and out of the Tab order:
+      // the table of contents already links to every heading, by name.
+      node.children.push(el("a", { className: ["anchor"], href: `#${id}`, ariaHidden: "true", tabIndex: -1 }, []));
     });
     if (first.title) {
       out.titleHtml = stringifyChildren(first.title.node.children);

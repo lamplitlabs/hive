@@ -29,9 +29,12 @@ export function LoopDiagram({ className = "" }: { className?: string }) {
                 <div className="hex flex h-full flex-col items-center justify-center bg-card px-[14%] text-center">
                   <span className="font-mono text-[10px] font-semibold text-teal sm:text-[11px]">
                     {i + 1}
-                    <span className="sr-only">.</span>
+                    <span className="sr-only">. </span>
                   </span>
-                  <span className="text-[13px] leading-tight font-semibold tracking-tight sm:text-[15px]">{s.name}</span>
+                  <span className="text-[13px] leading-tight font-semibold tracking-tight sm:text-[15px]">
+                    {s.name}
+                    <span className="sr-only">: </span>
+                  </span>
                   <span className="mt-0.5 text-[10px] leading-[1.25] text-muted-foreground sm:text-[11.5px]">{s.sub}</span>
                 </div>
               </div>
@@ -42,11 +45,7 @@ export function LoopDiagram({ className = "" }: { className?: string }) {
           <div className="hex bg-brand h-full p-[2px]">
             <div className="night hex flex h-full flex-col items-center justify-center bg-[var(--night-1)] px-[12%] text-center">
               <HiveMark className="mark-sweep size-5 sm:size-6" />
-              <span className="mt-1 text-[12px] leading-tight font-semibold sm:text-[14px]">
-                Your
-                <br />
-                constitution
-              </span>
+              <span className="mt-1 max-w-[6.5em] text-[12px] leading-tight font-semibold sm:text-[14px]">Your constitution</span>
             </div>
           </div>
         </div>

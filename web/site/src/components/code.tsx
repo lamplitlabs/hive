@@ -6,7 +6,7 @@ import { highlightCode } from "@/lib/markdown";
  * scrolling inside its own box. With a title, or with `copy` (the bare command
  * to put on the clipboard), the box gets a bar across its top.
  */
-export function CodeBlock({ code, lang = "bash", title, copy }: { code: string; lang?: string; title?: string; copy?: string }) {
+export function CodeBlock({ code, lang = "bash", title, copy, copyWhat }: { code: string; lang?: string; title?: string; copy?: string; copyWhat?: string }) {
   const pre = (
     <pre className={title || copy ? "code-block rounded-t-none border-t-0" : "code-block"} tabIndex={0}>
       <code dangerouslySetInnerHTML={{ __html: highlightCode(code, lang) }} />
@@ -17,7 +17,7 @@ export function CodeBlock({ code, lang = "bash", title, copy }: { code: string; 
     <figure>
       <figcaption className="flex min-h-11 items-center justify-between gap-3 rounded-t-xl border border-border bg-muted/60 py-1 pr-1.5 pl-4 text-xs font-medium text-muted-foreground">
         <span>{title}</span>
-        {copy && <CopyButton text={copy} what={title ? `the command: ${title}` : undefined} className="h-8" />}
+        {copy && <CopyButton text={copy} what={copyWhat} className="h-8" />}
       </figcaption>
       {pre}
     </figure>

@@ -330,18 +330,19 @@ export default function Home() {
                 <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                   <span className="font-mono text-sm font-semibold">{m.name}</span>
                   <span className="flex flex-wrap gap-1.5">
-                    <span className="sr-only">offers</span>
-                    {m.offers.map((w) => (
+                    <span className="sr-only"> offers </span>
+                    {m.offers.map((w, i) => (
                       <span key={w} className="rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
                         {w}
+                        {i < m.offers.length - 1 && <span className="sr-only">, </span>}
                       </span>
                     ))}
                   </span>
                 </div>
                 <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border pt-3 text-sm">
                   <ArrowRightIcon className="size-4 text-teal" aria-hidden="true" />
-                  <span className="sr-only">takes the job that</span>
-                  <span className="font-mono text-[13px] text-teal">{m.job}</span>
+                  <span className="sr-only">. It takes the job that </span>
+                  <span className="font-mono text-[13px] text-teal">{m.job}</span>{" "}
                   <span className="text-muted-foreground">({m.note})</span>
                 </p>
               </li>

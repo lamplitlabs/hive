@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock, CopyLine } from "@/components/code";
-import { Article, H2, PageHero } from "@/components/page-hero";
+import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { optionalDoc } from "@/lib/docs";
 import { pageMetadata } from "@/lib/seo";
 import { INSTALL, PAGES, repoFile } from "@/lib/site";
@@ -26,6 +26,7 @@ export default function InstallPage() {
   const settings = optionalDoc("settings");
   return (
     <Frame current={PAGES.install.path}>
+      <PageCrumbs page={PAGES.install} />
       <PageHero
         eyebrow="Install"
         title="Install Hive and give it a first task."
@@ -47,13 +48,13 @@ export default function InstallPage() {
         </ul>
 
         <H2 id="install">1. Install</H2>
-        <CodeBlock code={INSTALL.blocks.script} title="macOS and Linux" copy={INSTALL.script} />
+        <CodeBlock code={INSTALL.blocks.script} title="macOS and Linux" copy={INSTALL.script} copyWhat="the install command" />
         <p>
           The installer is one shell script. It is{" "}
           <a href={repoFile("scripts/install.sh")} rel="noopener noreferrer">
             <code>scripts/install.sh</code>
           </a>{" "}
-          in the repository, and this site serves the same file, so you can read it before you run it. Then put the binary on your path and look at it:
+          in the repository, and this site serves the same file, so you can read it before you run it. Then put the binary on your path, check it and start the console:
         </p>
         <CodeBlock code={INSTALL.blocks.after} title="Then" />
         <h3 id="from-source">From source</h3>
@@ -61,7 +62,7 @@ export default function InstallPage() {
           With Rust 1.95 or newer and Node.js 22 or newer, one command builds the same binary. Node.js is there because the build exports the console and
           embeds it in the binary.
         </p>
-        <CodeBlock code={INSTALL.blocks.source} title="From source" copy={INSTALL.source} />
+        <CodeBlock code={INSTALL.blocks.source} title="From source" copy={INSTALL.source} copyWhat="the command that builds from source" />
         <p>
           Later, <code>hive update</code> installs a newer release: it checks the download against the release&apos;s checksums, tries the new binary, and
           keeps the old one beside it. <Link href="/docs/release/">Releases and hive update</Link> has the details.
@@ -169,8 +170,7 @@ export default function InstallPage() {
           </li>
         </ul>
         <p>
-          The store is one SQLite file, <code>~/.hive/hive.sqlite</code>. <code>HIVE_HOME</code> names another folder than <code>~/.hive</code> when you
-          want one.
+          The store is one SQLite file, <code>~/.hive/hive.sqlite</code>. Set <code>HIVE_HOME</code> to keep it in another folder.
         </p>
       </Article>
     </Frame>

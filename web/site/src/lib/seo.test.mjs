@@ -112,6 +112,8 @@ test("JSON-LD on the landing page: the SoftwareApplication, free, MIT, with its 
   assert.match(app.license, /opensource\.org\/license\/mit$/);
   assert.ok(app.sameAs.includes("https://github.com/lamplitlabs/hive"));
   assert.equal(app.url, "https://hivefleet.dev/");
+  assert.equal(app.installUrl, "https://hivefleet.dev/install/");
+  assert.equal(app.softwareHelp.url, "https://hivefleet.dev/docs/");
   assert.doesNotMatch(app.operatingSystem, /windows/i);
   const code = byType(data, "SoftwareSourceCode");
   assert.equal(code.codeRepository, "https://github.com/lamplitlabs/hive");

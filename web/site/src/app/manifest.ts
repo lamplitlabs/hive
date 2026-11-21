@@ -11,7 +11,7 @@ export default function manifest(): MetadataRoute.Manifest {
     description: PAGES.home.description,
     start_url: "/",
     scope: "/",
-    display: "minimal-ui",
+    display: "browser",
     lang: "en",
     theme_color: "#0c1530",
     background_color: "#060a14",

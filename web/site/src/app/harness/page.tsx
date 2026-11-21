@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock } from "@/components/code";
-import { Article, H2, PageHero } from "@/components/page-hero";
+import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
 
@@ -48,6 +48,7 @@ const HOOKS = `{"hooks": [
 export default function HarnessPage() {
   return (
     <Frame current={PAGES.harness.path}>
+      <PageCrumbs page={PAGES.harness} />
       <PageHero
         eyebrow="The harness"
         title="How an agent runs."
@@ -189,7 +190,7 @@ export default function HarnessPage() {
 
         <H2 id="providers">Providers</H2>
         <p>
-          GitHub Copilot is the default provider and logs in with GitHub&apos;s device flow. Every other provider takes an API key: <code>openai</code>,{" "}
+          GitHub Copilot is the default provider and logs in with GitHub&apos;s device flow. The hosted ones take an API key: <code>openai</code>,{" "}
           <code>anthropic</code>, <code>gemini</code>, and the OpenAI-compatible vendors <code>openrouter</code>, <code>groq</code>, <code>mistral</code>,{" "}
           <code>deepseek</code>, <code>xai</code>, <code>together</code>, <code>fireworks</code>, <code>cerebras</code>, <code>github-models</code> and{" "}
           <code>azure-openai</code>. The local servers <code>ollama</code>, <code>lmstudio</code> and <code>vllm</code> need no key, and{" "}
