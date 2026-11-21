@@ -56,7 +56,7 @@ export function MachinePanel({ r, heading = true, machines = true, error }: { r:
         title="The runner hasn't started on this machine"
         action={
           <Button asChild size="sm">
-            <Link href="/#daemon-controls">Set up the runner</Link>
+            <Link href={hrefs.runnerControls()}>Set up the runner</Link>
           </Button>
         }
       >

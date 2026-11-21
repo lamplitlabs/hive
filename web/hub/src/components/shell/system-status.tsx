@@ -15,9 +15,9 @@ import { RailTip } from "./rail-tip";
 // sidebar (spec "App shell" - Status card): can agents work on this machine
 // (the runner, Cpu icon and its state), and which model provider they use
 // (its logo and the main model). Each line links to where it is fixed - the
-// runner controls on Home, the provider card or the Connect a provider wizard
-// in Settings. On the rail they shrink to the two icons with a tone dot and
-// the same words as tooltips.
+// runner controls (or the pause, while work is paused), the provider card or
+// the Connect a provider wizard, all in Settings. On the rail they shrink to
+// the two icons with a tone dot and the same words as tooltips.
 
 type Tone = "ok" | "warn" | "bad" | "neutral";
 const DOT: Record<Tone, string> = { ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", neutral: "bg-muted-foreground/50" };
@@ -52,7 +52,7 @@ export function useSystemStatus(): StatusLine[] {
     label: headline,
     sub: state.pause === "on" ? "Nothing new starts" : state.label === "running" || state.label === "alive" ? busy || "Waiting for work" : state.label === "checking" ? "" : "Agents can't start work",
     tone: state.pause === "on" ? "bad" : state.label === "checking" ? "neutral" : state.tone === "ok" ? "ok" : "warn",
-    href: state.pause === "on" ? hrefs.settings("stop") : "/#daemon-controls",
+    href: state.pause === "on" ? hrefs.settings("stop") : hrefs.runnerControls(),
   };
 
   const h = harness.data;

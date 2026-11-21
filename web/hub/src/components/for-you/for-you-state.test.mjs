@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SECTION_ORDER, SECTION_TITLE, filterRows, forYouProjects, forYouRows, groupRows, latestRows, orderRows, waitingWords } from "./for-you-state.ts";
+import { hrefs } from "../../lib/nav.ts";
 
 const empty = { decisions: [], proposals: [], questions: [], compute: [], work: [], drafts: [], steps: [], machine: false, provider: null, brain: "amistio" };
 
@@ -46,6 +47,7 @@ test("every inbox item becomes one row with its project, and the brain takes the
   assert.equal(byKey["provider:anthropic"].fix, "Sign in");
   assert.equal(forYouRows({ ...empty, provider: { name: "openai", label: "OpenAI", expired: false } })[0].fix, "Connect");
   assert.equal(byKey["machine"].fix, "Fix it");
+  assert.equal(byKey["machine"].href, hrefs.runnerControls(), "Fix it opens the runner's controls, not a page that forwards");
   assert.equal(byKey["step:heldout:demo-app,web"].fix, "Open");
   assert.equal(byKey["question:Q-1"].fix, undefined);
 });

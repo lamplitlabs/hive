@@ -104,7 +104,7 @@ export function ThisMachineCard({ runner, host, local, className }: { runner: Ru
             )
           ) : (
             <Button asChild size="sm" variant="outline">
-              <Link href="/#daemon-controls">
+              <Link href={hrefs.runnerControls()}>
                 <PlayIcon /> Start
               </Link>
             </Button>

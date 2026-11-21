@@ -2,19 +2,22 @@
 
 import { CoffeeIcon, TriangleAlertIcon } from "lucide-react";
 import { daemonUpdateText, pendingUpdate } from "@/components/hive/daemon-control-state";
+import { DaemonControls } from "@/components/hive/daemon-controls";
 import { awakeText, sleptText, useAwake } from "@/components/shell/awake";
 import { Disclosure, Kv } from "@/components/hive/panel";
 import { RestartNow } from "@/components/hive/restart-now";
 import { Mono, ToneBadge } from "@/components/hive/who";
-import type { RunningPayload, RunningState } from "@/lib/api";
+import type { Runner, RunningPayload, RunningState, ServicePayload, SettingsPayload } from "@/lib/api";
 import { fmtDate, num, rel, type Tone } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
 
-// "Which Hive is running" at the top of the This machine section (ADR-035):
-// the version of this console and of the runner, whether Hive is up to date
-// with its own source, and what it will do about it. Read-only - turning
-// self-update off is the row underneath. Build ids and the event stream fold
-// into "Technical details".
+// The top of the This machine section, in two blocks. First the runner's
+// controls (RunnerControls): where it stands and the one action that fits -
+// resume it, start it, set it up as a background service. Then "Which Hive
+// is running" (ADR-035): the version of this console and of the runner,
+// whether Hive is up to date with its own source, and what it will do about
+// it. That block is read-only - turning self-update off is the row
+// underneath. Build ids and the event stream fold into "Technical details".
 
 const STATE: Record<RunningState, { tone: Tone; label: string; text: string; terminal?: string; terminalWhat?: string }> = {
   current: { tone: "ok", label: "Up to date", text: "This machine runs the latest Hive. Nothing to do." },
@@ -22,7 +25,7 @@ const STATE: Record<RunningState, { tone: Tone; label: string; text: string; ter
   waiting: { tone: "warn", label: "Update on hold", text: "Hive's own source has uncommitted changes or is on another branch, so the update waits. Commit, or switch back to the default branch, and it carries on." },
   unstamped: { tone: "info", label: "Version not recorded", text: "This build doesn't record which version it came from. The runner rebuilds once after the next merge and records it from then on." },
   off: { tone: "neutral", label: "Self-update off", text: "Self-update is off, so the runner keeps the build it has until you install a new one.", terminal: "cargo install --path crates/hive --root ~/.hive --locked", terminalWhat: "Install a new build" },
-  "no-daemon": { tone: "warn", label: "Runner not started", text: "The runner hasn't run on this machine yet. Use Keep Hive running on the Home page to start it and this console in the background.", terminal: "hive service install", terminalWhat: "Start the runner and this console in the background" },
+  "no-daemon": { tone: "warn", label: "Runner not started", text: "The runner hasn't run on this machine yet. The runner controls above start it and this console in the background." },
   "no-brain": { tone: "neutral", label: "Installed build", text: "None of your projects is Hive's own source, so this build stays as it is. Everything works. Only people who develop Hive itself connect its source.", terminal: "hive init PATH --brain", terminalWhat: "Connect Hive's own source" },
   "no-store": { tone: "bad", label: "No data", text: "This console can't open Hive's data on this machine." },
 };
@@ -52,7 +55,27 @@ function Build({ b }: { b: RunningPayload["hub"] | null }) {
   );
 }
 
+// The runner's controls, reading the same three answers the sidebar's runner
+// line does (same paths, same cache).
+function RunnerControls() {
+  const runner = useApi<Runner>("runner", { refresh: 30000 });
+  const service = useApi<ServicePayload>("service", { refresh: 60000 });
+  const settings = useApi<SettingsPayload>("settings", { refresh: 60000 });
+  return <DaemonControls runner={runner} service={service} settings={settings} />;
+}
+
 export function RunningStrip() {
+  return (
+    <>
+      <RunnerControls />
+      <div className="border-t">
+        <WhichHiveRuns />
+      </div>
+    </>
+  );
+}
+
+function WhichHiveRuns() {
   const q = useApi<RunningPayload>("running", { refresh: 30000 });
   const awake = useAwake();
   const d = q.data;
