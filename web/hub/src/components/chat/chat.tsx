@@ -876,7 +876,7 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
               {outLines.length > OUTPUT_LINES
                 ? "\n… " +
                   num(outLines.length - OUTPUT_LINES) +
-                  " more lines (the Harness page has them all)"
+                  " more lines (the Runs page has them all)"
                 : ""}
             </pre>
           ) : null}

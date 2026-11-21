@@ -1370,7 +1370,7 @@ async function handle(req, res) {
         404,
         "Unknown jobs route",
         "Use failed, repair or <id>/artifacts.",
-        "Open Failed job repair.",
+        "Open Runs and pick Failed.",
       );
     if (req.method !== method)
       return fail(
@@ -1378,7 +1378,7 @@ async function handle(req, res) {
         405,
         "Method not allowed",
         "Use " + method + " for this route.",
-        "Open Failed job repair.",
+        "Open Runs and pick Failed.",
       );
   }
   if (
