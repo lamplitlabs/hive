@@ -1432,10 +1432,23 @@ fn harness_status(c: &mut Context, args: &[String]) -> Result<()> {
     }
 }
 
+/// The provider `hive harness models` lists: the one `--provider` names,
+/// else the `provider` setting, the way `hive harness status` reads it (the
+/// default provider on a machine with no store).
+fn models_provider(flag: &str, st: Option<&Store>) -> String {
+    if !flag.is_empty() {
+        return flag.to_string();
+    }
+    st.map_or_else(
+        || hive_provider::DEFAULT.to_string(),
+        |s| s.setting("provider", hive_provider::DEFAULT),
+    )
+}
+
 fn harness_models(c: &mut Context, args: &[String]) -> Result<()> {
     let mut fs = FlagSet::new("harness models");
     fs.set_output(hive_cli::flags::Output::Discard);
-    fs.string_var("provider", hive_provider::DEFAULT, "provider name");
+    fs.string_var("provider", "", "provider name");
     bind_raw_globals(&mut fs);
     fs.parse(args)?;
     apply_raw_globals(c, &fs);
@@ -1452,18 +1465,17 @@ fn harness_models(c: &mut Context, args: &[String]) -> Result<()> {
         .into());
     }
     let (st, _) = open_harness_store(c, false)?;
-    let p = hive_provider::open(
-        &fs.get_string("provider"),
-        harness_provider_options(c, st.as_ref()),
-    )
-    .map_err(|e| {
-        errorf(
-            2,
-            &format!("hive harness models: {e}"),
-            "",
-            "pass --provider P",
-        )
-    })?;
+    let provider_name = models_provider(&fs.get_string("provider"), st.as_ref());
+    let p = hive_provider::open(&provider_name, harness_provider_options(c, st.as_ref())).map_err(
+        |e| {
+            errorf(
+                2,
+                &format!("hive harness models: {e}"),
+                "",
+                "pass --provider P",
+            )
+        },
+    )?;
     let models = match p.models(&CancelToken::new()) {
         Ok(m) => m,
         Err(e) if hive_provider::is_not_logged_in(&e) => {
@@ -4280,6 +4292,100 @@ done
         for want in ["ID", "fake-model *", "Fake Model", "yes"] {
             assert!(out.contains(want), "models output missing {want:?}:\n{out}");
         }
+    }
+
+    const OTHER_FAKE_PROVIDER: &str = "fake-harness-cli-other";
+
+    /// A second fake provider with one model of its own.
+    fn register_other_fake_provider() {
+        static REGISTER_OTHER: Once = Once::new();
+        REGISTER_OTHER.call_once(|| {
+            hive_provider::register(OTHER_FAKE_PROVIDER, "Other Fake", |_options| {
+                Ok(Box::new(CommandFakeProvider {
+                    models: vec![Model {
+                        id: "other-model".into(),
+                        name: "Other Model".into(),
+                        vendor: "Other".into(),
+                        chat: true,
+                        tool_calls: false,
+                        vision: false,
+                        premium: 0.0,
+                        preview: false,
+                        context_window: 0,
+                        max_output: 0,
+                        default: true,
+                    }],
+                    ..CommandFakeProvider::default()
+                }))
+            });
+        });
+    }
+
+    /// Stores the `provider` setting as it is: the fakes are not among the
+    /// names `hive settings set provider` takes.
+    fn store_provider_setting(s: &Store, name: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO settings (name, value, updated_at, updated_by) VALUES ('provider', ?, ?, 'human') ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+                [name, s.now().as_str()],
+            )
+            .unwrap();
+    }
+
+    /// Without `--provider`, `hive harness models` lists the models of the
+    /// provider the owner chose, as `hive harness status` reports on it;
+    /// `--provider NAME` still wins.
+    #[test]
+    fn harness_models_lists_the_configured_provider() {
+        let _serial = crate::test_helpers::serial();
+        let (_env, _guards) = command_env();
+        let s = harness_command_store();
+        set_fake_provider(CommandFakeProvider::default());
+        register_other_fake_provider();
+        store_provider_setting(&s, FAKE_PROVIDER_NAME);
+
+        let (out, stderr, code) = invoke(&s.home, &["models", "--no-color"]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            out.contains("fake-model *") && !out.contains("other-model"),
+            "{out}"
+        );
+        // The provider status reports on is the one whose models are listed.
+        let (status, stderr, code) = invoke(&s.home, &["status", "--json"]);
+        assert_eq!(code, 0, "{stderr}");
+        let status: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["provider"]["name"], FAKE_PROVIDER_NAME);
+
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &["models", "--provider", OTHER_FAKE_PROVIDER, "--no-color"],
+        );
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            out.contains("other-model *") && !out.contains("fake-model"),
+            "{out}"
+        );
+
+        store_provider_setting(&s, OTHER_FAKE_PROVIDER);
+        let (out, stderr, code) = invoke(&s.home, &["models", "--json"]);
+        assert_eq!(code, 0, "{stderr}");
+        let models: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(models[0]["id"], "other-model", "{models}");
+        let (out, stderr, code) = invoke(
+            &s.home,
+            &["models", "--provider", FAKE_PROVIDER_NAME, "--json"],
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let models: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(models[0]["id"], "fake-model", "{models}");
+
+        // A store that holds no choice, and a machine with no store, mean
+        // the default provider; a name given is taken as it is.
+        let fresh = harness_command_store();
+        assert_eq!(models_provider("", Some(&fresh)), hive_provider::DEFAULT);
+        assert_eq!(models_provider("", None), hive_provider::DEFAULT);
+        assert_eq!(models_provider("ollama", Some(&s)), "ollama");
     }
 
     #[test]
