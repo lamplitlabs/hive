@@ -5,6 +5,7 @@ use anyhow::{Result, anyhow};
 use hive_cli::flags::FlagSet;
 use std::io::Write;
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
@@ -216,6 +217,40 @@ fn hub_flags(fs: &mut FlagSet) {
     fs.string_var("project", "", "project slug for serve");
 }
 
+/// Whether this hub is the service's own instance: the units `hive service
+/// install` writes start it with `--restart-on-change`, and a hub a person
+/// starts by hand does not carry the flag.
+fn is_service_hub(fs: &FlagSet) -> bool {
+    fs.lookup("restart-on-change").is_some() && fs.get_bool("restart-on-change")
+}
+
+/// Whether a `hive hub` that finds no store makes one itself (the store
+/// `hive init --store-only` makes) and carries on. It does when a person
+/// started it by hand: `terminal` says that standard input and standard
+/// output are both terminals, and the hub is not the service's own instance
+/// (launchd and systemd start that one without a terminal anyway).
+pub fn makes_first_store(fs: &FlagSet, terminal: bool, home: &str) -> bool {
+    first_store_allowed(terminal, is_service_hub(fs), Path::new(home))
+}
+
+fn first_store_allowed(terminal: bool, service: bool, home: &Path) -> bool {
+    terminal && !service && home_can_be_made(home)
+}
+
+/// The home is there, or the directory it goes in is. A home on a disk that
+/// is not mounted has neither, so it is never made on the disk underneath.
+fn home_can_be_made(home: &Path) -> bool {
+    if home.is_dir() {
+        return true;
+    }
+    // Something else has the home's name, such as a link to a disk that is
+    // not mounted: it stays as it is.
+    if home.symlink_metadata().is_ok() {
+        return false;
+    }
+    home.parent().is_some_and(Path::is_dir)
+}
+
 fn run_hub(c: &mut hive_cli::Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     run_command("hub", c, fs, args)
 }
@@ -281,7 +316,7 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
         Ok(_) => {}
     }
     let mut h = new_handler(Some(Arc::new(store)), None);
-    h.service = fs.get_bool("restart-on-change");
+    h.service = is_service_hub(fs);
     if name == "serve" {
         h.project = fs.get_string("project");
         if h.project.is_empty() {
@@ -556,4 +591,76 @@ fn run_command(name: &str, c: &mut hive_cli::Context, fs: &FlagSet, args: &[Stri
         return Err(hive_cli::errorf(3, "", "", "").into());
     }
     served
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hub_flag_set(args: &[&str]) -> FlagSet {
+        let mut fs = FlagSet::new("hub");
+        hub_flags(&mut fs);
+        let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        fs.parse(&args).expect("hub flags");
+        fs
+    }
+
+    /// A hub with no store makes one only for a person who started it by
+    /// hand, and only where the home is, or can be made beside what is
+    /// already there.
+    #[test]
+    fn the_first_store_is_made_only_by_hand_at_a_terminal_in_a_home_that_can_be_made() {
+        let dir = tempfile::tempdir().expect("dir");
+        let there = dir.path().join("there");
+        std::fs::create_dir(&there).expect("home");
+        let new = dir.path().join("new");
+        let unmounted = dir.path().join("volume").join("hive");
+
+        for home in [&there, &new] {
+            assert!(first_store_allowed(true, false, home), "{home:?}");
+            assert!(
+                !first_store_allowed(false, false, home),
+                "no terminal: {home:?}"
+            );
+            assert!(
+                !first_store_allowed(true, true, home),
+                "the service's hub: {home:?}"
+            );
+        }
+        assert!(!first_store_allowed(true, false, &unmounted));
+
+        // A name something else holds is never a home to make.
+        let file = dir.path().join("file");
+        std::fs::write(&file, "x").expect("file");
+        assert!(!first_store_allowed(true, false, &file));
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&unmounted, &link).expect("link");
+            assert!(
+                !first_store_allowed(true, false, &link),
+                "a link to nowhere"
+            );
+            let link = dir.path().join("link-there");
+            std::os::unix::fs::symlink(&there, &link).expect("link");
+            assert!(first_store_allowed(true, false, &link), "a link to a home");
+        }
+
+        // Asking changes nothing on disk.
+        assert!(!new.exists() && !unmounted.parent().expect("volume").exists());
+    }
+
+    /// The service's own hub is the one started with `--restart-on-change`.
+    #[test]
+    fn the_services_hub_is_told_from_one_started_by_hand_by_its_flag() {
+        let dir = tempfile::tempdir().expect("dir");
+        let home = dir.path().to_str().expect("home");
+        let by_hand = hub_flag_set(&["--no-browser", "--port", "0"]);
+        assert!(!is_service_hub(&by_hand));
+        assert!(makes_first_store(&by_hand, true, home));
+        assert!(!makes_first_store(&by_hand, false, home));
+        let service = hub_flag_set(&["--port", "8765", "--no-browser", "--restart-on-change"]);
+        assert!(is_service_hub(&service));
+        assert!(!makes_first_store(&service, true, home));
+    }
 }

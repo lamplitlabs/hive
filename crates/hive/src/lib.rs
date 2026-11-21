@@ -191,16 +191,48 @@ fn version_update_state(home: &str) -> Option<hive_cli::update::UpdateState> {
     hive_cli::update::stored_state(&s)
 }
 
+/// What the caller knows about the terminal the command runs at. A
+/// `dyn Write` cannot answer for itself, and a test has no terminal, so the
+/// binary's entry says what the process has and a test says what it wants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Terminal {
+    /// Standard input is a terminal.
+    pub stdin: bool,
+    /// Standard output is a terminal.
+    pub stdout: bool,
+}
+
+impl Terminal {
+    /// The terminal of this process's own standard input and output.
+    pub fn of_process() -> Self {
+        use std::io::IsTerminal;
+        Terminal {
+            stdin: std::io::stdin().is_terminal(),
+            stdout: std::io::stdout().is_terminal(),
+        }
+    }
+
+    /// A person types here and reads here: both ends are terminals.
+    fn attended(self) -> bool {
+        self.stdin && self.stdout
+    }
+}
+
 /// Runs the CLI for callers that lend borrowed writers (tests). Output is
-/// collected and copied out at the end.
+/// collected and copied out at the end. The command runs at no terminal.
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    run_at(argv, Terminal::default(), out, err)
+}
+
+/// [`run`] at the terminal the caller names.
+fn run_at(argv: &[String], terminal: Terminal, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let out_buf = hive_cli::Buffer::new();
     let err_buf = hive_cli::Buffer::new();
     let code = run_streaming(
         argv,
         Box::new(out_buf.clone()),
         Box::new(err_buf.clone()),
-        false,
+        terminal,
     );
     let _ = write!(out, "{}", out_buf.string());
     let _ = write!(err, "{}", err_buf.string());
@@ -208,14 +240,14 @@ pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 }
 
 /// The binary's entry: writes stream straight through to `out`/`err`.
-/// `out_is_tty` says whether `out` is a terminal, which a `dyn Write` cannot
-/// answer for itself.
+/// `terminal` says whether standard input and `out` are terminals.
 pub fn run_streaming(
     argv: &[String],
     out: Box<dyn Write + Send>,
     err: Box<dyn Write + Send>,
-    out_is_tty: bool,
+    terminal: Terminal,
 ) -> i32 {
+    let out_is_tty = terminal.stdout;
     // The stamp goes in before any command runs: `hive version`, the daemon's heartbeat, the
     // hub's running view and the self-update smoke test all read it through `hive_cli`.
     hive_cli::install_build_info(BUILD_INFO_TEXT);
@@ -326,13 +358,28 @@ pub fn run_streaming(
     }
 
     if !cmd.no_store {
-        match hive_store::Store::open(hive_store::Options {
-            home: g.home,
-            create: name == "init",
-            read_only: cmd.read_only,
-            skip_records: cmd.read_only,
-            now: ctx.now.clone(),
-        }) {
+        let open = |create: bool| {
+            hive_store::Store::open(hive_store::Options {
+                home: g.home.clone(),
+                create,
+                read_only: cmd.read_only,
+                skip_records: cmd.read_only,
+                now: ctx.now.clone(),
+            })
+        };
+        let mut opened = open(name == "init");
+        // The first `hive hub` a person starts on a machine makes the store
+        // itself, the way `hive init --store-only` does, and carries on.
+        if cmd.name == "hub"
+            && opened.as_ref().is_err_and(is_no_store)
+            && hive_hub::makes_first_store(&fs, terminal.attended(), &ctx.home)
+        {
+            opened = open(true);
+            if let Ok(s) = &opened {
+                let _ = writeln!(out, "{}", first_store_line(&s.path));
+            }
+        }
+        match opened {
             Ok(s) => ctx.store = Some(s),
             Err(e) => return report(name, e, err),
         }
@@ -527,6 +574,15 @@ fn unknown(name: &str, err: &mut dyn Write) -> i32 {
     2
 }
 
+fn is_no_store(e: &AnyError) -> bool {
+    e.downcast_ref::<hive_store::NotFoundError>().is_some()
+}
+
+/// What `hive hub` prints, before its serving lines, when it made the store.
+fn first_store_line(path: &str) -> String {
+    format!("No store yet: made one at {path}")
+}
+
 fn report(name: &str, errv: AnyError, err: &mut dyn Write) -> i32 {
     if let Some(ce) = errv.downcast_ref::<hive_cli::Error>() {
         if !ce.what.is_empty() {
@@ -550,7 +606,7 @@ fn report(name: &str, errv: AnyError, err: &mut dyn Write) -> i32 {
                 2,
                 &format!("No store at {}", nf.path),
                 "this machine has no Hive store yet",
-                "hive init <project-path>",
+                hive_cli::NO_STORE_FIX,
             )
         };
         let _ = writeln!(err, "{e}");
@@ -734,15 +790,225 @@ mod tests {
         let (mut out, mut errb) = (Vec::new(), Vec::new());
         let code = run(&["--home", home, "zz-needs-store"], &mut out, &mut errb);
         let want = hive_store::store_path(home).unwrap();
-        if code != 2
-            || !s(&errb).contains(&format!("No store at {want}"))
-            || !s(&errb).contains("fix: hive init <project-path>")
-        {
+        if code != 2 || s(&errb) != no_store_text(&want) {
             panic!("code {code} stderr {:?}", s(&errb));
         }
         if Path::new(&want).exists() {
             panic!("store created by a non-init command");
         }
+    }
+
+    /// The whole "No store" error, as every command that needs a store prints it.
+    fn no_store_text(store: &str) -> String {
+        format!(
+            "No store at {store}\n  why: this machine has no Hive store yet\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)\n"
+        )
+    }
+
+    const AT_A_TERMINAL: Terminal = Terminal {
+        stdin: true,
+        stdout: true,
+    };
+
+    fn run_at(terminal: Terminal, args: &[&str], out: &mut Vec<u8>, err: &mut Vec<u8>) -> i32 {
+        super::run_at(&sv(args), terminal, out, err)
+    }
+
+    /// A port something else holds: a hub given it stops where it would
+    /// start to serve, so a test that starts one never waits on it.
+    fn taken_port() -> (std::net::TcpListener, String) {
+        let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = holder.local_addr().unwrap().port().to_string();
+        (holder, port)
+    }
+
+    /// The first `hive hub` a person starts on a machine makes the store
+    /// `hive init --store-only` makes, says so in one line and goes on to
+    /// serve; the next one finds the store and says nothing about it.
+    #[test]
+    fn the_first_hub_at_a_terminal_makes_the_store_and_carries_on() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let _no_color = setenv("NO_COLOR", "1");
+        let dir = tempdir().unwrap();
+        // The home is not there yet; the directory it goes in is.
+        let home = dir.path().join("hive");
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        let want = hive_store::store_path(home.to_str().unwrap()).unwrap();
+        let (_holder, port) = taken_port();
+        let hub = ["hub", "--no-browser", "--port", port.as_str()];
+
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_at(AT_A_TERMINAL, &hub, &mut out, &mut errb);
+        assert_eq!(code, 1, "stdout {:?}, stderr {:?}", s(&out), s(&errb));
+        assert!(
+            s(&out).starts_with(&format!("No store yet: made one at {want}\n")),
+            "{:?}",
+            s(&out)
+        );
+        // It went on to serve: the port was the only thing in its way.
+        assert!(
+            s(&errb).starts_with("The hub could not listen\n") && !s(&errb).contains("No store"),
+            "{:?}",
+            s(&errb)
+        );
+        assert!(home.join(hive_store::STORE_NAME).is_file());
+        // The store is the one `hive init --store-only` makes: no project in it.
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(&["--json", "projects"], &mut out, &mut errb),
+            0,
+            "{}",
+            s(&errb)
+        );
+        let projects: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(projects.as_array().map(Vec::len), Some(0), "{projects}");
+
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_at(AT_A_TERMINAL, &hub, &mut out, &mut errb);
+        assert_eq!(code, 1, "stdout {:?}, stderr {:?}", s(&out), s(&errb));
+        assert!(!s(&out).contains("No store yet"), "{:?}", s(&out));
+        assert!(
+            s(&errb).starts_with("The hub could not listen\n"),
+            "{:?}",
+            s(&errb)
+        );
+    }
+
+    /// Where a store may not be made, the hub that would make one says why,
+    /// in the words `hive init --store-only` has for it.
+    #[test]
+    fn the_first_hub_says_why_it_cannot_make_a_store_inside_a_checkout() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let _no_color = setenv("NO_COLOR", "1");
+        let dir = tempdir().unwrap();
+        // The least git takes for a repository.
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir_all(checkout.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(checkout.join(".git/refs")).unwrap();
+        std::fs::write(checkout.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let home = checkout.join("home");
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        let (_holder, port) = taken_port();
+        let mut said = Vec::new();
+        for (terminal, args) in [
+            (
+                AT_A_TERMINAL,
+                vec!["hub", "--no-browser", "--port", port.as_str()],
+            ),
+            (Terminal::default(), vec!["init", "--store-only"]),
+        ] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run_at(terminal, &args, &mut out, &mut errb);
+            assert_eq!(code, 2, "{args:?}: stdout {:?}", s(&out));
+            let err = s(&errb);
+            let (who, why) = err.split_once(": ").unwrap_or(("", err.as_str()));
+            assert_eq!(who, format!("hive {}", args[0]), "{err:?}");
+            assert!(
+                why.starts_with("The store ") && why.contains(" must live outside the project "),
+                "{err:?}"
+            );
+            assert!(out.is_empty() && !home.exists(), "{args:?}: {:?}", s(&out));
+            said.push(why.to_string());
+        }
+        assert_eq!(said[0], said[1]);
+    }
+
+    /// Everywhere else a hub without a store ends as it always did: with the
+    /// "No store" error and status 2, and nothing made on disk.
+    #[test]
+    fn a_hub_nobody_started_by_hand_makes_no_store() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let _no_color = setenv("NO_COLOR", "1");
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("hive");
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        let want = hive_store::store_path(home.to_str().unwrap()).unwrap();
+        let (_holder, port) = taken_port();
+        let port = port.as_str();
+        let no_terminal = Terminal::default();
+        let only_output = Terminal {
+            stdin: false,
+            stdout: true,
+        };
+        let only_input = Terminal {
+            stdin: true,
+            stdout: false,
+        };
+        for (what, terminal, args) in [
+            (
+                "no terminal",
+                no_terminal,
+                vec!["hub", "--no-browser", "--port", port],
+            ),
+            (
+                "input is not a terminal",
+                only_output,
+                vec!["hub", "--no-browser", "--port", port],
+            ),
+            (
+                "output is not a terminal",
+                only_input,
+                vec!["hub", "--no-browser", "--port", port],
+            ),
+            (
+                "the service's own hub",
+                AT_A_TERMINAL,
+                vec!["hub", "--no-browser", "--port", port, "--restart-on-change"],
+            ),
+            (
+                "serve, which needs a project",
+                AT_A_TERMINAL,
+                vec!["serve", "--no-browser", "--port", port],
+            ),
+        ] {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run_at(terminal, &args, &mut out, &mut errb);
+            assert_eq!(code, 2, "{what}: stdout {:?}", s(&out));
+            assert_eq!(s(&errb), no_store_text(&want), "{what}");
+            assert!(out.is_empty(), "{what}: {:?}", s(&out));
+            assert!(!home.exists(), "{what}: the home was made");
+        }
+
+        // A home on a disk that is not mounted: neither it nor the directory
+        // it goes in is there, and neither is made.
+        let volume = dir.path().join("volume");
+        let away = volume.join("hive");
+        let _home = setenv("HIVE_HOME", away.to_str().unwrap());
+        let want = hive_store::store_path(away.to_str().unwrap()).unwrap();
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_at(
+            AT_A_TERMINAL,
+            &["hub", "--no-browser", "--port", port],
+            &mut out,
+            &mut errb,
+        );
+        assert_eq!(code, 2, "stdout {:?}", s(&out));
+        assert_eq!(s(&errb), no_store_text(&want));
+        assert!(out.is_empty() && !volume.exists(), "{:?}", s(&out));
+
+        // Inside a job nothing makes a store, a terminal or not.
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        let _job = setenv("HIVE_JOB", "job-test");
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run_at(
+            AT_A_TERMINAL,
+            &["hub", "--no-browser", "--port", port],
+            &mut out,
+            &mut errb,
+        );
+        assert_eq!(code, 2, "stdout {:?}", s(&out));
+        assert!(
+            s(&errb).contains("No store at") && s(&errb).contains("HIVE_JOB"),
+            "{:?}",
+            s(&errb)
+        );
+        assert!(out.is_empty() && !home.exists(), "{:?}", s(&out));
     }
 
     /// What the zz-post command saw: (Agent, Project, JSON, Now, Store.Now(), Home), args, kind.
@@ -869,6 +1135,115 @@ mod tests {
         let code = run(&["--home", home, "zz-post", "-h"], &mut out, &mut errb);
         if code != 0 || !s(&out).contains("-kind string") {
             panic!("command -h: {code} {:?}", s(&out));
+        }
+    }
+
+    /// `hive executor label NAME -word` through the whole command line: the
+    /// word with a dash is removed, and the flags around it are still flags.
+    #[test]
+    fn executor_label_removes_a_word_written_with_a_leading_dash() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        hive_store::create(home.join(hive_store::STORE_NAME)).unwrap();
+        let ok = |args: &[&str]| -> String {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run(args, &mut out, &mut errb);
+            assert_eq!(code, 0, "{args:?}: {}", s(&errb));
+            s(&out)
+        };
+        ok(&[
+            "executor",
+            "add",
+            "gpu-box",
+            "--ssh",
+            "hive@gpu-box",
+            "--workdir",
+            "/srv/hive",
+            "--labels",
+            "gpu,cuda,android",
+        ]);
+        assert_eq!(
+            ok(&["executor", "label", "gpu-box", "-cuda"]),
+            "gpu-box offers linux android gpu\n"
+        );
+        // A global flag after the word is still a flag: nothing is printed.
+        assert_eq!(ok(&["executor", "label", "gpu-box", "-gpu", "--quiet"]), "");
+        assert_eq!(
+            ok(&["executor", "label", "gpu-box", "--", "-android"]),
+            "gpu-box offers linux\n"
+        );
+        assert_eq!(
+            ok(&["executor", "label", "gpu-box", "+a,-b"]),
+            "gpu-box offers linux a\n"
+        );
+        // Two dashes still ask for a flag, and there is none of that name.
+        let (mut out, mut errb) = (Vec::new(), Vec::new());
+        let code = run(
+            &["executor", "label", "gpu-box", "--cuda"],
+            &mut out,
+            &mut errb,
+        );
+        assert_eq!(
+            (code, s(&errb).as_str()),
+            (
+                2,
+                "hive executor: flag provided but not defined: -cuda\n  fix: hive help executor\n"
+            )
+        );
+    }
+
+    /// `hive update` looks at Hive's own releases only for the owner. Under
+    /// an agent's name (`--agent` or HIVE_AGENT) or inside a job, an empty
+    /// `update.latest_url` is refused first. The store follows the source
+    /// channel here, so no run of this test can reach the network: the owner
+    /// is refused too, by the channel.
+    #[test]
+    fn update_with_no_latest_url_is_refused_for_an_agent_and_inside_a_job() {
+        let _serial = crate::test_helpers::serial();
+        let _job = setenv("HIVE_JOB", "");
+        let _agent = setenv("HIVE_AGENT", "");
+        let dir = tempdir().unwrap();
+        let home = dir.path();
+        let _home = setenv("HIVE_HOME", home.to_str().unwrap());
+        hive_store::create(home.join(hive_store::STORE_NAME)).unwrap();
+        let store = hive_store::Store::open(hive_store::Options {
+            home: home.to_str().unwrap().to_string(),
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap();
+        store
+            .set_setting("human", hive_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        let update = |args: &[&str]| -> (i32, String, String) {
+            let (mut out, mut errb) = (Vec::new(), Vec::new());
+            let code = run(args, &mut out, &mut errb);
+            (code, s(&out), s(&errb))
+        };
+        let empty = "hive update: update.latest_url is empty, so Hive does not know where its releases are; set it first: hive settings set update.latest_url https://api.github.com/repos/OWNER/REPO/releases/latest\n";
+        let refused = (1, String::new(), empty.to_string());
+
+        assert_eq!(update(&["--agent", "aurora", "update"]), refused);
+        {
+            let _agent = setenv("HIVE_AGENT", "aurora");
+            assert_eq!(update(&["update"]), refused);
+        }
+        {
+            let _job = setenv("HIVE_JOB", "job-test");
+            assert_eq!(update(&["update"]), refused);
+        }
+        // The owner is past that refusal, named or not.
+        for args in [vec!["update"], vec!["--agent", "human", "update"]] {
+            let (code, out, err) = update(&args);
+            assert_eq!((code, out.as_str()), (1, ""), "{args:?}");
+            assert!(
+                err.starts_with("hive update: update.channel resolves to source here"),
+                "{args:?}: {err:?}"
+            );
         }
     }
 
@@ -1011,7 +1386,7 @@ mod tests {
             || !out.is_empty()
             || !err.contains("No store at")
             || !err.contains("HIVE_JOB")
-            || err.contains("fix: hive init <project-path>")
+            || err.contains("fix: hive init")
         {
             panic!(
                 "worker init: code {code}, stdout {:?}, stderr {err:?}",

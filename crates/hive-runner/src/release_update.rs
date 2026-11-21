@@ -11,6 +11,12 @@
 //! restarts on it after its runs in flight (restart.rs); nothing here stops
 //! a run.
 //!
+//! While `update.latest_url` is empty, the command the owner runs reads the
+//! project's own releases for that one run and says so first. The setting
+//! stays empty, so the daily check, the daemon's self-update and the
+//! console still do not look anywhere. Under an agent's name or inside a
+//! job the command refuses, as it always did, and reads nothing.
+//!
 //! A private repository answers 404 to an anonymous request, so a GitHub
 //! address that fails over HTTP is read again through `gh api` when gh is
 //! on PATH (the account the owner is signed in with); the daily check
@@ -690,18 +696,78 @@ pub(crate) fn update_flags(fs: &mut hive_cli::FlagSet) {
     );
 }
 
+/// Where Hive's own releases are listed. `hive update`, run by the owner
+/// while `update.latest_url` is empty, reads it for that one run. Nothing
+/// else reads it: to the daily check, the daemon's self-update, the console,
+/// an agent and a job an empty setting still means "do not look".
+const PROJECT_RELEASES_URL: &str = "https://api.github.com/repos/lamplitlabs/hive/releases/latest";
+
+/// What `hive update` says before it reads [`PROJECT_RELEASES_URL`] in place
+/// of an empty `update.latest_url`.
+fn one_run_notice() -> String {
+    format!(
+        "{LATEST_URL_SETTING} is empty: looking at {PROJECT_RELEASES_URL} for this run. To hear of new releases without asking, set it: hive settings set {LATEST_URL_SETTING} {PROJECT_RELEASES_URL}"
+    )
+}
+
+/// What `hive update` takes from the build and the machine it runs on;
+/// tests name their own.
+pub(crate) struct UpdateHost {
+    /// The running build's version.
+    pub running: String,
+    /// The running build's target triple; None where no release is built.
+    pub target: Option<String>,
+    /// The binary to replace.
+    pub binary: String,
+    pub fetch_json: fn(&str) -> Result<Value, String>,
+    pub fetch_asset: fn(&Asset) -> Result<Vec<u8>, String>,
+}
+
+impl UpdateHost {
+    fn this_process() -> Self {
+        Self {
+            running: hive_cli::version(),
+            target: hive_cli::update::running_target(),
+            binary: crate::service::hive_binary(),
+            fetch_json,
+            fetch_asset,
+        }
+    }
+}
+
 /// `hive update [--check]`.
 pub(crate) fn cmd_update(
     c: &mut hive_cli::Context,
     fs: &hive_cli::FlagSet,
     _args: &[String],
 ) -> Result<()> {
+    update_on(c, fs, UpdateHost::this_process())
+}
+
+/// Whether the command runs under an agent's name or inside a job, and so
+/// not for the owner: the agent as `hive settings set` tells one from the
+/// owner for the owner's settings, the job by `HIVE_JOB`.
+fn agent_or_job(c: &hive_cli::Context) -> bool {
+    (!c.agent.is_empty() && c.agent != hive_store::HUMAN_AGENT)
+        || std::env::var("HIVE_JOB").is_ok_and(|job| !job.is_empty())
+}
+
+/// `hive update [--check]` on `host`.
+pub(crate) fn update_on(
+    c: &mut hive_cli::Context,
+    fs: &hive_cli::FlagSet,
+    host: UpdateHost,
+) -> Result<()> {
+    use std::io::Write;
     let s = c
         .store
         .clone()
         .ok_or_else(|| anyhow!("hive update needs the store"))?;
-    let url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
-    if url.is_empty() {
+    let mut url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
+    // Looking at the project's own releases is for the owner who runs the
+    // command. An agent and a job get the refusal an empty setting always
+    // gave, before anything else, and nothing is read.
+    if url.is_empty() && agent_or_job(c) {
         bail!(
             "{LATEST_URL_SETTING} is empty, so Hive does not know where its releases are; set it first: hive settings set {LATEST_URL_SETTING} https://api.github.com/repos/OWNER/REPO/releases/latest"
         );
@@ -713,25 +779,31 @@ pub(crate) fn cmd_update(
             "update.channel resolves to source here: the daemon rebuilds hive from the brain project's checkout after each landing (daemon.self_update). To install published releases instead: hive settings set update.channel release"
         );
     }
-    let target = hive_cli::update::running_target().ok_or_else(|| {
+    let target = host.target.ok_or_else(|| {
         anyhow!(
             "no release is built for {}-{}",
             std::env::consts::ARCH,
             std::env::consts::OS
         )
     })?;
+    if url.is_empty() {
+        // Asked by the owner, the command looks at the project's own
+        // releases for this run and says so first; the setting stays empty.
+        writeln!(c.err, "{}", one_run_notice())?;
+        url = PROJECT_RELEASES_URL.to_string();
+    }
     let env = UpdateEnv {
         url,
-        running: hive_cli::version(),
+        running: host.running,
         target,
-        binary: crate::service::hive_binary(),
+        binary: host.binary,
         actor: if c.agent.is_empty() {
             crate::util::HUMAN_AGENT.to_string()
         } else {
             c.agent.clone()
         },
-        fetch_json,
-        fetch_asset,
+        fetch_json: host.fetch_json,
+        fetch_asset: host.fetch_asset,
     };
     let outcome = if only_check {
         check(&s, &env)?
@@ -1198,6 +1270,304 @@ mod tests {
             }
         );
         assert_eq!(*ASKED.lock().unwrap(), 0);
+    }
+
+    /// The addresses `hive update` asked its fake for, and what the fake
+    /// answers; the tests that use them hold `serial()`.
+    static HAND_ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static HAND_ANSWER: Mutex<Option<Value>> = Mutex::new(None);
+
+    fn hand_answers(doc: Value) {
+        HAND_ASKED.lock().unwrap().clear();
+        *HAND_ANSWER.lock().unwrap() = Some(doc);
+    }
+
+    fn hand_asked() -> Vec<String> {
+        HAND_ASKED.lock().unwrap().clone()
+    }
+
+    fn canned(url: &str) -> Result<Value, String> {
+        HAND_ASKED.lock().unwrap().push(url.to_string());
+        HAND_ANSWER
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "offline".to_string())
+    }
+
+    fn no_download(asset: &Asset) -> Result<Vec<u8>, String> {
+        Err(format!("{} must not be downloaded here", asset.name))
+    }
+
+    /// A host that runs v0.1.0, replaces `binary`, and reads documents from
+    /// the fake.
+    fn hand_host(binary: &str) -> UpdateHost {
+        UpdateHost {
+            running: "v0.1.0".into(),
+            target: Some(TARGET.into()),
+            binary: binary.to_string(),
+            fetch_json: canned,
+            fetch_asset: no_download,
+        }
+    }
+
+    /// `hive update ARGS` on `host`, run by the owner with no name given.
+    fn update(
+        s: &hive_store::Store,
+        args: &[&str],
+        json: bool,
+        host: UpdateHost,
+    ) -> (String, String, i32) {
+        update_as(s, "", args, json, host)
+    }
+
+    /// `hive update ARGS` on `host` under the name `agent` (`--agent` or
+    /// `HIVE_AGENT`; empty for none): stdout, stderr and the exit status, a
+    /// failure reported the way the binary reports it.
+    fn update_as(
+        s: &hive_store::Store,
+        agent: &str,
+        args: &[&str],
+        json: bool,
+        host: UpdateHost,
+    ) -> (String, String, i32) {
+        let mut fs = hive_cli::FlagSet::new("update");
+        update_flags(&mut fs);
+        let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        fs.parse(&args).unwrap();
+        let out = hive_cli::Buffer::default();
+        let err = hive_cli::Buffer::default();
+        let mut c = hive_cli::Context {
+            store: Some(s.clone()),
+            home: s.home.clone(),
+            out: Box::new(out.clone()),
+            err: Box::new(err.clone()),
+            json,
+            quiet: false,
+            color: false,
+            agent: agent.to_string(),
+            project: String::new(),
+            session: String::new(),
+            now: crate::test_helpers::TEST_NOW.to_string(),
+            args: Vec::new(),
+        };
+        let code = match update_on(&mut c, &fs, host) {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(c.err, "hive update: {e}");
+                1
+            }
+        };
+        (out.string(), err.string(), code)
+    }
+
+    const ONE_RUN_NOTICE: &str = "update.latest_url is empty: looking at https://api.github.com/repos/lamplitlabs/hive/releases/latest for this run. To hear of new releases without asking, set it: hive settings set update.latest_url https://api.github.com/repos/lamplitlabs/hive/releases/latest\n";
+
+    fn project_release() -> Value {
+        serde_json::json!({
+            "tag_name": "v0.3.0",
+            "html_url": "https://github.com/lamplitlabs/hive/releases/tag/v0.3.0",
+        })
+    }
+
+    #[test]
+    fn update_by_hand_with_no_latest_url_looks_at_the_projects_releases_for_that_run() {
+        let _serial = serial();
+        let s = new_store();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        hand_answers(project_release());
+
+        let (out, err, code) = update(&s, &["--check"], false, hand_host(""));
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(err, ONE_RUN_NOTICE);
+        assert_eq!(
+            out,
+            "A newer Hive is available: v0.3.0 (running v0.1.0) - https://github.com/lamplitlabs/hive/releases/tag/v0.3.0\nInstall it with: hive update\n"
+        );
+        assert_eq!(hand_asked(), vec![PROJECT_RELEASES_URL.to_string()]);
+
+        // For that run only: the setting is as empty as it was, and what
+        // reads it still does not look anywhere.
+        assert_eq!(s.setting(LATEST_URL_SETTING, ""), "");
+        assert!(hive_cli::update::stored_state(&s).is_none());
+        assert_eq!(release_prompt(&s), None);
+        let daily = crate::update_check::set_fetch(canned);
+        let lines = crate::update_check::tend_update_check(&s, &s.now(), "v0.1.0");
+        crate::update_check::set_fetch(daily);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(
+            start_apply(
+                &s,
+                "human",
+                ApplyTarget {
+                    binary: "/nonexistent/hive".into(),
+                    running: "v0.1.0".into(),
+                },
+            )
+            .err(),
+            Some(ApplyRefusal::NoSource)
+        );
+        assert_eq!(hand_asked().len(), 1, "{:?}", hand_asked());
+
+        // Asked again the same day it answers from what the first run kept,
+        // as it does with the setting set, and --json keeps stdout for the
+        // document.
+        let (out, err, code) = update(&s, &["--check"], true, hand_host(""));
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(err, ONE_RUN_NOTICE);
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            (doc["state"].as_str(), doc["latest"].as_str()),
+            (Some("available"), Some("v0.3.0")),
+            "{doc}"
+        );
+        assert_eq!(hand_asked().len(), 1, "{:?}", hand_asked());
+
+        // A setting that holds an address is the one it reads, with no word
+        // about the project's.
+        let own = "https://releases.test/latest.json";
+        s.set_setting("human", LATEST_URL_SETTING, own).unwrap();
+        let (out, err, code) = update(&s, &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert_eq!(
+            hand_asked(),
+            vec![PROJECT_RELEASES_URL.to_string(), own.to_string()]
+        );
+    }
+
+    #[test]
+    fn update_by_hand_with_no_latest_url_installs_the_projects_release() {
+        let _serial = serial();
+        let _signing = signing_linux();
+        let s = new_store();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        // The project's address answers with the document of a served
+        // folder, whose files the real download then fetches from it.
+        let served = tempfile::tempdir().unwrap();
+        let base = serve(served.path().to_path_buf());
+        release_dir(&base, served.path(), "v0.2.0", false);
+        let doc = std::fs::read(served.path().join("latest.json")).unwrap();
+        hand_answers(serde_json::from_slice(&doc).unwrap());
+        let home = tempfile::tempdir().unwrap();
+        let binary = installed_binary(home.path());
+        let host = UpdateHost {
+            fetch_asset,
+            ..hand_host(&binary)
+        };
+
+        let (out, err, code) = update(&s, &[], false, host);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(err, ONE_RUN_NOTICE);
+        assert_eq!(
+            out,
+            format!(
+                "Installed Hive v0.2.0 at {binary} (was v0.1.0).\nThe daemon and the hub restart on it once their runs in flight end. Roll back with: mv {binary}.prev {binary}\n"
+            )
+        );
+        assert_eq!(hand_asked(), vec![PROJECT_RELEASES_URL.to_string()]);
+        let now = std::fs::read_to_string(&binary).unwrap();
+        assert!(now.contains("\"version\":\"v0.2.0\""), "{now}");
+        assert_eq!(
+            std::fs::read_to_string(format!("{binary}.prev")).unwrap(),
+            "old binary"
+        );
+        assert_eq!(s.setting(LATEST_URL_SETTING, ""), "");
+    }
+
+    /// The fallback is for the owner. Under an agent's name or inside a job
+    /// an empty setting is the refusal it always was, and nothing is read.
+    #[test]
+    fn update_under_an_agents_name_or_inside_a_job_keeps_the_old_refusal() {
+        let _serial = serial();
+        let s = new_store();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        hand_answers(project_release());
+        let refusal = "hive update: update.latest_url is empty, so Hive does not know where its releases are; set it first: hive settings set update.latest_url https://api.github.com/repos/OWNER/REPO/releases/latest\n";
+        let refused = |agent: &str, args: &[&str], what: &str| {
+            let (out, err, code) = update_as(&s, agent, args, false, hand_host(""));
+            assert_eq!(
+                (code, out.as_str(), err.as_str()),
+                (1, "", refusal),
+                "{what}"
+            );
+        };
+
+        refused("aurora", &["--check"], "an agent, --check");
+        refused("aurora", &[], "an agent");
+        {
+            let _job = hive_testutil::setenv("HIVE_JOB", "job-1");
+            refused("", &["--check"], "a job, --check");
+            refused("", &[], "a job");
+            refused("human", &[], "a job under the owner's name");
+            refused("aurora", &[], "an agent's job");
+        }
+        // As before the fallback existed, the refusal comes before the one
+        // of the source channel.
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        refused("aurora", &[], "an agent on the source channel");
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        // Nothing was read and nothing kept.
+        assert!(hand_asked().is_empty(), "{:?}", hand_asked());
+        assert!(!s.meta(META_KEY).unwrap().1);
+
+        // The owner, named or not, gets the project's releases.
+        let (_, err, code) = update_as(&s, "human", &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ONE_RUN_NOTICE));
+        assert_eq!(hand_asked(), vec![PROJECT_RELEASES_URL.to_string()]);
+
+        // A setting that holds an address is read by an agent and by a job
+        // as it always was.
+        let own = "https://releases.test/latest.json";
+        s.set_setting("human", LATEST_URL_SETTING, own).unwrap();
+        let (out, err, code) = update_as(&s, "aurora", &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert!(
+            out.starts_with("A newer Hive is available: v0.3.0"),
+            "{out}"
+        );
+        assert_eq!(
+            hand_asked(),
+            vec![PROJECT_RELEASES_URL.to_string(), own.to_string()]
+        );
+        let _job = hive_testutil::setenv("HIVE_JOB", "job-1");
+        let (out, err, code) = update(&s, &["--check"], false, hand_host(""));
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert!(
+            out.starts_with("A newer Hive is available: v0.3.0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn update_on_the_source_channel_still_refuses_to_install_and_check_still_reports() {
+        let _serial = serial();
+        let s = new_store();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        hand_answers(project_release());
+
+        // It refuses before it looks anywhere, so it names no address.
+        let (out, err, code) = update(&s, &[], false, hand_host(""));
+        assert_eq!((code, out.as_str()), (1, ""), "{err}");
+        assert_eq!(
+            err,
+            "hive update: update.channel resolves to source here: the daemon rebuilds hive from the brain project's checkout after each landing (daemon.self_update). To install published releases instead: hive settings set update.channel release\n"
+        );
+        assert!(hand_asked().is_empty(), "{:?}", hand_asked());
+
+        let (out, err, code) = update(&s, &["--check"], false, hand_host(""));
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(err, ONE_RUN_NOTICE);
+        assert_eq!(
+            out,
+            "A newer Hive is available: v0.3.0 (running v0.1.0) - https://github.com/lamplitlabs/hive/releases/tag/v0.3.0\nThis machine follows update.channel source: the daemon builds from the brain's checkout. hive settings set update.channel release to install releases.\n"
+        );
+        assert_eq!(hand_asked(), vec![PROJECT_RELEASES_URL.to_string()]);
     }
 
     #[test]

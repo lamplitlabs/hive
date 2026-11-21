@@ -5791,6 +5791,48 @@ fn manifest_command_checks_a_working_copy_and_shows_and_syncs_a_project() {
     assert!(err.contains("unknown subcommand"), "{err}");
 }
 
+/// `hive manifest` opens no store by itself. Where it needs one and the
+/// machine has none, it says how to make one.
+#[test]
+fn manifest_on_a_machine_with_no_store_says_how_to_make_one() {
+    let _serial = crate::test_helpers::serial();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("hive");
+    let out = Buffer::new();
+    let mut c = Context {
+        store: None,
+        home: home.display().to_string(),
+        out: Box::new(out.clone()),
+        err: Box::new(out.clone()),
+        json: false,
+        quiet: false,
+        color: false,
+        agent: String::new(),
+        project: "demo".into(),
+        session: String::new(),
+        now: String::new(),
+        args: Vec::new(),
+    };
+    for args in [vec!["show"], vec!["sync"], vec!["check"]] {
+        let err = run_cmd(&mut c, "manifest", &args).unwrap_err();
+        let ce = err.downcast_ref::<hive_cli::Error>().expect("a cli error");
+        assert_eq!(ce.exit_code(), 2, "{args:?}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "No store at {}\n  why: this machine has no Hive store yet; hive manifest check without --project needs none\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)",
+                home.join(hive_store::STORE_NAME).display()
+            ),
+            "{args:?}"
+        );
+    }
+    assert!(
+        out.string().is_empty() && !home.exists(),
+        "{}",
+        out.string()
+    );
+}
+
 #[test]
 fn an_owner_wait_names_its_holds_until_the_job_is_leased() {
     let _serial = crate::test_helpers::serial();

@@ -644,7 +644,7 @@ fn manifest_store(c: &Context, writable: bool) -> Result<hive_store::Store> {
             2,
             &format!("No store at {}", path.display()),
             "this machine has no Hive store yet; hive manifest check without --project needs none",
-            "hive init <project-path>",
+            hive_cli::NO_STORE_FIX,
         )
         .into());
     }
