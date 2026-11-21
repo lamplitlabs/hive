@@ -93,7 +93,8 @@ export default function RsiPage() {
         </p>
         <p>
           The reviewer and the project&apos;s pipeline then decide the pull request like any other. An experiment keeps its <code>evolve/</code> branch
-          name, and the review rule hands such a branch to you.
+          name, which the review rule counts as one of Hive&apos;s own, so the reviewer may merge it unless the change touches a path that is yours to
+          decide or you asked to merge every pull request yourself.
         </p>
 
         <H2 id="private-tests">Fixtures and private tests</H2>

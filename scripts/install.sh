@@ -576,6 +576,9 @@ report() {
     info "It shows the line to run here, of this shape:"
     info ""
     info "  hive-hand join --brain URL CODE"
+    info ""
+    info "To run agents this machine also needs hive itself and a model login:"
+    info "run this installer once more without --hand, then hive harness login."
   fi
 }
 

@@ -59,7 +59,7 @@ export function llmsText(docs: Docs = loadDocs()): string {
     "",
     `${SITE.name} is ${SITE.tagline.charAt(0).toLowerCase()}${SITE.tagline.slice(1)}. The facts:`,
     "",
-    "- One binary (`hive`), one SQLite file (`~/.hive/hive.sqlite`), one console (`http://127.0.0.1:8765`, loopback only). Nothing leaves the machine except the model calls and the git pushes you allowed.",
+    "- One binary (`hive`), one SQLite file (`~/.hive/hive.sqlite`), one console (`http://127.0.0.1:8765`, loopback only). Hive has no server of its own: in ordinary use the machine talks to the model provider you chose, to your git host, and to package registries for the release dates of dependencies.",
     "- A harness of its own: a tool loop with limits, deny rules, hooks, MCP servers, skills, helpers and sub-sessions. Models: GitHub Copilot by default; OpenAI, Anthropic, Gemini, a dozen OpenAI-compatible vendors and local servers by key.",
     "- Tasks as conversations: you write what you want, a project's lead agent cuts it into steps, step agents work in throwaway clones, you watch and steer.",
     "- Code becomes pull requests: each step must pass the project's own check, a finished branch becomes a pull request, a review agent reads it and merges it or hands it to you.",

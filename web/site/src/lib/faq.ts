@@ -26,7 +26,8 @@ export const FAQS: readonly FaqEntry[] = [
   },
   {
     q: "What leaves my machine?",
-    a: "The model calls and the git pushes you allowed. Nothing else. The store is one SQLite file under `~/.hive`, and the console listens on `127.0.0.1` only.",
+    a: "Hive has no server of its own. In ordinary use the machine talks to the model provider you chose, to your git host for fetches, pushes and pull requests, and to package registries for the release dates of dependencies. Web search, backups and the check for new releases stay off until you turn them on. The store is one SQLite file under `~/.hive`, and the console listens on `127.0.0.1` only.",
+    more: { label: "Security notes", href: "/docs/security/" },
   },
   {
     q: "What do I need to run it?",

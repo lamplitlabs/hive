@@ -81,7 +81,7 @@ const YOURS = [
   {
     icon: LockIcon,
     title: "It stays on your machine",
-    text: "Nothing leaves the machine except the model calls and the git pushes you allowed. The console listens on 127.0.0.1 only.",
+    text: "Hive has no server of its own. The machine talks to the model provider you chose and to your own git host, and the console listens on 127.0.0.1 only.",
   },
   {
     icon: GitPullRequestIcon,

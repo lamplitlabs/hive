@@ -130,6 +130,11 @@ export default function MachinesPage() {
           and coming back takes a new code.
         </p>
         <p>
+          <code>hive-hand</code> enrols the machine and carries the jobs. An agent itself runs on the harness, which is in <code>hive</code>, so a machine
+          that should take work also needs <code>hive</code> on its PATH and a model login of its own. The installer puts both programs in place: once as
+          it is, once with <code>--hand</code>.
+        </p>
+        <p>
           <code>--brain</code> is the address the machine reaches your Hive on; the line the console shows carries the address your browser used. The
           console listens on <code>127.0.0.1</code> only, so a machine elsewhere needs a way to that address that you set up. TLS is whatever stands in
           front of it.
