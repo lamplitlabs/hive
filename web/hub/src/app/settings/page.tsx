@@ -206,7 +206,7 @@ const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "provider", title: "Provider addresses", icon: iconOf("provider") },
   { id: "other", title: "Other", icon: iconOf("other") },
 ];
-const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", appearance: "general", notify: "general" };
+const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", appearance: "general", notify: "general", "runner-controls": "daemon" };
 const pageOf = (id: string) => PAGE_OF[id] ?? id;
 
 // The hash as a tiny store: the section links are plain anchors, so the

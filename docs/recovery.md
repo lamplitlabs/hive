@@ -69,9 +69,10 @@ week on a recipe no run could use).
 
 In the console, a project's header says how many of its jobs failed in the
 last day, and its **Overview** links **Jobs that failed** to the **Runs**
-page. No page of the console shows the repair panel at present. To inspect
-the current recovery reasons use `hive jobs --all`, and to repair a job by
-hand use `hive job retry JOB_ID [--as-new]` or the owner API.
+page. There, the **Failed** chip shows **Jobs that failed** under the runs:
+open it to see why each job failed and retry up to five at a time. In a
+terminal, `hive jobs --all` lists the recovery reasons and
+`hive job retry JOB_ID [--as-new]` repairs one job.
 
 The owner API exposes `GET /api/v1/jobs/failed` with project filtering and
 bounded cursor pagination, and `POST /api/v1/jobs/repair` with explicit

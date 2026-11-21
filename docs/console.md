@@ -73,6 +73,10 @@ After that Home shows a notice with the same step behind its button:
 in a terminal only. The sidebar's foot shows the runner's state. This
 machine's card on the **Machines** page has **Pause** and, after a pause,
 **Start**, and the runner's settings are under **Settings → This machine**.
+The runner's controls are at the top of that section: **Keep Hive running**,
+**Start the runner**, **Finish service setup** or **Resume**, whichever
+fits. The sidebar's runner line, **Start** on Machines for a runner that is
+not running, and **Fix it** on For you all lead there.
 
 A fresh copy carries the framework's records inside the binary, so nothing
 has to be imported first (see [Share Hive](development.md#share-hive)). How

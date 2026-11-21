@@ -306,7 +306,8 @@ first five under **Needs you**. Home also shows a notice while no runner
 runs, with the button **Start runner**: until the runner runs, a task waits
 in the queue. `hive status` shows the runner, the queue and what holds each
 project's work. For failed jobs, a project's Overview links **Jobs that
-failed** to the Runs page, and `hive jobs --all` lists them in a terminal
+failed** to the Runs page, where they can be retried, and
+`hive jobs --all` lists them in a terminal
 with what each one ended on. A waiting pull request says why on its task's
 delivery line. See [Recovery and hygiene](recovery.md).
 

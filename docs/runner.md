@@ -344,8 +344,8 @@ default: no check and no network request by the daemon. `hive update` and
 that one run (crates/hive-cli/src/update.rs,
 crates/hive-runner/src/update_check.rs).
 
-The owner need not wait for the drain. **Restart** (under **Settings →
-Running** and beside the update notice in the Home page's runner controls;
+The owner need not wait for the drain. **Restart now** (in the **Update
+waiting** row under **Settings → This machine**;
 `POST /api/v1/running/restart`) drains like a self-update by default
 (**Restart when they finish**): nothing new starts, the runs in flight are
 waited out, the daemon keeps its heartbeat and exits with code 3 once they
