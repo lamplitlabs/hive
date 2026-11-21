@@ -5,25 +5,30 @@ import assert from "node:assert/strict";
 
 const site = await import("./site.ts");
 
-test("the site names hivefleet.dev and nothing of GitHub", () => {
+test("the site names hivefleet.dev and the repository", () => {
   assert.equal(site.SITE.domain, "hivefleet.dev");
   assert.equal(site.SITE.url, "https://hivefleet.dev");
-  for (const v of Object.values(site.SITE)) assert.doesNotMatch(v, /github/i);
+  assert.equal(site.SITE.repo, "https://github.com/lamplitlabs/hive");
+  assert.equal(site.repoFile("/docs/harness.md"), "https://github.com/lamplitlabs/hive/blob/main/docs/harness.md");
+  assert.equal(site.absoluteUrl("/install/"), "https://hivefleet.dev/install/");
 });
 
-test("the headline speaks of the team, not of one machine (web-first, ADR-070)", () => {
-  assert.match(site.SITE.tagline, /team/i);
-  assert.match(site.SITE.description, /team/i);
-  for (const v of [site.SITE.tagline, site.SITE.description]) {
-    assert.doesNotMatch(v, /your own machine|one binary|one SQLite store|control plane/i);
-  }
+test("the words are the open tool's: the category line and the one sentence", () => {
+  assert.equal(site.SITE.tagline, "The self-improving agent harness");
+  assert.match(site.SITE.sentence, /^Hive is an open-source harness for coding agents\./);
+  assert.match(site.SITE.sentence, /your own machine as one binary/);
 });
 
-test("without a Clerk key the sign-in is not ready", () => {
-  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
-    assert.equal(site.SIGN_IN_READY, false);
-    assert.equal(site.CLERK_PUBLISHABLE_KEY, "");
-  } else {
-    assert.equal(site.SIGN_IN_READY, true);
-  }
+test("the install lines are the contract's, character for character", () => {
+  assert.equal(site.INSTALL.script, "curl -fsSL https://hivefleet.dev/install.sh | sh");
+  assert.equal(site.INSTALL.source, "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive");
+  assert.deepEqual(
+    site.INSTALL.after.map((l) => l.line),
+    ['export PATH="$HOME/.hive/bin:$PATH"', "hive version", "hive hub"],
+  );
+});
+
+test("nothing of the hosted product is left in the site's own words", () => {
+  const words = JSON.stringify([site.SITE, site.INSTALL, site.PAGES, site.NOT_FOUND]);
+  assert.doesNotMatch(words, /clerk|sign[ -]?in|sign[ -]?up|\baccounts?\b|team brain|hosted/i);
 });

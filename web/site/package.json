@@ -2,9 +2,9 @@
   "name": "hive-site",
   "type": "module",
   "//": [
-    "hivefleet.dev - the public landing page for Hive and the door to the team sign-in. Next.js App Router + Tailwind v4, exported statically to out/ (the same toolchain as web/hub). Vercel builds and serves it (.github/workflows/deploy-site-vercel.yml); nothing here is embedded in the hive binary.",
-    "Sign-in: Clerk, through @clerk/clerk-react (client only: the export has no server, so no middleware and no server auth). The publishable key comes from NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY at build time (.env.example); without it the page builds and the sign-in says it is not set up yet. SignIn/SignUp use hash routing so /sign-in/ and /sign-up/ are plain static pages.",
-    "check: `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + build + test."
+    "hivefleet.dev - the public site for Hive, the open-source tool: what it is, how to install it, and the repository's documentation. Next.js App Router + Tailwind v4, exported statically to out/ (the same toolchain as web/hub). Vercel builds and serves it (.github/workflows/deploy-site.yml); nothing here is embedded in the hive binary.",
+    "No server, no accounts, no secrets: every page is plain HTML written at build time.",
+    "check: `npm run check` = typecheck (next typegen, then tsc --noEmit, so a removed route never fails on stale .next/types) + lint (eslint) + build + test."
   ],
   "private": true,
   "scripts": {
@@ -12,12 +12,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test 'src/**/*.test.mjs'",
     "check": "npm run typecheck && npm run lint && npm run build && npm run test"
   },
   "dependencies": {
-    "@clerk/clerk-react": "^5.61.3",
     "lucide-react": "^1.41.0",
     "next": "16.4.6",
     "react": "19.3.1",

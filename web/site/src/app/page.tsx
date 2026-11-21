@@ -162,8 +162,8 @@ export default function Home() {
               command, and every task, rule, skill and review belongs to the team, not to one person.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Link href="/sign-in/" className={primary}>
-                Sign in to your team <ArrowRightIcon className="size-4" />
+              <Link href="/#how" className={primary}>
+                How it works <ArrowRightIcon className="size-4" />
               </Link>
               <Link href="/#story" className={secondary}>
                 Why a team needs it
@@ -323,8 +323,8 @@ export default function Home() {
             </div>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Link href="/sign-in/" className={primary}>
-              Sign in <ArrowRightIcon className="size-4" />
+            <Link href="/#how" className={primary}>
+              How it works <ArrowRightIcon className="size-4" />
             </Link>
             <a href="https://www.lamplitlabs.com" className={secondary}>
               Lamplit Labs

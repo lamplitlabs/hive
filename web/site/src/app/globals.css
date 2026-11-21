@@ -1,4 +1,3 @@
-@layer theme, base, clerk, components, utilities;
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
@@ -90,10 +89,6 @@
   --you: oklch(0.8 0.145 78);
   --you-ink: oklch(0.48 0.1 78);
   --you-soft: oklch(0.97 0.035 85);
-
-  /* Clerk's components follow the page */
-  --clerk-primary: var(--primary);
-  --clerk-background: var(--card);
 }
 
 @media (prefers-color-scheme: dark) {

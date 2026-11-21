@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { HiveTile } from "@/components/hive-mark";
-import { SignInControl } from "@/components/sign-in-control";
 
 const NAV = [
   { href: "/#story", label: "Why Hive" },
@@ -28,9 +27,6 @@ export function Header() {
             </Link>
           ))}
         </nav>
-        <div className="flex items-center gap-2">
-          <SignInControl />
-        </div>
       </div>
     </header>
   );
@@ -58,9 +54,6 @@ export function Footer() {
           </Link>
           <Link href="/#security" className="hover:text-foreground">
             Yours
-          </Link>
-          <Link href="/sign-in/" className="hover:text-foreground">
-            Sign in
           </Link>
           <a href="https://www.lamplitlabs.com" className="hover:text-foreground">
             Lamplit Labs
