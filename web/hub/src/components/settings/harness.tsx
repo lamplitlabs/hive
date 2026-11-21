@@ -532,7 +532,8 @@ function ProviderBlock({ h, runner, expired, commands, onReload }: { h: HarnessS
           <div className="min-w-0 flex-1 basis-56">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="text-sm font-semibold">{info.title}</span>
-              <ToneBadge tone={signedIn ? "ok" : "warn"} dot>
+              {/* On the tinted card the chip sits on the card's own colour: its tint over the card's reads below 4.5 to 1. */}
+              <ToneBadge tone={signedIn ? "ok" : "warn"} dot className={signedIn ? undefined : "bg-card"}>
                 {signedIn ? "Connected" : expired ? "Sign-in expired" : "Not connected"}
               </ToneBadge>
             </p>
