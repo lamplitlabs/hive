@@ -1,6 +1,7 @@
 //! Repository hooks: shell commands the clone's `.hive/hooks.json` (and
 //! the owner's `~/.hive/hooks.json`) runs around the model's tool calls
-//! and around the run. A `pre_tool` hook that exits 2 blocks the call and
+//! and around the run. A clone set up before the rename keeps the file as
+//! `.pulse/hooks.json`, read when there is no `.hive/hooks.json`. A `pre_tool` hook that exits 2 blocks the call and
 //! its output goes to the model; a `post_tool` hook's output is appended to
 //! the tool's result; `run_start` output joins the system prompt; `run_end`
 //! output is noted. In a session, a `user_prompt` hook sees each message
@@ -19,6 +20,11 @@ use std::time::Duration;
 
 /// The hook file of a clone, relative to its root.
 pub const HOOK_FILE: &str = ".hive/hooks.json";
+
+/// [`HOOK_FILE`] under the project folder's name from before the rename:
+/// read when the clone has no [`HOOK_FILE`]. One of the two is read, never
+/// both, so a project moving its hooks does not run them twice.
+pub const LEGACY_HOOK_FILE: &str = ".pulse/hooks.json";
 
 /// The owner's hook file, relative to the hive home.
 pub const HOME_HOOK_FILE: &str = "hooks.json";
@@ -132,22 +138,33 @@ struct HookEntry {
     timeout: u64,
 }
 
-/// Reads the clone's [`HOOK_FILE`] and the owner's `<home>/hooks.json`;
-/// the clone's hooks run first.
+/// Reads the clone's [`HOOK_FILE`] (or, when it has none, its
+/// [`LEGACY_HOOK_FILE`]) and the owner's `<home>/hooks.json`; the clone's
+/// hooks run first.
 pub fn load_hooks(cwd: &str, home: &str) -> HookSet {
     let root = if cwd.is_empty() {
         Path::new(".")
     } else {
         Path::new(cwd)
     };
-    let mut sources = vec![(root.join(HOOK_FILE), HOOK_FILE.to_string())];
+    let mut set = HookSet::default();
+    let clone_file = if root.join(HOOK_FILE).is_file() || !root.join(LEGACY_HOOK_FILE).is_file() {
+        if root.join(HOOK_FILE).is_file() && root.join(LEGACY_HOOK_FILE).is_file() {
+            set.errors.push(format!(
+                "{LEGACY_HOOK_FILE}: {HOOK_FILE} is there too and is the one read; remove this one"
+            ));
+        }
+        HOOK_FILE
+    } else {
+        LEGACY_HOOK_FILE
+    };
+    let mut sources = vec![(root.join(clone_file), clone_file.to_string())];
     if !home.is_empty() {
         sources.push((
             Path::new(home).join(HOME_HOOK_FILE),
             format!("~/.hive/{HOME_HOOK_FILE}"),
         ));
     }
-    let mut set = HookSet::default();
     for (path, label) in sources {
         let Ok(raw) = fs::read_to_string(&path) else {
             continue;
@@ -347,6 +364,41 @@ mod tests {
         // No files at all: an empty set, no errors.
         let none = load_hooks(tmp.path().join("nowhere").to_str().unwrap(), "");
         assert!(none.is_empty() && none.errors.is_empty());
+    }
+
+    /// A clone from before the rename keeps its hooks in `.pulse/`. They
+    /// are read from there until the clone has a `.hive/hooks.json`; then
+    /// that one alone is read, and the older file is named.
+    #[test]
+    fn reads_the_hook_file_from_before_the_rename_when_it_is_the_only_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clone = tmp.path().join("clone");
+        fs::create_dir_all(clone.join(".pulse")).unwrap();
+        fs::write(
+            clone.join(".pulse/hooks.json"),
+            r#"[{"event":"pre_tool","command":"old-hook"}]"#,
+        )
+        .unwrap();
+        let set = load_hooks(clone.to_str().unwrap(), "");
+        assert_eq!(set.files, [".pulse/hooks.json"]);
+        assert_eq!(set.hooks[0].source, ".pulse/hooks.json");
+        assert!(set.errors.is_empty(), "{:?}", set.errors);
+
+        fs::create_dir_all(clone.join(".hive")).unwrap();
+        fs::write(
+            clone.join(".hive/hooks.json"),
+            r#"[{"event":"pre_tool","command":"new-hook"}]"#,
+        )
+        .unwrap();
+        let set = load_hooks(clone.to_str().unwrap(), "");
+        let cmds: Vec<&str> = set.hooks.iter().map(|h| h.command.as_str()).collect();
+        assert_eq!(cmds, ["new-hook"], "both files would run the hooks twice");
+        assert_eq!(
+            set.errors,
+            [
+                ".pulse/hooks.json: .hive/hooks.json is there too and is the one read; remove this one"
+            ]
+        );
     }
 
     #[test]

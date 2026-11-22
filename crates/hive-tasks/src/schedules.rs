@@ -40,7 +40,9 @@ pub const SOURCE_PREFIX: &str = "schedule:";
 pub const BOARD_AREA: &str = "schedule";
 /// Where a check's or watch's script lives: under the project's `.hive/`
 /// folder, so everything Hive adds to a repository stays in one place.
-/// `script_home` names the usual spot for one.
+/// `script_home` names the usual spot for one. A script under `.pulse/`,
+/// the folder's name from before the rename, is in its place too
+/// (`script_in_hive`).
 pub const SCRIPT_ROOT: &str = ".hive/";
 const TIME_LAYOUT: &str = "%Y-%m-%dT%H:%M:%SZ";
 pub(crate) const MINUTES_PER_DAY: i64 = 24 * 60;
@@ -140,9 +142,10 @@ impl Schedule {
 }
 
 /// Whether a script path (as `validate_script_path` returns it) is under
-/// the project's `.hive/` folder.
+/// the project's own folder: `.hive/`, or `.pulse/` in a repository set up
+/// before the rename.
 pub fn script_in_hive(path: &str) -> bool {
-    path.starts_with(SCRIPT_ROOT) && path.len() > SCRIPT_ROOT.len()
+    hive_store::under_project_dir(path).is_some_and(|rest| !rest.is_empty())
 }
 
 /// The place a check's or watch's script belongs: beside its automation

@@ -657,53 +657,61 @@ fn manifest_store(c: &Context, writable: bool) -> Result<hive_store::Store> {
     })
 }
 
-/// Reads a working copy's Hive files and lists what the daemon would
-/// refuse: the YAML, every entry's fields, and with `--project` the store's
-/// checks too (the skill, the agent, the script on the default branch).
-/// Without a path it reads `.hive/hive.yaml` and every file under
-/// `.hive/automations/`; with one, that file alone.
-fn manifest_check(c: &mut Context, s: Option<&hive_store::Store>, arg: &str) -> Result<()> {
-    let paths: Vec<String> = if arg.is_empty() {
-        let found: Vec<&str> = manifest::MANIFEST_PATHS
-            .iter()
-            .copied()
-            .filter(|p| std::path::Path::new(p).is_file())
-            .collect();
-        if found.len() > 1 {
-            c.println(format!(
-                "note: both {} and {} exist; the daemon reads {} and reports the other",
-                found[0], found[1], found[0]
-            ))?;
-        }
-        let mut paths: Vec<String> = found
-            .first()
-            .map(|p| (*p).to_string())
-            .into_iter()
-            .collect();
-        let mut files: Vec<String> = std::fs::read_dir(manifest::AUTOMATIONS_DIR)
-            .map(|dir| {
-                dir.filter_map(Result::ok)
+/// The Hive files of the working copy at `root`, as paths relative to it:
+/// the list files present, in the order the daemon looks for them (the
+/// first is the one it reads), and what `hive manifest check` reads - that
+/// list file, then every per-automation file, each folder's in name order
+/// and the folders in the daemon's order.
+pub(crate) fn working_copy_files(root: &std::path::Path) -> (Vec<&'static str>, Vec<String>) {
+    let found: Vec<&str> = manifest::MANIFEST_PATHS
+        .iter()
+        .copied()
+        .filter(|p| root.join(p).is_file())
+        .collect();
+    let mut paths: Vec<String> = found
+        .first()
+        .map(|p| (*p).to_string())
+        .into_iter()
+        .collect();
+    for dir in manifest::AUTOMATIONS_DIRS {
+        let mut files: Vec<String> = std::fs::read_dir(root.join(dir))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
                     .filter(|e| e.path().is_file())
-                    .map(|e| {
-                        format!(
-                            "{}/{}",
-                            manifest::AUTOMATIONS_DIR,
-                            e.file_name().to_string_lossy()
-                        )
-                    })
+                    .map(|e| format!("{dir}/{}", e.file_name().to_string_lossy()))
                     .filter(|p| manifest::automation_stem(p).is_some())
                     .collect()
             })
             .unwrap_or_default();
         files.sort();
         paths.extend(files);
+    }
+    (found, paths)
+}
+
+/// Reads a working copy's Hive files and lists what the daemon would
+/// refuse: the YAML, every entry's fields, and with `--project` the store's
+/// checks too (the skill, the agent, the script on the default branch).
+/// Without a path it reads `.hive/hive.yaml` and every file under
+/// `.hive/automations/` (and, in a repository from before the rename, the
+/// same under `.pulse/`); with one, that file alone.
+fn manifest_check(c: &mut Context, s: Option<&hive_store::Store>, arg: &str) -> Result<()> {
+    let paths: Vec<String> = if arg.is_empty() {
+        let (found, paths) = working_copy_files(std::path::Path::new(""));
+        for other in found.iter().skip(1) {
+            c.println(format!(
+                "note: both {} and {other} exist; the daemon reads {} and reports the other",
+                found[0], found[0]
+            ))?;
+        }
         if paths.is_empty() {
             return Err(hive_cli::errorf(
                 2,
                 "No Hive file here",
                 &format!(
                     "neither {} nor a {}/<name>.yaml exists under the current directory",
-                    manifest::MANIFEST_PATHS.join(" or "),
+                    manifest::MANIFEST_PATHS[..2].join(" or "),
                     manifest::AUTOMATIONS_DIR
                 ),
                 "run it from the repository root, or name the file: hive manifest check PATH",
@@ -885,11 +893,7 @@ fn print_manifest_status(
             ))
             .map_err(Into::into);
     };
-    let files = match st.files.len() {
-        0 => String::new(),
-        1 => format!("1 file in {}/", manifest::AUTOMATIONS_DIR),
-        n => format!("{n} files in {}/", manifest::AUTOMATIONS_DIR),
-    };
+    let files = manifest::files_words(&st.files);
     if st.path.is_empty() && files.is_empty() {
         c.println(format!(
             "{slug}: no {} and no {}/ on the default branch at {} (read {})",
