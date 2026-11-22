@@ -177,6 +177,20 @@ on disk, so the console you keep open is always the build the daemon runs, and
 neither dies with a terminal. Running `hive service install` again is safe: a
 unit whose file did not change and is loaded is left running.
 
+A service keeps the `PATH` it was installed with, and every program the
+daemon and its runs start is found on it or not at all: `gh` for pull
+requests, the helper that reads a push key, the tools a project's recipe
+pins. So the units get the `PATH` of the shell that ran `hive service
+install`, as it is, and after it each of these directories that exists and
+is not on it already: the one `hive` is in, `~/.local/bin`, `~/.cargo/bin`,
+`/opt/homebrew/bin`, `/home/linuxbrew/.linuxbrew/bin`, `/usr/local/bin` and
+`/snap/bin`. The command says which it added. That covers an install run
+from a script, over ssh or from an app, where `PATH` is `/usr/bin:/bin` and
+little more. A tool that lives anywhere else must be on the `PATH` of the
+shell you run the command from; when the daemon says a tool is missing that
+you know is installed, run `hive service install` again from a shell that
+finds it.
+
 That install line is for the first install only. After it, the daemon keeps
 itself current (ADR-035): when the brain's `main` moves - a pull request
 merged on the forge and fast-forwarded into the checkout by the delivery

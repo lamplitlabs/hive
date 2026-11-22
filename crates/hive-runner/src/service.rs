@@ -513,6 +513,83 @@ pub(crate) fn launch_binary() -> String {
         .unwrap_or_else(|| "hive".to_string())
 }
 
+/// The directories a person's tools usually live in, in the order they are
+/// added to a service's PATH: the one hive itself is started from, the
+/// user's own (`~/.local/bin` holds mise and uv, `~/.cargo/bin` cargo), then
+/// Homebrew's and the system's.
+pub(crate) fn usual_tool_dirs(user_home: &str, hive_bin: &str) -> Vec<String> {
+    let mut dirs = Vec::new();
+    if !hive_bin.is_empty() {
+        dirs.push(hive_bin.to_string());
+    }
+    if !user_home.is_empty() {
+        dirs.push(format!("{user_home}/.local/bin"));
+        dirs.push(format!("{user_home}/.cargo/bin"));
+    }
+    dirs.extend(
+        [
+            "/opt/homebrew/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/usr/local/bin",
+            "/snap/bin",
+        ]
+        .map(String::from),
+    );
+    dirs
+}
+
+/// The PATH a service is given, and the directories that were added to the
+/// caller's to make it. A service keeps the PATH it was installed with, and
+/// every tool the daemon and its runs start is found on it or not at all:
+/// gh for pull requests, a credential helper, the tools a project's recipe
+/// pins. So the caller's PATH is kept as it is and in its order, and each of
+/// the `usual` directories that exists and is not on it goes after it.
+/// `hive service install` run from a script, over ssh or from an app, where
+/// PATH is `/usr/bin:/bin:/usr/sbin:/sbin`, once left a daemon that could
+/// start none of them (2026-11-20: two days of refused pull requests,
+/// skipped fetches and failed backups before anyone saw why). A directory
+/// added here comes last, so it shadows nothing the caller's PATH names.
+pub(crate) fn service_path(
+    caller: &str,
+    usual: &[String],
+    exists: &dyn Fn(&str) -> bool,
+) -> (String, Vec<String>) {
+    let same = |a: &str, b: &str| a.trim_end_matches('/') == b.trim_end_matches('/');
+    let mut have: Vec<&str> = caller.split(':').filter(|d| !d.is_empty()).collect();
+    let mut added = Vec::new();
+    for dir in usual {
+        if have.iter().any(|d| same(d, dir)) || !exists(dir) {
+            continue;
+        }
+        have.push(dir);
+        added.push(dir.clone());
+    }
+    let path = if added.is_empty() {
+        caller.to_string()
+    } else if caller.is_empty() {
+        added.join(":")
+    } else {
+        format!("{caller}:{}", added.join(":"))
+    };
+    (path, added)
+}
+
+/// [`service_path`] for this process: its own PATH and the usual
+/// directories of this user and this hive.
+fn path_for_services() -> (String, Vec<String>) {
+    let caller = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+    let binary = launch_binary();
+    let hive_bin = Path::new(&binary)
+        .parent()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+    service_path(
+        &caller,
+        &usual_tool_dirs(&crate::util::home_dir(), &hive_bin),
+        &|dir| Path::new(dir).is_dir(),
+    )
+}
+
 pub(crate) fn install_service_inner(
     out: &mut dyn std::io::Write,
     interval: i32,
@@ -557,7 +634,7 @@ pub(crate) fn prepare_unit(
     let (kind, path) = unit_paths(u.clone(), system, user_home);
     let log_dir = Path::new(&hive_home).join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
-    let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+    let (path_env, _) = path_for_services();
     let binary = launch_binary();
     let text = unit_file_text(
         u.clone(),
@@ -668,6 +745,16 @@ pub fn install_service(
         daemon_path,
         ..Default::default()
     };
+    // Said once, for both units: what was added to this shell's PATH.
+    let (_, added) = path_for_services();
+    if !added.is_empty() {
+        use std::io::Write as _;
+        writeln!(
+            w,
+            "PATH for the services: this shell's PATH, then {}, which exist and are not on it",
+            added.join(", ")
+        )?;
+    }
     if !o.dry_run {
         // Sign before the units load, so the first daemon to run is the one whose folder answer sticks.
         crate::sign::ensure_signed(&mut w, &hive_binary(), hive_cli::managed::this_program());
@@ -1173,6 +1260,89 @@ mod tests {
             panic!("hub unit: {data:?}");
         }
         let _ = set_run_service(old);
+    }
+
+    /// A service keeps the PATH it was installed with. The caller's PATH
+    /// stays whole and first; the usual tool directories that exist and are
+    /// missing from it follow, each once.
+    #[test]
+    fn a_service_path_keeps_the_callers_and_adds_the_usual_directories_it_lacks() {
+        let usual = usual_tool_dirs("/Users/me", "/Users/me/.hive/bin");
+        assert_eq!(
+            usual,
+            [
+                "/Users/me/.hive/bin",
+                "/Users/me/.local/bin",
+                "/Users/me/.cargo/bin",
+                "/opt/homebrew/bin",
+                "/home/linuxbrew/.linuxbrew/bin",
+                "/usr/local/bin",
+                "/snap/bin",
+            ]
+        );
+        // What this Mac has: no linuxbrew and no snap.
+        let on_disk = |dir: &str| {
+            [
+                "/Users/me/.hive/bin",
+                "/Users/me/.local/bin",
+                "/Users/me/.cargo/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+            ]
+            .contains(&dir)
+        };
+
+        // The PATH a script, an ssh session or an app has: the one that
+        // left a daemon without gh, op, az, mise and cargo.
+        let bare = "/Users/me/.hive/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        let (path, added) = service_path(bare, &usual, &on_disk);
+        assert_eq!(
+            path,
+            "/Users/me/.hive/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/me/.local/bin:/Users/me/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"
+        );
+        assert_eq!(
+            added,
+            [
+                "/Users/me/.local/bin",
+                "/Users/me/.cargo/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin"
+            ]
+        );
+
+        // A shell that names them all, in an order of its own and one with
+        // a slash at its end: the PATH is the caller's, to the character.
+        let full = "/opt/homebrew/bin/:/Users/me/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/Users/me/.local/bin:/Users/me/.hive/bin";
+        assert_eq!(
+            service_path(full, &usual, &on_disk),
+            (full.to_string(), vec![])
+        );
+
+        // Run again on its own result, nothing more is added.
+        assert_eq!(
+            service_path(&path, &usual, &on_disk),
+            (path.clone(), vec![])
+        );
+
+        // No PATH at all, and a machine with none of the directories.
+        assert_eq!(
+            service_path("", &usual, &on_disk).0,
+            "/Users/me/.hive/bin:/Users/me/.local/bin:/Users/me/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"
+        );
+        assert_eq!(
+            service_path(bare, &usual, &|_| false),
+            (bare.to_string(), vec![])
+        );
+        // No home and no binary to name: only the system-wide ones are tried.
+        assert_eq!(
+            usual_tool_dirs("", ""),
+            [
+                "/opt/homebrew/bin",
+                "/home/linuxbrew/.linuxbrew/bin",
+                "/usr/local/bin",
+                "/snap/bin",
+            ]
+        );
     }
 
     #[test]
