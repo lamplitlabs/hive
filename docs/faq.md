@@ -255,6 +255,30 @@ the **Update now** button would be. The services restart on the new
 version by themselves all the same
 ([Homebrew](release.md#homebrew)).
 
+## I set Hive up when it was called PULSE. Does it still work?
+
+Yes. Hive reads what that setup left, where it is.
+
+- **The home.** Hive uses `~/.pulse` while the install still lives there:
+  when there is no `~/.hive`, and when `~/.hive` holds only the program and
+  the store is in `~/.pulse`. `PULSE_HOME` stands in for `HIVE_HOME`. The
+  store file `pulse.sqlite` is renamed to `hive.sqlite` the first time it
+  is opened, and `hive service install` replaces the `pulse.daemon` and
+  `pulse.hub` services.
+- **A project's folder.** `.pulse/automations`, `.pulse/pulse.yaml`,
+  `.pulse/skills`, `.pulse/agents`, `.pulse/rules` and `.pulse/hooks.json`
+  are read like their `.hive/` twins. One repository may hold both folders
+  ([the rules](board.md#a-repository-set-up-before-the-rename-pulse)).
+- **Scripts and hooks.** The variables a script or a hook is given are
+  there again under their `PULSE_...` names.
+- **Open pull requests.** One that Hive opened then has its branch under
+  `pulse/`. It is still Hive's own: the reviewer reads it like the rest,
+  and the owner's paths stay closed to it.
+
+To move the home, stop the services, run `mv ~/.pulse ~/.hive`, then
+`hive service install`. Other programs may still name the old path, so a
+link from the old name is worth keeping: `ln -s ~/.hive ~/.pulse`.
+
 ## Is it safe to let agents run commands on my machine?
 
 An agent runs as your user, in a throwaway clone, with no container and no

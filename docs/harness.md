@@ -181,6 +181,12 @@ would start with, `/env` in a session lists the rules still waiting
 (`path rules: …`). The transcript's first `note` steps say which files
 were read and how many rules wait.
 
+A clone set up before the rename keeps its rules, agents, skills and hooks
+under `.pulse/` instead of `.hive/`. They are read the same way, and the
+run is told once that `pulse <command>` in the clone's files means
+`hive <command>`
+([the rules](board.md#a-repository-set-up-before-the-rename-pulse)).
+
 ### Custom agents
 
 The helper the `subagent` tool runs can be one the repository or the owner
@@ -783,7 +789,9 @@ with `git remote add`, `set-url` or `remove`, or with `gh`, and a command
 or path that names `~/.ssh/`, `.netrc`, `~/.copilot`, `~/.config/gh` or the
 hive home's `private/` directory (written as `.hive/private`,
 `$HIVE_HOME/private`, or a path with `/private/providers` or
-`/private/heldout` in it, as a measurement home's has). A
+`/private/heldout` in it, as a measurement home's has; `.pulse/private` and
+`$PULSE_HOME/private`, the home's names from before the rename, are closed
+the same way). A
 match is refused without being run; the model is told why and continues.
 Other spellings pass (`git -C . push`, `gh` by its full path,
 `$HOME/.ssh/...`). The rules catch a mistake; they are not a barrier

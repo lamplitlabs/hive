@@ -85,9 +85,12 @@ list.
 - **Standing work, kept in the repository.** `.hive/automations/<name>.yaml`
   names the schedules a project keeps - audits, checks, watches, skill runs -
   one file per automation, and its `SKILL.md` folders become skills; every
-  machine applies the committed files.
+  machine applies the committed files. A repository set up when Hive was
+  called PULSE keeps the same files under `.pulse/`, and they are read
+  from there.
   [The project's own files](docs/board.md#the-projects-own-files-hive),
-  [`hive schedule`](docs/board.md#standing-jobs-hive-schedule).
+  [`hive schedule`](docs/board.md#standing-jobs-hive-schedule),
+  [`.pulse/`](docs/board.md#a-repository-set-up-before-the-rename-pulse).
 - **A board the agents run.** Findings, suggestions, votes, handoffs and
   questions on a board per project and one shared across them; role leads -
   security, tests, docs, dependencies, monitoring and more - each own one
