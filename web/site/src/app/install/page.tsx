@@ -66,6 +66,16 @@ export default function InstallPage() {
           The first <code>hive hub</code> on a machine makes the store, <code>~/.hive/hive.sqlite</code>, and says so in one line.{" "}
           <code>hive init --store-only</code> makes one without starting the console, for a service or a script.
         </p>
+        <h3 id="homebrew">With Homebrew</h3>
+        <p>
+          On macOS and Linux, Homebrew installs the same binary and puts it on your path itself, so only the last two lines above are left to run.
+          The formula is called <code>hivefleet</code> because Homebrew has another <code>hive</code>.
+        </p>
+        <CodeBlock code={INSTALL.blocks.brew} title="With Homebrew" copy={INSTALL.brew} copyWhat="the Homebrew command" />
+        <p>
+          Homebrew owns the file it installed, so a newer release comes with <code>brew upgrade hivefleet</code>, and <code>hive update</code> says so
+          and installs nothing. <Link href="/docs/release/#homebrew">Homebrew</Link> has the rest.
+        </p>
         <h3 id="from-source">From source</h3>
         <p>
           With Rust 1.95 or newer and Node.js 22 or newer, one command builds the same binary. Node.js is there because the build exports the console and
@@ -73,7 +83,7 @@ export default function InstallPage() {
         </p>
         <CodeBlock code={INSTALL.blocks.source} title="From source" copy={INSTALL.source} copyWhat="the command that builds from source" />
         <p>
-          Later, <code>hive update</code> installs a newer release: it checks the download against the release&apos;s checksums, tries the new binary, and
+          Later, with the installer or a build from source, <code>hive update</code> installs a newer release: it checks the download against the release&apos;s checksums, tries the new binary, and
           keeps the old one beside it as <code>hive.prev</code>. Run by hand on a fresh install, it looks at the project&apos;s own releases on GitHub for
           that one run, and says so. To have Hive look once a day by itself, tell it where the releases are:
         </p>

@@ -248,6 +248,13 @@ you start it again. If you build Hive from a checkout you registered as the
 brain project, the runner rebuilds itself from that checkout instead. See
 [Releases and `hive update`](release.md).
 
+If Homebrew installed your `hive`, upgrade it with
+`brew upgrade hivefleet`. Homebrew owns that file, so `hive update` names
+the command and installs nothing, and the console shows the command where
+the **Update now** button would be. The services restart on the new
+version by themselves all the same
+([Homebrew](release.md#homebrew)).
+
 ## Is it safe to let agents run commands on my machine?
 
 An agent runs as your user, in a throwaway clone, with no container and no

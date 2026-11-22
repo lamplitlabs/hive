@@ -140,6 +140,14 @@ merges pull requests through `gh`. Agents run on the harness built into
    curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive
    ```
 
+   Or with Homebrew. The formula is called `hivefleet` because Homebrew
+   has another `hive`, and it puts `hive` on your PATH itself
+   ([Homebrew](docs/release.md#homebrew)).
+
+   ```bash
+   brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive
+   ```
+
    Or build it from source. The build exports the console (`web/hub/`) and
    embeds it in the binary, which is why it needs Node.
 
@@ -171,7 +179,9 @@ merges pull requests through `gh`. Agents run on the harness built into
    Later, `hive update` installs the newest release. Run by hand, it looks
    at the project's releases on GitHub without any setting. To hear of a
    new release without asking, set `update.latest_url`
-   ([Releases and `hive update`](docs/release.md#hive-update)).
+   ([Releases and `hive update`](docs/release.md#hive-update)). A `hive`
+   from Homebrew is upgraded with `brew upgrade hivefleet`, and
+   `hive update` says so.
 
 2. **Open the console.** `hive hub` serves it at `http://127.0.0.1:8765`;
    open that address in your browser. Only this computer can reach it. On a

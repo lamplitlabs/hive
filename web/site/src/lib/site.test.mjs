@@ -23,6 +23,8 @@ test("the install lines are the contract's, character for character", () => {
   assert.equal(site.INSTALL.script, "curl -fsSL https://hivefleet.dev/install.sh | sh");
   assert.equal(site.INSTALL.source, "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive");
   assert.equal(site.INSTALL.blocks.script, "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive");
+  assert.equal(site.INSTALL.brew, "brew install lamplitlabs/tap/hivefleet");
+  assert.equal(site.INSTALL.blocks.brew, "brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive");
   assert.equal(
     site.INSTALL.blocks.source,
     "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+",
@@ -37,6 +39,7 @@ test("the install lines are the contract's, character for character", () => {
   );
   // The block is the bare command and its note, nothing else.
   assert.ok(site.INSTALL.blocks.script.startsWith(`${site.INSTALL.script} `));
+  assert.ok(site.INSTALL.blocks.brew.startsWith(`${site.INSTALL.brew} `));
   assert.ok(site.INSTALL.blocks.source.startsWith(`${site.INSTALL.source} `));
 });
 

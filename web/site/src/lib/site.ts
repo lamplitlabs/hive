@@ -26,15 +26,19 @@ export function repoFile(path: string): string {
 }
 
 /**
- * The install lines (the contract's section 4). `blocks` are the three code
- * blocks as every package prints them, character for character; `script` and
- * `source` are the bare commands a copy button puts on the clipboard.
+ * The install lines (the contract's section 4). `blocks` are the code blocks
+ * as every package prints them, character for character; `script`, `brew`
+ * and `source` are the bare commands a copy button puts on the clipboard.
+ * The Homebrew formula is `hivefleet`: Homebrew's own list has another
+ * `hive` (docs/release.md, "Homebrew").
  */
 export const INSTALL = {
   script: "curl -fsSL https://hivefleet.dev/install.sh | sh",
+  brew: "brew install lamplitlabs/tap/hivefleet",
   source: "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive",
   blocks: {
     script: "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive",
+    brew: "brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive",
     source: "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+",
     after: [
       'export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile',

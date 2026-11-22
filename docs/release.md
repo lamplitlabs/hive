@@ -29,6 +29,10 @@ The first `hive hub` on a machine makes the store, `~/.hive/hive.sqlite`,
 and says so in one line. `hive init --store-only` makes one without
 starting the console, for a service or a script.
 
+With Homebrew the line is `brew install lamplitlabs/tap/hivefleet`
+([Homebrew](#homebrew), below). The rest of this section is about the
+installer.
+
 The script is `scripts/install.sh` in the repository, and the site serves
 the same file. To read it before you run it, end the line with `| less`
 in place of `| sh`. It never runs `sudo` and never edits a shell profile.
@@ -182,6 +186,55 @@ hive-hand join --brain URL CODE
 That line enrols the machine and then stays connected, so it does not
 return by itself. `hive-hand dial` is for every later start.
 
+### Homebrew
+
+```bash
+brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive
+```
+
+and on a machine that only takes work from your Hive:
+
+```sh
+brew install lamplitlabs/tap/hivefleet-hand
+```
+
+The formula is called `hivefleet`, after the site, because Homebrew's own
+list already has a formula named `hive` (Apache Hive). The program it
+installs is `hive` all the same, so the formula says it conflicts with
+that one. The name is given in full, tap and all, the first time: that is
+how Homebrew is told that you trust this one formula of a tap that is not
+its own.
+
+Homebrew downloads the archive the installer would take, for macOS or
+Linux on arm64 or x86_64, and checks it against the SHA-256 written in the
+formula. That digest is the archive's line in the release's `SHA256SUMS`,
+so the check proves what the installer's check proves and no more
+([above](#installing)). Nothing is built on your machine. Homebrew puts
+`hive` on your `PATH` itself, so what is left is:
+
+```sh
+hive version
+hive hub                               # the console, at http://127.0.0.1:8765
+```
+
+**Upgrading** is `brew upgrade hivefleet`. Homebrew owns the file, so Hive
+never writes over it: `hive update` names that command and installs
+nothing, the console's banner shows the command and no **Update now**
+button, and `daemon.self_update` installs nothing
+([A hive a package manager installed](#a-hive-a-package-manager-installed)).
+`hive update --check` still says whether a release is out. Hive's services
+pick an upgrade up by themselves, as they do after `hive update`:
+`hive service install` starts them by the path Homebrew keeps the same from
+one version to the next, `$(brew --prefix)/opt/hivefleet/bin/hive`, and
+they watch that path for the new program.
+
+**On macOS** the installer signs `hive` so that macOS keeps its answer
+about your folders across upgrades
+([runner.md](runner.md#macos-folder-access)). A `hive` from Homebrew is
+left as Homebrew wrote it, and every version is a new file in a new place.
+So macOS may ask again, after an upgrade, about a project that lives under
+Desktop, Documents or Downloads.
+
 ### Checking a download by hand
 
 Every release has one `SHA256SUMS` file beside its archives. To do by
@@ -227,9 +280,11 @@ Two workflows in `.github/workflows/`:
   none of the brain's brief text (`scripts/check-hand-deps.sh`), and packs
   each program in an archive of its own. It then makes sure all eight
   archives are there, writes one `SHA256SUMS`, installs both programs from
-  those files with `scripts/install.sh`, and publishes a GitHub Release
-  with the archives, `SHA256SUMS` and notes that say how to install and
-  list the commits since the previous tag.
+  those files with `scripts/install.sh`, writes the two Homebrew formulae
+  from the same `SHA256SUMS` (`scripts/brew-formula.sh`), and publishes a
+  GitHub Release with the archives, `SHA256SUMS` and notes that say how to
+  install and list the commits since the previous tag. A last job pushes
+  the formulae to [the Homebrew tap](#the-homebrew-tap).
 
 What a release carries:
 
@@ -241,7 +296,8 @@ What a release carries:
 
 - **Only hive's archives start with `hive`.** When `hive update` finds no
   archive under the exact name, it takes the one asset that starts with
-  `hive` and names its target, so no other asset may.
+  `hive` and names its target, so no other asset may. That is why the
+  Homebrew formulae are not assets: `hivefleet.rb` would be one.
 - **Linux is built inside Debian 12**, natively on each architecture, on
   GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` runners in the
   `rust:1.95-bookworm` image. A binary linked against a newer C library
@@ -253,8 +309,10 @@ What a release carries:
   `macos-15-intel` runners.
 - **A release goes out whole.** When one target does not build, nothing
   is published: no release lacks an archive the installer would ask for.
-- **Rights.** The workflow uses no secret but its own token, and only the
-  job that publishes may write to the repository.
+- **Rights.** To build and publish, the workflow uses no secret but its
+  own token, and only the job that publishes may write to the repository.
+  The one other secret, `HOMEBREW_TAP_TOKEN`, is optional. Only the tap job
+  reads it, and it gives access to the tap repository alone.
 - Releases cut before this workflow built Linux carry `hive` for macOS
   only. The installer says so when you ask one of them for another
   target.
@@ -277,6 +335,62 @@ release tag at HEAD gives `vX.Y.Z`; a later commit on `main` gives
 treat as newer than `vX.Y.Z` and older than the next release. Release tags
 must stay reachable from `main`: squashing `main` to a new root orphans them
 and every build falls back to `v0.0.0-...`.
+
+### The Homebrew tap
+
+`brew install lamplitlabs/tap/hivefleet` reads the formula from the
+repository `lamplitlabs/homebrew-tap`, file `Formula/hivefleet.rb`. The
+release workflow writes `hivefleet.rb` and `hivefleet-hand.rb` for every
+release and pushes them there in its last job, when the secret
+`HOMEBREW_TAP_TOKEN` is set. To set that up, once:
+
+1. Create the public repository `lamplitlabs/homebrew-tap`, with a README
+   so that it has a first commit. For a repository of another name, set
+   the Actions variable `HOMEBREW_TAP_REPOSITORY` to `OWNER/homebrew-NAME`;
+   Homebrew calls that tap `OWNER/NAME`.
+2. Make a fine-grained personal access token whose only repository is the
+   tap, with the permission **Contents: Read and write**.
+3. Save it in the Hive repository as the Actions secret
+   `HOMEBREW_TAP_TOKEN`.
+
+What the job does and does not do:
+
+- Without the secret it says so and ends green. The release is out all the
+  same, and its notes leave Homebrew out. The two files are in the run's
+  artifact `homebrew-formulae`, to commit to a tap by hand.
+- A token that has expired fails the job, after the release is out.
+- A tag built again replaces that release's formulae, because its archives
+  and so their digests are new. It does not take the tap back to an older
+  release than the one the tap holds.
+- A release cut before the tap existed is not in it. Build its tag again
+  (`gh workflow run release.yml -f tag=v0.2.0`), or write the formulae from
+  its checksums and commit them:
+
+  ```sh
+  curl -fsSLO https://github.com/lamplitlabs/hive/releases/download/v0.2.0/SHA256SUMS
+  sh scripts/brew-formula.sh --tag v0.2.0 --sums SHA256SUMS --out Formula
+  ```
+
+A formula builds nothing. It names the release's four archives with their
+SHA-256, puts the program in the formula's `libexec` with the marker
+`hive.managed` beside it
+([A hive a package manager installed](#a-hive-a-package-manager-installed)),
+and links it into `bin`. `scripts/tests/brew-formula-test.sh` tests the
+script with neither Homebrew nor network, and runs with the workspace's
+tests: it holds the formulae to the archive names `release.yml` publishes
+and to the marker the program reads. To try a formula in Homebrew itself
+against a release in a folder (`releases/v0.2.0/` holding the eight
+archives and their `SHA256SUMS`):
+
+```sh
+tap="$(brew --repository)/Library/Taps/you/homebrew-try"
+sh scripts/brew-formula.sh --tag v0.2.0 --sums releases/v0.2.0/SHA256SUMS \
+  --out "$tap/Formula" --base "file://$PWD/releases"
+git -C "$tap" init -q && git -C "$tap" add -A && git -C "$tap" commit -qm try
+brew style you/try
+brew install you/try/hivefleet && brew test hivefleet
+brew audit --strict --formula you/try/hivefleet
+```
 
 ## Windows
 
@@ -396,7 +510,58 @@ hive update [--check] [--json]
   sha256).
 
 On the `source` channel `hive update` refuses to install and says how to
-switch; `hive update --check` still reports.
+switch; `hive update --check` still reports. A `hive` that a package
+manager installed is left to that manager, on either channel (next
+section).
+
+## A hive a package manager installed
+
+Hive replaces its own program file when it updates: `hive update`, the
+console's **Update now** and both modes of `daemon.self_update` write a new
+file over the one that runs. A file that a package manager installed is
+that manager's to replace. It says so with a marker beside the program,
+named after it: `hive.managed` beside `hive`, `hive-hand.managed` beside
+`hive-hand`.
+
+```
+by=Homebrew
+upgrade=brew upgrade hivefleet
+path=/opt/homebrew/opt/hivefleet/bin/hive
+```
+
+| Line | What it says |
+| --- | --- |
+| `by` | who installed the program; Hive uses the name in what it prints |
+| `upgrade` | the command that brings a newer version; Hive prints it and never runs it |
+| `path` | the path that names the program from one version to the next, for a package manager that keeps every version in a directory of its own |
+
+Each line is optional: the file being there is what counts. Hive reads it
+beside the real file, symbolic links followed, once, when the program
+starts. An upgrade removes the old version's files, the marker among them,
+while a daemon started from them may still run, and that daemon goes on
+knowing whose file it is. With a marker:
+
+- `hive update` refuses before it reads anything, and names the `upgrade`
+  command. `hive update --check` reports as always, and its second line is
+  that command. With `--json` both carry `managed_by` and
+  `upgrade_command`, and so does `hive version --json`.
+- The console's banner shows the command and no **Update now** button, and
+  `POST /api/v1/update/apply` answers 409 in the same words.
+- `daemon.self_update` installs nothing in either mode and reads no
+  release document. It says why once, in the daemon's log.
+- The once-per-release line ends with the `upgrade` command, whatever
+  `update.channel` says.
+- `hive service install` writes `path` into the services' launchers while
+  it leads to the program that runs, and the daemon and the console watch
+  that path for the next version. It does not sign the file again on
+  macOS.
+- `hive-hand dial` starts its work by `path` too.
+
+Whoever can write beside the program can replace the program, so the
+marker gives nobody a right that directory had not given already. The
+Homebrew formulae write it. A package for another system can do the same:
+put the program where that system keeps it, write the three lines beside
+it, and name the path people start it by.
 
 ## `daemon.self_update release`: a machine without source
 
@@ -418,7 +583,9 @@ on its own:
   daemon's log and is tried again after `daemon.self_update_retry_minutes`.
 
 It never runs `cargo` and never reads the brain's checkout, and it works
-whatever `update.channel` says. With `brain.code none` the source mode
+whatever `update.channel` says. It installs nothing over a `hive` that a
+package manager installed
+([above](#a-hive-a-package-manager-installed)). With `brain.code none` the source mode
 (`on`) stands down and points here. The test is
 `release_update::tests::self_update_release_mode_installs_the_release_and_never_runs_cargo`
 in `crates/hive-runner`.
@@ -444,7 +611,10 @@ A newer Hive v1.2.3 is available - run: hive update
 It reads the store only (no network). Commands run as an agent or inside a
 job never print it, nor do read-only commands; the release it last named is
 kept in the store's `meta` row `update.prompted`. `hive version` keeps
-printing its own notice line every time.
+printing its own notice line every time. On a `hive` that a package manager
+installed the line ends with that manager's command, as in
+`A newer Hive v1.2.3 is available - run: brew upgrade hivefleet`, and it is
+printed on the `source` channel too, since nothing is built over that file.
 
 ## The console
 
@@ -454,10 +624,15 @@ button, which asks the hub to install the release the way `hive update`
 does (`POST /api/v1/update/apply`) and then shows how the install went.
 The hub refuses, and says why, on the `source` channel, while
 `update.latest_url` is empty and while an install is already running.
+Where a package manager installed Hive the banner has no button on any
+channel: it names that manager and shows its command.
 
 Code: scripts/install.sh (the installer), scripts/tests/install-test.sh
-(its test), .github/workflows/release.yml (what a release carries),
+(its test), scripts/brew-formula.sh (the Homebrew formulae),
+scripts/tests/brew-formula-test.sh (its test),
+.github/workflows/release.yml (what a release carries),
 crates/hive-cli/src/update.rs (the pure parts: assets, checksums, channel,
 the prompt), crates/hive-runner/src/release_update.rs (download, verify,
 install, `hive update`), crates/hive-runner/src/update_check.rs (the daily
-check).
+check), crates/hive-hand-core/src/managed.rs (the marker of a program a
+package manager installed).

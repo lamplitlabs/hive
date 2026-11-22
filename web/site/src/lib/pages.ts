@@ -72,6 +72,7 @@ export function llmsText(docs: Docs = loadDocs()): string {
     "",
     "```bash",
     INSTALL.blocks.script,
+    INSTALL.blocks.brew,
     INSTALL.blocks.source,
     INSTALL.blocks.after,
     "```",

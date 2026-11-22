@@ -450,7 +450,10 @@ is its own hash - so every rebuild would ask again. `hive service install`
 therefore re-signs the installed `hive` with a requirement every build meets,
 `identifier "hive"`, and the daemon signs each build it installs the same way:
 no certificate, no password, and the answer holds. Checkouts elsewhere never
-ask. The services run hive through small `/bin/sh` launchers
+ask. A `hive` that Homebrew installed is the exception: the file is
+Homebrew's, so Hive does not sign it again, and every version is a new file
+in a new place, so macOS may ask again after `brew upgrade`
+([release.md](release.md#homebrew)). The services run hive through small `/bin/sh` launchers
 (`~/.hive/bin/hive-daemon.sh`, `hive-hub.sh`) so that a restart is a loop
 and the crash guard has a home.
 
