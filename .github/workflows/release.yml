@@ -12,6 +12,13 @@
 # under the exact name, it takes the one asset that starts with `hive` and
 # names its target (crates/hive-cli/src/update.rs, pick_asset).
 #
+# A release also has two Homebrew formulae, written from its SHA256SUMS by
+# scripts/brew-formula.sh. They are not release assets (hivefleet.rb would
+# be a second name that starts with `hive`): the run keeps them as the
+# artifact `homebrew-formulae`, and the last job pushes them to the tap
+# repository when the secret HOMEBREW_TAP_TOKEN is set (docs/release.md,
+# "Homebrew"). Without the secret that job says so and ends green.
+#
 # Tags come from cut-release.yml (or `git tag vX.Y.Z && git push --tags` by
 # hand). Windows is not built here yet: the runner and daemon use unix-only
 # APIs (see docs/release.md).
@@ -201,6 +208,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+    outputs:
+      # true when this tag's scripts wrote the Homebrew formulae.
+      formulae: ${{ steps.formulae.outputs.written }}
     steps:
       - name: Check the tag
         run: |
@@ -272,7 +282,33 @@ jobs:
           case "$out" in *"$TAG"*) ;; *) echo "::error::the installed hive reports $out, not $TAG"; exit 1 ;; esac
           sh scripts/install.sh --hand --version "$TAG"
           "$HOME/.hive-hand/bin/hive-hand" --version
+      # The Homebrew formulae of this release, from the checksums that are
+      # about to be published. Written before anything is published, so a
+      # release whose formulae cannot be written does not go out, and kept
+      # as an artifact of the run: the tap job below pushes them, and
+      # without a tap they can be taken from the run by hand.
+      - name: Homebrew formulae
+        id: formulae
+        run: |
+          set -euo pipefail
+          if [[ ! -f scripts/brew-formula.sh ]]; then
+            echo "::notice::$TAG has no scripts/brew-formula.sh, so no Homebrew formula was written"
+            echo "written=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sh scripts/brew-formula.sh --tag "$TAG" --sums dist/SHA256SUMS --out formulae
+          echo "written=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.formulae.outputs.written == 'true'
+        with:
+          name: homebrew-formulae
+          path: formulae/*.rb
+          if-no-files-found: error
       - name: Release notes
+        env:
+          # Only whether there is a tap to name in the notes, never the token.
+          HAS_TAP: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && steps.formulae.outputs.written == 'true' }}
+          TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY || 'lamplitlabs/homebrew-tap' }}
         run: |
           set -euo pipefail
           prev="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
@@ -293,6 +329,19 @@ jobs:
             echo "curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand"
             echo '```'
             echo
+            if [[ "$HAS_TAP" == "true" ]]; then
+              # OWNER/homebrew-NAME is the tap Homebrew calls OWNER/NAME.
+              tap="${TAP_REPOSITORY%%/*}/${TAP_REPOSITORY#*/homebrew-}"
+              echo "With Homebrew, once the tap has this release:"
+              echo
+              echo '```sh'
+              echo "brew install $tap/hivefleet         # hive"
+              echo "brew install $tap/hivefleet-hand    # hive-hand"
+              echo '```'
+              echo
+              echo "The formula is \`hivefleet\` because Homebrew's own list has another \`hive\`. \`brew upgrade hivefleet\` brings a later release, and \`hive update\` leaves a hive that Homebrew installed to Homebrew."
+              echo
+            fi
             echo "| Machine | Target |"
             echo "| --- | --- |"
             echo "| macOS, Apple silicon | \`aarch64-apple-darwin\` |"
@@ -332,3 +381,76 @@ jobs:
           else
             gh release create "$TAG" dist/* --title "Hive $TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
           fi
+
+  # The formulae go to the tap repository: OWNER/homebrew-NAME is what
+  # `brew install OWNER/NAME/hivefleet` reads. Writing to another
+  # repository is the one thing here the workflow's own token cannot do, so
+  # this job needs the secret HOMEBREW_TAP_TOKEN, a token that may write
+  # the contents of the tap repository and nothing else (docs/release.md,
+  # "Homebrew", says how to make one). Without it the job says so and ends
+  # green: the release is out either way.
+  tap:
+    name: Homebrew tap
+    needs: publish
+    if: needs.publish.outputs.formulae == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Releases push to one branch of the tap: one at a time.
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    env:
+      TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY || 'lamplitlabs/homebrew-tap' }}
+    steps:
+      - name: Is there a tap to push to?
+        id: tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set, so the Homebrew formulae of $TAG were not pushed to $TAP_REPOSITORY. They are in this run's artifact homebrew-formulae (docs/release.md, Homebrew)."
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.tap.outputs.push == 'true'
+        with:
+          name: homebrew-formulae
+          path: formulae
+      - uses: actions/checkout@v4
+        if: steps.tap.outputs.push == 'true'
+        with:
+          repository: ${{ env.TAP_REPOSITORY }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      # A tag built again by hand must not take the tap back to an older
+      # release; the same release built again replaces its own formulae,
+      # because its archives, and so their digests, are new.
+      - name: Push the formulae
+        if: steps.tap.outputs.push == 'true'
+        run: |
+          set -euo pipefail
+          new="${TAG#v}"
+          old=""
+          if [[ -f tap/Formula/hivefleet.rb ]]; then
+            old="$(grep -m1 -oE '/v[0-9]+\.[0-9]+\.[0-9]+/hive-v' tap/Formula/hivefleet.rb | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
+          fi
+          if [[ -n "$old" && "$old" != "$new" && "$(printf '%s\n' "$old" "$new" | sort -V | tail -n 1)" == "$old" ]]; then
+            echo "::notice::$TAP_REPOSITORY holds $old, a later release than $new: left as it is"
+            exit 0
+          fi
+          mkdir -p tap/Formula
+          cp formulae/hivefleet.rb formulae/hivefleet-hand.rb tap/Formula/
+          cd tap
+          git add Formula/hivefleet.rb Formula/hivefleet-hand.rb
+          if git diff --cached --quiet; then
+            echo "$TAP_REPOSITORY already holds the formulae of $TAG"
+            exit 0
+          fi
+          git config user.name "hive-release[bot]"
+          git config user.email "hive-release[bot]@users.noreply.github.com"
+          git commit -m "hivefleet $new"
+          git push origin HEAD
+          echo "pushed the formulae of $TAG to $TAP_REPOSITORY"
