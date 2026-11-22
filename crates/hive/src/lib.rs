@@ -256,6 +256,11 @@ pub fn run_streaming(
     // hub's running view and the self-update smoke test all read it through `hive_cli`.
     hive_cli::install_build_info(BUILD_INFO_TEXT);
     register_all();
+    // Whether a package manager installed this program is read now and
+    // remembered: its upgrade removes this version's files, the marker
+    // among them, while a daemon or a console started from them still
+    // runs (hive_cli::managed).
+    let _ = hive_cli::managed::this();
     // launchd starts a service with 256 open files allowed; a hub holding a
     // provider and every MCP server per conversation runs out of them and
     // then cannot even spawn git. The ceiling goes as high as the system

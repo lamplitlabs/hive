@@ -192,7 +192,7 @@ fn tend_release(
     };
     // A package manager's program is that manager's to replace: the release
     // document is not even read.
-    if let Some(m) = hive_cli::managed::beside(std::path::Path::new(&env.binary)) {
+    if let Some(m) = hive_cli::managed::of(std::path::Path::new(&env.binary)) {
         say(st, managed_wait(&m, &env.binary, "release"));
         return;
     }
@@ -446,7 +446,7 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     // A package manager's program is that manager's to replace: nothing is
     // built to go over it. Said after the gates above, so a machine with
     // no brain project keeps the line it always had.
-    if let Some(m) = hive_cli::managed::beside(std::path::Path::new(&env.binary)) {
+    if let Some(m) = hive_cli::managed::of(std::path::Path::new(&env.binary)) {
         say(&mut st, &mut lines, managed_wait(&m, &env.binary, "build"));
         return lines;
     }

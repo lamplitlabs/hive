@@ -150,8 +150,9 @@ fn dial(_args: &[String]) -> ExitCode {
     // The path this program stays under: where a package manager installed
     // it, an upgrade moves the real file and leaves this name in place
     // (hive_hand_core::managed).
-    let Some(me) =
-        hive_hand_core::managed::this_stable_path().or_else(|| std::env::current_exe().ok())
+    let Some(me) = hive_hand_core::managed::this_stable_path()
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_exe().ok())
     else {
         eprintln!("hive-hand dial: cannot find this binary");
         return ExitCode::FAILURE;

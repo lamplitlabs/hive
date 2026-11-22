@@ -277,7 +277,7 @@ pub(crate) fn check(s: &hive_store::Store, env: &UpdateEnv) -> Result<Outcome> {
 /// build is current.
 pub(crate) fn install(s: &hive_store::Store, env: &UpdateEnv) -> Result<Outcome> {
     // Whoever asks: a package manager's file is never written here.
-    if let Some(m) = hive_cli::managed::beside(Path::new(&env.binary)) {
+    if let Some(m) = hive_cli::managed::of(Path::new(&env.binary)) {
         bail!("{}", m.refusal(&env.binary));
     }
     let release = read_release(s, env)?;
@@ -578,7 +578,7 @@ impl ApplyTarget {
 /// installed it: who owns the file and the command that upgrades it. None
 /// for a program Hive may replace.
 pub fn managed_refusal(binary: &str) -> Option<String> {
-    hive_cli::managed::beside(Path::new(binary)).map(|m| m.refusal(binary))
+    hive_cli::managed::of(Path::new(binary)).map(|m| m.refusal(binary))
 }
 
 /// The console's "Update now" (TASK-093): checks what `hive update` checks
@@ -798,7 +798,7 @@ pub(crate) fn update_on(
     let only_check = fs.get_bool("check");
     // A package manager's program is that manager's to replace: the command
     // says so before it reads anything. `--check` goes on and reports.
-    let managed = hive_cli::managed::beside(Path::new(&host.binary));
+    let managed = hive_cli::managed::of(Path::new(&host.binary));
     if let Some(m) = managed.as_ref().filter(|_| !only_check) {
         bail!("{}", m.refusal(&host.binary));
     }

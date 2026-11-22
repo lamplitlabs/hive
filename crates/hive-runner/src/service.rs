@@ -2,7 +2,7 @@
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::{LazyLock, RwLock};
@@ -493,13 +493,13 @@ pub(crate) fn unit_commands(
 }
 
 /// The running program's real file, symbolic links resolved: the one an
-/// update replaces.
+/// update replaces. Named once, when the process first asks
+/// (`hive_cli::managed::this`): once the file has been replaced or removed,
+/// Linux gives the running one the name `hive (deleted)`.
 pub(crate) fn hive_binary() -> String {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("hive"));
-    std::fs::canonicalize(&exe)
-        .unwrap_or(exe)
-        .display()
-        .to_string()
+    hive_cli::managed::this_real_path()
+        .map(|real| real.display().to_string())
+        .unwrap_or_else(|| "hive".to_string())
 }
 
 /// The path a service starts hive by. A package manager keeps each version
@@ -508,10 +508,9 @@ pub(crate) fn hive_binary() -> String {
 /// the real file would name nothing after the next upgrade. Everywhere else
 /// it is [`hive_binary`].
 pub(crate) fn launch_binary() -> String {
-    let real = hive_binary();
-    hive_cli::managed::launch_path(Path::new(&real), hive_cli::managed::this_program())
-        .display()
-        .to_string()
+    hive_cli::managed::this_launch_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "hive".to_string())
 }
 
 pub(crate) fn install_service_inner(
@@ -671,12 +670,7 @@ pub fn install_service(
     };
     if !o.dry_run {
         // Sign before the units load, so the first daemon to run is the one whose folder answer sticks.
-        let binary = hive_binary();
-        crate::sign::ensure_signed(
-            &mut w,
-            &binary,
-            hive_cli::managed::beside(Path::new(&binary)).as_ref(),
-        );
+        crate::sign::ensure_signed(&mut w, &hive_binary(), hive_cli::managed::this_program());
         // Units from before the rename (pulse.daemon, pulse.hub) would keep a
         // second daemon leasing jobs beside this one: unload and remove them.
         retire_legacy_units(&mut w, String::new(), String::new());

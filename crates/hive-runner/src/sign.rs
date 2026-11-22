@@ -77,9 +77,8 @@ pub(crate) fn sign(path: &str, running: bool) -> Result<()> {
     Ok(())
 }
 /// Signs `binary` as hive unless it already is. A program a package manager
-/// installed (`managed`) is left as that manager wrote it: its file is not
-/// Hive's to rewrite, and it moves with every upgrade, which is what macOS
-/// goes by.
+/// installed (`managed`) is left as that manager wrote it: the file is not
+/// Hive's to rewrite, and the next upgrade puts another in another place.
 pub(crate) fn ensure_signed(
     out: &mut dyn Write,
     binary: &str,
@@ -91,7 +90,7 @@ pub(crate) fn ensure_signed(
     if let Some(m) = managed {
         let _ = writeln!(
             out,
-            "macOS: {} owns {binary}, so hive left it unsigned; macOS may ask about your folders again after an upgrade.",
+            "macOS: {} owns {binary}, so hive did not sign it again as hive; macOS may ask about your folders again after an upgrade.",
             m.owner()
         );
         return;
@@ -231,8 +230,9 @@ mod tests {
             ensure_signed(&mut out, &build, Some(&brew));
             let said = String::from_utf8(out.clone()).unwrap();
             assert!(
-                said.contains(&format!("Homebrew owns {build}, so hive left it unsigned"))
-                    && !signed(&build)
+                said.contains(&format!(
+                    "Homebrew owns {build}, so hive did not sign it again as hive"
+                )) && !signed(&build)
                     && !std::path::Path::new(&format!("{build}.signing")).exists(),
                 "managed: {said}"
             );

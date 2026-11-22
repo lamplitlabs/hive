@@ -156,14 +156,6 @@ pub fn real_program() -> Option<PathBuf> {
     Some(std::fs::canonicalize(&exe).unwrap_or(exe))
 }
 
-/// What the marker beside the running program says, read once: a package
-/// manager does not come or go while the program runs.
-pub fn this_program() -> Option<&'static Managed> {
-    static THIS: OnceLock<Option<Managed>> = OnceLock::new();
-    THIS.get_or_init(|| real_program().and_then(|real| beside(&real)))
-        .as_ref()
-}
-
 /// The path to start `real` by, and to write into a service file: the
 /// marker's `path` when it names that very file today, and `real` itself
 /// otherwise (no marker, no `path`, or a `path` that leads elsewhere).
@@ -178,19 +170,85 @@ pub fn launch_path(real: &Path, managed: Option<&Managed>) -> PathBuf {
     }
 }
 
-/// The marker's `path` for the running program, while it names this very
-/// file; None without a marker, without a `path`, and for a `path` that
-/// leads elsewhere.
-pub fn this_stable_path() -> Option<PathBuf> {
-    let real = real_program()?;
-    let stable = launch_path(&real, this_program());
-    (stable != real).then_some(stable)
+/// One program as it was when it was looked at: its real file, what the
+/// marker beside it said, and the path that marker gave it, kept only when
+/// that path led to this file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Program {
+    pub real: Option<PathBuf>,
+    pub managed: Option<Managed>,
+    pub stable: Option<PathBuf>,
+}
+
+impl Program {
+    /// Looks at the program whose real file is `real`.
+    pub fn read(real: Option<PathBuf>) -> Program {
+        let managed = real.as_deref().and_then(beside);
+        let stable = real.as_deref().and_then(|real| {
+            let stable = launch_path(real, managed.as_ref());
+            (stable != real).then_some(stable)
+        });
+        Program {
+            real,
+            managed,
+            stable,
+        }
+    }
+
+    /// What the marker of `program` says: for this program what was read
+    /// when it was looked at, for any other file what the disk says now.
+    pub fn marker_of(&self, program: &Path) -> Option<Managed> {
+        if self.real.as_deref() == Some(program) {
+            return self.managed.clone();
+        }
+        beside(program)
+    }
+
+    /// The path to start this program by: the marker's while it led here,
+    /// else the real file.
+    pub fn launch(&self) -> Option<&Path> {
+        self.stable.as_deref().or(self.real.as_deref())
+    }
+}
+
+/// The running program, looked at once, when the process first asks, and
+/// remembered. A package manager's upgrade removes the old version's
+/// directory, marker included, while a daemon started from it still runs:
+/// that daemon must go on knowing whose file it runs from until it has
+/// restarted onto the new one. On Linux the running file's own name reads
+/// as `hive (deleted)` from then on, so the name is kept from before too.
+pub fn this() -> &'static Program {
+    static THIS: OnceLock<Program> = OnceLock::new();
+    THIS.get_or_init(|| Program::read(real_program()))
+}
+
+/// What the marker beside the running program says ([`this`]).
+pub fn this_program() -> Option<&'static Managed> {
+    this().managed.as_ref()
+}
+
+/// The running program's real file ([`this`]).
+pub fn this_real_path() -> Option<&'static Path> {
+    this().real.as_deref()
+}
+
+/// The marker's `path` for the running program, while it named this very
+/// file ([`this`]); None without a marker, without a `path`, and for a
+/// `path` that led elsewhere.
+pub fn this_stable_path() -> Option<&'static Path> {
+    this().stable.as_deref()
 }
 
 /// The path to start the running program by: [`this_stable_path`], else its
 /// real file. None when the program cannot name itself.
-pub fn this_launch_path() -> Option<PathBuf> {
-    this_stable_path().or_else(real_program)
+pub fn this_launch_path() -> Option<&'static Path> {
+    this().launch()
+}
+
+/// What the marker of `program` says: for the running program what
+/// [`this`] remembers, for any other file what the disk says now.
+pub fn of(program: &Path) -> Option<Managed> {
+    this().marker_of(program)
 }
 
 #[cfg(test)]
@@ -305,5 +363,69 @@ mod tests {
         // And a name that leads nowhere is not followed either.
         std::fs::remove_file(&stable).unwrap();
         assert_eq!(launch_path(&real, Some(&m)), real);
+    }
+
+    /// An upgrade removes the old version's directory while a daemon
+    /// started from it still runs: what was read at the start is what
+    /// counts for that program, and the disk for every other.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_remembers_its_marker_after_an_upgrade_removed_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let keg = dir.path().join("0.1.5");
+        std::fs::create_dir(&keg).unwrap();
+        let program = keg.join("hive");
+        std::fs::write(&program, b"#!/bin/sh\n").unwrap();
+        let real = std::fs::canonicalize(&program).unwrap();
+        let stable = std::fs::canonicalize(dir.path()).unwrap().join("opt-hive");
+        std::os::unix::fs::symlink(&real, &stable).unwrap();
+        std::fs::write(
+            marker_path(&real),
+            format!(
+                "by=Homebrew\nupgrade=brew upgrade hivefleet\npath={}\n",
+                stable.display()
+            ),
+        )
+        .unwrap();
+
+        let started = Program::read(Some(real.clone()));
+        assert_eq!(started.managed.as_ref().unwrap().by, "Homebrew");
+        assert_eq!(started.stable.as_deref(), Some(stable.as_path()));
+        assert_eq!(started.launch(), Some(stable.as_path()));
+
+        // The upgrade: a new version beside the old, the name moved to it,
+        // the old directory removed.
+        let next = dir.path().join("0.1.6");
+        std::fs::create_dir(&next).unwrap();
+        std::fs::write(next.join("hive"), b"#!/bin/sh\n").unwrap();
+        std::fs::remove_file(&stable).unwrap();
+        std::os::unix::fs::symlink(next.join("hive"), &stable).unwrap();
+        std::fs::remove_dir_all(&keg).unwrap();
+
+        assert_eq!(beside(&real), None, "the disk has no marker any more");
+        assert_eq!(
+            started.marker_of(&real).unwrap().upgrade,
+            "brew upgrade hivefleet"
+        );
+        assert_eq!(started.launch(), Some(stable.as_path()));
+        // Another file is read from the disk as it is now.
+        assert_eq!(started.marker_of(&next.join("hive")), None);
+        std::fs::write(marker_path(&next.join("hive")), "by=Homebrew\n").unwrap();
+        assert_eq!(
+            started.marker_of(&next.join("hive")).unwrap().by,
+            "Homebrew"
+        );
+
+        // A program with no marker starts by its own file.
+        let lone = dir.path().join("lone");
+        std::fs::write(&lone, b"#!/bin/sh\n").unwrap();
+        let lone = std::fs::canonicalize(&lone).unwrap();
+        let unmanaged = Program::read(Some(lone.clone()));
+        assert_eq!(
+            (unmanaged.managed.clone(), unmanaged.stable.clone()),
+            (None, None)
+        );
+        assert_eq!(unmanaged.launch(), Some(lone.as_path()));
+        assert_eq!(Program::read(None), Program::default());
     }
 }

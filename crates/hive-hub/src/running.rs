@@ -296,7 +296,7 @@ impl Handler {
             None => Some("this hub has no store".to_string()),
         };
         let binary = apply_target().binary;
-        let managed = hive_cli::managed::beside(std::path::Path::new(&binary));
+        let managed = hive_cli::managed::of(std::path::Path::new(&binary));
         let command = match &managed {
             Some(m) => m.upgrade.clone(),
             None if blocked.is_none() => "hive update".to_string(),

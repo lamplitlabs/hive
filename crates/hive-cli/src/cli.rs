@@ -240,7 +240,9 @@ pub fn binary_stamp() -> String {
     // (hive_hand_core::managed).
     static EXE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     let Some(exe) = EXE.get_or_init(|| {
-        crate::managed::this_stable_path().or_else(|| std::env::current_exe().ok())
+        crate::managed::this_stable_path()
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| std::env::current_exe().ok())
     }) else {
         return String::new();
     };
