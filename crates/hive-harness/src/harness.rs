@@ -11350,7 +11350,7 @@ mod tests {
         assert_eq!(commands.len(), 4, "{commands:?}");
         assert!(
             commands[0]
-                .contains("HIVE_HOOK_EVENT='pre_tool' HIVE_TOOL='bash' /bin/sh -c 'guard.sh'"),
+                .contains("HIVE_HOOK_EVENT='pre_tool' HIVE_TOOL='bash' PULSE_HOOK_EVENT='pre_tool' PULSE_TOOL='bash' /bin/sh -c 'guard.sh'"),
             "{}",
             commands[0]
         );
@@ -11427,7 +11427,7 @@ mod tests {
         assert_eq!(commands.len(), 2, "{commands:?}");
         assert!(
             commands[0]
-                .contains("HIVE_HOOK_EVENT='run_start' HIVE_TOOL='' /bin/sh -c 'context.sh'")
+                .contains("HIVE_HOOK_EVENT='run_start' HIVE_TOOL='' PULSE_HOOK_EVENT='run_start' PULSE_TOOL='' /bin/sh -c 'context.sh'")
         );
         assert!(
             commands[0]

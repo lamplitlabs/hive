@@ -251,13 +251,14 @@ pub fn run_payload(event: HookEvent, cwd: &str, fields: Value) -> Value {
 }
 
 /// The shell line that runs `hook` with `payload` on its stdin and the
-/// event and tool in `HIVE_HOOK_EVENT` and `HIVE_TOOL`.
+/// event and tool in `HIVE_HOOK_EVENT` and `HIVE_TOOL`. Both are given
+/// again as `PULSE_HOOK_EVENT` and `PULSE_TOOL`: a hook written before the
+/// rename tests those, and one that saw them empty would stop guarding.
 pub fn hook_command(hook: &Hook, tool: &str, payload: &Value) -> String {
+    let (event, tool) = (shell_quote(&hook.event.to_string()), shell_quote(tool));
     format!(
-        "printf '%s' {} | HIVE_HOOK_EVENT={} HIVE_TOOL={} /bin/sh -c {}",
+        "printf '%s' {} | HIVE_HOOK_EVENT={event} HIVE_TOOL={tool} PULSE_HOOK_EVENT={event} PULSE_TOOL={tool} /bin/sh -c {}",
         shell_quote(&payload.to_string()),
-        shell_quote(&hook.event.to_string()),
-        shell_quote(tool),
         shell_quote(&hook.command)
     )
 }
@@ -435,7 +436,9 @@ mod tests {
         };
         let line = hook_command(&hook, "bash", &payload);
         assert!(line.starts_with("printf '%s' '{"), "{line}");
-        assert!(line.contains("| HIVE_HOOK_EVENT='pre_tool' HIVE_TOOL='bash' /bin/sh -c '"));
+        assert!(line.contains(
+            "| HIVE_HOOK_EVENT='pre_tool' HIVE_TOOL='bash' PULSE_HOOK_EVENT='pre_tool' PULSE_TOOL='bash' /bin/sh -c '"
+        ));
         assert!(line.ends_with(r#"echo it'\''s fine'"#), "{line}");
         assert_eq!(shell_quote("a'b"), r#"'a'\''b'"#);
         let run = run_payload(
@@ -452,7 +455,7 @@ mod tests {
         let hook = Hook {
             event: HookEvent::PreTool,
             tools: Vec::new(),
-            command: "cat; printf ' %s %s' \"$HIVE_HOOK_EVENT\" \"$HIVE_TOOL\"".into(),
+            command: "cat; printf ' %s %s %s %s' \"$HIVE_HOOK_EVENT\" \"$HIVE_TOOL\" \"$PULSE_HOOK_EVENT\" \"$PULSE_TOOL\"".into(),
             timeout: DEFAULT_HOOK_TIMEOUT,
             source: "x".into(),
         };
@@ -465,7 +468,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
-            format!("{payload} pre_tool bash")
+            format!("{payload} pre_tool bash pre_tool bash")
         );
     }
 }
