@@ -107,7 +107,10 @@ export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<Re
         props.onClick?.(event);
         openAsk("", event.currentTarget);
       }}
-      aria-label="Ask about your projects (Control or Command J)"
+      // With its word in sight the button is named by it ("Ask about your
+      // projects"; the shortcut is in aria-keyshortcuts). The phone header's
+      // icon has no word, so it carries the whole name.
+      aria-label={variant === "icon" ? "Ask about your projects (Control or Command J)" : undefined}
       aria-haspopup="dialog"
       aria-expanded={open}
       aria-keyshortcuts="Control+j Meta+j"
@@ -115,14 +118,22 @@ export function AskTrigger({ variant = "sidebar", className, ...props }: Omit<Re
       <BotMessageSquareIcon aria-hidden="true" className="size-4" />
       {variant === "sidebar" ? (
         <>
-          <span className="collapsed:sr-only">Ask</span>
+          <span className="collapsed:sr-only">
+            Ask<span className="sr-only"> about your projects</span>
+          </span>
           {/* The same Kbd as the Search row above it, so the two hints match. */}
-          <Kbd className="pointer-events-none ml-auto collapsed:hidden">⌘J</Kbd>
+          <Kbd className="pointer-events-none ml-auto collapsed:hidden" aria-hidden>
+            ⌘J
+          </Kbd>
         </>
       ) : variant === "bar" ? (
         <>
-          <span>Ask</span>
-          <Kbd className="pointer-events-none">⌘J</Kbd>
+          <span>
+            Ask<span className="sr-only"> about your projects</span>
+          </span>
+          <Kbd className="pointer-events-none" aria-hidden>
+            ⌘J
+          </Kbd>
         </>
       ) : null}
     </Button>

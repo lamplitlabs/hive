@@ -1,9 +1,9 @@
 #!/bin/sh
 # The hand stays free of the brain (ADR-070 rule 1).
 #
-# `hive-hand` is the one binary a customer installs; the code that plans,
-# leads, scores and briefs (the brain) stays hosted and must never ship to a
-# customer's machine. This check holds that line twice:
+# `hive-hand` is the small program a machine runs to take work from a Hive,
+# and it is built without the code that plans, leads, scores and briefs (the
+# brain). This check holds that line twice:
 #
 # 1. deps: `cargo tree -p hive-hand -e normal` must not list a brain crate
 #    (hive-runner with its lead/plan/evolve/tally/research/idle modules,

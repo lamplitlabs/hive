@@ -63,7 +63,7 @@ fn conversation_id(fs: &FlagSet, verb: &str) -> Result<String> {
 
 fn run(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let Some(s) = c.store.clone() else {
-        return Err(errorf(2, "hive session: no store", "", "hive init <project-path>").into());
+        return Err(errorf(2, "hive session: no store", "", hive_cli::NO_STORE_FIX).into());
     };
     let verb = args.first().map(String::as_str).unwrap_or("list");
     match (verb, args.len()) {
@@ -305,6 +305,36 @@ mod tests {
             0,
         )
         .expect("events")
+    }
+
+    /// Run with no store open, the command says how to make one.
+    #[test]
+    fn session_with_no_store_says_how_to_make_one() {
+        register();
+        let cmd = hive_cli::lookup("session").unwrap();
+        let mut fs = FlagSet::new("session");
+        (cmd.flags.unwrap())(&mut fs);
+        let mut c = Context {
+            store: None,
+            home: String::new(),
+            out: Box::new(Buffer::new()),
+            err: Box::new(Buffer::new()),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: String::new(),
+            session: String::new(),
+            now: String::new(),
+            args: Vec::new(),
+        };
+        let err = (cmd.run)(&mut c, &fs, &["list".to_string()]).unwrap_err();
+        let ce = err.downcast_ref::<hive_cli::Error>().expect("a cli error");
+        assert_eq!(ce.exit_code(), 2);
+        assert_eq!(
+            err.to_string(),
+            "hive session: no store\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)"
+        );
     }
 
     #[test]

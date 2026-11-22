@@ -67,8 +67,12 @@ export function OwnerRow({ active }: { active: boolean }) {
   return (
     <div className="flex items-center gap-1 px-1 collapsed:flex-col collapsed:px-0">
       <RailTip label={name} hint="Your name and presence; change them in Settings">
-        <Link href={hrefs.settings("owner")} className="@container/owner flex min-w-8 flex-1 items-center gap-2 rounded-md px-1 py-1 text-[13px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:flex-none collapsed:px-0 collapsed:[container-type:normal]" aria-label={"Owner: " + name}>
-          <OwnerAvatar name={name} size={24} />
+        <Link href={hrefs.settings("owner")} className="@container/owner flex min-w-8 flex-1 items-center gap-2 rounded-md px-1 py-1 text-[13px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:flex-none collapsed:px-0 collapsed:[container-type:normal]" >
+          {/* Named by its words: "Owner: " for a screen reader, then the name. The face repeats the name, so it is for the eye only. */}
+          <span aria-hidden className="contents">
+            <OwnerAvatar name={name} size={24} />
+          </span>
+          <span className="sr-only">Owner: </span>
           <span className="min-w-0 truncate @max-[4rem]/owner:sr-only collapsed:sr-only">{name}</span>
         </Link>
       </RailTip>

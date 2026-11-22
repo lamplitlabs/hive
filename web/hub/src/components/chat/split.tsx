@@ -145,14 +145,15 @@ export function Split({
             />
           ) : null}
         </aside>
-        <main
+        {/* The middle column. The shell holds the page's one <main>. */}
+        <div
           className={cn(
             "order-1 min-w-0 lg:order-none",
             fill && "lg:flex lg:min-h-0 lg:flex-col",
           )}
         >
           {children}
-        </main>
+        </div>
         {three ? (
           <aside
             ref={setSlot}

@@ -640,9 +640,12 @@ trees in the same days - twenty hours, a third of the project's lock time,
 spent passing the same trees twice. A run whose worker left changes
 uncommitted, or on a remote executor (whose hook writes its memo on the
 remote store), runs the check as before. A run whose check fails
-is a failed run - no branch is written, the job is retried as [Recovery](recovery.md)
-describes - so every branch the daemon delivers passed the project's own check
-on the commit it carries. The forge then runs the project's pipeline on the
+is a failed run - nothing is delivered, its commits are kept on
+`hive/<agent>/<job>-failed` in the project's checkout and as a patch under
+`~/.hive/patches/<slug>/` for the retry, and the job is retried as
+[Recovery](recovery.md) describes - so every branch the daemon delivers
+passed the project's own check on the commit it carries. The forge then runs
+the project's pipeline on the
 pull request ([Pipelines](#pipelines-what-a-push-set-running-on-github)), and
 the reviewer runs the command again where it checks the pull request out
 ([The reviewer](review.md)). The merged result is not verified on this machine
@@ -1018,7 +1021,7 @@ When the clones share a build cache (a `CARGO_TARGET_DIR`, a Gradle or Bazel
 cache: the usual way to keep a large build fast and the disk small) two
 overlapping runs rewrite each other's artifacts mid-run and both fail for
 reasons neither branch contains, so a good branch is charged or the default
-branch is judged red. `hive settings verify.lock project` makes the
+branch is judged red. `hive settings set verify.lock project` makes the
 verifications of one project take turns on the machine (`machine`: every
 verification does); the command runs under an atomic lock in
 `$HIVE_HOME/locks/`, a later arrival prints that it is waiting and for whom, a

@@ -110,7 +110,9 @@ fn remove_worktree(repo: &str, wt: &Path) {
 }
 
 /// The environment a script gets: the daemon's own, less git's hook
-/// variables, plus what tells the script who it is.
+/// variables, plus what tells the script who it is. Each `HIVE_` variable
+/// is there again under its `PULSE_` name, which a script written before
+/// the rename reads.
 fn script_env(s: &hive_store::Store, sched: &Schedule, state_dir: &Path) -> Vec<String> {
     let mut env: BTreeMap<String, String> = crate::proc::environ()
         .into_iter()
@@ -130,6 +132,10 @@ fn script_env(s: &hive_store::Store, sched: &Schedule, state_dir: &Path) -> Vec<
     env.insert("HIVE_STATE_DIR".into(), state_dir.display().to_string());
     env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
     crate::run::worker_cli_env(&mut env, &crate::exec::local_cli(&s.home));
+    for name in ["PULSE_JOB", "PULSE_AGENT", "PULSE_SESSION"] {
+        env.remove(name);
+    }
+    hive_store::mirror_legacy_env(&mut env);
     env.into_iter().map(|(k, v)| format!("{k}={v}")).collect()
 }
 
@@ -1164,6 +1170,51 @@ mod tests {
             jobs1[0].str("brief").contains("    seen 2 times"),
             "{}",
             jobs1[0].str("brief")
+        );
+    }
+
+    /// A script written before the rename lives under `.pulse/` and reads
+    /// the `PULSE_` names. It runs from there as it is, and each variable
+    /// holds what its `HIVE_` twin holds, whatever the daemon inherited.
+    #[test]
+    fn a_script_from_before_the_rename_runs_where_it_is_and_reads_the_old_names() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        commit_script(
+            &dir,
+            ".pulse/automations/old.sh",
+            concat!(
+                "printf '%s\\n' \"$PULSE_PROJECT\" \"$PULSE_SCHEDULE\" \"$PULSE_SCHEDULE_KIND\" \"$PULSE_HOME\" \"$PULSE_STATE_DIR\" \"$PULSE_CLI\" \"$PULSE_JOB\" > \"$PULSE_STATE_DIR/env\"\n",
+                "[ \"$PULSE_STATE_DIR\" = \"$HIVE_STATE_DIR\" ] && [ \"$PULSE_CLI\" = \"$HIVE_CLI\" ] && [ \"$PULSE_HOME\" = \"$HIVE_HOME\" ]\n",
+            ),
+            false,
+        );
+        let _stale_home = hive_testutil::setenv("PULSE_HOME", "/stale/home");
+        let _stale_job = hive_testutil::setenv("PULSE_JOB", "job-of-the-daemon's-own-shell");
+        let sc = add(&s, "watch", ".pulse/automations/old.sh", "task");
+        assert!(!sc.script_outside());
+        let state = state_dir(&s.home, &sc.id);
+
+        let lines = tick(&s, 61.0);
+        assert!(
+            lines[0].contains("watch .pulse/automations/old.sh quiet (exit 0, "),
+            "{lines:?}"
+        );
+        let env = std::fs::read_to_string(state.join("env")).unwrap();
+        let env: Vec<&str> = env.lines().collect();
+        assert_eq!(&env[..3], &["proj", "SCHED-001", "watch"]);
+        assert_eq!(
+            env[3], s.home,
+            "PULSE_HOME is this run's home, not the stale one"
+        );
+        assert_eq!(env[4], state.display().to_string());
+        assert!(!env[5].is_empty(), "PULSE_CLI: {env:?}");
+        assert_eq!(
+            env.get(6).copied().unwrap_or(""),
+            "",
+            "PULSE_JOB is not handed on"
         );
     }
 

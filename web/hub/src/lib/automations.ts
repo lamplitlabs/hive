@@ -251,15 +251,20 @@ export function fileEntryOf(
   return e ? entryFromFile(e) : null;
 }
 
-// True for a path under the automations folder.
-export const inFolder = (path: string): boolean =>
-  path.startsWith(".hive/automations/");
+// The project's own folder, and the name it had before the rename: a
+// repository set up then keeps its files under .pulse/, read the same way
+// (`hive_store::legacy`).
+const PROJECT_DIRS = [".hive/", ".pulse/"];
 
-// Whether a script path is under the project's .hive/ folder - the rule a
+// True for a path under the automations folder, in either project folder.
+export const inFolder = (path: string): boolean =>
+  PROJECT_DIRS.some((d) => path.startsWith(d + "automations/"));
+
+// Whether a script path is under the project's own folder - the rule a
 // new check's or watch's script meets (`schedules::script_in_hive`).
 export const scriptInHive = (path: string): boolean => {
   const t = path.trim().replace(/^\.\//, "");
-  return t.startsWith(".hive/") && t.length > ".hive/".length;
+  return PROJECT_DIRS.some((d) => t.startsWith(d) && t.length > d.length);
 };
 
 // The place a check's or watch's script belongs: beside its automation

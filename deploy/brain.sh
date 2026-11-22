@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build, start and delete hosted brains, one per team (docs/security.md).
+# Build, start and delete brains in containers on a server of your own, one
+# per team (docs/security.md).
 #
 #   deploy/brain.sh build VERSION          build hive-brain:VERSION from this tree
 #   deploy/brain.sh up TEAM VERSION PORT   start team TEAM's brain, its hub on the host's 127.0.0.1:PORT
@@ -11,12 +12,14 @@
 # volume go; backups under backup.to are the operator's to remove (the
 # script prints where they were going).
 #
-# The hub binds loopback only until hub.allow_remote (ADR-070 step 5)
-# lands, and a container's loopback is its own, so a brain runs on the
-# host's network: its hub is on the host's 127.0.0.1:PORT, reached over an
-# SSH tunnel (ssh -L PORT:127.0.0.1:PORT host). Give each team its own PORT.
+# The hub binds loopback only, and a container's loopback is its own, so a
+# brain runs on the host's network: its hub is on the host's 127.0.0.1:PORT,
+# reached over an SSH tunnel (ssh -L PORT:127.0.0.1:PORT host). Give each
+# team its own PORT.
 #
-# Environment for `up`: HIVE_BACKUP_TO (az://ACCOUNT/CONTAINER/PREFIX),
+# Environment for `up`: HIVE_BACKUP_TO (az://ACCOUNT/CONTAINER/PREFIX; an
+# az:// backup runs the Azure CLI, which the image does not hold: add it and
+# a login to the image first),
 # HIVE_UPDATE_LATEST_URL (the release document daemon.self_update release
 # reads). DOCKER overrides the docker command (podman works).
 set -eu

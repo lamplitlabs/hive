@@ -53,12 +53,12 @@ pub fn register() {
         cli_register(Command { name:"bulk".into(), group:"runner".into(), summary:"keep the regenerable bulk (work, cache, worktrees, build dirs) on another disk; the daemon waits while that disk is away".into(), usage:"hive bulk status | attach VOLUME [--any-folder] [--dry-run] | detach [--lost] [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_bulk, flags:Some(bulk_flags) });
         cli_register(Command { name:"lead".into(), group:"agents".into(), summary:"the role leads of a project: seat one per concern (rsi, docs, security, monitor, or a word of your own), list, pause, resume, end, run, and ask which roles the project is missing".into(), usage:"hive lead add --project SLUG --role R [--title T] [--brief B | --brief-file F] [--every 1d]\nhive lead list [--project SLUG] [--status S] [--json]\nhive lead show LEAD-NNN [--json]\nhive lead pause|resume|end|run LEAD-NNN [--note N]\nhive lead suggest --project SLUG [--json]\nhive lead roles --project SLUG [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::lead_cli::cmd_lead, flags:Some(crate::lead_cli::lead_flags) });
         cli_register(Command { name:"toolkit".into(), group:"agents".into(), summary:"the tools (MCP servers) and skills a project's shape asks for and does not have: show them, add one, print a drafted skill".into(), usage:"hive toolkit [show] [--project SLUG] [--all] [--json]\nhive toolkit add tool|skill NAME --project SLUG\nhive toolkit draft NAME --project SLUG      (prints the skill body hive would add)\n\nA suggestion comes from what the checkout shows: its remote, manifests, lockfiles and folders, and what is already registered. Without --project every active project is read. The daemon asks the owner about one suggestion per project at a time (toolkit.suggest_days); a yes registers it, a declined thread rests it.".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::toolkit::cmd_toolkit, flags:Some(crate::toolkit::toolkit_flags) });
-        cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"hive executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] [--labels a,b] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | label NAME WORDS|+a,-b | reserve NAME [--off] | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
+        cli_register(Command { name:"executor".into(), group:"runner".into(), summary:"list, add, probe, drain, activate, remove or log in the executors (remote hands)".into(), usage:"hive executor list | add NAME --ssh user@host[:port] --workdir /abs [--workers N] [--projects a,b|*] [--labels a,b] | probe NAME [--login] | drain NAME | activate NAME | remove NAME | label NAME WORDS|+a,-b|-b | reserve NAME [--off] | login NAME --admin admin@host [--with-token | --remove] | token [--with-token | --remove]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_executor, flags:Some(executor_flags) });
         cli_register(Command { name:"env".into(), group:"runner".into(), summary:"the environment recipe per project (a CTX-environment record): show, set, import, check".into(), usage:"hive env show|set|import|check [--project SLUG] [--executor NAME] [--file F] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_env, flags:Some(env_flags) });
         cli_register(Command { name:"secret".into(), group:"runner".into(), summary:"the team secret vault (ADR-070 rule 4): set a value from stdin, list names (never values), remove; a project's recipe `secrets:` names what its jobs are granted".into(), usage:"hive secret list [--json] | set NAME  (value on stdin) | rm NAME".into(), aliases:vec!["secrets".into()], no_store:false, read_only:false, raw:false, run:crate::secrets::cmd_secret, flags:None });
         cli_register(Command { name:"hands".into(), group:"runner".into(), summary:"the forced command on a paired machine (probe, prepare, key, run, ...)".into(), usage:"hive hands VERB [ARGS]  (or via SSH_ORIGINAL_COMMAND)".into(), aliases:vec![], no_store:true, read_only:false, raw:true, run:cmd_hands, flags:None });
         cli_register(Command { name:"pair".into(), group:"runner".into(), summary:"pair a Linux machine as hands over its admin ssh session: inspect it, apply as root (sudo -n), register and probe the executor; --dry-run only prints the scripts".into(), usage:"hive pair ADMIN@HOST[:PORT] --name N [--workdir D] [--workers N] [--projects P] [--dry-run | --inspect]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:cmd_pair, flags:Some(pair_flags) });
-        cli_register(Command { name:"update".into(), group:"runner".into(), summary:"install the newer Hive release update.latest_url names (checksum-verified); --check only says whether one exists".into(), usage:"hive update [--check] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::release_update::cmd_update, flags:Some(crate::release_update::update_flags) });
+        cli_register(Command { name:"update".into(), group:"runner".into(), summary:"install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists. A hive that a package manager such as Homebrew installed is left to it: the command names that manager's upgrade command".into(), usage:"hive update [--check] [--json]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:crate::release_update::cmd_update, flags:Some(crate::release_update::update_flags) });
         cli_register(Command { name:"onboard".into(), group:"runner".into(), summary:"register a project (init) and queue its onboarding job; prints what stays human".into(), usage:"hive onboard [PATH] [--name N] [--remote URL] [--verify CMD] [--brain] [--now T]".into(), aliases:vec![], no_store:true, read_only:false, raw:false, run:cmd_onboard, flags:Some(onboard_flags) });
     });
 }
@@ -227,6 +227,18 @@ fn executor_flags(fs: &mut FlagSet) {
     );
     fs.bool_var("remove", false, "remove the worker login");
     fs.bool_var("login", false, "probe: also run the login check");
+    fs.dash_words(label_word);
+}
+
+/// `hive executor label NAME -word` removes a word: after `label NAME`, an
+/// argument that begins with one dash and then a letter or a digit is a
+/// change to the labels. The flags of `hive executor` stay flags there.
+fn label_word(positional: &[String], arg: &str) -> bool {
+    positional.len() >= 2
+        && positional[0] == "label"
+        && arg
+            .strip_prefix('-')
+            .is_some_and(|word| word.starts_with(|c: char| c.is_ascii_alphanumeric()))
 }
 
 fn env_flags(fs: &mut FlagSet) {
@@ -1347,6 +1359,9 @@ pub(crate) fn executors_text(s: &hive_store::Store, now: &str) -> String {
     format!("{}\n", out.join("\n"))
 }
 
+/// What `hive executor label NAME` says when no word follows.
+const LABEL_USAGE: &str = "executor label NAME WORDS (a comma-separated list replaces the labels; +a,-b adds a and removes b; -b alone removes b, or -- -b when b is also a flag such as off)";
+
 pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     let s = c
         .store
@@ -1437,14 +1452,13 @@ pub(crate) fn cmd_executor(c: &mut Context, fs: &FlagSet, args: &[String]) -> Re
         }
         "label" => {
             let name = &args[1];
-            let Some(change) = args.get(2) else {
-                return Err(crate::util::fail(
-                    2,
-                    "executor label NAME WORDS (a comma-separated list replaces the labels; +word and -word add and remove)",
-                )
-                .into());
-            };
-            crate::executor::set_labels(&s, &now, name, change, &actor_of(c))?;
+            if args.len() < 3 {
+                return Err(crate::util::fail(2, LABEL_USAGE).into());
+            }
+            // Every word after NAME is part of the change: `+a -b` reads
+            // as `+a,-b`.
+            let change = args[2..].join(",");
+            crate::executor::set_labels(&s, &now, name, &change, &actor_of(c))?;
             let r = crate::executor::executor_row(&s, name);
             c.printf(format_args!(
                 "{name} offers {}\n",
@@ -1928,6 +1942,20 @@ mod tests {
         assert!(o.no_store, "onboard opens its own store with Create");
     }
 
+    /// The summary of `hive update` says what it reads while the setting
+    /// is empty, as the command does for the owner, and what it does where
+    /// a package manager installed hive (release_update.rs).
+    #[test]
+    fn update_summary_says_what_an_empty_setting_and_a_package_manager_mean() {
+        let _serial = crate::test_helpers::serial();
+        register();
+        let update = hive_cli::lookup("update").expect("update registered");
+        assert_eq!(
+            update.summary,
+            "install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists. A hive that a package manager such as Homebrew installed is left to it: the command names that manager's upgrade command"
+        );
+    }
+
     #[test]
     fn work_plan_land_commands() {
         let _serial = crate::test_helpers::serial();
@@ -2094,6 +2122,138 @@ mod tests {
             crate::executor::executor_row(&s, "hands").is_empty(),
             "still there"
         );
+    }
+
+    /// `hive executor ARGS` with the arguments read the way the binary reads
+    /// them: flags and words may mix (`hive_cli::flags::parse_interleaved`).
+    fn executor(s: &hive_store::Store, args: &[&str]) -> (String, String, i32) {
+        register();
+        let cmd = hive_cli::lookup("executor").expect("executor registered");
+        let mut fs = FlagSet::new("executor");
+        fs.set_output(hive_cli::flags::Output::Discard);
+        (cmd.flags.expect("executor flags"))(&mut fs);
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let positional = match hive_cli::flags::parse_interleaved(&mut fs, &argv) {
+            Ok(positional) => positional,
+            Err(e) => return (String::new(), format!("hive executor: {e}"), 2),
+        };
+        let out = hive_cli::Buffer::default();
+        let err = hive_cli::Buffer::default();
+        let mut c = Context {
+            store: Some(s.clone()),
+            home: s.home.clone(),
+            out: Box::new(out.clone()),
+            err: Box::new(err.clone()),
+            json: false,
+            quiet: false,
+            color: false,
+            agent: String::new(),
+            project: String::new(),
+            session: String::new(),
+            now: crate::test_helpers::TEST_NOW.to_string(),
+            args: positional.clone(),
+        };
+        let code = match (cmd.run)(&mut c, &fs, &positional) {
+            Ok(()) => 0,
+            Err(e) => match e.downcast_ref::<hive_cli::Error>() {
+                Some(ce) => {
+                    let _ = write!(c.err, "{ce}");
+                    ce.exit_code()
+                }
+                None => {
+                    let _ = write!(c.err, "{e}");
+                    1
+                }
+            },
+        };
+        (out.string(), err.string(), code)
+    }
+
+    #[test]
+    fn executor_label_reads_a_leading_dash_as_a_word_to_remove() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let labels = || crate::executor::executor_row(&s, "gpu-box").str("labels");
+        let (out, err_text, code) = executor(
+            &s,
+            &[
+                "add",
+                "gpu-box",
+                "-ssh",
+                "hive@gpu-box",
+                "-workdir",
+                "/srv/hive",
+                "-labels",
+                "gpu,cuda,android",
+            ],
+        );
+        assert_eq!(code, 0, "add: {out:?} {err_text:?}");
+        assert_eq!(labels(), "gpu,cuda,android");
+
+        // Each form, and what the machine's own words are after it.
+        for (args, want, offers) in [
+            // a word with a dash in front is removed
+            (vec!["-cuda"], "gpu,android", "linux android gpu"),
+            // as it is after `--`
+            (vec!["--", "-android"], "gpu", "linux gpu"),
+            // a signed list adds and removes
+            (vec!["+cuda,-gpu"], "cuda", "linux cuda"),
+            // one that begins with a dash, too
+            (vec!["-cuda,+a"], "a", "linux a"),
+            // signed words as arguments of their own
+            (vec!["+b", "-a"], "b", "linux b"),
+            // a plain list replaces the words
+            (vec!["x,y"], "x,y", "linux x y"),
+            (vec!["z", "y"], "z,y", "linux y z"),
+            // removing a word that is not there changes nothing
+            (vec!["-cuda"], "z,y", "linux y z"),
+        ] {
+            let mut full = vec!["label", "gpu-box"];
+            full.extend(args.iter().copied());
+            let (out, err_text, code) = executor(&s, &full);
+            assert_eq!(code, 0, "{args:?}: {err_text:?}");
+            assert_eq!(out, format!("gpu-box offers {offers}\n"), "{args:?}");
+            assert_eq!(labels(), want, "{args:?}");
+        }
+
+        // The flags of hive executor are still flags, with one dash or two,
+        // in label's place and in their own.
+        let usage = "executor label NAME WORDS (a comma-separated list replaces the labels; +a,-b adds a and removes b; -b alone removes b, or -- -b when b is also a flag such as off)";
+        for args in [vec!["label", "gpu-box"], vec!["label", "gpu-box", "-off"]] {
+            let (out, err_text, code) = executor(&s, &args);
+            assert_eq!((code, out.as_str(), err_text.as_str()), (2, "", usage));
+        }
+        let (out, _, code) = executor(&s, &["label", "gpu-box", "--off", "-y"]);
+        assert_eq!((code, out.as_str()), (0, "gpu-box offers linux z\n"));
+        let (out, _, code) = executor(&s, &["reserve", "gpu-box"]);
+        assert!(code == 0 && out.starts_with("gpu-box reserved"), "{out:?}");
+        let (out, _, code) = executor(&s, &["reserve", "gpu-box", "-off"]);
+        assert_eq!(
+            (code, out.as_str()),
+            (0, "gpu-box takes any job it can run again\n")
+        );
+
+        // What is no word stays what it was: an undefined flag, or a word
+        // the labels do not take.
+        for args in [
+            vec!["label", "gpu-box", "--cuda"],
+            vec!["label", "-cuda"],
+            vec!["list", "-cuda"],
+            vec!["drain", "gpu-box", "-cuda"],
+        ] {
+            let (out, err_text, code) = executor(&s, &args);
+            assert_eq!(
+                (code, out.as_str(), err_text.as_str()),
+                (2, "", "hive executor: flag provided but not defined: -cuda"),
+                "{args:?}"
+            );
+        }
+        let (_, err_text, code) = executor(&s, &["label", "gpu-box", "gpu", "-z"]);
+        assert!(
+            code == 2 && err_text.starts_with("`-z` is not a need"),
+            "{code} {err_text:?}"
+        );
+        assert_eq!(labels(), "z");
     }
 
     /// The heartbeat row a running daemon leaves, naming `pid`.

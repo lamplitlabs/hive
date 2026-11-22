@@ -57,7 +57,9 @@ pub(crate) fn manifest_path(path: &str) -> bool {
     MANIFEST_FILES.contains(&name)
 }
 pub(crate) const RESULT_FILE: &str = "HIVE_RESULT.md";
-pub(crate) static LANDED_BRANCH_PREFIXES: &[&str] = &["hive/", "evolve/"];
+/// The branches `hive land` takes: an agent's (`hive/`, or `pulse/` for one
+/// made before the rename) and a kept experiment's.
+pub(crate) static LANDED_BRANCH_PREFIXES: &[&str] = &["hive/", "pulse/", "evolve/"];
 pub(crate) static LAND_REFUSED_PATHS: &[&str] = &[
     "docs/evolution/constitution.md",
     "docs/evolution/evaluators.md",
@@ -146,7 +148,7 @@ pub(crate) fn refused_paths(files: Vec<String>, branch: String) -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
-    if branch.starts_with("hive/") {
+    if hive_store::agent_branch(&branch) {
         guarded.extend(hive_store::OWNER_PATHS.iter().map(|s| s.to_string()));
     }
     let mut out = Vec::new();
@@ -3824,6 +3826,45 @@ impl Drop for LandingCleanup {
 
 #[cfg(test)]
 mod tests {
+    /// The owner's paths are closed to an agent's branch whichever prefix
+    /// it carries: `hive/`, or `pulse/` for one made before the rename.
+    /// The owner's own branch may change them, and the project folder's
+    /// older name is among them.
+    #[test]
+    fn owner_paths_are_refused_on_an_agents_branch_under_either_prefix() {
+        let files = || {
+            vec![
+                ".github/dependabot.yml".to_string(),
+                ".hive/agents/reviewer.md".to_string(),
+                ".pulse/agents/reviewer.md".to_string(),
+                ".pulse/automations/check.sh".to_string(),
+                "src/lib.rs".to_string(),
+            ]
+        };
+        let closed = vec![
+            ".github/dependabot.yml".to_string(),
+            ".hive/agents/reviewer.md".to_string(),
+            ".pulse/agents/reviewer.md".to_string(),
+        ];
+        for branch in [
+            "hive/aurora/job-1",
+            "pulse/aurora/job-1",
+            "pulse/task-TASK-116",
+        ] {
+            assert_eq!(
+                super::refused_paths(files(), branch.into()),
+                closed,
+                "{branch}"
+            );
+        }
+        for branch in ["main", "feature/x", "pulsed/x"] {
+            assert!(
+                super::refused_paths(files(), branch.into()).is_empty(),
+                "{branch}"
+            );
+        }
+    }
+
     #[test]
     fn base_red_detail_names_the_failing_tests_beside_the_tail() {
         let tail = "running 2 tests\ntest a::ok ... ok\ntest land::tests::x ... FAILED\n\nfailures:\n    land::tests::x\n\ntest result: FAILED. 1 passed; 1 failed\n";

@@ -53,6 +53,7 @@ import { ProjectAvatar } from "@/components/hive/avatar";
 import { ConfirmDialog } from "@/components/hive/confirm";
 import { DataTable, type Column } from "@/components/hive/data-table";
 import { FilterChip } from "@/components/hive/filter-chip";
+import { FailedJobsSection } from "@/components/hive/job-repair-section";
 import { ListRow, ListRows } from "@/components/hive/list-row";
 import { BrandLogo, logoFor } from "@/components/hive/logo";
 import { Markdown } from "@/components/hive/markdown";
@@ -1302,6 +1303,13 @@ export function HarnessPageClient() {
           </div>
         </>
       )}
+      {/* Under the Failed chip: the jobs behind such runs, folded, with Retry.
+          "Jobs that failed" on a project's Overview and on a machine lead here. */}
+      {chipActive(status, "failed") ? (
+        <div className="mt-6">
+          <FailedJobsSection project={project || undefined} />
+        </div>
+      ) : null}
       <RunPanel id={selected} models={modelRows} projects={projects.data} onClose={() => setSelected(null)} />
     </>
   );

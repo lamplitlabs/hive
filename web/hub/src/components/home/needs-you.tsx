@@ -11,7 +11,7 @@ import { DecideButtons } from "@/components/hive/decide-buttons";
 import { CopyButton } from "@/components/hive/evolve";
 import type { Inbox } from "@/components/hive/inbox";
 import { KindTile, type Kind } from "@/components/hive/kind-tile";
-import { ListRow, ListRows } from "@/components/hive/list-row";
+import { ListRow, ListRows, RowCue } from "@/components/hive/list-row";
 import { EmptyState } from "@/components/hive/panel";
 import { SectionHeading } from "@/components/hive/section-heading";
 import { When } from "@/components/hive/who";
@@ -141,22 +141,22 @@ function NeedsYouRow({ item, slug, name, canDecide }: { item: NeedsYouItem; slug
           lead={lead}
           title={title}
           // A "which…?" question needs words: its row leads to For you with
-          // the answer box open. The row is the link; the button is its cue
-          // (an <a> or a <button> inside the row's <a> would be invalid HTML).
+          // the answer box open. The row's title is the link; the button is
+          // its cue, and a press on it opens the row.
           href={open ? answerHref(slug, q.id) : hrefs.post(slug, q.id)}
           actionsVisible
           actions={
             open ? (
               canDecide ? (
-                <span className={buttonVariants({ size: "xs" })}>
+                <RowCue className={buttonVariants({ size: "xs" })}>
                   <ReplyIcon aria-hidden /> Answer
-                </span>
+                </RowCue>
               ) : undefined
             ) : (
               <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide && q.decider !== "setting"} size="xs" yesLabel={labels.yes} noLabel={labels.no} className="w-auto justify-end" />
             )
           }
-          ariaLabel={(stop ? "Self-improvement paused on " + name + ": " : "Question for you: ") + q.summary}
+          ariaLabel={(stop ? "Self-improvement paused on " + name + ": " : "Question for you: ") + title}
         >
           {line(who ? word + " from " + inSentence(who) : word)}
         </ListRow>
@@ -165,7 +165,7 @@ function NeedsYouRow({ item, slug, name, canDecide }: { item: NeedsYouItem; slug
     case "decision": {
       const r = item.r;
       return (
-        <ListRow className={ROW} lead={lead} title={sentence(r.title)} href={hrefs.record(r.id, r.project)} actionsVisible actions={canDecide && awaitsDecision(r) ? <RecordPair record={r} /> : undefined} ariaLabel={"Decision waiting: " + r.title}>
+        <ListRow className={ROW} lead={lead} title={sentence(r.title)} href={hrefs.record(r.id, r.project)} actionsVisible actions={canDecide && awaitsDecision(r) ? <RecordPair record={r} /> : undefined} ariaLabel={"Decision waiting: " + sentence(r.title)}>
           {line(word)}
         </ListRow>
       );
@@ -174,7 +174,7 @@ function NeedsYouRow({ item, slug, name, canDecide }: { item: NeedsYouItem; slug
       const p = item.p;
       const who = agentName(p.agent || p.name || "", slug);
       return (
-        <ListRow className={ROW} lead={lead} title={sentence(p.summary)} href={hrefs.post(slug, p.id)} actionsVisible actions={canDecide && p.can_decide !== false ? <ProposalDecide p={p} /> : undefined} ariaLabel={"Proposal: " + p.summary}>
+        <ListRow className={ROW} lead={lead} title={sentence(p.summary)} href={hrefs.post(slug, p.id)} actionsVisible actions={canDecide && p.can_decide !== false ? <ProposalDecide p={p} /> : undefined} ariaLabel={"Proposal: " + sentence(p.summary)}>
           {line(who ? word + " from " + inSentence(who) : word)}
         </ListRow>
       );

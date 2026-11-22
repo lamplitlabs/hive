@@ -12,6 +12,9 @@
 //! The hand's side, `POST /api/v1/hands/{join,nonce,connect,poll,result}`,
 //! is [`hive_runner::dial::hand_api`]: a hand is not a browser, so it
 //! proves itself with the join code once and its device key after that.
+//! The console's Host rule (`Handler::host_gate`) leaves these routes out
+//! for that reason: a hand may reach the hub through a proxy, under a name
+//! of the owner's.
 
 use crate::additions::{ADDITION_WRITES, addition_failure, addition_method, addition_not_found};
 use crate::httpx::{Request, ResponseWriter};

@@ -25,6 +25,12 @@ test("harness links do not advertise an unsupported job filter", () => {
   );
 });
 
+test("the runner's controls and its pause are sections of Settings", () => {
+  assert.equal(hrefs.runnerControls(), "/settings/#daemon");
+  assert.equal(hrefs.runnerControls(), hrefs.settings("daemon"));
+  assert.equal(hrefs.settings("stop"), "/settings/#stop");
+});
+
 test("connections links carry the project filter and the skills tab", () => {
   assert.equal(hrefs.connections(), "/connections/");
   assert.equal(

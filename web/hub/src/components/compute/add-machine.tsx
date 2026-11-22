@@ -20,6 +20,7 @@ import { errorText, writes, type AddMachineInput, type Compute, type ComputeCaps
 import { rel } from "@/lib/format";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { TUNNEL_LOGIN, joinTunnelLines, parseJoinAddress } from "./join-address";
 
 // Adding a machine from the console, as a few short steps instead of a
 // form full of ssh words. The four ways the shell offers:
@@ -708,10 +709,18 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   );
 }
 
+// Where a copied join line belongs: the other machine, not this one.
+const PASTE_THERE = "Copied. Paste it in a terminal on the machine you are adding.";
+
 // The join step: the line to run, the code by itself for the Mac app, how
 // long it is good for, and - once the hand has enrolled - which machine it is.
+// The line carries the address the browser used for the console. When that
+// is this machine's own (127.0.0.1, localhost, ::1) another machine cannot
+// reach it, so a note under the line gives the ssh tunnel that makes it
+// reachable, with the console's real port (join-address.ts).
 function JoinCodeView({ code, joined, busy, onAgain }: { code: JoinCode; joined?: string; busy: boolean; onAgain: () => void }) {
   const [now, setNow] = useState(() => Date.now());
+  const tunnel = joinTunnelLines(code.brain, code.command);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 15000);
     return () => clearInterval(t);
@@ -731,15 +740,33 @@ function JoinCodeView({ code, joined, busy, onAgain }: { code: JoinCode; joined?
           <code className="min-w-0 flex-1 font-mono text-[13px] leading-relaxed break-all" aria-label="Join command">
             {code.command}
           </code>
-          <CopyButton text={code.command} size="xs" variant="outline" />
+          <CopyButton text={code.command} size="xs" variant="outline" done={PASTE_THERE} />
         </div>
-        <p className="text-[13px] text-muted-foreground">It makes the machine&apos;s own key, joins with the code and then keeps calling Hive for work. Leave it running, or start it as a service.</p>
+        {tunnel ? (
+          <div className="grid gap-1.5 rounded-lg border border-warn/35 bg-warn/[0.08] px-3 py-2.5 text-[13px] leading-relaxed" role="note" aria-label="This address is this machine itself">
+            <p>
+              <span className="font-medium">{parseJoinAddress(code.brain)?.host} is this machine itself</span>, so another machine cannot reach it. On the other machine, open an ssh tunnel to this one first, then join through it:
+            </p>
+            <div className="flex items-start gap-2 rounded-md border bg-card px-2.5 py-2">
+              <code className="min-w-0 flex-1 whitespace-pre-wrap font-mono text-xs leading-relaxed break-all" aria-label="Tunnel and join commands">
+                {tunnel.join("\n")}
+              </code>
+              <CopyButton text={tunnel.join("\n")} exact size="xs" variant="outline" done={PASTE_THERE} />
+            </div>
+            <p className="text-muted-foreground">
+              Put your login and this machine&apos;s name in place of <Mono>{TUNNEL_LOGIN}</Mono>. Keep the tunnel open: every later start goes through it too.
+            </p>
+          </div>
+        ) : null}
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
+          It enrols the machine, then stays connected and does not return; on later starts run <Mono>hive-hand dial</Mono> (a launchd or systemd service keeps it running). The machine needs <Mono>hive</Mono> on its PATH and its own model login before it gets work.
+        </p>
       </div>
       <div className="grid gap-1.5">
         <Label>Join code</Label>
         <div className="flex flex-wrap items-center gap-2">
           <Mono className="rounded-md border px-2 py-1 text-sm">{code.code}</Mono>
-          <CopyButton text={code.code} size="xs" variant="ghost" label="Copy code" />
+          <CopyButton text={code.code} size="xs" variant="ghost" label="Copy code" done="Copied. Paste it on the Mac app's first screen." />
         </div>
         <p className="text-[13px] text-muted-foreground">For the Mac app&apos;s first screen. {left > 0 ? "Good for " + left + (left === 1 ? " more minute" : " more minutes") + ", one join." : "It has lapsed."}</p>
       </div>
