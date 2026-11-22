@@ -1,0 +1,55 @@
+name: Feature request
+description: Something Hive should do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start from the problem. A request that says what you were trying to do, and where Hive got in the way, is easier to judge than one that starts from a solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and what stood in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: How it would look to you as the one who uses it. A command, a setting, a page of the console.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: The workaround, if there is one.
+  - type: dropdown
+    id: area
+    attributes:
+      label: The part of Hive
+      options:
+        - The console
+        - Tasks and jobs (the runner)
+        - The harness or a model provider
+        - Pull requests (delivery, the reviewer)
+        - The board
+        - Self-improvement (the loop)
+        - Machines (pairing, hive-hand)
+        - Installing or updating
+        - The docs
+        - Something else
+  - type: checkboxes
+    id: decision
+    attributes:
+      label: Does it need a decision
+      description: Changes to money, sign-in, data, dependencies, deployment or security are decisions the owner records before any code is written.
+      options:
+        - label: This touches one of those, as far as I can tell.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you build it
+      options:
+        - label: I would open a pull request for this once the idea is agreed.

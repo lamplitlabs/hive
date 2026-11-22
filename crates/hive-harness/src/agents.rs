@@ -7,9 +7,10 @@
 //! agents work as they are.
 //!
 //! One name is one spec. The layers, in trust order: `agent` records of
-//! the store, the owner's `~/.hive/agents`, the clone's `.hive/agents`,
-//! `.claude/agents`, `.github/agents`. The highest layer owning a name
-//! wins; a lower twin may only narrow it (fewer tools, more denies, a
+//! the store, the owner's `~/.hive/agents`, the clone's `.hive/agents`
+//! (then `.pulse/agents`, the same folder under the name it had before the
+//! rename), `.claude/agents`, `.github/agents`. The highest layer owning a
+//! name wins; a lower twin may only narrow it (fewer tools, more denies, a
 //! smaller step cap, read-only), and what else it says is dropped with a
 //! warning. A file's `description` tells the model when to pick the
 //! agent, its body becomes the standing instructions, `tools` (or
@@ -27,8 +28,15 @@ use serde_json::{Map, Value, json};
 use crate::permissions::{Rule, Source, split_specs};
 use crate::skills::split_front_matter;
 
-/// Where a clone's agents live, relative to its root, in trust order.
-pub const AGENT_DIRS: &[&str] = &[".hive/agents", ".claude/agents", ".github/agents"];
+/// Where a clone's agents live, relative to its root, in trust order. The
+/// second is the first under the project folder's name from before the
+/// rename (`hive_store::legacy`).
+pub const AGENT_DIRS: &[&str] = &[
+    ".hive/agents",
+    ".pulse/agents",
+    ".claude/agents",
+    ".github/agents",
+];
 
 /// Characters of an agent's instructions the run gets before they are cut.
 pub const AGENT_BODY_LIMIT: usize = 30_000;
@@ -58,6 +66,11 @@ pub enum AgentLayer {
     /// The clone's `.hive/agents`.
     #[default]
     Repo,
+    /// The clone's `.pulse/agents`: [`AgentLayer::Repo`] under the folder's
+    /// name from before the rename. An agent both folders name is read
+    /// from `.hive/agents` alone (`read_agent_layers`): the file left
+    /// behind under `.pulse/` is named in a warning and changes nothing.
+    RepoLegacy,
     /// The clone's `.claude/agents`.
     Claude,
     /// The clone's `.github/agents`.
@@ -66,16 +79,30 @@ pub enum AgentLayer {
 
 impl AgentLayer {
     /// The layers read from files, in trust order.
-    pub const FILE_LAYERS: [AgentLayer; 4] = [Self::Home, Self::Repo, Self::Claude, Self::Github];
+    pub const FILE_LAYERS: [AgentLayer; 5] = [
+        Self::Home,
+        Self::Repo,
+        Self::RepoLegacy,
+        Self::Claude,
+        Self::Github,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Store => "store",
             Self::Home => "~/.hive/agents",
             Self::Repo => ".hive/agents",
+            Self::RepoLegacy => ".pulse/agents",
             Self::Claude => ".claude/agents",
             Self::Github => ".github/agents",
         }
+    }
+
+    /// Whether the layer is a folder kept only for a repository set up
+    /// before the rename: read like the rest, left out where Hive says
+    /// where a new agent file goes.
+    pub fn legacy(self) -> bool {
+        matches!(self, Self::RepoLegacy)
     }
 
     /// Whether the owner put the spec there (the store or the owner's own
@@ -87,7 +114,10 @@ impl AgentLayer {
     /// Whether the spec is a file of the clone, so a remote hand reading
     /// the clone sees it too.
     pub fn in_clone(self) -> bool {
-        matches!(self, Self::Repo | Self::Claude | Self::Github)
+        matches!(
+            self,
+            Self::Repo | Self::RepoLegacy | Self::Claude | Self::Github
+        )
     }
 
     /// The directory of a file layer under `cwd` or the Hive home.
@@ -96,8 +126,9 @@ impl AgentLayer {
             Self::Store => None,
             Self::Home => (!home.is_empty()).then(|| Path::new(home).join("agents")),
             Self::Repo => Some(cwd.join(AGENT_DIRS[0])),
-            Self::Claude => Some(cwd.join(AGENT_DIRS[1])),
-            Self::Github => Some(cwd.join(AGENT_DIRS[2])),
+            Self::RepoLegacy => Some(cwd.join(AGENT_DIRS[1])),
+            Self::Claude => Some(cwd.join(AGENT_DIRS[2])),
+            Self::Github => Some(cwd.join(AGENT_DIRS[3])),
         }
     }
 
@@ -105,7 +136,7 @@ impl AgentLayer {
         match self {
             Self::Store => "record",
             Self::Home => "owner file",
-            Self::Repo | Self::Claude | Self::Github => "repository file",
+            Self::Repo | Self::RepoLegacy | Self::Claude | Self::Github => "repository file",
         }
     }
 }
@@ -1381,7 +1412,7 @@ pub fn load_agents(cwd: &str, home: &str) -> Vec<AgentDef> {
 }
 
 /// Reads every layer - the store's `agent` records of `project` (and the
-/// commons), `~/.hive/agents`, the clone's `.hive/agents`,
+/// commons), `~/.hive/agents`, the clone's `.hive/agents`, `.pulse/agents`,
 /// `.claude/agents`, `.github/agents` - and merges them: one spec per
 /// name, the most trusted layer owning it, lower twins narrowing it. A
 /// rejected spec is returned too, with `rejected` set, so a caller can
@@ -1417,9 +1448,25 @@ pub fn read_agent_layers(
             continue;
         };
         for file in agent_files(&dir) {
-            if let Some(def) = read_agent_file(&file, layer) {
-                out.push(def);
+            let Some(def) = read_agent_file(&file, layer) else {
+                continue;
+            };
+            // One agent in both of the clone's own folders: `.hive/agents`
+            // is the one read. Folding the older file in as a lower layer
+            // would let a file somebody forgot to delete take tools away
+            // from the agent in use.
+            if layer.legacy()
+                && let Some(current) = out
+                    .iter_mut()
+                    .find(|a| a.layer == AgentLayer::Repo && a.name == def.name && a.loads())
+            {
+                current.warn(format!(
+                    "`{}` names the same agent and is not read; remove it",
+                    def.source
+                ));
+                continue;
             }
+            out.push(def);
         }
     }
     out
@@ -1716,6 +1763,67 @@ mod tests {
 
     fn strs(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// A clone from before the rename keeps its agents under
+    /// `.pulse/agents`. They load from there, as repository files; a twin
+    /// under `.hive/agents` owns the name and the older one only narrows it.
+    #[test]
+    fn agents_of_the_folder_from_before_the_rename_load_below_the_current_one() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".pulse/agents/content.md",
+            "---\ndescription: Writes the content.\ntools: Read, Edit\n---\nWrite it well.\n",
+        );
+        write(
+            dir.path(),
+            ".pulse/agents/tester.md",
+            "---\ndescription: The older tester.\ntools: Read, Write\n---\nOld instructions.\n",
+        );
+        write(
+            dir.path(),
+            ".hive/agents/tester.md",
+            "---\ndescription: Runs the tests.\ntools: Read, Bash\n---\nRun the tests and report.\n",
+        );
+        let agents = load_agents(dir.path().to_str().unwrap(), "");
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["tester", "content"]);
+        let content = &agents[1];
+        assert_eq!(content.source, ".pulse/agents/content.md");
+        assert_eq!(content.layer, AgentLayer::RepoLegacy);
+        assert!(content.layer.in_clone() && !content.layer.owner_trusted());
+        assert_eq!(content.body, "Write it well.");
+        // The agent both folders name is the `.hive` file as it stands:
+        // the older file takes no tool away from it and is named once.
+        let tester = &agents[0];
+        assert_eq!(tester.source, ".hive/agents/tester.md");
+        assert_eq!(tester.description, "Runs the tests.");
+        assert_eq!(tester.body, "Run the tests and report.");
+        assert_eq!(tester.tools.as_deref(), Some(&strs(&["read", "bash"])[..]));
+        assert_eq!(
+            tester.warnings,
+            ["`.pulse/agents/tester.md` names the same agent and is not read; remove it"]
+        );
+        // A `.hive` file that does not load owns no name: the older file
+        // is then the agent, as a file of any lower layer would be.
+        write(
+            dir.path(),
+            ".hive/agents/tester.md",
+            "---\ndescription: Broken.\npermissionMode: bypassPermissions\n---\nNo.\n",
+        );
+        let agents = load_agents(dir.path().to_str().unwrap(), "");
+        let tester = agents.iter().find(|a| a.name == "tester").unwrap();
+        assert_eq!(tester.source, ".pulse/agents/tester.md");
+        // Where a new agent file goes is said without the older folder.
+        assert!(AgentLayer::RepoLegacy.legacy());
+        assert!(
+            AgentLayer::FILE_LAYERS
+                .iter()
+                .filter(|l| l.legacy())
+                .count()
+                == 1
+        );
     }
 
     #[test]

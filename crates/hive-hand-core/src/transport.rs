@@ -51,8 +51,8 @@ pub const SSH_SOCKET_DIR_MAX: usize = 60;
 
 /// `HIVE_HOME`, else `~/.hive`, absolute and resolved: the same answer as
 /// the store's `resolve_home("")`, without linking the store. An install from
-/// before the rename still answers `PULSE_HOME` or `~/.pulse` while no
-/// `~/.hive` exists.
+/// before the rename still answers `PULSE_HOME`, or `~/.pulse` while that is
+/// where it lives (`default_home_in`).
 pub fn hive_home() -> Option<String> {
     let mut home = std::env::var("HIVE_HOME")
         .ok()
@@ -82,16 +82,35 @@ pub fn hive_home() -> Option<String> {
     Some(abs.display().to_string())
 }
 
-/// `~/.hive`, or `~/.pulse` while that is the only one of the two that
-/// exists (an install from before the rename). The store's `default_home_in`
-/// gives the same answer; the hand links this crate and not the store.
+/// The store file's names: the current one and the one from before the
+/// rename. The store's own constants say the same (a test there holds the
+/// two together); the hand links this crate and not the store.
+pub const STORE_FILE_NAMES: [&str; 2] = ["hive.sqlite", "pulse.sqlite"];
+
+/// `~/.hive`, or `~/.pulse` while an install from before the rename still
+/// lives there: when `~/.pulse` is the only one of the two that exists, and
+/// when both exist but the store is in `~/.pulse` and `~/.hive` holds none.
+/// The second case is an older install whose owner ran the installer or
+/// `cargo install --root ~/.hive`: either makes `~/.hive` for the program
+/// alone, and that must not hide the store, or a first run would start an
+/// empty one beside it. The store's `default_home_in` is this function.
 pub fn default_home_in(user: &std::path::Path) -> std::path::PathBuf {
     let current = user.join(".hive");
     let legacy = user.join(".pulse");
-    if !current.exists() && legacy.is_dir() {
+    if !legacy.is_dir() {
+        return current;
+    }
+    if !current.exists() || (!holds_store(&current) && holds_store(&legacy)) {
         return legacy;
     }
     current
+}
+
+/// Whether `home` holds a store file, under either of its names.
+fn holds_store(home: &std::path::Path) -> bool {
+    STORE_FILE_NAMES
+        .iter()
+        .any(|name| home.join(name).is_file())
 }
 
 /// The directory of the shared connections' sockets, `HIVE_HOME/ssh`,

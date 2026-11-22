@@ -1,9 +1,8 @@
 import type { NextConfig } from "next";
 
-// Static export: Vercel serves out/ as plain files, so the site has no server
-// and no middleware. Clerk runs in the browser only (ClerkProvider with the
-// publishable key baked in at build time) and the console it leads to is the
-// team's own front, never this site.
+// Static export: Vercel serves out/ as plain files, so the site has no server,
+// no middleware and no secrets. Everything a page shows is read at build time
+// from this folder and from the repository's docs/ (../../docs).
 const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,

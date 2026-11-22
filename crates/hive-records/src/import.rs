@@ -64,7 +64,34 @@ const IMPORT_PATHS: &[&str] = &[
     "CLAUDE.md",
     ".github/copilot-instructions.md",
     ".hive/agents",
+    // The same folder under its name from before the rename.
+    ".pulse/agents",
 ];
+
+/// Why an agent file under `.pulse/agents` is left out: the repository
+/// has the same agent under `.hive/agents`, and that one is the record.
+const AGENT_TWIN: &str = "the same agent under .hive/agents is the one imported";
+
+/// Whether `file` lies in the project's current folder, `.hive/`.
+fn in_current_dir(file: &str) -> bool {
+    file.starts_with(&format!("{}/", hive_store::PROJECT_DIR))
+}
+
+/// The record `id` when it was imported from a file under `.pulse/agents`:
+/// the agent's own record, or with `role` the role its `hive:` block made.
+fn legacy_agent_record(
+    by_path: &BTreeMap<String, hive_store::Record>,
+    id: &str,
+    role: bool,
+) -> Option<hive_store::Record> {
+    let folder = format!("{}/agents/", hive_store::LEGACY_PROJECT_DIR);
+    by_path
+        .iter()
+        .find(|(path, rec)| {
+            path.starts_with(&folder) && path.ends_with("#role") == role && rec.id == id
+        })
+        .map(|(_, rec)| rec.clone())
+}
 
 fn folder_kind(folder: &str) -> &'static str {
     match folder {
@@ -173,6 +200,15 @@ pub fn import_repo(
             by_path.insert(origin, rec);
         }
     }
+    // The agents the current folder gives: a file of the same name in the
+    // older folder is not a second record.
+    let current_agents: std::collections::BTreeSet<String> = files
+        .iter()
+        .filter(|f| in_current_dir(f))
+        .map(|f| classify_path(f))
+        .filter(|(kind, _, reason)| kind == "agent" && reason.is_empty())
+        .map(|(_, slug, _)| slug)
+        .collect();
     let mut items = Vec::new();
     for file in files {
         let (kind, slug, reason) = classify_path(&file);
@@ -180,10 +216,34 @@ pub fn import_repo(
             summary.skip(&file, &kind, &reason);
             continue;
         }
-        let prev = by_path.get(&file).cloned();
+        if kind == "agent"
+            && file.starts_with(&format!("{}/", hive_store::LEGACY_PROJECT_DIR))
+            && current_agents.contains(&slug)
+        {
+            summary.skip(&file, &kind, AGENT_TWIN);
+            continue;
+        }
+        // An agent imported from `.pulse/agents` before the repository had
+        // it under `.hive/agents` is the same agent: the current file takes
+        // that record over, and the record's path moves to it (its origin
+        // stays what it was, as every record's does). Without this the new
+        // file would collide with its own record, the older file would be
+        // skipped as the twin, and neither could revise it. The first
+        // import of the current file is the takeover; after it the record
+        // is revised like any other, on `--force-rev`.
+        let own = by_path.get(&file).cloned();
+        let taken_over = match &own {
+            None if kind == "agent" && in_current_dir(&file) => {
+                legacy_agent_record(&by_path, &scoped_id(&kind, &slug, &p), false)
+            }
+            _ => None,
+        };
+        let first_take = taken_over.as_ref().is_some_and(|r| r.path != file);
+        let prev = own.or(taken_over);
         let imported = prev.is_some();
         if let Some(prev) = &prev
             && !opts.force_rev
+            && !first_take
         {
             summary.skip(
                 &file,
@@ -330,10 +390,19 @@ pub fn import_repo(
         // The role an agent file declares is a second record from the same
         // path; `#role` on the origin keeps the two apart.
         let key = format!("{file}#role");
-        let prev = by_path.get(&key).cloned();
+        let own = by_path.get(&key).cloned();
+        let taken_over = match &own {
+            None if in_current_dir(&file) => {
+                legacy_agent_record(&by_path, &scoped_id("role", &role_slug, &p), true)
+            }
+            _ => None,
+        };
+        let first_take = taken_over.as_ref().is_some_and(|r| r.path != file);
+        let prev = own.or(taken_over);
         let imported = prev.is_some();
         if let Some(prev) = &prev
             && !opts.force_rev
+            && !first_take
         {
             summary.skip(
                 &file,
@@ -479,10 +548,10 @@ pub fn classify_path(file: &str) -> (String, String, String) {
         _ => {}
     }
     let parts: Vec<_> = file.split('/').collect();
-    if parts.len() == 3 && parts[0] == ".hive" && parts[1] == "agents" {
+    if parts.len() == 3 && hive_store::PROJECT_DIRS.contains(&parts[0]) && parts[1] == "agents" {
         // An agent file the harness reads from `.hive/agents/<name>.md`
-        // (or `<name>.agent.md`); the file is the record, front matter and
-        // all.
+        // (or `<name>.agent.md`; `.pulse/agents` in a repository from
+        // before the rename); the file is the record, front matter and all.
         let base = parts[2];
         let Some(stem) = base.strip_suffix(".md") else {
             return (
@@ -839,6 +908,154 @@ mod tests {
             classify_path(".hive/agents/deep/x.md").2,
             "outside record folders"
         );
+        assert_eq!(
+            classify_path(".pulse/agents/reviewer.agent.md"),
+            ("agent".into(), "reviewer".into(), String::new())
+        );
+        assert_eq!(
+            classify_path(".pulsed/agents/reviewer.md").2,
+            "outside record folders"
+        );
+    }
+
+    /// A repository from before the rename keeps its agent files under
+    /// `.pulse/agents`. They import as agent records all the same; one the
+    /// repository also has under `.hive/agents` is one record, not two.
+    #[test]
+    fn agent_files_of_the_folder_from_before_the_rename_import_too() {
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path().to_str().unwrap();
+        hive_testutil::git(&["-C", root, "init", "-q", "-b", "main"]).unwrap();
+        for (path, text) in [
+            (
+                ".pulse/agents/content.md",
+                "---\nname: content\n---\nThe older content agent.\n",
+            ),
+            (
+                ".pulse/agents/reviewer.md",
+                "---\nname: reviewer\n---\nThe older reviewer.\n",
+            ),
+            (
+                ".hive/agents/reviewer.agent.md",
+                "---\nname: reviewer\n---\nRead the diff.\n",
+            ),
+        ] {
+            let full = repo.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+        hive_testutil::git(&["-C", root, "add", "."]).unwrap();
+        hive_testutil::git(&["-C", root, "commit", "-q", "-m", "agents"]).unwrap();
+        add_project(&s, "app", repo.path(), false);
+        let summary = import_repo(
+            &s,
+            root,
+            "HEAD",
+            "app",
+            ImportOptions {
+                author: "tester".into(),
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.kinds["agent"].imported, 2, "{:?}", summary.skipped);
+        let (content, _) = s.get_record("AGENT-content-app", 0).unwrap();
+        assert!(
+            content
+                .origin
+                .starts_with("markdown:.pulse/agents/content.md@"),
+            "{}",
+            content.origin
+        );
+        let (reviewer, rev) = s.get_record("AGENT-reviewer-app", 0).unwrap();
+        assert!(
+            reviewer
+                .origin
+                .starts_with("markdown:.hive/agents/reviewer.agent.md@"),
+            "{}",
+            reviewer.origin
+        );
+        assert!(rev.unwrap().body.contains("Read the diff."));
+        assert_eq!(
+            summary.skipped,
+            [SkippedFile {
+                path: ".pulse/agents/reviewer.md".into(),
+                kind: "agent".into(),
+                reason: AGENT_TWIN.into(),
+            }]
+        );
+
+        // The repository later puts `content` under `.hive/agents` too.
+        // That file takes the record over, on a plain import: the record
+        // carries its text and its path, and the older file is the twin.
+        std::fs::write(
+            repo.path().join(".hive/agents/content.md"),
+            "---\nname: content\n---\nThe current content agent.\n",
+        )
+        .unwrap();
+        hive_testutil::git(&["-C", root, "add", "."]).unwrap();
+        hive_testutil::git(&["-C", root, "commit", "-q", "-m", "moved"]).unwrap();
+        let again = import_repo(
+            &s,
+            root,
+            "HEAD",
+            "app",
+            ImportOptions {
+                author: "tester".into(),
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(again.revised, 1, "{:?}", again.skipped);
+        let (content, rev) = s.get_record("AGENT-content-app", 0).unwrap();
+        assert_eq!(content.path, ".hive/agents/content.md");
+        assert!(rev.unwrap().body.contains("The current content agent."));
+        assert!(
+            again
+                .skipped
+                .iter()
+                .any(|k| k.path == ".pulse/agents/content.md" && k.reason == AGENT_TWIN),
+            "{:?}",
+            again.skipped
+        );
+        // From then on it is a record like any other: a plain import
+        // leaves it, and `--force-rev` revises it from the current file.
+        std::fs::write(
+            repo.path().join(".hive/agents/content.md"),
+            "---\nname: content\n---\nA third wording.\n",
+        )
+        .unwrap();
+        hive_testutil::git(&["-C", root, "add", "."]).unwrap();
+        hive_testutil::git(&["-C", root, "commit", "-q", "-m", "reworded"]).unwrap();
+        let plain = import_repo(
+            &s,
+            root,
+            "HEAD",
+            "app",
+            ImportOptions {
+                author: "tester".into(),
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(plain.revised, 0, "{:?}", plain.skipped);
+        let forced = import_repo(
+            &s,
+            root,
+            "HEAD",
+            "app",
+            ImportOptions {
+                author: "tester".into(),
+                force_rev: true,
+                ..ImportOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(forced.revised, 1, "{:?}", forced.skipped);
+        let (_, rev) = s.get_record("AGENT-content-app", 0).unwrap();
+        assert!(rev.unwrap().body.contains("A third wording."));
     }
 
     #[test]

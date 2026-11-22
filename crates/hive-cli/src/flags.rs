@@ -127,6 +127,10 @@ pub struct Flag {
     pub set: bool,
 }
 
+/// Says whether an argument that begins with `-` is one of the command's
+/// own words: it gets the positional arguments before it and the argument.
+pub type DashWord = fn(&[String], &str) -> bool;
+
 #[derive(Debug, Clone, Default)]
 pub struct FlagSet {
     name: String,
@@ -135,6 +139,7 @@ pub struct FlagSet {
     args: Vec<String>,
     output: Output,
     captured: std::cell::RefCell<Vec<u8>>,
+    dash_word: Option<DashWord>,
 }
 
 impl FlagSet {
@@ -149,6 +154,51 @@ impl FlagSet {
     /// them.
     pub fn set_output(&mut self, output: Output) {
         self.output = output;
+    }
+
+    /// Lets [`parse_interleaved`] keep some arguments that begin with `-`
+    /// as positional words, where `is_word` says so (`hive executor label
+    /// NAME -word` removes a word). A flag that is defined, and `-h` or
+    /// `-help`, stay flags whatever it answers.
+    pub fn dash_words(&mut self, is_word: DashWord) {
+        self.dash_word = Some(is_word);
+    }
+
+    /// Whether `arg`, which begins with `-`, is a word of the command and
+    /// not a flag (see [`FlagSet::dash_words`]).
+    fn is_dash_word(&self, positional: &[String], arg: &str) -> bool {
+        let Some(is_word) = self.dash_word else {
+            return false;
+        };
+        // `--` ends the flags and `-` alone is a plain argument, as ever.
+        if arg == "--" || arg == "-" {
+            return false;
+        }
+        match flag_name(arg) {
+            Some(name) if name == "h" || name == "help" || self.formal.contains_key(name) => false,
+            _ => is_word(positional, arg),
+        }
+    }
+
+    /// [`FlagSet::parse`] that also stops before a word `dash_words` keeps,
+    /// given the positional arguments before `args`.
+    fn parse_before_word(
+        &mut self,
+        args: &[String],
+        positional: &[String],
+    ) -> Result<(), FlagError> {
+        self.args = args.to_vec();
+        loop {
+            if let Some(next) = self.args.first()
+                && next.starts_with('-')
+                && self.is_dash_word(positional, next)
+            {
+                return Ok(());
+            }
+            if !self.parse_one()? {
+                return Ok(());
+            }
+        }
     }
 
     pub fn string_var(&mut self, name: &str, default: &str, usage: &str) {
@@ -661,8 +711,21 @@ fn parse_go_float(s: &str) -> Result<f64, &'static str> {
     Ok(v)
 }
 
+/// The flag name `arg` asks for, read the way [`FlagSet::parse`] reads it:
+/// one or two dashes, then the name up to an `=`. None when `arg` is not
+/// flag syntax at all.
+fn flag_name(arg: &str) -> Option<&str> {
+    let name = arg.strip_prefix('-')?;
+    let name = name.strip_prefix('-').unwrap_or(name);
+    if name.is_empty() || name.starts_with('-') || name.starts_with('=') {
+        return None;
+    }
+    Some(name.split_once('=').map_or(name, |(name, _)| name))
+}
+
 /// Flags and positional arguments may mix; `--` ends flag parsing and
-/// everything after it is positional.
+/// everything after it is positional. An argument that begins with `-` is
+/// a flag, unless the flag set keeps it as a word ([`FlagSet::dash_words`]).
 pub fn parse_interleaved(fs: &mut FlagSet, mut args: &[String]) -> Result<Vec<String>, FlagError> {
     let mut positional = Vec::new();
     while !args.is_empty() {
@@ -671,12 +734,12 @@ pub fn parse_interleaved(fs: &mut FlagSet, mut args: &[String]) -> Result<Vec<St
             positional.extend_from_slice(&args[1..]);
             return Ok(positional);
         }
-        if !a.starts_with('-') || a == "-" {
+        if !a.starts_with('-') || a == "-" || fs.is_dash_word(&positional, a) {
             positional.push(a.clone());
             args = &args[1..];
             continue;
         }
-        fs.parse(args)?;
+        fs.parse_before_word(args, &positional)?;
         let rest = fs.args();
         let consumed = args.len() - rest.len();
         if consumed > 0 && args[consumed - 1] == "--" {
@@ -897,6 +960,96 @@ mod tests {
         .unwrap();
         assert_eq!(got, sv(&["one", "two", "-x"]));
         assert_eq!(fs.get_string("kind"), "finding");
+    }
+
+    /// After `label NAME`, an argument with one dash is a word.
+    fn after_label(positional: &[String], arg: &str) -> bool {
+        positional.len() >= 2 && positional[0] == "label" && !arg.starts_with("--")
+    }
+
+    fn label_flags() -> FlagSet {
+        let mut fs = FlagSet::new("x");
+        fs.set_output(Output::Discard);
+        fs.bool_var("off", false, "");
+        fs.string_var("kind", "", "");
+        fs.dash_words(after_label);
+        fs
+    }
+
+    fn undefined(name: &str) -> Result<Vec<String>, FlagError> {
+        Err(FlagError::Message(format!(
+            "flag provided but not defined: -{name}"
+        )))
+    }
+
+    #[test]
+    fn dash_words_stay_positional_where_the_command_says_so() {
+        let _serial = crate::test_helpers::serial();
+        let mut fs = label_flags();
+        assert_eq!(
+            parse_interleaved(&mut fs, &sv(&["label", "box", "-cuda"])),
+            Ok(sv(&["label", "box", "-cuda"]))
+        );
+
+        // Flags that are defined stay flags around the words: one dash or
+        // two, with `=` or with the value as the next argument.
+        let mut fs = label_flags();
+        assert_eq!(
+            parse_interleaved(
+                &mut fs,
+                &sv(&[
+                    "label", "box", "-off", "-cuda", "--kind", "x", "-gpu", "-kind=y", "-a=b",
+                ]),
+            ),
+            Ok(sv(&["label", "box", "-cuda", "-gpu", "-a=b"]))
+        );
+        assert!(fs.get_bool("off"));
+        assert_eq!(fs.get_string("kind"), "y");
+
+        // A flag's value is taken as it always was, whatever it looks like.
+        let mut fs = label_flags();
+        assert_eq!(
+            parse_interleaved(&mut fs, &sv(&["label", "box", "--kind", "-cuda"])),
+            Ok(sv(&["label", "box"]))
+        );
+        assert_eq!(fs.get_string("kind"), "-cuda");
+
+        // Where the command does not say so, it is the undefined flag it was.
+        for args in [
+            vec!["list", "-cuda"],
+            vec!["label", "-cuda"],
+            vec!["label", "box", "--cuda"],
+            vec!["-cuda", "label", "box"],
+        ] {
+            assert_eq!(
+                parse_interleaved(&mut label_flags(), &sv(&args)),
+                undefined("cuda"),
+                "{args:?}"
+            );
+        }
+
+        // Help is still help, and `--` still ends the flags.
+        for help in ["-h", "-help", "--help"] {
+            assert_eq!(
+                parse_interleaved(&mut label_flags(), &sv(&["label", "box", help])),
+                Err(FlagError::Help),
+                "{help}"
+            );
+        }
+        let mut fs = label_flags();
+        assert_eq!(
+            parse_interleaved(&mut fs, &sv(&["label", "box", "--", "-off", "--kind"])),
+            Ok(sv(&["label", "box", "-off", "--kind"]))
+        );
+        assert!(!fs.get_bool("off"));
+
+        // A flag set that keeps no words reads every dash as a flag.
+        let mut plain = FlagSet::new("x");
+        plain.set_output(Output::Discard);
+        assert_eq!(
+            parse_interleaved(&mut plain, &sv(&["label", "box", "-cuda"])),
+            undefined("cuda")
+        );
     }
 
     #[test]

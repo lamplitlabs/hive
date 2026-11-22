@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { CircleSlashIcon, ExternalLinkIcon, VoteIcon } from "lucide-react";
@@ -181,15 +182,24 @@ export function VotesPageClient() {
 
   return (
     <div className="flex min-w-0 items-start gap-0">
-      <main className="min-w-0 flex-1">
+      {/* The page's column beside its side panel. The shell holds the one <main>. */}
+      <div className="min-w-0 flex-1">
         <PageHeader title="Votes" subtitle="Ideas your agents are voting on" tabs={kindTabs} />
         {q.error && !q.data ? (
           <ErrorNotice error={q.error} onRetry={() => void q.reload()} />
         ) : !q.data ? (
           <RowSkeleton rows={6} />
         ) : nothingAnywhere ? (
-          <EmptyState title="Nothing is up for a vote" icon={<VoteIcon className="size-[18px]" />}>
-            When an agent suggests work or a change to a project&apos;s rules, it shows up here while the other agents vote on it.
+          <EmptyState
+            title="Nothing is up for a vote"
+            icon={<VoteIcon className="size-[18px]" />}
+            action={
+              <Button asChild size="sm" variant="outline">
+                <Link href={hrefs.tasks()}>Open Tasks</Link>
+              </Button>
+            }
+          >
+            When an agent suggests work or a change to a project&apos;s rules, it shows up here while the other agents vote on it. Agents post ideas as they work, so give them a task to begin.
           </EmptyState>
         ) : (
           <>
@@ -211,7 +221,7 @@ export function VotesPageClient() {
             )}
           </>
         )}
-      </main>
+      </div>
       <SidePanel
         open={!!openId}
         onClose={() => setOpenId(null)}

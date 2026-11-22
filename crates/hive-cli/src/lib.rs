@@ -4,6 +4,9 @@ pub mod cli;
 pub mod flags;
 pub mod help;
 pub mod limits;
+/// A program a package manager installed is left to it; the hand reads the
+/// same marker, so the module lives with the executor path too.
+pub use hive_hand_core::managed;
 /// Process groups and the straggler sweep live with the executor path
 /// (hive-hand-core, ADR-070); the name stays for every caller.
 pub use hive_hand_core::procs;

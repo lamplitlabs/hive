@@ -253,7 +253,8 @@ function RecordsScreen() {
 
   return (
     <div className="flex min-w-0 items-start gap-0">
-      <main className="min-w-0 flex-1">
+      {/* The page's column beside its side panel. The shell holds the one <main>. */}
+      <div className="min-w-0 flex-1">
         <PageHeader title="Records" subtitle="Decisions, plans, guides and notes" />
         {filters}
         {q.error && !q.data ? (
@@ -299,7 +300,7 @@ function RecordsScreen() {
             )}
           </>
         )}
-      </main>
+      </div>
       <SidePanel
         open={!!id}
         onClose={() => setId(null)}

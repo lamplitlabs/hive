@@ -149,6 +149,10 @@ test("a check's script lives under .hive/, unless it is the one it already runs"
   assert.ok(!scriptInHive(".hive/"));
   assert.ok(!scriptInHive("scripts/check.sh"));
   assert.ok(!scriptInHive(".hivey/check.sh"));
+  // The folder's name from before the rename is the project's folder too.
+  assert.ok(scriptInHive(".pulse/automations/x.sh"));
+  assert.ok(!scriptInHive(".pulse/"));
+  assert.ok(!scriptInHive(".pulsed/check.sh"));
   const outside = entryHints({
     ...EMPTY_ENTRY,
     name: "site",

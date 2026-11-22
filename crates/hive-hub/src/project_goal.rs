@@ -181,42 +181,7 @@ pub(crate) fn read_project_goal_payload(
     w: &mut crate::httpx::ResponseWriter,
     r: &crate::httpx::Request,
 ) -> (String, bool, bool) {
-    let origin = r.header("Origin");
-    if !origin.is_empty() {
-        let parsed = url::Url::parse(&origin);
-        if parsed
-            .ok()
-            .filter(|u| {
-                u.host_str()
-                    .map(|host| {
-                        let host = match u.port() {
-                            Some(port) => format!("{host}:{port}"),
-                            None => host.to_string(),
-                        };
-                        host == r.host() && (u.scheme() == "http" || u.scheme() == "https")
-                    })
-                    .unwrap_or(false)
-            })
-            .is_none()
-        {
-            write_error(
-                w,
-                403,
-                "Cross-origin writes are not allowed".to_string(),
-                "The request did not originate at this hub.".to_string(),
-                "Open the hub on 127.0.0.1.".to_string(),
-            );
-            return (String::new(), false, false);
-        }
-    }
-    if r.header("Sec-Fetch-Site") == "cross-site" {
-        write_error(
-            w,
-            403,
-            "Cross-origin writes are not allowed".to_string(),
-            "The browser reports a cross-site request.".to_string(),
-            "Open the hub on 127.0.0.1.".to_string(),
-        );
+    if !crate::server::same_origin_write(w, r) {
         return (String::new(), false, false);
     }
     let media = r
@@ -696,6 +661,46 @@ mod tests {
                 status, 403,
                 "request headers {headers:?} bypassed guard: {status} {body}"
             );
+        }
+        // The goal write goes by the rule of every console write
+        // (`same_origin_write`). Behind a proxy of the owner's that serves
+        // the console over https on the default port, the browser names no
+        // port, and only the proxy's X-Forwarded-Proto says it is https.
+        s.set_setting("human", "hub.hosts", "hive.example.com")
+            .unwrap();
+        let forwarded = ("X-Forwarded-Proto", "https");
+        for (origin, host, proxy, want) in [
+            (
+                "https://hive.example.com",
+                "hive.example.com",
+                Some(forwarded),
+                200,
+            ),
+            (
+                "https://hive.example.com",
+                "HIVE.Example.com",
+                Some(forwarded),
+                200,
+            ),
+            ("https://hive.example.com", "hive.example.com", None, 403),
+            (
+                "http://hive.example.com",
+                "hive.example.com",
+                Some(forwarded),
+                403,
+            ),
+        ] {
+            let mut headers = vec![("Origin", origin), ("Host", host)];
+            headers.extend(proxy);
+            let (status, body) =
+                project_goal_request(http::handler(&s), &headers, "application/json");
+            assert_eq!(status, want, "{origin} to {host}, {proxy:?}: {body}");
+            if want == 403 {
+                assert!(
+                    body.contains("Cross-origin writes are not allowed"),
+                    "{origin} to {host}, {proxy:?}: {body}"
+                );
+            }
         }
         let (status, _) = project_goal_request(http::handler(&s), &[], "text/plain");
         assert_eq!(status, 415);

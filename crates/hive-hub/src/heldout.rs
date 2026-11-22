@@ -241,8 +241,12 @@ mod tests {
             }
         };
         let setup = crate::test_helpers_http::json_body(json!({"dir": dir.display().to_string()}));
+        // An address that is not this machine: the console answers to it
+        // (an IP address is no rebound name), so what refuses the write
+        // below is the route's own rule.
+        let elsewhere = "192.168.1.5:8787";
         let (status, result, raw) =
-            heldout_request(h, "GET", "/api/v1/heldout", "", "example.com", false);
+            heldout_request(h, "GET", "/api/v1/heldout", "", elsewhere, false);
         assert_eq!(status, 200, "{raw}");
         assert_eq!(result["configured"], false);
         assert_eq!(result["present"], false);
@@ -266,7 +270,7 @@ mod tests {
             "POST",
             "/api/v1/heldout",
             &setup,
-            "example.com",
+            elsewhere,
             true,
         );
         assert_eq!(status, 403, "{raw}");

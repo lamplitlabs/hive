@@ -166,6 +166,7 @@ fn list(c: &mut Context, store: Option<&Store>, cwd: &str) -> Result<()> {
             "no custom agents (the agents are {}, and the store's agent records)",
             AgentLayer::FILE_LAYERS
                 .iter()
+                .filter(|l| !l.legacy())
                 .map(|l| format!("{}/*.md", l.label()))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -339,6 +340,8 @@ fn layer_of_path(path: &Path, home: &str) -> AgentLayer {
         AgentLayer::Claude
     } else if text.contains("/.github/agents/") || text.starts_with(".github/agents/") {
         AgentLayer::Github
+    } else if text.contains("/.pulse/agents/") || text.starts_with(".pulse/agents/") {
+        AgentLayer::RepoLegacy
     } else {
         AgentLayer::Repo
     }

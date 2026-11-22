@@ -459,7 +459,9 @@ mod tests {
             ("origin", "Origin", "https://evil.example", 403),
             ("fetch site", "Sec-Fetch-Site", "cross-site", 403),
             ("content type", "Content-Type", "text/plain", 415),
-            ("host", "Host", "rebound.example:8787", 403),
+            // An address that is not this machine passes the console's Host
+            // rule (an IP address is no rebound name); the route refuses it.
+            ("host", "Host", "192.168.1.5:8787", 403),
         ] {
             let mut headers = vec![("Content-Type", "application/json")];
             if name != "intent" && name != "intent value" {
@@ -489,6 +491,12 @@ mod tests {
                 (status, raw)
             };
             assert_eq!(status, want, "{name}: {raw}");
+            if name == "host" {
+                assert!(
+                    raw.contains("Job repair is available only on loopback"),
+                    "{raw}"
+                );
+            }
         }
         assert_eq!(repair_row_count(&s, "events"), before);
         assert_eq!(repair_row_count(&s, "jobs"), 2);

@@ -169,7 +169,7 @@ export function KpisPanel({ project, height = 200, range: forced }: { project?: 
         <Tabs value={range} onValueChange={(v) => setRange(v as KpiRange)}>
           <TabsList variant="segmented" className="h-8!" aria-label="Over time range">
             {KPI_RANGES.map((r) => (
-              <TabsTrigger key={r} value={r} className="h-7 px-2.5 text-xs" aria-label={"Last " + KPI_RANGE_LABEL[r]}>
+              <TabsTrigger key={r} value={r} className="h-7 px-2.5 text-xs" aria-label={r + ", the last " + KPI_RANGE_LABEL[r]}>
                 {r}
               </TabsTrigger>
             ))}

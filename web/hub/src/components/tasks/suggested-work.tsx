@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { ConfirmDialog, showApiError } from "@/components/hive/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle, SectionHeading, excerpt } from "@/components/hive/item-card";
 import { KindTile } from "@/components/hive/kind-tile";
-import { ListRow, ListRows } from "@/components/hive/list-row";
+import { ListItem, ListRow, ListRows } from "@/components/hive/list-row";
 import { Disclosure } from "@/components/hive/panel";
 import { Markdown } from "@/components/hive/markdown";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -101,7 +101,8 @@ function SuggestionRow({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id:
     s.status === "suggested" && s.reviews > 0 ? plural(s.reviews, "review") + " without a verdict" : "",
   ].filter(Boolean);
   return (
-    <>
+    // One list item: the row and, while it is open, its details under it.
+    <ListItem>
       <ListRow
         lead={<KindTile kind="work" waiting={yours} title={yours ? "Suggested work, waiting for you" : "Suggested work"} />}
         title={s.title}
@@ -110,6 +111,7 @@ function SuggestionRow({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id:
         time={<When d={s.created_at} />}
         actions={open ? <RowActions s={s} onOpenTask={onOpenTask} /> : undefined}
         onOpen={hasMore ? () => setMore((m) => !m) : undefined}
+        expanded={hasMore ? more : undefined}
         ariaLabel={"Suggested work: " + s.title + (hasMore ? (more ? ". Hide the details" : ". Show the details") : "")}
         className={cn(yours && "bg-you-soft/40", more && "bg-muted/40")}
       >
@@ -117,7 +119,7 @@ function SuggestionRow({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id:
         {s.status === "owner" ? <span className="text-foreground">{" \u00b7 " + (s.reviewer ? Who(s.reviewer) + " handed it to you" : "your call")}</span> : null}
       </ListRow>
       {more ? (
-        <div className="grid gap-2 bg-muted/20 px-3 py-3 pl-13 text-sm" data-row-details>
+        <div className="grid gap-2 border-t bg-muted/20 px-3 py-3 pl-13 text-sm" data-row-details>
           {s.brief.trim() ? (
             <div className="rounded-lg border bg-card px-3 py-2 text-sm">
               <Markdown source={s.brief} />
@@ -126,7 +128,7 @@ function SuggestionRow({ s, onOpenTask }: { s: WorkSuggestion; onOpenTask?: (id:
           <VerdictLine s={s} onOpenTask={onOpenTask} />
         </div>
       ) : null}
-    </>
+    </ListItem>
   );
 }
 

@@ -526,12 +526,16 @@ mod tests {
             }
         };
         let loopback = "127.0.0.1:8765";
+        // An address that is not this machine: the console answers to it
+        // (an IP address is no rebound name), so what refuses it below is
+        // the route's own rule.
+        let elsewhere = "192.168.1.5:8787";
         let (status, result, raw) = cred_request(
             crate::test_helpers_http::handler(&s),
             "GET",
             "/api/v1/cred",
             "",
-            "example.com",
+            elsewhere,
             false,
         );
         assert_eq!(status, 200, "{raw}");
@@ -547,15 +551,16 @@ mod tests {
         assert_eq!(result["providers"][1]["available"], false);
         assert_eq!(result["providers"][2]["generate"], true);
         assert!(!raw.contains("BEGIN OPENSSH"));
-        let (status, _, _) = cred_request(
+        let (status, result, _) = cred_request(
             crate::test_helpers_http::handler(&s),
             "POST",
             "/api/v1/cred/token",
             r#"{"token":"x"}"#,
-            "example.com",
+            elsewhere,
             true,
         );
         assert_eq!(status, 403);
+        assert_eq!(result["error"], "The push key is set only on loopback");
         let (status, _, _) = cred_request(
             crate::test_helpers_http::handler(&s),
             "POST",

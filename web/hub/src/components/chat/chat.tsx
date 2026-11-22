@@ -876,7 +876,7 @@ function ActionRow({ item, running }: { item: ActionItem; running: boolean }) {
               {outLines.length > OUTPUT_LINES
                 ? "\n… " +
                   num(outLines.length - OUTPUT_LINES) +
-                  " more lines (the Harness page has them all)"
+                  " more lines (the Runs page has them all)"
                 : ""}
             </pre>
           ) : null}
@@ -1566,9 +1566,10 @@ function ConversationList({
               aria-label={GROUP_TITLES[g]}
             >
               <SectionHeading
-                as="h3"
+                // The groups stand right under the page's title, so they are its second level.
+                as="h2"
                 count={all.length}
-                className="mb-0 px-1 [&_h3]:text-sm"
+                className="mb-0 px-1 [&_h2]:text-sm"
                 action={
                   foldable ? (
                     <button

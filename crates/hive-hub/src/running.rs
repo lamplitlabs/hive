@@ -261,7 +261,10 @@ impl Handler {
     /// `can_install` says whether `hive update` (and the banner's Update
     /// now) can install the release on this machine, `install_command` is
     /// then the command to run in a terminal, and `install_blocked` otherwise
-    /// says why not - the same words the apply refusal would give.
+    /// says why not - the same words the apply refusal would give. Where a
+    /// package manager installed this program (`hive_cli::managed`),
+    /// `managed_by` names it, `can_install` is false and `install_command`
+    /// is that manager's upgrade command; both are empty everywhere else.
     pub(crate) fn update_status(&self) -> JsonMap {
         let running = hive_cli::version();
         let enabled = self.store.as_ref().is_some_and(|s| {
@@ -292,15 +295,23 @@ impl Handler {
             Some(s) => install_blocked(s),
             None => Some("this hub has no store".to_string()),
         };
+        let binary = apply_target().binary;
+        let managed = hive_cli::managed::of(std::path::Path::new(&binary));
+        let command = match &managed {
+            Some(m) => m.upgrade.clone(),
+            None if blocked.is_none() => "hive update".to_string(),
+            None => String::new(),
+        };
         map_from_pairs(vec![
             ("channel", json!(channel)),
             ("apply", apply),
             ("can_install", json!(blocked.is_none())),
-            (
-                "install_command",
-                json!(if blocked.is_none() { "hive update" } else { "" }),
-            ),
+            ("install_command", json!(command)),
             ("install_blocked", json!(blocked.unwrap_or_default())),
+            (
+                "managed_by",
+                json!(managed.as_ref().map(|m| m.owner()).unwrap_or_default()),
+            ),
             ("enabled", json!(enabled)),
             ("running", json!(running)),
             ("latest", json!(st.latest)),
@@ -374,6 +385,7 @@ impl Handler {
                     ApplyRefusal::Busy => (409, "Wait for the install running to end."),
                     ApplyRefusal::NoTarget => (409, "Build hive from source on this machine."),
                     ApplyRefusal::Spawn(_) => (500, "Try again, or run hive update."),
+                    ApplyRefusal::Managed(_) => (409, "Run that command in a terminal."),
                 };
                 crate::server::write_error(
                     w,
@@ -422,7 +434,12 @@ fn apply_target() -> hive_runner::release_update::ApplyTarget {
 /// when it can: the checks [`hive_runner::release_update::start_apply`]
 /// makes before it starts, short of an install already running.
 fn install_blocked(s: &hive_store::Store) -> Option<String> {
-    use hive_runner::release_update::{ApplyRefusal, update_channel};
+    use hive_runner::release_update::{ApplyRefusal, managed_refusal, update_channel};
+    // A package manager's program first: whatever else is set, it is that
+    // manager's to replace.
+    if let Some(why) = managed_refusal(&apply_target().binary) {
+        return Some(why);
+    }
     if s.setting(hive_cli::update::LATEST_URL_SETTING, "")
         .trim()
         .is_empty()
@@ -901,6 +918,66 @@ mod tests {
         );
         // The daily check's state now names the release it installed.
         assert_eq!(result["latest"], "v0.2.0");
+    }
+
+    /// A package manager's program (`hive_cli::managed`) is that manager's
+    /// to replace: the status names it and its command, Update now is
+    /// refused in the same words, and the file is as it was.
+    #[test]
+    fn update_leaves_a_program_a_package_manager_installed_to_that_manager() {
+        let _serial = crate::test_helpers::serial();
+        let _restore = ScratchTarget;
+        let s = http::additions_store(true);
+        let h = http::handler(&s);
+        let dir = tempfile::tempdir().unwrap();
+        let (url, _server) = served_release(dir.path());
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let binary = bin.join("hive").display().to_string();
+        std::fs::write(&binary, "old binary").unwrap();
+        let marker = format!("{binary}{}", hive_cli::managed::SUFFIX);
+        std::fs::write(&marker, "by=Homebrew\nupgrade=brew upgrade hivefleet\n").unwrap();
+        *APPLY_TARGET.lock().unwrap() = Some(hive_runner::release_update::ApplyTarget {
+            binary: binary.clone(),
+            running: "v0.1.0".into(),
+        });
+        s.set_setting("human", hive_cli::update::LATEST_URL_SETTING, &url)
+            .unwrap();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        let refusal = format!(
+            "Homebrew installed this hive and owns {binary}, so Hive does not replace that file. Upgrade it with: brew upgrade hivefleet"
+        );
+
+        let (status, result) =
+            http::additions_request(h.clone_for_test(), "GET", "/api/v1/update", "");
+        assert_eq!(status, 200, "{result:?}");
+        assert_eq!(result["managed_by"], "Homebrew", "{result:?}");
+        assert_eq!(result["can_install"], false, "{result:?}");
+        assert_eq!(result["install_command"], "brew upgrade hivefleet");
+        assert_eq!(result["install_blocked"], refusal.as_str());
+
+        let (status, result) =
+            http::additions_request(h.clone_for_test(), "POST", "/api/v1/update/apply", "{}");
+        assert_eq!(status, 409, "{result:?}");
+        assert_eq!(result["error"], "update not started");
+        assert_eq!(result["why"], refusal.as_str());
+        assert_eq!(result["fix"], "Run that command in a terminal.");
+        assert_eq!(std::fs::read_to_string(&binary).unwrap(), "old binary");
+        assert!(!std::path::Path::new(&format!("{binary}.prev")).exists());
+        assert!(!matches!(
+            s.meta(hive_runner::release_update::APPLY_KEY),
+            Ok((_, true))
+        ));
+
+        // The marker gone, the same machine is one hive update installs on.
+        std::fs::remove_file(&marker).unwrap();
+        let (_, result) = http::additions_request(h, "GET", "/api/v1/update", "");
+        assert_eq!(result["managed_by"], "", "{result:?}");
+        if hive_cli::update::running_target().is_some() {
+            assert_eq!(result["can_install"], true, "{result:?}");
+            assert_eq!(result["install_command"], "hive update");
+        }
     }
 
     #[test]
