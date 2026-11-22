@@ -70,7 +70,9 @@ touches `web/site/`, `docs/` or `scripts/install.sh`: it runs
 `npm run check` and the installer's own test
 (`scripts/tests/install-test.sh`), then `vercel pull`, `vercel build --prod` and
 `vercel deploy --prebuilt --prod` with the repository secrets
-`VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `VERCEL_DEPLOY_TOKEN`. Its last
+`VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `VERCEL_DEPLOY_TOKEN`. While one of
+the three is missing, the checks run, the deploy says it was skipped, and
+the run ends green. Its last
 step downloads `https://hivefleet.dev/install.sh` and compares it with this
 commit's `scripts/install.sh`, byte for byte, because the install line hands
 that address to a shell. An older installer there fails the run: the deploy

@@ -19,6 +19,9 @@ name: Deploy site (hivefleet.dev)
 #   VERCEL_PROJECT_ID    the project id (Project -> Settings -> General)
 #   VERCEL_DEPLOY_TOKEN  a token (Account -> Settings -> Tokens) scoped to the team
 # The Vercel project keeps Root Directory empty: every command here runs in web/site.
+# While one of the three is missing the deploy job says so and ends green: the
+# checks still run, and a repository that has no Vercel project yet (a fork,
+# or this one before the project exists) has no red run on its default branch.
 
 on:
   push:
@@ -75,17 +78,36 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
+      - name: Is there a Vercel project to deploy to?
+        id: vercel
+        shell: bash
+        working-directory: .
+        env:
+          DEPLOY_TOKEN: ${{ secrets.VERCEL_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VERCEL_ORG_ID" || -z "$VERCEL_PROJECT_ID" || -z "$DEPLOY_TOKEN" ]]; then
+            echo "::notice::The site was checked and not deployed: VERCEL_ORG_ID, VERCEL_PROJECT_ID and VERCEL_DEPLOY_TOKEN are not all set (docs/development.md says how to set them)."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.vercel.outputs.deploy == 'true'
       - uses: actions/setup-node@v4
+        if: steps.vercel.outputs.deploy == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/site/package-lock.json
       - name: Vercel pull
+        if: steps.vercel.outputs.deploy == 'true'
         run: npx --yes "$VERCEL_CLI" pull --yes --environment=production --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"
       - name: Vercel build
+        if: steps.vercel.outputs.deploy == 'true'
         run: npx --yes "$VERCEL_CLI" build --prod --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"
       - name: Vercel deploy
+        if: steps.vercel.outputs.deploy == 'true'
         shell: bash
         run: |
           max_attempts=3
@@ -112,6 +134,7 @@ jobs:
       #   failure: no commit can fix it, and a red run on the default branch
       #   would only send an agent after it (pipeline.watch).
       - name: Check the installer at the public address
+        if: steps.vercel.outputs.deploy == 'true'
         shell: bash
         working-directory: .
         run: |
