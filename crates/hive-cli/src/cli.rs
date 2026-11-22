@@ -234,8 +234,14 @@ pub fn binary_stamp() -> String {
     // The path is taken once, at the first stamp: a self-update replaces
     // the file under it, after which Linux reports the running inode as
     // "hive (deleted)" and a fresh current_exe() would stat nothing.
+    // A package manager keeps each version in a place of its own: an
+    // upgrade there leaves the running file alone and moves the name the
+    // program is started by, so that name is the one watched
+    // (hive_hand_core::managed).
     static EXE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    let Some(exe) = EXE.get_or_init(|| std::env::current_exe().ok()) else {
+    let Some(exe) = EXE.get_or_init(|| {
+        crate::managed::this_stable_path().or_else(|| std::env::current_exe().ok())
+    }) else {
         return String::new();
     };
     let Ok(st) = std::fs::metadata(exe) else {

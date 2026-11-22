@@ -492,10 +492,24 @@ pub(crate) fn unit_commands(
     }
 }
 
+/// The running program's real file, symbolic links resolved: the one an
+/// update replaces.
 pub(crate) fn hive_binary() -> String {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("hive"));
     std::fs::canonicalize(&exe)
         .unwrap_or(exe)
+        .display()
+        .to_string()
+}
+
+/// The path a service starts hive by. A package manager keeps each version
+/// in a place of its own and names the program by a path that stays
+/// (`hive_cli::managed`, the marker's `path`): a service file that named
+/// the real file would name nothing after the next upgrade. Everywhere else
+/// it is [`hive_binary`].
+pub(crate) fn launch_binary() -> String {
+    let real = hive_binary();
+    hive_cli::managed::launch_path(Path::new(&real), hive_cli::managed::this_program())
         .display()
         .to_string()
 }
@@ -545,7 +559,7 @@ pub(crate) fn prepare_unit(
     let log_dir = Path::new(&hive_home).join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
     let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
-    let binary = hive_binary();
+    let binary = launch_binary();
     let text = unit_file_text(
         u.clone(),
         kind.clone(),
@@ -657,7 +671,12 @@ pub fn install_service(
     };
     if !o.dry_run {
         // Sign before the units load, so the first daemon to run is the one whose folder answer sticks.
-        crate::sign::ensure_signed(&mut w, &hive_binary());
+        let binary = hive_binary();
+        crate::sign::ensure_signed(
+            &mut w,
+            &binary,
+            hive_cli::managed::beside(Path::new(&binary)).as_ref(),
+        );
         // Units from before the rename (pulse.daemon, pulse.hub) would keep a
         // second daemon leasing jobs beside this one: unload and remove them.
         retire_legacy_units(&mut w, String::new(), String::new());
@@ -702,7 +721,7 @@ pub fn service_status(hive_home: String) -> ServiceState {
     let mut state = ServiceState {
         kind: kind.clone(),
         supported: matches!(hive_gitenv::GOOS, "darwin" | "macos" | "linux"),
-        binary: hive_binary(),
+        binary: launch_binary(),
         logs: Path::new(&hive_home).join("logs").display().to_string(),
         ..Default::default()
     };

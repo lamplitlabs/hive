@@ -153,14 +153,18 @@ fn version_run(c: &mut Context, _fs: &FlagSet, _args: &[String]) -> anyhow::Resu
                 "notice": line,
             })
         });
-        hive_cli::write_json(
-            c.out.as_mut(),
-            &serde_json::json!({
-                "version": version,
-                "revision": hive_cli::revision(),
-                "update": update,
-            }),
-        )?;
+        let mut doc = serde_json::json!({
+            "version": version,
+            "revision": hive_cli::revision(),
+            "update": update,
+        });
+        // Only where a package manager installed this program
+        // (hive_cli::managed): who, and the command that upgrades it.
+        if let Some(m) = hive_cli::managed::this_program() {
+            doc["managed_by"] = serde_json::json!(m.owner());
+            doc["upgrade_command"] = serde_json::json!(m.upgrade);
+        }
+        hive_cli::write_json(c.out.as_mut(), &doc)?;
     } else {
         writeln!(c.out, "{version}")?;
         if let Some(line) = line {

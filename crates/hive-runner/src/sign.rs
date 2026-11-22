@@ -76,8 +76,24 @@ pub(crate) fn sign(path: &str, running: bool) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn ensure_signed(out: &mut dyn Write, binary: &str) {
+/// Signs `binary` as hive unless it already is. A program a package manager
+/// installed (`managed`) is left as that manager wrote it: its file is not
+/// Hive's to rewrite, and it moves with every upgrade, which is what macOS
+/// goes by.
+pub(crate) fn ensure_signed(
+    out: &mut dyn Write,
+    binary: &str,
+    managed: Option<&hive_cli::managed::Managed>,
+) {
     if signing_os() != "macos" && signing_os() != "darwin" {
+        return;
+    }
+    if let Some(m) = managed {
+        let _ = writeln!(
+            out,
+            "macOS: {} owns {binary}, so hive left it unsigned; macOS may ask about your folders again after an upgrade.",
+            m.owner()
+        );
         return;
     }
     if signed(binary) {
@@ -129,7 +145,7 @@ mod tests {
         assert!(!signed(&binary));
         sign(&binary, true).unwrap();
         let mut out = Vec::new();
-        ensure_signed(&mut out, &binary);
+        ensure_signed(&mut out, &binary, None);
         assert!(out.is_empty());
         assert_eq!(std::fs::read_to_string(&binary).unwrap(), "not a mach-o");
 
@@ -196,7 +212,7 @@ mod tests {
                 String::from_utf8_lossy(&verify.stderr)
             );
             out.clear();
-            ensure_signed(&mut out, &build);
+            ensure_signed(&mut out, &build, None);
             let said = String::from_utf8(out.clone()).unwrap();
             assert!(said.contains("is signed as hive"), "{said}");
 
@@ -209,8 +225,19 @@ mod tests {
                 "re-sign ad-hoc: {}",
                 String::from_utf8_lossy(&resign.stderr)
             );
+            // A package manager's file is left as that manager wrote it.
             out.clear();
-            ensure_signed(&mut out, &build);
+            let brew = hive_cli::managed::Managed::parse("by=Homebrew\n");
+            ensure_signed(&mut out, &build, Some(&brew));
+            let said = String::from_utf8(out.clone()).unwrap();
+            assert!(
+                said.contains(&format!("Homebrew owns {build}, so hive left it unsigned"))
+                    && !signed(&build)
+                    && !std::path::Path::new(&format!("{build}.signing")).exists(),
+                "managed: {said}"
+            );
+            out.clear();
+            ensure_signed(&mut out, &build, None);
             let said = String::from_utf8(out).unwrap();
             assert!(
                 said.contains(&format!("signed {build} as hive"))

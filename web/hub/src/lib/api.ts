@@ -2194,6 +2194,14 @@ export interface UpdatePayload {
   channel?: "release" | "source" | "";
   // What the banner's "Update now" (POST update/apply) is doing or last did.
   apply?: UpdateApply;
+  // The package manager that installed Hive on this machine ("Homebrew"),
+  // or "" when Hive may replace its own program. A managed program is
+  // upgraded by that manager, never by the hub: `install_command` is then
+  // its upgrade command. Absent from a hub that knows no package manager.
+  managed_by?: string;
+  // The command that brings a newer Hive, to run in a terminal: `hive
+  // update`, a package manager's upgrade command, or "" for none.
+  install_command?: string;
 }
 
 export interface UpdateApply {

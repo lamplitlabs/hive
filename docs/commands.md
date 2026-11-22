@@ -1361,10 +1361,10 @@ Flags:
 
 ### update
 
-Install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists.
+Install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists. A hive that a package manager such as Homebrew installed is left to it: the command names that manager's upgrade command.
 
 ```text
-hive update  install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists
+hive update  install the newer Hive release update.latest_url names, or Hive's own latest release while that setting is empty (checksum-verified); --check only says whether one exists. A hive that a package manager such as Homebrew installed is left to it: the command names that manager's upgrade command
 
 Usage: hive update [--check] [--json]
 

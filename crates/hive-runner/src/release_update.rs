@@ -17,6 +17,13 @@
 //! console still do not look anywhere. Under an agent's name or inside a
 //! job the command refuses, as it always did, and reads nothing.
 //!
+//! A program a package manager installed (Homebrew, for one) is that
+//! manager's to replace: it leaves a marker beside the program
+//! (`hive_cli::managed`), and with one there nothing here writes the file.
+//! `hive update` and the console's Update now refuse and name the manager's
+//! command, [`install`] itself refuses whoever calls it, and `hive update
+//! --check` still says whether a release is out.
+//!
 //! A private repository answers 404 to an anonymous request, so a GitHub
 //! address that fails over HTTP is read again through `gh api` when gh is
 //! on PATH (the account the owner is signed in with); the daily check
@@ -269,6 +276,10 @@ pub(crate) fn check(s: &hive_store::Store, env: &UpdateEnv) -> Result<Outcome> {
 /// Downloads, verifies and installs the newer release, or says the running
 /// build is current.
 pub(crate) fn install(s: &hive_store::Store, env: &UpdateEnv) -> Result<Outcome> {
+    // Whoever asks: a package manager's file is never written here.
+    if let Some(m) = hive_cli::managed::beside(Path::new(&env.binary)) {
+        bail!("{}", m.refusal(&env.binary));
+    }
     let release = read_release(s, env)?;
     if !hive_cli::update::is_newer(&release.version, &env.running) {
         return Ok(Outcome::Current {
@@ -517,6 +528,9 @@ pub enum ApplyRefusal {
     Busy,
     /// The install thread could not start.
     Spawn(String),
+    /// A package manager installed the program and replaces it itself; the
+    /// words say who, and the command to run.
+    Managed(String),
 }
 
 impl std::fmt::Display for ApplyRefusal {
@@ -538,6 +552,7 @@ impl std::fmt::Display for ApplyRefusal {
             ),
             ApplyRefusal::Busy => write!(f, "an update is already being installed"),
             ApplyRefusal::Spawn(e) => write!(f, "could not start the install: {e}"),
+            ApplyRefusal::Managed(why) => write!(f, "{why}"),
         }
     }
 }
@@ -559,6 +574,13 @@ impl ApplyTarget {
     }
 }
 
+/// Why nothing installs a release over `binary`, when a package manager
+/// installed it: who owns the file and the command that upgrades it. None
+/// for a program Hive may replace.
+pub fn managed_refusal(binary: &str) -> Option<String> {
+    hive_cli::managed::beside(Path::new(binary)).map(|m| m.refusal(binary))
+}
+
 /// The console's "Update now" (TASK-093): checks what `hive update` checks
 /// (a release source, the release channel, a target), records `installing`
 /// in the `update.apply` meta row and runs [`install`] on a thread of its
@@ -570,6 +592,9 @@ pub fn start_apply(
     target: ApplyTarget,
 ) -> std::result::Result<std::thread::JoinHandle<ApplyState>, ApplyRefusal> {
     use std::sync::atomic::Ordering;
+    if let Some(why) = managed_refusal(&target.binary) {
+        return Err(ApplyRefusal::Managed(why));
+    }
     let url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
     if url.is_empty() {
         return Err(ApplyRefusal::NoSource);
@@ -671,7 +696,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// from the stored state with no network: None when nothing newer is
 /// known, this machine follows the source channel, or the line for this
 /// release was already shown. Showing it records the release in the
-/// `update.prompted` meta row, so the next command stays quiet.
+/// `update.prompted` meta row, so the next command stays quiet. A program
+/// a package manager installed is told that manager's command.
 pub fn release_prompt(s: &hive_store::Store) -> Option<String> {
     let state = hive_cli::update::stored_state(s)?;
     let running = hive_cli::version();
@@ -682,7 +708,13 @@ pub fn release_prompt(s: &hive_store::Store) -> Option<String> {
         .meta(hive_cli::update::PROMPTED_KEY)
         .map(|(v, _)| v)
         .unwrap_or_default();
-    let line = hive_cli::update::prompt(&running, &state, channel(s), &prompted)?;
+    let line = hive_cli::update::prompt(
+        &running,
+        &state,
+        channel(s),
+        &prompted,
+        hive_cli::managed::this_program(),
+    )?;
     s.set_meta(hive_cli::update::PROMPTED_KEY, &state.latest)
         .ok()?;
     Some(line)
@@ -763,6 +795,13 @@ pub(crate) fn update_on(
         .store
         .clone()
         .ok_or_else(|| anyhow!("hive update needs the store"))?;
+    let only_check = fs.get_bool("check");
+    // A package manager's program is that manager's to replace: the command
+    // says so before it reads anything. `--check` goes on and reports.
+    let managed = hive_cli::managed::beside(Path::new(&host.binary));
+    if let Some(m) = managed.as_ref().filter(|_| !only_check) {
+        bail!("{}", m.refusal(&host.binary));
+    }
     let mut url = s.setting(LATEST_URL_SETTING, "").trim().to_string();
     // Looking at the project's own releases is for the owner who runs the
     // command. An agent and a job get the refusal an empty setting always
@@ -772,7 +811,6 @@ pub(crate) fn update_on(
             "{LATEST_URL_SETTING} is empty, so Hive does not know where its releases are; set it first: hive settings set {LATEST_URL_SETTING} https://api.github.com/repos/OWNER/REPO/releases/latest"
         );
     }
-    let only_check = fs.get_bool("check");
     let channel = channel(&s);
     if channel == Channel::Source && !only_check {
         bail!(
@@ -821,7 +859,7 @@ pub(crate) fn update_on(
         );
     }
     if c.json {
-        let v = match &outcome {
+        let mut v = match &outcome {
             Outcome::Current { latest } => serde_json::json!({
                 "state": "current", "running": env.running, "latest": latest,
                 "channel": channel.as_str(),
@@ -839,17 +877,30 @@ pub(crate) fn update_on(
                 "binary": binary, "prev": prev, "channel": channel.as_str(),
             }),
         };
+        // Only a managed program carries these two, so every other
+        // answer is what it was.
+        if let Some(m) = &managed {
+            v["managed_by"] = serde_json::json!(m.owner());
+            v["upgrade_command"] = serde_json::json!(m.upgrade);
+        }
         hive_cli::write_json(c.out.as_mut(), &v)?;
         return Ok(());
     }
-    for line in outcome_lines(&outcome, &env.running, channel) {
+    for line in outcome_lines(&outcome, &env.running, channel, managed.as_ref()) {
         c.println(line)?;
     }
     Ok(())
 }
 
-/// What `hive update` prints for `outcome`.
-pub(crate) fn outcome_lines(outcome: &Outcome, running: &str, channel: Channel) -> Vec<String> {
+/// What `hive update` prints for `outcome`. For a program a package
+/// manager installed (`managed`), the line under a newer release names
+/// that manager's command.
+pub(crate) fn outcome_lines(
+    outcome: &Outcome,
+    running: &str,
+    channel: Channel,
+    managed: Option<&hive_cli::managed::Managed>,
+) -> Vec<String> {
     match outcome {
         Outcome::Current { latest } => vec![format!(
             "hive {running} is up to date (latest release {latest})"
@@ -863,9 +914,10 @@ pub(crate) fn outcome_lines(outcome: &Outcome, running: &str, channel: Channel) 
                     format!(" - {url}")
                 }
             )];
-            lines.push(match channel {
-                Channel::Release => "Install it with: hive update".into(),
-                Channel::Source => "This machine follows update.channel source: the daemon builds from the brain's checkout. hive settings set update.channel release to install releases.".into(),
+            lines.push(match (managed, channel) {
+                (Some(m), _) => m.upgrade_line(),
+                (None, Channel::Release) => "Install it with: hive update".into(),
+                (None, Channel::Source) => "This machine follows update.channel source: the daemon builds from the brain's checkout. hive settings set update.channel release to install releases.".into(),
             });
             lines
         }
@@ -1063,7 +1115,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        let lines = outcome_lines(&out, "v0.1.0", Channel::Release);
+        let lines = outcome_lines(&out, "v0.1.0", Channel::Release, None);
         assert!(
             lines[0].starts_with("Installed Hive v0.2.0 at "),
             "{lines:?}"
@@ -1434,6 +1486,117 @@ mod tests {
             hand_asked(),
             vec![PROJECT_RELEASES_URL.to_string(), own.to_string()]
         );
+    }
+
+    /// A package manager's file is that manager's to replace
+    /// (hive_cli::managed): `hive update` refuses before it reads anything
+    /// and names the manager's command, `--check` still reports, the
+    /// console's Update now refuses, and `install` refuses whoever calls it.
+    #[test]
+    fn a_program_a_package_manager_installed_is_never_replaced() {
+        let _serial = serial();
+        let _signing = signing_linux();
+        let s = new_store();
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+        let served = tempfile::tempdir().unwrap();
+        let base = serve(served.path().to_path_buf());
+        let url = release_dir(&base, served.path(), "v0.2.0", false);
+        s.set_setting("human", LATEST_URL_SETTING, &url).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let binary = installed_binary(home.path());
+        let marker = format!("{binary}{}", hive_cli::managed::SUFFIX);
+        std::fs::write(&marker, "by=Homebrew\nupgrade=brew upgrade hivefleet\n").unwrap();
+        let refusal = format!(
+            "Homebrew installed this hive and owns {binary}, so Hive does not replace that file. Upgrade it with: brew upgrade hivefleet"
+        );
+        let untouched = || {
+            assert_eq!(std::fs::read_to_string(&binary).unwrap(), "old binary");
+            assert!(!Path::new(&format!("{binary}.new")).exists());
+            assert!(!Path::new(&format!("{binary}.prev")).exists());
+        };
+
+        hand_answers(project_release());
+        let (out, err, code) = update(&s, &[], false, hand_host(&binary));
+        assert_eq!((code, out.as_str()), (1, ""), "{err}");
+        assert_eq!(err, format!("hive update: {refusal}\n"));
+        assert!(hand_asked().is_empty(), "{:?}", hand_asked());
+        // The source channel's own refusal does not come first: the daemon
+        // builds nothing over this file either.
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "source")
+            .unwrap();
+        let (_, err, code) = update(&s, &[], false, hand_host(&binary));
+        assert_eq!((code, err), (1, format!("hive update: {refusal}\n")));
+        // An agent is told the same, and nothing is read for it either.
+        let (_, err, code) = update_as(&s, "worker-1", &[], false, hand_host(&binary));
+        assert_eq!((code, err), (1, format!("hive update: {refusal}\n")));
+        assert!(hand_asked().is_empty(), "{:?}", hand_asked());
+
+        let (out, err, code) = update(&s, &["--check"], false, hand_host(&binary));
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(
+            out,
+            "A newer Hive is available: v0.3.0 (running v0.1.0) - https://github.com/lamplitlabs/hive/releases/tag/v0.3.0\nUpgrade it with: brew upgrade hivefleet\n"
+        );
+        let (out, _, code) = update(&s, &["--check"], true, hand_host(&binary));
+        assert_eq!(code, 0);
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            (
+                doc["state"].as_str(),
+                doc["managed_by"].as_str(),
+                doc["upgrade_command"].as_str()
+            ),
+            (
+                Some("available"),
+                Some("Homebrew"),
+                Some("brew upgrade hivefleet")
+            ),
+            "{doc}"
+        );
+        s.set_setting("human", hive_cli::update::CHANNEL_SETTING, "release")
+            .unwrap();
+
+        let err = install(&s, &env_for(url.clone(), binary.clone()))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, refusal);
+        assert_eq!(
+            start_apply(
+                &s,
+                "human",
+                ApplyTarget {
+                    binary: binary.clone(),
+                    running: "v0.1.0".into(),
+                },
+            )
+            .err(),
+            Some(ApplyRefusal::Managed(refusal.clone()))
+        );
+        assert_eq!(apply_state(&s).state, "idle");
+        assert_eq!(managed_refusal(&binary), Some(refusal));
+        untouched();
+
+        // A marker that names nobody is a marker all the same.
+        std::fs::write(&marker, "").unwrap();
+        let err = install(&s, &env_for(url.clone(), binary.clone()))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            format!(
+                "A package manager installed this hive and owns {binary}, so Hive does not replace that file. Upgrade it with the package manager that installed it."
+            )
+        );
+        untouched();
+
+        // Without the marker the same machine installs the same release.
+        std::fs::remove_file(&marker).unwrap();
+        assert_eq!(managed_refusal(&binary), None);
+        assert!(matches!(
+            install(&s, &env_for(url, binary.clone())).unwrap(),
+            Outcome::Installed { .. }
+        ));
     }
 
     #[test]

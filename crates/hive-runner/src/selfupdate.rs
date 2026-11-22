@@ -190,6 +190,12 @@ fn tend_release(
             lines.push(format!("self-update: {reason}"));
         }
     };
+    // A package manager's program is that manager's to replace: the release
+    // document is not even read.
+    if let Some(m) = hive_cli::managed::beside(std::path::Path::new(&env.binary)) {
+        say(st, managed_wait(&m, &env.binary, "release"));
+        return;
+    }
     if s.setting("stop", "") == "1" {
         say(st, "stop is set; no release installed".into());
         return;
@@ -280,6 +286,17 @@ fn tend_release(
             st.last_failure_at.clear();
         }
     });
+}
+
+/// What a pass says, once, where a package manager installed the program:
+/// who owns the file, that no `what` ("release", "build") goes over it, and
+/// how a newer version does arrive.
+fn managed_wait(m: &hive_cli::managed::Managed, binary: &str, what: &str) -> String {
+    format!(
+        "{} installed this hive and owns {binary}; no {what} is installed over it ({})",
+        m.owner(),
+        m.upgrade_hint()
+    )
 }
 
 /// Installs the release (`release_update::install`) and says how it went:
@@ -424,6 +441,13 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
             &mut lines,
             "no brain project; nothing to build from".into(),
         );
+        return lines;
+    }
+    // A package manager's program is that manager's to replace: nothing is
+    // built to go over it. Said after the gates above, so a machine with
+    // no brain project keeps the line it always had.
+    if let Some(m) = hive_cli::managed::beside(std::path::Path::new(&env.binary)) {
+        say(&mut st, &mut lines, managed_wait(&m, &env.binary, "build"));
         return lines;
     }
     let def = first_non_empty(&[brain.str("default_branch"), "main".into()]);
@@ -1390,6 +1414,65 @@ mod tests {
         assert!(!installed_binary_is(&env.binary, "0000000000000000"));
         assert!(!installed_binary_is("", &rev));
         assert!(!installed_binary_is("/nonexistent/hive", &rev));
+    }
+
+    /// A package manager's file is that manager's to replace
+    /// (hive_hand_core::managed): neither mode writes over it, each says so
+    /// once, and the same pass builds as soon as the marker is gone.
+    #[test]
+    fn a_program_a_package_manager_installed_is_never_built_or_installed_over() {
+        let _serial = serial();
+        let _guard = hive_testutil::env_lock();
+        reset_self_update();
+        let (s, _repo, env, _fixture) = self_update_fixture();
+        let marker = format!("{}{}", env.binary, hive_cli::managed::SUFFIX);
+        std::fs::write(&marker, "by=Homebrew\nupgrade=brew upgrade hivefleet\n").unwrap();
+        let idle = || {
+            !SELF_UPDATE_STATE
+                .read()
+                .expect("self-update state poisoned")
+                .inflight
+        };
+
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert_eq!(
+            lines,
+            vec![format!(
+                "self-update: Homebrew installed this hive and owns {}; no build is installed over it (run: brew upgrade hivefleet)",
+                env.binary
+            )]
+        );
+        assert!(idle(), "a build started");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(lines.is_empty(), "said once: {lines:?}");
+
+        // Release mode reads no document: this address would refuse it.
+        set_setting(&s, "daemon.self_update", "release");
+        set_setting(&s, "update.latest_url", "http://127.0.0.1:1/latest.json");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert_eq!(
+            lines,
+            vec![format!(
+                "self-update: Homebrew installed this hive and owns {}; no release is installed over it (run: brew upgrade hivefleet)",
+                env.binary
+            )]
+        );
+        assert!(idle(), "an install started");
+        assert!(
+            !s.meta(hive_cli::update::META_KEY).unwrap().1,
+            "the release document was read"
+        );
+        assert_eq!(std::fs::read(&env.binary).unwrap(), b"old binary");
+        assert!(!file_exists(&format!("{}.new", env.binary)));
+        assert!(!file_exists(&format!("{}.prev", env.binary)));
+
+        // The marker gone, the very same pass builds.
+        std::fs::remove_file(&marker).unwrap();
+        set_setting(&s, "daemon.self_update", "on");
+        let lines = tend_binary(&s, TEST_NOW.into(), env.clone());
+        assert!(lines.iter().any(|l| l.ends_with("; building")), "{lines:?}");
+        wait_self_update_idle();
+        assert!(file_exists(&format!("{}.prev", env.binary)));
     }
 
     #[test]
