@@ -1224,7 +1224,9 @@ pub(crate) fn session_file_path(
         }
     }
     let norm = rel.replace('\\', "/");
-    if norm.starts_with(".hive/private/") || norm.contains("/.hive/private/") {
+    if hive_store::PROJECT_DIRS.iter().any(|dir| {
+        norm.starts_with(&format!("{dir}/private/")) || norm.contains(&format!("/{dir}/private/"))
+    }) {
         return Err("the hub's private folder is not a file to read");
     }
     let base = std::fs::canonicalize(cwd).map_err(|_| "the workspace is gone")?;
@@ -2127,9 +2129,11 @@ mod tests {
             [0x89u8, b'P', b'N', b'G', 0, 1, 2],
         )
         .unwrap();
-        let private = work.path().join(".hive").join("private");
-        std::fs::create_dir_all(&private).unwrap();
-        std::fs::write(private.join("token"), "secret\n").unwrap();
+        for dir in [".hive", ".pulse"] {
+            let private = work.path().join(dir).join("private");
+            std::fs::create_dir_all(&private).unwrap();
+            std::fs::write(private.join("token"), "secret\n").unwrap();
+        }
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("other.txt"), "elsewhere\n").unwrap();
         #[cfg(unix)]
@@ -2180,6 +2184,7 @@ mod tests {
             "src/../../other.txt",
             "/etc/hosts",
             ".hive/private/token",
+            ".pulse/private/token",
             ".git/config",
             "src",
             "missing.rs",

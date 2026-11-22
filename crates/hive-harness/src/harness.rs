@@ -306,8 +306,10 @@ pub const DEFAULT_DENY: &[&str] = &[
     // Credential paths: the hive home's private directory under any spelling
     // (`~/.hive/private`, `/Users/x/.hive/private`, `$HIVE_HOME/private`,
     // an isolated measurement home's `private/providers`), never the macOS
-    // filesystem root `/private/` that `/tmp` and `/var` resolve to.
-    r#"(^|[\s"'`])(~/.ssh/|\.netrc\b|~/.copilot\b|~/.config/gh\b)|\.hive/private\b|HIVE_HOME\}?/private\b|/private/(providers|heldout)\b"#,
+    // filesystem root `/private/` that `/tmp` and `/var` resolve to. A home
+    // from before the rename is `~/.pulse` or `$PULSE_HOME`, and a moved one
+    // may still answer to `~/.pulse` through a link: both names are closed.
+    r#"(^|[\s"'`])(~/.ssh/|\.netrc\b|~/.copilot\b|~/.config/gh\b)|\.(?:hive|pulse)/private\b|(?:HIVE|PULSE)_HOME\}?/private\b|/private/(providers|heldout)\b"#,
 ];
 
 pub use DEFAULT_DENY as DefaultDeny;
@@ -9711,6 +9713,36 @@ mod tests {
                 .resolve_action_path(".hive/private/token", false)
                 .is_err()
         );
+        // The home's name from before the rename is closed the same way,
+        // as a path and as the variable that names it.
+        fs::create_dir_all(dir.path().join(".pulse/private")).unwrap();
+        fs::write(dir.path().join(".pulse/private/token"), "secret").unwrap();
+        fs::create_dir_all(dir.path().join(".pulse/automations")).unwrap();
+        fs::write(dir.path().join(".pulse/automations/check.sh"), "exit 0\n").unwrap();
+        for cmd in [
+            "cat ~/.pulse/private/providers/copilot.json",
+            "cat /Users/x/.pulse/private/token",
+            "cat $PULSE_HOME/private/token",
+            "cat ${PULSE_HOME}/private/token",
+            "cat ${HIVE_HOME}/private/token",
+        ] {
+            assert!(h.denied(cmd).is_some(), "{cmd}");
+        }
+        assert!(
+            h.fs()
+                .resolve_action_path(".pulse/private/token", false)
+                .is_err()
+        );
+        // The rest of the older folder is an ordinary path: the file is
+        // there, so only the rule could refuse it, and it does not.
+        assert!(
+            h.fs()
+                .resolve_action_path(".pulse/automations/check.sh", false)
+                .is_ok()
+        );
+        for cmd in ["cat .pulse/automations/check.sh", "ls ~/.pulsed/private"] {
+            assert!(h.denied(cmd).is_none(), "{cmd}");
+        }
     }
 
     #[test]

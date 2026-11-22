@@ -373,6 +373,11 @@ pub const OWNER_PATHS: &[&str] = &[
     ".hive/agents/",
     ".hive/roles/",
     ".hive/kinds/",
+    // The same folders under the project folder's name from before the
+    // rename (`legacy::LEGACY_PROJECT_DIR`): read alike, so closed alike.
+    ".pulse/agents/",
+    ".pulse/roles/",
+    ".pulse/kinds/",
 ];
 pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
