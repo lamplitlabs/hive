@@ -295,15 +295,7 @@ pub(crate) fn repo_from_pr_url(url: &str) -> Option<String> {
 /// has no access to, 403 for one it may not write, 401 for a token that
 /// is no longer good, and an account whose token cannot be read at all.
 fn account_failed(err: &str) -> bool {
-    let low = err.to_ascii_lowercase();
-    if low.contains("branch not found") {
-        return false;
-    }
-    low.contains("http 401")
-        || low.contains("http 403")
-        || low.contains("http 404")
-        || low.contains("could not resolve to a repository")
-        || low.contains("gh auth token for")
+    crate::pipeline::account_failed(err)
 }
 
 fn gh_meta_key(slug: &str) -> String {
