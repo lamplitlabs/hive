@@ -884,9 +884,11 @@ pub use hive_hand_core::util::rfc3339_nano;
 
 /// The name the home directory, store and environment carried before the
 /// product was called Hive. An install made then keeps working: `resolve_home`
-/// falls back to `~/.pulse` while `~/.hive` does not exist, `PULSE_HOME`
+/// falls back to `~/.pulse` while the install still lives there (no `~/.hive`,
+/// or one that holds no store beside a `~/.pulse` that does), `PULSE_HOME`
 /// stands in for `HIVE_HOME`, and `Store::open` renames `pulse.sqlite` to
-/// `hive.sqlite` the first time it finds it.
+/// `hive.sqlite` the first time it finds it. What a repository keeps under
+/// the old name is `legacy`'s business.
 pub const LEGACY_NAME: &str = "pulse";
 
 /// Every environment variable the binary reads, under its legacy name.
@@ -932,9 +934,10 @@ pub fn resolve_home(explicit: &str) -> Result<String> {
     Ok(abs.display().to_string())
 }
 
-/// `~/.hive`, or `~/.pulse` while that is the only one of the two that
-/// exists: an install from before the rename keeps its home until its owner
-/// moves it (`mv ~/.pulse ~/.hive`), and a fresh install starts under `.hive`.
+/// `~/.hive`, or `~/.pulse` while an install from before the rename still
+/// lives there: it keeps its home until its owner moves it (`mv ~/.pulse
+/// ~/.hive`), a `~/.hive` made for the program alone does not hide its
+/// store, and a fresh install starts under `.hive`.
 pub use hive_hand_core::transport::default_home_in;
 
 /// Renames the store file an install from before the rename left in `home`
@@ -1724,9 +1727,41 @@ mod tests {
         // Only ~/.pulse exists: that is the home.
         fs::create_dir_all(user.path().join(".pulse")).unwrap();
         assert_eq!(default_home_in(user.path()), user.path().join(".pulse"));
-        // Both exist: .hive wins, the owner moved on.
-        fs::create_dir_all(user.path().join(".hive")).unwrap();
+        // Both exist and neither holds a store: .hive, where a fresh one goes.
+        fs::create_dir_all(user.path().join(".hive/bin")).unwrap();
         assert_eq!(default_home_in(user.path()), user.path().join(".hive"));
+        // The older home holds the store and .hive only the program (what
+        // the installer and `cargo install --root ~/.hive` leave): the
+        // store is not hidden, under its current name or its older one.
+        for name in hive_hand_core::transport::STORE_FILE_NAMES {
+            let store = user.path().join(".pulse").join(name);
+            fs::write(&store, b"").unwrap();
+            assert_eq!(
+                default_home_in(user.path()),
+                user.path().join(".pulse"),
+                "{name}"
+            );
+            fs::remove_file(&store).unwrap();
+        }
+        // Both hold a store: .hive wins, the owner moved on.
+        fs::write(user.path().join(".pulse").join(STORE_NAME), b"").unwrap();
+        fs::write(user.path().join(".hive").join(STORE_NAME), b"").unwrap();
+        assert_eq!(default_home_in(user.path()), user.path().join(".hive"));
+        // A moved home that left a link under its old name is one home.
+        #[cfg(unix)]
+        {
+            let moved = tempfile::tempdir().unwrap();
+            fs::create_dir_all(moved.path().join(".hive")).unwrap();
+            fs::write(moved.path().join(".hive").join(STORE_NAME), b"").unwrap();
+            std::os::unix::fs::symlink(moved.path().join(".hive"), moved.path().join(".pulse"))
+                .unwrap();
+            assert_eq!(default_home_in(moved.path()), moved.path().join(".hive"));
+        }
+        // The hand's copy of the store's file names says what the store says.
+        assert_eq!(
+            hive_hand_core::transport::STORE_FILE_NAMES,
+            [STORE_NAME, format!("{LEGACY_NAME}.sqlite").as_str()]
+        );
 
         // PULSE_HOME stands in for an unset HIVE_HOME; HIVE_HOME wins when both are set.
         let saved_hive = std::env::var("HIVE_HOME").ok();
