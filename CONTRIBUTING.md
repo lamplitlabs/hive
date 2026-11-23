@@ -33,8 +33,10 @@ sh scripts/verify-check.sh
 It runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
 -- -D warnings`, the check that keeps `hive-hand` small
 (`scripts/check-hand-deps.sh`) and every test of the workspace, and ends
-with `verify-check: ok`. It takes a while. For a quick loop, run the part
-you changed:
+with `verify-check: ok`. It takes a while: the tests run in chunks, half
+as many at once as the machine has CPUs (at least 2, at most 8);
+`VERIFY_POOL=N` sets that number and `sh scripts/verify-check.sh --pool`
+prints the one it would use. For a quick loop, run the part you changed:
 
 ```bash
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
