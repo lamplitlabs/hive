@@ -438,6 +438,22 @@ and falls back to `PULSE_MEASURE_CHANGED`. The measurement exports each
 scorer stored as `pulse evolve ...` through its own executable, like one
 stored as `hive evolve ...`, so fixtures added before the rename keep their
 scope.
+
+A pass count of the project's own tests works the same way, and it is the
+fixture a card that adds tests moves. `behaviour-hub-pinned-tests-pass`
+(sitting 26) runs the hub's `node --test` over the tests that pin the changed
+hub modules. `behaviour-crate-tests-pass` (sitting 31) is its Rust twin. 14 of
+the 20 cycles before it changed `crates/` and all of them tied. For each changed
+`crates/CRATE/src/MOD.rs` it runs `cargo test --offline --locked -q -p CRATE
+--lib -- MOD::` (`--bins` for a crate without a `lib.rs`; `lib.rs`, `main.rs`
+and `mod.rs` name their module; a crate root alone is skipped because it would
+run the whole crate). It then prints `1 +` the summed `N passed`. Without a
+scope it prints `1 +` the number of `#[test]` attributes under `crates/*/src`
+(2986 at a2a7125f, scale 5972), so it builds nothing. A card that adds a
+passing test to the module it changes scores above `0.5`, and one that breaks
+that module's tests scores below it. A scoped run with a cold target dir took
+about a minute for two crates. The measurement points `CARGO_TARGET_DIR` at the
+recipe's built target, so a warm run takes seconds.
 Such a fixture answers `scope: diff` after its score line, the log marks it
 `[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
