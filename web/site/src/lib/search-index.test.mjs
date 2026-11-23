@@ -1,6 +1,6 @@
-// The search index as the build makes it: which words and which code of a
-// section are worth a reader's typing, and what is left out to keep the file
-// small.
+// The search index as the build makes it: every word of a section that a
+// reader may type and all the code it names, the words it says most first.
+// Only the words of grammar are left out.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -30,7 +30,7 @@ test("a section keeps the words that say something its heading and its page's ti
     t: "Choose models and set budgets",
     g: "Guides",
     h: [
-      // No "local", "server" (the heading), "models" (the title), "you", "can", "the" (said everywhere), "it", "no", "2".
+      // No "use", "local", "server" (the heading), "models" (the title), "you", "can", "the", "it", "no" (words of grammar), "2" (one letter).
       ["local", "Use a local server", "ollama needs key stay machine see", "worker_model\nhive settings set"],
       ["empty", "Read more"],
     ],
@@ -47,21 +47,39 @@ test("a page's keywords and its opening are kept beside its sections", () => {
   assert.deepEqual(entry.h, []);
 });
 
-test("a word that stands in most sections is left out: it would find everything and cost bytes", () => {
+test("a word said in every section is kept in each: the search must never say the docs lack a word they hold", () => {
   const sections = Array.from({ length: 100 }, (_, i) => section(`s${i}`, `Part ${i}`, `the runner starts agents ${i % 50 === 0 ? "ollama" : ""} word${i}`));
   const [entry] = buildSearchIndex([page("/docs/x/", "X", sections)]);
-  const all = entry.h.map(([, , terms = ""]) => terms);
-  assert.ok(all.every((t) => !/\b(runner|starts|agents)\b/.test(t)), "said in every section");
-  assert.equal(all.filter((t) => /\bollama\b/.test(t)).length, 2, "said in two");
-  assert.match(all[7], /^word7$/);
+  const all = entry.h.map(([, , terms = ""]) => terms.split(" "));
+  assert.ok(all.every((t) => t.includes("runner") && t.includes("starts") && t.includes("agents")), "said in every section, kept in every section");
+  assert.equal(all.filter((t) => t.includes("ollama")).length, 2, "said in two");
+  assert.ok(all.every((t) => !t.includes("the")), "a word of grammar is in none");
+  assert.deepEqual(all[7], ["runner", "starts", "agents", "word7"]);
 });
 
-test("a very long section is cut: at most 160 words and 24 pieces of code", () => {
+test("a very long section keeps every word and all the code it names, each once", () => {
   const text = Array.from({ length: 400 }, (_, i) => `term${i}`).join(" ");
   const code = Array.from({ length: 60 }, (_, i) => `setting.name_${i}`);
-  const [entry] = buildSearchIndex([page("/docs/x/", "X", [section("long", "Long", text, [...code, ...code])])]);
+  const [entry] = buildSearchIndex([page("/docs/x/", "X", [section("long", "Long", `${text} ${text}`, [...code, ...code])])]);
   const [, , terms, named] = entry.h[0];
-  assert.equal(terms.split(" ").length, 160);
-  assert.equal(named.split("\n").length, 24);
-  assert.equal(new Set(named.split("\n")).size, 24);
+  assert.equal(terms.split(" ").length, 400);
+  assert.deepEqual(named.split("\n"), code);
+});
+
+test("the words a section says most come first, and among equals the one it says first", () => {
+  // As they are first said: paste, secret, check, key, checked, fails.
+  const text = "Paste a secret, then check the key. The key is checked once: a key that fails is a secret no more.";
+  const [entry] = buildSearchIndex([page("/docs/x/", "X", [section("s", "S", text)])]);
+  assert.equal(entry.h[0][2], "key secret paste check checked fails");
+});
+
+test("a short word and a number are words a reader types; a single letter is not", () => {
+  const [entry] = buildSearchIndex([page("/docs/x/", "X", [section("s", "S", "Run gh auth login, open port 8765 on v2, then answer y or n.")])]);
+  assert.equal(entry.h[0][2], "run gh auth login open port 8765 v2 answer");
+});
+
+test("a record of a decision is marked, so that the search lists it after the pages that say what holds", () => {
+  const [adr, guide] = buildSearchIndex([page("/docs/decisions/adr-1/", "ADR-1", [], { record: true }), page("/docs/how-to/x/", "X", [], { record: false })]);
+  assert.equal(adr.r, 1);
+  assert.equal("r" in guide, false);
 });

@@ -70,16 +70,20 @@ followed from top to bottom. `docs/how-to/README.md` is the page that
 lists them, at `/docs/how-to/`, because a folder's README is the folder's
 own page. The folder is not called `guides`: `hive migrate --records`
 reads a repository's `docs/guides/` as instructions for agents. A new
-guide needs a line in that README (a test fails without one) and, for its
-place in the sidebar, its name in `DOC_GROUPS` of
-`web/site/src/lib/docs.ts`; a guide nobody listed there still gets a page,
-after the others.
+guide needs a line in that README and nothing else: the sidebar lists the
+guides in the order that page first links them, and Previous and Next
+under a guide follow it. A guide the page does not link fails a test, and
+the site's check with it. Any other new file under `docs/` gets a page
+with no change to the site: one that no group of `DOC_GROUPS` in
+`web/site/src/lib/docs.ts` names stands under More.
 
 A picture lives beside the page that shows it, under `docs/`, and the
 page names it with a relative path, so it shows on GitHub too. The build
-copies every picture under `docs/` to `/docs-media/` and the page shows
-it from there, sized from the file's own header, so a docs page loads
-nothing from GitHub. A picture no page shows fails a test. The pictures of
+copies every PNG, WebP, JPEG, GIF and AVIF picture under `docs/` to
+`/docs-media/` and the page shows it from there, sized from the file's own
+header, so a docs page loads nothing from GitHub. An SVG can carry script,
+so the site never serves one from its own address: a page shows it from
+GitHub. A picture no page shows fails a test. The pictures of
 the console (`docs/how-to/images/console-*.webp`) are 1440 by 900, taken
 in the dark theme from the console's mock (`cd web/hub && npm run build &&
 npm run serve:out`), which serves made-up projects, and saved as WebP.
@@ -90,10 +94,16 @@ are recent.
 
 The search box reads `/docs/search.json`, which the build writes: for
 every page its title and headings, and for every section the commands and
-settings it names and the words of its text that are not said everywhere.
-`GUIDE_KEYWORDS` in `web/site/src/lib/docs.ts` and `keywords` in
-`web/site/src/lib/site.ts` hold the words a reader types that a title
-lacks, such as "quickstart".
+settings it names and every word of its text but the words of grammar
+("the", "of", "how"). Nothing else is left out, so a word the docs hold is
+always found, and the file grows with the docs; `npm run check` prints its
+size. A query is not held to the words of grammar either: "how do I add a
+machine" looks for "add" and "machine". Titles come first, then headings,
+then the commands and settings a section names, then its text, where the
+section most about the words leads. A decision record or a design note
+comes last among finds of one kind. `GUIDE_KEYWORDS` in
+`web/site/src/lib/docs.ts` and `keywords` in `web/site/src/lib/site.ts`
+hold the words a reader types that a title lacks, such as "quickstart".
 
 `.github/workflows/deploy-site.yml` deploys on every push to `main` that
 touches `web/site/`, `docs/` or `scripts/install.sh`: it runs

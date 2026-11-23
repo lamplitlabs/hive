@@ -177,7 +177,10 @@ if (isPublic) {
       open("Homebrew", `the formula in ${TAP} is not for ${release.tag_name}`, `gh workflow run release.yml -f tag=${release.tag_name} writes it (docs/release.md, "The Homebrew tap")`);
     } else ok("Homebrew", `${TAP} holds the formula for ${release.tag_name}`);
   }
-} else if (repo.status !== 200 || !limited(repo)) {
+} else if (limited(repo)) {
+  unknown("the release", "not looked at: GitHub did not say whether the repository is public");
+  unknown("Homebrew", "not looked at: the formula is compared with the latest release");
+} else {
   unknown("the release", "not looked at: a release of a repository that is not public cannot be downloaded");
   unknown("Homebrew", "not looked at: the formula points at that release");
 }

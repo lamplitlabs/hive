@@ -6,7 +6,7 @@
 //   scripts/install.sh, copied as it is, so the line on the front page and
 //   the file in the repository can never be two different scripts. A checkout
 //   without the installer still builds; it serves no /install.sh;
-// - the pictures of the docs: every image under docs/ goes to
+// - the pictures of the docs: every raster picture under docs/ goes to
 //   public/docs-media/ with its path, so a docs page shows a picture from
 //   this site and needs nothing from GitHub (src/lib/markdown.ts writes the
 //   address, scripts/check-out.mjs fails on one that is missing).
@@ -27,8 +27,9 @@ if (size > 0) {
   console.log("prebuild: scripts/install.sh is not in this checkout (or is empty), so this build serves no /install.sh. The build goes on.");
 }
 
-// The same extensions as isDocPicture in src/lib/markdown.ts.
-const PICTURE = /\.(png|webp|jpe?g|gif|avif|svg)$/i;
+// The same extensions as isDocPicture in src/lib/markdown.ts: raster pictures only. An SVG can carry script and
+// is never copied to the site's own address (scripts/check-out.mjs fails on one that is there).
+const PICTURE = /\.(png|webp|jpe?g|gif|avif)$/i;
 const docs = path.resolve(site, "../../docs");
 const media = path.join(site, "public", "docs-media");
 fs.rmSync(media, { recursive: true, force: true });

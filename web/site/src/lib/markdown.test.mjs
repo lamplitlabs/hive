@@ -26,6 +26,7 @@ const inRepo = new Map([
   [".github/assets/console-task.png", "file"],
   ["docs/how-to/images/home.webp", "file"],
   ["docs/how-to/images/tasks.png", "file"],
+  ["docs/how-to/images/parts.svg", "file"],
 ]);
 const sizes = new Map([["docs/how-to/images/home.webp", { width: 1440, height: 900 }]]);
 const ctx = (file) => ({ file, pages, repoHas: (p) => inRepo.get(p) ?? null, imageSize: (p) => sizes.get(p) ?? null });
@@ -213,6 +214,24 @@ test("a picture kept under docs/ is the site's own file: sized, and a link to it
   assert.equal(md.docMediaPath("docs/how-to/images/a b.webp"), "/docs-media/how-to/images/a%20b.webp");
   assert.equal(md.docMediaPath("docs/console.md"), null);
   assert.equal(md.docMediaPath(".github/assets/console-task.png"), null);
+});
+
+test("the links of a text, as written and in order; code and front matter are not read for links", () => {
+  const source = "---\ntitle: [no](front.md)\n---\n# T\n\n[one](b.md) and [two](./a.md#top), then [one again](b.md).\n\n```md\n[not](z.md)\n```\n\n`[nor](y.md)` but <https://example.com/x> and ![a picture](p.png).\n";
+  assert.deepEqual(md.markdownLinks(source), ["b.md", "./a.md#top", "b.md", "https://example.com/x"]);
+  assert.deepEqual(md.markdownLinks(""), []);
+});
+
+test("an SVG under docs/ is not the site's own file: it can carry script, so GitHub serves it and nothing links to it", () => {
+  const r = render("# T\n\n![How the parts fit](images/parts.svg)\n", "how-to/tour.md");
+  const [img] = elements(r.html, "img");
+  assert.equal(img.properties.src, "https://github.com/lamplitlabs/hive/raw/main/docs/how-to/images/parts.svg");
+  assert.equal(img.properties.alt, "How the parts fit");
+  assert.deepEqual(elements(r.html, "a"), []);
+  assert.deepEqual(r.links.filter((l) => l.problem), []);
+  assert.equal(md.docMediaPath("docs/how-to/images/parts.svg"), null);
+  assert.equal(md.isDocPicture("parts.SVG"), false);
+  assert.equal(md.isDocPicture("shot.PNG"), true);
 });
 
 test("the body is cut at its h2 and h3 headings into the text and the code the search reads", () => {

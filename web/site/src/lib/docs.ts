@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { IMAGE_HEADER_BYTES, imageSize } from "./image-size.ts";
 import type { ImageSize } from "./image-size.ts";
-import { cutClean, cutTitle, isDocPicture, renderMarkdown } from "./markdown.ts";
+import { cutClean, cutTitle, isDocPicture, markdownLinks, renderMarkdown, rewriteHref } from "./markdown.ts";
 import type { DocLink, Section, TocEntry } from "./markdown.ts";
 import { buildSearchIndex } from "./search-index.ts";
 import type { PageSource } from "./search-index.ts";
@@ -20,38 +20,31 @@ type GroupSpec = { title: string; files?: readonly string[]; dirs?: readonly str
 
 /**
  * The guides: docs/how-to/, one page per job a reader wants done, and the
- * folder's README as the page that lists them. The folder is not named
- * "guides" because `hive migrate --records` reads a repository's docs/guides/
- * as instructions for agents (crates/hive-records/src/import.rs).
+ * folder's README as the page that lists them. The sidebar lists them in
+ * the order that page does (`folderLists`), so a new guide needs a line
+ * there and nothing here. The folder is not named "guides" because
+ * `hive migrate --records` reads a repository's docs/guides/ as instructions
+ * for agents (crates/hive-records/src/import.rs).
  */
 export const GUIDES_DIR = "how-to";
 export const GUIDES_GROUP = "Guides";
+/** The decisions and the design notes: the record of why, which the search lists after the pages that say what holds. */
+export const RECORDS_GROUP = "Decisions and design";
 
 /**
- * The sidebar, in order. A name is a file of docs/ without `.md`; one that
- * does not exist (yet) is skipped, and a file no group names lands in "More",
- * so a new doc is never dropped silently.
+ * The sidebar, in order. A name under `files` is a file of docs/ without
+ * `.md`; one that does not exist (yet) is skipped. A name under `dirs` is a
+ * folder taken whole: its own page (its README) first, then the pages that
+ * page lists, in its order, then the rest by name. A file no group names
+ * lands in "More", so a new doc is never dropped silently.
  */
 export const DOC_GROUPS: readonly GroupSpec[] = [
   { title: "Start", files: ["concepts", "faq", "console", "mac-app"] },
-  {
-    title: GUIDES_GROUP,
-    // The order the page of guides lists them in (docs/how-to/README.md): start here, every day, more for the agents, control, upkeep.
-    files: [
-      GUIDES_DIR,
-      ...["first-project", "console-tour", "tasks"].map((n) => `${GUIDES_DIR}/${n}`),
-      ...["pull-requests", "what-needs-you", "sessions"].map((n) => `${GUIDES_DIR}/${n}`),
-      ...["schedules", "role-leads", "skills-and-tools", "models", "add-a-machine"].map((n) => `${GUIDES_DIR}/${n}`),
-      ...["rules", "self-improvement-loop"].map((n) => `${GUIDES_DIR}/${n}`),
-      ...["operations", "troubleshooting"].map((n) => `${GUIDES_DIR}/${n}`),
-    ],
-    // A guide nobody listed yet still belongs with the guides, after them.
-    dirs: [GUIDES_DIR],
-  },
+  { title: GUIDES_GROUP, dirs: [GUIDES_DIR] },
   { title: "The agents", files: ["board", "harness", "self-improvement", "evolve", "review", "landing"] },
   { title: "Machines and running", files: ["machines", "runner", "release", "recovery", "security"] },
   { title: "Reference", files: ["commands", "settings", "reports", "owner-reservation", "development", "windows-port"] },
-  { title: "Decisions and design", dirs: ["decisions", "design"] },
+  { title: RECORDS_GROUP, dirs: ["decisions", "design"] },
 ];
 export const MORE_GROUP = "More";
 
@@ -108,8 +101,12 @@ export function docPath(file: string): string {
   return `/docs/${docSlug(file).split("/").map(encodeURIComponent).join("/")}/`;
 }
 
-/** Which files get a page, and where each sits in the sidebar. */
-export function planDocs(files: readonly string[]): Plan {
+/**
+ * Which files get a page, and where each sits in the sidebar. `listed` says,
+ * for a folder with a page of its own, which of the folder's files that page
+ * lists and in which order (`folderLists`).
+ */
+export function planDocs(files: readonly string[], listed: ReadonlyMap<string, readonly string[]> = new Map()): Plan {
   const all = [...new Set(files)].filter((f) => /\.md$/i.test(f)).sort(byName);
   const excluded = all.filter((f) => DOCS_EXCLUDED.has(f));
   const kept = all.filter((f) => !DOCS_EXCLUDED.has(f));
@@ -136,7 +133,12 @@ export function planDocs(files: readonly string[]): Plan {
       if (file && !taken.has(file)) picked.push(file);
     }
     for (const dir of spec.dirs ?? []) {
-      picked.push(...kept.filter((f) => docSlug(f).startsWith(`${dir}/`) && !taken.has(f) && !picked.includes(f)));
+      const free = (f: string) => !taken.has(f) && !picked.includes(f);
+      const inside = (f: string) => docSlug(f).startsWith(`${dir}/`);
+      // The folder's own page (its README) first, then the pages it lists, as it lists them, then what else the folder holds.
+      picked.push(...kept.filter((f) => docSlug(f) === dir && free(f)));
+      for (const f of listed.get(dir) ?? []) if (kept.includes(f) && inside(f) && free(f)) picked.push(f);
+      picked.push(...kept.filter((f) => inside(f) && free(f)));
     }
     add(spec.title, picked);
   }
@@ -224,13 +226,38 @@ export function describeDoc(title: string, paragraphs: readonly string[]): strin
 
 export type DocSource = { file: string; source: string };
 
+/**
+ * For every folder with a page of its own (its README): the files of the
+ * folder that page links, in the order it first links each. The sidebar
+ * follows it, so the page that lists a folder's pages and the sidebar never
+ * disagree, and neither do Previous and Next under a page.
+ */
+export function folderLists(sources: readonly DocSource[]): Map<string, string[]> {
+  const pages = new Map(sources.map((s) => [s.file, docPath(s.file)]));
+  const lists = new Map<string, string[]>();
+  for (const { file, source } of sources) {
+    if (!/\/readme\.md$/i.test(file)) continue;
+    const dir = docSlug(file);
+    const list: string[] = [];
+    for (const href of markdownLinks(source)) {
+      const to = rewriteHref(href, { file, pages });
+      if (to.kind === "doc" && to.doc && docSlug(to.doc).startsWith(`${dir}/`) && !list.includes(to.doc)) list.push(to.doc);
+    }
+    lists.set(dir, list);
+  }
+  return lists;
+}
+
 /** Every doc rendered, titled, described and linked to its neighbours. */
 export function buildDocs(
   sources: readonly DocSource[],
   repoHas?: (path: string) => "file" | "dir" | null,
   sizeOf?: (repoPath: string) => ImageSize | null,
 ): Docs {
-  const plan = planDocs(sources.map((s) => s.file));
+  const plan = planDocs(
+    sources.map((s) => s.file),
+    folderLists(sources),
+  );
   const text = new Map(sources.map((s) => [s.file, s.source]));
   const pages = new Map(plan.docs.map((d) => [d.file, d.path]));
 
@@ -399,13 +426,13 @@ export const GUIDE_KEYWORDS: Readonly<Record<string, string>> = {
   [`${GUIDES_DIR}/first-project`]: "onboarding onboard register repository init verify goal",
   [`${GUIDES_DIR}/console-tour`]: "ui dashboard screenshots pictures sidebar shortcuts keyboard",
   [`${GUIDES_DIR}/tasks`]: "brief priority amend cancel reply suggested suggestion",
-  [`${GUIDES_DIR}/pull-requests`]: "pr prs reviewer verdict delivery land approve",
+  [`${GUIDES_DIR}/pull-requests`]: "pull request requests pr prs reviewer verdict delivery land approve",
   [`${GUIDES_DIR}/what-needs-you`]: "inbox questions proposals decisions decide away presence notifications",
   [`${GUIDES_DIR}/sessions`]: "chat conversation lockdown steer copilot claude hooks worktree",
   [`${GUIDES_DIR}/schedules`]: "automation automations cron recurring cadence watch script monitor manifest",
   [`${GUIDES_DIR}/role-leads`]: "security monitor rsi sitting seat triage",
   [`${GUIDES_DIR}/skills-and-tools`]: "mcp server servers connections toolkit hook hooks webhook playwright secret",
-  [`${GUIDES_DIR}/models`]: "provider providers openai anthropic gemini ollama key token cost copilot reasoning",
+  [`${GUIDES_DIR}/models`]: "provider providers openai anthropic gemini ollama api key token cost copilot reasoning",
   [`${GUIDES_DIR}/add-a-machine`]: "pair pairing executor hand hands join ssh linux needs offers labels docker",
   [`${GUIDES_DIR}/rules`]: "constitution tiers tier hard stops owner paths kill switch pause amendment vote decide",
   [`${GUIDES_DIR}/self-improvement-loop`]: "rsi evolve experiment experiments baseline fixtures private tests heldout gates",
@@ -422,6 +449,7 @@ function searchSource(d: Doc): PageSource {
     title: d.title,
     group: d.group,
     keywords: GUIDE_KEYWORDS[d.slug],
+    record: d.group === RECORDS_GROUP,
     lead: lead ? { text: lead.text, code: lead.code } : undefined,
     sections: rest.map((s) => ({ id: s.id, heading: heading.get(s.id) ?? s.id, text: s.text, code: s.code })),
   };

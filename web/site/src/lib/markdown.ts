@@ -49,7 +49,9 @@ export type LinkContext = {
 
 /** Where the export keeps the pictures of docs/ (scripts/prebuild.mjs copies them there). */
 export const DOC_MEDIA = "/docs-media";
-const PICTURE = /\.(png|webp|jpe?g|gif|avif|svg)$/i;
+// Raster formats only. An SVG can carry script, and opened by its address it would run that script as this site;
+// one in docs/ is shown from GitHub's raw host, as every picture outside docs/ is.
+const PICTURE = /\.(png|webp|jpe?g|gif|avif)$/i;
 
 /** Whether a file of docs/ is a picture the export carries. */
 export function isDocPicture(file: string): boolean {
@@ -81,6 +83,13 @@ function decode(part: string): string {
   } catch {
     return part;
   }
+}
+
+/** The addresses a Markdown text links to, as they are written and in the order they stand. Code is not read for links. */
+export function markdownLinks(source: string): string[] {
+  const out: string[] = [];
+  visit(unified().use(remarkParse).use(remarkGfm).parse(splitFrontMatter(source).body), "link", (node) => void out.push(node.url));
+  return out;
 }
 
 /** Where a link written in docs/<ctx.file> leads on the site. */

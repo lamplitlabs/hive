@@ -83,7 +83,7 @@ export function DocsSearch({ className = "" }: { className?: string }) {
         id={id}
         type="search"
         role="combobox"
-        aria-expanded={show}
+        aria-expanded={show && hits.length > 0}
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={show && hits[active] ? `${id}-hit-${active}` : undefined}
@@ -104,45 +104,45 @@ export function DocsSearch({ className = "" }: { className?: string }) {
         className="h-10 w-full rounded-xl border border-border bg-card pr-3 pl-9 text-sm text-foreground placeholder:text-muted-foreground"
       />
       <div
-        id={listId}
-        role="listbox"
-        aria-label="Search results"
         hidden={!show}
         // A press on a result must not take the focus from the box, or the list would close under the pointer.
         onMouseDown={(e) => e.preventDefault()}
         className="absolute top-12 right-0 left-0 z-40 max-h-[60dvh] overflow-y-auto rounded-xl border border-border bg-background p-1.5 shadow-pop"
       >
-        {hits.map((h, i) => (
-          <a
-            key={h.href}
-            id={`${id}-hit-${i}`}
-            role="option"
-            aria-selected={i === active}
-            href={h.href}
-            tabIndex={-1}
-            // A heading of the page you are on is only a jump: the list must not stay open over it.
-            onClick={() => setOpen(false)}
-            onMouseEnter={() => setActive(i)}
-            className="block rounded-lg px-3 py-2 text-sm aria-selected:bg-muted"
-          >
-            <span className="block font-medium text-foreground">{h.title}</span>
-            <span className="block text-xs text-muted-foreground">
-              {h.where}
-              {h.why && (
-                <>
-                  {" · names "}
-                  <code className="font-mono text-[0.95em] text-foreground">{h.why}</code>
-                </>
-              )}
-            </span>
-          </a>
-        ))}
+        {/* A list of options holds options and nothing else: what is said when there are none stands beside it. */}
+        <div id={listId} role="listbox" aria-label="Search results" hidden={hits.length === 0}>
+          {hits.map((h, i) => (
+            <a
+              key={h.href}
+              id={`${id}-hit-${i}`}
+              role="option"
+              aria-selected={i === active}
+              href={h.href}
+              tabIndex={-1}
+              // A heading of the page you are on is only a jump: the list must not stay open over it.
+              onClick={() => setOpen(false)}
+              onMouseEnter={() => setActive(i)}
+              className="block rounded-lg px-3 py-2 text-sm aria-selected:bg-muted"
+            >
+              <span className="block font-medium text-foreground">{h.title}</span>
+              <span className="block text-xs text-muted-foreground">
+                {h.where}
+                {h.why && (
+                  <>
+                    {" · names "}
+                    <code className="font-mono text-[0.95em] text-foreground">{h.why}</code>
+                  </>
+                )}
+              </span>
+            </a>
+          ))}
+        </div>
         {show && hits.length === 0 && (
           <p className="px-3 py-2 text-sm text-muted-foreground">
             {entries
               ? query.trim().length < MIN_PREFIX
                 ? "Keep typing: a word, or the name of a command or a setting."
-                : "Nothing in the docs has these words. Try one word, or the name of a command or a setting."
+                : "No page or section has all these words. Try fewer words, or the name of a command or a setting."
               : failed
                 ? "The search index did not load. Try again in a moment."
                 : "Loading the index."}
