@@ -26,7 +26,9 @@ outside a worker's remit. Two methods were used instead:
 2. **An emulated compile**, `scripts/check-not-unix.sh`. It copies the
    tracked workspace to a scratch directory. In the named crates it switches
    `cfg(unix)` off, renames `std::os::unix`, hides `signal_hook::iterator`
-   and drops `nix`/`libc`, then runs `cargo check` on them. Anything that
+   and drops `nix`/`libc`, then runs `cargo check` on them with
+   `-D warnings`, so an off-unix warning fails the check as an error would
+   and cannot creep back into a layer that is done. Anything that
    fails there will fail on Windows. A pass is strong evidence, not proof:
    it does not exercise Windows-only std APIs or the third-party crates'
    own Windows builds. Those need the real target (see
