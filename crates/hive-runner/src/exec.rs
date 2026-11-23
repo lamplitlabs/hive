@@ -1488,6 +1488,15 @@ mod tests {
         // A clean repository: `commit` fails with an empty stderr and says
         // "nothing to commit" on stdout; the log still names the cause.
         hive_testutil::git(&["-C", root.as_str(), "init", "-q"]).unwrap();
+        hive_testutil::git(&["-C", root.as_str(), "config", "user.name", "Fixture"]).unwrap();
+        hive_testutil::git(&[
+            "-C",
+            root.as_str(),
+            "config",
+            "user.email",
+            "fixture@hive.local",
+        ])
+        .unwrap();
         std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
         hive_testutil::git(&["-C", root.as_str(), "add", "a.txt"]).unwrap();
         hive_testutil::git(&[
