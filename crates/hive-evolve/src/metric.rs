@@ -313,6 +313,27 @@ pub fn ran_no_test(output: &str) -> bool {
         || text.lines().any(|l| l.trim() == "# tests 0")
 }
 
+/// Whether a card's check passed: it exited 0 and its test runner ran a
+/// test. The rule the runner's card proof (`card_proof.rs`) and the planner's
+/// already-green retirement (`plan::card_check_green`) share.
+pub fn check_passed(rc: Option<i32>, out: &str) -> bool {
+    rc == Some(0) && !ran_no_test(out)
+}
+
+/// A check's output that is one integer: a count that should fall, which no
+/// single tree can show as passing.
+pub fn check_count(out: &str) -> Option<u64> {
+    out.trim().parse().ok()
+}
+
+/// The card proof's `AlreadyGreen`: the check, run on the default branch,
+/// already passes there - its stdout is no count, it exited 0 and its
+/// `output` (stdout and stderr) shows a test ran - so no change can show it
+/// turning from red to green.
+pub fn check_already_green(rc: Option<i32>, stdout: &str, output: &str) -> bool {
+    check_count(stdout).is_none() && check_passed(rc, output)
+}
+
 /// Stdout that is one integer and nothing else.
 fn single_integer(stdout: &str) -> Option<f64> {
     strip_ansi(stdout)
