@@ -3612,6 +3612,20 @@ fn settle_merged(
     if let Some(note) = finish_conversation(s, pr, number, url, now) {
         line.push_str(&format!("; {note}"));
     }
+    let merged_at = if st.merged_at.is_empty() {
+        String::new()
+    } else {
+        format!(" at {}", st.merged_at)
+    };
+    if let Some(note) = answer_merge_question(
+        s,
+        &slug,
+        number,
+        &format!("Pull request #{number} was merged{merged_at}; nothing is left to decide."),
+        now,
+    ) {
+        line.push_str(&format!("; {note}"));
+    }
     // The merge is on the upstream now; the checkout follows it this pass,
     // not when the two-minute fetch memo runs out.
     if let Some(ff) = crate::forge::sync_default_from_upstream(s, project, ACTOR, now, true) {
@@ -3739,6 +3753,74 @@ fn worktree_branches(root: &str) -> Vec<String> {
     .collect()
 }
 
+/// The owner's open "Merge pull request #N...?" questions
+/// (`review::hand_to_owner`) of `slug`: marked for the owner, with no
+/// answer or result naming them.
+fn open_merge_questions(s: &hive_store::Store, slug: &str, number: i64) -> Vec<Row> {
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let exact = format!("Merge pull request #{number}?");
+    let titled = format!("Merge pull request #{number}: ");
+    crate::util::query_rows(
+        &conn,
+        "SELECT * FROM posts q WHERE q.project = ? AND q.kind = 'question'
+         AND q.summary LIKE 'Merge pull request #%'
+         AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.on_post = q.id AND r.kind IN ('answer', 'result'))
+         ORDER BY q.date, q.id",
+        &[&slug],
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|q| {
+        let summary = q.str("summary");
+        (summary == exact || summary.starts_with(&titled))
+            && hive_store::post_for_owner(&q.str("extra")).unwrap_or(false)
+    })
+    .collect()
+}
+
+/// A settled pull request answers the owner's open merge question for it:
+/// an `answer` naming the question, resolution `answered`, the outcome in
+/// one line. The answer goes on a thread of its own (`review-pr-N` in the
+/// question's area), not on the question's: `runner/review` holds every
+/// pull request's question, and a later answer or a resolution there would
+/// settle the ones still waiting too. Returns the log note, None when no
+/// question was open.
+fn answer_merge_question(
+    s: &hive_store::Store,
+    slug: &str,
+    number: i64,
+    outcome: &str,
+    now: &str,
+) -> Option<String> {
+    let mut answered = 0;
+    for q in open_merge_questions(s, slug, number) {
+        let id = q.str("id");
+        let posted = crate::board::create_post(
+            s,
+            now.to_string(),
+            crate::board::PostOpts {
+                kind: "answer".into(),
+                project: slug.to_string(),
+                area: q.str("area"),
+                thread: format!("{}-pr-{number}", q.str("thread")),
+                summary: crate::util::trunc(outcome, 230),
+                body: format!("{outcome}\nre: {id}\n"),
+                resolution: "answered".into(),
+                on: id,
+                agent: crate::board::actor_agent(s, ACTOR.to_string()),
+                date: now.to_string(),
+                ..Default::default()
+            },
+        );
+        if posted.is_ok() {
+            answered += 1;
+        }
+    }
+    (answered > 0).then(|| "the owner's merge question answered".to_string())
+}
+
 fn settle_closed(
     s: &hive_store::Store,
     project: &Row,
@@ -3753,9 +3835,18 @@ fn settle_closed(
     let url = field_of(&detail, "url");
     event(s, now, "land.pr-closed", &slug, detail);
     clear_branches(s, &slug, pr);
-    let told = note_conversation_closed(s, pr, number, &url)
+    let mut told = note_conversation_closed(s, pr, number, &url)
         .map(|note| format!("; {note}"))
         .unwrap_or_default();
+    if let Some(note) = answer_merge_question(
+        s,
+        &slug,
+        number,
+        &format!("Pull request #{number} was closed without merging; nothing is left to merge."),
+        now,
+    ) {
+        told.push_str(&format!("; {note}"));
+    }
     let task = field(pr, "task");
     if task.is_empty() {
         return format!(
@@ -3773,7 +3864,7 @@ fn settle_closed(
             task_branch(task)
         ),
     );
-    format!("task pr {slug} {task}: #{number} closed unmerged; task back in progress")
+    format!("task pr {slug} {task}: #{number} closed unmerged; task back in progress{told}")
 }
 
 #[cfg(test)]
@@ -4072,6 +4163,107 @@ mod tests {
         // Settled: no more polls.
         let lines = tend_proj(&s, &proj, TEST_NOW);
         assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    /// The owner's merge question for pull request `n`, as
+    /// `review::hand_to_owner` asks it.
+    fn merge_question(s: &hive_store::Store, n: i64, title: &str) -> String {
+        crate::board::create_post(
+            s,
+            TEST_NOW.to_string(),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "runner".into(),
+                thread: "review".into(),
+                summary: format!("Merge pull request #{n}: {title}?"),
+                body: format!("Pull request #{n}: {title}\n"),
+                agent: crate::board::actor_agent(s, ACTOR.to_string()),
+                for_owner: true,
+                ..Default::default()
+            },
+        )
+        .expect("merge question")
+        .str("id")
+    }
+
+    /// The answers naming post `id`, as `resolution|summary`.
+    fn answers_on(s: &hive_store::Store, id: &str) -> Vec<String> {
+        must_rows(
+            s,
+            "SELECT resolution, summary FROM posts WHERE kind = 'answer' AND on_post = ?",
+            &[&id],
+        )
+        .iter()
+        .map(|r| format!("{}|{}", r.str("resolution"), r.str("summary")))
+        .collect()
+    }
+
+    #[test]
+    fn a_merged_pull_request_answers_its_owner_question() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(last_detail(&s, "land.pr")["number"], 7);
+        let asked = merge_question(&s, 7, "Add the thing");
+        // Another pull request's question, and one whose number only starts
+        // like it, still wait for the owner.
+        let other = merge_question(&s, 8, "Something else");
+        let longer = merge_question(&s, 70, "Seventy");
+
+        merge_on_forge(&gh, &bare, 7);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged; task done")
+                && l.contains("the owner's merge question answered")),
+            "{lines:?}"
+        );
+        assert_eq!(status(&s, &task), "done");
+        assert_eq!(
+            answers_on(&s, &asked),
+            [
+                "answered|Pull request #7 was merged at 2026-11-04T07:00:00Z; nothing is left to decide."
+            ]
+        );
+        assert!(answers_on(&s, &other).is_empty());
+        assert!(answers_on(&s, &longer).is_empty());
+        // The answer settles the question where the owner reads it, and
+        // leaves the thread the other questions wait on open.
+        let open = crate::plan::open_questions(&s, "proj".into(), TEST_NOW.into());
+        let open: Vec<String> = open.iter().map(|q| q.str("id")).collect();
+        assert!(!open.contains(&asked), "{open:?}");
+        assert!(open.contains(&other) && open.contains(&longer), "{open:?}");
+        // Settled once: the next pass answers nothing again.
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(answers_on(&s, &asked).len(), 1);
+    }
+
+    #[test]
+    fn a_pull_request_closed_unmerged_answers_its_owner_question() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        task_with_two_branches(&s, &proj, &repo);
+        tend_proj(&s, &proj, TEST_NOW);
+        let asked = merge_question(&s, 7, "Add the thing");
+
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.contains("closed unmerged")
+                && l.contains("the owner's merge question answered")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            answers_on(&s, &asked),
+            ["answered|Pull request #7 was closed without merging; nothing is left to merge."]
+        );
     }
 
     #[test]
