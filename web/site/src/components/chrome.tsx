@@ -3,14 +3,26 @@ import type { ReactNode } from "react";
 import { ArrowUpRightIcon, MenuIcon } from "lucide-react";
 import { HiveTile } from "@/components/hive-mark";
 import { JsonLd } from "@/components/json-ld";
-import { optionalDoc } from "@/lib/docs";
+import { GUIDES_DIR, optionalDoc } from "@/lib/docs";
 import { siteJsonLd } from "@/lib/seo";
 import { PAGES, repoFile, SITE } from "@/lib/site";
 
-const NAV = [PAGES.install, PAGES.harness, PAGES.rsi, PAGES.machines, PAGES.docs];
+type NavItem = { path: string; nav: string };
+
+/**
+ * The header's links. The guides are pages of the docs with a place of their
+ * own up here, because they are what a newcomer opens after the install page.
+ */
+function navItems(): NavItem[] {
+  const guides = optionalDoc(GUIDES_DIR);
+  return [PAGES.install, ...(guides ? [{ path: guides.path, nav: "Guides" }] : []), PAGES.harness, PAGES.rsi, PAGES.machines, PAGES.docs];
+}
 
 /** The docs the footer names, in this order; one that is not there (yet) is left out. */
 const FOOTER_DOCS = ["concepts", "faq", "console", "commands", "settings", "board", "landing", "runner", "security", "review"];
+
+/** The guides the footer names, by the file's name under docs/how-to/. */
+const FOOTER_GUIDES = ["first-project", "tasks", "pull-requests", "self-improvement-loop", "add-a-machine", "models", "troubleshooting"];
 
 /**
  * Every page: the skip link, the header with this page marked in it, the
@@ -55,6 +67,7 @@ function SweepDefs() {
 }
 
 function Header({ current }: { current?: string }) {
+  const NAV = navItems();
   const link = "rounded-full px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:text-foreground";
   return (
     <header className="night sticky top-0 z-30 border-b border-border bg-[var(--night-1)]">
@@ -104,11 +117,14 @@ function Header({ current }: { current?: string }) {
 
 function Footer() {
   const docs = FOOTER_DOCS.map((slug) => optionalDoc(slug)).filter((d) => d !== undefined).slice(0, 7);
+  const guides = FOOTER_GUIDES.map((name) => optionalDoc(`${GUIDES_DIR}/${name}`)).filter((d) => d !== undefined);
+  const allGuides = optionalDoc(GUIDES_DIR);
+  const pages = [PAGES.install, PAGES.harness, PAGES.rsi, PAGES.machines, PAGES.docs];
   const item = "text-muted-foreground transition-colors hover:text-foreground";
   const head = "text-xs font-semibold tracking-[0.14em] text-foreground uppercase";
   return (
     <footer className="night night-field border-t border-border">
-      <div className="mx-auto grid max-w-6xl gap-10 px-5 py-14 text-sm sm:grid-cols-2 sm:px-8 lg:grid-cols-[1.4fr_1fr_1fr_1fr]">
+      <div className={`mx-auto grid max-w-6xl gap-10 px-5 py-14 text-sm sm:grid-cols-2 sm:px-8 ${guides.length > 0 ? "lg:grid-cols-[1.25fr_0.8fr_1.25fr_0.9fr_1fr]" : "lg:grid-cols-[1.4fr_1fr_1fr_1fr]"}`}>
         <div>
           <div className="flex items-center gap-2.5">
             <HiveTile className="size-8" />
@@ -136,7 +152,7 @@ function Footer() {
                 Overview
               </Link>
             </li>
-            {NAV.map((p) => (
+            {pages.map((p) => (
               <li key={p.path}>
                 <Link href={p.path} className={item}>
                   {p === PAGES.docs ? "Documentation" : p === PAGES.harness ? "The harness" : p === PAGES.machines ? "Pairing machines" : p.nav}
@@ -145,6 +161,27 @@ function Footer() {
             ))}
           </ul>
         </nav>
+        {guides.length > 0 && (
+          <nav aria-label="Footer, guides">
+            <h2 className={head}>Guides</h2>
+            <ul className="mt-4 space-y-2.5">
+              {guides.map((d) => (
+                <li key={d.path}>
+                  <Link href={d.path} className={item}>
+                    {d.label}
+                  </Link>
+                </li>
+              ))}
+              {allGuides && (
+                <li>
+                  <Link href={allGuides.path} className={item}>
+                    {allGuides.label}
+                  </Link>
+                </li>
+              )}
+            </ul>
+          </nav>
+        )}
         <nav aria-label="Footer, documentation">
           <h2 className={head}>Docs</h2>
           <ul className="mt-4 space-y-2.5">

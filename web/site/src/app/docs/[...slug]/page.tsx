@@ -5,7 +5,7 @@ import { ArrowLeftIcon, ArrowRightIcon, ChevronRightIcon, SquarePenIcon } from "
 import { Frame } from "@/components/chrome";
 import { DocsShell, Toc } from "@/components/docs-shell";
 import { JsonLd } from "@/components/json-ld";
-import { loadDocs } from "@/lib/docs";
+import { GUIDES_DIR, GUIDES_GROUP, loadDocs } from "@/lib/docs";
 import { breadcrumbJsonLd, pageMetadata, techArticleJsonLd } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
 
@@ -33,13 +33,17 @@ export default async function DocPage(props: Params) {
   const doc = await find(props);
   if (!doc) notFound();
   const { status, date } = doc.frontMatter;
+  // A guide belongs to the guides: the header marks them, and the page that lists them is one step up.
+  const hub = doc.group === GUIDES_GROUP ? loadDocs().bySlug.get(GUIDES_DIR) : undefined;
+  const above = hub && hub.path !== doc.path ? hub : undefined;
 
   return (
-    <Frame current={PAGES.docs.path}>
+    <Frame current={hub ? hub.path : PAGES.docs.path}>
       <JsonLd
         data={breadcrumbJsonLd([
           { name: "Hive", path: "/" },
           { name: "Docs", path: PAGES.docs.path },
+          ...(above ? [{ name: GUIDES_GROUP, path: above.path }] : []),
           { name: doc.label, path: doc.path },
         ])}
       />
@@ -55,7 +59,13 @@ export default async function DocPage(props: Params) {
               </li>
               <li className="flex items-center gap-1.5">
                 <ChevronRightIcon className="size-3.5" aria-hidden="true" />
-                {doc.group}
+                {above ? (
+                  <Link href={above.path} className="hover:text-foreground hover:underline">
+                    {doc.group}
+                  </Link>
+                ) : (
+                  doc.group
+                )}
               </li>
               <li className="flex items-center gap-1.5 text-foreground" aria-current="page">
                 <ChevronRightIcon className="size-3.5 text-muted-foreground" aria-hidden="true" />

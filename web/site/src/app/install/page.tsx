@@ -3,7 +3,7 @@ import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock, CopyLine } from "@/components/code";
 import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
-import { optionalDoc } from "@/lib/docs";
+import { GUIDES_DIR, optionalDoc } from "@/lib/docs";
 import { pageMetadata } from "@/lib/seo";
 import { INSTALL, PAGES, repoFile } from "@/lib/site";
 
@@ -24,6 +24,11 @@ const SECTIONS = [
 export default function InstallPage() {
   const commands = optionalDoc("commands");
   const settings = optionalDoc("settings");
+  const guide = (name: string) => optionalDoc(`${GUIDES_DIR}/${name}`);
+  const guides = optionalDoc(GUIDES_DIR);
+  const firstProject = guide("first-project");
+  const daily = [guide("tasks"), guide("pull-requests"), guide("what-needs-you")].filter((d) => d !== undefined);
+  const trouble = guide("troubleshooting");
   return (
     <Frame current={PAGES.install.path}>
       <PageCrumbs page={PAGES.install} />
@@ -176,20 +181,48 @@ export default function InstallPage() {
 
         <H2 id="decide">7. Say yes or no</H2>
         <p>
-          Anything that needs you waits on the <strong>For you</strong> page, and Home shows the first five under <strong>Needs you</strong>: a question,
-          a proposal, a request for more machines, a hard stop. A yes-or-no question shows two buttons and an open one an answer box, with the agents&apos;
+          What needs your yes or no waits on the <strong>For you</strong> page, and Home shows the first five under <strong>Needs you</strong>: a
+          question, a proposal, a request for more machines, a hard stop. A yes-or-no question shows two buttons and an open one an answer box, with the agents&apos;
           reasoning beside them. Each waits for your answer, and everything else carries on. There is one exception: when the self-improvement loop pauses
           because its fixtures tell nothing apart and a day passes with no answer, it answers that one question itself (
           <Link href={`${PAGES.rsi.path}#stops`}>Hard stops and the kill switch</Link>).
         </p>
         <p>
           The work reaches GitHub as pull requests. A review agent merges the ones the agents may decide on, and the console shows you the rest under{" "}
-          <strong>Needs your review</strong>. Set <code>review.merge</code> to <code>ask</code> in Settings to see every one.{" "}
+          <strong>Needs your review</strong>, on the task and on the Sessions page. Set <code>review.merge</code> to <code>ask</code> in Settings to see every one.{" "}
           <Link href="/docs/landing/">Delivery</Link> and <Link href="/docs/review/">the reviewer</Link> say how.
         </p>
 
         <H2 id="next">Where to go next</H2>
         <ul>
+          {firstProject && (
+            <li>
+              <Link href={firstProject.path}>{firstProject.title}</Link>: steps 2 to 5 of this page again, slower, with what you see at each step and what
+              to do when one does not work.
+            </li>
+          )}
+          {daily.length > 0 && (
+            <li>
+              The guides for every day:{" "}
+              {daily.map((d, i) => (
+                <span key={d.path}>
+                  {i > 0 && (i === daily.length - 1 ? " and " : ", ")}
+                  <Link href={d.path}>{d.title}</Link>
+                </span>
+              ))}
+              .{" "}
+              {guides && (
+                <>
+                  <Link href={guides.path}>{guides.label}</Link> lists the rest.
+                </>
+              )}
+            </li>
+          )}
+          {trouble && (
+            <li>
+              <Link href={trouble.path}>{trouble.title}</Link>: where to look when something does not do what you expected.
+            </li>
+          )}
           <li>
             <Link href={PAGES.harness.path}>The harness</Link>: how an agent runs, and how you limit it.
           </li>

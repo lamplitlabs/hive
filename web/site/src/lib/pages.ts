@@ -1,6 +1,6 @@
 // Every page the site exports, in one list: the sitemap, /llms.txt and the
 // tests all read it, so a page can never be in one and missing from another.
-import { loadDocs } from "./docs.ts";
+import { GUIDES_GROUP, loadDocs } from "./docs.ts";
 import type { Docs } from "./docs.ts";
 import { absoluteUrl, INSTALL, SITE, STATIC_PAGES } from "./site.ts";
 
@@ -13,7 +13,8 @@ export type AnyPage = {
   name: string;
   /** One line that says what is on it. */
   summary: string;
-  kind: "page" | "doc";
+  /** A page the site wrote, a guide (docs/how-to/), or any other page of the docs. */
+  kind: "page" | "guide" | "doc";
 };
 
 /** The static pages, then every docs page in sidebar order. The 404 page is not a page to find. */
@@ -33,7 +34,7 @@ export function allPages(docs: Docs = loadDocs()): AnyPage[] {
       description: d.description,
       name: d.title,
       summary: d.description,
-      kind: "doc" as const,
+      kind: d.group === GUIDES_GROUP ? ("guide" as const) : ("doc" as const),
     })),
   ];
 }
@@ -43,8 +44,8 @@ export type SitemapEntry = { url: string; changeFrequency: "weekly" | "monthly";
 export function sitemapEntries(docs: Docs = loadDocs()): SitemapEntry[] {
   return allPages(docs).map((p) => ({
     url: absoluteUrl(p.path),
-    changeFrequency: p.kind === "doc" ? "weekly" : "monthly",
-    priority: p.path === "/" ? 1 : p.kind === "page" ? 0.8 : p.path.startsWith("/docs/decisions/") || p.path.startsWith("/docs/design/") ? 0.4 : 0.6,
+    changeFrequency: p.kind === "page" ? "monthly" : "weekly",
+    priority: p.path === "/" ? 1 : p.kind === "page" ? 0.8 : p.kind === "guide" ? 0.7 : p.path.startsWith("/docs/decisions/") || p.path.startsWith("/docs/design/") ? 0.4 : 0.6,
   }));
 }
 
@@ -81,7 +82,15 @@ export function llmsText(docs: Docs = loadDocs()): string {
     "",
     ...pages.filter((p) => p.kind === "page").map(line),
     "",
+    "## Guides",
+    "",
+    "Each guide takes one job from start to finish, in the console and in a terminal.",
+    "",
+    ...pages.filter((p) => p.kind === "guide").map(line),
+    "",
     "## Documentation",
+    "",
+    "The reference, one page per part of Hive.",
     "",
     ...pages.filter((p) => p.kind === "doc").map(line),
     "",

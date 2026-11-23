@@ -1,10 +1,11 @@
 "use client";
 
-// The search box over the docs: titles and headings, from the small index the
-// build writes to /docs/search.json. The index is fetched the first time the
-// box is used, never before, and a result is a plain link.
+// The search box over the docs and the site's own pages: titles, headings,
+// the commands and settings a section names and the words of its text, from
+// the index the build writes to /docs/search.json. The index is fetched the
+// first time the box is used, never before, and a result is a plain link.
 import { useId, useRef, useState } from "react";
-import { searchDocs } from "@/lib/search";
+import { MIN_PREFIX, searchDocs } from "@/lib/search";
 import type { SearchEntry } from "@/lib/search";
 
 const MAX = 10;
@@ -125,12 +126,26 @@ export function DocsSearch({ className = "" }: { className?: string }) {
             className="block rounded-lg px-3 py-2 text-sm aria-selected:bg-muted"
           >
             <span className="block font-medium text-foreground">{h.title}</span>
-            <span className="block text-xs text-muted-foreground">{h.where}</span>
+            <span className="block text-xs text-muted-foreground">
+              {h.where}
+              {h.why && (
+                <>
+                  {" · names "}
+                  <code className="font-mono text-[0.95em] text-foreground">{h.why}</code>
+                </>
+              )}
+            </span>
           </a>
         ))}
         {show && hits.length === 0 && (
           <p className="px-3 py-2 text-sm text-muted-foreground">
-            {entries ? "No title or heading in the docs has these words." : failed ? "The search index did not load. Try again in a moment." : "Loading the index."}
+            {entries
+              ? query.trim().length < MIN_PREFIX
+                ? "Keep typing: a word, or the name of a command or a setting."
+                : "Nothing in the docs has these words. Try one word, or the name of a command or a setting."
+              : failed
+                ? "The search index did not load. Try again in a moment."
+                : "Loading the index."}
           </p>
         )}
       </div>

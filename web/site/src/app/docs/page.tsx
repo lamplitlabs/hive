@@ -4,7 +4,7 @@ import { ArrowRightIcon } from "lucide-react";
 import { Frame } from "@/components/chrome";
 import { DocsSearch } from "@/components/docs-search";
 import { PageCrumbs, PageHero } from "@/components/page-hero";
-import { loadDocs } from "@/lib/docs";
+import { GUIDES_DIR, GUIDES_GROUP, loadDocs } from "@/lib/docs";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES, SITE } from "@/lib/site";
 
@@ -18,14 +18,18 @@ const OVERVIEWS = [
 ];
 
 export default function DocsIndex() {
-  const { groups, docs } = loadDocs();
+  const { groups, docs, bySlug } = loadDocs();
+  // The guides come first and as cards: they are where a reader with a job to do starts. The page that lists them is linked, not listed.
+  const hub = bySlug.get(GUIDES_DIR);
+  const guides = groups.find((g) => g.title === GUIDES_GROUP)?.docs.filter((d) => d !== hub) ?? [];
+  const reference = groups.filter((g) => g.title !== GUIDES_GROUP);
   return (
     <Frame current={PAGES.docs.path}>
       <PageCrumbs page={PAGES.docs} />
       <PageHero
         eyebrow="Documentation"
         title="Hive documentation"
-        lead="The reference for every part of Hive, one page per part. These pages are rendered from the Markdown files of the repository's docs folder when the site is built."
+        lead="Guides that take one job from start to finish, and the reference for every part of Hive, one page per part. These pages are rendered from the Markdown files of the repository's docs folder when the site is built."
       >
         <DocsSearch className="mt-8 max-w-xl" />
       </PageHero>
@@ -49,7 +53,35 @@ export default function DocsIndex() {
           </ul>
         </section>
 
-        {groups.map((g) => {
+        {guides.length > 0 && (
+          <section aria-labelledby="group-guides" className="mt-14">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+              <h2 id="group-guides" className="text-xl font-semibold tracking-tight">
+                Guides
+              </h2>
+              {hub && (
+                <Link href={hub.path} className="inline-flex items-center gap-1.5 text-sm font-medium text-link hover:underline">
+                  {hub.label} <ArrowRightIcon className="size-3.5" aria-hidden="true" />
+                </Link>
+              )}
+            </div>
+            <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-muted-foreground">
+              Each guide takes one job from start to finish, in the console and in a terminal, and ends with how to tell that it worked.
+            </p>
+            <ul className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {guides.map((d) => (
+                <li key={d.path}>
+                  <Link href={d.path} className="group flex h-full flex-col rounded-card border border-border bg-card p-5 shadow-card hover:border-teal">
+                    <span className="font-semibold tracking-tight group-hover:text-link">{d.title}</span>
+                    <span className="mt-2 text-sm leading-relaxed text-muted-foreground">{d.description}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {reference.map((g) => {
           const id = `group-${g.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
           return (
             <section key={g.title} aria-labelledby={id} className="mt-14">
