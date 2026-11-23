@@ -19,6 +19,25 @@ Everything runs on your machine, as your user: the runner, the store
 (`~/.hive/hive.sqlite`) and the console. A job runs in a throwaway clone
 under the hive home, here or on a machine you added.
 
+Your machine on the left, and on the right everyone it talks to in ordinary
+use; the list below says what each of them receives:
+
+```text
+┌────────────────────┐                          ┌──────────────────────┐
+│ your machine,      │ ── model calls ────────→ │ model provider       │
+│ as your user       │                          ├──────────────────────┤
+│                    │ ── git fetch, push ────→ │ project's upstream   │
+│ the runner         │                          ├──────────────────────┤
+│ the store          │ ── through the gh CLI ─→ │ GitHub               │
+│ the console,       │                          ├──────────────────────┤
+│ 127.0.0.1 only     │ ── asks publish dates ─→ │ package registries   │
+│ jobs, each in a    │                          ├──────────────────────┤
+│ throwaway clone    │ ── a job's commands ───→ │ whatever they reach  │
+│                    │                          ├──────────────────────┤
+│                    │ ── a session's search ─→ │ DuckDuckGo or Brave  │
+└────────────────────┘                          └──────────────────────┘
+```
+
 What leaves the machine in ordinary use:
 
 - **Model calls.** Each turn of an agent goes to the model provider you
@@ -215,6 +234,25 @@ project on its own. Each job comes to it on its own, with a brief that
 carries what the brain chose to tell it. A hand with more than one worker
 slot runs several jobs at the same time, each in a clone of its own.
 
+What the brain sends a paired or enrolled hand for a job, what comes back,
+and what never goes there:
+
+```text
+┌────────────────────────┐                         ┌───────────────────┐
+│ the brain              │  git bundle, brief,     │ a paired or       │
+│                        │  signing key, hook,     │ enrolled hand     │
+│ never sent to a hand:  │  recipe env             │                   │
+│ the store, push key,   │ ──────────────────────→ │ a clone per job,  │
+│ vault and MCP secrets  │                         │ no git remote     │
+│                        │  the job's commits      │                   │
+│                        │ ←────────────────────── │                   │
+└───────────┬────────────┘                         └─────────┬─────────┘
+            │ checks who made them,    model calls, with the │
+            │ pushes the branch      sign-in on that machine │
+            ↓                                                ↓
+  the project's upstream                              model provider
+```
+
 **A machine paired over SSH** (`hive pair ADMIN@HOST --name NAME`, Linux
 only) is set up over the SSH login of an admin there, who needs
 passwordless sudo. Pairing copies a Linux `hive` to the machine and leaves
@@ -297,6 +335,25 @@ under `/usr/local/bin` and the sshd drop-in in place, so remove those by
 hand too.
 
 ## Secrets
+
+Where each secret rests, who opens it, and what it is used for:
+
+```text
+  where it rests              who opens it        what it is used for
+┌─────────────────────────┐                     ┌──────────────────────┐
+│ push.credential:        │ ── the runner ────→ │ one push or fetch,   │
+│ a reference, not a key  │                     │ then removed         │
+├─────────────────────────┤                     ├──────────────────────┤
+│ GitHub App private key: │ ── the brain ─────→ │ a one-hour token for │
+│ a reference too         │                     │ one repository       │
+├─────────────────────────┤                     ├──────────────────────┤
+│ the vault: ciphertext   │ ── the brain ─────→ │ the env of one run   │
+│ in the store            │                     │ on the brain         │
+├─────────────────────────┤                     ├──────────────────────┤
+│ model login:            │ ── the harness ───→ │ model calls          │
+│ a 0600 file             │                     │                      │
+└─────────────────────────┘                     └──────────────────────┘
+```
 
 **References, not values.** The push key is a reference (`push.credential`:
 `op://`, `keychain://` or `file://`), never the key. The runner resolves it

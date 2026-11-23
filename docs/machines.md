@@ -3,7 +3,8 @@
 ## Machines: what runs where
 
 Work runs on more than one machine: this one, the Linux hands `hive pair`
-adds, the machines compute rents. They are not alike - the iOS app needs a
+adds, the machines compute rents, and the ones that enrol themselves with a
+join code. They are not alike - the iOS app needs a
 Mac with Xcode, a model evaluation wants a GPU, most jobs want nothing in
 particular - so a job can say what it **needs** and a machine says what it
 **offers**, and the daemon puts each job on a machine that offers everything
@@ -16,6 +17,28 @@ like every other job of it, so a project whose needs this machine does not
 offer has its lead and its reviews wait in the queue, and nothing plans its
 tasks. Give a project only words this machine offers too, and put a
 narrower need on the one job that has it (`hive job add --needs`).
+
+The machines a job can go to, and how the brain reaches each:
+
+```text
+                 ┌────────────────────────────────────┐
+                 │ queued jobs, each with its needs   │
+                 └──────────────────┬─────────────────┘
+                                    │ each job goes to a machine
+                                    │ that offers what it needs
+          ┌─────────────────────────┼────────────────────────┐
+          ↓                         ↓                        ↓
+┌────────────────────┐  ┌────────────────────────┐  ┌──────────────────┐
+│ this machine,      │  │ a hand over SSH        │  │ an enrolled hand │
+│ the brain          │  │ paired by hive pair,   │  │ hive-hand join,  │
+│                    │  │ or prepared yourself   │  │ with a join code │
+│ lead, review and   │  │                        │  │                  │
+│ reflect: only here │  │ the brain reaches in   │  │ dials the brain  │
+└────────────────────┘  └────────────────────────┘  └──────────────────┘
+```
+
+A machine compute rents is paired the way `hive pair` pairs one, so it is a
+hand over SSH.
 
 Needs and offers are the same plain lowercase words, with no fixed list:
 `macos`, `linux`, `windows`; `arm64`, `amd64`; `xcode`, `docker`, `gpu`,
@@ -380,6 +403,23 @@ fetches the branch - one verb per call, the command line in
 `SSH_ORIGINAL_COMMAND` (`b64 …` or `git-upload-pack …`) and the payload on
 stdin, exactly as behind sshd.
 
+One job on a hand, as the main verbs in the order the brain sends them; each
+arrow points the way the data travels:
+
+```text
+┌───────────┐                                           ┌──────────────┐
+│ the brain │ ── prepare: the branch, a git bundle ───→ │ a hand       │
+│           │ ── key: the run's signing key ──────────→ │              │
+│           │ ── hook: the pre-commit hook ───────────→ │              │
+│           │ ── run: the worker and its brief ───────→ │ hive harness │
+│           │ ←── heartbeat, steps: while it runs ───── │ run, in the  │
+│           │ ←── the agent's report ────────────────── │ job's clone  │
+│           │ ── verify: the project's check ─────────→ │              │
+│           │ ←── the job's commits, by git fetch ───── │              │
+│           │ ── clean: removes the job's clone ──────→ │              │
+└───────────┘                                           └──────────────┘
+```
+
 ```
 cargo build -p hive-hand --release    # target/release/hive-hand, about 2 MB
 HIVE_HANDS_WORKDIR=/srv/hive target/release/hive-hand probe
@@ -431,7 +471,7 @@ executor.transport local-hand` sends this machine's own jobs to the
 clone under the hive home. The run keeps the `local` executor's name and
 slots; the hand makes its clone in `HIVE_HOME/hands`, runs the worker
 there, and the brain fetches the commits from that path. Jobs that work
-the store (lead, review, suggestion review) stay local, since a hand has
+the store (lead, review, reflect, suggestion review) stay local, since a hand has
 a clone and no store. `executor.transport local` (the default) puts things
 back.
 
@@ -477,6 +517,24 @@ reach in place of the one the console shows:
 ```
 hive-hand join --brain https://hive.example.com amber-river-cobalt-maple-orbit-lantern   # the first time: enrols, then stays connected
 hive-hand dial          # every later start: keep it running (a launchd or systemd service)
+```
+
+What passes between the brain and the machine, from the join code to the
+first verb of a job; the machine makes every call and the brain only answers:
+
+```text
+┌───────────┐                                           ┌──────────────┐
+│ the brain │ ── a join code, carried by you ─────────→ │ the machine, │
+│           │ ←── join: the code, a public key ──────── │ hive-hand    │
+│           │ ── a device id, its dial executor ──────→ │              │
+│           │ ←── nonce: asks for one ───────────────── │              │
+│           │ ── a nonce, good for 2 minutes ─────────→ │              │
+│           │ ←── connect: the nonce, signed ────────── │              │
+│           │ ── a session token, 12 hours ───────────→ │              │
+│           │ ←── poll: waits for a verb ────────────── │              │
+│           │ ── one hands verb ──────────────────────→ │ runs it      │
+│           │ ←── result: what the verb answered ────── │              │
+└───────────┘                                           └──────────────┘
 ```
 
 **The first line does not return by itself.** `join` enrols the machine and
