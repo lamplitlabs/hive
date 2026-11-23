@@ -438,6 +438,22 @@ and falls back to `PULSE_MEASURE_CHANGED`. The measurement exports each
 scorer stored as `pulse evolve ...` through its own executable, like one
 stored as `hive evolve ...`, so fixtures added before the rename keep their
 scope.
+
+A pass count of the project's own tests works the same way, and it is the
+fixture a card that adds tests moves. `behaviour-hub-pinned-tests-pass`
+(sitting 26) runs the hub's `node --test` over the tests that pin the changed
+hub modules. `behaviour-crate-tests-pass` (sitting 31) is its Rust twin. 14 of
+the 20 cycles before it changed `crates/` and all of them tied. For each changed
+`crates/CRATE/src/MOD.rs` it runs `cargo test --offline --locked -q -p CRATE
+--lib -- MOD::` (`--bins` for a crate without a `lib.rs`; `lib.rs`, `main.rs`
+and `mod.rs` name their module; a crate root alone is skipped because it would
+run the whole crate). It then prints `1 +` the summed `N passed`. Without a
+scope it prints `1 +` the number of `#[test]` attributes under `crates/*/src`
+(2986 at a2a7125f, scale 5972), so it builds nothing. A card that adds a
+passing test to the module it changes scores above `0.5`, and one that breaks
+that module's tests scores below it. A scoped run with a cold target dir took
+about a minute for two crates. The measurement points `CARGO_TARGET_DIR` at the
+recipe's built target, so a warm run takes seconds.
 Such a fixture answers `scope: diff` after its score line, the log marks it
 `[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
@@ -456,6 +472,23 @@ events) and add it up over the listed files only, as
 that tests the module it touches drops that count from, say, 7 to 0 and scores
 1.0 against the base's 0.5, which at weight 2 of a total near 35 moves the
 composite by about 0.029 on its own.
+The Rust side has the same count: `behaviour-crate-untested-lines` (RSI
+sitting 33, lower is better) builds `cargo test -p CRATE --lib|--bins` with
+`-C instrument-coverage` for every crate a card changes, runs the tests of
+each changed module (`MOD::`, a changed `MOD_tests.rs` counting for `MOD.rs`),
+and prints one plus the lines of those modules that `llvm-cov export` reports
+uncovered. It needs an `llvm-cov` and `llvm-profdata` of rustc's LLVM major
+(the toolchain's `llvm-tools`, Homebrew `llvm@N` or `/usr/lib/llvm-N`); without
+them it prints 1 on both trees, a tie. Before it builds it runs `cargo clean
+-p` for each changed crate under `$CARGO_TARGET_DIR/rust-coverage`: the base
+and the variant share that directory and a crate's hash, and Cargo serves the
+newer tree's test binary to the older tree, whose sources have older mtimes,
+so both trees would read one tree's numbers. Counting passed tests runs into
+the same thing: adding one `load_thresholds` test to
+`crates/hive-tally/src/thresholds.rs` left a test-count fixture at 4 passed on
+both trees. The uncovered-lines count went from 58 to 19 and scored `0.7532`.
+Without a diff scope it counts the `crates/*/src` modules that have no
+`#[test]` and no `MOD_tests.rs` (83 at `c386053b`).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still

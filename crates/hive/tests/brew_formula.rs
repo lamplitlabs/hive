@@ -7,11 +7,13 @@
 //! check, not the first release after it.
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    // Read when the test runs: a binary served from a shared target dir
+    // carries another checkout's compiled-in path (hive_testutil::manifest_dir).
+    hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .expect("workspace root")
