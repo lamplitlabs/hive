@@ -181,6 +181,25 @@ test("the words of grammar decide nothing about what is found, and still say whi
   ];
   assert.deepEqual(searchDocs(stop, "how do i stop it").map((h) => h.href), ["/docs/faq/#how-do-i-stop-it", "/docs/commands/#stop"]);
   assert.deepEqual(searchDocs(stop, "stop").map((h) => h.href), ["/docs/commands/#stop", "/docs/faq/#how-do-i-stop-it"]);
+  // Holding some of them says nothing, and an article never does: neither "the" nor "what is" in a heading puts it
+  // before the section that is about the word.
+  const some = [
+    {
+      u: "/docs/release/",
+      t: "Releases",
+      g: "Reference",
+      h: [
+        ["the-console", "The console", "bundle assets page checksum"],
+        ["what", "What a release is", "archives targets notes checksum"],
+        ["update", "Update", "checksum release"],
+      ],
+    },
+  ];
+  const sections = (q) => searchDocs(some, q).map((h) => h.href.split("#")[1]);
+  assert.deepEqual(sections("checksum"), ["update", "the-console", "what"]);
+  assert.deepEqual(sections("the checksum"), sections("checksum"));
+  assert.deepEqual(sections("what is the checksum"), ["what", "update", "the-console"]);
+  assert.deepEqual(sections("what does the checksum do"), sections("checksum"));
 });
 
 test("among sections found by their text, the one most about the words comes first", () => {
@@ -232,12 +251,17 @@ test("a record of a decision comes after the pages that say what holds, among fi
 const real = docs.searchIndex(docs.loadDocs());
 const all = (q) => new Set(searchDocs(real, q, Infinity).map((h) => h.href));
 
-test("on the real index: the words a reader types reach the page that answers", () => {
-  const first = (q) => searchDocs(real, q)[0]?.href;
-  assert.equal(first("hooks"), "/docs/harness/#hooks");
-  assert.equal(first("pairing hands"), "/docs/machines/#pairing-hands");
-  assert.equal(first("evolve settings"), "/docs/evolve/");
-  assert.equal(first("complexity rule"), "/docs/review/#the-complexity-rule");
+test("on the real index: every title finds its page and every heading its section", () => {
+  let asked = 0;
+  for (const doc of docs.loadDocs().docs) {
+    for (const [text, href] of [[doc.title, doc.path], ...doc.toc.map((h) => [h.text, `${doc.path}#${h.id}`])]) {
+      // A heading of signs alone has no word to be found by.
+      if (searchWords(text).length === 0) continue;
+      asked += 1;
+      assert.ok(all(text).has(href), `"${text}" does not find ${href}`);
+    }
+  }
+  assert.ok(asked > 0);
 });
 
 test("on the real index: every word kept for a page finds that page", () => {

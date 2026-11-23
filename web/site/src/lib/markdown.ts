@@ -85,10 +85,23 @@ function decode(part: string): string {
   }
 }
 
-/** The addresses a Markdown text links to, as they are written and in the order they stand. Code is not read for links. */
+/**
+ * The addresses a Markdown text links to, as they are written and in the
+ * order they stand: `[a](b.md)`, and `[a][b]` with its `[b]: b.md` wherever
+ * that stands. Code is not read for links.
+ */
 export function markdownLinks(source: string): string[] {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(splitFrontMatter(source).body);
+  // Of two definitions of one name the first holds, as in the page.
+  const defined = new Map<string, string>();
+  visit(tree, "definition", (node) => {
+    if (!defined.has(node.identifier)) defined.set(node.identifier, node.url);
+  });
   const out: string[] = [];
-  visit(unified().use(remarkParse).use(remarkGfm).parse(splitFrontMatter(source).body), "link", (node) => void out.push(node.url));
+  visit(tree, (node) => {
+    if (node.type === "link") out.push(node.url);
+    else if (node.type === "linkReference" && defined.has(node.identifier)) out.push(defined.get(node.identifier) as string);
+  });
   return out;
 }
 

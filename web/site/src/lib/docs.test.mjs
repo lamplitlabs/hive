@@ -116,7 +116,7 @@ test("a folder's own page says in which order the sidebar lists the folder's pag
   const sources = [
     {
       file: "how-to/README.md",
-      source: "# Guides\n\nRead [Concepts](../concepts.md) first.\n\n1. [B](b.md)\n2. [A](./a.md#top)\n3. [B again](b.md)\n\n```md\n[not a link](z.md)\n```\n\n[gone](gone.md), [outside](../other/x.md), [deeper](more/c.md), <https://example.com/a.md>\n",
+      source: "# Guides\n\nRead [Concepts](../concepts.md) first.\n\n1. [B](b.md)\n2. [A](./a.md#top)\n3. [B again](b.md)\n\n```md\n[not a link](z.md)\n```\n\n[gone](gone.md), [outside](../other/x.md), [deeper][c], <https://example.com/a.md>, [this page](README.md)\n\n[c]: more/c.md\n",
     },
     { file: "how-to/a.md", source: "# A\n\n## Top\n" },
     { file: "how-to/b.md", source: "# B\n" },
@@ -125,7 +125,7 @@ test("a folder's own page says in which order the sidebar lists the folder's pag
     { file: "concepts.md", source: "# Concepts\n\nSee [a guide](how-to/a.md).\n" },
     { file: "other/x.md", source: "# X\n" },
   ];
-  // Each file of the folder once, as first linked. Not a page elsewhere, a file that is not there, or a link inside code.
+  // Each file of the folder once, as first linked. Not the page itself, a page elsewhere, a file that is not there, or a link inside code.
   assert.deepEqual([...docs.folderLists(sources)], [["how-to", ["how-to/b.md", "how-to/a.md", "how-to/more/c.md"]]]);
   const built = docs.buildDocs(sources);
   assert.deepEqual(
@@ -142,7 +142,8 @@ test("every guide is listed on the page of guides, and the sidebar walks them in
   const hub = built.bySlug.get(docs.GUIDES_DIR);
   const guides = built.docs.filter((d) => d.group === docs.GUIDES_GROUP && d !== hub).map((d) => d.file);
   assert.ok(guides.length > 0, "docs/how-to/ holds guides");
-  const listed = [...new Set(hub.links.filter((l) => l.kind === "doc" && l.doc.startsWith(`${docs.GUIDES_DIR}/`)).map((l) => l.doc))];
+  // The guides the page links, as it first links each. Not the page itself: it may link to a heading of its own.
+  const listed = [...new Set(hub.links.filter((l) => l.kind === "doc" && docs.docSlug(l.doc).startsWith(`${docs.GUIDES_DIR}/`)).map((l) => l.doc))];
   // A guide the page does not list is one nobody who reads the page finds.
   assert.deepEqual(guides.filter((f) => !listed.includes(f)), [], "docs/how-to/README.md links every guide: a new guide needs a line there");
   // The same order, whichever it is: Previous and Next under a guide follow the page that lists them.

@@ -31,6 +31,9 @@ export const MIN_PREFIX = 3;
 /** What a word costs a section that only says it in its text, before its place there is counted: a heading costs 0, the page's title 1. */
 const IN_TEXT = 4;
 
+/** Words that stand before nearly every noun: typed, they are no part of what is looked for. */
+const ARTICLES: ReadonlySet<string> = new Set(["a", "an", "the"]);
+
 /** The kind of find each rank is, best first: by a title, by a heading, by the words kept for a page, by code, by text. */
 const KIND = [0, 0, 0, 1, 1, 1, 1, 2, 3, 3, 4, 4];
 
@@ -108,9 +111,11 @@ function prepare(entries: readonly SearchEntry[]): Prepared[] {
  *
  *  - a record of a decision or a design comes last: it says why something
  *    was chosen, and a reader looks first for what holds;
- *  - then the place whose title or heading also holds the words of grammar
- *    that were typed comes first: "for you page" is nearer to the heading
- *    "Read the For you page" than to the heading "Page".
+ *  - then the place whose title or heading also holds every word of
+ *    grammar that was typed comes first: "for you page" is nearer to the
+ *    heading "Read the For you page" than to the heading "Page". Holding
+ *    some of them says nothing, and neither does an article: nearly every
+ *    heading holds a "the".
  */
 export function searchDocs(entries: readonly SearchEntry[], query: string, max = 10): SearchHit[] {
   const asked = searchWords(query);
@@ -119,9 +124,10 @@ export function searchDocs(entries: readonly SearchEntry[], query: string, max =
   const held = telling.length > 0 ? telling : asked;
   // The query as it is typed and as the words it is held to: a heading or a command that is either, word for word, is what was asked for.
   const forms = [...new Set([asked.join(" "), held.join(" ")])];
-  // The words a place is not held to: how many of them its title or heading lacks says how near it is to what was typed.
-  const beside = [...new Set(asked.filter((w) => !held.includes(w)))];
-  const lacks = (...lists: (readonly string[])[]) => beside.filter((w) => !lists.some((tokens) => tokens.includes(w))).length;
+  // The words a place is not held to, but for articles and single letters. A place whose title or heading holds
+  // every one of them, whole, is nearer to what was typed (0) than one that lacks any (1).
+  const beside = [...new Set(asked.filter((w) => !held.includes(w) && w.length > 1 && !ARTICLES.has(w)))];
+  const lacks = (...lists: (readonly string[])[]) => (beside.every((w) => lists.some((tokens) => tokens.includes(w))) ? 0 : 1);
   // Only a query that is one short word: the second letter of a word in a longer one is a word still being typed.
   const whole = asked.length === 1 && asked[0].length < MIN_PREFIX;
   const starts = (tokens: readonly string[], w: string) => (whole ? tokens.includes(w) : tokens.some((t) => t.startsWith(w)));

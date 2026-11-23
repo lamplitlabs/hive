@@ -220,6 +220,9 @@ test("the links of a text, as written and in order; code and front matter are no
   const source = "---\ntitle: [no](front.md)\n---\n# T\n\n[one](b.md) and [two](./a.md#top), then [one again](b.md).\n\n```md\n[not](z.md)\n```\n\n`[nor](y.md)` but <https://example.com/x> and ![a picture](p.png).\n";
   assert.deepEqual(md.markdownLinks(source), ["b.md", "./a.md#top", "b.md", "https://example.com/x"]);
   assert.deepEqual(md.markdownLinks(""), []);
+  // A link whose address stands elsewhere in the text: where the link is, with the first address given for its name.
+  const named = "# T\n\n[c]: c.md\n\n[Tasks][t], then [two](b.md), [c] and [nowhere][x].\n\n[t]: tasks.md\n[T]: other.md\n";
+  assert.deepEqual(md.markdownLinks(named), ["tasks.md", "b.md", "c.md"]);
 });
 
 test("an SVG under docs/ is not the site's own file: it can carry script, so GitHub serves it and nothing links to it", () => {
