@@ -68,10 +68,10 @@ crosses the cadence and again only after one fits, so a slow pass is one
 line, not one per tick; before this the heartbeat said when the loop beat
 and how often, and a body that spent its cadence planning looked like a loop
 that merely beat late. The line ends with where the time went - `; longest:
-plan 14s, maintenance 9s, pipeline 3s`, the three longest stages of a second
+plan 14s, maintenance 9s, leads 3s`, the three longest stages of a second
 or more, a per-project tender summed across the projects - and the heartbeat
 carries the slowest body's stages as `tick.longest`, which `hive status`
-prints after the slowest time (`slowest 31000ms: plan 14000ms, pipeline
+prints after the slowest time (`slowest 31000ms: plan 14000ms, leads
 9000ms`): the number alone said that seven passes after one restart took
 29-33 s each and nothing about which of the twenty tenders took them.
 

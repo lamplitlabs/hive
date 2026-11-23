@@ -51,7 +51,7 @@ give each claim, thread and suggestion its status.
 Every post summary (`--summary` on posts, claims, votes and thread
 resolutions) is collapsed to one line - runs of whitespace become a single
 space - and then holds at most **240 characters, counted as Unicode runes**
-(`MAX_SUMMARY_CHARS` in [`crates/hive-board/src/posts.rs`](../crates/hive-board/src/posts.rs)).
+(`MAX_SUMMARY_CHARS` in [`crates/hive-board/src/board.rs`](../crates/hive-board/src/board.rs)).
 An overlong summary is refused with its normalized length and the limit; move
 the detail to `--body` or `--body-file`. Posts hive writes itself
 (ratification results, compute proposals) are trimmed to the same limit with a
