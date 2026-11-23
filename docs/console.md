@@ -139,6 +139,8 @@ buttons next to the planning reason when the loop waits on one.
 [Notifications](#notifications) can tell you, with a sound, the moment a
 new one arrives.
 
+![The For you page: questions, decisions, proposals, compute requests and suggested work, each with its buttons](how-to/images/console-for-you.webp)
+
 The two private held-out fixtures that open a project's self-improvement loop
 need no step of yours: the daemon writes them itself, sealed (one model call
 each, no repository, no board, no store) and labelled *generated* wherever the
@@ -187,6 +189,8 @@ says so only while nothing waits for you there and nothing is wrong.
 `hive goal set --project my-app --text '...'` sets it from a terminal.
 
 ## Tasks
+
+![The Tasks page as a board with the columns Planned, In progress, Asked you and Done](how-to/images/console-tasks.webp)
 
 Write a brief, set a priority, amend or cancel it later; each revision is kept.
 The project's lead agent starts on it at once - your write wakes the daemon
@@ -752,6 +756,8 @@ lead.
 
 ## Machines
 
+![The Machines page: this machine with its agent slots, one request waiting, and three machines taking work](how-to/images/console-machines.webp)
+
 Every machine that runs agents (`/compute/`), with what it offers (`macos arm64
 xcode docker`; *Reserved* when it is kept for the work that needs it,
 [Machines: what runs where](machines.md#machines-what-runs-where); this machine's card
@@ -1068,6 +1074,15 @@ the limits.
 
 ADRs, plans, features, guides, memory, prompts, environment recipes, the
 constitution and the evolution archive, with revisions and delivery marks.
+
+The decisions that wait for you come first, under **Waiting on you**, each
+with **Decline**, **Defer** and **Accept**. A click on a record opens it
+beside the list, and a long record gets a list of its contents. A decision
+record opens with **At a glance**, a few lines the owner can decide from,
+and a diagram of the change drawn in text
+([Diagrams in the docs](development.md#diagrams-in-the-docs)).
+
+![The Records page with a proposed decision open beside the list: its answers Decline, Defer and Accept, then At a glance and a diagram of today beside the proposal](how-to/images/console-decision.webp)
 
 ## Reports
 

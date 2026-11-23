@@ -18,6 +18,8 @@ import { SKIP, visit } from "unist-util-visit";
 import type { Element, ElementContent, Root as HastRoot, RootContent as HastRootContent } from "hast";
 import type { Root as MdastRoot } from "mdast";
 import type { ImageSize } from "./image-size.ts";
+import { diagramWords, findDiagrams, isDiagram } from "./diagram.ts";
+import type { FoundDiagram } from "./diagram.ts";
 import { SITE } from "./site.ts";
 
 /** What a link in a doc turned out to be. */
@@ -214,6 +216,8 @@ export type Section = {
   code: string[];
 };
 export type DocLink = Rewritten & { written: string };
+/** One diagram drawn in text: where it starts in the file, its size, its words, and what is badly drawn (lib/diagram.ts). */
+export type DocDiagram = FoundDiagram;
 
 export type Rendered = {
   /** The first `# heading` as text; empty when the file has none. */
@@ -233,6 +237,8 @@ export type Rendered = {
   paragraphs: string[];
   /** Every link and image the doc holds, as written and as rendered. */
   links: DocLink[];
+  /** Every diagram drawn in text, in order. */
+  diagrams: DocDiagram[];
   frontMatter: Record<string, string>;
 };
 
@@ -267,7 +273,8 @@ function stringifyChildren(children: ElementContent[]): string {
 /** One doc: Markdown in, the pieces a page is built from out. */
 export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
   const { data, body } = splitFrontMatter(source);
-  const out: Rendered = { title: "", titleHtml: "", titleId: "", html: "", toc: [], sections: [], ids: [], paragraphs: [], links: [], frontMatter: data };
+  // The diagrams are read from the file as it is, so each is named by its line there, front matter included.
+  const out: Rendered = { title: "", titleHtml: "", titleId: "", html: "", toc: [], sections: [], ids: [], paragraphs: [], links: [], diagrams: findDiagrams(source), frontMatter: data };
 
   const collectText = () => (tree: MdastRoot) => {
     for (const node of tree.children) {
@@ -382,6 +389,16 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
     visit(tree, "element", (node, index, parent) => {
       if (node.tagName === "pre") {
         node.properties.tabIndex = 0;
+        const code = node.children.find((child): child is Element => child.type === "element" && child.tagName === "code");
+        const classes = Array.isArray(code?.properties.className) ? code.properties.className.map(String) : [];
+        const lang = classes.find((c) => c.startsWith("language-"))?.slice("language-".length) ?? "";
+        const text = code ? hastToString(code) : "";
+        if (code && isDiagram(text, lang)) {
+          // A diagram drawn in text: the stylesheet closes the lines up, and a screen reader gets its words, not sixty line characters.
+          node.properties.className = ["diagram"];
+          node.properties.role = "img";
+          node.properties.ariaLabel = `Diagram: ${diagramWords(text).join(", ")}`;
+        }
       } else if (node.tagName === "table" && parent && index !== undefined) {
         nameRows(node);
         keepWords(node);

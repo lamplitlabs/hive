@@ -11,6 +11,34 @@ with the reviewer's reasons and a **Merge** button (on the task, or on the
 session, that the pull request belongs to), on the project's board as a
 question marked for you, or on GitHub like any other pull request.
 
+A pull request's way through the review, with the event each step records:
+
+```text
+                ┌──────────────────────────┐
+┌─────────────→ │ pull request Hive opened │
+│               └────────────┬─────────────┘
+│                            │ review.queued
+│                            ↓
+│               ┌──────────────────────────┐
+│               │ a review job             │
+│               │ reads the diff           │
+│               └────────────┬─────────────┘
+│         ┌──────────────────┼──────────────────────────────┐
+│         │ changes          │ merge                        │ owner
+│         ↓                  ↓                              ↓
+│ ┌────────────────┐ ┌───────────────┐   Merge    ┌───────────────────┐
+│ │ follow-up job  │ │ merged        │ ←───────── │ Needs your review │
+│ │ review.changes │ │ review.merged │ review.ask │ review.owner      │
+│ └───────┬────────┘ └───────┬───────┘            └───────────────────┘
+│         │ land.pr          │ next delivery pass
+└─────────┘                  ↓
+                  land.merged, and the local
+                  default branch follows
+```
+
+**Merge** is the button on the task or the session the pull request belongs
+to, and [Your part](#your-part) says how you merge one that has no button.
+
 An agent reviews because the owner cannot read 260 pull requests a week: of
 the branches one machine landed in seven days, 22 (8%) were the owner's
 tasks and 238 were the fleet's own work - suggestion jobs, security updates,
@@ -123,6 +151,31 @@ brief, in `review.queued`, in `hive review list` and `show`, and in the
 hub's **Needs your review** row, which a pull request enters the moment its
 review is queued with a reason - you need not wait for the reading to merge
 it, though the reading is what you get for waiting.
+
+The rule as a picture, with the four reasons the daemon checks before it queues
+the review (the fifth in the table, `the reviewer failed twice`, comes from the
+attempts, not from the pull request):
+
+```text
+                          ┌──────────────────┐
+                          │ the daemon reads │
+                          │ the pull request │
+                          └────────┬─────────┘
+        ┌─────────────────┬────────┴────────┬─────────────────┐
+        ↓                 ↓                 ↓                 ↓
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│ review.merge  │ │ touches a     │ │ UI files and  │ │ head branch   │
+│ is ask        │ │ guarded path  │ │ no report     │ │ not Hive's    │
+└───────┬───────┘ └───────┬───────┘ └───────┬───────┘ └───────┬───────┘
+        └─────────────────┴────────┬────────┴─────────────────┘
+                 ┌─────────────────┴─────────────────┐
+                 │ no reason holds                   │ any one holds
+                 ↓                                   ↓
+┌─────────────────────────────────┐ ┌─────────────────────────────────┐
+│ the reviewer's verdict:         │ │ Needs your review:              │
+│ merge, changes or owner         │ │ only you merge it               │
+└─────────────────────────────────┘ └─────────────────────────────────┘
+```
 
 | Reason (as the reviewer and the hub word it) | Why |
 | --- | --- |

@@ -110,8 +110,11 @@ function seed() {
   hive(["record", "accept", "ADR-001", "--words", "Yes - one store, one export."]);
   hive(["record", "deliver", "ADR-001", "delivered", "--date", "2026-09-02"]);
   hive(["record", "new", "adr", "--project", "hive", "--title", "Agents ask for compute through the board", "--areas", "runner", "--body-file", "-"], {
+    // A decision as TPL-adr asks for it: the owner's summary first, then the change drawn in text.
     input: md(
       "Agents ask for compute through the board",
+      "## At a glance\n\n- **Decide:** may a worker ask you for more machines instead of failing?\n- **Today:** a job that needs a machine nobody has fails, with no way to ask.\n- **Proposed:** the worker files a compute request; you approve or deny it.\n- **You will notice:** a request under For you with the machine and the reason.\n- **Cost and risk:** one command and one card. A hand costs money, so the caps and the daily hour budget bound it.\n- **To undo:** remove the command; a job without a machine fails as it does today.",
+      "```text\nToday                      Proposed\n\n┌────────┐  no machine     ┌────────┐  compute request  ┌───────────┐\n│ worker │ ──────→ job     │ worker │ ────────────────→ │ the owner │\n└────────┘         fails   └────────┘                   └─────┬─────┘\n                                                              │ approve\n                                                              ↓\n                                                  a hand, under the caps\n```",
       "## Context\n\nA worker that needs more machines has no way to say so except failing.",
       "## Decision\n\n`hive compute request` writes a request the owner approves or denies from the console; approved requests provision a hand under the configured caps.",
       "## Consequences\n\nCompute stays owner-bounded: caps, a daily hour budget and credits live in settings.",

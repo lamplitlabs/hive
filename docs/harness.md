@@ -8,11 +8,29 @@ plus `skill`, `fetch` and `subagent` where the owner allows them and the
 project's MCP servers' tools, a linear history, and limits the owner sets.
 
 ```text
-system prompt (+ the clone's AGENTS.md) + the job's brief
-  ─► model answers (one or more tool calls, or exactly one fenced bash/read/grep/edit block)
-  ─► every call runs in the clone root, in order; cd <root> is unnecessary
-  ─► each result (cut in the middle past harness.output_limit) goes back as that call's observation
-  ─► ... until the model answers with no call: that message is the final report
+┌────────────────────────────────────────────────────────────┐
+│ system prompt (+ the clone's AGENTS.md) + the job's brief  │
+└──────────────────────────────┬─────────────────────────────┘
+                               ↓
+┌────────────────────────────────────────────────────────────┐
+│ the model answers: one or more tool calls, or exactly one  │ ←───┐
+│ fenced bash/read/grep/edit block                           │     │
+└──────────────┬──────────────────────────────┬──────────────┘     │
+               │ calls                        │ no call            │
+               ↓                              ↓                    │
+┌─────────────────────────────┐  ┌───────────────────────────┐     │
+│ every call runs in the      │  │ that message is the final │     │
+│ clone root, in order;       │  │ report                    │     │
+│ cd <root> is unnecessary    │  └───────────────────────────┘     │
+└──────────────┬──────────────┘                                    │
+               ↓                                                   │
+┌─────────────────────────────┐                                    │
+│ each result (cut in the     │                                    │
+│ middle past                 │                                    │
+│ harness.output_limit) goes  ├────────────────────────────────────┘
+│ back as that call's         │
+│ observation                 │
+└─────────────────────────────┘
 ```
 
 ## The tools

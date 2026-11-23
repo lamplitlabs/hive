@@ -285,6 +285,20 @@ test("the body is cut at its h2 and h3 headings into the text and the code the s
   assert.deepEqual(r.toc.map((t) => t.id), ["1-look-at-the-gates", "a-gate-that-stays-closed", "read-more"]);
 });
 
+test("a diagram drawn in text is marked, named for a screen reader and checked", () => {
+  const good = "┌───────┐  task   ┌──────┐\n│ owner │ ──────→ │ lead │\n└───────┘         └──────┘";
+  const bad = "┌───────┐\n│ owner │\n└──────";
+  const r = render(`---\nid: ADR-900\nstatus: Proposed\n---\n\n# T\n\n\`\`\`text\n${good}\n\`\`\`\n\nText.\n\n\`\`\`\n${bad}\n\`\`\`\n\n\`\`\`text\nhive status\n  → 3 running\n\`\`\`\n\n\`\`\`bash\necho "│"\n\`\`\`\n`);
+  const pres = elements(r.html, "pre");
+  assert.deepEqual(pres.map((p) => p.properties.className ?? null), [["diagram"], ["diagram"], null, null], "sample output and code are not diagrams");
+  assert.equal(pres[0].properties.role, "img");
+  assert.equal(pres[0].properties.ariaLabel, "Diagram: task, owner, lead");
+  assert.equal(toString(pres[0]), `${good}\n`, "the drawing is kept character for character");
+  // Named by the line of the file, front matter included, so the writer finds it.
+  assert.deepEqual(r.diagrams.map((d) => [d.line, d.rows, d.columns, d.problems.length]), [[8, 3, 26, 0], [16, 3, 9, 1]]);
+  assert.match(r.diagrams[1].problems[0], /^line 2, column 9: │ reaches down/);
+});
+
 test("code blocks keep their text exactly, highlighted or not", () => {
   const bash = `hive settings set machine.labels gpu,android   # what <this> machine offers & more\nexport PATH="$HOME/.hive/bin:$PATH"\n\tif [ -z "$X" ]; then echo 'a  b'; fi`;
   const plain = `system prompt (+ the clone's AGENTS.md) + the job's brief\n  ─► model answers <one> & "two"\n`;

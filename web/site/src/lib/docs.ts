@@ -7,7 +7,7 @@ import path from "node:path";
 import { IMAGE_HEADER_BYTES, imageSize } from "./image-size.ts";
 import type { ImageSize } from "./image-size.ts";
 import { cutClean, cutTitle, isDocPicture, markdownLinks, renderMarkdown, rewriteHref } from "./markdown.ts";
-import type { DocLink, Section, TocEntry } from "./markdown.ts";
+import type { DocDiagram, DocLink, Section, TocEntry } from "./markdown.ts";
 import { buildSearchIndex } from "./search-index.ts";
 import type { PageSource } from "./search-index.ts";
 import type { SearchEntry } from "./search.ts";
@@ -168,6 +168,8 @@ export type Doc = PlannedDoc & {
   sections: Section[];
   ids: string[];
   links: DocLink[];
+  /** The diagrams drawn in text, each with what is badly drawn about it. */
+  diagrams: DocDiagram[];
   frontMatter: Record<string, string>;
   editUrl: string;
   prev?: DocRef;
@@ -182,6 +184,8 @@ export type Docs = {
   excluded: string[];
   /** Links that are broken in the Markdown itself. They are rendered as written and reported, never hidden. */
   problems: string[];
+  /** Diagrams that are badly drawn, each named by file and line. Rendered as written, and reported. */
+  drawing: string[];
 };
 
 /** "windows-port" reads "Windows port" when a file has no heading of its own. */
@@ -260,9 +264,11 @@ export function buildDocs(
   );
   const text = new Map(sources.map((s) => [s.file, s.source]));
   const pages = new Map(plan.docs.map((d) => [d.file, d.path]));
+  const drawing: string[] = [];
 
   const docs: Doc[] = plan.docs.map((planned) => {
     const r = renderMarkdown(text.get(planned.file) ?? "", { file: planned.file, pages, repoHas, imageSize: sizeOf });
+    for (const d of r.diagrams) for (const p of d.problems) drawing.push(`docs/${planned.file}:${d.line}: the diagram: ${p}`);
     const title = r.title || titleFromSlug(planned.slug);
     return {
       ...planned,
@@ -277,6 +283,7 @@ export function buildDocs(
       sections: r.sections,
       ids: r.ids,
       links: r.links,
+      diagrams: r.diagrams,
       frontMatter: r.frontMatter,
       editUrl: `${SITE.repo}/edit/main/docs/${planned.file.split("/").map(encodeURIComponent).join("/")}`,
     };
@@ -325,6 +332,7 @@ export function buildDocs(
     bySlug: new Map(docs.map((d) => [d.slug, d])),
     excluded: plan.excluded,
     problems,
+    drawing,
   };
 }
 

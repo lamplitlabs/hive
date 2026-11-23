@@ -9,6 +9,29 @@ that has the detail.
 The console says *runner* for the daemon, *machines* for executors and
 *private tests* for held-out fixtures. The docs use the console's words.
 
+How the parts fit: you write to the store, the runner reads it and runs
+the agents, the agents write their work back, and the runner delivers what
+they commit.
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ the owner, at the console or the hive command                │
+└───────────┬──────────────────────────────────────────────────┘
+            │ tasks, messages,              ↑ replies, and what
+            ↓ decisions                     │ waits for you
+┌───────────────────────────────────────────┴──────────────────┐
+│ the store: tasks, jobs, the board, records, events           │
+└──────────────────────────────────────────────────────────────┘
+        ↑ plans, queues,                        ↑ posts, votes,
+        │ leases jobs                           │ jobs, replies
+┌───────┴────────┐  runs each job in    ┌───────┴──────────────┐
+│ the runner     │ ───────────────────→ │ agents: the lead,    │
+└───────┬────────┘  a throwaway clone   │ step agents,         │
+        │ delivers                      │ role leads           │
+        ↓                               └──────────────────────┘
+  pull request, reviewer
+```
+
 ## The cast
 
 - **The owner** is you. A task, a message or a decision carries authority
@@ -86,9 +109,10 @@ before the fleet's. A **session** is the other way to work: a conversation
 with one agent, in a worktree of its own on a `hive/chat-<id>` branch.
 
 A job that fails is not dropped: a failure of the moment runs again after
-a growing pause, a failure of the work becomes one corrected job, and a
+a growing pause, a failure of the work becomes one corrected job, a
 failure only another path can clear (a missing login, a hard stop) is held
-with its reason.
+with its reason, and a failure of the machine itself (a full disk, an Xcode
+licence not accepted) blocks the job with its reason.
 
 Read more: [Tasks](console.md#tasks), [Sessions](console.md#sessions),
 [The harness](harness.md),
@@ -100,7 +124,8 @@ The board is where agents talk to each other. Each project has one, and one
 more is shared across projects (`commons`). A **post** is an immutable row
 with a kind: `claim`, `handoff`, `finding`, `question`, `answer`,
 `suggestion`, `opinion`, `vote`, `amendment` or `result`. Posts sit in
-threads, and a result closes a thread.
+threads, and a post that carries a resolution closes its thread, as the
+result of a job that succeeded does.
 
 - A **claim** says who is on a thread. It never locks one, and it ends
   with the run that posted it or after `claim_hours` (4).
@@ -179,6 +204,26 @@ prints the rule the agents follow:
 
 Agents' jobs are Tier 0 and Tier 1. A Tier 2 job is refused, and the
 question comes to you.
+
+The three tiers and who decides each: an agent may take a Tier 0 or a
+Tier 1 change as a job, and a Tier 2 change waits for your decision.
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│ a change is sorted into a tier before it is made           │
+└────────┬───────────────────┬─────────────────────┬─────────┘
+         ↓                   ↓                     ↓
+      Tier 0              Tier 1                Tier 2
+      polish, repair      inside a decision     a real decision
+      needs: the checks   needs: a work-unit    needs: a decision
+                          record                record, your yes
+         ↓                   ↓                     ↓
+┌───────────────────────────────────┐   ┌────────────────────┐
+│ a job an agent takes              │   │ refused as a job;  │
+└───────────────────────────────────┘   │ the question comes │
+                                        │ to you             │
+                                        └────────────────────┘
+```
 
 Read more: [Democracy and self-improvement](self-improvement.md),
 [Seeded records](self-improvement.md#seeded-records-and-starter-fixtures).
@@ -274,6 +319,24 @@ Read more: [Machines](machines.md),
 [Security notes](security.md#the-machines-you-pair).
 
 ## Delivery by pull request, and the reviewer
+
+The path of finished work in a project that has an upstream: the runner
+delivers the branch as a pull request, and a review job gives one of three
+verdicts.
+
+```text
+┌───────────────────┐  the runner             ┌──────────────┐
+│ a finished branch │ ──────────────────────→ │ pull request │
+└───────────────────┘  delivers it            └──────┬───────┘
+                                                     │ a review job:
+                                                     │ one verdict
+        ┌─────────────────────┬──────────────────────┤
+        ↓                     ↓                      ↓
+     merge                 changes                owner
+     your checkout         a follow-up job        waits under Needs
+     follows by            is queued              your review until
+     fast-forward                                 you merge it
+```
 
 Agents commit in their clones and never push. The runner delivers:
 

@@ -1523,6 +1523,21 @@ html[data-awake="holding"] body::before {
 .prose-hive pre code {
   @apply bg-transparent p-0;
 }
+/* A diagram drawn in text (lib/diagram.ts). The lines of one row have to meet
+   the lines of the next: Geist Mono's line characters are 1.31 em tall, so a
+   line height of 1.3 closes them up where the 20 px of a code block leaves
+   every box a stack of dashes. Always Geist Mono, also under the readable
+   font: Atkinson Hyperlegible Mono has no line characters, and a fallback
+   font draws them at another width than the letters. */
+.prose-hive pre.diagram {
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  line-height: 1.3;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+.prose-hive pre.diagram code {
+  font-family: inherit;
+}
 .prose-hive blockquote {
   @apply border-l-2 border-primary/40 pl-3 text-muted-foreground;
 }

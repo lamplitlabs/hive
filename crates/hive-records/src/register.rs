@@ -468,6 +468,10 @@ pub fn run_record(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
                 opts,
             )?;
             print_record_write(c, &rec, json_out)?;
+            if rec.kind == "adr" {
+                let body = crate::records::get(store(c)?, &rec.id, 0)?.1.body;
+                print_adr_notes(c, &rec, &body)?;
+            }
         }
         "amend" => {
             let body_file = fs.get_string("body-file");
@@ -489,6 +493,7 @@ pub fn run_record(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
                 crate::records::amend(store(c)?, id, &body, &author(c), &fs.get_string("note"))
                     .map_err(|e| record_error(id, e))?;
             print_record_write(c, &rec, json_out)?;
+            print_adr_notes(c, &rec, &body)?;
         }
         "status" | "accept" | "deliver" => {
             let result = match sub {
@@ -516,6 +521,7 @@ pub fn run_record(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
                 ));
             }
             let body = read_body(&body_file)?;
+            let drafted = body.clone();
             let draft = crate::drafts::draft(
                 store(c)?,
                 id,
@@ -528,6 +534,8 @@ pub fn run_record(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()>
             )
             .map_err(|e| record_error(id, e))?
             .expect("draft stored");
+            let rec = store(c)?.get_record(id, 0)?.0;
+            print_adr_notes(c, &rec, &drafted)?;
             if json_out {
                 return write_json(&mut c.out, &DraftOut { draft });
             }
@@ -868,6 +876,35 @@ fn print_record_write(c: &mut Context, rec: &hive_store::Record, json_out: bool)
         "{} revision {}: {}\n",
         rec.id, rec.current_rev, rec.status
     ))?;
+    Ok(())
+}
+
+/// A decision record the owner has yet to decide is read by someone who may
+/// not know the code. When the text just written lacks the `At a glance`
+/// section or its diagram, still holds the template's example, or has a
+/// diagram that is badly drawn, say so on stderr (the write stands, and
+/// `--json` output stays clean). The note says what to write and points at
+/// no record: a store seeded before this build may hold an older `TPL-adr`.
+/// A record that is decided already is history and gets no note.
+fn print_adr_notes(c: &mut Context, rec: &hive_store::Record, body: &str) -> Result<()> {
+    let status = rec.status.trim().to_ascii_lowercase();
+    let waiting =
+        status.is_empty() || status.starts_with("draft") || status.starts_with("proposed");
+    if c.quiet || rec.kind != "adr" || !waiting {
+        return Ok(());
+    }
+    let notes = crate::diagram::adr_reading_notes(body);
+    if notes.is_empty() {
+        return Ok(());
+    }
+    writeln!(
+        c.err,
+        "note: {} is written, and the owner will find it hard to decide from:",
+        rec.id
+    )?;
+    for note in notes {
+        writeln!(c.err, "  - {note}")?;
+    }
     Ok(())
 }
 
@@ -1376,5 +1413,150 @@ mod tests {
         // slug through the global --project flag, so nothing is left to look up.
         let cmd = msg.rsplit("refresh it with: ").next().unwrap();
         assert_eq!(cmd, "hive --project amistio-template seed export");
+    }
+
+    #[test]
+    fn a_proposed_adr_without_a_glance_or_a_diagram_earns_a_note_and_is_still_written() {
+        let _serial = crate::test_helpers::serial();
+        let s = temp_store();
+        add_project(&s, "brain", true);
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, text: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            path.display().to_string()
+        };
+        // What one command wrote to stdout and to stderr.
+        let run = |args: &[&str], quiet: bool| {
+            let out = hive_cli::Buffer::new();
+            let err = hive_cli::Buffer::new();
+            let mut c = Context {
+                store: Some(s.clone()),
+                home: s.home.clone(),
+                out: Box::new(out.clone()),
+                err: Box::new(err.clone()),
+                json: false,
+                quiet,
+                color: false,
+                agent: "agent".into(),
+                project: "brain".into(),
+                session: String::new(),
+                now: "2026-09-06T21:00:00Z".into(),
+                args: vec![],
+            };
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            run_record(&mut c, &FlagSet::new(""), &args).unwrap();
+            (out.string(), err.string())
+        };
+
+        let bare = file(
+            "bare.md",
+            "# ADR-001: Cache the index\n\n## Context\n\nSlow.\n\n## Decision\n\nCache it.\n",
+        );
+        let (out, err) = run(
+            &[
+                "new",
+                "adr",
+                "--title",
+                "Cache the index",
+                "--areas",
+                "store",
+                "--body-file",
+                &bare,
+            ],
+            false,
+        );
+        assert_eq!(
+            out, "ADR-001 revision 1: Proposed\n",
+            "the record is written"
+        );
+        assert!(
+            err.starts_with(
+                "note: ADR-001 is written, and the owner will find it hard to decide from:\n"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains("  - it has no `## At a glance` section"),
+            "{err}"
+        );
+        assert!(err.contains("  - it has no diagram"), "{err}");
+
+        // A badly drawn diagram is named by its line and column; the section is there now.
+        let crooked = file(
+            "crooked.md",
+            "# ADR-001: Cache the index\n\n## At a glance\n\n- **Decide:** cache it?\n\n```text\n┌───────┐\n│ index │\n└──────\n```\n",
+        );
+        let (out, err) = run(
+            &[
+                "amend",
+                "ADR-001",
+                "--body-file",
+                &crooked,
+                "--note",
+                "Draw it",
+            ],
+            false,
+        );
+        assert_eq!(out, "ADR-001 revision 2: Proposed\n");
+        assert!(!err.contains("At a glance"), "{err}");
+        assert!(
+            err.contains(
+                "  - the diagram at line 7 is badly drawn: line 2, column 9: │ reaches down"
+            ),
+            "{err}"
+        );
+
+        // Well drawn: nothing to say. A draft of the same text says nothing either.
+        let drawn = file(
+            "drawn.md",
+            "# ADR-001: Cache the index\n\n## At a glance\n\n- **Decide:** cache it?\n\n```text\n┌───────┐  read   ┌───────┐\n│ index │ ──────→ │ cache │\n└───────┘         └───────┘\n```\n",
+        );
+        let (out, err) = run(&["amend", "ADR-001", "--body-file", &drawn], false);
+        assert_eq!(
+            (out.as_str(), err.as_str()),
+            ("ADR-001 revision 3: Proposed\n", "")
+        );
+        let (_, err) = run(
+            &[
+                "draft",
+                "ADR-001",
+                "--body-file",
+                &bare,
+                "--note",
+                "Shorter",
+            ],
+            false,
+        );
+        assert!(
+            err.contains("  - it has no diagram"),
+            "a draft is read by the owner too: {err}"
+        );
+
+        // --quiet silences the note, and another kind of record never gets one.
+        let (_, err) = run(&["amend", "ADR-001", "--body-file", &bare], true);
+        assert_eq!(err, "");
+        let (_, err) = run(
+            &["new", "memory", "--title", "A lesson", "--body-file", &bare],
+            false,
+        );
+        assert_eq!(err, "");
+
+        // A decided record is history: amending it earns no note.
+        let (_, err) = run(&["accept", "ADR-001", "--words", "Yes, cache it."], false);
+        assert_eq!(err, "");
+        let (out, err) = run(
+            &[
+                "amend",
+                "ADR-001",
+                "--body-file",
+                &crooked,
+                "--note",
+                "A typo",
+            ],
+            false,
+        );
+        assert!(out.starts_with("ADR-001 revision 6: Accepted"), "{out}");
+        assert_eq!(err, "");
     }
 }
