@@ -224,7 +224,8 @@ function FailedJobCard({ job, checked, disabled, onToggle }: { job: FailedJob; c
         <ItemCardKind icon={CircleXIcon} tone="bad">{JOB_FAILURE_CLASS[job.class] ?? "Failed"}</ItemCardKind>
         <ProjectLink slug={job.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
-      <ItemCardTitle>{job.title}</ItemCardTitle>
+      {/* Second level: on Runs the cards stand right under the page's title (the fold's line is no heading). */}
+      <ItemCardTitle as="h2">{job.title}</ItemCardTitle>
       <ItemCardBody clamp={0}>
         <p className="text-foreground/85">{JOB_REPAIR_SENTENCE[job.category] ?? job.reason}</p>
         {job.reason && JOB_REPAIR_SENTENCE[job.category] ? <p className="mt-1 whitespace-pre-wrap text-[13px] anywhere" title="What Hive recorded">{"What Hive recorded: " + job.reason}</p> : null}

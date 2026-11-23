@@ -491,13 +491,24 @@ mod tests {
         );
         assert_eq!(status, 404);
         let root_q = root.path().to_string_lossy();
-        let (status, _) = folders_request(
-            http::handler(&s),
-            "GET",
-            &format!("/api/v1/folders?path={root_q}"),
-            "evil.example:8765",
-        );
-        assert_eq!(status, 403);
+        // The route's own rule is stricter than the console's: a name the
+        // owner listed in hub.hosts and an address that is not this machine
+        // both pass the console's Host rule, and folders refuse them still.
+        s.set_setting("human", "hub.hosts", "hive.example.com")
+            .unwrap();
+        for host in ["hive.example.com:8765", "192.168.1.5:8765"] {
+            let (status, result) = folders_request(
+                http::handler(&s),
+                "GET",
+                &format!("/api/v1/folders?path={root_q}"),
+                host,
+            );
+            assert_eq!(status, 403, "{host}");
+            assert_eq!(
+                result["error"], "Folders are listed only on loopback",
+                "{host}"
+            );
+        }
         for host in [
             "127.0.0.1:8765",
             "localhost:8765",

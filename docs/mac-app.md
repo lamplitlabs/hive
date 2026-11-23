@@ -131,8 +131,11 @@ opens a console path) is `HiveKit/Notify.swift`, tested in `NotifyTests`.
 
 ## Joining a brain
 
-A Mac that should work for a Hive running somewhere else (a team's brain,
-[ADR-070](decisions/ADR-070-web-first-hive-hosted-brain-open-hand.md)) needs no `hive` of its own. When the app finds no
+A Mac can join a Hive that runs on another machine, and joining needs no
+`hive` on this Mac. Taking work does: an agent runs on the harness, which is
+in `hive`, so a joined Mac also needs `hive` on its PATH and a model login
+of its own before it is given a job
+([Enrolling a hand](machines.md#enrolling-a-hand)). When the app finds no
 `hive` on this Mac its first screen is **Join a Hive brain**: on the brain's
 **Machines** page choose **Add a machine → Run one command on it**, then type
 the brain's address and the six-word join code. The code can be typed with

@@ -15,6 +15,13 @@ pub const MAX_LENGTH: usize = 4000;
 pub const OWNER: &str = "owner";
 pub const GENERATED: &str = "generated";
 pub const GENERATED_BY: &str = "hive:generated";
+/// What [`GENERATED_BY`] was before the program was renamed
+/// (`hive_store::LEGACY_NAME`). A store that came over from that time holds
+/// generated goals written under this name, and they are read as what they
+/// are. Refusing them left every worker brief of such a project failing with
+/// "invalid provenance" until the owner reset the goal by hand. Nothing
+/// writes this name any more.
+pub const LEGACY_GENERATED_BY: &str = "pulse:generated";
 pub const KEY_PREFIX: &str = "project.goal.";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,7 +260,7 @@ pub fn get(s: &hive_store::Store, slug: &str) -> Result<Goal> {
     let owner = owner_actor(&updated_by);
     let valid_provenance = match saved.source.as_str() {
         OWNER => owner,
-        GENERATED => owner || updated_by == GENERATED_BY,
+        GENERATED => owner || updated_by == GENERATED_BY || updated_by == LEGACY_GENERATED_BY,
         _ => false,
     };
     if !valid_provenance {
@@ -1113,6 +1120,85 @@ mod tests {
             assert!(get(&s, "one").is_err(), "{value}, {actor}");
             assert_eq!(goal_snapshot(&s), before);
         }
+    }
+
+    /// A store that came over from before the rename holds generated goals
+    /// written by `pulse:generated`. They read as generated goals, with the
+    /// text of today's facts; the row is not rewritten by the read, and the
+    /// old name opens nothing else.
+    #[test]
+    fn goal_generated_before_the_rename_still_reads() {
+        let _serial = crate::test_helpers::serial();
+        let (_guard, _home, s) = goal_store();
+        goal_project(&s, "one", "One", false);
+        assert_eq!(
+            LEGACY_GENERATED_BY,
+            format!("{}:generated", hive_store::LEGACY_NAME)
+        );
+        let fresh = must_goal(&s, "one");
+        let put = |value: &str, actor: &str| {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT OR REPLACE INTO settings (name,value,updated_by,updated_at) VALUES (?,?,?,?)",
+                    params![format!("{KEY_PREFIX}one"), value, actor, GOAL_NOW],
+                )
+                .unwrap();
+        };
+        put(
+            r#"{"text":"What the old program wrote then.","source":"generated"}"#,
+            LEGACY_GENERATED_BY,
+        );
+        let before = goal_snapshot(&s);
+        let goal = get(&s, "one").unwrap();
+        assert_eq!(goal.source, GENERATED);
+        assert_eq!(goal.updated_by, LEGACY_GENERATED_BY);
+        assert_eq!(goal.updated_at, GOAL_NOW);
+        assert_eq!(
+            goal.text, fresh.text,
+            "a generated goal follows today's facts"
+        );
+        assert_eq!(goal_snapshot(&s), before, "reading wrote nothing");
+        assert!(context(&goal).contains("Source: generated"));
+
+        // The old name is good for a generated row only, and only as it was.
+        for (value, actor) in [
+            (
+                r#"{"text":"Use safe text.","source":"owner"}"#,
+                LEGACY_GENERATED_BY,
+            ),
+            (
+                r#"{"text":"Use safe text.","source":"generated"}"#,
+                "pulse:lead",
+            ),
+            (
+                r#"{"text":"Use safe text.","source":"generated"}"#,
+                "pulse:generated ",
+            ),
+            (
+                r#"{"text":"Use safe text.","source":"generated"}"#,
+                "other:generated",
+            ),
+        ] {
+            put(value, actor);
+            let err = get(&s, "one").unwrap_err().to_string();
+            assert_eq!(
+                err, "stored project goal has invalid provenance",
+                "{value}, {actor}"
+            );
+        }
+
+        // The owner's reset writes the row under the owner's name, as before.
+        put(
+            r#"{"text":"What the old program wrote then.","source":"generated"}"#,
+            LEGACY_GENERATED_BY,
+        );
+        let reset = reset(&s, "one", "human").unwrap();
+        assert_eq!(
+            (reset.source.as_str(), reset.updated_by.as_str()),
+            (GENERATED, "human")
+        );
+        assert_eq!(must_goal(&s, "one").updated_by, "human");
     }
 
     #[test]

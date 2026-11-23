@@ -1,6 +1,6 @@
 # Windows port
 
-Hive builds and ships for macOS today, and the code builds on Linux too. This page
+Hive builds and ships for macOS and Linux today. This page
 lists everything that keeps the workspace from compiling for
 `x86_64-pc-windows-msvc`, crate by crate, with the Windows replacement for
 each site, and tracks how far the port has got. The work is planned in

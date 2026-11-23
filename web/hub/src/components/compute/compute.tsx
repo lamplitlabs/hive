@@ -113,8 +113,10 @@ export function ComputeRequestListRow({ r }: { r: ComputeRequest }) {
       lead={<Avatar seed={r.requested_by} size={28} />}
       title={<span title={"Request " + r.id + " from " + agentName(r.requested_by) + ", machine type " + r.size}>{requestTitle(r)}</span>}
       meta={<When d={r.at} />}
-      // The status slot, not `actions`: Deny / Approve must be in sight, not only on hover.
-      status={<ComputeDecide r={r} size="xs" />}
+      // Deny / Approve stay in sight, not only on hover; on a phone they go
+      // under the text, so the title keeps its words.
+      actions={<ComputeDecide r={r} size="xs" />}
+      actionsVisible
       className="min-h-14 py-2"
       ariaLabel={"Request " + r.id + " from " + agentName(r.requested_by)}
     >

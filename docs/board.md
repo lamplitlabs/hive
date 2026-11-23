@@ -446,6 +446,51 @@ the whole thing off; the harness still offers the skill folders to the model
 either way. A project whose checkout is not on this machine, or whose
 default branch is not fetched here, is skipped without a word.
 
+### A repository set up before the rename: `.pulse/`
+
+Hive was called PULSE before. A repository set up then keeps its files
+under `.pulse/`, and Hive reads that folder the way it reads `.hive/`.
+Nothing has to move before the project works.
+
+| Under `.pulse/` | Read as |
+| --- | --- |
+| `.pulse/automations/<name>.yaml` and the script beside it | `.hive/automations/<name>.yaml` |
+| `.pulse/pulse.yaml` (or `.yml`) | `.hive/hive.yaml` |
+| `.pulse/skills/<name>/SKILL.md` | `.hive/skills/<name>/SKILL.md` |
+| `.pulse/agents/<name>.md` | `.hive/agents/<name>.md` |
+| `.pulse/rules/*.md` | `.hive/rules/*.md` |
+| `.pulse/hooks.json` | `.hive/hooks.json` |
+
+One repository may hold both folders. The rules are the same everywhere.
+
+- **`.hive/` comes first.** An automation, a skill, an agent or a rule that
+  both folders name is read from `.hive/` alone. The daemon reports a twin
+  automation or skill as a problem until it is removed, and
+  `hive agents lint` names a twin agent. Of the list file and of
+  `hooks.json`, one file is read: the one under `.hive/` when it exists.
+- **What Hive writes goes under `.hive/`.** An edit of a file that lives
+  under `.pulse/` rewrites it where it is. Renaming an automation in the
+  console moves its file to `.hive/automations/`.
+- **A script under `.pulse/` is in its place.** The rule that a check's or
+  a watch's script lives in the project's folder accepts both names.
+- **The old variable names still hold a value.** An automation's script
+  gets each `HIVE_...` variable again as `PULSE_...` (`PULSE_STATE_DIR`,
+  `PULSE_CLI`, `PULSE_PROJECT`). A hook of `hooks.json` gets
+  `PULSE_HOOK_EVENT` and `PULSE_TOOL`. A script that `hive hook` runs on
+  an event gets `PULSE_EVENT_ACTION` and its kin, and a webhook also
+  carries `X-Pulse-Event`.
+- **What is closed under `.hive/` is closed under `.pulse/`.**
+  `.pulse/agents/` is an owner-only path, and an experiment neither sees
+  nor changes the folder.
+- **A run is told what the old name means.** In a repository with a
+  `.pulse/` folder, each run reads one note ahead of the repository's own
+  instructions: `pulse <command>` in its files means `hive <command>`.
+
+To move a project over, do it in one commit: `git mv .pulse .hive`, rename
+`.hive/pulse.yaml` to `.hive/hive.yaml` if there is one, and change the
+`script:` lines that name `.pulse/`. A schedule is known by its name, so
+each one keeps its row, its count and its state.
+
 ## Role leads: `hive lead`
 
 The project lead tends the board as a whole. A **role lead** owns one

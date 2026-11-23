@@ -7,6 +7,12 @@
 //! join the project's `hive skill` registry. All travel with the code: a
 //! commit changes them, a pull request reviews them, a clone has them.
 //!
+//! A repository set up before the rename keeps the same files under
+//! `.pulse/` (`.pulse/automations`, `.pulse/pulse.yaml`, `.pulse/skills`),
+//! and they are read from there as they are: see `hive_store::legacy`.
+//! One repository may hold both folders; an automation or a skill named in
+//! both is read from `.hive/` and the other one is reported.
+//!
 //! The daemon reads the committed tree of the default branch, never a
 //! working copy, and re-applies the files only when a commit changed them
 //! or the skill folders (one `git ls-tree` tells). A schedule a file names
@@ -25,19 +31,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::schedules::{self, ScheduleInput};
 
 /// Where the list file lives, relative to the repository root. The first is
-/// the one to use; the second is read when it is the only one present.
-pub const MANIFEST_PATHS: &[&str] = &[".hive/hive.yaml", ".hive/hive.yml"];
+/// the one to use; each later one is read when no earlier one is present,
+/// and reported when one is. The last two are the file's names from before
+/// the rename.
+pub const MANIFEST_PATHS: &[&str] = &[
+    ".hive/hive.yaml",
+    ".hive/hive.yml",
+    ".pulse/pulse.yaml",
+    ".pulse/pulse.yml",
+];
 /// The folder of per-automation files: `<dir>/<name>.yaml` holds one
-/// automation, its fields at the top level, the file's stem its name.
+/// automation, its fields at the top level, the file's stem its name. A new
+/// automation is written here.
 pub const AUTOMATIONS_DIR: &str = ".hive/automations";
+/// Every folder per-automation files are read from: [`AUTOMATIONS_DIR`],
+/// then the same folder under the project folder's name from before the
+/// rename. An automation both hold is read from the first.
+pub const AUTOMATIONS_DIRS: &[&str] = &[AUTOMATIONS_DIR, ".pulse/automations"];
 /// The skill folders the daemon reads, in the order the native harness
 /// searches them: the first `SKILL.md` of a name wins.
-pub const SKILL_DIRS: &[&str] = &[
-    ".hive/skills",
-    ".claude/skills",
-    ".github/skills",
-    ".agents/skills",
-];
+pub const SKILL_DIRS: &[&str] = hive_store::REPO_SKILL_DIRS;
 /// The note a schedule paused by the file carries; the file resumes only a
 /// schedule whose pause it made, so a pause by hand survives.
 pub const PAUSED_NOTE: &str = "paused in the project's Hive file";
@@ -249,21 +262,62 @@ pub fn parse_automation(stem: &str, text: &str) -> Result<Entry, String> {
     Ok(e)
 }
 
-/// The path of the per-automation file of `name`.
+/// The path a new per-automation file of `name` is written to.
 pub fn automation_path(name: &str) -> String {
     format!("{AUTOMATIONS_DIR}/{name}.yaml")
 }
 
-/// The automation name a path under [`AUTOMATIONS_DIR`] carries: the file's
-/// stem, for a `.yaml` or `.yml` right under the folder.
+/// Which of [`AUTOMATIONS_DIRS`] `path` lies right under, by index, and the
+/// file's name there.
+fn automation_file(path: &str) -> Option<(usize, &str)> {
+    AUTOMATIONS_DIRS.iter().enumerate().find_map(|(i, dir)| {
+        let file = path.strip_prefix(dir)?.strip_prefix('/')?;
+        (!file.contains('/')).then_some((i, file))
+    })
+}
+
+/// The automation name a path under one of [`AUTOMATIONS_DIRS`] carries:
+/// the file's stem, for a `.yaml` or `.yml` right under the folder.
 pub fn automation_stem(path: &str) -> Option<&str> {
-    let file = path.strip_prefix(AUTOMATIONS_DIR)?.strip_prefix('/')?;
-    if file.contains('/') {
-        return None;
-    }
+    let (_, file) = automation_file(path)?;
     file.strip_suffix(".yaml")
         .or_else(|| file.strip_suffix(".yml"))
         .filter(|stem| !stem.is_empty())
+}
+
+/// How many per-automation files were read and from where: `1 file in
+/// .hive/automations/`, `2 files in .hive/automations/ and 1 file in
+/// .pulse/automations/`; empty for none.
+pub fn files_words(files: &[String]) -> String {
+    let mut parts = Vec::new();
+    for (i, dir) in AUTOMATIONS_DIRS.iter().enumerate() {
+        let n = files
+            .iter()
+            .filter(|f| automation_file(f).is_some_and(|(at, _)| at == i))
+            .count();
+        match n {
+            0 => {}
+            1 => parts.push(format!("1 file in {dir}/")),
+            n => parts.push(format!("{n} files in {dir}/")),
+        }
+    }
+    parts.join(" and ")
+}
+
+/// The folders the per-automation files in `files` came from, each with a
+/// trailing slash: `.hive/automations/`, or both joined with `and`.
+pub fn files_dirs(files: &[String]) -> String {
+    AUTOMATIONS_DIRS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            files
+                .iter()
+                .any(|f| automation_file(f).is_some_and(|(at, _)| at == *i))
+        })
+        .map(|(_, dir)| format!("{dir}/"))
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 /// What is wrong with a file before any store is asked: names, kinds,
@@ -400,7 +454,8 @@ pub struct Status {
     /// The list file that was read; empty when the repository has none.
     #[serde(default)]
     pub path: String,
-    /// The per-automation files that were read (`.hive/automations/`).
+    /// The per-automation files that were read (`.hive/automations/`, and
+    /// `.pulse/automations/` in a repository from before the rename).
     #[serde(default)]
     pub files: Vec<String>,
     /// When the daemon last applied it.
@@ -496,7 +551,7 @@ impl Synced {
         if !self.path.is_empty() {
             self.path.clone()
         } else if !self.files.is_empty() {
-            format!("{AUTOMATIONS_DIR}/")
+            files_dirs(&self.files)
         } else {
             MANIFEST_PATHS[0].to_string()
         }
@@ -516,11 +571,7 @@ impl Synced {
             );
         }
         let mut line = format!("manifest {}: ", self.project);
-        let files = match self.files.len() {
-            0 => String::new(),
-            1 => format!("1 file in {AUTOMATIONS_DIR}/"),
-            n => format!("{n} files in {AUTOMATIONS_DIR}/"),
-        };
+        let files = files_words(&self.files);
         if self.path.is_empty() && files.is_empty() {
             line.push_str(&format!(
                 "no {} and no {AUTOMATIONS_DIR}/ on {}",
@@ -639,12 +690,15 @@ pub fn repo_of(s: &hive_store::Store, slug: &str) -> Result<Option<(String, Stri
 /// A fingerprint of the trees the file and the skill folders live in on
 /// `branch`: equal while no commit changed any of them.
 pub fn fingerprint(repo: &str, branch: &str) -> Option<String> {
+    // A folder the branch does not have adds no line, so a repository
+    // without `.pulse/` keeps the fingerprint it had before that folder was
+    // read, and one with it is read once more.
     let mut args = vec!["ls-tree", branch, "--"];
-    args.push(".hive");
+    args.extend(hive_store::PROJECT_DIRS);
     args.extend(
         SKILL_DIRS
             .iter()
-            .filter(|d| !d.starts_with(".hive/"))
+            .filter(|d| hive_store::under_project_dir(d).is_none())
             .copied(),
     );
     let (ok, out) = git(repo, &args)?;
@@ -853,10 +907,10 @@ pub fn front_value(front: &str, key: &str) -> Option<String> {
     None
 }
 
-/// The file of the branch: its path and text, or the problem that keeps it
-/// from being read. `Ok(None)` when the repository has none.
-fn read_manifest(repo: &str, branch: &str) -> Result<Option<(String, String)>, String> {
-    let present: Vec<&str> = MANIFEST_PATHS
+/// The list files the branch holds, in the order of [`MANIFEST_PATHS`]: the
+/// first is the one read.
+pub fn present_manifests(repo: &str, branch: &str) -> Vec<&'static str> {
+    MANIFEST_PATHS
         .iter()
         .copied()
         .filter(|p| {
@@ -865,7 +919,28 @@ fn read_manifest(repo: &str, branch: &str) -> Result<Option<(String, String)>, S
                 Some("blob")
             )
         })
-        .collect();
+        .collect()
+}
+
+/// The problem of each list file that is present but not read, because an
+/// earlier one of [`MANIFEST_PATHS`] is.
+pub fn unread_manifests(present: &[&str]) -> Vec<String> {
+    let Some(read) = present.first() else {
+        return Vec::new();
+    };
+    present[1..]
+        .iter()
+        .map(|other| format!("both {read} and {other} exist; {read} is read, remove the other"))
+        .collect()
+}
+
+/// The file of the branch: its path and text, or the problem that keeps it
+/// from being read. `Ok(None)` when the repository has none.
+fn read_manifest(
+    repo: &str,
+    branch: &str,
+    present: &[&str],
+) -> Result<Option<(String, String)>, String> {
     let Some(path) = present.first() else {
         return Ok(None);
     };
@@ -876,7 +951,8 @@ fn read_manifest(repo: &str, branch: &str) -> Result<Option<(String, String)>, S
     }
 }
 
-/// One `.hive/automations/<name>.yaml` of the branch.
+/// One per-automation file of the branch, `.hive/automations/<name>.yaml`
+/// (or the same under `.pulse/`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AutomationFile {
     pub path: String,
@@ -891,23 +967,28 @@ pub struct AutomationFile {
 }
 
 /// The per-automation files of `branch`, in name order: every `.yaml` or
-/// `.yml` right under [`AUTOMATIONS_DIR`]. Other files there are left
-/// alone. A `.yml` beside a `.yaml` of the same name is a problem on the
-/// one that is read.
+/// `.yml` right under one of [`AUTOMATIONS_DIRS`]. Other files there are
+/// left alone. Two files of one name - a `.yml` beside a `.yaml`, or one in
+/// each folder - are a problem on the one that is read: the `.yaml` before
+/// the `.yml`, the first folder before the second.
 pub fn read_automations(repo: &str, branch: &str) -> Vec<AutomationFile> {
-    let dir = format!("{AUTOMATIONS_DIR}/");
-    let Some(listing) = git_text(repo, &["ls-tree", branch, "--", &dir]) else {
+    let dirs: Vec<String> = AUTOMATIONS_DIRS.iter().map(|d| format!("{d}/")).collect();
+    let mut args = vec!["ls-tree", branch, "--"];
+    args.extend(dirs.iter().map(String::as_str));
+    let Some(listing) = git_text(repo, &args) else {
         return Vec::new();
     };
+    // `100644 blob <hash>\t<path>`, kept in folder order then path order
+    // whatever order git lists them in.
+    let mut paths: Vec<(usize, &str)> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter(|(meta, _)| meta.split_whitespace().nth(1) == Some("blob"))
+        .filter_map(|(_, path)| automation_file(path).map(|(dir, _)| (dir, path)))
+        .collect();
+    paths.sort();
     let mut out: Vec<AutomationFile> = Vec::new();
-    for line in listing.lines() {
-        // `100644 blob <hash>\t<path>`
-        let Some((meta, path)) = line.split_once('\t') else {
-            continue;
-        };
-        if meta.split_whitespace().nth(1) != Some("blob") {
-            continue;
-        }
+    for (_, path) in paths {
         let Some(stem) = automation_stem(path) else {
             continue;
         };
@@ -1005,7 +1086,8 @@ pub fn sync(s: &hive_store::Store, slug: &str, actor: &str, force: bool) -> Resu
     let mut entries: Vec<(Entry, String)> = Vec::new();
     let mut held: BTreeSet<String> = BTreeSet::new();
     let mut list = Manifest::default();
-    match read_manifest(&repo, &branch) {
+    let present = present_manifests(&repo, &branch);
+    match read_manifest(&repo, &branch, &present) {
         Err(problem) => {
             synced.problems.push(problem);
             held.extend(kept_by_list(s, slug)?);
@@ -1013,18 +1095,7 @@ pub fn sync(s: &hive_store::Store, slug: &str, actor: &str, force: bool) -> Resu
         Ok(None) => {}
         Ok(Some((path, text))) => {
             synced.path = path.clone();
-            if MANIFEST_PATHS.iter().skip(1).any(|p| {
-                matches!(
-                    git_text(&repo, &["cat-file", "-t", &format!("{branch}:{p}")]).as_deref(),
-                    Some("blob")
-                )
-            }) && path == MANIFEST_PATHS[0]
-            {
-                synced.problems.push(format!(
-                    "both {} and {} exist; {} is read, remove the other",
-                    MANIFEST_PATHS[0], MANIFEST_PATHS[1], MANIFEST_PATHS[0]
-                ));
-            }
+            synced.problems.extend(unread_manifests(&present));
             match parse(&text) {
                 Err(e) => {
                     synced.problems.push(format!(

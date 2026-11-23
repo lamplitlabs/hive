@@ -1,20 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- The console's brand mark (web/hub/src/components/shell/hive-mark.tsx):
-       the hive cell: a hexagon with a dot at its centre, on the mint-sky-violet tile (the console's
-       brand gradient token), placed on
-       the macOS icon grid (an 824 pt tile on a 1024 pt canvas).
-       scripts/build.sh renders it into AppIcon.icns. -->
-  <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#50f4c5"/>
-      <stop offset="0.52" stop-color="#11bff0"/>
-      <stop offset="1" stop-color="#877af7"/>
-    </linearGradient>
-  </defs>
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#brand)"/>
-  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="2"/>
-  <g transform="translate(190.64 190.64) scale(2.5106)">
-    <path d="M128 36l78 45v90l-78 45-78-45V81z" fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="128" cy="126" r="14" fill="#ffffff"/>
-  </g>
+  <!-- The Hive mark (scripts/brand.py) on the macOS icon grid: an 824 pt tile on a
+       1024 pt canvas. scripts/build.sh renders it into AppIcon.icns. -->
+  <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="24" y1="24" x2="232" y2="232"><stop offset="0" stop-color="#50f4c5"/><stop offset="0.52" stop-color="#11bff0"/><stop offset="1" stop-color="#877af7"/></linearGradient><linearGradient id="n" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c1530"/><stop offset="1" stop-color="#060a14"/></linearGradient><linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="100" y1="100" x2="924" y2="924"><stop offset="0" stop-color="#50f4c5"/><stop offset="0.52" stop-color="#11bff0"/><stop offset="1" stop-color="#877af7"/></linearGradient></defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#n)"/>
+  <rect x="103" y="103" width="818" height="818" rx="182" fill="none" stroke="url(#edge)" stroke-opacity="0.45" stroke-width="6"/>
+  <g transform="translate(207.12 207.12) scale(2.38)"><g fill="none" stroke="url(#g)" stroke-width="22" stroke-linejoin="miter" stroke-miterlimit="6"><path d="M77.77 61L128 32L178.23 61"/><path d="M211.14 118L211.14 176L160.91 205"/><path d="M95.09 205L44.86 176L44.86 118"/></g><g fill="url(#g)"><path d="M211.14 66.5L222.83 73.25L222.83 86.75L211.14 93.5L199.45 86.75L199.45 73.25z"/><path d="M128 210.5L139.69 217.25L139.69 230.75L128 237.5L116.31 230.75L116.31 217.25z"/><path d="M44.86 66.5L56.55 73.25L56.55 86.75L44.86 93.5L33.17 86.75L33.17 73.25z"/><path d="M128 100L152.25 114L152.25 142L128 156L103.75 142L103.75 114z"/></g></g>
 </svg>

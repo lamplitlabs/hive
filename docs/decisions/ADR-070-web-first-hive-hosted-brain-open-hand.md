@@ -29,6 +29,8 @@ delivered: null
 
 # ADR-070: Web-first Hive - a hosted brain per team, an open hand enrolled once per machine, one web login that every machine inherits
 
+> Superseded in part by [ADR-071](ADR-071-hive-is-an-open-source-tool.md) (proposed): the hosted product is withdrawn, and what this ADR built stays as options for someone who runs Hive themselves.
+
 ## Context
 
 Hive today is a thing one person installs on one Mac. The README's first

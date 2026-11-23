@@ -857,6 +857,7 @@ mod tests {
             .unwrap();
         for key in [
             ".hive/answer",
+            ".pulse/answer",
             "keys/answer.txt",
             "docs/evolution/evaluators.md",
             "docs/evolution/archive.md",

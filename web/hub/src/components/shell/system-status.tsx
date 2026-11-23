@@ -15,9 +15,9 @@ import { RailTip } from "./rail-tip";
 // sidebar (spec "App shell" - Status card): can agents work on this machine
 // (the runner, Cpu icon and its state), and which model provider they use
 // (its logo and the main model). Each line links to where it is fixed - the
-// runner controls on Home, the provider card or the Connect a provider wizard
-// in Settings. On the rail they shrink to the two icons with a tone dot and
-// the same words as tooltips.
+// runner controls (or the pause, while work is paused), the provider card or
+// the Connect a provider wizard, all in Settings. On the rail they shrink to
+// the two icons with a tone dot and the same words as tooltips.
 
 type Tone = "ok" | "warn" | "bad" | "neutral";
 const DOT: Record<Tone, string> = { ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", neutral: "bg-muted-foreground/50" };
@@ -52,7 +52,7 @@ export function useSystemStatus(): StatusLine[] {
     label: headline,
     sub: state.pause === "on" ? "Nothing new starts" : state.label === "running" || state.label === "alive" ? busy || "Waiting for work" : state.label === "checking" ? "" : "Agents can't start work",
     tone: state.pause === "on" ? "bad" : state.label === "checking" ? "neutral" : state.tone === "ok" ? "ok" : "warn",
-    href: state.pause === "on" ? hrefs.settings("stop") : "/#daemon-controls",
+    href: state.pause === "on" ? hrefs.settings("stop") : hrefs.runnerControls(),
   };
 
   const h = harness.data;
@@ -83,7 +83,8 @@ export function useSystemStatus(): StatusLine[] {
 function StatusGlyph({ line }: { line: StatusLine }) {
   const logo = line.key === "provider" ? logoFor(line.provider ?? line.label) : null;
   return (
-    <span className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
+    // For the eye only: the line's own words follow it and name the link.
+    <span aria-hidden className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
       {line.key === "runner" ? (
         <CpuIcon aria-hidden className="size-4" strokeWidth={1.75} />
       ) : logo ? (
@@ -107,11 +108,11 @@ export function SystemStatus({ className }: { className?: string }) {
           <Link
             href={l.href}
             className="group flex min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:justify-center collapsed:px-0 collapsed:py-1.5"
-            aria-label={l.label + (l.sub ? ": " + l.sub : "")}
           >
             <StatusGlyph line={l} />
+            {/* The link is named by its two lines; on the rail they stay for a screen reader. */}
             <span className="min-w-0 flex-1 collapsed:sr-only">
-              <span className="block truncate text-[13px] font-medium leading-tight text-foreground">{l.label}</span>
+              <span className="block truncate text-[13px] font-medium leading-tight text-foreground">{l.label}</span>{" "}
               {l.sub ? <span className={cn("block truncate text-xs leading-tight", l.tone === "warn" || l.tone === "bad" ? "text-warn" : "text-muted-foreground")}>{l.sub}</span> : null}
             </span>
             <ChevronRightIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 collapsed:hidden" />

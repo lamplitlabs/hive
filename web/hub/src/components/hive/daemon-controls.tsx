@@ -2,16 +2,15 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CirclePauseIcon, Loader2Icon, PlayIcon, PowerIcon, RefreshCwIcon } from "lucide-react";
+import { CirclePauseIcon, Loader2Icon, PlayIcon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
-import { daemonControlState, daemonHeadline, daemonUpdateText } from "./daemon-control-state";
+import { daemonControlState, daemonHeadline } from "./daemon-control-state";
 import { CommandBox, TerminalAlternative } from "./evolve";
-import { Disclosure, ErrorNotice, Kv, Notice, Panel } from "./panel";
-import { RestartNow } from "./restart-now";
+import { Disclosure, ErrorNotice, Kv, Notice } from "./panel";
 import { ServiceControl } from "./service";
 import { Mono, When } from "./who";
-import { writes, type Runner, type RunningPayload, type ServicePayload, type SettingsPayload } from "@/lib/api";
+import { writes, type Runner, type ServicePayload, type SettingsPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { hrefs } from "@/lib/nav";
 import type { Loaded } from "@/lib/use-api";
@@ -22,10 +21,16 @@ const DOT = { ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", info: "bg-info", acce
 // the one action that fits (Resume, Start the runner, Keep Hive running,
 // Finish service setup) with why in plain words, and everything technical -
 // heartbeat states, PIDs, the stop setting, service units, logs - folded
-// under "Technical details". Every guard of the old controls stays: Resume
+// under "Runner details". Every guard of the old controls stays: Resume
 // only clears the owner pause, setup is previewed first and refused while a
 // runner may already be running.
-export function DaemonControls({ runner, service, settings, running }: { runner: Loaded<Runner>; service: Loaded<ServicePayload>; settings: Loaded<SettingsPayload>; running?: Loaded<RunningPayload> }) {
+//
+// It sits at the top of Settings, This machine (settings/running.tsx), where
+// hrefs.runnerControls() leads: the sidebar's runner line, Start on the
+// Machines page, Fix it on For you and Runner controls on Home. It draws no
+// card of its own (the section's card holds it), and a waiting update is the
+// "Update waiting" row right under it, with its Restart now.
+export function DaemonControls({ runner, service, settings }: { runner: Loaded<Runner>; service: Loaded<ServicePayload>; settings: Loaded<SettingsPayload> }) {
   const [resumeOpen, setResumeOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const state = daemonControlState({ runner, service, settings });
@@ -60,11 +65,12 @@ export function DaemonControls({ runner, service, settings, running }: { runner:
                 : "";
 
   return (
-    <Panel
-      title="Runner controls"
-      icon={PowerIcon}
-      actions={
-        <>
+    <section id="runner-controls" aria-labelledby="runner-controls-title" className="grid min-w-0 gap-3 px-4 py-4 text-sm sm:px-5">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <h3 id="runner-controls-title" className="text-sm font-semibold text-foreground">
+          Runner controls
+        </h3>
+        <div className="flex min-w-0 flex-wrap items-center gap-2 text-[13px]">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground" title={"Runner state: " + state.label}>
             <span className={cn("size-2 rounded-full", DOT[state.tone])} aria-hidden />
             {headline}
@@ -72,19 +78,12 @@ export function DaemonControls({ runner, service, settings, running }: { runner:
           <Button size="xs" variant="outline" disabled={refreshing} onClick={() => void refresh()}>
             {refreshing ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Refresh
           </Button>
-        </>
-      }
-    >
+        </div>
+      </div>
       <div className="grid gap-4">
         <div className="grid max-w-3xl gap-1.5">
-          <p className="text-base font-semibold leading-snug text-foreground anywhere">{state.sentence}</p>
-          {state.update ? (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-              <p className="text-sm text-muted-foreground anywhere">{daemonUpdateText(state.update)}.</p>
-              <RestartNow ask={running?.data?.restart_ask} inflight={r?.jobs.running ?? 0} size="xs" />
-            </div>
-          ) : null}
-          {why ? <p className="text-sm leading-relaxed text-muted-foreground anywhere">{why}</p> : null}
+          <p className="text-sm font-medium leading-snug text-foreground anywhere">{state.sentence}</p>
+          {why ? <p className="text-[13px] leading-relaxed text-muted-foreground anywhere">{why}</p> : null}
           {r?.daemon.at ? <p className="text-[13px] text-muted-foreground">Last checked in <When d={r.daemon.at} /></p> : null}
         </div>
 
@@ -113,7 +112,7 @@ export function DaemonControls({ runner, service, settings, running }: { runner:
           {payload ? <ServiceControl payload={payload} disabled={!state.canPreview || refreshing} blockedReason={state.setupBlock} variant={state.pause === "on" ? "outline" : "default"} size="default" /> : null}
           {state.pause !== "on" ? (
             <Button asChild variant="outline">
-              <Link href={hrefs.settings("stop")} title="Pause all agent work from Settings">
+              <Link href={hrefs.settings("stop")} title="Opens the pause, under General">
                 <CirclePauseIcon /> Pause all work
               </Link>
             </Button>
@@ -121,7 +120,7 @@ export function DaemonControls({ runner, service, settings, running }: { runner:
         </div>
         {state.pause === "on" ? <TerminalAlternative command="hive start" /> : state.setup && payload ? <TerminalAlternative command={state.setupBlock ? "hive status" : payload.command} /> : null}
 
-        <Disclosure summary="Technical details" className="border-t pt-3 text-[13px]" contentClassName="mt-3 grid gap-3 text-muted-foreground">
+        <Disclosure summary="Runner details" className="border-t pt-3 text-[13px]" contentClassName="mt-3 grid gap-3 text-muted-foreground">
             <p className="leading-relaxed text-foreground/85 anywhere">{state.description}</p>
             <Kv
               className="text-[13px]"
@@ -164,6 +163,6 @@ export function DaemonControls({ runner, service, settings, running }: { runner:
         }}
         invalidates={(p) => ["settings", "runner", "service", "running", "compute", "org", "events"].some((path) => p === path || p.startsWith(path + "?"))}
       />
-    </Panel>
+    </section>
   );
 }

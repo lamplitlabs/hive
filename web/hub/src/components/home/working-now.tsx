@@ -57,7 +57,8 @@ export function WorkingNow({ claims, tasks, names }: { claims: Claim[]; tasks: T
                 status={<StatusBadge status="running" label="Running" size="sm" />}
                 time={since ? <When d={since} /> : undefined}
                 href={href}
-                ariaLabel={agent + " is working on " + what + (name ? " in " + name : "")}
+                // The words the row shows, then where: the name has to hold what is seen.
+                ariaLabel={agent + " · " + what + (name ? ", working in " + name : "")}
               />
             );
           })}
