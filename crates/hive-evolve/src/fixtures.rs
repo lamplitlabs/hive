@@ -549,10 +549,10 @@ mod tests {
         )
         .expect_err("private request could be imported into the public table");
         assert_private_absent(&err.to_string(), &forbidden);
-        let file = std::path::Path::new(&dir).join("owner-private-first.score");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let file = std::path::Path::new(&dir).join("owner-private-first.score");
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o744)).unwrap();
         }
         let err = load_private(&s).expect_err("world-readable private scorer accepted");

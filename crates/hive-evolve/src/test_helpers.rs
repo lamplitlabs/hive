@@ -67,6 +67,8 @@ pub(crate) fn put_file(name: impl AsRef<Path>, body: &str, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(name, fs::Permissions::from_mode(mode)).expect("chmod file");
     }
+    #[cfg(not(unix))]
+    let _ = mode;
 }
 
 pub(crate) fn test_git(repo: impl AsRef<Path>, args: &[&str]) -> String {

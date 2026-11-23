@@ -78,7 +78,8 @@ pub use usage::*;
 pub(crate) mod test_helpers;
 #[cfg(test)]
 pub(crate) mod test_helpers_cycle;
-#[cfg(test)]
+// Its one caller is a unix-only test.
+#[cfg(all(test, unix))]
 pub(crate) mod test_helpers_e2;
 #[cfg(test)]
 pub(crate) mod test_helpers_measure;

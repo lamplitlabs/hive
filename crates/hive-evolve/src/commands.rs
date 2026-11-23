@@ -1387,6 +1387,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_measure::*;
+    #[cfg(unix)]
     use std::io::Read;
 
     #[test]
