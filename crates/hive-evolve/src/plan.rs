@@ -26,6 +26,11 @@ pub struct PlanResult {
     /// nothing needed healing.
     #[serde(default)]
     pub healed: String,
+    /// The voted cards the planner closed before planning because their
+    /// check already passes on the default branch (`retire_green_cards`),
+    /// one line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired: Vec<String>,
 }
 
 pub(crate) type ReadPlanPreflight =
@@ -176,6 +181,11 @@ pub(crate) fn plan_experiment_inner(
         // Heal a flat evaluator set before planning. It writes fixtures and
         // a post of its own, so it runs outside the planner's transaction.
         let healed = crate::heal::heal_flat(s, project, &opts)?;
+        // A voted card whose check already passes on the default branch has
+        // nothing left to prove; it is closed before planning. The check runs
+        // here, outside the planner's write transaction, because it may take
+        // minutes.
+        let retired = retire_green_cards(s, project, &opts, &status);
         let mut result = PlanResult::default();
         hive_board::with_write_transaction(s, |tx| {
             result = plan_experiment_locked(s, tx, project, opts.clone(), seen)?;
@@ -184,6 +194,7 @@ pub(crate) fn plan_experiment_inner(
         if let Some(h) = healed {
             result.healed = format!("{}: {}", h.how, h.line);
         }
+        result.retired = retired;
         return Ok(result);
     }
     let agent = hive_board::resolve_agent(s, &opts.agent, true)?.expect("required agent");
@@ -588,6 +599,264 @@ pub(crate) fn fix_already_landed(
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .any(|line| line.to_ascii_lowercase().contains(&needle)))
+}
+
+/// The event that remembers a card's check verdict on one default-branch
+/// commit, so a red check is not run again until the branch moves.
+pub(crate) const CARD_CHECK_EVENT: &str = "evolve.card_check";
+
+/// The most card checks one planning pass runs on the default branch: the
+/// pass runs in the daemon's loop, so a run of already-green cards is retired
+/// over several passes rather than holding one pass for all of them.
+pub(crate) const GREEN_CHECKS_PER_PASS: usize = 3;
+
+/// How long one card's check may run on the default branch: the project's
+/// `minutes_per_job`, at most ten minutes. A check that does not finish in
+/// time is not green and the card is planned as before.
+pub(crate) fn green_check_timeout(s: &hive_store::Store) -> std::time::Duration {
+    let minutes = s.setting_int("minutes_per_job");
+    let minutes = if minutes > 0 { minutes.min(10) } else { 10 };
+    std::time::Duration::from_secs(minutes as u64 * 60)
+}
+
+/// Close the voted cards whose `Signal: check:` already passes at the
+/// default branch, before the planner picks one. Such a card has nothing
+/// left to prove: the card proof (`hive-runner` card_proof.rs, AlreadyGreen)
+/// would refuse whatever its job changed, so planning it only spends a worker
+/// and a rerun (kestrel-82-3 was planned and rerun after 3b81f1b had made its
+/// check green). The candidates are taken in the planner's order; a card
+/// whose check fails, prints a count, or does not finish in time stops the
+/// walk - it is the card the planner takes next - and its verdict is kept
+/// per default-branch commit so the next pass does not run it again. Never
+/// fails the plan: a check that cannot run is simply not green. Returns one
+/// line per closed card.
+pub(crate) fn retire_green_cards(
+    s: &hive_store::Store,
+    project: &str,
+    opts: &PlanOptions,
+    status: &crate::status::LoopStatus,
+) -> Vec<String> {
+    retire_green_cards_inner(s, project, opts, status).unwrap_or_else(|e| {
+        let _ = s.event(
+            &opts.agent,
+            "evolve.card_check.error",
+            project,
+            serde_json::json!({"project": project, "error": e.to_string()}),
+        );
+        Vec::new()
+    })
+}
+
+fn retire_green_cards_inner(
+    s: &hive_store::Store,
+    project: &str,
+    opts: &PlanOptions,
+    status: &crate::status::LoopStatus,
+) -> Result<Vec<String>> {
+    let mut retired = Vec::new();
+    let Some(proj) = s.project(project)? else {
+        return Ok(retired);
+    };
+    if proj.path.is_empty() || proj.default_branch.is_empty() {
+        return Ok(retired);
+    }
+    let in_flight = in_flight_experiments(s, project, true)?;
+    let limit = s
+        .setting_int(hive_store::EVOLVE_EXPERIMENTS_IN_FLIGHT)
+        .max(1) as usize;
+    if in_flight.len() >= limit {
+        return Ok(retired);
+    }
+    let busy: std::collections::BTreeSet<String> = in_flight
+        .iter()
+        .filter_map(|(_, source)| source.strip_prefix("suggestion:").map(str::to_string))
+        .collect();
+    let result = hive_tally::compute_light(s, project, "", hive_tally::Thresholds::default())?;
+    let candidates = experiment_candidates(
+        s,
+        project,
+        status,
+        &result,
+        &opts.agent,
+        opts.require_positive_score,
+        None,
+        None,
+    )?;
+    let cancel = hive_bus::CancellationToken::new();
+    let mut commit = String::new();
+    let mut ran = 0;
+    for candidate in candidates {
+        let p = candidate.post;
+        if busy.contains(&p.id) {
+            continue;
+        }
+        // A card the planner cannot build (it gets a card job) is passed
+        // over there too; the check belongs to the card it does build.
+        if crate::card::make_card(s, &p, status).is_err() {
+            continue;
+        }
+        let check = crate::card::card_check_of(&p.body);
+        if check.is_empty() || hive_store::secret_shaped(&check) || check.contains(['\n', '\0']) {
+            continue;
+        }
+        if commit.is_empty() {
+            commit = crate::clones::resolve_revision(&cancel, &proj.path, &proj.default_branch)?.1;
+        }
+        // A verdict on this commit stands: a red card is not run again until
+        // the default branch moves, and a green one still on the ballot (its
+        // close did not land) is closed now.
+        let green = match card_check_verdict(s, &p.id, &commit)? {
+            Some(green) => green,
+            None if ran >= GREEN_CHECKS_PER_PASS => break,
+            None => {
+                ran += 1;
+                let green = card_check_green(s, project, &proj.path, &commit, &check);
+                s.event(
+                    &opts.agent,
+                    CARD_CHECK_EVENT,
+                    &p.id,
+                    serde_json::json!({"project": project, "commit": commit, "check": check, "green": green}),
+                )?;
+                green
+            }
+        };
+        if !green {
+            break;
+        }
+        close_green_card(s, project, opts, &p, &check, &commit)?;
+        retired.push(format!(
+            "closed {}: its check already passes on {} at {}",
+            p.id,
+            proj.default_branch,
+            &commit[..commit.len().min(12)]
+        ));
+    }
+    Ok(retired)
+}
+
+/// The verdict a card's check had on `commit`, when the planner ran it there.
+fn card_check_verdict(s: &hive_store::Store, card: &str, commit: &str) -> Result<Option<bool>> {
+    let conn = s.conn()?;
+    let green: Option<Option<bool>> = conn
+        .query_row(
+            "SELECT json_extract(detail, '$.green') FROM events WHERE action = ? AND subject = ?
+            AND json_valid(detail) AND json_extract(detail, '$.commit') = ? ORDER BY seq DESC LIMIT 1",
+            params![CARD_CHECK_EVENT, card, commit],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(green.flatten())
+}
+
+/// Run `check` once in a stripped clone of `commit` (the answer keys removed,
+/// as a measurement clone), bounded by [`green_check_timeout`], and say
+/// whether it already passes there by the card proof's rule. A clone or a
+/// check that fails, times out, or prints a count is not green. The clone is
+/// removed before this returns.
+pub(crate) fn card_check_green(
+    s: &hive_store::Store,
+    project: &str,
+    repo: &str,
+    commit: &str,
+    check: &str,
+) -> bool {
+    card_check_green_within(s, project, repo, commit, check, green_check_timeout(s))
+}
+
+fn card_check_green_within(
+    s: &hive_store::Store,
+    project: &str,
+    repo: &str,
+    commit: &str,
+    check: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let Ok(keys) = crate::clones::project_answer_keys(s, project) else {
+        return false;
+    };
+    let Ok(base) = crate::clones::fleet_root(s, true) else {
+        return false;
+    };
+    let id = hive_board::new_id(s, "measure-check");
+    let root = std::path::Path::new(&base).join(&id);
+    if crate::private::within(&root.display().to_string(), repo)
+        || std::fs::create_dir(&root).is_err()
+    {
+        return false;
+    }
+    let green = (|| -> Result<bool> {
+        crate::clones::claim_measurement_root(&root.display().to_string())?;
+        let clone = root.join("1").display().to_string();
+        let home = root.join("homes").join("1").display().to_string();
+        // The clone and the check are bounded each on its own: a slow clone
+        // of a large tree never eats the check's time.
+        let cancel = hive_bus::CancellationToken::new().with_timeout(timeout);
+        crate::clones::stripped_clone(&cancel, repo, commit, &clone, &keys)?;
+        let cancel = hive_bus::CancellationToken::new().with_timeout(timeout);
+        std::fs::create_dir_all(&home)?;
+        crate::process::prepare_measurement_caches(&home)?;
+        let mut stdout = crate::process::BoundedOutput {
+            limit: 64 << 10,
+            ..Default::default()
+        };
+        let mut stderr = crate::process::BoundedOutput {
+            limit: 64 << 10,
+            ..Default::default()
+        };
+        let argv = ["sh".to_string(), "-c".to_string(), check.to_string()];
+        let rc = crate::process::run_process_to(
+            &cancel,
+            &clone,
+            &crate::process::isolated_env(&home),
+            &argv,
+            &mut stdout,
+            &mut stderr,
+        )
+        .ok()
+        .map(|()| 0);
+        let out = String::from_utf8_lossy(&stdout.buf).to_string();
+        let both = format!("{out}\n{}", String::from_utf8_lossy(&stderr.buf));
+        Ok(crate::metric::check_already_green(rc, &out, &both))
+    })()
+    .unwrap_or(false);
+    let _ = crate::clones::remove_managed(s, &id);
+    green
+}
+
+/// Close a voted card whose check already passes on the default branch: a
+/// `dropped` result on its thread, with the check and the commit as the
+/// evidence, takes it off the ballot so no job is planned from it.
+fn close_green_card(
+    s: &hive_store::Store,
+    project: &str,
+    opts: &PlanOptions,
+    p: &hive_tally::Post,
+    check: &str,
+    commit: &str,
+) -> Result<()> {
+    hive_board::create_post(
+        s,
+        hive_board::PostInput {
+            kind: "result".to_string(),
+            project: project.to_string(),
+            area: p.area.clone(),
+            thread: p.thread.clone(),
+            on: p.id.clone(),
+            agent: opts.agent.clone(),
+            agent_row: opts.agent_row.clone(),
+            session: opts.session.clone(),
+            branch: Some(String::new()),
+            resolution: "dropped".to_string(),
+            summary: "Card check already passes on the default branch; closed without a job"
+                .to_string(),
+            body: format!(
+                "The planner ran the card's check once on the default branch before planning it: `{check}` passed at {commit} (exit 0, a test ran). The card proof would refuse any change made for it (the check already passes on the default branch, so it shows nothing a change fixes), so no job was planned. A card whose hypothesis still holds names a check that fails on the default branch today.\nre: {}\n",
+                p.id
+            ),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
 }
 
 pub(crate) fn experiment_carrier_reason(job: &hive_board::Job) -> String {
@@ -2040,6 +2309,146 @@ mod tests {
             result.created && result.suggestion == unlanded.id,
             "unlanded fix was skipped: {result:?}"
         );
+    }
+    fn checked_card(s: &hive_store::Store, thread: &str, check: &str) -> hive_board::Post {
+        voted_post_with_votes(
+            s,
+            hive_board::PostInput {
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: thread.into(),
+                kind: "suggestion".into(),
+                agent: "proposer".into(),
+                summary: format!("Fix {thread}"),
+                files: "README.md".into(),
+                body: format!(
+                    "Class: operating-layer\nFile: README.md\nVariable: one constant\nHypothesis: the check turns green\nTier: 1\nSignal: check:{check}\n"
+                ),
+                ..Default::default()
+            },
+            &["up", "up", "up"],
+        )
+    }
+    #[test]
+    fn plan_experiment_closes_card_whose_check_already_passes() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = plan_test_lock();
+        let s = cycle_ready();
+        // value.txt reads "original" on the default branch: the check is green there.
+        let green = checked_card(&s, "already-green", "grep -q original value.txt");
+        let result = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !result.created,
+            "an already-green card was planned: {result:?}"
+        );
+        assert_eq!(result.retired.len(), 1, "{result:?}");
+        assert!(result.retired[0].contains(&green.id), "{result:?}");
+        assert_eq!(
+            count_rows(
+                &s,
+                &format!("jobs WHERE source = 'suggestion:{}'", green.id)
+            ),
+            0
+        );
+        let closed = count_rows(
+            &s,
+            &format!(
+                "posts WHERE kind = 'result' AND resolution = 'dropped' AND on_post = '{}' AND body LIKE '%grep -q original value.txt%'",
+                green.id
+            ),
+        );
+        assert_eq!(closed, 1, "the card was not closed with its evidence");
+        crate::test_helpers::assert_no_clones(&s);
+        // Closed: the next pass neither plans it nor runs its check again.
+        let again = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!again.created && again.retired.is_empty(), "{again:?}");
+        assert_eq!(
+            count_rows(&s, "events WHERE action = 'evolve.card_check'"),
+            1
+        );
+    }
+    #[test]
+    fn plan_experiment_plans_card_whose_check_fails_on_the_default_branch() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = plan_test_lock();
+        let s = cycle_ready();
+        let red = checked_card(&s, "still-red", "grep -q fixed value.txt");
+        let result = plan_experiment(
+            &s,
+            "demo",
+            PlanOptions {
+                agent: "tester".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            result.created && result.suggestion == red.id && result.retired.is_empty(),
+            "a red card was not planned: {result:?}"
+        );
+        assert_eq!(
+            count_rows(
+                &s,
+                &format!("posts WHERE kind = 'result' AND on_post = '{}'", red.id)
+            ),
+            0
+        );
+        assert_eq!(
+            count_rows(
+                &s,
+                "events WHERE action = 'evolve.card_check' AND json_extract(detail, '$.green') = 0"
+            ),
+            1
+        );
+        crate::test_helpers::assert_no_clones(&s);
+    }
+    #[test]
+    fn a_check_that_outlives_its_timeout_is_not_green() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = plan_test_lock();
+        let s = cycle_ready();
+        let p = s.project("demo").unwrap().unwrap();
+        let head = test_git(&p.path, &["rev-parse", "HEAD"]);
+        let within = |check: &str, secs: u64| {
+            card_check_green_within(&s, "demo", &p.path, &head, check, Duration::from_secs(secs))
+        };
+        let green = |check: &str| within(check, 120);
+        assert!(green("true"));
+        let started = std::time::Instant::now();
+        assert!(
+            !within("sleep 60 && true", 3),
+            "a check past its timeout counted as green"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(50),
+            "the timeout did not stop the check"
+        );
+        // A count is no pass: only the base and a change together judge it.
+        assert!(!green("echo 3"));
+        assert!(!green("false"));
+        // A test runner that selected nothing proves nothing.
+        assert!(!green("echo 'test result: ok. 0 passed; 0 failed'"));
+        s.set_setting("human", "minutes_per_job", "45").unwrap();
+        assert_eq!(green_check_timeout(&s), Duration::from_secs(600));
+        s.set_setting("human", "minutes_per_job", "2").unwrap();
+        assert_eq!(green_check_timeout(&s), Duration::from_secs(120));
+        crate::test_helpers::assert_no_clones(&s);
     }
     #[test]
     fn loop_pick_requires_loop_on_and_level_d() {

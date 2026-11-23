@@ -76,6 +76,11 @@ pub(crate) fn tend_evolve(
         {
             lines.push(format!("evolve {slug}: healed {}", result.healed));
         }
+        if let Ok(result) = &planned {
+            for line in &result.retired {
+                lines.push(format!("evolve {slug}: {line}"));
+            }
+        }
         match planned {
             Err(e) => lines.push(format!("evolve {slug}: {}", crate::run::err_message(&e))),
             Ok(result) if result.created => {
