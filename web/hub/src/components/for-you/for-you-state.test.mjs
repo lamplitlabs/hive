@@ -102,3 +102,84 @@ test("waiting words", () => {
   assert.equal(waitingWords(1), "1 thing waits on you");
   assert.equal(waitingWords(12), "12 things wait on you");
 });
+
+test("rows fall back to plain words when the inbox leaves a field out", () => {
+  const rows = forYouRows({
+    decisions: [{ id: "ADR-7", project: "demo-app", title: "Undated", kind: "adr" }],
+    proposals: [{ id: "P-9", summary: "No slug, no brain", date: "2026-11-01T00:00:00Z" }],
+    questions: [
+      { id: "Q-9", summary: "No slug either", date: "2026-11-01T00:00:00Z" },
+      { id: "Q-10", slug: "web", summary: "evolution stopped; OWNER review needed by the gate", date: "2026-11-02T00:00:00Z" },
+      { id: "Q-11", slug: "web", date: "2026-11-03T00:00:00Z" },
+    ],
+    compute: [{ id: "C-1", project: "web", size: "Standard_D2s_v5", hours: 1, requested_by: "quartz", at: "2026-11-01T00:00:00Z" }],
+    work: [
+      { id: "SUG-9", project: "web", title: "Undated idea" },
+      { id: "SUG-10", project: "web", title: "Reviewed idea", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z", reviewed_at: "2026-11-03T00:00:00Z" },
+      { id: "SUG-11", project: "web", title: "Created only", created_at: "2026-11-01T00:00:00Z" },
+    ],
+    drafts: [
+      { slug: "web", r: { id: "EVO-evaluators", draft: { at: "2026-11-04T00:00:00Z" } } },
+      { slug: "demo-app", r: { id: "EVO-constitution", draft: null } },
+    ],
+    steps: [
+      { kind: "heldout", slug: "web", label: "Set up private tests", title: "Set up private tests" },
+      { kind: "card", slug: "demo-app", slugs: ["demo-app"], label: "Name a check", title: "Name a check" },
+    ],
+    machine: true,
+    provider: { name: "gemini", label: "", expired: false },
+  });
+  const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+  // No brain set: unslugged proposals and questions belong to no project.
+  assert.equal(byKey["proposal:P-9"].project, "");
+  assert.equal(byKey["question:Q-9"].project, "");
+  // A gate's stop line reads as the stop question even without the flag, but only the flag makes it urgent.
+  assert.equal(byKey["question:Q-10"].title, "Self-improvement stopped. May it carry on?");
+  assert.ok(!byKey["question:Q-10"].urgent);
+  assert.equal(byKey["question:Q-11"].title, undefined, "a question without a summary is not taken for a stop");
+  // Dates: the first one known, else none.
+  assert.equal(byKey["decision:ADR-7"].at, "");
+  assert.equal(byKey["work:SUG-9"].at, "");
+  assert.equal(byKey["work:SUG-10"].at, "2026-11-03T00:00:00Z");
+  assert.equal(byKey["work:SUG-11"].at, "2026-11-01T00:00:00Z");
+  assert.equal(byKey["compute:C-1"].title, "Standard_D2s_v5 for 1 hour");
+  // Drafts: the evaluators read as such; no author, no date.
+  assert.equal(byKey["draft:web:EVO-evaluators"].title, "New evaluators drafted");
+  assert.equal(byKey["draft:web:EVO-evaluators"].meta, undefined);
+  assert.equal(byKey["draft:web:EVO-evaluators"].at, "2026-11-04T00:00:00Z");
+  assert.equal(byKey["draft:demo-app:EVO-constitution"].title, "A new constitution drafted");
+  assert.equal(byKey["draft:demo-app:EVO-constitution"].at, "");
+  // Steps: one project's step stays that project's, keyed by its slug.
+  assert.equal(byKey["step:heldout:web"].project, "web");
+  assert.equal(byKey["step:card:demo-app"].project, "demo-app");
+  // Machine and provider: the default reason, the provider's name when it has no label.
+  assert.equal(byKey["machine"].meta, "Agents can't start work on this machine");
+  assert.equal(byKey["provider:gemini"].title, "Connect gemini");
+  assert.equal(byKey["provider:gemini"].meta, "Agents have no model provider yet");
+  assert.equal(byKey["provider:gemini"].href, "/settings/?connect=gemini#harness");
+  const expired = forYouRows({ ...empty, provider: { name: "copilot", label: "", expired: true } })[0];
+  assert.equal(expired.title, "copilot sign-in expired");
+  assert.equal(expired.meta, "Sign in again so agents can use their model");
+});
+
+test("filter chips with the same count read in name order", () => {
+  const row = (key, project) => ({ key, section: "work", kind: "suggestion", project, title: "", at: "" });
+  assert.deepEqual(forYouProjects([row("1", "web"), row("2", "api"), row("3", ""), row("4", "web"), row("5", "api"), row("6", "zed")]), [
+    { slug: "api", n: 2 },
+    { slug: "web", n: 2 },
+    { slug: "zed", n: 1 },
+  ]);
+  assert.deepEqual(forYouProjects([]), []);
+});
+
+test("order puts newer first whichever way the rows arrive", () => {
+  const row = (key, at, urgent) => ({ key, section: "work", kind: "suggestion", project: "", title: "", at, urgent });
+  const older = row("a", "2026-11-01T00:00:00Z");
+  const newer = row("b", "2026-11-02T00:00:00Z");
+  const undated = row("c", "");
+  assert.deepEqual(orderRows([older, newer, undated]).map((r) => r.key), ["b", "a", "c"]);
+  assert.deepEqual(orderRows([undated, newer, older]).map((r) => r.key), ["b", "a", "c"]);
+  assert.deepEqual(orderRows([newer, row("u", "", true)]).map((r) => r.key), ["u", "b"], "urgent beats newer");
+  const bell = latestRows([older, newer, row("p", "", false)].concat([{ ...row("m", ""), section: "problems" }]), 2);
+  assert.deepEqual(bell.map((r) => r.key), ["m", "b"]);
+});
