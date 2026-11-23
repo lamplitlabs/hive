@@ -1224,7 +1224,8 @@ fn wait_for_release_age(
 
 /// Whether the newest run of `job_id` ran on a remote hand: such a hand has
 /// no artifacts folder the hub serves, so its job cannot leave a report.
-fn ran_on_hands(s: &hive_store::Store, job_id: &str) -> bool {
+/// The pull-request path (ui_evidence::pr_report_reason) excuses it the same way.
+pub(crate) fn ran_on_hands(s: &hive_store::Store, job_id: &str) -> bool {
     let Ok(conn) = s.conn() else {
         return false;
     };

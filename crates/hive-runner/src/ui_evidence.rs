@@ -337,21 +337,26 @@ End with your SUMMARY line as before, naming {page}.",
 /// session the store does not know. A head under `pulse/`, from a pull
 /// request opened before the rename, is read the same way: the reviewer
 /// takes it for Hive's own, so the report it owes is asked of it too.
-pub(crate) fn pr_evidence(
+/// Beside it, the jobs whose work the pull request carries: the job of
+/// `hive/<agent>/<job>`, every job of `hive/task-<id>`, none for a session.
+fn pr_evidence(
     s: &hive_store::Store,
     head: &str,
     files: &[String],
-) -> Option<UiEvidence> {
+) -> Option<(UiEvidence, Vec<String>)> {
     let home = s.home.clone();
     let rest = hive_store::agent_branch_rest(head)?;
     if let Some(id) = rest.strip_prefix("chat-") {
         let chat = s.chat_get(id).ok().flatten()?;
         let mode = Mode::of(s, &chat.project);
-        return Some(UiEvidence::of_dir(
-            hive_harness::conversation::artifacts_dir(&home, id),
-            chat_report_href(id),
-            files,
-            mode,
+        return Some((
+            UiEvidence::of_dir(
+                hive_harness::conversation::artifacts_dir(&home, id),
+                chat_report_href(id),
+                files,
+                mode,
+            ),
+            Vec::new(),
         ));
     }
     let conn = s.conn().ok()?;
@@ -377,7 +382,7 @@ pub(crate) fn pr_evidence(
             .map(|j| UiEvidence::collect(&home, j, files, mode))
             .collect();
         let best = each.iter().position(|e| e.reported()).unwrap_or(0);
-        return each.into_iter().nth(best);
+        return each.into_iter().nth(best).map(|e| (e, jobs));
     }
     let (_, job_id) = rest.split_once('/')?;
     let job = crate::jobs::job_row(&*conn, job_id.to_string());
@@ -385,25 +390,34 @@ pub(crate) fn pr_evidence(
         return None;
     }
     let mode = Mode::of(s, &job.str("project"));
-    Some(UiEvidence::collect(&home, job_id, files, mode))
+    Some((
+        UiEvidence::collect(&home, job_id, files, mode),
+        vec![job_id.to_string()],
+    ))
 }
 
 /// Why a pull request is the owner's to merge for want of its report;
 /// `None` when it shows its change, has no face, or the project does not
-/// require a report.
+/// require a report. Like a job landed locally (land.rs), a pull request
+/// whose every job last ran on a remote hand is excused: such a hand has no
+/// artifacts folder the hub serves, so its summary is all it can show.
 pub(crate) fn pr_report_reason(
     s: &hive_store::Store,
     head: &str,
     files: &[String],
 ) -> Option<String> {
-    let e = pr_evidence(s, head, files)?;
-    e.wants_report().then(|| {
-        format!(
-            "changes {} with no before/after report ({}; landing.ui_report)",
-            counted(&e.ui_paths, "UI file"),
-            e.report_trouble()
-        )
-    })
+    let (e, jobs) = pr_evidence(s, head, files)?;
+    if !e.wants_report() {
+        return None;
+    }
+    if !jobs.is_empty() && jobs.iter().all(|j| crate::land::ran_on_hands(s, j)) {
+        return None;
+    }
+    Some(format!(
+        "changes {} with no before/after report ({}; landing.ui_report)",
+        counted(&e.ui_paths, "UI file"),
+        e.report_trouble()
+    ))
 }
 
 /// How long a session's pull request waits for the report it was asked for
@@ -786,6 +800,66 @@ mod tests {
         assert!(pr_report_reason(&s, "hive/aurora/job-9", &files).is_none());
         assert!(pr_report_reason(&s, "hive/task-TASK-7", &files).is_none());
         assert!(pr_report_reason(&s, "pulse/aurora/job-9", &files).is_none());
+    }
+
+    #[test]
+    fn a_pull_request_from_a_remote_hand_owes_no_report() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        s.set_setting("human", &hive_store::ui_report_setting("web"), "require")
+            .unwrap();
+        let files = v(&["web/hub/src/x.tsx"]);
+        let conn = s.conn().unwrap();
+        for (job, executor) in [("job-hand", "hands-cr-1"), ("job-here", "local")] {
+            conn.execute(
+                "INSERT INTO jobs (id, project, title, kind, status, created_at) VALUES (?, 'web', 't', 'work', 'done', '2026-11-07T09:00:00Z')",
+                [job],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES (?, ?, 'aurora', 'web', '2026-11-07T09:30:00Z', 'done', ?)",
+                [&format!("run-{job}"), job, executor],
+            )
+            .unwrap();
+        }
+        crate::util::event_at(
+            &conn,
+            "2026-11-07T10:00:00Z",
+            "hive",
+            "land.pr",
+            "web",
+            serde_json::json!({"project": "web", "task": "TASK-8", "jobs": ["job-hand"], "number": 4}),
+        );
+        crate::util::event_at(
+            &conn,
+            "2026-11-07T10:01:00Z",
+            "hive",
+            "land.pr",
+            "web",
+            serde_json::json!({"project": "web", "task": "TASK-9", "jobs": ["job-hand", "job-here"], "number": 5}),
+        );
+        drop(conn);
+        // Its newest run was on a remote hand, which has no folder the hub
+        // serves: excused, as a local landing excuses it (land.rs).
+        assert!(pr_report_reason(&s, "hive/aurora/job-hand", &files).is_none());
+        assert!(pr_report_reason(&s, "hive/task-TASK-8", &files).is_none());
+        // A job that ran here still owes its report, alone or beside one
+        // from a hand.
+        let why = pr_report_reason(&s, "hive/aurora/job-here", &files).unwrap_or_default();
+        assert!(
+            why.starts_with("changes 1 UI file with no before/after report"),
+            "{why}"
+        );
+        assert!(pr_report_reason(&s, "hive/task-TASK-9", &files).is_some());
+        // A later run here makes the job local again.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-again', 'job-hand', 'aurora', 'web', '2026-11-07T11:00:00Z', 'done', 'local')",
+                [],
+            )
+            .unwrap();
+        assert!(pr_report_reason(&s, "hive/aurora/job-hand", &files).is_some());
     }
 
     #[test]
