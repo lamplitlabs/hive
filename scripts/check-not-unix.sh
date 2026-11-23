@@ -13,7 +13,9 @@
 #
 # Usage: sh scripts/check-not-unix.sh [--all-targets] CRATE...
 #        sh scripts/check-not-unix.sh --leaves [--all-targets]
-# Exit status is cargo's; the scratch copy is removed afterwards.
+# Exit status is cargo's; the scratch copy is removed afterwards. Any warning
+# fails the check (-D warnings), so off-unix noise cannot creep back in; only
+# unexpected_cfgs is allowed, for the hive_unix_off cfg this script invents.
 set -eu
 
 LEAVES="hive-gitenv hive-cred hive-store hive-bus hive-cli
@@ -70,4 +72,4 @@ cd "$ws"
 # rewritten sources fingerprint differently, so they never serve a real build.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ws/target}/not-unix"
 # shellcheck disable=SC2086
-RUSTFLAGS="-A unexpected_cfgs" cargo check --offline --keep-going $pkgs $targets
+RUSTFLAGS="-D warnings -A unexpected_cfgs" cargo check --offline --keep-going $pkgs $targets
