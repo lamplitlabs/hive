@@ -14,8 +14,16 @@ const SENTINELS: [&str; 3] = [
     "Never edit",
 ];
 
+/// The workspace root, from the `CARGO_MANIFEST_DIR` the test process gets
+/// when it runs; the compiled-in value is only the fallback. A binary served
+/// from a shared target dir carries another checkout's path, often one removed
+/// since (the same rule as `hive_testutil::manifest_dir`, which the hand does
+/// not depend on).
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
         .join("../..")
         .canonicalize()
         .expect("workspace root")

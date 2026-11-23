@@ -495,6 +495,13 @@ pub struct ApplyState {
 /// A stored `installing` no thread of this process runs any more (the hub
 /// stopped mid-install) reads as `failed`.
 pub fn apply_state(s: &hive_store::Store) -> ApplyState {
+    use std::sync::atomic::Ordering;
+    // The flag is read before the row: the install thread writes how it
+    // ended and only then clears the flag, so a row read after a set flag
+    // was still in flight. Read the other way round, an install ending
+    // between the two reads left the old `installing` row beside a cleared
+    // flag and a finished install read as failed.
+    let busy = APPLYING.load(Ordering::SeqCst);
     let mut st = match s.meta(APPLY_KEY) {
         Ok((raw, true)) => serde_json::from_str::<ApplyState>(&raw).unwrap_or_default(),
         _ => ApplyState::default(),
@@ -502,7 +509,9 @@ pub fn apply_state(s: &hive_store::Store) -> ApplyState {
     if st.state.is_empty() {
         st.state = "idle".into();
     }
-    if st.state == "installing" && !APPLYING.load(std::sync::atomic::Ordering::SeqCst) {
+    // Checked again after the read: an install that started between the
+    // two reads wrote its own `installing` row.
+    if st.state == "installing" && !busy && !APPLYING.load(Ordering::SeqCst) {
         st.state = "failed".into();
         st.error = "the console stopped while it was installing; hive version says which build is in place. Try again.".into();
     }
