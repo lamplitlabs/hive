@@ -52,9 +52,51 @@
 #   tests the same way. Some tests rely on an earlier test of their process
 #   to clear them, and a chunk has a different earlier test.
 #
+# How many chunks run at once: VERIFY_POOL when it is set (a whole number of
+# at least 1, from the hand's environment), else half the CPUs, at least 2
+# and at most 8. Half of a 2-CPU hand is 1, and one chunk at a time runs the
+# tests for about 48 minutes, past the 40 the command limit gives the
+# pre-commit verify; most chunks wait on a lock or a sleep rather than the
+# CPU, so two at a time fit even there. `--pool` prints the pool this
+# machine gets and exits; VERIFY_CPUS stands in for the CPU count there
+# (scripts/tests/verify-check-test.sh).
+#
 # Usage: scripts/verify-check.sh            (the check)
+#        scripts/verify-check.sh --pool     (print the pool size and exit)
 #        scripts/verify-check.sh --chunk S C (internal: one chunk of the pool)
 set -e
+
+# Prints how many chunks run at once (see above).
+pool_size() {
+  case "${VERIFY_POOL:-}" in
+    '') ;;
+    *[!0-9]*)
+      echo "verify-check: VERIFY_POOL=$VERIFY_POOL is not a whole number; using the default pool" >&2
+      ;;
+    *)
+      # Leading zeros dropped: sh arithmetic reads 08 as a bad octal.
+      size=${VERIFY_POOL#"${VERIFY_POOL%%[!0]*}"}
+      if [ -n "$size" ]; then
+        echo "$size"
+        return
+      fi
+      echo "verify-check: VERIFY_POOL=$VERIFY_POOL is below 1; using the default pool" >&2
+      ;;
+  esac
+  cpus=${VERIFY_CPUS:-$(getconf _NPROCESSORS_ONLN 2> /dev/null || echo 4)}
+  case "$cpus" in
+    '' | *[!0-9]*) cpus=4 ;;
+  esac
+  size=$((cpus / 2))
+  [ "$size" -ge 2 ] || size=2
+  [ "$size" -le 8 ] || size=8
+  echo "$size"
+}
+
+if [ "${1:-}" = "--pool" ]; then
+  pool_size
+  exit 0
+fi
 
 if [ "${1:-}" = "--chunk" ]; then
   # One chunk: suite S, chunk C, under the pool's work directory.
@@ -167,13 +209,7 @@ built=$(date +%s)
 cargo test --workspace --doc
 
 per=${VERIFY_CHUNK_TESTS:-20}
-pool=${VERIFY_POOL:-}
-if [ -z "$pool" ]; then
-  cpus=$(getconf _NPROCESSORS_ONLN 2> /dev/null || echo 4)
-  pool=$((cpus / 2))
-  [ "$pool" -le 8 ] || pool=8
-fi
-[ "$pool" -ge 1 ] || pool=1
+pool=$(pool_size)
 
 : > "$work/suites"
 s=0
