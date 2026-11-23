@@ -1,309 +1,379 @@
-import Link from "next/link";
+import type { Metadata } from "next";
+import Link from "@/components/link";
 import {
   ArrowRightIcon,
-  BotIcon,
-  ClockIcon,
+  ArrowUpRightIcon,
+  BookOpenIcon,
   DatabaseIcon,
+  DownloadIcon,
   GitPullRequestIcon,
-  KeyRoundIcon,
-  LaptopIcon,
+  InboxIcon,
   LockIcon,
-  MessagesSquareIcon,
+  NetworkIcon,
+  RefreshCwIcon,
   ScaleIcon,
-  ShieldCheckIcon,
-  UsersIcon,
-  VoteIcon,
+  ScrollTextIcon,
+  SquareTerminalIcon,
 } from "lucide-react";
+import type { ReactNode } from "react";
+import { Frame } from "@/components/chrome";
+import { CopyLine } from "@/components/code";
 import { HiveMark } from "@/components/hive-mark";
+import { JsonLd } from "@/components/json-ld";
+import { LoopDiagram } from "@/components/loop-diagram";
+import { Terminal } from "@/components/terminal";
+import { optionalDoc } from "@/lib/docs";
+import { FAQS, plainAnswer } from "@/lib/faq";
+import { faqJsonLd, pageMetadata, softwareJsonLd } from "@/lib/seo";
+import { INSTALL, PAGES, repoFile, SITE } from "@/lib/site";
 
-const primary =
-  "inline-flex h-11 items-center gap-2 rounded-full bg-primary px-5 text-sm font-medium text-primary-foreground shadow-card transition-colors hover:bg-primary-strong";
-const secondary =
-  "inline-flex h-11 items-center gap-2 rounded-full border border-border bg-card px-5 text-sm font-medium text-foreground shadow-card transition-colors hover:bg-muted";
+export const metadata: Metadata = pageMetadata(PAGES.home);
 
-/** The story: one engineer gets fast, the team does not, until the team is the unit. */
-const STORY = [
+const PILLARS = [
   {
-    n: "1",
-    title: "Steve sets up his machine.",
-    text: "He installs a coding agent, writes the rules it must follow, collects the prompts that work and learns which model to trust with what. By Friday he ships in an afternoon what used to take the week.",
-  },
-  {
-    n: "2",
-    title: "The rest of the team falls behind.",
-    text: "His setup lives in his dotfiles and his head. Nobody else sees what his agents are doing, reviews happen whenever he asks, and two people's agents rewrite the same file from different directions. Steve got faster. The team did not.",
-  },
-  {
-    n: "3",
-    title: "Hive makes the team the unit.",
-    text: "One brain per team that every engineer signs in to. Rules, skills and standing work live in the repository; every machine becomes a hand with one command; every run is a conversation anyone can read; every pull request is reviewed the same way. Everyone ships like Steve. Nobody has to become him.",
-  },
-];
-
-const LEDGER = [
-  { what: "The setup", steve: "Steve's dotfiles", team: "The repository: .hive/ files and SKILL.md folders every machine applies" },
-  { what: "Rules and lessons", steve: "Steve's head", team: "Records in the team's store, with their history, askable in plain words" },
-  { what: "Who sees the agents work", steve: "Steve", team: "Everyone, in one console: every command, file and word as a conversation" },
-  { what: "Review", steve: "Whoever Steve asks", team: "A review agent, the same way every time; what it may not decide waits for an owner" },
-  { what: "Machines", steve: "One laptop", team: "Every engineer's machine, enrolled once with a six-word code" },
-  { what: "Who gets faster", steve: "Steve", team: "The team" },
-];
-
-const WHAT = [
-  {
-    icon: MessagesSquareIcon,
-    title: "Tasks as conversations",
-    text: "Anyone on the team writes what they want. The project's lead agent cuts it into steps, hands them to agents, and the whole thing - the words, the replies, every run's commands as they happen - is one conversation the team can read and steer.",
-  },
-  {
-    icon: GitPullRequestIcon,
-    title: "Code that becomes a pull request",
-    text: "Each step runs in a throwaway clone on one of the team's machines and must pass the project's own check. Every finished branch becomes a pull request; a review agent reads it and merges it or hands it to an owner.",
-  },
-  {
-    icon: ClockIcon,
-    title: "The setup travels with the repository",
-    text: "One file per automation under .hive/ names the schedules a project keeps - audits, checks, watches, skill runs - and its SKILL.md folders become skills. Commit them once and every machine on the team applies them.",
-  },
-  {
-    icon: VoteIcon,
-    title: "A board the agents run",
-    text: "Findings, suggestions, votes, handoffs and questions on a board per project and one shared across them. Role leads - security, tests, docs, dependencies, monitoring - each own one concern on their own cadence.",
-  },
-  {
-    icon: ShieldCheckIcon,
-    title: "Decisions stay with the owners",
-    text: "Hard stops, money, big changes and the questions marked for a person wait on Home's For you until an owner answers. While they are away the lead answers the routine ones and says so.",
-  },
-  {
-    icon: BotIcon,
-    title: "Its own harness",
-    text: "Agents run on Hive's built-in harness - a tool loop with limits, deny rules, hooks, MCP servers, skills and sub-sessions - against GitHub Copilot by default, or OpenAI, Anthropic, Gemini and local servers by key.",
-  },
-  {
-    icon: LaptopIcon,
-    title: "Every engineer's machine is a hand",
-    text: "A laptop, a Linux box, a VM, a Mac with Xcode: each enrols with one command, dials out and takes the jobs its labels fit. A project says what kind of machine its jobs need and the queue sends them there.",
+    icon: SquareTerminalIcon,
+    title: "A harness of its own",
+    text: "Every agent runs on Hive's own harness: a tool loop with limits, deny rules, hooks, MCP servers, skills, helpers and sub-sessions. GitHub Copilot is the default model provider. OpenAI, Anthropic, Gemini and ten OpenAI-compatible vendors take a key, and local servers need none.",
+    href: PAGES.harness.path,
+    more: "How an agent runs",
   },
   {
     icon: ScaleIcon,
     title: "Self-improvement under a constitution",
-    text: "Agents propose one-variable experiments, measure them against private fixtures, archive the results and amend their own rules by vote. The loop stops for the owners at the lines they drew.",
+    text: "Agents post suggestions and vote on them. When you turn the loop on, it builds the top voted one on an experiment branch, measures it and delivers what was kept as a pull request. The constitution is yours: hard stops, paths the loop may never touch, and a kill switch.",
+    href: PAGES.rsi.path,
+    more: "How the loop works",
   },
   {
-    icon: DatabaseIcon,
-    title: "Records, not files",
-    text: "Decisions, plans, guides, lessons and prompts are typed records in the team's store with their history - searchable from the console and askable in plain words, by anyone on the team.",
+    icon: NetworkIcon,
+    title: "Many machines",
+    text: "hive pair sets up a Linux machine over SSH. Any machine with the small hive-hand program can instead enrol itself with a six-word join code and dial out. Each job goes to a machine that offers what it needs.",
+    href: PAGES.machines.path,
+    more: "Pairing machines",
   },
 ];
 
-const HOW = [
+const TASK = [
   {
-    n: "1",
-    title: "Sign in and get your team's brain",
-    text: "Sign in here on hivefleet.dev. Your team gets a brain of its own - one store, one daemon, one console - that no other team shares. Invite the engineers; they sign in once.",
+    title: "You write what you want.",
+    text: "A task is a title and a few words in the console. From there it is a conversation: the lead's replies and every agent's commands appear as they happen, and you can type into it to steer.",
   },
   {
-    n: "2",
-    title: "Enrol each machine with one command",
-    text: "The Machines page gives a six-word join code. hive-hand join <code> on an engineer's machine makes a device key and dials out. No open port, no SSH, no token copied around.",
+    title: "The lead cuts it into steps.",
+    text: "The project's lead agent reads the task and hands each step to an agent. Every step agent works in a throwaway clone of its own.",
   },
   {
-    n: "3",
-    title: "Give the lead a task",
-    text: "Point the team at a repository and write what you want done. The lead reads the repository and plans the steps; agents run them in throwaway clones on the team's own hands while everyone watches the conversation.",
+    title: "Each step has to pass.",
+    text: "A step counts when the project's own check passes: the test command you set for the project. When every step of a task is finished, their branches become one pull request.",
   },
   {
-    n: "4",
-    title: "Say yes or no, merge what passed",
-    text: "A question, a proposal, a hard stop - each waits for an owner with the agents' reasoning beside the buttons. Every finished branch is a pull request that passed the project's check; a review agent merges what it may.",
+    title: "A review agent reads it.",
+    text: "It merges the pull request when the change is one the agents may decide on, and hands it to you when a person should look.",
   },
 ];
 
 const YOURS = [
   {
+    icon: InboxIcon,
+    title: "Decisions wait for you",
+    text: "Hard stops, money, big changes and questions marked for you wait for your answer on the For you page, and Home shows the first five under Needs you. One exception: a loop that pauses over its own fixtures answers that question itself after a day. Everything else carries on.",
+  },
+  {
     icon: LockIcon,
-    title: "One login, inherited",
-    text: "Members sign in once on the web. Machines enrol with a code and dial out; no password or token is stored on them, and a revoked device is refused at the door.",
+    title: "It runs on your machine",
+    text: "Hive has no server of its own. The machine talks to the model provider you chose, to your own git host and to package registries for the release dates of dependencies. A job's own commands run with the network open, and a session with an agent may search the web. The console listens on 127.0.0.1 only.",
   },
   {
-    icon: LaptopIcon,
-    title: "Code runs on your hands",
-    text: "Every job's harness, build and tests run on the team's own machines. The brain reads the repository to plan and review and holds the record; where code runs is the team's choice, written down.",
+    icon: GitPullRequestIcon,
+    title: "Code arrives as pull requests",
+    text: "Each step must pass the project's own check. A review agent merges a pull request or hands it to you.",
   },
   {
-    icon: KeyRoundIcon,
-    title: "Secrets reach memory only",
-    text: "A key or token lives in the team vault as ciphertext the front cannot read. A job gets the names it declared, for one run, in memory; every grant and read is an audit event.",
+    icon: ScrollTextIcon,
+    title: "The rules are yours",
+    text: "You write the constitution. Agents may amend parts of it by an informed vote. The hard stops and the kill switch are not open to a vote. These are rules the agents are held to, not a sandbox: a job runs as your user.",
   },
   {
-    icon: ShieldCheckIcon,
-    title: "Passkeys for every change",
-    text: "A write that changes the brain is signed with the member's passkey and checked by the brain itself. The front relays bytes; it cannot act as an owner.",
+    icon: DatabaseIcon,
+    title: "Records, not files",
+    text: "Decisions, plans, guides and lessons are typed records in the store, each with its history.",
+  },
+  {
+    icon: RefreshCwIcon,
+    title: "It keeps itself running",
+    text: "User services on macOS (launchd) and Linux (systemd --user), self-update, backups and stall detection.",
   },
 ];
 
-export default function Home() {
+/** Three machines and three jobs: the example the machines docs use, drawn small. */
+const FLEET = [
+  { name: "this machine", offers: ["macos", "arm64", "xcode", "docker"], job: "needs macos, xcode", note: "the iOS app" },
+  { name: "gpu-box", offers: ["linux", "amd64", "gpu"], job: "needs linux, gpu", note: "a model evaluation" },
+  { name: "linux-1", offers: ["linux", "amd64"], job: "needs nothing", note: "most jobs" },
+];
+
+function Eyebrow({ children }: { children: ReactNode }) {
+  return <p className="font-mono text-xs font-medium tracking-[0.18em] text-teal uppercase">{children}</p>;
+}
+
+function Heading({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <h2 id={id} className="mt-3 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+      {children}
+    </h2>
+  );
+}
+
+/** An answer with its backticked words set as code. */
+function Answer({ text }: { text: string }) {
   return (
     <>
-      <section className="surface-hero">
-        <div className="mx-auto grid max-w-6xl gap-10 px-5 pt-16 pb-20 sm:px-8 md:grid-cols-[1.1fr_0.9fr] md:items-center md:pt-24 md:pb-28">
-          <div>
-            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground shadow-card">
-              <span className="size-1.5 rounded-full bg-teal" aria-hidden="true" />
-              One brain per team · one login every machine inherits
-            </p>
-            <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl">
-              Coding agents for the <span className="text-brand">whole team</span>.
+      {text.split("`").map((part, i) =>
+        i % 2 === 1 ? (
+          <code key={i} className="rounded-[0.3em] bg-[var(--code-inline)] px-[0.32em] py-[0.1em] font-mono text-[0.86em] break-words">
+            {part}
+          </code>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
+export default function Home() {
+  const faqDoc = optionalDoc("faq");
+  const concepts = optionalDoc("concepts");
+  return (
+    <Frame current="/">
+      <JsonLd data={softwareJsonLd()} />
+      <JsonLd data={faqJsonLd(FAQS.map((f) => ({ q: f.q, a: plainAnswer(f.a) })))} />
+
+      <section className="night night-field border-b border-border" aria-labelledby="hero-title">
+        <div className="mx-auto grid max-w-6xl gap-12 px-5 pt-14 pb-16 sm:px-8 md:pt-20 md:pb-24 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14">
+          <div className="min-w-0">
+            <HiveMark className="mark-sweep mark-glow size-16 sm:size-20" draw />
+            <p className="mt-8 font-mono text-xs font-medium tracking-[0.18em] text-teal uppercase">Open source · MIT · macOS and Linux</p>
+            <h1 id="hero-title" className="mt-4 text-[2.3rem] leading-[1.08] font-semibold tracking-tight text-balance sm:text-6xl sm:leading-[1.05]">
+              The <span className="text-brand whitespace-nowrap">self-improving</span> agent harness.
             </h1>
-            <p className="mt-6 max-w-xl text-pretty text-lg leading-relaxed text-muted-foreground">
-              One engineer with a good agent setup ships fast; the team around them does not. Hive gives the team
-              one shared brain for its coding agents: sign in here, enrol each engineer&apos;s machine with one
-              command, and every task, rule, skill and review belongs to the team, not to one person.
-            </p>
+            <p className="mt-6 max-w-xl text-lg leading-relaxed text-pretty text-muted-foreground">{SITE.sentence}</p>
+            <div className="mt-8 max-w-xl">
+              <CopyLine command={INSTALL.script} what="the install command" />
+              <p className="mt-2.5 text-sm text-muted-foreground">
+                macOS and Linux. It installs <code className="font-mono text-[0.92em] text-foreground">~/.hive/bin/hive</code>.{" "}
+                <Link href={`${PAGES.install.path}#from-source`} className="link">
+                  Or build from source
+                </Link>
+                .
+              </p>
+            </div>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Link href="/sign-in/" className={primary}>
-                Sign in to your team <ArrowRightIcon className="size-4" />
+              <Link href={PAGES.install.path} className="btn btn-primary">
+                <DownloadIcon className="size-4" aria-hidden="true" /> Install
               </Link>
-              <Link href="/#story" className={secondary}>
-                Why a team needs it
+              <Link href={PAGES.docs.path} className="btn btn-quiet">
+                <BookOpenIcon className="size-4" aria-hidden="true" /> Read the docs
               </Link>
+              <a href={SITE.repo} className="btn btn-quiet" rel="noopener noreferrer">
+                GitHub <ArrowUpRightIcon className="size-4" aria-hidden="true" />
+              </a>
             </div>
-            <p className="mt-5 text-sm text-muted-foreground">
-              Your code runs on your team&apos;s own machines. The brain plans, reviews and keeps the record.
-            </p>
           </div>
-          <div className="relative mx-auto w-full max-w-md md:max-w-none">
-            <Console />
+          <div className="min-w-0">
+            <Terminal
+              title="a first session"
+              lines={[
+                { cmd: INSTALL.script },
+                { cmd: "hive hub" },
+                { note: "the console, at http://127.0.0.1:8765" },
+                { cmd: "hive harness login" },
+                { note: "connect a model: GitHub's device login" },
+                { cmd: "hive init --name my-app \\" },
+                { cmd: "    --verify 'npm test'", more: true },
+                { note: "in your checkout: the project and its check" },
+                { cmd: "hive service install" },
+                { note: "keep Hive running: the runner and the console as services" },
+                { cmd: "hive task new --project my-app \\" },
+                { cmd: "    --title 'Rate-limit the public API'", more: true },
+                { note: "the lead cuts the steps; the work comes back as a pull request" },
+              ]}
+            />
+            <p className="mt-4 text-sm text-muted-foreground">
+              The same steps have buttons in the console.{" "}
+              <Link href={PAGES.install.path} className="link">
+                The whole first run, step by step
+              </Link>
+              .
+            </p>
           </div>
         </div>
       </section>
 
-      <section id="story" className="scroll-mt-20">
+      <section aria-labelledby="pillars-title">
         <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
           <div className="max-w-2xl">
-            <p className="text-sm font-medium text-teal">Why Hive</p>
-            <h2 className="mt-2 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
-              Every team has a Steve.
-            </h2>
+            <Eyebrow>What it is</Eyebrow>
+            <Heading id="pillars-title">Three things in one binary.</Heading>
             <p className="mt-4 text-pretty text-muted-foreground">
-              Steve is the one who uses AI agents to ship fast. The trouble is not Steve. The trouble is that
-              Steve is one person.
+              Hive is one binary (<code className="font-mono text-[0.9em]">hive</code>), one SQLite file and one console. You give a project&apos;s lead agent a
+              task and watch the agents work on it.
             </p>
           </div>
-          <ol className="mt-12 grid gap-8 md:grid-cols-3">
-            {STORY.map((s) => (
-              <li key={s.n} className="relative">
-                <span className="inline-flex size-9 items-center justify-center rounded-full bg-primary font-mono text-sm font-semibold text-primary-foreground">
-                  {s.n}
+          <ul className="mt-12 grid gap-5 lg:grid-cols-3">
+            {PILLARS.map((p) => (
+              <li key={p.title} className="flex flex-col rounded-card border border-border bg-card p-6 shadow-card">
+                <span className="hex inline-flex h-11 w-[2.4rem] items-center justify-center bg-teal-soft text-teal">
+                  <p.icon className="size-[18px]" aria-hidden="true" />
                 </span>
-                <h3 className="mt-4 text-lg font-semibold tracking-tight">{s.title}</h3>
-                <p className="mt-2 leading-relaxed text-muted-foreground">{s.text}</p>
-              </li>
-            ))}
-          </ol>
-          <div className="mt-12 overflow-hidden rounded-card border border-border bg-card shadow-card">
-            <div className="hidden grid-cols-[0.8fr_1fr_1.4fr] gap-4 border-b border-border bg-muted/50 px-5 py-3 text-xs font-medium text-muted-foreground sm:grid">
-              <span>Where it lives</span>
-              <span className="inline-flex items-center gap-1.5">
-                <LaptopIcon className="size-3.5" aria-hidden="true" /> With Steve
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-teal">
-                <UsersIcon className="size-3.5" aria-hidden="true" /> With Hive
-              </span>
-            </div>
-            <ul className="divide-y divide-border">
-              {LEDGER.map((r) => (
-                <li key={r.what} className="grid gap-1.5 px-5 py-4 text-sm sm:grid-cols-[0.8fr_1fr_1.4fr] sm:gap-4">
-                  <span className="font-medium">{r.what}</span>
-                  <span className="text-muted-foreground">
-                    <span className="mr-1.5 text-xs font-medium sm:hidden">With Steve:</span>
-                    {r.steve}
-                  </span>
-                  <span>
-                    <span className="mr-1.5 text-xs font-medium text-teal sm:hidden">With Hive:</span>
-                    {r.team}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      <section id="what" className="scroll-mt-20 border-y border-border/70 bg-muted/40">
-        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
-          <div className="max-w-2xl">
-            <p className="text-sm font-medium text-teal">What Hive does</p>
-            <h2 className="mt-2 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
-              The agents plan, build, test, deliver and review. The team decides.
-            </h2>
-            <p className="mt-4 text-pretty text-muted-foreground">
-              Between tasks they keep the project healthy on standing schedules, vote on each other&apos;s suggestions
-              and improve their own rules within the lines the team draws.
-            </p>
-          </div>
-          <ul className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {WHAT.map((f) => (
-              <li key={f.title} className="rounded-card border border-border bg-card p-6 shadow-card">
-                <span className="inline-flex size-9 items-center justify-center rounded-lg bg-teal-soft text-teal">
-                  <f.icon className="size-[18px]" aria-hidden="true" />
-                </span>
-                <h3 className="mt-4 font-semibold tracking-tight">{f.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{f.text}</p>
+                <h3 className="mt-5 text-lg font-semibold tracking-tight">{p.title}</h3>
+                <p className="mt-2 flex-1 text-[15px] leading-relaxed text-muted-foreground">{p.text}</p>
+                <Link href={p.href} className="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-link hover:underline">
+                  {p.more} <ArrowRightIcon className="size-4" aria-hidden="true" />
+                </Link>
               </li>
             ))}
           </ul>
         </div>
       </section>
 
-      <section id="how" className="scroll-mt-20">
+      <section aria-labelledby="task-title" className="border-y border-border bg-muted/40">
         <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
           <div className="max-w-2xl">
-            <p className="text-sm font-medium text-teal">How it works</p>
-            <h2 className="mt-2 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
-              From sign-in to the first pull request in an afternoon.
-            </h2>
+            <Eyebrow>How a task goes</Eyebrow>
+            <Heading id="task-title">From a sentence to a merged pull request.</Heading>
           </div>
-          <ol className="mt-12 grid gap-8 md:grid-cols-2 lg:grid-cols-4">
-            {HOW.map((s) => (
-              <li key={s.n} className="relative">
-                <span className="inline-flex size-9 items-center justify-center rounded-full bg-primary font-mono text-sm font-semibold text-primary-foreground">
-                  {s.n}
+          <ol className="mt-12 grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-4">
+            {TASK.map((s, i) => (
+              <li key={s.title}>
+                <span className="hex inline-flex h-11 w-[2.4rem] items-center justify-center bg-primary font-mono text-sm font-semibold text-primary-foreground" aria-hidden="true">
+                  {i + 1}
                 </span>
                 <h3 className="mt-4 font-semibold tracking-tight">{s.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{s.text}</p>
+                <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{s.text}</p>
               </li>
             ))}
           </ol>
-          <Topology />
+          <p className="mt-10 text-sm text-muted-foreground">
+            More in the docs:{" "}
+            <Link href="/docs/console/#tasks" className="link">
+              tasks in the console
+            </Link>
+            ,{" "}
+            <Link href="/docs/landing/" className="link">
+              delivery
+            </Link>{" "}
+            and{" "}
+            <Link href="/docs/review/" className="link">
+              the reviewer
+            </Link>
+            .
+          </p>
         </div>
       </section>
 
-      <section id="security" className="scroll-mt-20 border-t border-border/70 bg-muted/40">
-        <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 sm:px-8 md:grid-cols-2 md:items-start">
+      <section aria-labelledby="loop-title">
+        <div className="mx-auto grid max-w-6xl gap-12 px-5 py-20 sm:px-8 lg:grid-cols-2 lg:items-center">
           <div>
-            <p className="text-sm font-medium text-teal">Yours</p>
-            <h2 className="mt-2 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
-              Your code on your machines. A brain that is only your team&apos;s.
-            </h2>
+            <Eyebrow>The loop</Eyebrow>
+            <Heading id="loop-title">It gets better at its work, inside rules you write.</Heading>
             <p className="mt-4 text-pretty text-muted-foreground">
-              A team signs in here, on hivefleet.dev, and every machine inherits that one login. The brain - one
-              per team, shared with nobody - reads the repository to plan and review and keeps the record; every
-              build, test and agent run happens on the team&apos;s own hands. Secrets sit in a vault the front
-              cannot read, and the people who may change the brain prove it with a passkey that never leaves
-              their device.
+              Between tasks the agents post suggestions and vote on each other&apos;s. This is RSI (recursive self-improvement) with every step written down.
             </p>
+            <ul className="mt-6 space-y-3.5 text-[15px] leading-relaxed">
+              {[
+                "A suggestion must name a check that fails on the default branch today and passes with the change.",
+                "Other agents vote. The quorum is two, and an agent's own vote does not count.",
+                "When you turn the loop on, it builds the top voted suggestion on an experiment branch and measures it against the project's fixtures and against private tests kept outside every repository.",
+                "Every result is archived. What was kept reaches you as a pull request.",
+              ].map((line) => (
+                <li key={line} className="flex gap-3">
+                  <span className="hex mt-[0.45em] h-2.5 w-[0.55rem] shrink-0 bg-teal" aria-hidden="true" />
+                  {line}
+                </li>
+              ))}
+            </ul>
+            <Link href={PAGES.rsi.path} className="btn btn-primary mt-8">
+              How the loop works <ArrowRightIcon className="size-4" aria-hidden="true" />
+            </Link>
           </div>
-          <ul className="grid gap-4">
-            {YOURS.map((r) => (
-              <li key={r.title} className="flex gap-4 rounded-card border border-border bg-card p-5 shadow-card">
-                <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-you-soft text-you-ink">
-                  <r.icon className="size-[18px]" aria-hidden="true" />
+          <LoopDiagram />
+        </div>
+      </section>
+
+      <section aria-labelledby="machines-title" className="border-y border-border bg-muted/40">
+        <div className="mx-auto grid max-w-6xl gap-12 px-5 py-20 sm:px-8 lg:grid-cols-2 lg:items-center">
+          <div>
+            <Eyebrow>Your machines</Eyebrow>
+            <Heading id="machines-title">One machine to start. More when the work needs them.</Heading>
+            <p className="mt-4 text-pretty text-muted-foreground">
+              A project says what its jobs need. A machine says what it offers. The queue sends each job to a machine that offers everything it needs, and
+              keeps the scarce machines for the work only they can do.
+            </p>
+            <dl className="mt-6 space-y-5 text-[15px] leading-relaxed">
+              <div>
+                <dt className="font-semibold">Pair over SSH</dt>
+                <dd className="mt-1 text-muted-foreground">
+                  <code className="font-mono text-[0.9em] text-foreground">hive pair ADMIN@HOST --name NAME</code> sets up a Linux machine over the SSH login of an
+                  admin there. It copies a Linux <code className="font-mono text-[0.9em] text-foreground">hive</code> to the machine, and the machine takes work once
+                  it has a model login.
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold">Or let it dial out</dt>
+                <dd className="mt-1 text-muted-foreground">
+                  A machine with <code className="font-mono text-[0.9em] text-foreground">hive-hand</code> joins with a six-word code and calls out for work.
+                  It opens no port of its own. It reaches your console through an SSH tunnel or a proxy that you set up.
+                </dd>
+              </div>
+            </dl>
+            <Link href={PAGES.machines.path} className="btn btn-primary mt-8">
+              Pairing machines <ArrowRightIcon className="size-4" aria-hidden="true" />
+            </Link>
+          </div>
+          <ul className="space-y-3" aria-label="An example: three machines and the job each one takes">
+            {FLEET.map((m) => (
+              <li key={m.name} className="rounded-card border border-border bg-card p-4 shadow-card sm:p-5">
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                  <span className="font-mono text-sm font-semibold">{m.name}</span>
+                  <span className="flex flex-wrap gap-1.5">
+                    <span className="sr-only"> offers </span>
+                    {m.offers.map((w, i) => (
+                      <span key={w} className="rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+                        {w}
+                        {i < m.offers.length - 1 && <span className="sr-only">, </span>}
+                      </span>
+                    ))}
+                  </span>
+                </div>
+                <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border pt-3 text-sm">
+                  <ArrowRightIcon className="size-4 text-teal" aria-hidden="true" />
+                  <span className="sr-only">. It takes the job that </span>
+                  <span className="font-mono text-[13px] text-teal">{m.job}</span>{" "}
+                  <span className="text-muted-foreground">({m.note})</span>
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <section aria-labelledby="yours-title">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
+          <div className="max-w-2xl">
+            <Eyebrow>Yours</Eyebrow>
+            <Heading id="yours-title">You stay in charge.</Heading>
+            <p className="mt-4 text-pretty text-muted-foreground">Hive runs on your machine and answers to you. The agents do the work. What matters waits for your yes or no.</p>
+          </div>
+          <ul className="mt-12 grid gap-x-8 gap-y-9 sm:grid-cols-2 lg:grid-cols-3">
+            {YOURS.map((y) => (
+              <li key={y.title} className="flex gap-4">
+                <span className="hex inline-flex h-10 w-[2.2rem] shrink-0 items-center justify-center bg-you-soft text-you-ink">
+                  <y.icon className="size-4" aria-hidden="true" />
                 </span>
                 <div>
-                  <h3 className="font-semibold tracking-tight">{r.title}</h3>
-                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{r.text}</p>
+                  <h3 className="font-semibold tracking-tight">{y.title}</h3>
+                  <p className="mt-1 text-[15px] leading-relaxed text-muted-foreground">{y.text}</p>
                 </div>
               </li>
             ))}
@@ -311,137 +381,112 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="border-t border-border/70">
-        <div className="mx-auto flex max-w-6xl flex-col items-start gap-6 px-5 py-16 sm:px-8 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-4">
-            <span className="bg-brand inline-flex size-12 items-center justify-center rounded-[28%] text-white shadow-card">
-              <HiveMark className="size-8" />
-            </span>
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight">Bring the whole team.</h2>
-              <p className="mt-1 text-muted-foreground">Sign in to your team, or ask us for one.</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <Link href="/sign-in/" className={primary}>
-              Sign in <ArrowRightIcon className="size-4" />
-            </Link>
-            <a href="https://www.lamplitlabs.com" className={secondary}>
-              Lamplit Labs
+      <section aria-labelledby="open-title" className="border-y border-border bg-muted/40">
+        <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 sm:px-8 lg:grid-cols-[1fr_1.1fr] lg:items-start">
+          <div>
+            <Eyebrow>Open source</Eyebrow>
+            <Heading id="open-title">MIT licensed. Read it, run it, change it.</Heading>
+            <p className="mt-4 text-pretty text-muted-foreground">
+              The binary, the console, this site and the documentation live in one repository. The licence is MIT, copyright {SITE.year} {SITE.holder}.
+            </p>
+            <a href={SITE.repo} className="btn btn-primary mt-8" rel="noopener noreferrer">
+              The repository on GitHub <ArrowUpRightIcon className="size-4" aria-hidden="true" />
             </a>
           </div>
+          <ul className="grid gap-4 sm:grid-cols-2">
+            <li className="rounded-card border border-border bg-card p-5 shadow-card">
+              <h3 className="font-semibold tracking-tight">Contribute</h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
+                <a href={repoFile("CONTRIBUTING.md")} className="link" rel="noopener noreferrer">
+                  CONTRIBUTING.md
+                </a>{" "}
+                says how to send a change. The{" "}
+                <Link href="/docs/development/" className="link">
+                  development guide
+                </Link>{" "}
+                says how to build and test Hive itself.
+              </p>
+            </li>
+            <li className="rounded-card border border-border bg-card p-5 shadow-card">
+              <h3 className="font-semibold tracking-tight">Build it yourself</h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
+                Rust 1.95 or newer and Node.js 22 or newer. The console is exported and embedded in the binary at build time.{" "}
+                <Link href={`${PAGES.install.path}#from-source`} className="link">
+                  From source
+                </Link>
+                .
+              </p>
+            </li>
+            <li className="rounded-card border border-border bg-card p-5 shadow-card">
+              <h3 className="font-semibold tracking-tight">Report a problem</h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
+                Open an{" "}
+                <a href={`${SITE.repo}/issues`} className="link" rel="noopener noreferrer">
+                  issue on GitHub
+                </a>
+                . For a vulnerability, follow{" "}
+                <a href={repoFile("SECURITY.md")} className="link" rel="noopener noreferrer">
+                  SECURITY.md
+                </a>
+                .
+              </p>
+            </li>
+            <li className="rounded-card border border-border bg-card p-5 shadow-card">
+              <h3 className="font-semibold tracking-tight">The licence</h3>
+              <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
+                <a href={repoFile("LICENSE")} className="link" rel="noopener noreferrer">
+                  MIT
+                </a>
+                : use it, change it and share it, with the copyright and licence notice kept.
+              </p>
+            </li>
+          </ul>
         </div>
       </section>
-    </>
-  );
-}
 
-const TOPOLOGY = [
-  {
-    icon: UsersIcon,
-    title: "The team",
-    where: "hivefleet.dev",
-    lines: ["Signs in once, on the web", "Writes tasks, reads conversations", "Says yes or no with a passkey"],
-  },
-  {
-    icon: BotIcon,
-    title: "The team's brain",
-    where: "one per team, nobody else's",
-    lines: ["Plans tasks into jobs, wakes the leads", "Reviews every pull request", "Keeps the board, the records, the rules"],
-  },
-  {
-    icon: LaptopIcon,
-    title: "The hands",
-    where: "every engineer's machine",
-    lines: ["Enrol once, dial out", "Run the harness in a throwaway clone", "Push the branch, report back"],
-  },
-];
-
-/** Who talks to whom: the team on the web, one brain per team, a hand on every machine. */
-function Topology() {
-  return (
-    <ol className="mt-12 grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr] md:items-stretch">
-      {TOPOLOGY.map((t, i) => (
-        <li key={t.title} className="contents">
-          <div className="rounded-card border border-border bg-card p-5 shadow-card">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex size-9 items-center justify-center rounded-lg bg-teal-soft text-teal">
-                <t.icon className="size-[18px]" aria-hidden="true" />
-              </span>
-              <div>
-                <h3 className="font-semibold tracking-tight">{t.title}</h3>
-                <p className="font-mono text-xs text-muted-foreground">{t.where}</p>
-              </div>
-            </div>
-            <ul className="mt-4 space-y-1.5 text-sm text-muted-foreground">
-              {t.lines.map((l) => (
-                <li key={l} className="flex gap-2">
-                  <span className="mt-2 size-1 shrink-0 rounded-full bg-teal" aria-hidden="true" />
-                  {l}
-                </li>
-              ))}
-            </ul>
+      <section aria-labelledby="faq-title">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
+          <div className="max-w-2xl">
+            <Eyebrow>Questions</Eyebrow>
+            <Heading id="faq-title">Frequently asked questions</Heading>
           </div>
-          {i < TOPOLOGY.length - 1 && (
-            <div className="flex items-center justify-center text-muted-foreground" aria-hidden="true">
-              <ArrowRightIcon className="size-5 rotate-90 md:rotate-0" />
-            </div>
-          )}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-/** A still of the console's task page, drawn in markup so the page carries no screenshot it would have to keep fresh. */
-function Console() {
-  return (
-    <div className="rounded-card border border-border bg-card shadow-pop" aria-hidden="true">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <span className="size-2.5 rounded-full bg-border" />
-        <span className="size-2.5 rounded-full bg-border" />
-        <span className="size-2.5 rounded-full bg-border" />
-        <span className="ml-3 truncate font-mono text-xs text-muted-foreground">acme · hive console · tasks/TASK-412</span>
-      </div>
-      <div className="space-y-4 p-5 text-sm">
-        <div className="flex gap-3">
-          <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-you-soft text-xs font-semibold text-you-ink">
-            mia
-          </span>
-          <p className="rounded-xl rounded-tl-sm bg-muted px-3.5 py-2.5 leading-relaxed">
-            Rate-limit the public API per key, 600 a minute, with the usual headers. Do it the way the billing
-            service does.
-          </p>
-        </div>
-        <div className="flex gap-3">
-          <span className="bg-brand mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-white">
-            <HiveMark className="size-4" draw />
-          </span>
-          <div className="min-w-0 flex-1 space-y-2">
-            <p className="leading-relaxed text-muted-foreground">
-              Two steps. zephyr takes the middleware on dev-linux-02; aurora the headers and the docs on
-              priya-mbp, where the billing limiter was written.
+          <div className="mt-12 grid gap-x-12 gap-y-10 md:grid-cols-2">
+            {FAQS.map((f) => (
+              <div key={f.q}>
+                <h3 className="text-lg font-semibold tracking-tight">{f.q}</h3>
+                <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
+                  <Answer text={f.a} />
+                  {f.more && (
+                    <>
+                      {" "}
+                      <Link href={f.more.href} className="link whitespace-nowrap">
+                        {f.more.label}
+                      </Link>
+                      .
+                    </>
+                  )}
+                </p>
+              </div>
+            ))}
+          </div>
+          {(faqDoc || concepts) && (
+            <p className="mt-12 text-sm text-muted-foreground">
+              More answers in the docs:{" "}
+              {[concepts, faqDoc]
+                .filter((d) => d !== undefined)
+                .map((d, i) => (
+                  <span key={d.path}>
+                    {i > 0 && " and "}
+                    <Link href={d.path} className="link">
+                      {d.label}
+                    </Link>
+                  </span>
+                ))}
+              .
             </p>
-            <div className="rounded-xl border border-border bg-background p-3 font-mono text-xs leading-relaxed">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <span className="size-1.5 rounded-full bg-teal" /> zephyr-12 · api: rate-limit middleware · dev-linux-02
-              </div>
-              <div className="mt-2 space-y-1 text-foreground/80">
-                <p>$ cargo test -p api rate_limit</p>
-                <p className="text-muted-foreground">test result: ok. 14 passed; 0 failed</p>
-                <p>$ git push origin hive/zephyr/api-rate-limit</p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between rounded-xl border border-border bg-you-soft/60 px-3.5 py-2.5">
-              <span className="text-xs font-medium text-you-ink">For you · merge pull request #412? Check passed, sable reviewed.</span>
-              <span className="flex gap-1.5">
-                <span className="rounded-full bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground">Yes</span>
-                <span className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium">Not yet</span>
-              </span>
-            </div>
-          </div>
+          )}
         </div>
-      </div>
-    </div>
+      </section>
+    </Frame>
   );
 }

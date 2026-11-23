@@ -631,6 +631,12 @@ fn log_gone(err: &str) -> bool {
 /// again every poll. A branch that is not there is a 404 too, but one that
 /// says so, and another account would not find it either. The pull-request
 /// calls (`landing_pr::gh`) rotate on the same answers.
+///
+/// An account an enterprise manages is one more case: it reads a public
+/// repository outside its enterprise and may not write to it, so the read
+/// succeeds and opening the pull request is refused with `Unauthorized: As
+/// an Enterprise Managed User, you cannot access this content`. That says
+/// the account is the wrong one, and another login may open it.
 pub(crate) fn account_failed(err: &str) -> bool {
     let low = err.to_ascii_lowercase();
     if low.contains("branch not found") {
@@ -641,6 +647,7 @@ pub(crate) fn account_failed(err: &str) -> bool {
         || low.contains("http 404")
         || low.contains("could not resolve to a repository")
         || low.contains("gh auth token for")
+        || low.contains("as an enterprise managed user")
 }
 
 /// Reads the repository as the gh account that can see it. The watch's

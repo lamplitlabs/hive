@@ -334,14 +334,17 @@ End with your SUMMARY line as before, naming {page}.",
 /// `hive/task-<id>` (one whose report shows a change, else the first) and
 /// the session's for `hive/chat-<id>`. `None` for a head Hive keeps no
 /// folder for: an experiment's `evolve/...`, a person's branch, a job or a
-/// session the store does not know.
+/// session the store does not know. A head under `pulse/`, from a pull
+/// request opened before the rename, is read the same way: the reviewer
+/// takes it for Hive's own, so the report it owes is asked of it too.
 pub(crate) fn pr_evidence(
     s: &hive_store::Store,
     head: &str,
     files: &[String],
 ) -> Option<UiEvidence> {
     let home = s.home.clone();
-    if let Some(id) = head.strip_prefix(hive_harness::conversation::BRANCH_PREFIX) {
+    let rest = hive_store::agent_branch_rest(head)?;
+    if let Some(id) = rest.strip_prefix("chat-") {
         let chat = s.chat_get(id).ok().flatten()?;
         let mode = Mode::of(s, &chat.project);
         return Some(UiEvidence::of_dir(
@@ -352,7 +355,7 @@ pub(crate) fn pr_evidence(
         ));
     }
     let conn = s.conn().ok()?;
-    if let Some(task) = head.strip_prefix("hive/task-") {
+    if let Some(task) = rest.strip_prefix("task-") {
         let pr = crate::util::must_one(
             &conn,
             "SELECT detail FROM events WHERE action = 'land.pr' AND json_extract(detail, '$.task') = ? ORDER BY seq DESC LIMIT 1",
@@ -376,7 +379,6 @@ pub(crate) fn pr_evidence(
         let best = each.iter().position(|e| e.reported()).unwrap_or(0);
         return each.into_iter().nth(best);
     }
-    let rest = head.strip_prefix("hive/")?;
     let (_, job_id) = rest.split_once('/')?;
     let job = crate::jobs::job_row(&*conn, job_id.to_string());
     if job.0.is_empty() {
@@ -753,8 +755,22 @@ mod tests {
             "{why}"
         );
         assert!(pr_report_reason(&s, "hive/task-TASK-7", &files).is_some());
+        // A pull request opened before the rename owes the same report:
+        // its head is under `pulse/`, and it is Hive's own to the reviewer.
+        for head in ["pulse/aurora/job-9", "pulse/task-TASK-7"] {
+            let why = pr_report_reason(&s, head, &files).unwrap_or_default();
+            assert!(
+                why.starts_with("changes 1 UI file with no before/after report"),
+                "{head}: {why}"
+            );
+        }
         // An experiment, a person's branch or a job nobody knows: no folder, no reason.
-        for head in ["evolve/B-1", "feature/x", "hive/aurora/job-404"] {
+        for head in [
+            "evolve/B-1",
+            "feature/x",
+            "hive/aurora/job-404",
+            "pulsed/aurora/job-9",
+        ] {
             assert!(pr_evidence(&s, head, &files).is_none(), "{head}");
         }
         // No face, or the project lets it through: no reason.
@@ -769,6 +785,7 @@ mod tests {
         write_report(&dir);
         assert!(pr_report_reason(&s, "hive/aurora/job-9", &files).is_none());
         assert!(pr_report_reason(&s, "hive/task-TASK-7", &files).is_none());
+        assert!(pr_report_reason(&s, "pulse/aurora/job-9", &files).is_none());
     }
 
     #[test]

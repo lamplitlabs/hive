@@ -126,8 +126,8 @@ it, though the reading is what you get for waiting.
 | Reason (as the reviewer and the hub word it) | Why |
 | --- | --- |
 | `the owner asked to merge every pull request` | `review.merge` is `ask` |
-| `touches <path>` | a guarded path: the files the landing refused to agents (`docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/STOP`, `.github/workflows/`) and, for a branch under `hive/`, the owner's paths too (`docs/decisions/`, `.github/`, `.hive/agents/`, `.hive/roles/`, `.hive/kinds/`); `.env*` files other than `.example` and `.sample`; anything whose name contains `secret`, `credential`, `password`, `.pem`, `id_rsa` or `id_ed25519`; the other forges' CI files (`.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, `.circleci/`). An agent's merge must never move these on its own |
-| `opened by a human/other tool (branch <head>)` | the head branch is not under `hive/`: a branch you proposed with `hive land --branch`, or an experiment's `evolve/<id>` branch, which keeps its name on the forge. The reviewer reviews it - findings, a drafted review - and never merges it |
+| `touches <path>` | a guarded path: the files the landing refused to agents (`docs/evolution/constitution.md`, `docs/evolution/evaluators.md`, `docs/evolution/STOP`, `.github/workflows/`) and, for a branch under `hive/` (or `pulse/`, the prefix from before the rename), the owner's paths too (`docs/decisions/`, `.github/`, `.hive/agents/`, `.hive/roles/`, `.hive/kinds/`, and the same three folders under `.pulse/`); `.env*` files other than `.example` and `.sample`; anything whose name contains `secret`, `credential`, `password`, `.pem`, `id_rsa` or `id_ed25519`; the other forges' CI files (`.gitlab-ci.yml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `bitbucket-pipelines.yml`, `.circleci/`). An agent's merge must never move these on its own |
+| `opened by a human/other tool (branch <head>)` | the head branch is neither under `hive/` nor an experiment's `evolve/<id>`: a branch you proposed with `hive land --branch`, or one a person or another tool pushed. The reviewer reviews it - findings, a drafted review - and never merges it. An experiment's branch keeps its `evolve/<id>` name on the forge and counts as Hive's own. So does a head under `pulse/`: a pull request Hive opened before the rename is still Hive's |
 | `changes N UI files with no before/after report (...; landing.ui_report)` | the change touches a screen (a page, a view, a stylesheet) and the folder of the job, the task's jobs or the session that made it holds no `report.html` showing a change before and after, while `landing.ui_report` is `require` for the project ([Before/after reports](reports.md)). It names work the agent left undone rather than the shape of the change: a review queued once the report shows the change (a later commit on the pull request) no longer has it |
 | `the reviewer failed twice` | two review jobs of the same head ended without a verdict ([When the review fails](#when-the-review-fails)); this one is not read from the diff but from the attempts |
 
@@ -239,8 +239,8 @@ pull request you close unmerged sends a task back to its lead with the pull
 request's words; a job's branch stays on the remote. A Merge pressed on a
 pull request somebody merged or closed meanwhile asks for nothing.
 
-To see every pull request before it merges, set `hive settings review.merge
-ask`: the reviewer still reads each one and leaves its findings, so what you
+To see every pull request before it merges, run `hive settings set
+review.merge ask`: the reviewer still reads each one and leaves its findings, so what you
 get is a reviewed pull request and a button, not a bare diff.
 `review.max_files` and `review.max_lines` set where the brief starts asking
 for the file-by-file reading ([The complexity rule](#the-complexity-rule));
@@ -334,7 +334,7 @@ and `review.merged`, `land.merged` or `land.pr-closed` settle it
 | `review.max_files` | `20` | a pull request changing more files than this goes to you; generated paths are not counted |
 | `review.max_lines` | `600` | a pull request adding and deleting more lines than this together goes to you; generated paths are not counted |
 
-`hive settings review.merge ask` sets one; the rest of the settings are in
+`hive settings set review.merge ask` sets one; the rest of the settings are in
 [self-improvement.md](self-improvement.md#evolution-runner-caps). An evolve
 variant cannot set any of the three: they are off the variant allowlist, so
 the loop changes how an agent reviews, never what it may merge.

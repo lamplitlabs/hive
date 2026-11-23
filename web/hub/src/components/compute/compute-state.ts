@@ -150,3 +150,12 @@ export function requestReason(reason: string | null | undefined, max = 120): str
   const first = r.split(/(?<=[.!?])\s/)[0] || r;
   return first.length > max ? first.slice(0, max - 1).trimEnd() + "…" : first;
 }
+
+// The line under "Waiting for you" on the Machines page. Two things can wait
+// there: an agent's request for an extra machine, and Hive's own question
+// about cleaning up after the other agent programs. The line says which, so
+// it does not name a request when only the question waits.
+export function waitingNote(requests: number, cleanupQuestion: boolean): string {
+  if (requests > 0) return "An agent asked for an extra machine. It starts only if you approve.";
+  return cleanupQuestion ? "Hive asks before it cleans up after other agent programs on this machine." : "";
+}

@@ -37,7 +37,8 @@ export function SectionHeading({
           <span className="truncate">{children}</span>
           {hasCount ? <span className={cn("tnum inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-xs font-medium", countTone === "you" ? "bg-you-soft text-you-ink" : "bg-muted text-muted-foreground")}>{count}</span> : null}
         </Heading>
-        {note ? <p className="min-w-0 flex-1 truncate text-sm leading-6 text-muted-foreground max-sm:basis-full">{note}</p> : null}
+        {/* One line beside the heading; on a phone it has a line of its own and wraps, so a sentence is not cut off mid-way. */}
+        {note ? <p className="min-w-0 flex-1 truncate text-sm leading-6 text-muted-foreground max-sm:basis-full max-sm:whitespace-normal">{note}</p> : null}
       </div>
       {action ? <div className="flex shrink-0 items-center gap-2 text-sm leading-6 text-link [&_a]:text-link [&_a:hover]:underline">{action}</div> : null}
     </div>

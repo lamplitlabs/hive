@@ -293,6 +293,45 @@ impl LocalExec {
     pub(crate) fn name(&self) -> String {
         self.row.str("name")
     }
+    /// Runs git in the clone; a failure is written to the job log with
+    /// everything git said - its exit code, stderr, stdout (`commit` reports
+    /// "nothing to commit" there) and a timeout or spawn error - so a
+    /// failed runner commit is never unexplained in the log.
+    pub(crate) fn clone_git(&self, args: &[&str]) -> Result<crate::util::GitResult> {
+        let r = crate::util::git(&self.clone_dir, args);
+        if r.ok() {
+            return Ok(r);
+        }
+        let cause = git_failure_cause(&r);
+        let words = args.first().copied().unwrap_or("");
+        let line = format!(
+            "git {words} failed in the clone {} (exit {}): {cause}",
+            self.clone_dir, r.code
+        );
+        self.log.add(line.clone());
+        Err(anyhow!(line))
+    }
+}
+
+/// What a failed git said, in one line: its error, stderr and stdout,
+/// whichever are there, or that it said nothing.
+fn git_failure_cause(r: &crate::util::GitResult) -> String {
+    let parts: Vec<String> = [
+        r.err.clone().unwrap_or_default(),
+        r.stderr.trim().to_string(),
+        r.stdout.trim().to_string(),
+    ]
+    .into_iter()
+    .filter(|p| !p.is_empty())
+    .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+    .collect();
+    if parts.is_empty() {
+        "git printed nothing".to_string()
+    } else {
+        crate::util::trunc(&parts.join("; "), 600)
+    }
+}
+impl LocalExec {
     pub(crate) fn branch_to_clone(&self) -> String {
         let d = self.project.str("default_branch");
         if !d.is_empty() && d != "HEAD" {
@@ -414,14 +453,11 @@ impl Executor for LocalExec {
         if lock.exists() {
             let _ = std::fs::remove_file(&lock);
         }
-        crate::util::git_check(&self.clone_dir, &["add", "-u"])?;
+        self.clone_git(&["add", "-u"])?;
         // `--no-verify` skips pre-commit and commit-msg; the clone's
         // prepare-commit-msg hook still adds the provenance trailers and
         // the included identity still signs with the run key (ADR-022).
-        crate::util::git_check(
-            &self.clone_dir,
-            &["commit", "-q", "--no-verify", "-m", message],
-        )?;
+        self.clone_git(&["commit", "-q", "--no-verify", "-m", message])?;
         Ok(())
     }
     fn owner_paths_touched(&self, base: &str) -> Vec<String> {
@@ -1431,6 +1467,70 @@ mod tests {
         env.iter()
             .find_map(|kv| kv.strip_prefix(&format!("{key}=")).map(ToOwned::to_owned))
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn verify_git_failures_are_written_to_the_job_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        // Not a repository: `add -u` fails and says why on stderr.
+        let e = LocalExec {
+            log: RunLog::default(),
+            clone_dir: root.clone(),
+            ..Default::default()
+        };
+        let err = e.commit_left_work("left work").unwrap_err().to_string();
+        let log = e.log.text();
+        assert!(log.contains("git add failed in the clone"), "{log}");
+        assert!(log.contains("not a git repository"), "{log}");
+        assert!(err.contains("not a git repository"), "{err}");
+
+        // A clean repository: `commit` fails with an empty stderr and says
+        // "nothing to commit" on stdout; the log still names the cause.
+        hive_testutil::git(&["-C", root.as_str(), "init", "-q"]).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+        hive_testutil::git(&["-C", root.as_str(), "add", "a.txt"]).unwrap();
+        hive_testutil::git(&[
+            "-C",
+            root.as_str(),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ])
+        .unwrap();
+        let e = LocalExec {
+            log: RunLog::default(),
+            clone_dir: root.clone(),
+            ..Default::default()
+        };
+        let err = e.commit_left_work("left work").unwrap_err().to_string();
+        let log = e.log.text();
+        assert!(log.contains("git commit failed in the clone"), "{log}");
+        assert!(log.contains("nothing to commit"), "{log}");
+        assert!(err.contains("nothing to commit"), "{err}");
+    }
+
+    #[test]
+    fn git_failure_cause_says_when_git_printed_nothing() {
+        let r = crate::util::GitResult {
+            code: 1,
+            ..Default::default()
+        };
+        assert_eq!(git_failure_cause(&r), "git printed nothing");
+        let r = crate::util::GitResult {
+            code: -1,
+            err: Some("timed out after 60s".into()),
+            stderr: "fatal:\n  lock".into(),
+            ..Default::default()
+        };
+        assert_eq!(git_failure_cause(&r), "timed out after 60s; fatal: lock");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { CirclePauseIcon, EraserIcon, EyeOffIcon, PlayIcon, RotateCcwIcon, ShieldAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Clamp } from "@/components/hive/clamp";
 import { ConfirmDialog } from "@/components/hive/confirm";
+import { DocText } from "@/components/hive/doc-text";
 import { StatusBadge } from "@/components/hive/status-badge";
 import { Mono, ToneBadge, When } from "@/components/hive/who";
 import { cn } from "@/lib/utils";
@@ -132,6 +133,10 @@ export function SettingKey({ name, className }: { name: string; className?: stri
 // (folded, with "More" when it runs longer - ADR-042 D5), then the quiet
 // default/changed line with the key.
 export function RowHead({ s, title, badge, children }: { s: Setting; title?: React.ReactNode; badge?: React.ReactNode; children?: React.ReactNode }) {
+  // A documentation file the help names ("docs/security.md") is a link to its
+  // page on the website. One node per text, so Clamp measures it once.
+  const text = settingHelp(s.name, s.description);
+  const help = useMemo(() => <DocText>{text}</DocText>, [text]);
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -143,7 +148,11 @@ export function RowHead({ s, title, badge, children }: { s: Setting; title?: Rea
         ) : null}
         {badge}
       </div>
-      {children ?? <Clamp lines={2} className="text-[13px] text-muted-foreground">{settingHelp(s.name, s.description)}</Clamp>}
+      {children ?? (
+        <Clamp lines={2} className="text-[13px] text-muted-foreground">
+          {help}
+        </Clamp>
+      )}
       <RowMeta s={s} className="mt-0.5" />
     </div>
   );

@@ -107,12 +107,7 @@ pub const PROBE_FILES: &[&str] = &[
 
 /// Where a clone's skill folders live, the layout Claude Code, Copilot and
 /// the agents.md convention share (hive-harness reads the same list).
-const SKILL_DIRS: &[&str] = &[
-    ".hive/skills",
-    ".claude/skills",
-    ".github/skills",
-    ".agents/skills",
-];
+const SKILL_DIRS: &[&str] = hive_store::REPO_SKILL_DIRS;
 
 impl Shape {
     pub fn has(&self, file: &str) -> bool {

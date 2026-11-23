@@ -99,7 +99,7 @@ const DAEMON_CLUSTERS: Cluster[] = [
   { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes", "update.latest_url"] },
   { title: "Project code", keys: ["brain.code"] },
   { title: "Staying awake", keys: ["daemon.keep_awake"] },
-  { title: "Reaching the console from anywhere", keys: ["hub.allow_remote"] },
+  { title: "Reaching the console from anywhere", keys: ["hub.allow_remote", "hub.hosts"] },
   { title: "What this machine offers", keys: ["machine.labels", "machine.reserve"] },
   { title: "Failed work", keys: ["daemon.recover", "daemon.recover_days", "daemon.recover_limit"] },
   { title: "Cleanup and disk space", keys: ["daemon.sweep", "daemon.min_free_mb", "daemon.sweep_grace_minutes", "daemon.sweep_branch_days", "daemon.chat_worktree_keep_days", "daemon.sweep_keep_days", "daemon.log_keep_days", "daemon.log_max_mb", "daemon.transcript_keep_days", "daemon.artifact_keep_days", "daemon.sweep_runners", "daemon.runner_keep_days", "daemon.vacuum_free_mb", "daemon.archive_days", "daemon.build_cache", "daemon.build_cache_keep_days", "hygiene.cargo_target", "hygiene.cargo_target_hours"] },
@@ -206,7 +206,7 @@ const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "provider", title: "Provider addresses", icon: iconOf("provider") },
   { id: "other", title: "Other", icon: iconOf("other") },
 ];
-const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", appearance: "general", notify: "general" };
+const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", appearance: "general", notify: "general", "runner-controls": "daemon" };
 const pageOf = (id: string) => PAGE_OF[id] ?? id;
 
 // The hash as a tiny store: the section links are plain anchors, so the
@@ -273,8 +273,8 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   // Owner-private: the hub answers "[owner-private]" instead of the real path once set.
   { name: "evolve.heldout_dir", value: "", default: "", kind: "identifier", min: null, choices: null, description: "path to the owner's held-out evaluators; never shown to agents", secret: true },
   { name: "evolve.draft_hours", value: "24", default: "24", kind: "count", min: 0, choices: null, description: "hours between the drafting jobs the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046); 0 leaves drafting to the console's Draft it for me button" },
-  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off", "release"], description: "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - a hosted brain holds no Hive source (ADR-070 rule 1); off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
-  { name: "brain.code", value: "clone", default: "clone", kind: "choice", min: null, choices: ["clone", "none"], description: "clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md)" },
+  { name: "daemon.self_update", value: "on", default: "on", kind: "choice", min: null, choices: ["on", "off", "release"], description: "on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - for a machine that holds no Hive source, such as one installed from a release; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)" },
+  { name: "brain.code", value: "clone", default: "clone", kind: "choice", min: null, choices: ["clone", "none"], description: "clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the project lead's jobs and the reflection (kinds lead and reflect), which run in an empty workspace and plan from the board, the task text and the diffs hands report; every job that works in the code waits for a hand, check and watch scripts are held, and a review job, which needs the code and the store both, has no machine to run on yet (ADR-070 rule 6, docs/security.md)" },
   { name: "daemon.self_update_retry_minutes", value: "60", default: "60", kind: "count", min: 1, choices: null, description: "minutes the daemon waits before building again after a failed build or smoke test" },
   { name: "daemon.keep_awake", value: "off", default: "off", kind: "choice", min: null, choices: ["off", "on", "always"], description: "on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say" },
   { name: "machine.labels", value: "", default: "", kind: "text", min: null, choices: null, description: "what this machine offers beyond its OS and architecture, as words a project or job can need (hive.yaml needs:, hive job needs): xcode and docker are found on their own; add the rest here, comma-separated, such as gpu, android or a tool's name" },
@@ -301,7 +301,7 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "dependencies.security_updates": { on: "On: agents fix the alerts, one small update at a time", off: "Off: the alerts wait for me" },
   "dependencies.major_updates": { choices: { ask: "Ask me: a major upgrade waits in For you with Yes / No", auto: "Automatic: agents do major upgrades like any other fix" } },
   "pipeline.watch": { choices: { off: "Off: I watch the checks myself", watch: "Tell me when a check fails", fix: "Tell me and have an agent fix it" } },
-  "review.merge": { choices: { auto: "Agents merge small, safe pull requests themselves", ask: "Ask me: every merge waits for me" } },
+  "review.merge": { choices: { auto: "Agents merge safe pull requests themselves", ask: "Ask me: every merge waits for me" } },
   "compute.provider": { choices: { azure: "Azure", aws: "AWS", gcp: "Google Cloud", multipass: "Multipass (on this computer)" } },
   "compute.auto_approve": { on: "On: requests within the limits start by themselves", off: "Off: every request waits for you" },
   "compute.self_heal": { on: "On: Hive gives it a fresh login", off: "Off: a refused login stays refused" },

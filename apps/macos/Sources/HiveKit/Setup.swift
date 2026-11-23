@@ -308,24 +308,39 @@ public enum SetupReader {
         return words
     }
 
-    /// ~/.hive, or ~/.pulse while only the home from before the rename
-    /// exists (the same rule as `hive_store::default_home_in`).
+    /// ~/.hive, or ~/.pulse while an install from before the rename still
+    /// lives there: when it is the only one of the two that exists, and when
+    /// both exist but the store is in ~/.pulse and ~/.hive holds none (the
+    /// installer and `cargo install --root ~/.hive` make ~/.hive for the
+    /// program alone). The same rule as `hive_store::default_home_in`.
     static func defaultHome(userHome: URL, fileManager: FileManager) -> URL {
         let hive = userHome.appendingPathComponent(".hive", isDirectory: true)
         let legacy = userHome.appendingPathComponent(".\(HiveSetup.legacyName)", isDirectory: true)
         var isDir: ObjCBool = false
-        if fileManager.fileExists(atPath: hive.path) { return hive }
-        if fileManager.fileExists(atPath: legacy.path, isDirectory: &isDir), isDir.boolValue { return legacy }
+        guard fileManager.fileExists(atPath: legacy.path, isDirectory: &isDir), isDir.boolValue else { return hive }
+        if !fileManager.fileExists(atPath: hive.path) { return legacy }
+        if !holdsStore(hive, fileManager: fileManager), holdsStore(legacy, fileManager: fileManager) { return legacy }
         return hive
+    }
+
+    /// Whether a home holds a store file, under its current name or the
+    /// one from before the rename.
+    static func holdsStore(_ home: URL, fileManager: FileManager) -> Bool {
+        ["hive.sqlite", "\(HiveSetup.legacyName).sqlite"].contains { name in
+            var isDir: ObjCBool = false
+            return fileManager.fileExists(atPath: home.appendingPathComponent(name).path, isDirectory: &isDir) && !isDir.boolValue
+        }
     }
 
     /// <home>/bin/hive (`cargo install --root ~/.hive`), else the first
     /// other install that exists, else <home>/bin/hive so the app can say
-    /// where it looked.
+    /// where it looked. ~/.hive/bin/hive is among the others: the installer
+    /// puts the program there even when the home is still ~/.pulse.
     static func defaultBinary(home: URL, userHome: URL, fileManager: FileManager) -> URL {
         let primary = home.appendingPathComponent("bin/hive")
         let candidates = [
             primary,
+            userHome.appendingPathComponent(".hive/bin/hive"),
             userHome.appendingPathComponent(".cargo/bin/hive"),
             URL(fileURLWithPath: "/opt/homebrew/bin/hive"),
             URL(fileURLWithPath: "/usr/local/bin/hive"),

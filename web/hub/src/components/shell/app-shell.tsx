@@ -110,13 +110,15 @@ function SidebarHeader() {
           "brand-link flex h-10 min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 collapsed:justify-center collapsed:px-0",
           focusRing,
         )}
-        aria-label={"Hive on " + name + ": home"}
+        // The name holds the two lines the link shows, in their order
+        // (WCAG 2.5.3), then where it leads.
+        aria-label={"Hive, " + name + ": home"}
       >
         <HiveMark />
         <span className="min-w-0 collapsed:sr-only">
           <span className="block truncate text-base font-semibold leading-tight tracking-tight">
             Hive
-          </span>
+          </span>{" "}
           <span
             className="block truncate text-xs leading-tight text-muted-foreground"
             title={org?.host || undefined}
@@ -214,7 +216,8 @@ function SearchRow() {
         type="button"
         data-palette-trigger=""
         onClick={(e) => setPaletteOpen(true, e.currentTarget)}
-        aria-label="Search (Command K)"
+        // Named by its word, "Search"; the shortcut is in aria-keyshortcuts,
+        // and the hint drawn beside the word is for the eye only.
         aria-haspopup="dialog"
         aria-keyshortcuts="Control+k Meta+k"
         className={cn(
@@ -230,7 +233,9 @@ function SearchRow() {
         <span className="min-w-0 flex-1 truncate text-left collapsed:sr-only">
           Search
         </span>
-        <Kbd className="collapsed:hidden">⌘K</Kbd>
+        <Kbd className="collapsed:hidden" aria-hidden>
+          ⌘K
+        </Kbd>
       </button>
     </RailTip>
   );

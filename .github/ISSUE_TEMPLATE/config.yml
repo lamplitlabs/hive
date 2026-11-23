@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://hivefleet.dev/docs/
+    about: How Hive works, page by page. Read this first.
+  - name: Report a security problem
+    url: https://github.com/lamplitlabs/hive/security/policy
+    about: Do not open a public issue for a vulnerability. The security policy says how to report it privately.

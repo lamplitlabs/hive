@@ -583,6 +583,14 @@ echo "$1 $2 as=${{GH_TOKEN#tok-}}" >> "$d/calls"
 repo=""; prev=""
 for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
 if [ "$repo" = rot/r ] && [ "$GH_TOKEN" = tok-seer-x ]; then echo '[]'; exit 0; fi
+if [ "$repo" = rot/public ]; then
+  if [ "$1 $2" = "pr create" ] && [ -z "$GH_TOKEN" ]; then
+    echo "pull request create failed: GraphQL: Unauthorized: As an Enterprise Managed User, you cannot access this content (createPullRequest)" >&2
+    exit 1
+  fi
+  if [ "$1 $2" = "pr create" ]; then echo "https://github.com/rot/public/pull/1"; else echo '[]'; fi
+  exit 0
+fi
 echo "GraphQL: Could not resolve to a Repository with the name '$repo'. (repository)" >&2
 exit 1
 "#,
@@ -653,6 +661,62 @@ exit 1
         );
         assert!(!err.contains("tok-"), "token in the error: {err}");
         assert_eq!(remembered("rot/closed"), None);
+    }
+
+    /// A login an enterprise manages reads a public repository and may not
+    /// open a pull request on it. The refusal names the account as the
+    /// wrong one, so the pull request is opened as the login that may, and
+    /// that login is the one remembered for the repository.
+    #[test]
+    fn a_pull_request_a_managed_login_may_not_open_is_opened_as_the_login_that_may() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path) = rotating_gh();
+        let calls = || {
+            std::fs::read_to_string(bin.path().join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let logins = || crate::gh_auth::Logins {
+            active: "pat-x".into(),
+            accounts: vec!["pat-x".into(), "seer-x".into()],
+        };
+        remember("rot/public", None);
+        let root = std::env::temp_dir().display().to_string();
+        // Reading works as the managed login, so nothing is remembered yet.
+        let listed = gh_with(
+            &root,
+            "rot/public",
+            &["pr", "list", "--state", "open"],
+            Duration::from_secs(20),
+            &logins,
+        );
+        assert_eq!(listed.as_deref().map(str::trim), Ok("[]"), "{listed:?}");
+        assert_eq!(remembered("rot/public"), None);
+        let opened = gh_with(
+            &root,
+            "rot/public",
+            &["pr", "create", "--head", "hive/a/job-1"],
+            Duration::from_secs(20),
+            &logins,
+        );
+        assert_eq!(
+            opened.as_deref().map(str::trim),
+            Ok("https://github.com/rot/public/pull/1"),
+            "{opened:?}"
+        );
+        assert_eq!(
+            calls(),
+            vec![
+                "pr list as=".to_string(),
+                "pr create as=".to_string(),
+                "pr create as=seer-x".to_string()
+            ]
+        );
+        assert_eq!(remembered("rot/public").as_deref(), Some("seer-x"));
+        remember("rot/public", None);
     }
 
     #[test]

@@ -57,6 +57,49 @@ export function opensRow(key: string): boolean {
   return key === "Enter" || key === " " || key === "Spacebar";
 }
 
+// ----- what the row's opener is called ---------------------------------------
+
+// The words of a text as "Label in Name" (WCAG 2.5.3) compares them: what
+// stands in brackets left out, every run of anything that is not a letter or
+// a digit a gap between words, in lowercase. A control's spoken name has to
+// hold the words it shows, side by side and in their order, so someone who
+// says what they see reaches it.
+export function nameWords(text: string): string[] {
+  let t = (text || "").normalize("NFKD");
+  for (let before = ""; before !== t; ) {
+    before = t;
+    t = t.replace(/\([^()]*\)/g, " ");
+  }
+  return t
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
+// Whether `name` holds the words of `shown`, next to each other and in order.
+export function holdsWords(name: string, shown: string): boolean {
+  const need = nameWords(shown);
+  if (!need.length) return true;
+  const have = nameWords(name);
+  for (let i = 0; i + need.length <= have.length; i++) if (need.every((w, k) => w === have[i + k])) return true;
+  return false;
+}
+
+// The name of the control that opens a row. The control shows the row's
+// title; `label` is what the caller wants it called, usually the title with
+// the row's kind before it ("Decision waiting: Version the client API"). A
+// label that holds the title's words is the name. One that does not gets the
+// title put first, so the name always holds what the control shows. With no
+// label the title names the control by itself (undefined). A title drawn from
+// several nodes (`title` undefined) cannot be compared: the label stands.
+export function openerName(label: string | undefined | null, title: string | undefined): string | undefined {
+  const l = (label || "").trim();
+  if (!l) return undefined;
+  if (title === undefined || holdsWords(l, title)) return l;
+  const head = title.trim().replace(/[.:;,\s]+$/, "");
+  return head + (/[?!]$/.test(head) ? " " : ". ") + l;
+}
+
 // Whether a keydown that reached the list started inside a text field
 // (where J/K are letters, not commands).
 export function inTextField(tag: string | null | undefined, editable: boolean | string | null | undefined): boolean {
