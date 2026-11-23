@@ -17,11 +17,13 @@
 //   JSON-LD that parses; no two pages share a title or a description;
 // - sitemap.xml lists exactly the pages that were exported, robots.txt names
 //   it, llms.txt lists every page, the manifest's icons exist;
+// - the pictures of the docs under /docs-media/ are raster pictures only;
 // - the pages the site writes itself keep to the words it was given: no em
 //   dash, no hype, nothing of the hosted product.
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import zlib from "node:zlib";
 import { toString } from "hast-util-to-string";
 import rehypeParse from "rehype-parse";
 import { unified } from "unified";
@@ -380,6 +382,19 @@ else {
 }
 
 for (const name of ["og.png", "icon.svg", "apple-icon.png", "docs/search.json"]) if (!isFile(path.join(OUT, name))) fail(`/${name}`, "is missing");
+
+// The pictures of the docs are copied into the export as the repository has them. Only a raster picture may be:
+// an SVG or a page there would run its script as this site when someone opens it by its address.
+for (const f of files.map(rel)) {
+  if (f.startsWith("docs-media/") && !/\.(png|webp|jpe?g|gif|avif)$/i.test(f)) fail(`/${f}`, "is not a raster picture, and a file that can carry script is not served from the site's own address (scripts/prebuild.mjs copies docs/ pictures)");
+}
+
+// The search index grows with the docs: every word of every section is in it. Its size is said here, not capped.
+const searchJson = path.join(OUT, "docs", "search.json");
+if (isFile(searchJson)) {
+  const bytes = fs.readFileSync(searchJson);
+  notes.push(`the search index /docs/search.json is ${Math.round(bytes.length / 1024)} KB, ${Math.round(zlib.gzipSync(bytes).length / 1024)} KB gzipped; a reader fetches it on the first use of the search box.`);
+}
 notes.push(isFile(path.join(OUT, "install.sh")) ? "/install.sh is in the export." : "/install.sh is not in the export: scripts/install.sh was not there when the site was built.");
 
 const hostedDocs = pages.filter((p) => p.path.startsWith("/docs/") && /\bclerk\b/i.test(p.text)).map((p) => p.path);

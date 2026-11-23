@@ -96,7 +96,8 @@ repository-relative part and checked at the project's HEAD. A card whose own
 lead's brief lists each held card with its gate so the fleet supplies the
 evidence or closes the thread - and the card's `File:` (what the job would
 edit) must stay off owner-only paths (`docs/evolution/constitution.md`,
-`evaluators.md`, `STOP`, `docs/decisions/`, `.github/`): one owner-only path
+`evaluators.md`, `STOP`, `docs/decisions/`, `.github/`, `.hive/agents/`,
+`.hive/roles/`, `.hive/kinds/`): one owner-only path
 among its files holds the card as `points at owner-only paths`, while a card on
 agent-writable files may cite an ADR or a workflow as its `Signal:` evidence
 (only a card that names no file is read by its Signal's paths), and a card held
@@ -270,8 +271,9 @@ the checkout and files the complete text with every placeholder replaced as a
 *draft* - `hive record draft ID --body-file F [--note ...]`, refused while a
 `<placeholder>` remains or a protected section (Hard stops, Kill switch,
 Amendments) differs from the current text. A draft never changes the record:
-the console shows it as `draft ready` on the project row and the Evolution tab,
-and one **Adopt** (or `hive record adopt ID [--words ...]`, human only) writes
+the console lists it on **For you** under **Drafts** and on the project's
+**Self-improvement** tab, and **Read & adopt**, then **Adopt** (or
+`hive record adopt ID [--words ...]`, human only) writes
 it as the next revision authored by `human` with the drafting agent in the
 note; **Discard** (`hive record discard ID`) drops it; `hive record drafts
 [--project P]` lists what waits. The switch `records.auto_adopt` (off by
@@ -323,7 +325,7 @@ the agents have seen without ever changing all at once; since the held-out
 marker is part of the baseline cache key, the next measurement re-measures
 every baseline. `hive settings set evolve.heldout
 owner` hands the step back to you: `hive evolve setup DIR` or the console's
-Held-out fixtures dialog, which also work under `auto` and are never
+**Private tests** dialog, which also work under `auto` and are never
 overwritten or renewed. Product fixtures - your project's own checks - are yours to add
 with `hive evolve fixture add`. Every scorer runs against a frozen clone: a
 symlink or hardlink that leaves the clone, a special file, or a tree that
@@ -554,8 +556,9 @@ filter that matched nothing because the test did not exist yet - counts as
 failing, which is how a new test proves itself), still fails with the
 change, or, for a check that prints a count, did not make the count fall; the
 summary says which. An experiment from such a card lands only when its
-`card-check` fixture turned from failing to passing (or the other fixtures
-improved) with no fixture regressed: a tie means the check did not turn, and
+`card-check` fixture turned from failing to passing (or the total score rose
+by at least the tolerance; totals are compared, so one fixture may fall
+while the total rises): a tie means the check did not turn, and
 it does not land whatever `evolve.land_neutral` says. The fixtures saw almost
 none of the changes the loop made (76 of 85 experiments tied by 2026-11-08),
 so the card's own check is the measurement that moves. `hive settings set
@@ -593,8 +596,8 @@ fixtures measure agent safety, not the quality of the project's product;
 baseline rows are not completed improvement cycles. The console reports
 baselines and variants separately.
 
-Open **Project → Evolution → Experiment planning** for the current candidate
-or blocking reason. `hive evolve status` reports the same planning state:
+Open the project's **Self-improvement** tab and read **Next experiment** for
+the current candidate or blocking reason. `hive evolve status` reports the same planning state:
 gated, blocked, waiting for an eligible suggestion, writing an experiment
 card, ready but not dispatched, queued, in flight, or finalizing. When the
 planner is blocked on something only the owner can do (an instruction-shaped
@@ -890,16 +893,16 @@ record, read with `hive record show WF-evolve`.
 | --- | --- | --- |
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
-| `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (variant score = baseline score) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
+| `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (the variant's total within `evolve.tolerance` of the baseline's) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
 | `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - retires a fixture that flipped the same commit both ways twice, derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
 | `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `review.merge` | `auto` | `auto`: the review job merges a pull request no complexity reason holds back; `ask`: every pull request is handed to you with the reviewer's findings under **Needs your review**, and the reviewer merges nothing ([The reviewer](review.md)). |
 | `git.github_app.app_id`, `git.github_app.installation_id`, `git.github_app.private_key_ref` | empty | A GitHub App every git command Hive runs inherits (ADR-070 step 3): its id, its installation's id, and where its private key lives (`op://`, `keychain://`, `file://`; only the brain reads it). With all three set, pushes, fetches and `gh` on a repository the App covers use a one-hour token for that one repository - a hand gets it for its one push - and fall back to `push.credential` and this machine's logins when GitHub will not mint one ([Credentials](landing.md#one-git-login-for-every-machine-a-github-app-adr-070-step-3)). |
-| `review.max_files` | `20` files | A pull request that changes more files than this goes to you instead of merging; generated paths (`web/hub/out/**`, lockfiles, `dist/`, `out/`, `target/`, minified files) are not counted. |
-| `review.max_lines` | `600` lines | A pull request that adds and deletes more lines than this together goes to you instead of merging; the same paths are left out of the count. |
-| `landing.base_red_retry_minutes` | `10` minutes | How long a project's held work waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
+| `review.max_files` | `20` files | A pull request that changes more files than this is read file by file; the reviewer still merges one whose every file the title and body explain, and size alone hands nothing to you. Generated paths (`web/hub/out/**`, lockfiles, `dist/`, `out/`, `target/`, minified files) are not counted. |
+| `review.max_lines` | `600` lines | The same for a pull request that adds and deletes more lines than this together; the same paths are left out of the count. |
+| `landing.base_red_retry_minutes` | `10` minutes | How long a local landing waits before the daemon looks again after the default branch itself failed verify ([A red default branch](landing.md#a-red-default-branch)). |
 | `landing.setup_repair` | `on` | `on`: a project setup that fails on its own default branch - twice the same way in a worker clone, or at a local landing - queues one repair job (source `setup:SLUG`, at most three a day per project) that runs without that setup and fixes the recipe, the lockfile or the tree; `off` only marks the machine unfit, as before. |
 | `landing.merge_check` | `on` | A Cargo project's task branch is compiled (`cargo check --workspace --all-targets`) after its job branches are merged and before it is pushed; a merged tree that does not compile goes to one fix job on the task (`land.merge-broken`), then is held for you ([When delivery fails](landing.md#when-delivery-fails)); `off` opens the pull request from whatever merges without a conflict. |
 | `landing.auto_stash` | `on` | A dirty checkout on the default branch is stashed around the daemon's fast-forward from the upstream (and around a local landing); `off` leaves it alone and records `land.sync-skipped` at most once an hour ([Delivery](landing.md#the-local-default-branch-follows-the-upstream)). |

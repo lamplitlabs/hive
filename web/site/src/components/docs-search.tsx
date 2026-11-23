@@ -1,10 +1,11 @@
 "use client";
 
-// The search box over the docs: titles and headings, from the small index the
-// build writes to /docs/search.json. The index is fetched the first time the
-// box is used, never before, and a result is a plain link.
+// The search box over the docs and the site's own pages: titles, headings,
+// the commands and settings a section names and the words of its text, from
+// the index the build writes to /docs/search.json. The index is fetched the
+// first time the box is used, never before, and a result is a plain link.
 import { useId, useRef, useState } from "react";
-import { searchDocs } from "@/lib/search";
+import { MIN_PREFIX, searchDocs } from "@/lib/search";
 import type { SearchEntry } from "@/lib/search";
 
 const MAX = 10;
@@ -82,7 +83,7 @@ export function DocsSearch({ className = "" }: { className?: string }) {
         id={id}
         type="search"
         role="combobox"
-        aria-expanded={show}
+        aria-expanded={show && hits.length > 0}
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={show && hits[active] ? `${id}-hit-${active}` : undefined}
@@ -103,34 +104,48 @@ export function DocsSearch({ className = "" }: { className?: string }) {
         className="h-10 w-full rounded-xl border border-border bg-card pr-3 pl-9 text-sm text-foreground placeholder:text-muted-foreground"
       />
       <div
-        id={listId}
-        role="listbox"
-        aria-label="Search results"
         hidden={!show}
         // A press on a result must not take the focus from the box, or the list would close under the pointer.
         onMouseDown={(e) => e.preventDefault()}
         className="absolute top-12 right-0 left-0 z-40 max-h-[60dvh] overflow-y-auto rounded-xl border border-border bg-background p-1.5 shadow-pop"
       >
-        {hits.map((h, i) => (
-          <a
-            key={h.href}
-            id={`${id}-hit-${i}`}
-            role="option"
-            aria-selected={i === active}
-            href={h.href}
-            tabIndex={-1}
-            // A heading of the page you are on is only a jump: the list must not stay open over it.
-            onClick={() => setOpen(false)}
-            onMouseEnter={() => setActive(i)}
-            className="block rounded-lg px-3 py-2 text-sm aria-selected:bg-muted"
-          >
-            <span className="block font-medium text-foreground">{h.title}</span>
-            <span className="block text-xs text-muted-foreground">{h.where}</span>
-          </a>
-        ))}
+        {/* A list of options holds options and nothing else: what is said when there are none stands beside it. */}
+        <div id={listId} role="listbox" aria-label="Search results" hidden={hits.length === 0}>
+          {hits.map((h, i) => (
+            <a
+              key={h.href}
+              id={`${id}-hit-${i}`}
+              role="option"
+              aria-selected={i === active}
+              href={h.href}
+              tabIndex={-1}
+              // A heading of the page you are on is only a jump: the list must not stay open over it.
+              onClick={() => setOpen(false)}
+              onMouseEnter={() => setActive(i)}
+              className="block rounded-lg px-3 py-2 text-sm aria-selected:bg-muted"
+            >
+              <span className="block font-medium text-foreground">{h.title}</span>
+              <span className="block text-xs text-muted-foreground">
+                {h.where}
+                {h.why && (
+                  <>
+                    {" · names "}
+                    <code className="font-mono text-[0.95em] text-foreground">{h.why}</code>
+                  </>
+                )}
+              </span>
+            </a>
+          ))}
+        </div>
         {show && hits.length === 0 && (
           <p className="px-3 py-2 text-sm text-muted-foreground">
-            {entries ? "No title or heading in the docs has these words." : failed ? "The search index did not load. Try again in a moment." : "Loading the index."}
+            {entries
+              ? query.trim().length < MIN_PREFIX
+                ? "Keep typing: a word, or the name of a command or a setting."
+                : "No page or section has all these words. Try fewer words, or the name of a command or a setting."
+              : failed
+                ? "The search index did not load. Try again in a moment."
+                : "Loading the index."}
           </p>
         )}
       </div>

@@ -523,6 +523,23 @@
     height: auto;
     border-radius: 0.6rem;
   }
+  /* A picture of the docs: framed, and a link to the picture at its own size. */
+  .prose a.shot {
+    display: block;
+    margin: 1.4em 0;
+    border: 1px solid var(--border);
+    border-radius: 0.7rem;
+    overflow: hidden;
+    line-height: 0;
+  }
+  .prose a.shot:hover {
+    border-color: var(--teal);
+  }
+  .prose a.shot img {
+    display: block;
+    width: 100%;
+    border-radius: 0;
+  }
   .prose .table-scroll {
     overflow-x: auto;
     border: 1px solid var(--border);
@@ -571,6 +588,11 @@
   }
   .prose :where(td, tbody th):first-child code {
     overflow-wrap: normal;
+  }
+  /* A short code of one word in any column (src/lib/markdown.ts): a setting's name is read whole or misread. */
+  .prose table code.word {
+    overflow-wrap: normal;
+    white-space: nowrap;
   }
 }
 

@@ -59,6 +59,8 @@ export type SitePage = {
   nav: string;
   /** One line for /llms.txt. */
   summary: string;
+  /** Words a reader may type into the search for this page that the summary lacks. */
+  keywords?: string;
 };
 
 export const PAGES = {
@@ -77,6 +79,7 @@ export const PAGES = {
       "Install Hive on macOS or Linux, open the console on 127.0.0.1:8765, connect a model, add a project, start the runner and give its lead agent a first task.",
     nav: "Install",
     summary: "The install line, building from source, and the first task step by step.",
+    keywords: "quickstart quick start getting started download setup set up homebrew brew curl cargo tutorial",
   },
   harness: {
     path: "/harness/",
@@ -106,9 +109,9 @@ export const PAGES = {
     path: "/docs/",
     title: "Hive documentation: guides and reference",
     description:
-      "The Hive documentation, rendered from the repository: the console, the board, the harness, self-improvement, delivery, review, machines and the runner.",
+      "Guides that take one job from start to finish, and the reference for every part of Hive: the console, the harness, self-improvement, delivery and machines.",
     nav: "Docs",
-    summary: "The index of the documentation, with a search over titles and headings.",
+    summary: "The index of the documentation: the guides, the reference for every part, and a search over both.",
   },
 } as const satisfies Record<string, SitePage>;
 

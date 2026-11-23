@@ -619,7 +619,7 @@ only when that command succeeds without timing out; otherwise the error
 returns to the agent for diagnosis.
 
 **Three budgets** bound every run. They are settings (Settings → Harness
-**Budgets**, or `hive settings set`), and the rule is that the owner sets
+**Limits per run**, or `hive settings set`), and the rule is that the owner sets
 them: the program does not refuse `hive settings set` for them from an
 agent's shell ([security.md](security.md#agents)). They are
 `harness.max_steps` model calls (60), the wall

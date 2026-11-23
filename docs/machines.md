@@ -9,9 +9,13 @@ particular - so a job can say what it **needs** and a machine says what it
 **offers**, and the daemon puts each job on a machine that offers everything
 it needs, keeping the scarce machines for the work that needs them.
 
-Some jobs never leave this machine whatever they need: lead, review,
-reflect and suggestion-review jobs run `hive` commands against this
-machine's store, and a hand has no store, so they lease only here.
+Some jobs never leave this machine: lead, review, reflect and
+suggestion-review jobs run `hive` commands against this machine's store, and
+a hand has no store, so they lease only here. They take the project's needs
+like every other job of it, so a project whose needs this machine does not
+offer has its lead and its reviews wait in the queue, and nothing plans its
+tasks. Give a project only words this machine offers too, and put a
+narrower need on the one job that has it (`hive job add --needs`).
 
 Needs and offers are the same plain lowercase words, with no fixed list:
 `macos`, `linux`, `windows`; `arm64`, `amd64`; `xcode`, `docker`, `gpu`,
@@ -517,7 +521,9 @@ hive-hand join --brain http://127.0.0.1:8765 CODE       # this machine's port 87
 carries the jobs. An agent itself runs on the harness, and the harness is
 in `hive`: the only worker a hand starts is `hive harness run`. So the
 machine also needs `hive` on its PATH and a model login of its own
-(`hive harness login` there, or a provider key). The installer puts both
+(`hive harness login` there). The brain sends a hand the model's name and no
+provider, so the worker runs on the provider that machine is set to, GitHub
+Copilot unless a store of its own says otherwise. The installer puts both
 programs in place: once as it is for `hive`, once with `--hand`
 ([release.md](release.md)).
 

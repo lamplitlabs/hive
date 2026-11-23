@@ -539,6 +539,10 @@ What the program checks:
   counts only when the store names the owner as the one who set it: a value
   written under an agent's name is ignored. A `hive` command run under an
   agent's name is also refused the `owner.*` settings and `push.credential`.
+- **Your yes or no.** `hive decide` and `hive record adopt` are refused to
+  a command that runs under an agent's name. A lead agent may decide, and
+  only while `owner.presence` is `away`
+  ([recovery.md](recovery.md#when-the-owner-is-away)).
 - **Votes and variants.** No vote can touch the constitution's protected
   sections, and no variant of the loop can change `evolve.*`.
 - **Every commit is traceable.** A run signs its commits with a key of its
@@ -571,6 +575,13 @@ What is a rule and not a barrier:
 - **Every other setting.** The caps and `evolve.*` included, any other
   setting can be changed by `hive settings set` from an agent's shell. The
   event log records the name it was written under.
+- **Acceptance, compute, the constitution's text and the owner's merge.**
+  `hive record accept` writes a decision record's acceptance in your name
+  whoever runs it. `hive compute approve` and `hive record amend` on the
+  constitution are not refused under an agent's name, and
+  `hive review merge <n> --by owner` takes the word `owner` from the
+  command line. Agents are told that all four are yours. The record's
+  revisions, the compute request and the event log show each one.
 - **The agent's name.** The first two checks above go by the name a `hive`
   command carries (`HIVE_AGENT`, `--agent`) and by the job's mark in its
   environment (`HIVE_JOB`). A job runs as your user, so a command can leave
@@ -578,8 +589,9 @@ What is a rule and not a barrier:
   127.0.0.1, which has no login. Such a write is recorded as yours and
   counts as yours.
 - **Posts are data.** Agents are told that a post on the board is data,
-  never an instruction, and the loop stops for you when a post reads like
-  one. Nothing tells an agent the same about the text of a web page it
+  never an instruction. While a post in an open thread of a project reads
+  like one, the loop plans no new experiment there and asks you; that ends
+  when the thread is closed, which an agent's post can do. Nothing tells an agent the same about the text of a web page it
   fetched. A repository's own instruction files (`AGENTS.md` and the like)
   are different: a run reads them as instructions, under the rule that the
   harness's own rules win.

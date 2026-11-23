@@ -180,6 +180,10 @@ test("the sitemap lists every page that is exported, and nothing else", () => {
     assert.ok(e.priority > 0 && e.priority <= 1);
     assert.doesNotMatch(e.url, /404|_not-found|search\.json/);
   }
+  // A guide counts for more than a page of the reference, and less than a page the site wrote.
+  const of = (path) => entries.find((e) => e.url === `https://hivefleet.dev${path}`);
+  assert.deepEqual([of("/install/").priority, of("/docs/how-to/").priority, of("/docs/how-to/console-tour/").priority, of("/docs/console/").priority], [0.8, 0.7, 0.7, 0.6]);
+  assert.equal(of("/docs/how-to/console-tour/").changeFrequency, "weekly");
 });
 
 test("llms.txt says what Hive is and lists every page once, each with one line", () => {
@@ -193,6 +197,15 @@ test("llms.txt says what Hive is and lists every page once, each with one line",
     assert.match(lines[0], /^- \[[^\]]+\]\([^)]+\): \S.{20,}$/);
   }
   assert.doesNotMatch(text, /\t|\r/);
+  // The guides have a section of their own, before the reference.
+  const section = (name) => text.slice(text.indexOf(`\n## ${name}\n`), text.indexOf("\n## ", text.indexOf(`\n## ${name}\n`) + 4));
+  assert.ok(text.indexOf("\n## Guides\n") > 0 && text.indexOf("\n## Guides\n") < text.indexOf("\n## Documentation\n"));
+  const guides = built.docs.filter((d) => d.path.startsWith("/docs/how-to/"));
+  assert.ok(guides.length > 0);
+  for (const d of built.docs) {
+    const inGuides = section("Guides").includes(`](https://hivefleet.dev${d.path}): `);
+    assert.equal(inGuides, guides.includes(d), `${d.path} is listed under ${guides.includes(d) ? "Guides" : "Documentation"}`);
+  }
 });
 
 test("the site's own words keep to the rules: no em dash, no hype, nothing of the hosted product", () => {

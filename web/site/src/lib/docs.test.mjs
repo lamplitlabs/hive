@@ -4,9 +4,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const docs = await import("./docs.ts");
+const await_site = await import("./site.ts");
+const { STOP_WORDS, searchWords } = await import("./search.ts");
+const { isCodeTerm } = await import("./search-index.ts");
 
 const slugs = (plan) => plan.docs.map((d) => d.slug);
 const shape = (plan) => plan.groups.map((g) => [g.title, g.docs.map((d) => d.slug)]);
@@ -39,15 +43,29 @@ test("the sidebar follows the listed order, group by group", () => {
     "decisions/ADR-069-delivery.md",
     "decisions/ADR-071-open-tool.md",
     "context/environment.md",
+    "how-to/zebra.md",
+    "how-to/tasks.md",
+    "how-to/README.md",
+    "how-to/troubleshooting.md",
+    "how-to/first-project.md",
   ]);
   assert.deepEqual(shape(plan), [
     ["Start", ["concepts", "faq", "console", "mac-app"]],
+    // The page that lists the guides, then the guides: by name, while nothing says which that page lists.
+    ["Guides", ["how-to", "how-to/first-project", "how-to/tasks", "how-to/troubleshooting", "how-to/zebra"]],
     ["The agents", ["board", "harness", "self-improvement", "evolve", "review", "landing"]],
     ["Machines and running", ["machines", "runner", "release", "recovery", "security"]],
     ["Reference", ["commands", "settings", "reports", "owner-reservation", "development", "windows-port"]],
     ["Decisions and design", ["decisions/adr-069-delivery", "decisions/adr-070-web-first", "decisions/adr-071-open-tool", "design/computer-use"]],
   ]);
   assert.deepEqual(plan.excluded, ["context/environment.md"]);
+  // What a folder's own page lists comes in that page's order, and the rest after it by name. A file it names that is not there is passed over.
+  const listed = new Map([["how-to", ["how-to/troubleshooting.md", "how-to/first-project.md", "how-to/gone.md", "how-to/troubleshooting.md", "concepts.md"]]]);
+  const guides = docs.planDocs(["concepts.md", "how-to/zebra.md", "how-to/tasks.md", "how-to/README.md", "how-to/troubleshooting.md", "how-to/first-project.md"], listed);
+  assert.deepEqual(shape(guides), [
+    ["Start", ["concepts"]],
+    ["Guides", ["how-to", "how-to/troubleshooting", "how-to/first-project", "how-to/tasks", "how-to/zebra"]],
+  ]);
   assert.equal(plan.docs.find((d) => d.slug === "decisions/adr-069-delivery").path, "/docs/decisions/adr-069-delivery/");
   assert.equal(plan.docs.find((d) => d.slug === "decisions/adr-069-delivery").file, "decisions/ADR-069-delivery.md");
 });
@@ -75,6 +93,68 @@ test("a file nobody listed lands in More: nothing is dropped silently", () => {
   assert.equal(new Set(plan.docs.map((d) => d.path)).size, plan.docs.length);
 });
 
+test("a folder's README is the folder's own page", () => {
+  assert.equal(docs.docSlug("how-to/README.md"), "how-to");
+  assert.equal(docs.docPath("how-to/README.md"), "/docs/how-to/");
+  assert.equal(docs.docSlug("how-to/readme.md"), "how-to");
+  // A README at the top of docs/ has no folder to stand for.
+  assert.equal(docs.docSlug("README.md"), "readme");
+  assert.throws(() => docs.planDocs(["how-to.md", "how-to/README.md"]), /would both be \/docs\/how-to\//);
+  // A group that takes a folder whole takes the folder's own page with it, first; a guide nobody listed stays with the guides.
+  assert.deepEqual(shape(docs.planDocs(["decisions/ADR-001-first.md", "decisions/README.md", "design/README.md", "how-to/new-guide.md", "how-to/README.md", "new-thing.md"])), [
+    ["Guides", ["how-to", "how-to/new-guide"]],
+    ["Decisions and design", ["decisions", "decisions/adr-001-first", "design"]],
+    ["More", ["new-thing"]],
+  ]);
+  const hub = docs.loadDocs().bySlug.get(docs.GUIDES_DIR);
+  assert.equal(hub.path, "/docs/how-to/");
+  assert.equal(hub.label, "All guides");
+  assert.equal(hub.group, docs.GUIDES_GROUP);
+});
+
+test("a folder's own page says in which order the sidebar lists the folder's pages", () => {
+  const sources = [
+    {
+      file: "how-to/README.md",
+      source: "# Guides\n\nRead [Concepts](../concepts.md) first.\n\n1. [B](b.md)\n2. [A](./a.md#top)\n3. [B again](b.md)\n\n```md\n[not a link](z.md)\n```\n\n[gone](gone.md), [outside](../other/x.md), [deeper][c], <https://example.com/a.md>, [this page](README.md)\n\n[c]: more/c.md\n",
+    },
+    { file: "how-to/a.md", source: "# A\n\n## Top\n" },
+    { file: "how-to/b.md", source: "# B\n" },
+    { file: "how-to/z.md", source: "# Z\n" },
+    { file: "how-to/more/c.md", source: "# C\n" },
+    { file: "concepts.md", source: "# Concepts\n\nSee [a guide](how-to/a.md).\n" },
+    { file: "other/x.md", source: "# X\n" },
+  ];
+  // Each file of the folder once, as first linked. Not the page itself, a page elsewhere, a file that is not there, or a link inside code.
+  assert.deepEqual([...docs.folderLists(sources)], [["how-to", ["how-to/b.md", "how-to/a.md", "how-to/more/c.md"]]]);
+  const built = docs.buildDocs(sources);
+  assert.deepEqual(
+    built.groups.find((g) => g.title === docs.GUIDES_GROUP).docs.map((d) => d.slug),
+    ["how-to", "how-to/b", "how-to/a", "how-to/more/c", "how-to/z"],
+  );
+  // Previous and Next under a page walk the same order.
+  assert.equal(built.bySlug.get("how-to/b").next.path, "/docs/how-to/a/");
+  assert.equal(built.bySlug.get("how-to/b").prev.path, "/docs/how-to/");
+});
+
+test("every guide is listed on the page of guides, and the sidebar walks them in that page's order", () => {
+  const built = docs.loadDocs();
+  const hub = built.bySlug.get(docs.GUIDES_DIR);
+  const guides = built.docs.filter((d) => d.group === docs.GUIDES_GROUP && d !== hub).map((d) => d.file);
+  assert.ok(guides.length > 0, "docs/how-to/ holds guides");
+  // The guides the page links, as it first links each. Not the page itself: it may link to a heading of its own.
+  const listed = [...new Set(hub.links.filter((l) => l.kind === "doc" && docs.docSlug(l.doc).startsWith(`${docs.GUIDES_DIR}/`)).map((l) => l.doc))];
+  // A guide the page does not list is one nobody who reads the page finds.
+  assert.deepEqual(guides.filter((f) => !listed.includes(f)), [], "docs/how-to/README.md links every guide: a new guide needs a line there");
+  // The same order, whichever it is: Previous and Next under a guide follow the page that lists them.
+  assert.deepEqual(guides, listed);
+  assert.equal(built.groups.find((g) => g.title === docs.GUIDES_GROUP).docs[0], hub);
+  // A guide is a page of its own group and nowhere else, so the sidebar never lists one under More.
+  // (Any other new file of docs/ does land there, with a page of its own and no change to the site.)
+  const more = built.groups.find((g) => g.title === docs.MORE_GROUP)?.docs ?? [];
+  assert.deepEqual(more.filter((d) => d.file.startsWith(`${docs.GUIDES_DIR}/`)).map((d) => d.file), []);
+});
+
 test("files that are not Markdown get no page; two files that differ only by case are refused by name", () => {
   assert.deepEqual(slugs(docs.planDocs(["harness.md", "diagram.png", "notes.txt"])), ["harness"]);
   assert.throws(() => docs.planDocs(["Harness.md", "harness.md"]), /docs\/Harness\.md and docs\/harness\.md would both be \/docs\/harness\/: the addresses are lowercased/);
@@ -99,7 +179,7 @@ test("every file under the repository's docs/ has a page, except the environment
   assert.deepEqual(built.excluded, ["context/environment.md"]);
   assert.deepEqual(built.docs.map((d) => d.file).sort(), onDisk.filter((f) => f !== "context/environment.md").sort());
   for (const d of built.docs) {
-    assert.equal(d.path, `/docs/${d.file.replace(/\.md$/, "").toLowerCase()}/`);
+    assert.equal(d.path, `/docs/${d.file.replace(/\.md$/, "").toLowerCase().replace(/\/readme$/, "")}/`);
     assert.ok(d.title.length > 0, `${d.file} has a title`);
     assert.ok(d.html.length > 0, `${d.file} has a body`);
     assert.equal(d.editUrl, `https://github.com/lamplitlabs/hive/edit/main/docs/${d.file}`);
@@ -190,16 +270,88 @@ test("two docs with the same words still get different titles and descriptions",
   assert.ok(b.metaTitle.length <= 60 && b.description.length <= 155);
 });
 
-test("the search index holds every page's title and its h2 and h3 headings, and stays small", () => {
+test("the search index holds the site's pages and every docs page with its sections, and leaves out nothing a reader may type", () => {
   const built = docs.loadDocs();
   const index = docs.searchIndex(built);
-  assert.equal(index.length, built.docs.length);
+  const site = await_site.STATIC_PAGES.filter((p) => p.path !== "/docs/");
+  assert.equal(index.length, built.docs.length + site.length);
+  assert.equal(new Set(index.map((e) => e.u)).size, index.length);
+  // The guides stand first, so of two finds that are equally good the guide is shown first.
+  assert.equal(index[0].g, docs.GUIDES_GROUP);
+
   const harness = index.find((e) => e.u === "/docs/harness/");
   assert.equal(harness.t, "The harness (how an agent runs)");
-  assert.ok(harness.h.some(([id, text]) => id === "hooks" && text === "Hooks"));
+  const hooks = harness.h.find(([id]) => id === "hooks");
+  assert.equal(hooks[1], "Hooks");
+  assert.ok(hooks[2].split(" ").length > 5, "a section carries the words of its text");
   for (const e of index) {
     const doc = built.byPath.get(e.u);
-    for (const [id] of e.h) assert.ok(doc.ids.includes(id), `${e.u}#${id} is a heading of the page`);
+    if (!doc) {
+      assert.deepEqual(e.h, [], `${e.u} is a page of the site and has no sections in the index`);
+      assert.ok(e.k.length > 20);
+      continue;
+    }
+    assert.deepEqual(
+      e.h.map(([id, text]) => [id, text]),
+      doc.toc.map((t) => [t.id, t.text]),
+      `${e.u} lists its h2 and h3 headings in order`,
+    );
+    // Nothing a reader may type is left out of a section: every word of its text but the words of grammar and
+    // single letters is in its page's title, its heading or its words, and every command and setting it names is kept.
+    const title = searchWords(e.t);
+    const sources = doc.sections.slice(1);
+    e.h.forEach(([, heading, terms = "", code = ""], i) => {
+      const where = `${e.u} "${heading}"`;
+      assert.doesNotMatch(terms, /[^a-z0-9 ]/, `${where}: words only`);
+      const kept = terms ? terms.split(" ") : [];
+      assert.equal(new Set(kept).size, kept.length, `${where}: each word once`);
+      assert.deepEqual(kept.filter((w) => STOP_WORDS.has(w) || w.length < 2), [], `${where}: no word of grammar`);
+      const findable = new Set([...title, ...searchWords(heading), ...kept]);
+      assert.deepEqual(searchWords(sources[i].text).filter((w) => w.length > 1 && !STOP_WORDS.has(w) && !findable.has(w)), [], `${where}: a word of its text is not in the index`);
+      assert.deepEqual(code ? code.split("\n") : [], [...new Set(sources[i].code.filter(isCodeTerm))], `${where}: the commands and settings it names`);
+    });
   }
-  assert.ok(JSON.stringify(index).length < 60_000, "the index is a small file");
+  // A setting and a command are in the index as written.
+  const names = (needle) => index.some((e) => e.h.some(([, , , code = ""]) => code.split("\n").includes(needle)));
+  assert.ok(names("evolve.loop"));
+  assert.ok(names("review.merge"));
+
+  // The decisions and the design notes are marked as records, and nothing else is.
+  assert.deepEqual(index.filter((e) => e.r).map((e) => e.g), built.docs.filter((d) => d.group === docs.RECORDS_GROUP).map(() => docs.RECORDS_GROUP));
+
+  // The index grows with the docs and is not capped. It stays well under the text it is made from: a section's words once each.
+  const text = built.docs.reduce((n, d) => n + d.sections.reduce((m, s) => m + s.text.length, 0), 0);
+  const size = JSON.stringify(index).length;
+  assert.ok(size < text * 0.6, `the index is ${size} bytes for ${text} bytes of text`);
+});
+
+test("only raster pictures of the docs are carried: a file that can hold script is never one of them", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hive-docs-"));
+  try {
+    fs.mkdirSync(path.join(root, "how-to", "images"), { recursive: true });
+    for (const f of ["b.png", "A.WEBP", "diagram.svg", "notes.txt", ".hidden.png", "how-to/page.html", "how-to/images/shot.jpg"]) fs.writeFileSync(path.join(root, f), "x");
+    assert.deepEqual(docs.listDocPictures(root), ["A.WEBP", "b.png", "how-to/images/shot.jpg"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  assert.deepEqual(docs.listDocPictures(root), []);
+});
+
+test("the pictures of the docs are listed for the export, and each page that shows one keeps its place", () => {
+  const pictures = docs.listDocPictures(docs.docsRoot());
+  assert.ok(pictures.includes("how-to/images/console-home.webp"));
+  const built = docs.loadDocs();
+  const shown = new Set(built.docs.flatMap((d) => d.links.filter((l) => l.kind === "repo" && l.repoPath?.startsWith("docs/") && /\.(png|webp|jpe?g|gif|avif)$/i.test(l.repoPath)).map((l) => l.repoPath.slice("docs/".length))));
+  // No picture is kept that no page shows.
+  assert.deepEqual([...shown].sort(), [...pictures].sort());
+  // A page shows its pictures from the site itself, each with the size read from its file and with words for those who cannot see it.
+  const tour = built.bySlug.get("how-to/console-tour");
+  const imgs = [...tour.html.matchAll(/<img\b[^>]*>/g)].map((m) => m[0]);
+  assert.ok(imgs.length > 0);
+  for (const img of imgs) {
+    assert.match(img, /src="\/docs-media\/how-to\/images\/[^"]+"/);
+    assert.match(img, /width="\d+"/);
+    assert.match(img, /height="\d+"/);
+    assert.match(img, /alt="[^"]+"/);
+  }
 });

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock } from "@/components/code";
+import { GUIDES_SECTION, GuideLinks } from "@/components/guide-links";
 import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
@@ -20,6 +21,7 @@ const SECTIONS = [
   { id: "reads", title: "What a run reads first" },
   { id: "providers", title: "Providers" },
   { id: "chat", title: "Talk to it yourself" },
+  GUIDES_SECTION,
   { id: "reference", title: "The full reference" },
 ];
 
@@ -238,6 +240,8 @@ export default function HarnessPage() {
           something is shown first, and you answer yes, no or always.
         </p>
         <CodeBlock code="hive harness chat -C ~/src/my-app" />
+
+        <GuideLinks names={["models", "skills-and-tools", "sessions"]} />
 
         <H2 id="reference">The full reference</H2>
         <ul>

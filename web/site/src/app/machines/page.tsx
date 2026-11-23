@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock } from "@/components/code";
+import { GUIDES_SECTION, GuideLinks } from "@/components/guide-links";
 import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
@@ -14,6 +15,7 @@ const SECTIONS = [
   { id: "pair", title: "Pair over SSH: hive pair" },
   { id: "join", title: "Join codes and hive-hand" },
   { id: "quiet", title: "When a machine goes quiet" },
+  GUIDES_SECTION,
   { id: "reference", title: "The full reference" },
 ];
 
@@ -184,6 +186,8 @@ export default function MachinesPage() {
           minutes, and puts it back in rotation with the first probe that passes. A job whose machine fell silent in the middle of a run goes back to the
           queue.
         </p>
+
+        <GuideLinks names={["add-a-machine"]} />
 
         <H2 id="reference">The full reference</H2>
         <ul>

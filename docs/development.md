@@ -65,6 +65,46 @@ committed whole and cut down to Latin and the signs the pages use; every
 page loads the cut files, and `web/site/scripts/subset-fonts.py` writes
 them (its first lines say how).
 
+The guides are `docs/how-to/*.md`: one page per job, written to be
+followed from top to bottom. `docs/how-to/README.md` is the page that
+lists them, at `/docs/how-to/`, because a folder's README is the folder's
+own page. The folder is not called `guides`: `hive migrate --records`
+reads a repository's `docs/guides/` as instructions for agents. A new
+guide needs a line in that README and nothing else: the sidebar lists the
+guides in the order that page first links them, and Previous and Next
+under a guide follow it. A guide the page does not link fails a test, and
+the site's check with it. Any other new file under `docs/` gets a page
+with no change to the site: one that no group of `DOC_GROUPS` in
+`web/site/src/lib/docs.ts` names stands under More.
+
+A picture lives beside the page that shows it, under `docs/`, and the
+page names it with a relative path, so it shows on GitHub too. The build
+copies every PNG, WebP, JPEG, GIF and AVIF picture under `docs/` to
+`/docs-media/` and the page shows it from there, sized from the file's own
+header, so a docs page loads nothing from GitHub. An SVG can carry script,
+so the site never serves one from its own address: a page shows it from
+GitHub. A picture no page shows fails a test. The pictures of
+the console (`docs/how-to/images/console-*.webp`) are 1440 by 900, taken
+in the dark theme from the console's mock (`cd web/hub && npm run build &&
+npm run serve:out`), which serves made-up projects, and saved as WebP.
+They were taken from a copy of the mock's fixtures with three things
+changed, and a new picture should keep to them: the owner has a made-up
+name, the runner is on and a model provider is connected, and the dates
+are recent.
+
+The search box reads `/docs/search.json`, which the build writes: for
+every page its title and headings, and for every section the commands and
+settings it names and every word of its text but the words of grammar
+("the", "of", "how"). Nothing else is left out, so a word the docs hold is
+always found, and the file grows with the docs; `npm run check` prints its
+size. A query is not held to the words of grammar either: "how do I add a
+machine" looks for "add" and "machine". Titles come first, then headings,
+then the commands and settings a section names, then its text, where the
+section most about the words leads. A decision record or a design note
+comes last among finds of one kind. `GUIDE_KEYWORDS` in
+`web/site/src/lib/docs.ts` and `keywords` in `web/site/src/lib/site.ts`
+hold the words a reader types that a title lacks, such as "quickstart".
+
 `.github/workflows/deploy-site.yml` deploys on every push to `main` that
 touches `web/site/`, `docs/` or `scripts/install.sh`: it runs
 `npm run check` and the installer's own test
@@ -80,6 +120,26 @@ did not reach the public address. Anything else there, such as a parked
 domain's page, is a warning on the run and not a failure: pointing the
 domain is not something a commit can fix, and a red run would only send an
 agent after it.
+
+**Going public** takes five things. `npm run check:live` in `web/site`
+asks the public internet for each, with no login, and says which are
+still open. None of them is something a commit can do; they are the
+owner's steps.
+
+1. **The repository is public.** Until it is, every link from the site to
+   GitHub answers 404 for a reader, and the installer cannot download a
+   release. Making a repository public publishes its whole history, so
+   look through it first.
+2. **A release is published** with the four archives and `SHA256SUMS`
+   ([What a release must carry](release.md#what-a-release-must-carry)).
+3. **The Homebrew tap holds the formula**
+   ([The Homebrew tap](release.md#the-homebrew-tap)). Without it the
+   Homebrew line of the install page fails.
+4. **The three Vercel secrets are set**, so that a push deploys (above).
+5. **The domain points at the Vercel project** (the next paragraph).
+
+`npm run check:live -- --site URL` looks at another address instead: a
+preview of a deploy, or this machine while it serves `web/site/out`.
 
 **Putting the domain on the site** is the owner's step, done once. On
 21 November 2026 `hivefleet.dev` is parked at its registrar, Hostinger: its
@@ -256,5 +316,5 @@ hive seed apply         # write what is missing by hand (the hub and the daemon 
 The brain - a registered Hive checkout (`hive init PATH --brain`) - is for
 developing Hive itself: with one, the daemon rebuilds from its `main`
 (ADR-035) and `hive seed export` refreshes the bundle from its records so
-the next build carries them. Without one, **Settings → Running** says *as
-built* and nothing waits.
+the next build carries them. Without one, **Settings → This machine** says
+**Installed build** and nothing waits.

@@ -7,8 +7,9 @@ branch, the conventions the README and the ADRs state - and merges it when
 the change is one the agents may decide on, asks for changes when it is not
 ready, and hands it to you when the complexity rule says a person should
 look. You see the ones handed to you in the hub under **Needs your review**,
-with the reviewer's reasons and a **Merge** button, on the project's board as
-a question marked for you, or on GitHub like any other pull request.
+with the reviewer's reasons and a **Merge** button (on the task, or on the
+session, that the pull request belongs to), on the project's board as a
+question marked for you, or on GitHub like any other pull request.
 
 An agent reviews because the owner cannot read 260 pull requests a week: of
 the branches one machine landed in seven days, 22 (8%) were the owner's
@@ -35,7 +36,7 @@ reviews of one project go one after another, oldest pull request first.
 The job is kind `review`, source `review:<slug>:<number>`, title `Review PR
 #<n>: <title>`, recorded as `review.queued` with the pull request, the head
 commit (`sha`) and the complexity reasons already computed from `gh pr view`
-(size, files, head branch). It leases with the owner's own work - the
+(the files and the head branch; size is not one). It leases with the owner's own work - the
 express lane, ahead of the fleet's improve and research jobs - because a
 pull request that waits is work the owner is waiting on. The reasons are
 computed again by every verdict command, so the brief and the command
@@ -213,9 +214,12 @@ with the follow-up's id; the verdict is `review.changes` with the job id in
 
 A pull request handed to you is **Needs your review** in the hub: on the
 task's delivery line (*Needs your review: PR #n — <reasons>. <the review>*),
-at the top of the Chat page's list in a group of its own
-([Sessions](console.md#sessions)), and on the project's pull request card, with a
-link to the pull request and a **Merge** button. The button asks once
+and at the top of the Sessions page's list in a group of its own
+([Sessions](console.md#sessions)), under the card of the task or the session
+it belongs to, with a link to the pull request and a **Merge** button. A pull
+request that belongs to neither (a job's own, or a branch proposed with
+`hive land --branch`) has no button in the hub: merge it with
+`hive review merge <n> --by owner` or on GitHub. The button asks once
 (*Merge PR #n into <base>? The daemon merges it on GitHub as you.*) and
 records `review.ask {action: merge}`; the hub merges nothing itself. The
 next maintenance pass merges the pull request as the owner, whatever the
@@ -331,8 +335,8 @@ and `review.merged`, `land.merged` or `land.pr-closed` settle it
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `review.merge` | `auto` | `auto`: the reviewer merges a pull request no reason holds back; `ask`: every pull request is handed to you with the reviewer's findings, and the reviewer merges nothing (the hub's label: *Who merges a reviewed pull request*) |
-| `review.max_files` | `20` | a pull request changing more files than this goes to you; generated paths are not counted |
-| `review.max_lines` | `600` | a pull request adding and deleting more lines than this together goes to you; generated paths are not counted |
+| `review.max_files` | `20` | a pull request changing more files than this is read file by file; the reviewer still merges one whose every file the title and body explain (size alone hands nothing to you); generated paths are not counted |
+| `review.max_lines` | `600` | the same for a pull request adding and deleting more lines than this together; generated paths are not counted |
 
 `hive settings set review.merge ask` sets one; the rest of the settings are in
 [self-improvement.md](self-improvement.md#evolution-runner-caps). An evolve

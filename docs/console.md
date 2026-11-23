@@ -120,8 +120,10 @@ day from the harness sessions (the **Runs** page), the jobs table, the
 ### For you
 
 **For you** is a page of its own in the sidebar, and Home shows its first
-five items under **Needs you**. It holds everything waiting on the owner in
-one place, across projects: proposed decisions (ADRs) to accept, defer or
+five items under **Needs you**. It holds what waits on the owner's yes, no or
+answer, across projects (a task whose lead stopped for you is on **Tasks**
+under **Asked you**, and a pull request handed to you on **Sessions** under
+**Needs your review**): proposed decisions (ADRs) to accept, defer or
 decline with your own words - the same `hive record accept` the terminal
 runs, recorded as `human` with the words in the record's history - plus
 board proposals, compute requests and the questions only you can answer:
@@ -175,9 +177,9 @@ console.
 Each project card shows its self-improvement state - constitution revision (and
 whether it is still the seeded text), enabled fixtures, baseline (measured by
 the daemon, "measuring" while its job runs), the level the loop may reach - and
-the project page lists its fixtures. Open a project's **Overview → Project
-goal** to give every agent the same direction. **Edit goal** sets your outcome;
-without one, Hive supplies a project-derived default. Until you set one,
+the project page lists its fixtures. **Goal**, on a project's **Overview**,
+gives every agent the same direction. **Edit** sets your outcome; without
+one, Hive supplies a project-derived default. Until you set one,
 Home's **Projects** list says so on that project's row - *Runs on a
 generated goal* - with **Set goal**, a link straight to that panel, since
 the lead plans, votes and researches toward whatever goal is there; the row
@@ -367,11 +369,21 @@ without asking, as the daemon's own jobs do; switch it off for a
 session you want to watch step by step, and flipping it on while an
 approval waits grants it.
 
-Messages typed while a turn runs wait in line and go next - shown as *Queued*
-under the transcript until the agent picks them up, and written into it only
-then, so a message sent while the agent answers never appears between your
-earlier message and its reply; **Stop** ends the turn now, and a message still
-in line stays in the transcript with a note that it never reached the agent.
+**Lockdown** (off by default) is the switch beside it. In lockdown the
+harness withdraws web search, page fetching and the MCP tools and refuses a
+command that reaches outside the machine; on macOS each command also runs in
+the operating system's sandbox. Switched on in a running session, it applies
+from the next turn. [Security notes](security.md#agents) says what is
+enforced where.
+
+A message typed while a turn runs goes one of two ways. Enter steers the
+running turn (**Steer the running turn**): the agent reads the message before
+its next step, and it is in the transcript at once, marked *Steered*.
+⌘/Ctrl+Enter queues it (**Queue message**): it waits in line and starts a turn
+of its own once this one ends - shown as *Queued* under the transcript until
+the agent picks it up, and written into it only then. **Stop** ends the turn
+now, and a message still in line stays in the transcript with a note that it
+never reached the agent.
 
 The controls sit in one place, under the message box the way the Copilot app
 keeps them: the **Model** picker (also on the start form) chooses the model
@@ -938,18 +950,22 @@ The standing jobs of every project on one page (`/automations/`): the ones
 each project keeps in its repository, one file per automation under
 [`.hive/automations/`](board.md#the-projects-own-files-hive) (and the older
 `schedules:` list of `.hive/hive.yaml`, still read), and the ones set by
-hand (`hive schedule add`, or a lead), grouped by project under the
-repository's state - the folder, how many files it holds, the list file when
-there is one, the default branch, when the daemon last applied them and any
-problem it wrote down. The folder's files come first, one line each: the file
-name, its state (*live*, *paused*, *held* with the problem beside it, or
-*pending* until the daemon's next pass), the cadence, the kind and the skill
-or script, with **Edit**. Below them a card per schedule shows the cadence,
-the kind, where it is kept (*in .hive/automations/NAME.yaml*, *in
-.hive/hive.yaml* with its `#name`, or *set by you* / *set by AGENT*), the
-next start, the runs so far, the last run and the last job; a check or
-watch whose script sits outside `.hive/` carries a *script outside .hive*
-mark and the path it belongs at. **History** opens what happened to the
+hand (`hive schedule add`, or a lead). A strip at the top shows the next
+seven days with a dot for each scheduled run. Below it the automations are
+grouped by project, under a line with the repository's state - the folder
+and how many files it holds, the list file when there is one, when the
+daemon last read them - and any problem the daemon wrote down. Each
+automation is a card: its cadence in your own time zone, the next start
+(**Due now** once the daemon is behind it), the last five results, where it
+is kept (*in .hive/automations/NAME.yaml*, *in .hive/hive.yaml* with its
+`#name`, or *set by you* / *set by AGENT*) and its status. A file the daemon
+has not applied yet, or holds because of a problem, has a card of its own,
+marked **Not applied yet** or **Held**. What is held or failing comes first,
+with its problem in one sentence and a **Fix** button; a check or watch
+whose script sits outside `.hive/` carries a warning mark that names the
+path it belongs at. A card's one button is **Run now** (**Resume** on a
+paused one); **History**, **Pause**, **Edit**, **Move into the repository**
+and **End it** are in its **More** menu. **History** opens what happened to the
 automation, newest first: each run of its script with the exit code, how
 long it took and the state it left (green or red, quiet or broken), the
 job a run queued or found still open and where that job stands now, every
@@ -957,7 +973,7 @@ turn of state with the finding posted, and every change by hand or by the
 file (added, changed and what changed, paused with its note, resumed, ended,
 run now) - with the last output in full at the top and the jobs it queued
 below; **Older** pages back through the rest. **Run now**, **Pause**,
-**Resume** and **End** are the `hive schedule` verbs, in your name. What
+**Resume** and **End it** are the `hive schedule` verbs, in your name. What
 the daemon said about a skill folder is the Skills page's business and does
 not show here.
 
@@ -988,9 +1004,9 @@ sets it by hand, as `hive schedule add` would, for a job that should not
 travel with the code. **Edit** on a repository-kept automation rewrites its
 file (or its list item) in place and commits; a new name moves the file in
 the same commit, and the old schedule ends as a new one starts; on a
-hand-set schedule it updates the row. **Into the repository** moves a
+hand-set schedule it updates the row. **Move into the repository** moves a
 hand-set schedule into a file of its own: the file takes over and the row
-ends with a note saying where it went. **End** on a repository-kept
+ends with a note saying where it went. **End it** on a repository-kept
 automation deletes its file (or takes its item out of the list), because
 ending the row alone would last only until the next commit that touches the
 folder.

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { HiveMark } from "@/components/hive-mark";
+import { GUIDES_DIR, optionalDoc } from "@/lib/docs";
 import { NOT_FOUND, PAGES } from "@/lib/site";
 
 export const metadata: Metadata = {
@@ -11,6 +12,7 @@ export const metadata: Metadata = {
 };
 
 export default function NotFound() {
+  const guides = optionalDoc(GUIDES_DIR);
   return (
     <Frame>
       <section className="night night-field flex min-h-[70dvh] items-center">
@@ -28,6 +30,11 @@ export default function NotFound() {
             <Link href={PAGES.docs.path} className="btn btn-quiet">
               Documentation
             </Link>
+            {guides && (
+              <Link href={guides.path} className="btn btn-quiet">
+                Guides
+              </Link>
+            )}
             <Link href={PAGES.install.path} className="btn btn-quiet">
               Install
             </Link>

@@ -2,6 +2,8 @@
 /out/
 # The installer at /install.sh is a copy of ../../scripts/install.sh made by scripts/prebuild.mjs before every build.
 /public/install.sh
+# The pictures of ../../docs, copied by the same script; the site serves them at /docs-media/.
+/public/docs-media/
 /node_modules
 /.next/
 /build

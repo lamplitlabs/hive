@@ -18,11 +18,12 @@ import {
 import type { ReactNode } from "react";
 import { Frame } from "@/components/chrome";
 import { CopyLine } from "@/components/code";
+import { ConsoleShot } from "@/components/console-shot";
 import { HiveMark } from "@/components/hive-mark";
 import { JsonLd } from "@/components/json-ld";
 import { LoopDiagram } from "@/components/loop-diagram";
 import { Terminal } from "@/components/terminal";
-import { optionalDoc } from "@/lib/docs";
+import { GUIDES_DIR, optionalDoc } from "@/lib/docs";
 import { FAQS, plainAnswer } from "@/lib/faq";
 import { faqJsonLd, pageMetadata, softwareJsonLd } from "@/lib/seo";
 import { INSTALL, PAGES, repoFile, SITE } from "@/lib/site";
@@ -105,6 +106,31 @@ const YOURS = [
   },
 ];
 
+/** The guides the front page names, by the file's name under docs/how-to/: the path from a first project to a second machine, and where to look when something is wrong. */
+const GUIDES = ["first-project", "tasks", "pull-requests", "self-improvement-loop", "add-a-machine", "troubleshooting"];
+
+/** Three more pages of the console, small, under the picture of Home. */
+const SHOTS = [
+  {
+    name: "console-tasks.webp",
+    title: "Tasks",
+    alt: "The Tasks page of the console as a board with the columns Planned, In progress, Asked you and Done",
+    text: "Every task you gave, on a board. A card moves to Asked you when the lead needs your decision.",
+  },
+  {
+    name: "console-session.webp",
+    title: "Sessions",
+    alt: "A session in the console: the agent's steps in the middle and the files it changed on the right",
+    text: "Work with one agent turn by turn. Each command and each edit shows as it happens, with the changed files beside it.",
+  },
+  {
+    name: "console-self-improvement.webp",
+    title: "Self-improvement",
+    alt: "A project's Self-improvement tab in the console, with the counts from suggestion to change",
+    text: "How far each suggestion has come, from the vote to the change, and what the loop waits for.",
+  },
+];
+
 /** Three machines and three jobs: the example the machines docs use, drawn small. */
 const FLEET = [
   { name: "this machine", offers: ["macos", "arm64", "xcode", "docker"], job: "needs macos, xcode", note: "the iOS app" },
@@ -144,6 +170,11 @@ function Answer({ text }: { text: string }) {
 export default function Home() {
   const faqDoc = optionalDoc("faq");
   const concepts = optionalDoc("concepts");
+  const tour = optionalDoc(`${GUIDES_DIR}/console-tour`);
+  const tasksGuide = optionalDoc(`${GUIDES_DIR}/tasks`);
+  const mergeGuide = optionalDoc(`${GUIDES_DIR}/pull-requests`);
+  const guideCards = GUIDES.map((name) => optionalDoc(`${GUIDES_DIR}/${name}`)).filter((d) => d !== undefined);
+  const guides = optionalDoc(GUIDES_DIR);
   return (
     <Frame current="/">
       <JsonLd data={softwareJsonLd()} />
@@ -237,6 +268,53 @@ export default function Home() {
         </div>
       </section>
 
+      <section aria-labelledby="console-title" className="night night-field border-t border-border">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
+          <div className="max-w-2xl">
+            <Eyebrow>The console</Eyebrow>
+            <Heading id="console-title">See what needs you and what is running.</Heading>
+            <p className="mt-4 text-pretty text-muted-foreground">
+              The console runs on your own machine, at <code className="font-mono text-[0.9em] text-foreground">{SITE.console}</code>. Home lists the questions,
+              decisions and proposals that wait for your answer, the agents at work and your projects. Every button calls what the matching{" "}
+              <code className="font-mono text-[0.9em] text-foreground">hive</code> command calls, so a terminal can do the same.
+            </p>
+          </div>
+          <figure className="mt-10">
+            <ConsoleShot
+              name="console-home.webp"
+              large="/console-home-2x.webp"
+              sizes="(min-width: 72rem) 68rem, 100vw"
+              title="Home"
+              alt="The Home page of the console: five things that need you, one agent working now, three projects and this week's numbers"
+            />
+            <figcaption className="mt-3 text-sm text-muted-foreground">Home, on a machine with three projects. The pictures are from the console&apos;s own example data.</figcaption>
+          </figure>
+          <ul className="mt-10 grid gap-6 sm:grid-cols-3">
+            {SHOTS.map((shot) => (
+              <li key={shot.name}>
+                <ConsoleShot name={shot.name} title={shot.title} alt={shot.alt} zoom />
+                <h3 className="mt-4 font-semibold tracking-tight">{shot.title}</h3>
+                <p className="mt-1 text-[15px] leading-relaxed text-muted-foreground">{shot.text}</p>
+              </li>
+            ))}
+          </ul>
+          {(tour || guides) && (
+            <div className="mt-10 flex flex-wrap items-center gap-3">
+              {tour && (
+                <Link href={tour.path} className="btn btn-primary">
+                  Take the tour of the console <ArrowRightIcon className="size-4" aria-hidden="true" />
+                </Link>
+              )}
+              {guides && (
+                <Link href={guides.path} className="btn btn-quiet">
+                  <BookOpenIcon className="size-4" aria-hidden="true" /> {guides.label}
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+
       <section aria-labelledby="task-title" className="border-y border-border bg-muted/40">
         <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
           <div className="max-w-2xl">
@@ -254,7 +332,23 @@ export default function Home() {
               </li>
             ))}
           </ol>
-          <p className="mt-10 text-sm text-muted-foreground">
+          {(tasksGuide || mergeGuide) && (
+            <p className="mt-10 text-sm text-muted-foreground">
+              Step by step:{" "}
+              {[tasksGuide, mergeGuide]
+                .filter((d) => d !== undefined)
+                .map((d, i) => (
+                  <span key={d.path}>
+                    {i > 0 && " and "}
+                    <Link href={d.path} className="link">
+                      {d.title}
+                    </Link>
+                  </span>
+                ))}
+              .
+            </p>
+          )}
+          <p className={`${tasksGuide || mergeGuide ? "mt-2" : "mt-10"} text-sm text-muted-foreground`}>
             More in the docs:{" "}
             <Link href="/docs/console/#tasks" className="link">
               tasks in the console
@@ -381,7 +475,38 @@ export default function Home() {
         </div>
       </section>
 
-      <section aria-labelledby="open-title" className="border-y border-border bg-muted/40">
+      {guideCards.length > 0 && (
+        <section aria-labelledby="guides-title" className="border-y border-border bg-muted/40">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
+            <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4">
+              <div className="max-w-2xl">
+                <Eyebrow>Guides</Eyebrow>
+                <Heading id="guides-title">One job each, from start to finish.</Heading>
+                <p className="mt-4 text-pretty text-muted-foreground">
+                  Each guide says what to click in the console and what to type in a terminal, and ends with how to tell that it worked.
+                </p>
+              </div>
+              {guides && (
+                <Link href={guides.path} className="inline-flex items-center gap-1.5 text-sm font-medium text-link hover:underline">
+                  {guides.label} <ArrowRightIcon className="size-4" aria-hidden="true" />
+                </Link>
+              )}
+            </div>
+            <ul className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {guideCards.map((d) => (
+                <li key={d.path}>
+                  <Link href={d.path} className="group flex h-full flex-col rounded-card border border-border bg-card p-5 shadow-card hover:border-teal">
+                    <h3 className="font-semibold tracking-tight group-hover:text-link">{d.title}</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{d.description}</p>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      )}
+
+      <section aria-labelledby="open-title" className={guideCards.length > 0 ? undefined : "border-y border-border bg-muted/40"}>
         <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 sm:px-8 lg:grid-cols-[1fr_1.1fr] lg:items-start">
           <div>
             <Eyebrow>Open source</Eyebrow>
@@ -444,7 +569,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section aria-labelledby="faq-title">
+      <section aria-labelledby="faq-title" className={guideCards.length > 0 ? "border-t border-border bg-muted/40" : undefined}>
         <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
           <div className="max-w-2xl">
             <Eyebrow>Questions</Eyebrow>

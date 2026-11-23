@@ -3,6 +3,7 @@ import Link from "@/components/link";
 import { Frame } from "@/components/chrome";
 import { CodeBlock } from "@/components/code";
 import { LoopDiagram } from "@/components/loop-diagram";
+import { GUIDES_SECTION, GuideLinks } from "@/components/guide-links";
 import { Article, H2, PageCrumbs, PageHero } from "@/components/page-hero";
 import { pageMetadata } from "@/lib/seo";
 import { PAGES } from "@/lib/site";
@@ -20,6 +21,7 @@ const SECTIONS = [
   { id: "constitution", title: "The constitution" },
   { id: "stops", title: "Hard stops and the kill switch" },
   { id: "by-hand", title: "By hand" },
+  GUIDES_SECTION,
   { id: "reference", title: "The full reference" },
 ];
 
@@ -206,6 +208,8 @@ export default function RsiPage() {
           <code>NAME</code> is an agent that has joined (<code>hive agent join --name NAME</code>). Without <code>--once</code>,{" "}
           <code>hive evolve cycle</code> starts the next cycle when one ends.
         </p>
+
+        <GuideLinks names={["self-improvement-loop", "rules", "what-needs-you"]} />
 
         <H2 id="reference">The full reference</H2>
         <ul>

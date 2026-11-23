@@ -24,8 +24,12 @@ const inRepo = new Map([
   ["docs/context/environment.md", "file"],
   ["LICENSE", "file"],
   [".github/assets/console-task.png", "file"],
+  ["docs/how-to/images/home.webp", "file"],
+  ["docs/how-to/images/tasks.png", "file"],
+  ["docs/how-to/images/parts.svg", "file"],
 ]);
-const ctx = (file) => ({ file, pages, repoHas: (p) => inRepo.get(p) ?? null });
+const sizes = new Map([["docs/how-to/images/home.webp", { width: 1440, height: 900 }]]);
+const ctx = (file) => ({ file, pages, repoHas: (p) => inRepo.get(p) ?? null, imageSize: (p) => sizes.get(p) ?? null });
 const render = (source, file = "harness.md") => md.renderMarkdown(source, ctx(file));
 const parse = (html) => unified().use(rehypeParse, { fragment: true }).parse(html);
 function elements(html, tag) {
@@ -124,6 +128,7 @@ test("a link into the repository becomes its file on GitHub", () => {
     href: "https://github.com/lamplitlabs/hive/blob/main/crates/hive-board/src/posts.rs",
     kind: "repo",
     anchor: undefined,
+    repoPath: "crates/hive-board/src/posts.rs",
   });
   assert.equal(to("../crates/hive-hand/").href, "https://github.com/lamplitlabs/hive/tree/main/crates/hive-hand");
   assert.equal(to("../README.md").href, "https://github.com/lamplitlabs/hive/blob/main/README.md");
@@ -189,6 +194,97 @@ test("a picture kept in the repository is served by GitHub, with its alt text", 
   assert.match(r.links[0].problem, /docs\/img\/home\.png, which is not in the repository/);
 });
 
+test("a picture kept under docs/ is the site's own file: sized, and a link to itself at full size", () => {
+  const r = render("# T\n\n![The Home page](images/home.webp)\n\n![](images/tasks.png)\n\n[![The Home page](images/home.webp)](../harness.md)\n", "how-to/tour.md");
+  const imgs = elements(r.html, "img").map((i) => [i.properties.src, i.properties.width, i.properties.height, i.properties.alt, i.properties.loading]);
+  assert.deepEqual(imgs, [
+    ["/docs-media/how-to/images/home.webp", 1440, 900, "The Home page", "lazy"],
+    // A size that could not be read is left out; the picture is shown all the same.
+    ["/docs-media/how-to/images/tasks.png", undefined, undefined, "", "lazy"],
+    ["/docs-media/how-to/images/home.webp", 1440, 900, "The Home page", "lazy"],
+  ]);
+  const links = elements(r.html, "a").map((a) => [a.properties.href, (a.properties.className ?? []).join(" "), a.properties.ariaLabel]);
+  assert.deepEqual(links, [
+    ["/docs-media/how-to/images/home.webp", "shot", "Open the picture at full size: The Home page"],
+    ["/docs-media/how-to/images/tasks.png", "shot", "Open the picture at full size"],
+    // A picture that is already a link keeps that link.
+    ["/docs/harness/", "", undefined],
+  ]);
+  assert.deepEqual(r.links.filter((l) => l.problem), []);
+  assert.equal(md.docMediaPath("docs/how-to/images/a b.webp"), "/docs-media/how-to/images/a%20b.webp");
+  assert.equal(md.docMediaPath("docs/console.md"), null);
+  assert.equal(md.docMediaPath(".github/assets/console-task.png"), null);
+});
+
+test("a heading inside a quote, a list or the footnotes starts a section too: the search follows the table of contents", () => {
+  const r = render(
+    "# T\n\nBefore the first heading[^1], with `evolve.loop`.\n\n## One\n\nText one.\n\n> ### In a quote\n>\n> Quoted words and `hive pair`.\n\nAfter the quote.\n\n- item\n\n  ### In a list\n\n  Listed words.\n\n#### A small heading\n\nSmall words.\n\n[^1]: The note.\n",
+  );
+  assert.deepEqual(r.toc.map((t) => t.id), ["one", "in-a-quote", "in-a-list", "footnote-label"]);
+  assert.deepEqual(r.sections.slice(1).map((s) => s.id), r.toc.map((t) => t.id));
+  const text = Object.fromEntries(r.sections.map((s) => [s.id, s.text]));
+  // What follows a heading is its section's, in the order of the page, until the next h2 or h3 wherever that stands.
+  assert.equal(text.one, "Text one.");
+  assert.equal(text["in-a-quote"], "Quoted words and hive pair. After the quote. item");
+  assert.equal(text["in-a-list"], "Listed words. A small heading Small words.");
+  assert.match(text["footnote-label"], /^The note\./);
+  assert.deepEqual(r.sections.find((s) => s.id === "in-a-quote").code, ["hive pair"]);
+  assert.deepEqual(r.sections[0].code, ["evolve.loop"]);
+});
+
+test("the links of a text, as written and in order; code and front matter are not read for links", () => {
+  const source = "---\ntitle: [no](front.md)\n---\n# T\n\n[one](b.md) and [two](./a.md#top), then [one again](b.md).\n\n```md\n[not](z.md)\n```\n\n`[nor](y.md)` but <https://example.com/x> and ![a picture](p.png).\n";
+  assert.deepEqual(md.markdownLinks(source), ["b.md", "./a.md#top", "b.md", "https://example.com/x"]);
+  assert.deepEqual(md.markdownLinks(""), []);
+  // A link whose address stands elsewhere in the text: where the link is, with the first address given for its name.
+  const named = "# T\n\n[c]: c.md\n\n[Tasks][t], then [two](b.md), [c] and [nowhere][x].\n\n[t]: tasks.md\n[T]: other.md\n";
+  assert.deepEqual(md.markdownLinks(named), ["tasks.md", "b.md", "c.md"]);
+});
+
+test("an SVG under docs/ is not the site's own file: it can carry script, so GitHub serves it and nothing links to it", () => {
+  const r = render("# T\n\n![How the parts fit](images/parts.svg)\n", "how-to/tour.md");
+  const [img] = elements(r.html, "img");
+  assert.equal(img.properties.src, "https://github.com/lamplitlabs/hive/raw/main/docs/how-to/images/parts.svg");
+  assert.equal(img.properties.alt, "How the parts fit");
+  assert.deepEqual(elements(r.html, "a"), []);
+  assert.deepEqual(r.links.filter((l) => l.problem), []);
+  assert.equal(md.docMediaPath("docs/how-to/images/parts.svg"), null);
+  assert.equal(md.isDocPicture("parts.SVG"), false);
+  assert.equal(md.isDocPicture("shot.PNG"), true);
+});
+
+test("the body is cut at its h2 and h3 headings into the text and the code the search reads", () => {
+  const r = render(
+    [
+      "# Turn on the loop",
+      "The loop is off until `evolve.loop` is `1`.",
+      "## 1. Look at the gates",
+      "Run `hive evolve status`.",
+      "```bash\nhive evolve status --project my-app\n```",
+      "### A gate that stays closed",
+      "| Gate | Opens when |\n| --- | --- |\n| baseline | a measurement ran |",
+      "#### Deeper",
+      "Still the same section.",
+      "## Read more",
+      "Nothing.",
+    ].join("\n\n"),
+  );
+  assert.deepEqual(
+    r.sections.map((s) => [s.id, s.code]),
+    [
+      ["", ["evolve.loop", "1"]],
+      ["1-look-at-the-gates", ["hive evolve status"]],
+      ["a-gate-that-stays-closed", []],
+      ["read-more", []],
+    ],
+  );
+  assert.equal(r.sections[0].text, "The loop is off until evolve.loop is 1.");
+  // A fenced block is text of its section, not inline code.
+  assert.match(r.sections[1].text, /^Run hive evolve status\. hive evolve status --project my-app$/);
+  assert.match(r.sections[2].text, /baseline a measurement ran.*Deeper.*Still the same section\./s);
+  assert.deepEqual(r.toc.map((t) => t.id), ["1-look-at-the-gates", "a-gate-that-stays-closed", "read-more"]);
+});
+
 test("code blocks keep their text exactly, highlighted or not", () => {
   const bash = `hive settings set machine.labels gpu,android   # what <this> machine offers & more\nexport PATH="$HOME/.hive/bin:$PATH"\n\tif [ -z "$X" ]; then echo 'a  b'; fi`;
   const plain = `system prompt (+ the clone's AGENTS.md) + the job's brief\n  ─► model answers <one> & "two"\n`;
@@ -240,6 +336,17 @@ test("a table with an empty first heading names its rows in its first column; an
   assert.deepEqual(cells(plain.html), [
     ["th", "th"],
     ["td", "td"],
+  ]);
+});
+
+test("a short one-word code in a table is kept whole; an address, a command with spaces and code in a paragraph are left to wrap", () => {
+  const r = render("# T\n\nSet `worker_model` first.\n\n| In the console | Setting | Notes |\n| --- | --- | --- |\n| **Main model** | `worker_model` | `hive settings get worker_model`, or `https://api.example.com/v1/models` |\n");
+  const marked = elements(r.html, "code").map((c) => [toString(c), (c.properties.className ?? []).join(" ")]);
+  assert.deepEqual(marked, [
+    ["worker_model", ""],
+    ["worker_model", "word"],
+    ["hive settings get worker_model", ""],
+    ["https://api.example.com/v1/models", ""],
   ]);
 });
 

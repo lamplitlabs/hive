@@ -14,9 +14,10 @@ import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified } from "unified";
-import { visit } from "unist-util-visit";
+import { SKIP, visit } from "unist-util-visit";
 import type { Element, ElementContent, Root as HastRoot, RootContent as HastRootContent } from "hast";
 import type { Root as MdastRoot } from "mdast";
+import type { ImageSize } from "./image-size.ts";
 import { SITE } from "./site.ts";
 
 /** What a link in a doc turned out to be. */
@@ -31,6 +32,8 @@ export type Rewritten = {
   anchor?: string;
   /** What is wrong with the link as the Markdown wrote it; the link is still rendered. */
   problem?: string;
+  /** For a file of the repository: its path from the repository's root. */
+  repoPath?: string;
 };
 
 export type LinkContext = {
@@ -40,7 +43,30 @@ export type LinkContext = {
   pages: ReadonlyMap<string, string>;
   /** Whether the repository holds this path (relative to its root). Without it every path is trusted. */
   repoHas?: (path: string) => "file" | "dir" | null;
+  /** The pixel size of a picture of the repository, when it can be read, so the page keeps the picture's place while it loads. */
+  imageSize?: (repoPath: string) => ImageSize | null;
 };
+
+/** Where the export keeps the pictures of docs/ (scripts/prebuild.mjs copies them there). */
+export const DOC_MEDIA = "/docs-media";
+// Raster formats only. An SVG can carry script, and opened by its address it would run that script as this site;
+// one in docs/ is shown from GitHub's raw host, as every picture outside docs/ is.
+const PICTURE = /\.(png|webp|jpe?g|gif|avif)$/i;
+
+/** Whether a file of docs/ is a picture the export carries. */
+export function isDocPicture(file: string): boolean {
+  return PICTURE.test(file);
+}
+
+/**
+ * A picture kept under docs/ is served by the site itself, so a page needs
+ * nothing from GitHub to show it: docs/how-to/images/home.webp is
+ * /docs-media/how-to/images/home.webp. Any other file of the repository is null.
+ */
+export function docMediaPath(repoPath: string): string | null {
+  if (!repoPath.startsWith("docs/") || !isDocPicture(repoPath)) return null;
+  return `${DOC_MEDIA}/${repoPath.slice("docs/".length).split("/").map(encodeURIComponent).join("/")}`;
+}
 
 /** Sections of the README that a page of this site covers; a doc that links to one lands here instead. */
 export const README_ON_SITE: Readonly<Record<string, string>> = {
@@ -57,6 +83,26 @@ function decode(part: string): string {
   } catch {
     return part;
   }
+}
+
+/**
+ * The addresses a Markdown text links to, as they are written and in the
+ * order they stand: `[a](b.md)`, and `[a][b]` with its `[b]: b.md` wherever
+ * that stands. Code is not read for links.
+ */
+export function markdownLinks(source: string): string[] {
+  const tree = unified().use(remarkParse).use(remarkGfm).parse(splitFrontMatter(source).body);
+  // Of two definitions of one name the first holds, as in the page.
+  const defined = new Map<string, string>();
+  visit(tree, "definition", (node) => {
+    if (!defined.has(node.identifier)) defined.set(node.identifier, node.url);
+  });
+  const out: string[] = [];
+  visit(tree, (node) => {
+    if (node.type === "link") out.push(node.url);
+    else if (node.type === "linkReference" && defined.has(node.identifier)) out.push(defined.get(node.identifier) as string);
+  });
+  return out;
 }
 
 /** Where a link written in docs/<ctx.file> leads on the site. */
@@ -100,14 +146,14 @@ export function rewriteHref(href: string, ctx: LinkContext): Rewritten {
   if (path === "" || path === "." || path.startsWith("..")) {
     return { href: github(path.replace(/^(\.\.\/)+/, ""), true), kind: "repo", anchor, problem: `${href} leaves the repository` };
   }
-  if (!ctx.repoHas) return { href: github(path, resolved.endsWith("/")), kind: "repo", anchor };
+  if (!ctx.repoHas) return { href: github(path, resolved.endsWith("/")), kind: "repo", anchor, repoPath: path };
 
   const found = ctx.repoHas(path);
-  if (found) return { href: github(path, found === "dir"), kind: "repo", anchor };
+  if (found) return { href: github(path, found === "dir"), kind: "repo", anchor, repoPath: path };
   // A path written from the repository's root without the leading slash (scripts/install.sh in a doc).
   const asWritten = posix.normalize(written).replace(/^(\.\/)+/, "").replace(/\/+$/, "");
   const alt = fromRoot || asWritten.startsWith("..") ? null : ctx.repoHas(asWritten);
-  if (alt) return { href: github(asWritten, alt === "dir"), kind: "repo", anchor };
+  if (alt) return { href: github(asWritten, alt === "dir"), kind: "repo", anchor, repoPath: asWritten };
   return { href: github(path, false), kind: "repo", anchor, problem: `${href} names ${path}, which is not in the repository` };
 }
 
@@ -158,6 +204,15 @@ export function cutTitle(title: string, max: number): string {
 }
 
 export type TocEntry = { id: string; text: string; level: 2 | 3 };
+
+/** What stands under one h2 or h3 heading (or before the first, with the id ""), for the search. */
+export type Section = {
+  id: string;
+  /** Everything under the heading as plain text, code blocks included. */
+  text: string;
+  /** The inline code of the section as written: commands, settings, flags, paths. */
+  code: string[];
+};
 export type DocLink = Rewritten & { written: string };
 
 export type Rendered = {
@@ -170,6 +225,8 @@ export type Rendered = {
   html: string;
   /** The h2 and h3 headings, in order. */
   toc: TocEntry[];
+  /** The body cut at those headings, in order; the first is what stands before any of them. */
+  sections: Section[];
   /** Every id a link may point at: each heading's, the title's first. */
   ids: string[];
   /** The top-level paragraphs as plain text, in order (the description is cut from the first). */
@@ -210,7 +267,7 @@ function stringifyChildren(children: ElementContent[]): string {
 /** One doc: Markdown in, the pieces a page is built from out. */
 export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
   const { data, body } = splitFrontMatter(source);
-  const out: Rendered = { title: "", titleHtml: "", titleId: "", html: "", toc: [], ids: [], paragraphs: [], links: [], frontMatter: data };
+  const out: Rendered = { title: "", titleHtml: "", titleId: "", html: "", toc: [], sections: [], ids: [], paragraphs: [], links: [], frontMatter: data };
 
   const collectText = () => (tree: MdastRoot) => {
     for (const node of tree.children) {
@@ -254,7 +311,7 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
     }
 
     // Links and images.
-    visit(tree, "element", (node) => {
+    visit(tree, "element", (node, index, parent) => {
       if (node.tagName === "a" && typeof node.properties.href === "string" && !isAnchorLink(node)) {
         const written = node.properties.href;
         const to = rewriteHref(written, ctx);
@@ -266,13 +323,60 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
         const written = node.properties.src;
         const to = rewriteHref(written, ctx);
         out.links.push({ ...to, written });
-        // A picture kept in the repository is served by GitHub as the file itself.
-        node.properties.src = to.kind === "repo" ? to.href.replace(`${SITE.repo}/blob/`, `${SITE.repo}/raw/`) : to.href;
+        // A picture under docs/ is the site's own file; one kept elsewhere in the repository is served by GitHub as the file itself.
+        const media = to.kind === "repo" && to.repoPath && !to.problem ? docMediaPath(to.repoPath) : null;
+        if (media && to.repoPath) {
+          node.properties.src = media;
+          const size = ctx.imageSize?.(to.repoPath);
+          if (size) {
+            node.properties.width = size.width;
+            node.properties.height = size.height;
+          }
+        } else {
+          node.properties.src = to.kind === "repo" ? to.href.replace(`${SITE.repo}/blob/`, `${SITE.repo}/raw/`) : to.href;
+        }
         node.properties.alt = typeof node.properties.alt === "string" ? node.properties.alt : "";
         node.properties.loading = "lazy";
         node.properties.decoding = "async";
+        // A picture of the docs is shown at the width of the text; a click opens it at its own size.
+        const inLink = parent?.type === "element" && parent.tagName === "a";
+        if (media && parent && index !== undefined && !inLink) {
+          const name = node.properties.alt ? `Open the picture at full size: ${node.properties.alt}` : "Open the picture at full size";
+          parent.children[index] = el("a", { className: ["shot"], href: media, ariaLabel: name }, [node]);
+          return SKIP;
+        }
       }
     });
+
+    // The body cut at its h2 and h3 headings, as text: what the search index is made of. The cut follows every such
+    // heading, as the table of contents does: one inside a quote, a list or the footnotes starts a section too.
+    let section: Section = { id: "", text: "", code: [] };
+    out.sections.push(section);
+    const cuts = (node: Element) => node.tagName === "h2" || node.tagName === "h3";
+    const holdsCut = (node: Element): boolean => node.children.some((c) => c.type === "element" && (cuts(c) || holdsCut(c)));
+    const say = (text: string) => {
+      const words = text.replace(/\s+/g, " ").trim();
+      if (words) section.text += `${section.text ? " " : ""}${words}`;
+    };
+    const cut = (nodes: readonly (HastRootContent | ElementContent)[]) => {
+      for (const node of nodes) {
+        if (node.type === "text") say(node.value);
+        if (node.type !== "element") continue;
+        if (cuts(node)) {
+          section = { id: typeof node.properties.id === "string" ? node.properties.id : "", text: "", code: [] };
+          out.sections.push(section);
+        } else if (holdsCut(node)) {
+          cut(node.children);
+        } else {
+          say(hastToString(node));
+          const into = section;
+          visit(node, "element", (n, _i, parent) => {
+            if (n.tagName === "code" && !(parent?.type === "element" && parent.tagName === "pre")) into.code.push(hastToString(n).replace(/\s+/g, " ").trim());
+          });
+        }
+      }
+    };
+    cut(tree.children);
 
     // Wide things scroll inside their own box, and a keyboard can reach them.
     visit(tree, "element", (node, index, parent) => {
@@ -280,6 +384,7 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
         node.properties.tabIndex = 0;
       } else if (node.tagName === "table" && parent && index !== undefined) {
         nameRows(node);
+        keepWords(node);
         // Focusable, so a keyboard can scroll it; no landmark of its own, or a page of tables would be a page of regions.
         parent.children[index] = el("div", { className: ["table-scroll"], tabIndex: 0 }, [node]);
       } else if (node.tagName === "input" && node.properties.type === "checkbox") {
@@ -331,6 +436,22 @@ function nameRows(table: Element): void {
       first.properties.scope = "row";
     }
   }
+}
+
+/** The longest one-word code a table keeps on one line: a setting, a flag, a command. An address or a path may still break. */
+const WHOLE_WORD = 20;
+
+/**
+ * A narrow column would break a setting's name in the middle
+ * (`worker_mode` and `l`). A short code of one word is marked, and the
+ * stylesheet keeps a marked one whole; the table's box scrolls if it must.
+ */
+function keepWords(table: Element): void {
+  visit(table, "element", (node) => {
+    if (node.tagName !== "code") return;
+    const text = hastToString(node);
+    if (text.length > 0 && text.length <= WHOLE_WORD && !/\s/.test(text)) node.properties.className = ["word"];
+  });
 }
 
 function isAnchorLink(node: Element): boolean {
