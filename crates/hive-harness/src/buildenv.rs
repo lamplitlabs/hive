@@ -109,6 +109,7 @@ pub(crate) fn link_target(cwd: &Path, target: &Path) {
 /// a directory, not a link, so without this the Changes tab would list
 /// `target` as a new file and a commit could carry it. The exclude file
 /// is asked of git, since a worktree's is not under its own `.git`.
+#[cfg(unix)]
 fn exclude_target(cwd: &Path) {
     let Ok(out) = std::process::Command::new("git")
         .arg("-C")

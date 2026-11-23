@@ -49,7 +49,7 @@ not, and is only a dependency of hive-cli, hive-hub and hive-runner.
 | Layer | Crates | State |
 | --- | --- | --- |
 | Leaves | hive-gitenv, hive-cred, hive-store, hive-bus, hive-cli, hive-cred-setup, hive-cred-command, hive-provider, hive-provider-{anthropic,copilot,gemini,openai,fake}, hive-board, hive-tasks, hive-goals, hive-goals-command, hive-tally, hive-records, hive-codedelivery, hive-mcp, hive-voice, hive-hooks, hive-testutil | **Compile off unix**, libs and tests (`check-not-unix.sh --leaves --all-targets`, no warnings). Several only *compile*: behaviour still to port is listed below. |
-| Middle | hive-evolve, hive-harness | **Compile off unix**, libs and tests (`check-not-unix.sh --all-targets hive-evolve hive-harness`). Off-unix warnings remain for parameters only unix code reads (`private.rs` modes, test helpers). |
+| Middle | hive-evolve, hive-harness | **Compile off unix**, libs and tests (`check-not-unix.sh --all-targets hive-evolve hive-harness`), no warnings. |
 | Top | hive-hub, hive-runner, hive-inspect, hive-ask, hive (the binary) | Not reached yet: they depend on the middle layer. hive-runner holds most of the work. |
 
 ## Done in the first step
