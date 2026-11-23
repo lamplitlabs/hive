@@ -7,6 +7,8 @@ seven typed tools (`bash`, `read`, `grep`, `glob`, `edit`, `write`, `plan`)
 plus `skill`, `fetch` and `subagent` where the owner allows them and the
 project's MCP servers' tools, a linear history, and limits the owner sets.
 
+One run, from the brief to the final report:
+
 ```text
 ┌────────────────────────────────────────────────────────────┐
 │ system prompt (+ the clone's AGENTS.md) + the job's brief  │
@@ -16,11 +18,11 @@ project's MCP servers' tools, a linear history, and limits the owner sets.
 │ the model answers: one or more tool calls, or exactly one  │ ←───┐
 │ fenced bash/read/grep/edit block                           │     │
 └──────────────┬──────────────────────────────┬──────────────┘     │
-               │ calls                        │ no call            │
+               │ calls                        │ a report, no call  │
                ↓                              ↓                    │
 ┌─────────────────────────────┐  ┌───────────────────────────┐     │
 │ every call runs in the      │  │ that message is the final │     │
-│ clone root, in order;       │  │ report                    │     │
+│ clone root;                 │  │ report                    │     │
 │ cd <root> is unnecessary    │  └───────────────────────────┘     │
 └──────────────┬──────────────┘                                    │
                ↓                                                   │
@@ -64,7 +66,7 @@ as its working directory, and the deny rules match the text of the command
 
 A reply may carry **several calls**, and every one gets its own
 observation, so a model reads three files in one turn instead of three.
-The calls that only look - `read`, `grep`, `glob` and `fetch` - run **at
+The calls that only look - `read`, `grep`, `glob`, `fetch` and `web_search` - run **at
 the same time** when a reply carries two or more of them (eight threads at
 most), the file tools confined to the clone as before; `bash`, `edit`, `write`,
 `plan`, `skill`, `subagent` and MCP calls run one after another in the
@@ -78,6 +80,36 @@ reply towards `format_error`; a call that ran but found nothing (a missing
 file, a search that matched twice) is an ordinary observation with a
 non-zero return code. The fenced blocks below are still accepted for models
 without tool calling - the typed tools are the same operations.
+
+What a tool call passes on its way to the tool, and what the model reads
+when a permission rule or a hook ([Hooks](#hooks)) stops it; the tool's own
+checks include the deny rules, a read-only run's refusal and, in a session,
+your approval:
+
+```text
+            a tool call
+                 ↓
+┌─────────────────────────────────┐  a rule denies it ┌────────────────┐
+│ permission rules                │ ────────────────→ │ the call does  │
+└────────────────┬────────────────┘                   │ not run: the   │
+                 ↓                                    │ refusal is its │
+┌─────────────────────────────────┐  a hook exits 2   │ result         │
+│ pre_tool hooks                  │ ────────────────→ │                │
+└────────────────┬────────────────┘                   └───────┬────────┘
+                 ↓                                            │
+┌─────────────────────────────────┐                           │
+│ the tool's own checks:          │                           │
+│ it runs, or they refuse it      │                           │
+└────────────────┬────────────────┘                           │
+                 ↓                                            │
+┌─────────────────────────────────┐                           │
+│ post_tool hooks add output      │                           │
+└────────────────┬────────────────┘                           │
+                 ↓                                            ↓
+┌──────────────────────────────────────────────────────────────────────┐
+│ the observation the model reads                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
 ### Step timeouts
 
