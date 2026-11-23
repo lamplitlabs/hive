@@ -8,13 +8,10 @@ use serde_json::json;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-/// Where a clone's skills live, relative to its root, in search order.
-pub const SKILL_DIRS: &[&str] = &[
-    ".hive/skills",
-    ".claude/skills",
-    ".github/skills",
-    ".agents/skills",
-];
+/// Where a clone's skills live, relative to its root, in search order:
+/// `.hive/skills`, the same folder under its name from before the rename,
+/// then the layouts of the other harnesses.
+pub const SKILL_DIRS: &[&str] = hive_store::REPO_SKILL_DIRS;
 
 /// The name of the tool that loads a skill.
 pub const SKILL_TOOL: &str = "skill";

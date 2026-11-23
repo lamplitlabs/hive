@@ -104,6 +104,7 @@ pub(crate) fn test_project(s: &hive_store::Store, slug: &str) -> String {
     test_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
     put_file(repo.join("value.txt"), "original\n", 0o644);
     put_file(repo.join(".hive/answer"), "withheld answer\n", 0o600);
+    put_file(repo.join(".pulse/answer"), "withheld answer\n", 0o600);
     put_file(repo.join("keys/answer.txt"), "another answer\n", 0o600);
     test_git(&repo, &["add", "."]);
     test_git(&repo, &["commit", "--quiet", "-m", "temporary fixture"]);

@@ -39,6 +39,10 @@ use std::time::Duration;
 pub const LINK: &str = "bulk";
 /// The marker on the volume, beside the bulk dirs.
 pub const MARKER: &str = ".hive-bulk";
+/// The marker's name before the rename. A disk attached then carries this
+/// one and is the same disk: without it the home would take its own volume
+/// for a stranger's and hold all work as if the disk were away.
+pub const LEGACY_MARKER: &str = ".pulse-bulk";
 /// The id of the marker this home expects, kept on the boot disk.
 pub const ID_FILE: &str = "bulk.id";
 /// The folder `hive bulk attach <volume>` uses on the volume.
@@ -99,9 +103,12 @@ fn expected_id(home: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The marker's id, if `dir` carries one.
+/// The marker's id, if `dir` carries one, under its name or the one from
+/// before the rename.
 fn marker_id(dir: &Path) -> Option<String> {
-    let text = fs::read_to_string(dir.join(MARKER)).ok()?;
+    let text = [MARKER, LEGACY_MARKER]
+        .iter()
+        .find_map(|name| fs::read_to_string(dir.join(name)).ok())?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     v.get("id").and_then(|i| i.as_str()).map(str::to_string)
 }
@@ -505,6 +512,7 @@ fn detach_now(home: &Path, target: Option<&Path>, out: &mut dyn Write) -> Result
     let _ = fs::remove_file(home.join(ID_FILE));
     if let Some(target) = target {
         let _ = fs::remove_file(target.join(MARKER));
+        let _ = fs::remove_file(target.join(LEGACY_MARKER));
         let _ = fs::remove_dir(target.join(CARGO_TARGET_DIR));
         let _ = fs::remove_dir(target);
     }
@@ -692,6 +700,33 @@ mod tests {
     fn marker(dir: &Path, id: &str) {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join(MARKER), serde_json::json!({"id": id}).to_string()).unwrap();
+    }
+
+    /// A disk attached before the rename carries the marker under its
+    /// older name, in a folder named after the product then. It is this
+    /// home's disk all the same.
+    #[test]
+    fn a_volume_marked_before_the_rename_is_still_this_homes_disk() {
+        let home = tempfile::tempdir().unwrap();
+        let volume = tempfile::tempdir().unwrap();
+        let target = volume.path().join("pulse");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join(LEGACY_MARKER),
+            serde_json::json!({"id": "abc"}).to_string(),
+        )
+        .unwrap();
+        fs::write(home.path().join(ID_FILE), "abc\n").unwrap();
+        link(&target, &home.path().join(LINK));
+        assert_eq!(
+            state(home.path()),
+            State::Mounted {
+                target: target.clone()
+            }
+        );
+        // Another home's id on the older marker is still a stranger.
+        fs::write(home.path().join(ID_FILE), "other\n").unwrap();
+        assert!(state(home.path()).is_missing());
     }
 
     #[test]

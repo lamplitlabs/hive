@@ -177,6 +177,20 @@ on disk, so the console you keep open is always the build the daemon runs, and
 neither dies with a terminal. Running `hive service install` again is safe: a
 unit whose file did not change and is loaded is left running.
 
+A service keeps the `PATH` it was installed with, and every program the
+daemon and its runs start is found on it or not at all: `gh` for pull
+requests, the helper that reads a push key, the tools a project's recipe
+pins. So the units get the `PATH` of the shell that ran `hive service
+install`, as it is, and after it each of these directories that exists and
+is not on it already: the one `hive` is in, `~/.local/bin`, `~/.cargo/bin`,
+`/opt/homebrew/bin`, `/home/linuxbrew/.linuxbrew/bin`, `/usr/local/bin` and
+`/snap/bin`. The command says which it added. That covers an install run
+from a script, over ssh or from an app, where `PATH` is `/usr/bin:/bin` and
+little more. A tool that lives anywhere else must be on the `PATH` of the
+shell you run the command from; when the daemon says a tool is missing that
+you know is installed, run `hive service install` again from a shell that
+finds it.
+
 That install line is for the first install only. After it, the daemon keeps
 itself current (ADR-035): when the brain's `main` moves - a pull request
 merged on the forge and fast-forwarded into the checkout by the delivery
@@ -339,11 +353,13 @@ itself downloads and installs nothing; `hive update` installs the release,
 checksum-verified, on a machine whose `update.channel` is `release`, and
 `update.channel release` also stops the source builds above
 ([Releases and `hive update`](release.md)). The setting is empty by
-default: no check and no network request (crates/hive-cli/src/update.rs,
+default: no check and no network request by the daemon. `hive update` and
+`hive update --check`, run by hand, then look at Hive's own releases for
+that one run (crates/hive-cli/src/update.rs,
 crates/hive-runner/src/update_check.rs).
 
-The owner need not wait for the drain. **Restart** (under **Settings →
-Running** and beside the update notice in the Home page's runner controls;
+The owner need not wait for the drain. **Restart now** (in the **Update
+waiting** row under **Settings → This machine**;
 `POST /api/v1/running/restart`) drains like a self-update by default
 (**Restart when they finish**): nothing new starts, the runs in flight are
 waited out, the daemon keeps its heartbeat and exits with code 3 once they
@@ -434,7 +450,10 @@ is its own hash - so every rebuild would ask again. `hive service install`
 therefore re-signs the installed `hive` with a requirement every build meets,
 `identifier "hive"`, and the daemon signs each build it installs the same way:
 no certificate, no password, and the answer holds. Checkouts elsewhere never
-ask. The services run hive through small `/bin/sh` launchers
+ask. A `hive` that Homebrew installed is the exception: the file is
+Homebrew's, so Hive does not sign it again, and every version is a new file
+in a new place, so macOS may ask again after `brew upgrade`
+([release.md](release.md#homebrew)). The services run hive through small `/bin/sh` launchers
 (`~/.hive/bin/hive-daemon.sh`, `hive-hub.sh`) so that a restart is a loop
 and the crash guard has a home.
 

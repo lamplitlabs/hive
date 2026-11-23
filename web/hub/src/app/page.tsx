@@ -1,7 +1,6 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
 import { AttentionStrip, retryInputs } from "@/components/home/attention-strip";
 import { SetupCard } from "@/components/home/first-run";
 import { HomeHeader } from "@/components/home/header";
@@ -40,17 +39,6 @@ export default function HubPage() {
   // Everything that waits for the owner, the runner's state and the inputs
   // that failed: the same model the sidebar count and For you read.
   const inbox = useInbox();
-
-  // "/#daemon-controls" used to open a fold on Home; the runner's controls
-  // are on Machines now, so the old deep link lands there.
-  useEffect(() => {
-    const go = () => {
-      if (window.location.hash === "#daemon-controls") router.replace(hrefs.compute());
-    };
-    go();
-    window.addEventListener("hashchange", go);
-    return () => window.removeEventListener("hashchange", go);
-  }, [router]);
 
   if (org.error && !org.data)
     return (

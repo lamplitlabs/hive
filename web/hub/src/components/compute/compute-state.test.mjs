@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs } from "./compute-state.ts";
+import { diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs, waitingNote } from "./compute-state.ts";
 
 test("meterTone: ok below 70, warning below 90, failed from 90", () => {
   assert.equal(meterTone(0), "ok");
@@ -102,4 +102,11 @@ test("requestReason keeps the first sentence on one line", () => {
   assert.equal(requestReason("  spaced   out  "), "spaced out");
   assert.equal(requestReason(""), "");
   assert.equal(requestReason("x".repeat(200), 20).length, 20);
+});
+
+test("the Waiting for you line names what waits: a request, or only Hive's cleanup question", () => {
+  assert.equal(waitingNote(1, false), "An agent asked for an extra machine. It starts only if you approve.");
+  assert.equal(waitingNote(2, true), "An agent asked for an extra machine. It starts only if you approve.");
+  assert.equal(waitingNote(0, true), "Hive asks before it cleans up after other agent programs on this machine.");
+  assert.equal(waitingNote(0, false), "");
 });

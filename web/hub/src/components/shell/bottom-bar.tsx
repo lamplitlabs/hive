@@ -18,16 +18,19 @@ const cell = "relative flex min-w-0 flex-col items-center justify-center gap-1 r
 function Cell({ item, active, count }: { item: NavItem; active: boolean; count?: number }) {
   const Icon = NAV_ICON[item.icon];
   return (
-    <Link href={item.href} aria-current={active ? "page" : undefined} className={cn(cell, active && "text-link")} aria-label={count ? item.label + ", " + count + " waiting" : undefined}>
-      <span className="relative">
+    // Named by its words, in the order they are read: the page, then how many
+    // wait ("For you 10 waiting"). The icon and its count are drawn first.
+    <Link href={item.href} aria-current={active ? "page" : undefined} className={cn(cell, active && "text-link")}>
+      <span className="truncate">{item.label}</span>{" "}
+      <span className="relative order-first">
         <Icon aria-hidden className="size-[22px]" strokeWidth={active ? 2 : 1.75} />
         {count ? (
-          <span aria-hidden className="tnum absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-you px-1 text-xs font-semibold text-[oklch(0.3_0.06_60)]">
+          <span className="tnum absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-you px-1 text-xs font-semibold text-[oklch(0.3_0.06_60)]">
             {count > 99 ? "99+" : count}
+            <span className="sr-only"> waiting</span>
           </span>
         ) : null}
       </span>
-      <span className="truncate">{item.label}</span>
     </Link>
   );
 }

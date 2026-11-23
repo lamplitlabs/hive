@@ -553,16 +553,26 @@ fn fire_once(ctx: &CancellationToken, s: &Store, h: &Hook, e: &Event) -> Result<
     match h.kind.as_str() {
         "script" => {
             let ctx = ctx.with_timeout(SCRIPT_TIMEOUT);
-            let mut child = Command::new(&h.target)
-                .env("HIVE_HOOK_ID", h.id.to_string())
-                .env("HIVE_EVENT_ID", e.id.to_string())
-                .env("HIVE_EVENT_AT", &e.at)
-                .env("HIVE_EVENT_ACTOR", &e.actor)
-                .env("HIVE_EVENT_ACTION", &e.action)
-                .env("HIVE_EVENT_SUBJECT", &e.subject)
-                .env("HIVE_EVENT_DETAIL", &e.detail)
-                .env("HIVE_EVENT_PROJECT", e.project())
-                .env("HIVE_HOME", home)
+            let mut command = Command::new(&h.target);
+            for (name, value) in [
+                ("HIVE_HOOK_ID", h.id.to_string()),
+                ("HIVE_EVENT_ID", e.id.to_string()),
+                ("HIVE_EVENT_AT", e.at.clone()),
+                ("HIVE_EVENT_ACTOR", e.actor.clone()),
+                ("HIVE_EVENT_ACTION", e.action.clone()),
+                ("HIVE_EVENT_SUBJECT", e.subject.clone()),
+                ("HIVE_EVENT_DETAIL", e.detail.clone()),
+                ("HIVE_EVENT_PROJECT", e.project()),
+                ("HIVE_HOME", home.to_string()),
+            ] {
+                // A script registered before the rename reads the same
+                // value under its old name (`PULSE_EVENT_ACTION`).
+                if let Some(legacy) = hive_store::legacy_env_name(name) {
+                    command.env(legacy, &value);
+                }
+                command.env(name, value);
+            }
+            let mut child = command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -612,6 +622,8 @@ fn fire_once(ctx: &CancellationToken, s: &Store, h: &Hook, e: &Event) -> Result<
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "hive-hook/1")
                 .header("X-Hive-Event", &e.action)
+                // A receiver written before the rename reads this one.
+                .header("X-Pulse-Event", &e.action)
                 .body(body)
                 .send()?;
             let code = resp.status().as_u16();
@@ -1148,8 +1160,11 @@ mod tests {
         let s = new_store();
         let out_dir = tempfile::tempdir().unwrap();
         let out_file = out_dir.path().join("seen.txt");
+        // The last line is what a script registered before the rename
+        // reads: each variable again under its `PULSE_` name.
         let sh = script(&format!(
-            "cat > \"{}.stdin\"; printf '%s %s %s %s\\n' \"$HIVE_EVENT_ID\" \"$HIVE_EVENT_ACTION\" \"$HIVE_EVENT_SUBJECT\" \"$HIVE_EVENT_PROJECT\" > \"{}\"",
+            "cat > \"{}.stdin\"; printf '%s %s %s %s\\n' \"$HIVE_EVENT_ID\" \"$HIVE_EVENT_ACTION\" \"$HIVE_EVENT_SUBJECT\" \"$HIVE_EVENT_PROJECT\" > \"{}\"; printf '%s|%s|%s|%s|%s\\n' \"$HIVE_EVENT_ACTION\" \"$PULSE_EVENT_ACTION\" \"$HIVE_HOOK_ID\" \"$PULSE_HOOK_ID\" \"$PULSE_HOME\" > \"{}.names\"",
+            out_file.display(),
             out_file.display(),
             out_file.display()
         ));
@@ -1159,6 +1174,7 @@ mod tests {
             let p: Payload = serde_json::from_value(req.json().unwrap()).unwrap();
             got2.lock().unwrap().push(p);
             if req.header("X-Hive-Event").is_none()
+                || req.header("X-Pulse-Event") != req.header("X-Hive-Event")
                 || req.header("Content-Type") != Some("application/json")
             {
                 return Response::new(400);
@@ -1237,6 +1253,14 @@ mod tests {
                 std::fs::read_to_string(format!("{}.stdin", out_file.display())).unwrap()
             });
         assert!(stdin_text.contains(r#""action":"task.created""#));
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.names", out_file.display())).unwrap(),
+            format!(
+                "task.created|task.created|{id}|{id}|{home}\n",
+                id = sc.id,
+                home = s.home
+            )
+        );
         let h = get(&s, wh.id).unwrap();
         assert_eq!(h.fires, 1);
         assert_eq!(h.last_status, "ok 204");

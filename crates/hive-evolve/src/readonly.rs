@@ -338,6 +338,9 @@ mod tests {
         let inside = tree.join("shared");
         fs::write(&inside, b"x").unwrap();
         fs::hard_link(&inside, dir.join("outside")).unwrap();
+        // What the umask left it: 0o200 under 022, 0o220 under 002.
+        let writable = file_mode(&inside) & 0o222;
+        assert_ne!(writable & 0o200, 0, "the owner may write it");
 
         let root = TreeRoot::open(&tree).unwrap();
         let Err(err) = freeze_tree(&root) else {
@@ -352,7 +355,7 @@ mod tests {
             reason,
             "scored tree has a special file or shared hardlink: shared"
         );
-        assert_eq!(file_mode(&inside) & 0o222, 0o200, "nothing was frozen");
+        assert_eq!(file_mode(&inside) & 0o222, writable, "nothing was frozen");
         let err = tree_fingerprint(&root).unwrap_err();
         assert!(err.to_string().contains("shared hardlink: shared"), "{err}");
     }

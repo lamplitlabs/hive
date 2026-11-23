@@ -49,31 +49,93 @@ is not cached, so the first build after Node is installed makes the console
 needs Node). `HIVE_HUB_SKIP_BUILD=1 cargo build` skips npm and embeds
 whatever `out/` already holds, for work on the Rust side.
 
-### The site, hivefleet.dev
+## The site, hivefleet.dev
 
-`web/site/` is the public site: the landing page and the sign-in, a second
+`web/site/` is the public site: the landing page and the docs, a second
 Next.js static export in the console's look that is not part of the binary.
 It runs the same way as the console (`cd web/site && npm install && npm run dev`
 serves http://localhost:3000; `npm run check` is typecheck + lint + build +
-test). Sign-in is [Clerk](https://clerk.com): the Clerk application is
-"Hive" in the Lamplit Labs workspace, and the page reads the publishable
-key from `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (`.env.example` lists the
-variables; copy it to `.env.local` for the development instance key).
-Without the key the build still succeeds and `/sign-in` says sign-in is
-not configured, so the site builds in any checkout. The export has no
-server, so Clerk runs client-side with hash routing (`/sign-in/#/factor-one`
-and so on) and the landing links to the console address
-`NEXT_PUBLIC_HIVE_CONSOLE_URL` once signed in.
+test, then `check:out`, which reads the built pages and fails on a broken
+link or anchor). It has no sign-in and no account: Hive is a tool you run
+yourself
+([ADR-071](decisions/ADR-071-hive-is-an-open-source-tool.md)). At build
+time it renders this repository's `docs/**/*.md` under `/docs/` and serves
+the installer, `scripts/install.sh`, at `/install.sh`. Its two fonts are
+committed whole and cut down to Latin and the signs the pages use; every
+page loads the cut files, and `web/site/scripts/subset-fonts.py` writes
+them (its first lines say how).
 
 `.github/workflows/deploy-site.yml` deploys on every push to `main` that
-touches `web/site/`: it runs `npm run check`, then `vercel pull`,
-`vercel build --prod` and `vercel deploy --prebuilt --prod` with the
-repository secrets `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and
-`VERCEL_DEPLOY_TOKEN`; the production publishable key lives in the Vercel
-project's environment, not in the repository. Clerk's production instance
-runs on the `clerk.hivefleet.dev` / `accounts.hivefleet.dev` subdomains
-(five CNAME records at the DNS host, then a certificate wait), so moving
-from the development instance to production is a DNS step for the owner.
+touches `web/site/`, `docs/` or `scripts/install.sh`: it runs
+`npm run check` and the installer's own test
+(`scripts/tests/install-test.sh`), then `vercel pull`, `vercel build --prod` and
+`vercel deploy --prebuilt --prod` with the repository secrets
+`VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and `VERCEL_DEPLOY_TOKEN`. While one of
+the three is missing, the checks run, the deploy says it was skipped, and
+the run ends green. Its last
+step downloads `https://hivefleet.dev/install.sh` and compares it with this
+commit's `scripts/install.sh`, byte for byte, because the install line hands
+that address to a shell. An older installer there fails the run: the deploy
+did not reach the public address. Anything else there, such as a parked
+domain's page, is a warning on the run and not a failure: pointing the
+domain is not something a commit can fix, and a red run would only send an
+agent after it.
+
+**Putting the domain on the site** is the owner's step, done once. On
+21 November 2026 `hivefleet.dev` is parked at its registrar, Hostinger: its
+nameservers are `aster.dns-parking.com` and `helios.dns-parking.com`, and
+every address under it, `/install.sh` included, answers with the
+registrar's parking page.
+
+1. **Add the domain to the Vercel project.** In Vercel, open the project
+   this workflow deploys to, then **Settings**, then **Domains**. Choose
+   **Add Existing** and enter `hivefleet.dev`. Vercel offers to add
+   `www.hivefleet.dev` as well: add it. Keep `hivefleet.dev` as the name
+   that serves the site, and make `www.hivefleet.dev` redirect to it
+   (**Edit** on that row, then **Redirect to**). Vercel recommends the
+   other direction, but the install line, the canonical addresses and the
+   sitemap all name `https://hivefleet.dev`.
+2. **Set the two records at the DNS host.** That is Hostinger today, in
+   the domain's DNS records. The project's Domains page shows the exact
+   values to use:
+
+   | Type | Name | Value |
+   | --- | --- | --- |
+   | `A` | `@`, or blank where the host does not take `@` | the address the Domains page shows for `hivefleet.dev` |
+   | `CNAME` | `www` | the target the Domains page shows for `www.hivefleet.dev` |
+
+   Vercel gives each project values of its own. Its documentation, read
+   on 21 November 2026, says that many projects show the address
+   `76.76.21.21`, that newer ones can show one such as `216.198.79.1`,
+   and that the `CNAME` target is the project's own, of the form
+   `d1d4fc829fe7bc7c.vercel-dns-017.com`. So copy what the page shows,
+   the dot at the end of the target included, and not a value from here
+   or from another project. First remove what the parking left under the
+   same two names: the `A` record of the apex (`2.57.91.91` today) and
+   the `CNAME` that points `www` at `hivefleet.dev`. Leave no other `A`
+   record and no `AAAA` record on the apex: Vercel does not serve IPv6.
+   The nameservers stay as they are. Vercel's own pages for this are
+   [adding a domain](https://vercel.com/docs/domains/working-with-domains/add-a-domain)
+   and [the records for an apex domain and `www`](https://vercel.com/docs/domains/troubleshooting#working-with-apex-domain).
+3. **Wait until the Domains page shows both names as configured.** Vercel
+   then issues the certificate by itself.
+   `dig A hivefleet.dev +short` and `dig CNAME www.hivefleet.dev +short`
+   print what the DNS host publishes, to compare with the page.
+
+To see that it worked:
+
+```sh
+curl -sI https://hivefleet.dev/install.sh               # content-type: text/plain
+curl -fsSL https://hivefleet.dev/install.sh | head -2   # the installer's first lines
+```
+
+The first answers with `content-type: text/plain`, which
+`web/site/vercel.json` sets for the installer; the parking page answers
+`text/html`. The second prints `#!/bin/sh` and
+`# The Hive installer, for macOS and Linux.` And the workflow's last step,
+**Check the installer at the public address**, stops warning: it prints
+`https://hivefleet.dev/install.sh serves scripts/install.sh of this commit`.
+
 The Mac app has its own check, `apps/macos/scripts/check.sh` (see
 [The Mac app](mac-app.md#the-mac-app)); it is outside the Cargo workspace and the verify
 command.
@@ -151,7 +213,7 @@ crates/hive-inspect           status, projects, jobs, agents, events, settings, 
 crates/hive-hub               the HTTP API and SSE the console uses; its build.rs builds and it embeds the console export, web/hub/out
 crates/hive-testutil          shared test helpers
 web/hub/                       the console (source, mock API; the static export out/ is built by cargo, not committed)
-web/site/                      hivefleet.dev: the landing page and the sign-in (Next.js static export, deployed to Vercel by .github/workflows/deploy-site.yml; not part of the binary)
+web/site/                      hivefleet.dev: the landing page and the docs (Next.js static export, deployed to Vercel by .github/workflows/deploy-site.yml; not part of the binary)
 apps/macos/                    the Mac app: a Swift package (HiveKit decides, the AppKit shell shows), build.sh, check.sh
 docs/                          the reference, one file per part (the README's Documentation table lists them)
 docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)

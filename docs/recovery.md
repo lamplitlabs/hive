@@ -67,25 +67,28 @@ projects then erred 342 runs in 14 hours while their cards read "Quiet", and
 before the hold landed the same two projects spent 385 runs of 136 jobs in a
 week on a recipe no run could use).
 
-Open **Home → Failed job repair**, or the same section in a project's
-**Overview**, to inspect current recovery reasons. The historical total counts
-all-age jobs still marked failed, including autonomous jobs that have no owner
-task. Category counts and filters describe the current page, not the whole
-history; **Older** and **Newer** page through it.
-
-Select up to five eligible jobs and confirm **Repair selected**. Each failure
-is rechecked against its current state, replacement jobs, cancellations,
-prerequisites, STOP, backoff and existing recovery/queue limits. Deterministic
-failures get a corrected job carrying the earlier evidence; transient failures
-can reuse their job. The response lists queued, skipped and failed actions
-separately. **Queued is not fixed.** Structural failures and exhausted chains
-remain held with a reason and next step; no history is deleted and no cap is
-raised.
+In the console, a project's header says how many of its jobs failed in the
+last day, and its **Overview** links **Jobs that failed** to the **Runs**
+page. There, the **Failed** chip shows **Jobs that failed** under the runs:
+open it to see why each job failed and retry up to five at a time. In a
+terminal, `hive jobs --all` lists the recovery reasons and
+`hive job retry JOB_ID [--as-new]` repairs one job.
 
 The owner API exposes `GET /api/v1/jobs/failed` with project filtering and
 bounded cursor pagination, and `POST /api/v1/jobs/repair` with explicit
-`job_ids` and `X-Hive-Job-Repair: yes`. It never accepts an actor or a
-blanket retry-all request.
+`job_ids` (five at most) and `X-Hive-Job-Repair: yes`. It never accepts an
+actor or a blanket retry-all request. The list's historical total counts
+all-age jobs still marked failed, including autonomous jobs that have no
+owner task. Its category counts describe the page asked for, not the whole
+history.
+
+A repair rechecks each failure against its current state, replacement jobs,
+cancellations, prerequisites, STOP, backoff and existing recovery/queue
+limits. Deterministic failures get a corrected job carrying the earlier
+evidence; transient failures can reuse their job. The response lists queued,
+skipped and failed actions separately. **Queued is not fixed.** Structural
+failures and exhausted chains remain held with a reason and next step; no
+history is deleted and no cap is raised.
 
 ## Lessons, briefs and peer help
 

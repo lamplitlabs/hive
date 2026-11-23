@@ -3247,6 +3247,15 @@ pub(crate) fn daemon(
         maintenance_ctx.cancel();
     }
     if !inflight.is_empty() {
+        // The owner's ask to restart now, written while this daemon waits
+        // for its runs, is heard here: before this it was read only by the
+        // loop, so a daemon in this wait sat on the ask for as long as its
+        // runs took (on 2026-11-04, seven asks in a day, one unheard for
+        // hours while a task run was in its check). The asks that count are
+        // the ones after this point, and the point is fixed before the line
+        // below says that the daemon waits: an ask written the moment that
+        // line appears (the console shows it) must not fall behind it.
+        let asks_after = hive_bus::last_id(s).unwrap_or(0);
         say(
             &o,
             format!(
@@ -3265,12 +3274,6 @@ pub(crate) fn daemon(
         // an hour): beat on, naming the runs, so the console does not call a
         // daemon that waits for its runs silent.
         let beat_tick = crossbeam_channel::tick(Duration::from_secs(interval.max(1) as u64));
-        // The owner's ask to restart now, written while this daemon waits
-        // for its runs, is heard here: before this it was read only by the
-        // loop, so a daemon in this wait sat on the ask for as long as its
-        // runs took (on 2026-11-04, seven asks in a day, one unheard for
-        // hours while a task run was in its check).
-        let asks_after = hive_bus::last_id(s).unwrap_or(0);
         let ask_tick = if result == "restart" && !restart.forced() {
             crossbeam_channel::tick(WAIT_ASK_POLL)
         } else {

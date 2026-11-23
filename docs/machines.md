@@ -29,8 +29,9 @@ machine.labels gpu,android`). A paired hand reports its OS and chip and what
 it found on every probe (`hive executor probe NAME`; hands paired before
 this count as Linux until their next probe, the only platform `hive pair`
 takes), and you label it with `hive executor label NAME gpu,android`
-(replaces your words, keeps the found ones) or `hive executor label NAME
-+cuda,-gpu` (adds and removes); `hive executor add NAME --labels a,b`
+(replaces your words, keeps the found ones), `hive executor label NAME
++cuda,-gpu` (adds and removes) or `hive executor label NAME -gpu` (removes
+one); `hive executor add NAME --labels a,b`
 labels it from the start, and so does the console's **Add machine** dialog
 (its *Labels* field). `hive executor list` shows every machine's
 `offers …` line, and the hub's Machines page the same.
@@ -104,7 +105,8 @@ hive settings set machine.labels gpu,android          # what this machine offers
 hive settings set machine.reserve on                  # this machine takes only the jobs that need something it offers
 hive settings set executor.transport local-hand      # this machine's jobs go to its hive-hand, which pushes their branch
 hive executor add gpu-box --ssh hive@gpu-box --workdir /srv/hive --labels gpu
-hive executor label gpu-box +cuda                     # add a word; -word removes one; a plain list replaces yours
+hive executor label gpu-box +cuda                     # add a word; a plain list replaces yours
+hive executor label gpu-box -cuda                     # remove a word
 hive executor reserve gpu-box                         # keep it for the jobs that need it; --off to release
 hive executor list                                    # every machine, its slots and an `offers …` line
 hive init ~/code/ios-app --needs macos,xcode          # every job of the project needs a Mac with Xcode
@@ -115,8 +117,32 @@ hive job needs JOB_ID -                               # this one job may run any
 ## Pairing hands
 
 `hive pair ADMIN@HOST --name NAME [--workdir /srv/hive] [--workers N]
-[--projects a,b|*]` turns a Linux machine into an executor in one run, from
-the account that runs the daemon. `--workers` is only the starting count: each
+[--projects a,b|*]` sets up a Linux machine as an executor over the SSH
+login of an admin there, who needs passwordless sudo. Run it from the
+account that runs the daemon. The name is required. `hive pair` refuses
+anything but Linux: a Mac, or any other machine, joins with `hive-hand`
+([Enrolling a hand](#enrolling-a-hand)). On a new setup it is not the only
+step:
+
+- **It copies a Linux `hive` to the machine, and needs one to copy.** A
+  Linux brain with the same processor sends its own program. Otherwise it
+  needs one from you: set `HIVE_HANDS_BINARY` to a Linux `hive` for that
+  machine's processor (the `hive` inside the release's Linux archive), or
+  put that file beside your `hive` as `hive-linux-amd64` or
+  `hive-linux-arm64`. From a checkout of Hive's source it can cross-build
+  one. With none of these it stops and says so. A file you name with
+  `HIVE_HANDS_BINARY`, or one beside your `hive`, is taken before the
+  brain's own program. The run says which it took:
+  `hands binary: linux/arm64, ... from PATH`, where a Linux brain names its
+  own `hive`, and `from HIVE_HANDS_BINARY=PATH` when the variable is set.
+- **A newly paired machine has no model login** and takes no work until it
+  has one. So the first run on a new machine ends with
+  `paired NAME: drained (the probe did not pass)` and
+  `probe FAILED: harness login missing`, names the next step and exits with
+  status 1. The next step is `hive executor login NAME --admin ADMIN@HOST`,
+  then `hive executor probe NAME`.
+
+`--workers` is only the starting count: each
 probe reads the machine's cores and memory (`cores=` and `mem_mb=` in the
 hands' probe line) and sets its slots to the smaller of the cores and one run
 per 3 GB, the same rule this machine uses, so the fleet's total grows with every
@@ -145,7 +171,10 @@ block is printed). Then, in this order:
   `/usr/local/bin/hive` linked to it, makes the workdir, writes the one
   `command="… hands",restrict` line in its `authorized_keys`, a gitconfig and
   `mise`, then the drop-in `/etc/ssh/sshd_config.d/60-hive-hands.conf` and reloads
-  sshd. Every step reports `kept` or `done`, so a re-pair is safe. `sudo -n`
+  sshd. The steps it reports, in order, are `user`, `hands`, `hive`,
+  `workdir`, `authorized_keys`, `gitconfig`, `mise`, `dropin` and
+  `sshd_reload`. Every step reports `kept` or `done` (`sshd_reload` says
+  `skipped` when the drop-in did not change), so a re-pair is safe. `sudo -n`
   never prompts: when sudo wants a password the run stops with the dry-run
   output and the way out (a `NOPASSWD` line for the admin, or run the printed
   script as root yourself and then `hive executor add NAME --ssh hive@NAME
@@ -161,8 +190,9 @@ block is printed). Then, in this order:
   workers, projects, the probe line, the undo one-liner). When the machine is reached
   but not ready - no harness login, disk under the floor - the pairing
   stays, the executor stays `drained` with the probe note, the summary names
-  the next step (`hive executor login NAME --admin ADMIN@HOST --with-token`,
-  or fix it and `hive executor probe NAME`) and the exit code is 1. The
+  the next step (`hive executor login NAME --admin ADMIN@HOST`, with
+  `--with-token` to paste a token, then `hive executor probe NAME`; or fix
+  it and `hive executor probe NAME`) and the exit code is 1. The
   daemon pairs a machine it bought the same way, except that the login is
   its own next step: a probe that lacks only the harness login leaves the
   hand paired and waiting (`paired NAME: drained (the harness login comes
@@ -433,15 +463,63 @@ you would rather prepare yourself.
 ## Enrolling a hand
 
 A machine with `hive-hand` installed joins the brain once and then calls
-out to it for work: no open port, no sshd drop-in, no `authorized_keys`, no
-key from the brain (ADR-070 step 2). On the Machines page, **Add a
-machine** -> **Run one command on it** -> **Get a join code** shows a
-six-word code and the line to run on the machine:
+out to it for work: no open port, no sshd drop-in, no `authorized_keys`,
+and enrolling puts no key of the brain's on it (ADR-070 step 2). On the
+Machines page, **Add a machine** -> **Run one command on it** -> **Get a
+join code** shows a six-word code, good for ten minutes and one join, and
+the line to run on the machine. Here it is with an address the machine can
+reach in place of the one the console shows:
 
 ```
-hive-hand join --brain https://hive.example.com amber-river-cobalt-maple-orbit-lantern
-hive-hand dial          # keep it running (a launchd or systemd service)
+hive-hand join --brain https://hive.example.com amber-river-cobalt-maple-orbit-lantern   # the first time: enrols, then stays connected
+hive-hand dial          # every later start: keep it running (a launchd or systemd service)
 ```
+
+**The first line does not return by itself.** `join` enrols the machine and
+then dials in. It prints
+`joined URL as NAME (device dev-ID); jobs run under DIR`, then
+`hive-hand: connected to URL as NAME (dev-ID)`, and stays in the foreground
+holding the channel to the brain. It returns after enrolling only when
+`HIVE_HAND_JOIN_ONLY=1` is set. `hive-hand dial` is for every later start:
+it is what a launchd or systemd service keeps running.
+
+**The address in that line.** `--brain` is the address the machine reaches
+the brain on. The line the console shows carries the address your browser
+used, so it usually reads `http://127.0.0.1:8765`: on another machine that
+is the machine itself and not the brain, so change it to an address the
+machine can reach. The console listens on 127.0.0.1 only, so another
+machine reaches it only through something you set up on the brain's
+machine: an SSH tunnel, or a proxy with TLS there. A private network alone
+does not reach a port bound to 127.0.0.1. A tunnel reaches the whole
+console, not only the hand's routes; a proxy under a name of your own
+reaches the hand's routes only, until you list that name
+([security.md](security.md#the-machines-you-pair)).
+
+The console answers only to the host names `localhost`, an IP address or a
+name listed in the setting `hub.hosts` (empty by default), and any other
+`Host` header gets 403: a guard against DNS rebinding, not a login. The
+routes a hand calls are exempt, so
+`hive-hand join --brain https://hive.example.com` through a proxy works as
+it is, while opening the console in a browser under that name needs the
+name in `hub.hosts`.
+
+An SSH tunnel is the short way. On the machine that joins, forward a port
+of its own to the console and name that port. Keep the tunnel up for as
+long as the machine should take work: while the console cannot be reached,
+`dial` tries again and waits longer each time.
+
+```
+ssh -N -L 8765:127.0.0.1:8765 YOU@HOST &                # HOST is the brain's machine
+hive-hand join --brain http://127.0.0.1:8765 CODE       # this machine's port 8765 now reaches the console
+```
+
+**What the machine needs to take work.** `hive-hand` enrols the machine and
+carries the jobs. An agent itself runs on the harness, and the harness is
+in `hive`: the only worker a hand starts is `hive harness run`. So the
+machine also needs `hive` on its PATH and a model login of its own
+(`hive harness login` there, or a provider key). The installer puts both
+programs in place: once as it is for `hive`, once with `--hand`
+([release.md](release.md)).
 
 `join [--brain URL] [--name NAME] [--labels a,b] [--workers N] [--workdir
 DIR] CODE` makes an ed25519 device key in the hand's own directory
@@ -451,12 +529,16 @@ DIR] CODE` makes an ed25519 device key in the hand's own directory
 brain URL comes from `--brain`, else `HIVE_BRAIN`. The brain answers with
 a device id and the executor the machine works as - a row of kind `dial`,
 named after the machine unless `--name` says otherwise - and the hand keeps
-both in `device.json` beside the key.
+both in `device.json` beside the key. After a join the hand's directory
+holds `device.json`, `device_key`, `device_key.pub` and `work`, where jobs
+run unless `--workdir` names another directory.
 
-**Join codes.** `POST /api/v1/machines/join-codes` (an owner write, same
-origin like every console write) issues one: six words, good for 10 minutes
-and one join. The brain keeps only its SHA-256 (`hand_join_codes`); a
-lapsed, spent or wrong code answers 403 and enrols nothing. The answer
+**Join codes.** `POST /api/v1/machines/join-codes` (a console write, held to
+the same origin like every console write) issues one: six words, good for 10
+minutes and one join. The brain keeps only its SHA-256 (`hand_join_codes`);
+a lapsed, spent or wrong code answers 403 and enrols nothing
+(`That join code has expired`, `That join code was already used`,
+`That join code is not one this brain issued`). The answer
 carries `code`, `expires_at`, `minutes`, `brain` (the URL the browser
 reached the hub on) and `command`, the line above. The wizard watches
 `GET /api/v1/compute`'s `devices` and says when the machine has joined.
@@ -468,8 +550,11 @@ signature of that key can connect) and trades the signature for a session
 token (`/hands/connect`, 12 hours). A tampered signature, a used or lapsed
 nonce and a revoked device are refused. The first connect puts the `dial`
 executor into rotation (it is `drained` until then; a drain by the owner
-stays). From then on it long-polls `/hands/poll` (25 seconds at most per
-call) and posts each outcome to `/hands/result`. Every `hive-hands` verb
+stays). Since `join` dials in itself, a machine that has joined shows as
+`active` as soon as it has connected, without a probe (`hive executor list`
+says `probe never`), unlike a paired machine, which stays `drained` until
+its probe passes. From then on it long-polls `/hands/poll` (25 seconds at
+most per call) and posts each outcome to `/hands/result`. Every `hive-hands` verb
 the brain would send over ssh is queued in that device's mailbox
 (`hand_calls`) and run by the hand's own `hive-hand` exactly as sshd's
 forced command would. The lease and report semantics, and the executor code,
@@ -494,25 +579,30 @@ routes.
 
 ## A brain without code: `brain.code none`
 
-A brain that should never hold a team's code - the hosted brain of ADR-070
-rule 6 (`deploy/Dockerfile`), or any machine whose review needs that -
+A brain that should never hold the projects' code - a brain you run on a
+server of your own from the image in `deploy/` (`deploy/Dockerfile`), or
+any machine whose review needs that -
 sets `hive settings set brain.code none`. This machine's own slot then
 leases only the `lead` and `reflect` jobs. Those run in an empty
 workspace and plan from the board, the task text and what the hands
-report. Every job that needs the code - tasks, improvements, reviews,
-measurement, check and watch scripts - stays queued for a paired hand,
-which keeps its own clone. `hive run` of such a job is refused,
-`executor.transport local-hand` included, since a local hand clones onto
-this disk too. The source self-update stands down; `daemon.self_update
-release` installs releases instead ([release.md](release.md)). What this
-promises, and the test that holds it, is in [security.md](security.md).
+report. Every job that works in the code - tasks, improvements,
+experiments and the rest - stays queued for a hand, which keeps its own
+clone. A `review` job needs the code and the store both: this brain has no
+code and a hand has no store, so no machine takes it yet. Check and watch
+scripts are held. A run asked for by hand (`hive work --job ID`) does not
+start a job that needs the code here either, `executor.transport
+local-hand` included, since a local hand clones onto this disk too. The
+source self-update stands down; `daemon.self_update release` installs
+releases instead ([release.md](release.md)). What this promises, and the
+test that holds it, is in [security.md](security.md).
 
-Two things a code-less brain does not do yet. Its hands still reach it
-through `hive pair` over SSH, because the dial-in channel is ADR-070
-step 2. And landing merges in a worktree of the registered checkout, so
-with no checkout the lander holds a finished branch (`land.held`, reason
-`brain-code-none`: "brain.code is none") without making a worktree, and the
-branch waits for a pull request merged through the forge.
+A code-less brain is not finished. Landing merges in a worktree of the
+registered checkout, so with no checkout the lander holds a finished branch
+(`land.held`, reason `brain-code-none`: "brain.code is none") without
+making a worktree, and the branch waits for a pull request merged through
+the forge. A machine reaches such a brain as it reaches any other: paired
+over SSH, or enrolled with a join code ([Enrolling a hand](#enrolling-a-hand)).
+[security.md](security.md#what-is-not-built) lists what else is not built.
 
 ## Heartbeats and presence
 

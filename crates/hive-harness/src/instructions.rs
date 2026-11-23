@@ -25,10 +25,26 @@ pub const INSTRUCTION_FILES: &[&str] = &[
 /// the clone's own so a project can refine them.
 pub const OWNER_INSTRUCTIONS: &str = "AGENTS.md";
 
+/// What a clone set up before the rename is told ahead of its own files.
+/// They still say `pulse`, and a model that ran `pulse skill show X` as
+/// written would find no such command: the note says what the words mean
+/// now. It goes into the prompt only where the clone has a `.pulse/`
+/// folder.
+pub const LEGACY_NOTE: &str = "This repository was set up when Hive was called PULSE, and its files still say so. Where one says `pulse <command>`, run `hive <command>` with the same arguments. Where one names a `PULSE_...` variable, read the `HIVE_...` one. The `.pulse/` folder is read as it is; a new file goes under `.hive/`.";
+
+/// The name [`LEGACY_NOTE`] carries among the instruction files.
+pub const LEGACY_NOTE_NAME: &str = "Hive's note on .pulse/";
+
+const HIVE_RULES: &str = ".hive/rules";
+const LEGACY_HIVE_RULES: &str = ".pulse/rules";
+
 /// Where a clone keeps rules - instruction files that may name the paths
 /// they apply to - and what their files are called.
 pub const RULE_DIRS: &[(&str, &str)] = &[
-    (".hive/rules", ".md"),
+    (HIVE_RULES, ".md"),
+    // The same folder under its name from before the rename. A rule both
+    // hold, by its path under the folder, is read from the first.
+    (LEGACY_HIVE_RULES, ".md"),
     (".claude/rules", ".md"),
     (".github/instructions", ".instructions.md"),
 ];
@@ -100,14 +116,26 @@ pub fn load_instructions(cwd: &str, home: &str) -> Instructions {
         let path = Path::new(home).join(OWNER_INSTRUCTIONS);
         add_file(&mut out, &path, "~/.hive/AGENTS.md");
     }
+    if root.join(hive_store::LEGACY_PROJECT_DIR).is_dir() {
+        add_text(&mut out, LEGACY_NOTE_NAME, LEGACY_NOTE);
+    }
     for name in INSTRUCTION_FILES {
         add_file(&mut out, &root.join(name), name);
     }
+    // The rules `.hive/rules` holds, by their path under it.
+    let mut current: BTreeSet<PathBuf> = BTreeSet::new();
     for (dir, suffix) in RULE_DIRS {
+        let base = root.join(dir);
         let mut files = Vec::new();
-        collect_rule_files(&root.join(dir), suffix, &mut files);
+        collect_rule_files(&base, suffix, &mut files);
         files.sort();
         for path in files {
+            let under = path.strip_prefix(&base).unwrap_or(&path).to_path_buf();
+            if *dir == HIVE_RULES {
+                current.insert(under);
+            } else if *dir == LEGACY_HIVE_RULES && current.contains(&under) {
+                continue;
+            }
             let name = path
                 .strip_prefix(&root)
                 .unwrap_or(&path)
@@ -481,6 +509,60 @@ mod tests {
         );
         assert!(front_list("paths:\nname: x\n", "paths").is_empty());
         assert!(front_list("other: a\n", "paths").is_empty());
+    }
+
+    /// A clone from before the rename keeps its rules under `.pulse/rules`
+    /// and its files say `pulse`: the rules are read, and the prompt says
+    /// once, ahead of the clone's own files, what the old words mean.
+    #[test]
+    fn a_clone_from_before_the_rename_gets_its_rules_and_a_note_on_the_old_name() {
+        let clone = tempfile::tempdir().unwrap();
+        write(clone.path(), "AGENTS.md", "Run `pulse task list` first.\n");
+        write(clone.path(), ".pulse/rules/style.md", "Tabs, not spaces.\n");
+        write(
+            clone.path(),
+            ".pulse/rules/api.md",
+            "---\npaths:\n  - \"src/api/**\"\n---\nEvery handler returns Result.\n",
+        );
+        write(clone.path(), ".hive/rules/new.md", "Short sentences.\n");
+        // A rule both folders hold is read from `.hive/rules` alone.
+        write(clone.path(), ".pulse/rules/new.md", "The older wording.\n");
+        let got = load_instructions(clone.path().to_str().unwrap(), "");
+        assert_eq!(
+            got.files,
+            [
+                LEGACY_NOTE_NAME,
+                "AGENTS.md",
+                ".hive/rules/new.md",
+                ".pulse/rules/style.md",
+            ]
+        );
+        assert!(
+            got.text.starts_with(&format!(
+                "--- {LEGACY_NOTE_NAME} ---\n{LEGACY_NOTE}\n--- AGENTS.md ---\n"
+            )),
+            "{}",
+            got.text
+        );
+        assert!(
+            got.text
+                .contains("run `hive <command>` with the same arguments")
+        );
+        assert!(got.text.contains("Short sentences.") && !got.text.contains("The older wording."));
+        assert_eq!(
+            got.scoped
+                .iter()
+                .map(|s| s.source.as_str())
+                .collect::<Vec<_>>(),
+            [".pulse/rules/api.md"]
+        );
+
+        // A clone without the older folder is told nothing about it.
+        let plain = tempfile::tempdir().unwrap();
+        write(plain.path(), "AGENTS.md", "Run the tests.\n");
+        let got = load_instructions(plain.path().to_str().unwrap(), "");
+        assert_eq!(got.files, ["AGENTS.md"]);
+        assert!(!got.text.contains("PULSE"), "{}", got.text);
     }
 
     #[test]

@@ -1,22 +1,35 @@
 name: Deploy site (hivefleet.dev)
 
-# Builds web/site (the landing page and sign-in at https://hivefleet.dev) and
-# deploys it to Vercel from CI, the way Lamplit Labs' other sites deploy: the
-# Vercel project is NOT connected to the repository; this workflow pulls its
-# settings and production environment (NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY lives
-# there), builds the export with the Vercel CLI and uploads the prebuilt output.
+# Builds web/site (https://hivefleet.dev: what Hive is, how to install it, and
+# the repository's docs/ rendered as pages) and deploys it to Vercel from CI,
+# the way Lamplit Labs' other sites deploy: the Vercel project is NOT connected
+# to the repository; this workflow pulls its settings and production
+# environment, builds the export with the Vercel CLI and uploads the prebuilt
+# output. The site needs no secret of its own: the one variable it reads,
+# NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION, is optional and public by nature
+# (web/site/.env.example).
+#
+# The build reads two things outside web/site: every Markdown file under docs/
+# becomes a page, and scripts/install.sh is served at /install.sh. A change to
+# either starts this workflow, so the site never shows older docs or an older
+# installer than main holds.
 #
 # Secrets the repository needs (Settings -> Secrets -> Actions):
 #   VERCEL_ORG_ID        the team id (Vercel: Settings -> General)
 #   VERCEL_PROJECT_ID    the project id (Project -> Settings -> General)
 #   VERCEL_DEPLOY_TOKEN  a token (Account -> Settings -> Tokens) scoped to the team
 # The Vercel project keeps Root Directory empty: every command here runs in web/site.
+# While one of the three is missing the deploy job says so and ends green: the
+# checks still run, and a repository that has no Vercel project yet (a fork,
+# or this one before the project exists) has no red run on its default branch.
 
 on:
   push:
     branches: [main]
     paths:
       - "web/site/**"
+      - "docs/**"
+      - "scripts/install.sh"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
 
@@ -29,6 +42,8 @@ permissions:
 
 env:
   VERCEL_CLI: vercel@65.14.0
+  # The address the README and the site give for the installer.
+  INSTALLER_URL: https://hivefleet.dev/install.sh
 
 jobs:
   check:
@@ -45,6 +60,12 @@ jobs:
           cache-dependency-path: web/site/package-lock.json
       - run: npm ci
       - run: npm run check
+      # The site serves scripts/install.sh at /install.sh, and people pipe it
+      # into a shell: its own test passes before it is deployed. The test is
+      # offline (a release it builds itself, served from a local address).
+      - name: The installer's test
+        working-directory: .
+        run: sh scripts/tests/install-test.sh
 
   deploy:
     needs: check
@@ -57,17 +78,36 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
+      - name: Is there a Vercel project to deploy to?
+        id: vercel
+        shell: bash
+        working-directory: .
+        env:
+          DEPLOY_TOKEN: ${{ secrets.VERCEL_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VERCEL_ORG_ID" || -z "$VERCEL_PROJECT_ID" || -z "$DEPLOY_TOKEN" ]]; then
+            echo "::notice::The site was checked and not deployed: VERCEL_ORG_ID, VERCEL_PROJECT_ID and VERCEL_DEPLOY_TOKEN are not all set (docs/development.md says how to set them)."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.vercel.outputs.deploy == 'true'
       - uses: actions/setup-node@v4
+        if: steps.vercel.outputs.deploy == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/site/package-lock.json
       - name: Vercel pull
+        if: steps.vercel.outputs.deploy == 'true'
         run: npx --yes "$VERCEL_CLI" pull --yes --environment=production --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"
       - name: Vercel build
+        if: steps.vercel.outputs.deploy == 'true'
         run: npx --yes "$VERCEL_CLI" build --prod --token="${{ secrets.VERCEL_DEPLOY_TOKEN }}"
       - name: Vercel deploy
+        if: steps.vercel.outputs.deploy == 'true'
         shell: bash
         run: |
           max_attempts=3
@@ -84,3 +124,42 @@ jobs:
             echo "Transient deploy failure. Retrying in ${sleep_seconds}s..."
             sleep "$sleep_seconds"
           done
+      # People are told to run `curl -fsSL https://hivefleet.dev/install.sh | sh`,
+      # so that address must serve this commit's installer, byte for byte.
+      # - An older installer there fails the run: the deploy did not reach the
+      #   public address.
+      # - Anything else there means the domain does not point at this project
+      #   (a parked domain answers 200 with a page of its own to every path,
+      #   which curl would hand to the shell). That is a warning and not a
+      #   failure: no commit can fix it, and a red run on the default branch
+      #   would only send an agent after it (pipeline.watch).
+      - name: Check the installer at the public address
+        if: steps.vercel.outputs.deploy == 'true'
+        shell: bash
+        working-directory: .
+        run: |
+          set -uo pipefail
+          served="$RUNNER_TEMP/served-install.sh"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsSL --proto '=https' --tlsv1.2 -o "$served" "$INSTALLER_URL" \
+              && cmp -s "$served" scripts/install.sh; then
+              echo "$INSTALLER_URL serves scripts/install.sh of this commit"
+              exit 0
+            fi
+            echo "attempt $attempt/6: $INSTALLER_URL does not serve this commit's scripts/install.sh yet"
+            sleep 20
+          done
+          second=""
+          if [[ -s "$served" ]]; then
+            second="$(sed -n '2p' "$served")"
+          fi
+          if [[ "$second" == "# The Hive installer"* ]]; then
+            echo "::error::$INSTALLER_URL serves an installer, but not scripts/install.sh of this commit: the deploy did not reach the public address."
+            exit 1
+          fi
+          echo "::warning::$INSTALLER_URL does not serve Hive's installer, so the domain does not point at this Vercel project. Until it does, the install line in the README hands whatever that address serves to a shell. Pointing the domain is the owner's step; no commit fixes it."
+          if [[ -s "$served" ]]; then
+            echo "It served, to begin with:"
+            head -c 300 "$served"
+            echo
+          fi

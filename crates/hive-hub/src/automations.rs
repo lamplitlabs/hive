@@ -2545,6 +2545,124 @@ mod tests {
         assert_eq!(body["error"], "No automation nightly in demo");
     }
 
+    /// A repository from before the rename keeps its automations under
+    /// `.pulse/automations`. The console lists them, an edit rewrites the
+    /// file where it is, a new automation goes under `.hive/`, and a rename
+    /// moves the file there.
+    #[test]
+    fn an_automation_under_the_older_folder_is_edited_where_it_is() {
+        let _serial = crate::test_helpers::serial();
+        let t = http::additions_store(false);
+        let s = &t.store;
+        let dir = project_with_repo(s, "demo");
+        for (path, text) in [
+            (
+                ".pulse/automations/old-watch.yaml",
+                "title: The older watch\nkind: watch\nscript: .pulse/automations/old-watch.sh\nevery: daily\nbrief: Follow the skill.\n",
+            ),
+            (".pulse/automations/old-watch.sh", "#!/bin/sh\nexit 0\n"),
+        ] {
+            let full = Path::new(&dir).join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "the older folder"]);
+        manifest::sync(s, "demo", "human", true).unwrap().unwrap();
+
+        // Listed with the path it has, and its script is in its place.
+        let (code, body) = get(s, "/api/v1/automations");
+        assert_eq!(code, 200, "{body}");
+        let project = body["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["slug"] == "demo")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            project["automations"]["files"][0]["path"],
+            ".pulse/automations/old-watch.yaml"
+        );
+        assert_eq!(project["automations"]["dir"], ".hive/automations");
+        let row = &project["schedules"][0];
+        assert_eq!(
+            row["origin"],
+            "repo:.pulse/automations/old-watch.yaml#old-watch"
+        );
+        assert_eq!(row["script_outside"], false);
+        let id = row["id"].as_str().unwrap().to_string();
+
+        // The same name again is taken, wherever a new file would go.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "entry": {"name": "old-watch", "every": "1d", "brief": "Again."}}),
+        );
+        assert_eq!(code, 400, "{body}");
+        assert!(
+            body["why"].as_str().unwrap().contains(
+                ".pulse/automations/old-watch.yaml already holds an automation named `old-watch`"
+            ),
+            "{body}"
+        );
+
+        // An edit rewrites the file under the older folder and keeps the row.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "replace": "old-watch", "entry": {"name": "old-watch", "title": "The older watch", "kind": "watch", "script": ".pulse/automations/old-watch.sh", "every": "weekly", "brief": "Follow the skill."}}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["path"], ".pulse/automations/old-watch.yaml");
+        assert_eq!(body["schedule"]["id"], id);
+        assert_eq!(body["schedule"]["every"], "1w");
+        assert_eq!(
+            git_in(&dir, &["log", "-1", "--format=%s"]).trim(),
+            "hive: update automation old-watch (.pulse/automations/old-watch.yaml)"
+        );
+        assert!(
+            !Path::new(&dir)
+                .join(".hive/automations/old-watch.yaml")
+                .exists(),
+            "an edit does not move the file"
+        );
+
+        // A new automation goes under .hive/, beside the older folder.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "entry": {"name": "fresh", "every": "1d", "brief": "New work."}}),
+        );
+        assert_eq!(code, 201, "{body}");
+        assert_eq!(body["path"], ".hive/automations/fresh.yaml");
+
+        // A rename writes the new name under .hive/ and removes the old file.
+        let (code, body) = post(
+            s,
+            "/api/v1/automations",
+            json!({"project": "demo", "replace": "old-watch", "entry": {"name": "new-watch", "title": "The older watch", "kind": "watch", "script": ".pulse/automations/old-watch.sh", "every": "weekly", "brief": "Follow the skill."}}),
+        );
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(body["path"], ".hive/automations/new-watch.yaml");
+        assert!(
+            !Path::new(&dir)
+                .join(".pulse/automations/old-watch.yaml")
+                .exists()
+        );
+        assert!(
+            Path::new(&dir)
+                .join(".pulse/automations/old-watch.sh")
+                .exists(),
+            "the script it still runs stays where it is"
+        );
+        assert_eq!(
+            body["schedule"]["script"],
+            ".pulse/automations/old-watch.sh"
+        );
+        assert_eq!(body["schedule"]["script_outside"], false);
+    }
+
     #[test]
     fn a_list_file_is_edited_in_place_and_new_automations_go_beside_it() {
         let _serial = crate::test_helpers::serial();

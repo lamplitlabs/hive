@@ -16,6 +16,7 @@ pub mod gitcred;
 pub mod hands;
 pub mod local;
 pub mod machine;
+pub mod managed;
 pub mod names;
 pub mod needs;
 pub mod pair;

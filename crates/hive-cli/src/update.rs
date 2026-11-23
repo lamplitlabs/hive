@@ -404,22 +404,29 @@ pub fn check_digest(
 /// The one stderr line every command prints once per release, or None:
 /// nothing newer is known, this machine follows the source channel, or the
 /// line for this release was already shown (`prompted` is the release the
-/// last prompt named).
+/// last prompt named). A program a package manager installed (`managed`)
+/// is told that manager's command whatever the channel: nothing else
+/// brings it a newer version.
 pub fn prompt(
     running: &str,
     state: &UpdateState,
     channel: Channel,
     prompted: &str,
+    managed: Option<&crate::managed::Managed>,
 ) -> Option<String> {
-    if channel != Channel::Release || !state.newer_than(running) {
+    if (channel != Channel::Release && managed.is_none()) || !state.newer_than(running) {
         return None;
     }
     if prompted.trim() == state.latest.trim() {
         return None;
     }
     Some(format!(
-        "A newer Hive {} is available - run: hive update",
-        state.latest
+        "A newer Hive {} is available - {}",
+        state.latest,
+        match managed {
+            Some(m) => m.upgrade_hint(),
+            None => "run: hive update".to_string(),
+        }
     ))
 }
 
@@ -805,14 +812,50 @@ mod tests {
             ..UpdateState::default()
         };
         assert_eq!(
-            prompt("v0.1.0", &st, Channel::Release, "").unwrap(),
+            prompt("v0.1.0", &st, Channel::Release, "", None).unwrap(),
             "A newer Hive v0.2.0 is available - run: hive update"
         );
         // Shown for v0.1.x before: a new release prompts again.
-        assert!(prompt("v0.1.0", &st, Channel::Release, "v0.1.5").is_some());
-        assert_eq!(prompt("v0.1.0", &st, Channel::Release, "v0.2.0"), None);
-        assert_eq!(prompt("v0.1.0", &st, Channel::Source, ""), None);
-        assert_eq!(prompt("v0.2.0", &st, Channel::Release, ""), None);
-        assert_eq!(prompt("dev", &st, Channel::Release, ""), None);
+        assert!(prompt("v0.1.0", &st, Channel::Release, "v0.1.5", None).is_some());
+        assert_eq!(
+            prompt("v0.1.0", &st, Channel::Release, "v0.2.0", None),
+            None
+        );
+        assert_eq!(prompt("v0.1.0", &st, Channel::Source, "", None), None);
+        assert_eq!(prompt("v0.2.0", &st, Channel::Release, "", None), None);
+        assert_eq!(prompt("dev", &st, Channel::Release, "", None), None);
+    }
+
+    #[test]
+    fn prompt_names_the_package_managers_command_on_a_managed_install() {
+        let st = UpdateState {
+            latest: "v0.2.0".into(),
+            ..UpdateState::default()
+        };
+        let brew = crate::managed::Managed::parse("by=Homebrew\nupgrade=brew upgrade hivefleet\n");
+        assert_eq!(
+            prompt("v0.1.0", &st, Channel::Release, "", Some(&brew)).unwrap(),
+            "A newer Hive v0.2.0 is available - run: brew upgrade hivefleet"
+        );
+        // The daemon builds nothing over a managed program, so the source
+        // channel does not silence the line there.
+        assert_eq!(
+            prompt("v0.1.0", &st, Channel::Source, "", Some(&brew)).unwrap(),
+            "A newer Hive v0.2.0 is available - run: brew upgrade hivefleet"
+        );
+        let unnamed = crate::managed::Managed::default();
+        assert_eq!(
+            prompt("v0.1.0", &st, Channel::Release, "", Some(&unnamed)).unwrap(),
+            "A newer Hive v0.2.0 is available - upgrade it with the package manager that installed it"
+        );
+        // Once per release and only for a newer one, as everywhere.
+        assert_eq!(
+            prompt("v0.1.0", &st, Channel::Release, "v0.2.0", Some(&brew)),
+            None
+        );
+        assert_eq!(
+            prompt("v0.2.0", &st, Channel::Release, "", Some(&brew)),
+            None
+        );
     }
 }

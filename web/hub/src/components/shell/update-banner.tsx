@@ -74,7 +74,8 @@ export function UpdateBanner() {
   return (
     <div role="status" data-testid="update-banner" className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-ok/30 bg-ok/10 px-3 py-2 text-[13px] text-foreground">
       <ArrowUpCircleIcon aria-hidden className="size-4 shrink-0 text-ok" />
-      <span className="min-w-0 flex-1">
+      {/* The words keep a line's worth of room: on a phone the buttons wrap under them instead of squeezing them to a word a line. */}
+      <span className="min-w-0 flex-1 basis-56 anywhere">
         <span className="font-medium">{b.title}</span> <span className="text-muted-foreground">{b.detail}</span>
         {view.line ? (
           <span data-testid="update-apply-line" className={cn("block leading-snug", view.tone ? TONE[view.tone] : "text-muted-foreground")}>

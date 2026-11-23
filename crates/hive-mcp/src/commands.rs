@@ -2931,14 +2931,31 @@ mod tests {
 
         // Asking for the code flow with a hand client needs a redirect port,
         // which the fake server redirects to; the client id is still kept.
+        // The port is one this test holds, so it is busy for whoever runs
+        // the test: a low port is refused only to a user who may not bind
+        // one, and root and some Linux hosts may (the sign-in then waits out
+        // its five minutes).
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let held_port = held.local_addr().unwrap().port().to_string();
         let e = run_cmd(
             &mut c,
             "mcp",
-            &["login", "github", "--flow", "code", "--redirect-port", "1"],
+            &[
+                "login",
+                "github",
+                "--flow",
+                "code",
+                "--redirect-port",
+                &held_port,
+            ],
         )
         .unwrap_err()
         .to_string();
-        assert!(e.contains("cannot listen on 127.0.0.1:1"), "{e}");
+        assert!(
+            e.contains(&format!("cannot listen on 127.0.0.1:{held_port}")),
+            "{e}"
+        );
+        drop(held);
         crate::oauth::set_opener_for_tests(None);
     }
 

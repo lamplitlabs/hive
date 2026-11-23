@@ -14,6 +14,10 @@
 // runs finish - the banner then shows the runner's own wait words
 // (daemonUpdateText in components/hive/daemon-control-state.ts), handed in
 // as `waitText` so this module stays free of runtime imports.
+//
+// Where a package manager installed Hive (Homebrew, for one) there is no
+// button: that manager replaces the program, and the banner names its
+// upgrade command (`managed_by`, `install_command` in the payload).
 import type { UpdatePayload } from "./api";
 
 export const UPDATE_DISMISS_KEY = "hive.update.dismissed";
@@ -118,6 +122,20 @@ export function updateApplyView(p: UpdatePayload | null | undefined, input: Upda
   const ours = !!apply && (!applyLatest || applyLatest === latest);
   const state = ours ? apply.state : "idle";
   const release = p.channel === "release";
+  // A package manager's program is that manager's to replace: the hub
+  // refuses to install over it, so the banner offers no button and names
+  // the manager's own command, whatever the channel.
+  const managedBy = (p.managed_by ?? "").trim();
+  if (managedBy) {
+    const command = (p.install_command ?? "").trim();
+    return {
+      ...none,
+      line: command
+        ? `${managedBy} installed Hive on this machine. Upgrade it in a terminal: ${command}`
+        : `${managedBy} installed Hive on this machine and upgrades it.`,
+      tone: "info",
+    };
+  }
   const buttonTitle = `Download ${latest || "the release"}, check it against the release's SHA256SUMS and install it. The runner and this console restart on it once their runs finish.`;
   if (input.posting || state === "installing") {
     return { button: "Installing…", busy: true, buttonTitle, line: `Downloading and checking ${applyLatest || latest || "the release"}…`, tone: "info", installing: true };

@@ -20,8 +20,12 @@ system prompt (+ the clone's AGENTS.md) + the job's brief
 ### The tool set
 
 Every run offers the same typed tools, each a JSON
-schema the provider's tool-calling API sees, each confined to the clone
-and subject to the same deny rules and output cap as a shell command:
+schema the provider's tool-calling API sees, and subject to the same deny
+rules and output cap as a shell command. The file tools (`read`, `grep`,
+`glob`, `edit`, `write`) take paths inside the clone only. A `bash`
+command is not confined to the clone: it runs as your user with the clone
+as its working directory, and the deny rules match the text of the command
+([security.md](security.md#agents)). The tools:
 
 | tool | what it does |
 |------|--------------|
@@ -44,7 +48,7 @@ A reply may carry **several calls**, and every one gets its own
 observation, so a model reads three files in one turn instead of three.
 The calls that only look - `read`, `grep`, `glob` and `fetch` - run **at
 the same time** when a reply carries two or more of them (eight threads at
-most), each confined to the clone as before; `bash`, `edit`, `write`,
+most), the file tools confined to the clone as before; `bash`, `edit`, `write`,
 `plan`, `skill`, `subagent` and MCP calls run one after another in the
 order the model gave, after the batch, and the results go back in the
 order of the calls, so the model sees nothing of the scheduling but the
@@ -176,6 +180,12 @@ for one; `hive harness prompt -C <clone>` shows the prompt a run there
 would start with, `/env` in a session lists the rules still waiting
 (`path rules: …`). The transcript's first `note` steps say which files
 were read and how many rules wait.
+
+A clone set up before the rename keeps its rules, agents, skills and hooks
+under `.pulse/` instead of `.hive/`. They are read the same way, and the
+run is told once that `pulse <command>` in the clone's files means
+`hive <command>`
+([the rules](board.md#a-repository-set-up-before-the-rename-pulse)).
 
 ### Custom agents
 
@@ -373,8 +383,9 @@ for one run. Empty means the tool is not offered; a URL whose host is not
 listed, or that redirects off the list, is refused with the list named
 (`refused by policy: host "x" is not in harness.fetch_allow …`) as an
 `error` step. The deny rules for credentials do not apply to a page the
-model reads, but a page's text is observation, never instruction - the
-system prompt says so. Each fetch is a `fetch` step with the URL.
+model reads. A page's text is meant to be read as observation, never as
+instruction, but nothing in the system prompt or in the tool's description
+tells the model so today. Each fetch is a `fetch` step with the URL.
 
 ### Web search
 
@@ -443,13 +454,14 @@ helper started by a read-only run is read-only too, and the fenced
 
 A job that needs an API key or token gets it from the team vault (ADR-070
 rule 4, step 4), never from a file in its clone. The brain keeps the
-vault in its store: the `secrets` table holds only ciphertext
+vault in its store: the `vault_secrets` table holds only ciphertext
 (ChaCha20-Poly1305 under one team data key, a fresh nonce per write and the
-name bound as associated data). The data key is stored wrapped, once per
-holder: X25519 to the holder's key, then HKDF-SHA256 and ChaCha20-Poly1305.
-Today the brain is the only holder. Its key is a mode-0600 file in the
-brain's private directory, outside the store. The step 2 device registry
-adds a holder per paired device.
+name bound as associated data). The data key is stored wrapped in the
+`vault_keys` table, once per holder: X25519 to the holder's key, then
+HKDF-SHA256 and ChaCha20-Poly1305. Today the brain is the only holder. Its
+key is a mode-0600 file in the brain's private directory, outside the
+store. Nothing adds a paired or enrolled machine as a holder yet (see "Not
+built yet" below).
 
 - `printf %s "$TOKEN" | hive secret set NAME` seals a value. The value
   comes on stdin only. It is refused from a terminal and from inside a job,
@@ -471,9 +483,10 @@ adds a holder per paired device.
 - On the brain's own executor (LocalExec), the granted values are opened
   in memory and handed to the worker process as environment variables for
   that run only, with one `secret.read` event per name. They are wiped when
-  the worker ends. Every value is replaced by `[secret NAME]` in the run
-  log and in the parsed result before either is stored. Events carry names,
-  never values. Setting and removing a value record `secret.set` and
+  the worker ends. Every value of four characters or more is replaced by
+  `[secret NAME]` in the run log and in the parsed result before either is
+  stored; a shorter value is not replaced. Events carry names, never
+  values. Setting and removing a value record `secret.set` and
   `secret.removed`.
 - Remote hands cannot open the vault yet. A project whose recipe declares
   `secrets:` is marked unfit on them ("needs vault secrets, which only the
@@ -605,8 +618,11 @@ instead of silently closing a task. A command's completion marker is accepted
 only when that command succeeds without timing out; otherwise the error
 returns to the agent for diagnosis.
 
-**Three budgets** bound every run, all owner settings (Settings → Harness
-**Budgets**, or `hive settings set`): `harness.max_steps` model calls (60), the wall
+**Three budgets** bound every run. They are settings (Settings → Harness
+**Budgets**, or `hive settings set`), and the rule is that the owner sets
+them: the program does not refuse `hive settings set` for them from an
+agent's shell ([security.md](security.md#agents)). They are
+`harness.max_steps` model calls (60), the wall
 clock (`minutes_per_job`, the harness stops one minute before the runner
 would kill it), and `harness.max_cost` - the provider-reported cost one run
 may spend, `0` meaning no cap. `harness.max_steps none` (also `off` or
@@ -767,15 +783,26 @@ two-reply script, and `HIVE_HARNESS_FAKE_SCRIPT=path.json` supplies your own
 (`{"replies":[{"command":"echo hi"},{"report":"SUMMARY: done"}]}`; add
 `"loop":true` to repeat the last reply). It never appears in Settings; it is
 for tests and demos.
-Commands or native paths that would leave the clone (`git push`, changing
-`git remote`, any `gh` call) or touch credentials (`~/.ssh`, `.netrc`, the hive home's
-`private/` directory under any spelling - `~/.hive/private`,
-`$HIVE_HOME/private`, a measurement home's `private/providers` -
-`~/.copilot`, `~/.config/gh`) are refused without being run; the model is
-told why and continues. Native actions reuse the same deny rules as shell so
-the two paths cannot drift. The macOS filesystem root `/private/`, which
-`/tmp` and `/var` resolve to, is not a credential path.
-A run never holds a git login either. With a GitHub App configured
+Before a command or a native path of a run is used, the harness matches
+its text against four deny rules: a command that starts with `git push`,
+with `git remote add`, `set-url` or `remove`, or with `gh`, and a command
+or path that names `~/.ssh/`, `.netrc`, `~/.copilot`, `~/.config/gh` or the
+hive home's `private/` directory (written as `.hive/private`,
+`$HIVE_HOME/private`, or a path with `/private/providers` or
+`/private/heldout` in it, as a measurement home's has; `.pulse/private` and
+`$PULSE_HOME/private`, the home's names from before the rename, are closed
+the same way). A
+match is refused without being run; the model is told why and continues.
+Other spellings pass (`git -C . push`, `gh` by its full path,
+`$HOME/.ssh/...`). The rules catch a mistake; they are not a barrier
+([security.md](security.md#agents)). Native actions reuse the same deny
+rules as shell so the two paths cannot drift. The macOS filesystem root
+`/private/`, which `/tmp` and `/var` resolve to, is not a credential path.
+Hive hands a run no git login of its own. That is not a wall around the
+run: a job runs as your user and inherits the runner's environment, so a
+git login that user has on the machine (an SSH key, a credential helper,
+`gh`'s login, a token in the environment) is within reach of its commands.
+With a GitHub App configured
 (Settings → Git, [Credentials](landing.md#credentials)), the brain mints a
 one-hour installation token for the job's one repository after the run
 has ended and its commits passed the identity check; the hand that pushes
@@ -1043,7 +1070,7 @@ rules change nothing in a job, which asks nobody.
 ```bash
 hive harness login                     # device flow: open the URL, type the code (GitHub for copilot and github-models, Microsoft for azure-openai); for anthropic, Anthropic's own CLI opens the browser and there is no code; --with-token reads a key or token on stdin; --provider <name> picks the provider
 hive harness status                    # harness, provider, who is signed in, the models and limits in force
-hive harness models                    # the models the provider offers this login (id, vendor, tools, premium, context)
+hive harness models                    # the models the provider you chose (the `provider` setting) offers this login (id, vendor, tools, premium, context); --provider NAME lists another provider's
 hive harness run -p 'Reply with SUMMARY: ok' -C ~/src/my-app --max-steps 3   # one run by hand; --json for the result, --task-file - reads the brief from stdin, --steps-file PATH streams JSONL events (- for stdout, which implies --json), --max-cost 2 --keep-observations 3 override the budgets (--max-steps none lifts the call cap), --context-window 1000000 the window context discipline assumes, --compact-at 60 the percent of it at which the run summarises its older messages, again each time it fills back up (0 never), --no-instructions skips the clone's AGENTS.md and rules, --no-mcp offers no MCP tools, --no-skills / --no-agents / --no-hooks / --no-subagents / --no-memory leave those out, --web-search / --no-web-search offer or withhold the web_search tool whatever harness.web_search says, --fetch-allow 'docs.rs,*.rust-lang.org' offers the fetch tool for these hosts, --deny-tool 'bash(rm *),read(.env*)' refuses matching calls (a tool denied whole is withdrawn), --bare leaves out instruction files, memory, skills, custom agents, hooks and MCP, --read-only makes it a run that looks but does not touch (what answer and ballot jobs get), --reasoning high asks the model for that reasoning effort
 hive harness chat -C ~/src/my-app        # a conversation with the same agent: each line a turn, changes shown for approval (--yes approves all; y/n/a/all or a reason at each), replies stream; line editing, history and Tab completion, @PATH attaches a file, #123 attaches a GitHub issue or pull request through gh, !CMD runs a shell command the model also sees; --allow-tool 'bash(git *),edit(src/*)' runs those without asking, --deny-tool 'bash(rm *)' refuses those; --resume ID / --continue carry an earlier session on, -p TEXT sends a first message; /plan /permissions /procs /memory /rewind /diff /review /pr /export /env /init /delegate /new /sessions /help inside
 hive harness sessions --project my-app # recent sessions; hive harness show ID prints one transcript
@@ -1131,9 +1158,10 @@ the file the provider borrows the key from its environment variable, so
 `OPENAI_API_KEY` and the like work for one-off runs. Each provider calls the
 endpoint in `provider.<name>.base_url` (Settings → **Model provider**); while
 that keeps its default, its `*_BASE_URL` variable stands in when set. `hive
-harness models --provider <name>` lists what the endpoint serves. None of
-them reports a cost, so `harness.max_cost` does not apply to them - the step
-and time budgets do.
+harness models` lists what the endpoint of the provider you chose serves,
+and `--provider <name>` lists another provider's without changing the
+setting. None of them reports a cost, so `harness.max_cost` does not apply
+to them - the step and time budgets do.
 
 To point a provider at a proxy, a gateway or a local server, set its key
 (`hive settings set provider.<name>.base_url <url>`), or leave the setting
