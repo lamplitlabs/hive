@@ -279,6 +279,80 @@ docs/                          the reference, one file per part (the README's Do
 docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)
 ```
 
+## Diagrams in the docs
+
+A page under `docs/` shows how a thing works before it lists the detail: a
+diagram for a flow or a set of parts. A decision record follows the same
+rule (see below). A picture of a screen is a file, and
+[The site, hivefleet.dev](#the-site-hivefleetdev) says where it lives and
+how the console's pictures are taken.
+
+**A diagram is drawn in text.** It is a fenced block opened with
+` ```text ` whose lines are drawn with box-drawing characters. GitHub, the
+site and the console all show such a block as it was written, so it needs no
+library and no picture file, and a record in the store can carry one.
+Neither the site nor the console draws Mermaid: a `mermaid` block is shown
+as code.
+
+```text
+┌───────────────────────┐
+│ a fenced text block   │
+│ in a page under docs/ │
+└───────────┬───────────┘
+            │ read by
+            ├──────────────────────┬───────────────────────┐
+            ↓                      ↓                       ↓
+   check-diagrams.mjs      cargo test, in the      npm test, in the
+   lists each one for      verify command          site's check before
+   the writer              (hive-records)          a deploy
+```
+
+The rules, which `web/site/src/lib/diagram.ts` and
+`crates/hive-records/src/diagram.rs` both hold:
+
+- At most 72 characters wide. That is what the console's record panel shows
+  without scrolling sideways.
+- ASCII, the line characters `─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼` and the arrows
+  `→ ← ↑ ↓`. No tab and no other sign: Geist Mono, the font of the site and
+  the console, holds these at one width.
+- Every box is closed, and a line that goes up or down meets a line, a
+  corner or an arrowhead in the same column of the next row. A horizontal
+  line may end at a space, so a label can sit on it: `── merge ──→`.
+- Every box and every arrow is true of the code. A diagram the code does not
+  back is removed.
+
+```bash
+node web/site/scripts/check-diagrams.mjs                 # every diagram under docs/, by file and line
+node web/site/scripts/check-diagrams.mjs landing.md      # one page
+node web/site/scripts/check-diagrams.mjs --file adr.md   # any Markdown file, such as a decision record before it is filed
+```
+
+The script needs Node 22.18 or later and no `npm install`. It exits 1 and
+names the row and the column of what is badly drawn. The same check runs in
+`cargo test` (`every_diagram_in_the_repositorys_docs_is_well_drawn` in
+`hive-records`), which is part of this repository's verify command, so it
+runs where a job's check and the reviewer's check run
+([The verify command](landing.md#the-verify-command)). It also runs in the
+site's `npm test`, which `npm run check` runs before a deploy. The
+site and the console draw a diagram with its rows closed up (`pre.diagram`
+in each stylesheet), and a screen reader is given the word *Diagram* and the
+words in it, not the line characters.
+
+**A decision record opens with `## At a glance`.** The owner reads it first
+and may decide from it alone: the decision asked for as a yes-or-no
+question, what happens today, what would happen instead, what the owner will
+notice, the cost and the risk, and how to undo it, each in a sentence, then
+a diagram of the change. `TPL-adr` has the shape, and `WF-decision` and the
+`hive-decision` skill ask for it. `hive record new adr`, `hive record amend`
+and `hive record draft` print a note on stderr when a Draft or Proposed ADR
+has no such section, has no diagram, still holds the template's example
+diagram, or has a diagram that is badly drawn. The record is written all the
+same, and `--quiet` silences the note. A
+store that already holds `TPL-adr` keeps its own text, since `hive seed
+apply` writes only the records a store lacks: it takes the new template
+when the owner adopts a draft of it (`hive record adopt TPL-adr`) or amends
+it.
+
 ## Upgrading from older Hive
 
 A machine that ran an earlier, script-based Hive moves over in three commands:

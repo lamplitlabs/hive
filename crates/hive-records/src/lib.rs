@@ -1,6 +1,7 @@
 //! Hive: typed records, Markdown import, guide, export, lead time, seed bundle.
 
 pub mod bundle;
+pub mod diagram;
 pub mod drafts;
 pub mod export;
 pub mod frontmatter;
@@ -12,6 +13,7 @@ pub mod register;
 pub mod seed;
 
 pub use bundle::*;
+pub use diagram::*;
 pub use drafts::*;
 pub use export::*;
 pub use frontmatter::*;

@@ -93,7 +93,9 @@ A pull request is easy to accept when:
   names that command.
 
 Write docs and messages in plain words and short sentences. Leave out what
-you cannot confirm.
+you cannot confirm. A page that describes a flow shows it as a diagram drawn
+in text: [Diagrams in the docs](docs/development.md#diagrams-in-the-docs)
+has the rules and the script that checks one.
 
 ## Ask first
 

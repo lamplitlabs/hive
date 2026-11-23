@@ -10,6 +10,28 @@ messages get answers. `hive work` runs one worker here; `hive land`,
 
 ## The daemon loop
 
+One tick of the loop, top to bottom, with what a line starts or ends on its
+right; the planning pass is the one line a tick may skip, since it runs at
+most once per `daemon.pass_seconds`, or at once when you write a task or a
+message.
+
+```text
+      ┌────────────────────────────────────┐
+┌───→ │ collect the runs that ended        │
+│     │ stop switch, pending restart       ├──→ the daemon leaves
+│     │ write the heartbeat                │
+│     │ reap dead agents, idle workers     │
+│     │ the planning pass, when it is due  ├──→ maintenance thread
+│     │ ask for a chores pass              ├──→ chores thread
+│     │ refill free slots: lease, run      ├──→ one thread per run
+│     └─────────────────┬──────────────────┘
+│                       ↓
+│     ┌────────────────────────────────────┐
+│     │ wait: a run ends, an event wakes   │
+└─────┤ the loop, or the timer runs out    │
+      └────────────────────────────────────┘
+```
+
 Use `hive daemon --interval S` (or `hive service install --interval S`) to
 set the idle wait and the retry pause after an all-error batch. The default
 is 300 seconds; zero or negative values use that default. `hive daemon`
@@ -33,6 +55,9 @@ the maintenance thread) runs at most once per `daemon.pass_seconds` (default
 60), however often the loop wakes, since planning every fifteen seconds under
 four agents cost a quarter of a core for jobs that only queued behind full
 slots. Zero plans on every tick, and a shorter `--interval` caps the spacing.
+What you write does not wait for the spacing - a task filed or amended, a
+task's status changed, a message sent: the tick it wakes runs the planning
+pass.
 The heartbeat the hub shows counts `loops` and `passes` apart, and carries
 the body's own time as `tick` (the last body in milliseconds, the slowest
 since the start and how many ran over the fifteen-second dispatch cadence):
@@ -49,6 +74,24 @@ carries the slowest body's stages as `tick.longest`, which `hive status`
 prints after the slowest time (`slowest 31000ms: plan 14000ms, pipeline
 9000ms`): the number alone said that seven passes after one restart took
 29-33 s each and nothing about which of the twenty tenders took them.
+
+The stages of one tick in the order the code runs them, by the names the
+slow-tick line and `tick.longest` print; the `each project` row runs through
+for one project, then for the next.
+
+```text
+┌──────┐     ┌───────────────────┐     ┌────────┐     ┌──────────┐
+│ reap │ ──→ │ the planning pass │ ──→ │ chores │ ──→ │ dispatch │
+└──────┘     └─────────┬─────────┘     └────────┘     └──────────┘
+                       │ its stages, in order
+  ┌────────────────────┴───────────────────────────────────────┐
+  │ first          probes, maintenance, adopt                  │
+  │ each project   amend, manifest, records, leads, toolkit,   │
+  │                tasks, suggestions, recover, lessons        │
+  │ then           evolve, schedules, plan, idle, heldout,     │
+  │                executors                                   │
+  └────────────────────────────────────────────────────────────┘
+```
 
 Three chores left the tick for a background thread of their own
 (`daemon_chores.rs`): the Dependabot alert watch (`security`), the pipeline
@@ -112,6 +155,39 @@ listed. Only a read the App cannot make (the same 401/403/404 answers: the
 App is not installed on the repository or lacks Actions read access) or a
 token that cannot be minted (written down once as `gitapp.fallback`) goes
 to the remembered login and the rotation above, for the rest of that pass.
+
+The life of a job: `queued` when it is added, `leased` while its run goes,
+`done` or `failed` when the run ends. A run held for a restart, a lost run
+or a runner error puts the job back in the queue; the third attempt that
+ends lost or in a runner error fails the job (a hold, or an error that is
+the machine's or the recipe's fault, costs no attempt). Recovery then sorts
+a failed job on a planning pass
+([Failed jobs and recovery](recovery.md#failed-jobs-and-recovery)).
+
+```text
+   a lead, the planner, a schedule, hive job add
+                         ↓
+                    ┌──────────┐
+                    │  queued  │ ←────────────────────────────┐
+                    └────┬─────┘                              │
+                         │ a free slot leases it              │
+                         ↓                                    │
+                    ┌──────────┐  restart, lost run, runner   │
+                    │  leased  ├─ error, lease expired ───────┘
+                    └────┬─────┘
+               ┌─────────┴──────────┐  the run ends
+               ↓                    ↓
+          ┌──────────┐         ┌──────────┐
+          │   done   │         │  failed  │
+          └──────────┘         └────┬─────┘
+                                    │ recovery, on a planning pass
+      ┌─────────────────┬───────────┴─────┬─────────────────┐
+      ↓                 ↓                 ↓                 ↓
+ of the moment:    of the work:      another path:     the environment:
+ queued again      a corrected       held, with        blocked, with
+ after a pause     copy, or the      its reason        its reason
+                   lead re-plans
+```
 
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project

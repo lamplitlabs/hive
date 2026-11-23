@@ -199,6 +199,20 @@ test("previous and next walk the sidebar from the first page to the last", () =>
   }
 });
 
+test("every diagram in the docs is well drawn", () => {
+  // A column that drifted by one, an open box, a line wider than the console's reading panel, a character the
+  // fonts hold at another width: none of it shows in the Markdown, all of it shows on the page.
+  // `node scripts/check-diagrams.mjs` lists every diagram with its place.
+  const { drawing } = docs.loadDocs();
+  assert.deepEqual(drawing, [], `badly drawn in the source Markdown:\n${drawing.join("\n")}`);
+});
+
+test("a badly drawn diagram is reported by file and line", () => {
+  const built = docs.buildDocs([{ file: "concepts.md", source: "# Concepts\n\nWhat Hive is.\n\n```text\n┌──┐\n│  │\n└──\n```\n" }]);
+  assert.deepEqual(built.drawing, ["docs/concepts.md:5: the diagram: line 2, column 4: │ reaches down, and the row below has no line or arrowhead in that column"]);
+  assert.deepEqual(built.docs[0].diagrams.map((d) => d.line), [5]);
+});
+
 test("no link in the docs is broken in the Markdown itself", () => {
   // A doc that points at a file or a heading that is not there is a defect of
   // the doc. The page still renders the link as written; this names it.

@@ -14,6 +14,32 @@ done, Hive builds the same page from what it knows of the work (see
 [Hive's report](#hives-report-for-every-job-and-session)), and the console
 shows it to the owner by itself.
 
+What the agent leaves in its folder, step by step, and how it reaches the
+owner:
+
+```text
+ the agent                            in $HIVE_ARTIFACTS
+
+┌──────────────────────┐             ┌───────────────────────┐
+│ pictures each screen │ ──────────→ │ before-<screen>.png   │
+├──────────────────────┤             │                       │
+│ makes the change     │             │                       │
+├──────────────────────┤             │                       │
+│ pictures them again  │ ──────────→ │ after-<screen>.png    │
+├──────────────────────┤             │                       │
+│ writes the manifest  │ ──────────→ │ report.json           │
+├──────────────────────┤             │                       │
+│ runs hive report     │ ──────────→ │ report.html           │
+└──────────────────────┘             └───────────┬───────────┘
+                       the hub adds Hive's part  │
+                       and serves the page       │
+                                                 ↓
+                                     ┌───────────────────────┐
+                                     │ the owner opens       │
+                                     │ See the report        │
+                                     └───────────────────────┘
+```
+
 ## What the agent does
 
 Rule 10 of a worker's brief, and the same paragraph of a session's brief,
@@ -79,6 +105,31 @@ change counts as having a face when the branch touches a `.tsx`, `.jsx`,
 an iOS storyboard or xib, or a Dart, Kotlin, Swift or Java screen, view,
 page, activity or fragment; tests and built bundles do not count. A report
 shows the change when at least one pair has both pictures in the folder.
+
+Under `require`, on a project with an upstream, a change with a face and no
+report goes this way:
+
+```text
+                  ┌────────────────────────┐
+                  │ UI change, no report   │
+                  └────────────┬───────────┘
+             ┌─────────────────┴─────────────────┐
+             │ a worker's job                    │ a session's branch
+             ↓                                   ↓
+┌────────────────────────┐          ┌────────────────────────┐
+│ one more turn,         │          │ the session is woken,  │
+│ up to 20 minutes       │          │ waits up to an hour    │
+└────────────┬───────────┘          └────────────┬───────────┘
+             └─────────────────┬─────────────────┘
+                               ↓
+                  ┌────────────────────────┐
+                  │ the pull request opens │
+                  └────────────┬───────────┘
+             ┌─────────────────┴─────────────────┐
+             │ shows the change                  │ still no report
+             ↓                                   ↓
+  reviewed like any other                Needs your review
+```
 
 | | `require` | `warn` | `off` |
 | --- | --- | --- | --- |

@@ -13,6 +13,37 @@ has no forge to hold them, so its finished branches land locally as before;
 the daemon says so in its delivery line and `hive land --dry-run` says so
 per project.)
 
+A finished branch's way to the local default branch, with the event each step
+records:
+
+```text
+┌────────────────────────┐ push, gh pr create ┌────────────────────────┐
+│ finished branch        │ ─────────────────→ │ pull request on        │
+│ in your checkout       │      land.pr       │ the upstream           │
+└────────────────────────┘                    └───────────┬────────────┘
+                                            review.queued │
+                                                          ↓
+┌────────────────────────┐  hands it to you   ┌────────────────────────┐
+│ you: Needs your review │ ←───────────────── │ a review job           │
+│ and the Merge button   │    review.owner    │ reads the diff         │
+└───────────┬────────────┘                    └───────────┬────────────┘
+            │ review.ask                            merge │
+            ↓                                             ↓
+┌──────────────────────────────────────────────────────────────────────┐
+│                merged on the upstream (review.merged)                │
+└───────────────────────────────────┬──────────────────────────────────┘
+                                    │ next delivery pass: land.merged
+                                    ↓
+┌──────────────────────────────────────────────────────────────────────┐
+│       local default branch fast-forwarded (land.fast-forward)        │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+The **Merge** button is on the task or the session the pull request belongs
+to. A pull request that belongs to neither has no button: you merge it with
+`hive review merge <n> --by owner` or on GitHub
+([Your part](review.md#your-part)).
+
 Before this (ADR-024) the daemon merged each finished branch into the local
 default branch itself - verify command first, fast-forward or a `Land …` merge
 commit - and `landing.push` said whether the result went further. [What
@@ -21,6 +52,30 @@ this page describes the flow as it is now. The page keeps its file name so
 links to it stay valid.
 
 ## What is delivered and when
+
+Which finished work is pushed as which branch, and the kind of pull request it
+becomes; a follow-up after a review opens none and goes onto the pull request
+it fixes:
+
+```text
+ finished work                branch pushed          pull request
+
+┌─────────────────────────┐                         ┌──────────────────┐
+│ a task's finished jobs  │ ─ hive/task-<id> ─────→ │ kind task        │
+├─────────────────────────┤                         ├──────────────────┤
+│ a job with no task      │ ─ hive/<agent>/<job> ─→ │ kind job         │
+├─────────────────────────┤                         ├──────────────────┤
+│ a kept experiment       │ ─ evolve/<id> ────────→ │ kind experiment  │
+├─────────────────────────┤                         ├──────────────────┤
+│ a conversation's branch │ ─ hive/chat-<id> ─────→ │ kind proposed    │
+├─────────────────────────┤                         │                  │
+│ a branch named by hand  │ ─ the branch itself ──→ │                  │
+└─────────────────────────┘                         └──────────────────┘
+
+┌─────────────────────────┐                         ┌──────────────────┐
+│ a pr-fix follow-up      │ ─ onto the head of ───→ │ the one it fixes │
+└─────────────────────────┘                         └──────────────────┘
+```
 
 A delivery pass runs inside the daemon's maintenance pass (its stage is named
 `delivery` in the pass summary) - every tick, on its own thread, so a slow
@@ -396,6 +451,31 @@ are taught `land.merged`.
 
 ## When delivery fails
 
+What a task's finished work passes before its pull request opens, and what
+each failure sets going:
+
+```text
+┌──────────────────┐ no ┌───────────────────┐ no, again ┌──────────────┐
+│ the job branches │ ─→ │ rebase job        │ ────────→ │ held until   │
+│ merge cleanly?   │    │ land.rebase       │           │ the work     │
+└────────┬─────────┘    └───────────────────┘           │ changes      │
+         │ yes                                          │              │
+         ↓                                              │ land.pr-held │
+┌──────────────────┐ no ┌───────────────────┐ no, again │              │
+│ the merged tree  │ ─→ │ fix job           │ ────────→ │              │
+│ compiles?        │    │ land.merge-broken │           │              │
+└────────┬─────────┘    └───────────────────┘           │              │
+         │ yes, or not checked                          │              │
+         ↓                                              │              │
+┌──────────────────┐ no                                 │              │
+│ push and gh pr   │ ─────────────────────────────────→ │              │
+│ create succeed?  │                                    │              │
+└────────┬─────────┘                                    └──────────────┘
+         │ yes
+         ↓
+ pull request (land.pr)
+```
+
 A branch the pass cannot deliver is held with `land.pr-held` and the reason in
 `note`, shown on the task's conversation and on the hub's row, and tried again
 only when the work changes (a new job of the task finishes, a branch of it
@@ -467,7 +547,7 @@ and the daemon merges as you on its next pass - the same as `hive review
 merge <n> --by owner`), *Changes requested on PR #n: <note>. Follow-up <job>
 is queued.*, *Merging PR #n…*, *The review of PR #n failed* (with the button
 too) and *Merged*. A finished step whose branch still waits for the task's
-pull request reads *Waiting for its pull request*. The Chat page's list
+pull request reads *Waiting for its pull request*. The Sessions page's list
 groups the rows the same way: **Needs your review** at the top, then
 **Working**, then **In review** for work that has a pull request and nobody
 waiting on you, then the rest ([Sessions](console.md#sessions)). The old *Waiting to
