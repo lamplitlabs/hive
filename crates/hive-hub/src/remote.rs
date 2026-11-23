@@ -8,6 +8,11 @@
 //!
 //! - nothing is served while `hub.allow_remote` is empty (403), so clearing
 //!   the setting closes the console to the front at once;
+//! - once it is set, a request is answered only when its Host names the
+//!   front (the host of `hub.allow_remote`), `localhost`, a `.localhost`
+//!   name or an IP address literal, and gets 403 otherwise: a web page whose
+//!   name was re-pointed at 127.0.0.1 (DNS rebinding) reaches this port too,
+//!   and its reads would pass like the front's;
 //! - reads pass (the front checks the member's web session before it relays);
 //! - every write carries a member's passkey assertion over a nonce this brain
 //!   issued and the write's method, path and body
@@ -100,12 +105,34 @@ impl Handler {
             );
             return false;
         };
+        // The relay's own Host rule, the console's (`Handler::host_gate`)
+        // with the front's name in place of the owner's list: a web page
+        // whose name was re-pointed at 127.0.0.1 reaches this port too, and
+        // its same-origin reads carry no Origin header for the check below.
+        let front_host = webauthn::origin_host(&origin).unwrap_or_default();
+        let name = crate::server::host_name(&r.host());
+        if !crate::server::local_name(&name) && (name.is_empty() || name != front_host) {
+            let what = if name.is_empty() {
+                "This relay needs a Host header".to_string()
+            } else {
+                format!("This relay does not answer to the name {name}")
+            };
+            forbidden(
+                w,
+                &what,
+                "A web page can point a name of its own at 127.0.0.1 to reach the relay port on this machine (DNS rebinding), so the relay answers only to the front's own name, to localhost and to IP addresses.",
+                &format!(
+                    "Have the front send its own name ({front_host}) or 127.0.0.1 as the Host header."
+                ),
+            );
+            return false;
+        }
         let sent_origin = r.header("Origin");
         if !sent_origin.is_empty() && sent_origin.trim_end_matches('/') != origin {
             forbidden(
                 w,
                 "Cross-origin requests are not allowed",
-                "The browser names another origin than the team's front.",
+                "The browser names another origin than the front's (hub.allow_remote).",
                 "Open the console at the front's address.",
             );
             return false;
@@ -741,11 +768,108 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status().as_u16(), 403, "{path}");
         }
+        // Closed, the relay says so whatever name the request came under.
+        let resp = crate::test_helpers::client()
+            .get(format!("{}/api/v1/settings", srv.url))
+            .header("Host", "evil.example:8766")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 403);
+        let body: Value = resp.json().unwrap();
+        assert_eq!(body["error"], "This console is not open to the front");
         // The loopback listener issues no nonce while the console is closed.
         s.set_setting("human", "hub.allow_remote", "").unwrap();
         let (status, body, _) =
             crate::test_helpers_http::request(handler(&s), "GET", "/api/v1/nonce", "", &[]);
         assert_eq!(status, 403, "{body:?}");
+    }
+
+    /// DNS rebinding reaches the relay port as it reached the console's: a
+    /// web page whose name was re-pointed at 127.0.0.1 sends same-origin
+    /// reads there, with no Origin header and its own name as Host.
+    #[test]
+    fn the_relay_answers_only_to_the_fronts_name_localhost_and_ip_addresses() {
+        use std::io::{Read, Write};
+        let _serial = crate::test_helpers::serial();
+        let (_s, srv) = open_hub("owner");
+        let get = |path: &str, host: &str| {
+            let resp = crate::test_helpers::client()
+                .get(format!("{}{path}", srv.url))
+                .header("Host", host)
+                .send()
+                .unwrap();
+            (
+                resp.status().as_u16(),
+                resp.json::<Value>().unwrap_or(Value::Null),
+            )
+        };
+        let why = "A web page can point a name of its own at 127.0.0.1 to reach the relay port on this machine (DNS rebinding), so the relay answers only to the front's own name, to localhost and to IP addresses.";
+        let fix =
+            "Have the front send its own name (team.example.com) or 127.0.0.1 as the Host header.";
+        for path in ["/", "/api/v1/settings"] {
+            let (status, body) = get(path, "evil.example:8766");
+            assert_eq!(status, 403, "{path}");
+            assert_eq!(
+                body,
+                json!({
+                    "error": "This relay does not answer to the name evil.example",
+                    "why": why,
+                    "fix": fix,
+                }),
+                "{path}"
+            );
+        }
+        // The front's own name, whatever its case and port, and what is
+        // never a rebound name pass as before.
+        for host in [
+            "team.example.com",
+            "TEAM.Example.com:443",
+            "localhost:8766",
+            "relay.localhost",
+            "127.0.0.1:8766",
+            "[::1]:8766",
+            "10.0.0.7",
+        ] {
+            for path in ["/", "/api/v1/settings"] {
+                let resp = crate::test_helpers::client()
+                    .get(format!("{}{path}", srv.url))
+                    .header("Host", host)
+                    .send()
+                    .unwrap();
+                assert_eq!(resp.status().as_u16(), 200, "{host} {path}");
+            }
+        }
+        // The front's name as it is, nothing wider.
+        for host in [
+            "sub.team.example.com",
+            "team.example.com.evil.example",
+            "example.com",
+            "[team.example.com]",
+        ] {
+            assert_eq!(get("/api/v1/settings", host).0, 403, "{host}");
+        }
+        // No Host at all.
+        let mut stream =
+            std::net::TcpStream::connect(srv.url.trim_start_matches("http://")).unwrap();
+        stream
+            .write_all(b"GET /api/v1/settings HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+        let body: Value = answer
+            .find('{')
+            .zip(answer.rfind('}'))
+            .and_then(|(start, end)| serde_json::from_str(&answer[start..=end]).ok())
+            .unwrap_or_else(|| panic!("{answer}"));
+        assert_eq!(
+            body,
+            json!({
+                "error": "This relay needs a Host header",
+                "why": why,
+                "fix": fix,
+            })
+        );
     }
 
     #[test]

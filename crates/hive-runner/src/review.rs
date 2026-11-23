@@ -295,15 +295,7 @@ pub(crate) fn repo_from_pr_url(url: &str) -> Option<String> {
 /// has no access to, 403 for one it may not write, 401 for a token that
 /// is no longer good, and an account whose token cannot be read at all.
 fn account_failed(err: &str) -> bool {
-    let low = err.to_ascii_lowercase();
-    if low.contains("branch not found") {
-        return false;
-    }
-    low.contains("http 401")
-        || low.contains("http 403")
-        || low.contains("http 404")
-        || low.contains("could not resolve to a repository")
-        || low.contains("gh auth token for")
+    crate::pipeline::account_failed(err)
 }
 
 fn gh_meta_key(slug: &str) -> String {
@@ -514,9 +506,10 @@ pub(crate) fn reasons_for(s: &hive_store::Store, pr: &PrView) -> Vec<String> {
     if let Some(why) = crate::ui_evidence::pr_report_reason(s, &pr.head, &paths) {
         reasons.push(why);
     }
-    // Hive's own heads are `hive/...` (jobs, tasks, conversations) and
-    // `evolve/<id>` (a kept experiment, already measured against its card);
-    // anything else was pushed by a person or another tool and gets the owner.
+    // Hive's own heads are `hive/...` (jobs, tasks, conversations; `pulse/...`
+    // on a pull request opened before the rename) and `evolve/<id>` (a kept
+    // experiment, already measured against its card); anything else was
+    // pushed by a person or another tool and gets the owner.
     if !hive_head(&pr.head) {
         reasons.push(format!(
             "opened by a human/other tool (branch {})",
@@ -563,9 +556,12 @@ pub(crate) fn care_for(s: &hive_store::Store, pr: &PrView) -> Vec<String> {
 }
 
 /// True for a branch Hive itself pushes: `hive/<agent>/<job>`,
-/// `hive/task-<id>`, `hive/chat-<id>` or an experiment's `evolve/<id>`.
+/// `hive/task-<id>`, `hive/chat-<id>` or an experiment's `evolve/<id>`. A
+/// pull request opened before the rename has its head under `pulse/`; it
+/// was Hive's then and is now, and calling it a person's would hand every
+/// one of them to the owner.
 pub(crate) fn hive_head(head: &str) -> bool {
-    head.starts_with("hive/") || head.starts_with("evolve/")
+    hive_store::agent_branch(head) || head.starts_with("evolve/")
 }
 
 /// The project's check command when the store knows one.
@@ -1847,6 +1843,25 @@ mod tests {
             reasons_for(&s, &view_of(7, "evolve/B-013", &[("src/a.rs", 1, 0)])).is_empty(),
             "a kept experiment's branch is Hive's own"
         );
+        // A pull request opened before the rename has its head under
+        // `pulse/`. It is Hive's own, with the owner's paths closed to it
+        // like any agent's branch.
+        for head in [
+            "pulse/fjord-55/job-20261115T175900Z-cef603",
+            "pulse/task-TASK-116",
+        ] {
+            assert!(
+                reasons_for(&s, &view_of(7, head, &[("src/a.rs", 1, 0)])).is_empty(),
+                "{head}"
+            );
+            assert_eq!(
+                reasons_for(&s, &view_of(7, head, &[(".github/dependabot.yml", 1, 0)])),
+                ["touches .github/dependabot.yml"],
+                "{head}"
+            );
+        }
+        let r = reasons_for(&s, &view_of(7, "pulsed/x", &[("src/a.rs", 1, 0)]));
+        assert_eq!(r, ["opened by a human/other tool (branch pulsed/x)"]);
 
         set_setting(&s, "review.merge", "ask");
         let r = reasons_for(&s, &view_of(7, "hive/x/y", &[("src/a.rs", 1, 0)]));

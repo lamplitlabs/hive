@@ -120,6 +120,10 @@ export const hrefs = {
     "/reports/" + qs({ project: f.project }),
   compute: () => "/compute/",
   settings: (section?: string) => "/settings/" + (section ? "#" + section : ""),
+  // Where the runner is started, resumed and set up as a background service:
+  // the controls at the top of Settings, This machine. Pausing is under
+  // settings("stop").
+  runnerControls: () => "/settings/#daemon",
   conversations: (id?: string) => "/chat/" + qs({ id }),
   harness: (
     f: { id?: string; project?: string; status?: string; agent?: string } = {},

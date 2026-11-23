@@ -200,6 +200,8 @@ mod tests {
         assert!(output.contains("hive-daemon.sh"));
         assert!(output.contains("hive-hub.sh"));
         assert!(output.contains("--port 8765"));
+        // The flag the hub knows the service's own instance by (register.rs).
+        assert!(output.contains("--restart-on-change"));
         assert!(
             result["daemon_path"]
                 .as_str()

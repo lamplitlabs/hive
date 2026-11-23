@@ -1,0 +1,98 @@
+name: Bug report
+description: Something Hive did wrong, or did not do.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time. A report that says what you did, what happened and what you expected is one we can act on.
+
+        A security problem does not belong here. See the [security policy](https://github.com/lamplitlabs/hive/security/policy) for how to report it privately.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what Hive did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest way to see it again. Commands, clicks, the task you gave.
+      placeholder: |
+        1. hive hub
+        2. New task: ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hive version
+      description: What `hive version` prints.
+      placeholder: v0.1.3
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS, Apple silicon
+        - macOS, Intel
+        - Linux, x86_64
+        - Linux, arm64
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed Hive
+      options:
+        - The installer (install.sh)
+        - A release archive
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where it happened
+      options:
+        - The console
+        - A task or a job (the runner)
+        - The harness or a model provider
+        - Pull requests (delivery, the reviewer)
+        - Self-improvement (the loop)
+        - Machines (pairing, hive-hand)
+        - Installing or updating
+        - Something else
+  - type: input
+    id: model
+    attributes:
+      label: Model provider and model
+      description: Only when the problem is in an agent's run. For example `copilot`, `anthropic`, `ollama`, and the model's name.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output and logs
+      description: |
+        What the command printed, `hive status`, or the end of `~/.hive/logs/daemon.log` and `~/.hive/logs/hub.log`. This field is shown as plain text.
+      render: text
+  - type: checkboxes
+    id: before-sending
+    attributes:
+      label: Before you send
+      options:
+        - label: I took tokens, keys and private paths out of what I pasted.
+          required: true
+        - label: I looked through the open issues for the same problem.
+          required: true

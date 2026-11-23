@@ -125,3 +125,20 @@ test("an apply about an older release reads as idle; current says nothing to ins
   assert.equal(current.button, null);
   assert.match(current.line, /already runs/);
 });
+
+test("where a package manager installed Hive the banner names its command and offers no button", () => {
+  const brew = { ...onRelease, managed_by: "Homebrew", install_command: "brew upgrade hivefleet" };
+  const line = "Homebrew installed Hive on this machine. Upgrade it in a terminal: brew upgrade hivefleet";
+  const v = updateApplyView(brew);
+  assert.deepEqual([v.button, v.busy, v.installing, v.tone, v.line], [null, false, false, "info", line]);
+  // The banner itself is the one every machine shows.
+  assert.equal(updateBanner(brew).title, "Hive v0.2.0 is available");
+  // Whatever the channel, and whatever an older apply left behind.
+  assert.equal(updateApplyView({ ...brew, channel: "source" }).line, line);
+  assert.equal(updateApplyView({ ...brew, apply: { ...idle, state: "failed", latest: "v0.2.0", error: "x" } }).button, null);
+  assert.equal(updateApplyView(brew, { postError: "refused" }).line, line);
+  // A marker that names no command still says who upgrades it.
+  assert.equal(updateApplyView({ ...brew, install_command: "" }).line, "Homebrew installed Hive on this machine and upgrades it.");
+  // Not managed: the button is back, with hive update's own command in the payload.
+  assert.equal(updateApplyView({ ...onRelease, managed_by: "", install_command: "hive update" }).button, "Update now");
+});

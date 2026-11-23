@@ -659,10 +659,13 @@ mod process_tree_tests {
     fn sweep_job_dir_logs_what_it_killed_and_spares_the_rest() {
         let job = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
+        // `exec`, so each spawn is one process under every shell: dash keeps
+        // itself as the parent of a lone command, and the sweep would then
+        // report two stragglers where bash leaves one.
         let spawn = |dir: &Path| {
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c")
-                .arg("sleep 300")
+                .arg("exec sleep 300")
                 .current_dir(dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

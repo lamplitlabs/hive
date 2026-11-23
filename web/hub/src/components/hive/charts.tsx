@@ -87,7 +87,8 @@ export function ActivityChart({ tl, bys, title = "Activity", height = 200 }: { t
           <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
             <TabsList variant="segmented" className="h-8!" aria-label="Activity time range">
               {(["24h", "7d", "30d"] as Range[]).map((r) => (
-                <TabsTrigger key={r} value={r} className="h-7 px-2.5 text-xs" aria-label={"Last " + RANGE_LABEL[r]}>
+                // The name starts with the word the tab shows (WCAG 2.5.3), then says the span.
+                <TabsTrigger key={r} value={r} className="h-7 px-2.5 text-xs" aria-label={(r === "24h" ? "Day" : r === "7d" ? "Week" : "Month") + ", the last " + RANGE_LABEL[r]}>
                   {r === "24h" ? "Day" : r === "7d" ? "Week" : "Month"}
                 </TabsTrigger>
               ))}

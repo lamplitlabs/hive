@@ -100,7 +100,7 @@ impl Handler {
             HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         );
 
-        if !self.front_gate(w, r) {
+        if !self.front_gate(w, r) || !self.host_gate(w, r) {
             return;
         }
         let p = r.path();
@@ -383,9 +383,119 @@ pub(crate) fn write_error(
     write_json(w, status, json!(payload));
 }
 
+impl Handler {
+    /// The Host rule of the console's own listener: true when the request
+    /// may go on to its route. The console has no login, and a web page
+    /// whose name was re-pointed at 127.0.0.1 (DNS rebinding) sends
+    /// same-origin requests, so [`same_origin_write`] passes them; what
+    /// gives such a page away is that its requests carry its own name as
+    /// `Host`. So the console answers only to `localhost`, to a `.localhost`
+    /// name, to an IP address literal (a rebound name is never one) and to
+    /// the names the owner listed in `hub.hosts`. Any other Host, and a
+    /// missing one, gets 403 here, a page as plain text and the API as JSON.
+    ///
+    /// Two kinds of request are checked in their own way instead: one that
+    /// came through the front's relay listener, which
+    /// [`Handler::front_gate`] holds to a Host rule of its own, and the
+    /// routes a hand calls, which go by join code and device key because a
+    /// hand may reach the console under a name of the owner's.
+    /// The routes that call [`crate::folders::loopback_host`] stay stricter:
+    /// a listed name or a non-loopback address does not reach them.
+    pub(crate) fn host_gate(&self, w: &mut ResponseWriter, r: &Request) -> bool {
+        if r.via_front || hand_route(r.path()) {
+            return true;
+        }
+        let name = host_name(&r.host());
+        if local_name(&name)
+            || self
+                .store
+                .as_deref()
+                .is_some_and(|s| s.hub_hosts().contains(&name))
+        {
+            return true;
+        }
+        let what = if name.is_empty() {
+            "This console needs a Host header".to_string()
+        } else {
+            format!("This console does not answer to the name {name}")
+        };
+        let why = "A web page can point a name of its own at 127.0.0.1 to reach a console on this machine (DNS rebinding), so the console answers only to localhost, to IP addresses and to the names you listed.";
+        let open = format!("Open http://127.0.0.1:{}", self.port);
+        // The command is offered only for a name the setting takes as it
+        // stands, so the line is safe to paste whatever the header held.
+        let fix = if !name.is_empty()
+            && hive_store::validate_setting("hub.hosts", &name).is_ok_and(|listed| listed == name)
+        {
+            format!("{open}, or allow the name: hive settings set hub.hosts {name}")
+        } else {
+            open
+        };
+        if r.path().contains("/api/") {
+            write_error(w, 403, what, why.into(), fix);
+        } else {
+            crate::httpx::http_error(w, &format!("{what}\n{why}\n{fix}"), 403);
+        }
+        false
+    }
+}
+
+/// Whether `path` is a route a hand calls, `/api/v1/hands/...`: its first
+/// segment under `/api/v1/` is `hands`, which is what makes the router hand
+/// a request to [`Handler::addition_hands`] and to nothing else.
+fn hand_route(path: &str) -> bool {
+    path.strip_prefix("/api/v1/")
+        .and_then(|route| route.split('/').find(|segment| !segment.is_empty()))
+        == Some("hands")
+}
+
+/// A Host header as its name and its port. The name is lower-cased and an
+/// IPv6 literal keeps its brackets; the port is None when the header
+/// carries none.
+fn host_parts(host: &str) -> (String, Option<&str>) {
+    let host = host.trim();
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port))
+            if port.bytes().all(|b| b.is_ascii_digit())
+                && (name.ends_with(']') || !name.contains(':')) =>
+        {
+            (name, Some(port))
+        }
+        _ => (host, None),
+    };
+    (name.to_ascii_lowercase(), port)
+}
+
+/// The name in a Host header: lower-cased, without the port. An IPv6
+/// literal keeps its brackets.
+pub(crate) fn host_name(host: &str) -> String {
+    host_parts(host).0
+}
+
+/// Whether `name` (from [`host_name`]) is this machine by name or an IP
+/// address literal, v4 or bracketed v6: neither can be a name a web page
+/// re-pointed at 127.0.0.1. No one owns a name under `.localhost` (RFC
+/// 6761 reserves it), and an IP address literal is never looked up.
+pub(crate) fn local_name(name: &str) -> bool {
+    if let Some(v6) = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')) {
+        return v6.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    !name.contains(':')
+        && (name == "localhost"
+            || name.ends_with(".localhost")
+            || name.parse::<std::net::Ipv4Addr>().is_ok())
+}
+
 /// Whether a write came from a page this hub served: the Origin header
 /// (when the browser sends one) names this host, and the request is not
 /// cross-site. Writes an error and returns false otherwise.
+///
+/// The Origin and the Host are compared as a browser means them: the names
+/// without regard to case, the ports as numbers. A Host without a port
+/// stands for the scheme's own port, and the hub speaks plain HTTP itself:
+/// that is port 80, or 443 when a proxy in front says so with
+/// `X-Forwarded-Proto: https`. So `http://name` and `https://name` stay two
+/// origins: a page served over plain HTTP under the console's name does not
+/// pass for a console reached over https.
 pub(crate) fn same_origin_write(w: &mut ResponseWriter, r: &Request) -> bool {
     // A write through the front passed `Handler::front_gate` already: its
     // Origin is the front's and a member's passkey signed it.
@@ -394,15 +504,18 @@ pub(crate) fn same_origin_write(w: &mut ResponseWriter, r: &Request) -> bool {
     }
     let origin = r.header("Origin");
     if !origin.is_empty() {
-        let ok = url::Url::parse(&origin)
-            .map(|u| {
-                u.host_str()
-                    .zip(u.port_or_known_default())
-                    .map(|(host, port)| format!("{host}:{port}"))
-                    .is_some_and(|h| h == r.host())
-                    && matches!(u.scheme(), "http" | "https")
-            })
-            .unwrap_or(false);
+        let host = r.host();
+        let (name, port) = host_parts(&host);
+        let port = match port {
+            Some(port) => port.parse::<u16>().ok(),
+            None if r.header("X-Forwarded-Proto") == "https" => Some(443),
+            None => Some(80),
+        };
+        let ok = url::Url::parse(&origin).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.host_str().is_some_and(|h| h.eq_ignore_ascii_case(&name))
+                && port.is_some_and(|port| u.port_or_known_default() == Some(port))
+        });
         if !ok {
             write_error(
                 w,
@@ -1385,5 +1498,421 @@ mod tests {
                 "index read error was hidden: {status} {body:?}"
             );
         }
+    }
+
+    /// The three writes that carry no JSON body pass the guard every other
+    /// write passes: a page of another site cannot merge a pull request,
+    /// cancel a run or remove a secret from the vault.
+    #[test]
+    fn writes_without_a_body_refuse_a_page_of_another_site() {
+        use crate::test_helpers_http as http;
+        let s = http::additions_store(false);
+        let (code, _, raw) = http::request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/secrets",
+            r#"{"name":"NPM_TOKEN","value":"npm_guard-value-0123"}"#,
+            &[],
+        );
+        assert_eq!(code, 201, "{raw}");
+        for path in [
+            "/api/v1/secrets/NPM_TOKEN/remove",
+            "/api/v1/harness/sessions/hs-none/cancel",
+            "/api/v1/projects/one/prs/7/merge",
+        ] {
+            for header in [
+                ("Origin", "http://evil.example"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ] {
+                let (code, body, raw) =
+                    http::request(http::handler(&s), "POST", path, "", &[header]);
+                assert_eq!(code, 403, "{path} with {header:?}: {raw}");
+                assert_eq!(
+                    body["error"], "Cross-origin writes are not allowed",
+                    "{path} with {header:?}: {raw}"
+                );
+            }
+        }
+        // Refused before anything was done: the secret is still in the vault.
+        assert_eq!(s.vault_open(&["NPM_TOKEN".to_string()]).unwrap().len(), 1);
+        // The console's own page still removes it.
+        let (code, _, raw) = http::request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/secrets/NPM_TOKEN/remove",
+            "",
+            &[],
+        );
+        assert_eq!(code, 200, "{raw}");
+    }
+
+    const HOST_WHY: &str = "A web page can point a name of its own at 127.0.0.1 to reach a console on this machine (DNS rebinding), so the console answers only to localhost, to IP addresses and to the names you listed.";
+
+    /// A console on `s` that knows its listener's port, as `hive hub` sets
+    /// it, and serves one page.
+    fn console_on_8765(s: &hive_store::Store) -> Handler {
+        let mut h = crate::test_helpers_http::handler(s);
+        h.port = 8765;
+        h.ui = map_fs(&[("index.html", b"home")]);
+        h
+    }
+
+    /// DNS rebinding: a page whose name was re-pointed at 127.0.0.1 sends
+    /// same-origin requests under that name. A page, a read and a write are
+    /// refused before any route sees them.
+    #[test]
+    fn a_rebound_name_gets_403_on_a_page_a_read_and_a_write() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let rebound = ("Host", "evil.example:8765");
+        let what = "This console does not answer to the name evil.example";
+        let fix = "Open http://127.0.0.1:8765, or allow the name: hive settings set hub.hosts evil.example";
+
+        let (code, _, raw) = http::request(console_on_8765(&s), "GET", "/", "", &[rebound]);
+        assert_eq!(code, 403, "{raw}");
+        assert_eq!(raw, format!("{what}\n{HOST_WHY}\n{fix}\n"));
+
+        let (code, body, raw) = http::request(
+            console_on_8765(&s),
+            "GET",
+            "/api/v1/settings",
+            "",
+            &[rebound],
+        );
+        assert_eq!(code, 403, "{raw}");
+        assert_eq!(
+            (&body["error"], &body["why"], &body["fix"]),
+            (&json!(what), &json!(HOST_WHY), &json!(fix)),
+            "{raw}"
+        );
+
+        // The write such a page sends: its Origin equals its Host, so the
+        // same-origin guard alone lets it through.
+        let before = s.setting("jobs_per_day", "");
+        let (code, body, raw) = http::request(
+            console_on_8765(&s),
+            "POST",
+            "/api/v1/settings",
+            r#"{"name":"jobs_per_day","value":"50"}"#,
+            &[
+                rebound,
+                ("Origin", "http://evil.example:8765"),
+                ("X-Hive-Settings", "yes"),
+            ],
+        );
+        assert_eq!(code, 403, "{raw}");
+        assert_eq!(body["error"], what, "{raw}");
+        assert_eq!(s.setting("jobs_per_day", ""), before);
+    }
+
+    #[test]
+    fn localhost_names_and_ip_addresses_pass_the_host_rule() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        for host in [
+            "localhost:8765",
+            "LOCALHOST",
+            "app.localhost:3000",
+            "127.0.0.1:8765",
+            "[::1]:8765",
+            "192.168.1.5:8765",
+        ] {
+            for path in ["/", "/api/v1/settings"] {
+                let (code, _, raw) =
+                    http::request(console_on_8765(&s), "GET", path, "", &[("Host", host)]);
+                assert_eq!(code, 200, "{host} {path}: {raw}");
+            }
+        }
+        // Names that only look local are names like any other.
+        for host in [
+            "localhost.evil.example",
+            "notlocalhost",
+            "evil-localhost:8765",
+            "127.0.0.1.evil.example",
+            "evil.example:80.localhost",
+            "localhost.:8765",
+            "[evil.example]:8765",
+            "2130706433",
+            "::1",
+        ] {
+            assert!(!local_name(&host_name(host)), "{host}");
+        }
+    }
+
+    #[test]
+    fn a_request_without_a_host_is_refused() {
+        use std::io::{Read, Write};
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers_http::additions_store(false);
+        for head in [
+            "GET /api/v1/settings HTTP/1.1\r\n",
+            "GET /api/v1/settings HTTP/1.1\r\nHost:\r\n",
+            "GET /api/v1/settings HTTP/1.1\r\nHost: :8765\r\n",
+        ] {
+            let srv = crate::test_helpers_http::server(console_on_8765(&s));
+            let mut stream =
+                std::net::TcpStream::connect(srv.url.trim_start_matches("http://")).unwrap();
+            stream
+                .write_all(format!("{head}Connection: close\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer).unwrap();
+            assert!(answer.starts_with("HTTP/1.1 403 "), "{head:?}: {answer}");
+            let json_text = answer
+                .find('{')
+                .zip(answer.rfind('}'))
+                .map(|(start, end)| &answer[start..=end])
+                .unwrap_or_else(|| panic!("{head:?}: {answer}"));
+            let body: Value = serde_json::from_str(json_text)
+                .unwrap_or_else(|err| panic!("{head:?}: {answer}: {err}"));
+            assert_eq!(
+                body,
+                json!({
+                    "error": "This console needs a Host header",
+                    "why": HOST_WHY,
+                    "fix": "Open http://127.0.0.1:8765",
+                }),
+                "{head:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_in_hub_hosts_passes_only_when_the_owner_set_it() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let read = |host: &str| {
+            http::request(
+                console_on_8765(&s),
+                "GET",
+                "/api/v1/settings",
+                "",
+                &[("Host", host)],
+            )
+            .0
+        };
+        assert_eq!(read("hive.example.com:8765"), 403);
+        s.set_setting("cinder-47", "hub.hosts", "hive.example.com")
+            .unwrap();
+        assert_eq!(read("hive.example.com:8765"), 403, "an agent set it");
+        s.set_setting(
+            "human",
+            "hub.hosts",
+            "hive.example.com, console.example.org",
+        )
+        .unwrap();
+        assert_eq!(read("hive.example.com:8765"), 200);
+        assert_eq!(read("Console.Example.ORG"), 200);
+        // The names as listed, nothing wider.
+        for host in [
+            "evil.example:8765",
+            "sub.hive.example.com",
+            "hive.example.com.evil.example",
+            "[hive.example.com]:8765",
+        ] {
+            assert_eq!(read(host), 403, "{host}");
+        }
+        // A name the setting would refuse is not offered as a command to paste.
+        let (code, body, raw) = http::request(
+            console_on_8765(&s),
+            "GET",
+            "/api/v1/settings",
+            "",
+            &[("Host", "$(id).evil.example:8765")],
+        );
+        assert_eq!(code, 403, "{raw}");
+        assert_eq!(body["fix"], "Open http://127.0.0.1:8765", "{raw}");
+        s.set_setting("cinder-47", "hub.hosts", "hive.example.com")
+            .unwrap();
+        assert_eq!(
+            read("hive.example.com:8765"),
+            403,
+            "an agent wrote over the owner's list"
+        );
+    }
+
+    /// A hand is checked by its join code and its device key, so it reaches
+    /// its routes under whatever name the owner's proxy carries. Only those
+    /// routes are exempt.
+    #[test]
+    fn a_hand_reaches_its_routes_under_any_host() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let proxied = [("Host", "brain.example.com")];
+        let (code, issued, raw) = http::request(
+            console_on_8765(&s),
+            "POST",
+            "/api/v1/machines/join-codes",
+            "{}",
+            &[],
+        );
+        assert_eq!(code, 200, "{raw}");
+        let join = json!({
+            "code": issued["code"].as_str().unwrap().replace('-', " "),
+            "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFnK0ljcL0vNfwh0SJNWr3tkC2ANeKkLb9FRGmBwJrLO hand@box",
+            "name": "Studio Mac", "os": "macos", "arch": "arm64", "workers": 2,
+            "workdir": "/Users/hive/hands",
+        })
+        .to_string();
+        let (code, joined, raw) = http::request(
+            console_on_8765(&s),
+            "POST",
+            "/api/v1/hands/join",
+            &join,
+            &proxied,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let (code, body, raw) = http::request(
+            console_on_8765(&s),
+            "POST",
+            "/api/v1/hands/nonce",
+            &json!({"device": joined["device"]}).to_string(),
+            &proxied,
+        );
+        assert_eq!(code, 200, "{raw}");
+        assert!(body["nonce"].is_string(), "{raw}");
+        // The exemption is the hand's routes and nothing beside them.
+        for (method, path, want) in [
+            ("POST", "/api/v1/machines/join-codes", 403),
+            ("GET", "/api/v1/handsome", 403),
+            ("GET", "/api/v1/settings", 403),
+            // A path the router hands to the hand's routes stays there.
+            ("POST", "/api/v1/hands/..%2Fsettings", 404),
+        ] {
+            let (code, _, raw) = http::request(console_on_8765(&s), method, path, "{}", &proxied);
+            assert_eq!(code, want, "{method} {path}: {raw}");
+        }
+    }
+
+    /// The write guard compares the Origin with the Host as a browser means
+    /// them: names without regard to case, ports as numbers, and a Host
+    /// without a port on the scheme's own port, which is https only when a
+    /// proxy in front says so (the hub itself speaks plain HTTP).
+    #[test]
+    fn the_write_guard_compares_names_and_ports_as_a_browser_means_them() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        s.set_setting("human", "hub.hosts", "hive.example.com")
+            .unwrap();
+        let https = Some("https");
+        for (origin, host, forwarded, want) in [
+            // The console behind a proxy of the owner's, on the default ports.
+            ("https://hive.example.com", "hive.example.com", https, 200),
+            ("https://hive.example.com", "hive.example.com", None, 403),
+            ("http://hive.example.com", "hive.example.com", None, 200),
+            ("http://hive.example.com", "hive.example.com", https, 403),
+            // Upper and lower case in the name do not matter.
+            ("https://HIVE.Example.com", "Hive.EXAMPLE.com", https, 200),
+            // A port named on either side counts as a number.
+            (
+                "https://hive.example.com",
+                "hive.example.com:443",
+                None,
+                200,
+            ),
+            (
+                "http://hive.example.com:8080",
+                "hive.example.com:8080",
+                https,
+                200,
+            ),
+            (
+                "http://hive.example.com:8080",
+                "hive.example.com",
+                None,
+                403,
+            ),
+            // The console on this machine, as before.
+            ("http://127.0.0.1:8765", "127.0.0.1:8765", None, 200),
+            ("http://127.0.0.1:8765", "127.0.0.1:9999", None, 403),
+            ("http://[::1]:8765", "[::1]:8765", None, 200),
+            ("http://localhost:8765", "127.0.0.1:8765", None, 403),
+            // A hub on port 80: the browser names no port on either side.
+            ("http://127.0.0.1", "127.0.0.1", None, 200),
+            // Another name is another origin, whatever the ports.
+            ("https://evil.example", "hive.example.com", https, 403),
+        ] {
+            let mut headers = vec![
+                ("Host", host),
+                ("Origin", origin),
+                ("X-Hive-Settings", "yes"),
+            ];
+            if let Some(proto) = forwarded {
+                headers.push(("X-Forwarded-Proto", proto));
+            }
+            let (code, body, raw) = http::request(
+                console_on_8765(&s),
+                "POST",
+                "/api/v1/settings",
+                r#"{"name":"capacity","value":"3"}"#,
+                &headers,
+            );
+            assert_eq!(code, want, "{origin} to {host}, {forwarded:?}: {raw}");
+            if want == 403 {
+                assert_eq!(
+                    body["error"], "Cross-origin writes are not allowed",
+                    "{origin} to {host}, {forwarded:?}: {raw}"
+                );
+            }
+        }
+    }
+
+    /// The relay listener goes by a Host rule of its own (`front_gate`):
+    /// the front's name passes there without being in `hub.hosts`, a name
+    /// in `hub.hosts` does not, and on the console's own listener it is the
+    /// other way round.
+    #[test]
+    fn the_relay_listener_goes_by_the_fronts_name_not_by_hub_hosts() {
+        use crate::test_helpers_http as http;
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let h = Arc::new(console_on_8765(&s));
+        let front = crate::test_helpers::TestServer::start_on(
+            Arc::new(move |w, r| h.serve_http(w, r)),
+            true,
+        );
+        let relay = |host: &str| {
+            let resp = crate::test_helpers::client()
+                .get(format!("{}/api/v1/settings", front.url))
+                .header("Host", host)
+                .send()
+                .unwrap();
+            (
+                resp.status().as_u16(),
+                resp.json::<Value>().unwrap_or(Value::Null),
+            )
+        };
+        // Closed, the front's own gate says so.
+        let (code, body) = relay("team.example.com");
+        assert_eq!(code, 403);
+        assert_eq!(body["error"], "This console is not open to the front");
+        s.set_setting("human", "hub.allow_remote", "https://team.example.com")
+            .unwrap();
+        s.set_setting("human", "hub.hosts", "hive.example.com")
+            .unwrap();
+        assert_eq!(relay("team.example.com").0, 200);
+        let (code, body) = relay("hive.example.com");
+        assert_eq!(code, 403);
+        assert_eq!(
+            body["error"],
+            "This relay does not answer to the name hive.example.com"
+        );
+        let console = |host: &str| {
+            http::request(
+                console_on_8765(&s),
+                "GET",
+                "/api/v1/settings",
+                "",
+                &[("Host", host)],
+            )
+            .0
+        };
+        assert_eq!(console("hive.example.com"), 200);
+        assert_eq!(console("team.example.com"), 403);
     }
 }

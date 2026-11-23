@@ -1,4 +1,5 @@
-# The hosted brain: one container per team (ADR-070 rule 6, docs/security.md).
+# A brain in a container, one per team, for a server of your own (ADR-070
+# rule 6, ADR-071, docs/security.md).
 #
 # It runs the Hive daemon and its hub from a `hive` binary built here in
 # release mode, with the console embedded. The image carries no Hive source:
@@ -10,8 +11,10 @@
 #
 # Build from the repository root:
 #   docker build -f deploy/Dockerfile --build-arg HIVE_VERSION=v0.2.0 -t hive-brain .
-# Run one brain (deploy/compose.yaml does this with a named volume):
-#   docker run -v hive-team-a:/data -p 127.0.0.1:8765:8765 hive-brain
+# Run one brain (deploy/compose.yaml does this with a named volume). The hub
+# listens on loopback only, and a container's loopback is its own, so the
+# brain runs on the host's network; a published port would reach nothing:
+#   docker run -v hive-team-a:/data --network host hive-brain
 #
 # Everything the brain keeps - the store, its WAL, the work dir, logs, keys -
 # lives under HIVE_HOME=/data/hive on the one volume, which the host
@@ -47,10 +50,16 @@ FROM debian:bookworm-slim
 
 # git: the daemon reads and lands branches the hands push; gh: GitHub reads,
 # pull requests and merges; tini: signals reach the daemon and the hub, and
-# their children are reaped. No coding harness (copilot, claude, codex): those
-# run on hands. The built-in harness the brain's own lead uses is `hive`.
+# their children are reaped.
+# openssh-client: ssh-keygen, which the brain runs to give each run its
+# signing key, to check commit signatures and to check the signature of a
+# machine that dials in (and ssh, for git remotes that use it). git only
+# recommends it, so it is named here.
+# openssl: the brain signs its GitHub App tokens with the openssl command.
+# No coding harness (copilot, claude, codex): those run on hands. The
+# built-in harness the brain's own lead uses is `hive`.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git gnupg tini \
+ && apt-get install -y --no-install-recommends ca-certificates curl git gnupg openssh-client openssl tini \
  && install -d -m 0755 /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \

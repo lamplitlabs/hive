@@ -24,7 +24,9 @@ impl Handler {
                 }
             }
             [_, name, action] if action == "remove" => {
-                if addition_method(w, r, vec!["POST".to_string()]) {
+                if addition_method(w, r, vec!["POST".to_string()])
+                    && crate::server::same_origin_write(w, r)
+                {
                     self.secret_remove(w, name);
                 }
             }

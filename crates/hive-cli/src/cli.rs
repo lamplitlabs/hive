@@ -224,12 +224,26 @@ pub fn write_json(w: &mut dyn Write, v: &impl Serialize) -> Result<()> {
 
 pub use hive_hand_core::error::{Error, errorf};
 
+/// The fix line of a "No store" error, wherever a command prints one: the
+/// command that makes a store without a project, then the one that
+/// registers a project as well.
+pub const NO_STORE_FIX: &str =
+    "hive init --store-only (or hive init <project-path> to register a project as well)";
+
 pub fn binary_stamp() -> String {
     // The path is taken once, at the first stamp: a self-update replaces
     // the file under it, after which Linux reports the running inode as
     // "hive (deleted)" and a fresh current_exe() would stat nothing.
+    // A package manager keeps each version in a place of its own: an
+    // upgrade there leaves the running file alone and moves the name the
+    // program is started by, so that name is the one watched
+    // (hive_hand_core::managed).
     static EXE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    let Some(exe) = EXE.get_or_init(|| std::env::current_exe().ok()) else {
+    let Some(exe) = EXE.get_or_init(|| {
+        crate::managed::this_stable_path()
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| std::env::current_exe().ok())
+    }) else {
         return String::new();
     };
     let Ok(st) = std::fs::metadata(exe) else {
@@ -382,9 +396,9 @@ mod tests {
             2,
             "No store at /x",
             "this machine has no Hive store yet",
-            "hive init <project-path>",
+            NO_STORE_FIX,
         );
-        let want = "No store at /x\n  why: this machine has no Hive store yet\n  fix: hive init <project-path>";
+        let want = "No store at /x\n  why: this machine has no Hive store yet\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)";
         if e.to_string() != want || e.exit_code() != 2 {
             panic!("Error() = {:?} code {}", e.to_string(), e.exit_code());
         }

@@ -497,6 +497,8 @@ pub(crate) fn scope_gate(
     immutable.extend(immutable_paths(evaluators));
     immutable.extend([
         ".hive/**".into(),
+        // The same folder under its name from before the rename.
+        ".pulse/**".into(),
         ".git/**".into(),
         "docs/evolution/**".into(),
     ]);
@@ -662,6 +664,23 @@ pub(crate) fn make_card(
         ));
     }
     Ok(card)
+}
+
+#[cfg(test)]
+mod legacy_scope_tests {
+    /// The project's own folder is closed to every experiment under the
+    /// name it has now and the one it had before the rename.
+    #[test]
+    fn the_project_folder_is_closed_to_experiments_under_both_names() {
+        for file in [
+            ".hive/automations/check.sh",
+            ".pulse/automations/check.sh",
+            ".pulse/skills/release/SKILL.md",
+        ] {
+            let why = super::scope_gate("", "", file, false);
+            assert!(why.starts_with(super::SCOPE_IMMUTABLE), "{file}: {why}");
+        }
+    }
 }
 
 #[cfg(test)]

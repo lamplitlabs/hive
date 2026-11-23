@@ -11,21 +11,46 @@ import { Tabs as TabsPrimitive } from "radix-ui"
 // underline (the old segmented `default` is gone; `line` stays as an alias so
 // callers need not change). `segmented` keeps a small control on a muted
 // track for a chart's range or grouping toggles.
+//
+// Most tab rows here choose a view of the page under them and have no panel
+// of their own (no TabsContent). Radix gives every tab an aria-controls that
+// names its panel; with no panel that name points at nothing, which a screen
+// reader may announce as a broken reference. So the root keeps the values of
+// the panels it holds, and a tab names a panel only when there is one.
+const PanelsContext = React.createContext<{
+  panels: ReadonlySet<string>
+  add: (value: string) => () => void
+} | null>(null)
+
 function Tabs({
   className,
   orientation = "horizontal",
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Root>) {
+  const [panels, setPanels] = React.useState<ReadonlySet<string>>(() => new Set())
+  const add = React.useCallback((value: string) => {
+    setPanels((cur) => (cur.has(value) ? cur : new Set(cur).add(value)))
+    return () =>
+      setPanels((cur) => {
+        if (!cur.has(value)) return cur
+        const next = new Set(cur)
+        next.delete(value)
+        return next
+      })
+  }, [])
+  const ctx = React.useMemo(() => ({ panels, add }), [panels, add])
   return (
-    <TabsPrimitive.Root
-      data-slot="tabs"
-      data-orientation={orientation}
-      className={cn(
-        "group/tabs flex gap-2 data-horizontal:flex-col",
-        className
-      )}
-      {...props}
-    />
+    <PanelsContext.Provider value={ctx}>
+      <TabsPrimitive.Root
+        data-slot="tabs"
+        data-orientation={orientation}
+        className={cn(
+          "group/tabs flex gap-2 data-horizontal:flex-col",
+          className
+        )}
+        {...props}
+      />
+    </PanelsContext.Provider>
   )
 }
 
@@ -76,6 +101,9 @@ function TabsTrigger({
   className,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
+  const ctx = React.useContext(PanelsContext)
+  // No panel for this tab: drop the reference Radix would write to one.
+  const noPanel = ctx && !ctx.panels.has(props.value) ? { "aria-controls": undefined } : null
   return (
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
@@ -89,6 +117,7 @@ function TabsTrigger({
         className
       )}
       {...props}
+      {...noPanel}
     />
   )
 }
@@ -97,6 +126,9 @@ function TabsContent({
   className,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Content>) {
+  const add = React.useContext(PanelsContext)?.add
+  const value = props.value
+  React.useEffect(() => add?.(value), [add, value])
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"

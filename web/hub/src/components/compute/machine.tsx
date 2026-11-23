@@ -56,7 +56,7 @@ export function MachinePanel({ r, heading = true, machines = true, error }: { r:
         title="The runner hasn't started on this machine"
         action={
           <Button asChild size="sm">
-            <Link href="/#daemon-controls">Set up the runner</Link>
+            <Link href={hrefs.runnerControls()}>Set up the runner</Link>
           </Button>
         }
       >
@@ -87,7 +87,17 @@ export function MachinePanel({ r, heading = true, machines = true, error }: { r:
       label: "Work",
       tone: r.jobs.blocked ? "bad" : busy ? "info" : r.jobs.queued ? "warn" : "ok",
       value: (r.jobs.queued || busy ? num(r.jobs.queued) + " waiting to start, " + num(busy) + " running" : "Nothing waiting") + (r.jobs.blocked ? ", " + num(r.jobs.blocked) + " stuck" : ""),
-      note: r.jobs.blocked ? "See the failed jobs on Home" : (r.jobs.cap ? num(r.jobs.runs_today) + " of " + plural(r.jobs.cap, "run") : plural(r.jobs.runs_today, "run")) + " today",
+      // Stuck jobs are failed jobs: Runs, filtered to Failed, lists them with Retry.
+      note: r.jobs.blocked ? (
+        <>
+          <Link href={hrefs.harness({ status: "failed" })} className="font-medium text-link underline-offset-2 hover:underline">
+            Jobs that failed
+          </Link>{" "}
+          are on the Runs page.
+        </>
+      ) : (
+        (r.jobs.cap ? num(r.jobs.runs_today) + " of " + plural(r.jobs.cap, "run") : plural(r.jobs.runs_today, "run")) + " today"
+      ),
     },
     { label: "Cleanup", tone: leftovers.count ? "warn" : "ok", value: leftovers.text, title: r.hygiene },
   ];

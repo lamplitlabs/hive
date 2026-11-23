@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_ANSWER_KEYS: &[&str] = &[
     ".hive",
+    // The project's folder under its name from before the rename.
+    ".pulse",
     "docs/evolution/evaluators.md",
     "docs/evolution/archive.md",
     "docs/board/evolution",

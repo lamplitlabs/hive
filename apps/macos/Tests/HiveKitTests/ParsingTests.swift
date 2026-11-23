@@ -182,9 +182,27 @@ import Testing
         let fromOldEnv = SetupReader.read(overrides: .init(), environment: ["PULSE_HOME": "/env/old"], userHome: root, launchAgents: agents)
         #expect(fromOldEnv.home.path == "/env/old")
 
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".hive"), withIntermediateDirectories: true)
+        let hive = root.appendingPathComponent(".hive", isDirectory: true)
+        try FileManager.default.createDirectory(at: hive, withIntermediateDirectories: true)
         let new = SetupReader.read(overrides: .init(), environment: [:], userHome: root, launchAgents: agents)
-        #expect(new.home.path == root.appendingPathComponent(".hive").path)
+        #expect(new.home.path == hive.path)
+
+        // ~/.hive made for the program alone does not hide the store the
+        // older home holds; once ~/.hive has a store of its own, it wins.
+        try Data().write(to: legacy.appendingPathComponent("hive.sqlite"))
+        let kept = SetupReader.read(overrides: .init(), environment: [:], userHome: root, launchAgents: agents)
+        #expect(kept.home.path == legacy.path)
+        // The program the installer put under ~/.hive/bin is still found.
+        let program = hive.appendingPathComponent("bin/hive")
+        try FileManager.default.createDirectory(at: program.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n".utf8).write(to: program)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: program.path)
+        let found = SetupReader.read(overrides: .init(), environment: [:], userHome: root, launchAgents: agents)
+        #expect(found.home.path == legacy.path)
+        #expect(found.binary.path == program.path)
+        try Data().write(to: hive.appendingPathComponent("hive.sqlite"))
+        let moved = SetupReader.read(overrides: .init(), environment: [:], userHome: root, launchAgents: agents)
+        #expect(moved.home.path == hive.path)
     }
 
     @Test func aHubURLThatIsNotHTTPIsIgnored() {

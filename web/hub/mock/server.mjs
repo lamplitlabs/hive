@@ -1370,7 +1370,7 @@ async function handle(req, res) {
         404,
         "Unknown jobs route",
         "Use failed, repair or <id>/artifacts.",
-        "Open Failed job repair.",
+        "Open Runs and pick Failed.",
       );
     if (req.method !== method)
       return fail(
@@ -1378,7 +1378,7 @@ async function handle(req, res) {
         405,
         "Method not allowed",
         "Use " + method + " for this route.",
-        "Open Failed job repair.",
+        "Open Runs and pick Failed.",
       );
   }
   if (
@@ -1471,7 +1471,11 @@ async function handle(req, res) {
     return fail(res, 404, "not found", "no route " + url.pathname, "use GET members");
   }
   if (segs[0] === "update" && segs.length <= 2) {
-    const base = await fixture("update");
+    const fixed = await fixture("update");
+    // MOCK_UPDATE_MANAGED=Homebrew shows the console of a program a package
+    // manager installed: no install here, and that manager's command.
+    const managedBy = process.env.MOCK_UPDATE_MANAGED || "";
+    const base = managedBy ? { ...fixed, managed_by: managedBy, install_command: "brew upgrade hivefleet" } : fixed;
     const channel = process.env.MOCK_UPDATE_CHANNEL || base.channel || "release";
     const apply = () => {
       if (updateApply.state === "installing" && Date.now() >= updateApply.endsAt) {
@@ -1486,6 +1490,8 @@ async function handle(req, res) {
     if (segs.length === 1) return send(res, 200, { ...base, channel, apply: apply() });
     if (segs[1] !== "apply") return fail(res, 404, "not found", "no route " + url.pathname, "use update or update/apply");
     if (req.method !== "POST") return fail(res, 405, "method not allowed", "Only POST installs an update.", "Send POST /api/v1/update/apply.");
+    if (managedBy)
+      return fail(res, 409, "update not started", managedBy + " installed this hive and owns /opt/homebrew/Cellar/hivefleet/0.2.0/libexec/hive, so Hive does not replace that file. Upgrade it with: brew upgrade hivefleet", "Run that command in a terminal.");
     if (channel === "source")
       return fail(res, 409, "update not started", "update.channel resolves to source here: the daemon rebuilds hive from the brain project's checkout after each landing", "To install published releases instead: hive settings set update.channel release");
     if (apply().state === "installing") return fail(res, 409, "update not started", "an update is already being installed", "Wait for the install running to end.");
