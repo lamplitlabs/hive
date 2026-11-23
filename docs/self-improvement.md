@@ -1,5 +1,34 @@
 # Democracy and self-improvement
 
+How a suggestion card becomes a change: an agent posts it, a ballot job votes
+on it, and it is built as an improve job or measured as an experiment.
+
+```text
+research job     reflect job on the result ←─────────────────────────┐
+     ↓ cards            ↓ may post a new card                        │
+┌──────────────────────────────┐                    ┌────────────┐   │
+│ a suggestion card            │ ── needs votes ──→ │ ballot job │   │
+│ on the board                 │ ←───── votes ───── │            │   │
+└──────────────┬───────────────┘                    └────────────┘   │
+               │ eligible, and no gate holds it                      │
+       ┌───────┴──────────────────┐                                  │
+       ↓                          ↓                                  │
+┌─────────────┐          ┌────────────────┐ the loop picks first,    │
+│ improve job │          │ experiment job │ when evolve.loop is 1    │
+└──────┬──────┘          └────────┬───────┘ and at level D           │
+       │ its check: red on        │ measured against                 │
+       │ the default branch,      │ the default branch               │
+       │ green with the change    │                                  │
+       │ (evolve.require_check)   │                                  │
+       ↓                          ↓                                  │
+ pull request          ┌──────────────────────────┐ once the result  │
+                       │ kept: pull request       │ is final         │
+                       │ not kept: branch deleted ├──────────────────┘
+                       └──────────────────────────┘
+
+pull request: a local landing where the project has no upstream
+```
+
 ## Suggestions
 
 Suggestions collect votes. `quorum` voters (default 2; the author's and
@@ -79,6 +108,36 @@ post until the owner decides its question - reserves nothing but the flagged
 post itself: the planner carries the other voted cards as ordinary improve jobs
 meanwhile, and the project's idle line says `evolve: level D, planning blocked:
 ...` with the owner's next step.
+
+The gates an eligible card passes before a job is queued for it; the planner
+stops at the first one that holds the card:
+
+```text
+              an eligible card
+                      ↓
+┌───────────────────────────────────────────┐
+│ held by the first of these gates:         │
+│  a job already carries it                 │
+│  duplicate of an older open card          │     held: hive queue
+│  names no check (evolve.require_check)    │ ──→ names the gate; the
+│  addressed to the owner                   │     Votes page says why
+│  names gone paths                         │
+│  a worker's card:                         │
+│    File: holds none of the Signal's terms │
+│    without evidence                       │
+│    points at owner-only paths             │
+│    Signal path not on the default branch  │
+│    go test -run selects no test           │
+│  over the loop cap or operating-layer cap │
+└─────────────────────┬─────────────────────┘
+                      │ none holds it: plannable
+          ┌───────────┴───────────┐
+          ↓                       ↓
+an improve job, when     an experiment job, when the
+a lane is free           evolution loop took the card
+                         (a duplicate or the operating-
+                         layer cap does not hold it)
+```
 
 The gates, in order: a suggestion already carried by a queued, leased or
 blocked job waits for that job; a later open card with the same summary, or the
@@ -182,6 +241,35 @@ so the reviewer may merge it like any other
 ([The complexity rule](review.md#the-complexity-rule)).
 When the gates allow, the
 daemon runs the cycle by itself; the command is the by-hand alternative.
+
+What must hold before the daemon queues an experiment, first for the project
+and then for the card:
+
+```text
+┌────────────────────────────────────────┐
+│ STOP is not engaged                    │
+│ constitution and evaluators records    │  the project:
+│ an enabled public fixture              │  level B until these hold
+│ a measured baseline                    │
+├────────────────────────────────────────┤
+│ at least two private tests, all ready  │
+│ evolve.loop is 1                       │  level C until these hold
+│ evolve.limits not used up              │
+│ a file class the constitution opens    │
+└───────────────────┬────────────────────┘
+                    │ level D, no loop-gate question open for the owner,
+                    ↓ fewer than evolve.experiments_in_flight in flight
+┌────────────────────────────────────────┐
+│ eligible, and no planner gate holds it │  the card: skipped when one
+│ never measured before                  │  of the first four fails (a
+│ product scope open, if a product card  │  duplicate or the operating-
+│ a File: the constitution opens         │  layer cap does not hold it)
+│ one File: and one Variable:            │ ──→ if not: one card job
+│ Tier 0 or 1                            │ ──→ if not: asks the owner
+└───────────────────┬────────────────────┘
+                    ↓
+              experiment job
+```
 
 - The evolution archive keeps lineage as well as scores. Each measured
   variant saves a binary patch outside the checkout under

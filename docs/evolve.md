@@ -23,6 +23,37 @@ self-improvement](self-improvement.md) does not explain. The loop itself, and
 `evolve.baseline_ttl_hours`, `evolve.parent_rate`, `evolve.outcome_hours`,
 `evolve.mode` and `evolve.keep_days`, are covered there.
 
+How one experiment is measured: its branch (the variant here, not an
+agent-program variant) is scored against the default branch (the base), and
+the difference decides what becomes of the branch:
+
+```text
+┌─────────────────────────────────────┐   ┌────────────────────────────┐
+│ base: the default branch            │   │ variant: the branch merged │
+│ (cached: evolve.baseline_ttl_hours) │   │ onto the default branch    │
+└──────────────────┬──────────────────┘   └─────────────┬──────────────┘
+                   └─────────────────┬──────────────────┘
+                                     ↓
+                 ┌───────────────────────────────────────┐
+                 │ both scored by the same fixtures:     │
+                 │ public fixtures, private tests from   │
+                 │ evolve.heldout_dir, the card's check  │
+                 └───────────────────┬───────────────────┘
+                                     │ variant score - baseline score
+         ┌───────────────────────────┼───────────────────────┐
+         ↓                           ↓                       ↓
+improved                   neutral                    discarded
+up by evolve.tolerance     a tie                      down by more than
+or more, or a tie and                ↓                evolve.tolerance
+the card's check rose      branch deleted, unless            ↓
+         ↓                 evolve.land_neutral is on  branch deleted
+measured again: still      and evolve.require_check
+improved, pull request;    is off: then it is kept,
+if not, neutral            as a pull request
+
+pull request: a local landing where the project has no upstream
+```
+
 ## Drafting and held-out fixtures
 
 | Setting | Default | Takes | What it does |

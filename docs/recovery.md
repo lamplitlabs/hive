@@ -2,6 +2,30 @@
 
 ## Failed jobs and recovery
 
+What happens to a failed job: the daemon classifies it, then runs it again,
+corrects it or holds it, and writes a lesson when a cause fails twice.
+
+```text
+┌──────────────┐                             ┌──────────────────────┐
+│ a failed job │ ── an environment fault ──→ │ blocked, fault named │
+└──────┬───────┘                             └──────────────────────┘
+       │ otherwise classified from what the runner wrote
+       ├─────────────────────┬───────────────────────┐
+       │ transient           │ deterministic         │ structural
+       │ after a pause       │ after a pause         │
+       ↓                     ↓                       ↓
+┌────────────────┐  ┌───────────────────┐  ┌──────────────────────┐
+│ same job again │  │ one corrected job │  │ held with its reason │
+└───────┬────────┘  └─────────┬─────────┘  └──────────┬───────────┘
+        └──────────┬──────────┘                       │ a board card's
+                   │ daemon.recover_limit times       │ job
+                   ↓                                  ↓
+           held, one finding                 one owner question
+
+a task's deterministic failure ──→ back to the lead, who re-plans
+the same cause twice ──→ a memory record ──→ later worker briefs
+```
+
 What the daemon does on its own when a job fails (ADR-036): every failed job is
 classified from what the runner wrote. A transient failure - the machine, the
 runner or the moment: a lost run, a runner error, an unreachable executor, a
@@ -93,7 +117,7 @@ history is deleted and no cap is raised.
 
 A cause that fails twice becomes a memory record
 (`MEM-failure-pattern-...`, `hive record list memory`) the daemon writes and
-amends itself, and every later worker brief of that project opens with those
+amends itself, and every later worker brief of that project carries those
 lessons so the cause is not repeated. Every worker brief also says who else
 holds a job or a claim on the project so two agents never redo the same work,
 and lists the posts that named the agent with `@name` and have had no reply
@@ -518,6 +542,33 @@ switch the two halves off.
 
 ## When the owner is quiet: handoffs, idle leads and research
 
+Who queues work on its own while the owner is quiet, and from what (the
+loop's baseline and drafting jobs are left out):
+
+```text
+┌─────────────┐
+│ the planner │ each planning pass, while the project has a free lane
+└─┬───────────┘
+  ├─→ a handoff nobody claimed ───────→ one improve job
+  ├─→ eligible cards no gate holds ───→ improve jobs
+  │   only when nothing above was queued, the first of:
+  ├─→ open questions ─────────────────→ answer jobs
+  ├─→ cards that need votes ──────────→ one ballot job
+  ├─→ no daily reflect yet today ─────→ one reflect job
+  ├─→ on the brain, open shared posts → one triage job
+  └─→ research is due ────────────────→ one research job
+
+┌────────────────────┐
+│ the evolution loop │ each planning pass, for a project at level D
+└─┬──────────────────┘
+  └─→ a card it can measure ──────────→ one experiment job instead
+
+┌──────────┐ after lead.idle_hours with no job queued, leased or
+│ the lead │ created; reflect and ballot jobs do not count as created
+└─┬────────┘
+  └─→ a standing brief ───────────────→ up to lead.idle_max_jobs jobs
+```
+
 What the daemon does on its own when the owner is quiet: a handoff nobody
 claimed becomes one `improve` job, tried once; its first step is to read the
 thread and the default branch, and a handoff that reports work already landed
@@ -527,16 +578,20 @@ work listed in the brief, or a variable another merge already moved, is
 recorded as a `finding` naming the commit or the worker, and the job stops -
 a `handoff` is for work a worker began and leaves unfinished, because the
 daemon gives every unclaimed handoff to another worker. When a project's loop is at
-level D, the daemon queues its experiments itself - one in flight per project,
-only cards with net votes > 0; a result carrying a violation or hard stop posts
+level D, the daemon queues its experiments itself - up to
+`evolve.experiments_in_flight` in flight per project (default 2), only cards
+with net votes > 0, or net zero for a card that names a check
+(`evolve.check_skips_quorum`); a result carrying a violation or hard stop posts
 the owner question once and holds that project until it is answered - so
 `hive evolve cycle` is the by-hand alternative, not a requirement. After
 `lead.idle_hours` (default 6, `0` turns it off) with no job queued, leased or
-created (a `blocked` job is one the runner stopped retrying, not open work),
-the lead gets a standing brief: read the board's queue, the failed
-jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
-(default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
-it queued and why, or say in its summary that nothing was worth queueing.
+created (a `blocked` job is one the runner stopped retrying, not open work;
+a `reflect` or `ballot` job does not count as created, and a role lead's
+sitting counts as neither), the lead gets a standing brief: read the board's
+queue, the failed jobs of the week, the plans and decisions, queue up to
+`lead.idle_max_jobs` (default 3) Tier 0/1 worker jobs and tell the owner in
+the project's chat what it queued and why, or say in its summary that nothing
+was worth queueing.
 While the fleet is idle (fewer than half of the local worker slots busy and
 nothing queued) the wait is divided by `lead.idle_factor` (default 3, never
 under an hour).
@@ -638,6 +693,33 @@ project's plannable items; the console's Votes page shows the same gate on
 the card.
 
 ## When the owner is away
+
+What the lead decides while the owner is away, and what stays with the
+owner:
+
+```text
+┌──────────────────────────────────────┐
+│ waiting for the owner:               │
+│ agreed proposals; findings, handoffs │
+│ and suggestions marked for the owner │
+└────────┬────────────────────┬────────┘
+         │ owner.presence     │ money, an ADR, an owner-only path,
+         │ is away            │ a pair: or onboard: marker,
+         ↓                    │ a major dependency upgrade
+   ┌───────────┐              ↓
+   │ the lead  │     stays with the owner
+   └─────┬─────┘
+         │ DECIDE: <post-id> yes|no <reason>
+         ↓
+  ┌─────────────┐
+  │ the daemon  │ records it as the lead's decision
+  └──────┬──────┘
+     ┌───┴──────────────┐
+     ↓                  ↓
+yes: one job      no: declined, with
+to act on it      the lead's reason
+(a lead-role:, toolkit: or goal: proposal queues no job)
+```
 
 What the daemon does when the owner is away (`hive settings set
 owner.presence away`, or **Here or away** under **Settings → General → You** in the console; `present` is
