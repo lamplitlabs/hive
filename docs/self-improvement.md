@@ -514,6 +514,19 @@ the same thing: adding one `load_thresholds` test to
 both trees. The uncovered-lines count went from 58 to 19 and scored `0.7532`.
 Without a diff scope it counts the `crates/*/src` modules that have no
 `#[test]` and no `MOD_tests.rs` (83 at `c386053b`).
+That stale binary is why `behaviour-crate-tests-pass` scored `0.5` on both
+trees in every Rust cycle from B-113 to B-117, even when the card added two
+tests (B-115, B-116, B-117). RSI sitting 34 disabled it and registered
+`behaviour-crate-tests-pass-fresh` in its place (metric, weight 2, higher is
+better, scale 6094). It counts the same way, but it builds in its own directory,
+`$CARGO_TARGET_DIR/crate-tests-fresh`, and runs `cargo clean -p CRATE` there
+before each `cargo test`. That way neither tree can read the other's binary.
+On the toy pair above (one test added to `thresholds.rs`), the old command
+printed 4 on both trees. The new one printed 4 on the variant and 3 on the
+base, scoring `0.6667` against `0.5000`. A warm scoped run takes about
+3 seconds per crate, because the clean only rebuilds the changed crate.
+Without a scope it prints `1 +` the `#[test]` count under `crates/*/src`
+(raw 3047 at `7263eee0`, scored `0.5000` by `hive evolve measure --ref HEAD`).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
