@@ -17,7 +17,7 @@ import { DecideButtons } from "@/components/hive/decide-buttons";
 import { DocRev, GateCard, SelfImprovementPanel } from "@/components/hive/evolve";
 import { useInbox } from "@/components/hive/inbox";
 import { KindTile } from "@/components/hive/kind-tile";
-import { ListRow, ListRows } from "@/components/hive/list-row";
+import { ListItem, ListRow, ListRows, RowCue } from "@/components/hive/list-row";
 import { ComputeDecide, ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
@@ -218,12 +218,12 @@ function SecondLine({ who, at, text }: { who: string; at?: string | null; text?:
 const inSentence = (who: string) => (who === "The runner" || who === "You" ? who.toLowerCase() : who);
 
 // The cue on a row that leads to an answer box: drawn as a button, but a
-// span, since the row itself is the link or the opener.
+// span, since the row's title is the link or the opener.
 function AnswerCue() {
   return (
-    <span className={buttonVariants({ size: "xs" })}>
+    <RowCue className={buttonVariants({ size: "xs" })}>
       <ReplyIcon aria-hidden /> Answer
-    </span>
+    </RowCue>
   );
 }
 
@@ -286,7 +286,7 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
           actionsVisible
           actions={canDecide ? openQ ? <AnswerCue /> : <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} size="xs" yesLabel={labels.yes} noLabel={labels.no} className="w-auto justify-end" /> : undefined}
           {...(openQ && !expand ? { href: hrefs.project(q.slug || slug, "for-you") } : opener(key, hrefs.post(q.slug || slug, q.id)))}
-          ariaLabel={(stop ? "Self-improvement paused: " : "Question for you: ") + q.summary}
+          ariaLabel={(stop ? "Self-improvement paused: " : "Question for you: ") + title}
         >
           <SecondLine who={q.stale ? what + " · older thread" : what} at={q.date} text={firstLine(q.body)} />
         </ListRow>
@@ -305,7 +305,7 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
           actionsVisible
           actions={canDecide ? <ComputeDecide r={cr} size="xs" /> : undefined}
           {...opener(key, hrefs.compute())}
-          ariaLabel={"Machine request: " + cr.reason}
+          ariaLabel={"Machine request: extra machine for " + (cr.hours === 1 ? "1 hour" : cr.hours + " hours") + (cr.size ? " (" + cr.size + ")" : "") + (cr.reason ? ". " + cr.reason : "")}
         >
           <SecondLine who={"Asked by " + inSentence(agentName(cr.requested_by))} at={cr.at} text={cr.reason} />
         </ListRow>
@@ -341,7 +341,7 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
           lead={<KindTile kind="rule" waiting title="Draft to review" />}
           title={"A new " + what + " to review"}
           {...opener(key, hrefs.project(slug, "evolution"))}
-          ariaLabel={"Draft to review: " + d.r.id}
+          ariaLabel={"Draft to review: a new " + what + " to review (" + d.r.id + ")"}
         >
           <SecondLine who={d.r.draft?.author ? "Drafted by " + inSentence(agentName(d.r.draft.author)) : "Draft " + d.r.id} at={d.r.draft?.at} text="An agent drafted the project's own text; adopt it or keep the template." />
         </ListRow>
@@ -753,14 +753,14 @@ export function ForYouTab({ slug, canDecide }: { slug: string; canDecide: boolea
               {waiting ? (
                 <ListRows ariaLabel="Waiting for you">
                   {rows.map((row) => (
-                    <div key={row.key}>
+                    <ListItem key={row.key}>
                       {row.node}
                       {expanded === row.key && cards[row.key] ? (
                         <div className="bg-muted/20 px-3 py-3 sm:pl-14" data-row-details>
                           {cards[row.key]}
                         </div>
                       ) : null}
-                    </div>
+                    </ListItem>
                   ))}
                 </ListRows>
               ) : (

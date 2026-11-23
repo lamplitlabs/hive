@@ -247,10 +247,14 @@ pub(crate) fn private_regular(root: &Path, name: &str, executable: bool) -> Resu
         }
     }
     #[cfg(not(unix))]
-    if !meta.is_file() || meta.len() > MAX_FIXTURE_BYTES as u64 {
-        return Err(private_error(
-            "each pair needs regular owner-only request and executable scorer files",
-        ));
+    {
+        // No mode bits off unix: owner-only and executable are unix's to check.
+        let _ = executable;
+        if !meta.is_file() || meta.len() > MAX_FIXTURE_BYTES as u64 {
+            return Err(private_error(
+                "each pair needs regular owner-only request and executable scorer files",
+            ));
+        }
     }
     let mut f = std::fs::File::open(path)
         .map_err(|_| private_error("cannot read a private fixture file"))?;
@@ -286,6 +290,12 @@ pub(crate) fn load_private_at(
                 "the owner-private directory must exist with mode 0700",
             ));
         }
+    }
+    #[cfg(not(unix))]
+    if !meta.is_dir() {
+        return Err(private_error(
+            "the owner-private directory must exist with mode 0700",
+        ));
     }
     std::fs::read_dir(&dir)
         .map_err(|_| private_error("cannot open the owner-private directory"))?;
@@ -459,6 +469,8 @@ pub fn setup(s: &hive_store::Store, value: &str) -> Result<SetupResult> {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
                     .map_err(|_| private_error("cannot write a private template"))?;
             }
+            #[cfg(not(unix))]
+            let _ = mode;
             result.created += 1;
         }
     }
@@ -574,6 +586,8 @@ pub(crate) fn heldout_file(root: &Path, name: &str, body: &str, mode: u32) -> Re
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
             .map_err(|_| private_error("cannot write a private fixture"))?;
     }
+    #[cfg(not(unix))]
+    let _ = mode;
     Ok(())
 }
 pub fn write_heldout(s: &hive_store::Store, w: HeldoutWrite) -> Result<SetupResult> {
@@ -591,6 +605,12 @@ pub fn write_heldout(s: &hive_store::Store, w: HeldoutWrite) -> Result<SetupResu
                 "the owner-private directory must exist with mode 0700",
             ));
         }
+    }
+    #[cfg(not(unix))]
+    if !meta.is_dir() {
+        return Err(private_error(
+            "the owner-private directory must exist with mode 0700",
+        ));
     }
     let judge = w.judge.trim().to_string();
     let mut scorer = w.scorer.clone();

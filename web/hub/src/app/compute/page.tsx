@@ -6,6 +6,7 @@ import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { MachineCard, RevokeDeviceButton } from "@/components/compute/machine";
 import { ThisMachineCard } from "@/components/compute/this-machine";
 import { CapsPanel, ComputeRequestCard, ComputeRequestListRow, ComputeRequestRow } from "@/components/compute/compute";
+import { waitingNote } from "@/components/compute/compute-state";
 import { HygienePanel } from "@/components/hive/hygiene";
 import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/hive/runners";
 import { Button } from "@/components/ui/button";
@@ -72,20 +73,23 @@ export default function ComputePage() {
       <PageHeader title="Machines" subtitle={SUB} action={<AddMachineButton caps={c.caps} size="default" variant="default" />} />
 
       <div className="grid min-w-0 gap-8 [&>*]:min-w-0">
-        <section aria-label="This machine">
+        {/* The card is the section named "This machine"; a second one around it would name the same landmark twice. */}
+        <div>
           <ThisMachineCard runner={runner.data === undefined && runner.error ? null : runner.data} host={org.data?.host} local={local} />
-        </section>
+        </div>
 
         {waiting ? (
           <section aria-label="Waiting for you">
-            <SectionHeading count={waiting} note="An agent asked for an extra machine. It starts only if you approve.">
+            <SectionHeading count={waiting} note={waitingNote(pending.length, asking)}>
               Waiting for you
             </SectionHeading>
             {asking ? <RunnersQuestion note={runnersNote} className={pending.length ? "mb-3" : undefined} /> : null}
             {pending.length ? (
               <ul className="grid gap-2" aria-label="Requests">
                 {pending.map((r) => (
-                  <ComputeRequestListRow key={r.id} r={r} />
+                  <li key={r.id}>
+                    <ComputeRequestListRow r={r} />
+                  </li>
                 ))}
               </ul>
             ) : null}

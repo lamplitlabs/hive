@@ -2536,6 +2536,17 @@ fn schedule_script_kinds_need_a_script_on_the_default_branch() {
         "{err}"
     );
     assert!(err.contains(".hive/automations/<name>.sh"), "{err}");
+    // The folder's name from before the rename is the project's folder
+    // too: the place rule lets the script through, and what stops it is
+    // only that this repository has no such file.
+    let err = format!(
+        "{}",
+        schedules::add(&s, script_input("check", ".pulse/automations/check.sh")).unwrap_err()
+    );
+    assert!(
+        err.contains("No file \".pulse/automations/check.sh\" on main of demo"),
+        "{err}"
+    );
     // The job kind of a script is task or improve.
     let mut input = script_input("check", ".hive/automations/check.sh");
     input.job_kind = "clean".into();
@@ -5374,6 +5385,232 @@ fn manifest_sync_reads_one_file_per_automation_beside_the_list() {
     assert!(sixth.skipped, "{}", sixth.line());
 }
 
+/// A repository set up before the rename keeps its Hive files under
+/// `.pulse/`. They are read from there as they are, beside whatever the
+/// repository has since put under `.hive/`.
+#[test]
+fn manifest_sync_reads_the_folder_from_before_the_rename() {
+    let _serial = crate::test_helpers::serial();
+    let t = new_store();
+    let s = &t;
+    let dir = script_repo(s);
+    const WATCH: &str = "title: Daily status check\nkind: watch\nscript: .pulse/automations/evaluation-sync.sh\nevery: daily\nat: \"14:00\"\ntier: 0\nbrief: Follow the skill bamf-data-sync.\n";
+    const CATALOGUE: &str = "kind: watch\nscript: .hive/automations/watch.sh\nevery: daily\nbrief: Sync the catalogue.\n";
+    const SKILL: &str = "---\nname: bamf-data-sync\ndescription: How to sync the data\n---\n# Sync\n\nRun the script.\n";
+
+    // A repository without the older folder keeps the fingerprint it had
+    // before that folder was read, so the update alone re-reads nothing.
+    let old_way = hive_testutil::git(&[
+        "-C",
+        &dir,
+        "ls-tree",
+        "main",
+        "--",
+        ".hive",
+        ".claude/skills",
+        ".github/skills",
+        ".agents/skills",
+    ])
+    .unwrap();
+    {
+        use sha2::Digest;
+        assert_eq!(
+            manifest::fingerprint(&dir, "main").unwrap(),
+            hex::encode(sha2::Sha256::digest(old_way.as_bytes()))
+        );
+    }
+    let before = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(before.files.is_empty() && before.path.is_empty());
+
+    commit_files(
+        &dir,
+        &[
+            (".pulse/automations/evaluation-sync.yaml", WATCH),
+            (
+                ".pulse/automations/evaluation-sync.sh",
+                "#!/bin/sh\nexit 0\n",
+            ),
+            (".pulse/skills/bamf-data-sync/SKILL.md", SKILL),
+            (".hive/automations/catalogue.yaml", CATALOGUE),
+        ],
+        "both folders",
+    );
+    let first = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert!(
+        !first.skipped,
+        "the older folder is part of the fingerprint"
+    );
+    assert_eq!(
+        first.files,
+        vec![
+            ".hive/automations/catalogue.yaml",
+            ".pulse/automations/evaluation-sync.yaml",
+        ]
+    );
+    assert!(first.problems.is_empty(), "{:?}", first.problems);
+    assert_eq!(
+        (first.schedules.added, first.skills.added),
+        (2, 1),
+        "{}",
+        first.line()
+    );
+    assert!(
+        first
+            .line()
+            .contains("1 file in .hive/automations/ and 1 file in .pulse/automations/ at"),
+        "{}",
+        first.line()
+    );
+    assert_eq!(first.source(), ".hive/automations/ and .pulse/automations/");
+    let rows = schedules::list(s, "demo", "").unwrap();
+    let watch = rows
+        .iter()
+        .find(|r| r.origin == "repo:.pulse/automations/evaluation-sync.yaml#evaluation-sync")
+        .cloned()
+        .unwrap_or_else(|| panic!("{rows:?}"));
+    assert_eq!(
+        (
+            watch.kind.as_str(),
+            watch.script.as_str(),
+            watch.at_time.as_str(),
+            watch.status.as_str()
+        ),
+        (
+            "watch",
+            ".pulse/automations/evaluation-sync.sh",
+            "14:00",
+            "active"
+        )
+    );
+    assert!(
+        !watch.script_outside(),
+        "a script under the older folder is in its place"
+    );
+    let skill = s.skill_in("demo", "bamf-data-sync").unwrap().unwrap();
+    assert_eq!(
+        (skill.origin.as_str(), skill.status.as_str()),
+        ("repo:.pulse/skills/bamf-data-sync/SKILL.md", "enabled")
+    );
+
+    // The same name under both folders: `.hive/` is the one read, the
+    // other is reported, and the schedule is the row it was.
+    commit_files(
+        &dir,
+        &[
+            (
+                ".hive/automations/evaluation-sync.yaml",
+                "kind: watch\nscript: .pulse/automations/evaluation-sync.sh\nevery: weekly\nbrief: Follow the skill.\n",
+            ),
+            (".hive/skills/bamf-data-sync/SKILL.md", SKILL),
+        ],
+        "twins",
+    );
+    let second = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(
+        second.problems,
+        vec![
+            "skill .pulse/skills/bamf-data-sync/SKILL.md: .hive/skills/bamf-data-sync/SKILL.md already gives the skill bamf-data-sync; the first folder wins".to_string(),
+            "both .hive/automations/evaluation-sync.yaml and .pulse/automations/evaluation-sync.yaml exist; .hive/automations/evaluation-sync.yaml is read, remove the other".to_string(),
+        ]
+    );
+    let moved = schedules::get(s, &watch.id).unwrap();
+    assert_eq!(
+        (
+            moved.origin.as_str(),
+            moved.every_minutes,
+            moved.status.as_str()
+        ),
+        (
+            "repo:.hive/automations/evaluation-sync.yaml#evaluation-sync",
+            10080,
+            "active"
+        )
+    );
+    assert_eq!(
+        s.skill_in("demo", "bamf-data-sync")
+            .unwrap()
+            .unwrap()
+            .origin,
+        "repo:.hive/skills/bamf-data-sync/SKILL.md"
+    );
+
+    // The list file under its older name is read while it is the only
+    // one, and reported once the current one is there too.
+    commit_files(
+        &dir,
+        &[(
+            ".pulse/pulse.yaml",
+            "schedules:\n  - name: tidy\n    kind: clean\n    every: weekly\n    brief: Remove what nobody uses.\n",
+        )],
+        "older list",
+    );
+    let third = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(third.path, ".pulse/pulse.yaml");
+    assert_eq!(third.schedules.added, 1, "{}", third.line());
+    let tidy = schedules::list(s, "demo", "")
+        .unwrap()
+        .into_iter()
+        .find(|r| r.origin == "repo:.pulse/pulse.yaml#tidy")
+        .unwrap();
+    commit_files(
+        &dir,
+        &[(".hive/hive.yaml", "schedules: []\n")],
+        "newer list",
+    );
+    let fourth = manifest::sync(s, "demo", "daemon", false).unwrap().unwrap();
+    assert_eq!(fourth.path, ".hive/hive.yaml");
+    assert!(
+        fourth.problems.contains(
+            &"both .hive/hive.yaml and .pulse/pulse.yaml exist; .hive/hive.yaml is read, remove the other"
+                .to_string()
+        ),
+        "{:?}",
+        fourth.problems
+    );
+    assert_eq!(schedules::get(s, &tidy.id).unwrap().status, "ended");
+}
+
+/// `hive manifest check` with no path reads a working copy the way the
+/// daemon reads the branch: the first list file present, then both
+/// automation folders.
+#[test]
+fn manifest_check_finds_the_working_copy_files_of_both_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    assert_eq!(
+        crate::commands::working_copy_files(root),
+        (Vec::<&str>::new(), Vec::<String>::new())
+    );
+    for (path, text) in [
+        (".pulse/pulse.yaml", "schedules: []\n"),
+        (".pulse/automations/b.yaml", "every: 1d\n"),
+        (".pulse/automations/b.sh", "exit 0\n"),
+        (".hive/automations/z.yml", "every: 1d\n"),
+        (".hive/automations/a.yaml", "every: 1d\n"),
+        (".hive/automations/nested/x.yaml", "every: 1d\n"),
+    ] {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    let (found, paths) = crate::commands::working_copy_files(root);
+    assert_eq!(found, vec![".pulse/pulse.yaml"]);
+    assert_eq!(
+        paths,
+        vec![
+            ".pulse/pulse.yaml",
+            ".hive/automations/a.yaml",
+            ".hive/automations/z.yml",
+            ".pulse/automations/b.yaml",
+        ]
+    );
+    std::fs::write(root.join(".hive/hive.yaml"), "schedules: []\n").unwrap();
+    let (found, paths) = crate::commands::working_copy_files(root);
+    assert_eq!(found, vec![".hive/hive.yaml", ".pulse/pulse.yaml"]);
+    assert_eq!(paths[0], ".hive/hive.yaml");
+    assert_eq!(paths.len(), 4);
+}
+
 #[test]
 fn manifest_entry_with_a_problem_keeps_its_row_and_a_taken_skill_name_is_reported() {
     let _serial = crate::test_helpers::serial();
@@ -5789,6 +6026,48 @@ fn manifest_command_checks_a_working_copy_and_shows_and_syncs_a_project() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("unknown subcommand"), "{err}");
+}
+
+/// `hive manifest` opens no store by itself. Where it needs one and the
+/// machine has none, it says how to make one.
+#[test]
+fn manifest_on_a_machine_with_no_store_says_how_to_make_one() {
+    let _serial = crate::test_helpers::serial();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("hive");
+    let out = Buffer::new();
+    let mut c = Context {
+        store: None,
+        home: home.display().to_string(),
+        out: Box::new(out.clone()),
+        err: Box::new(out.clone()),
+        json: false,
+        quiet: false,
+        color: false,
+        agent: String::new(),
+        project: "demo".into(),
+        session: String::new(),
+        now: String::new(),
+        args: Vec::new(),
+    };
+    for args in [vec!["show"], vec!["sync"], vec!["check"]] {
+        let err = run_cmd(&mut c, "manifest", &args).unwrap_err();
+        let ce = err.downcast_ref::<hive_cli::Error>().expect("a cli error");
+        assert_eq!(ce.exit_code(), 2, "{args:?}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "No store at {}\n  why: this machine has no Hive store yet; hive manifest check without --project needs none\n  fix: hive init --store-only (or hive init <project-path> to register a project as well)",
+                home.join(hive_store::STORE_NAME).display()
+            ),
+            "{args:?}"
+        );
+    }
+    assert!(
+        out.string().is_empty() && !home.exists(),
+        "{}",
+        out.string()
+    );
 }
 
 #[test]

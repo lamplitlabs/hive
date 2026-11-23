@@ -137,7 +137,8 @@ export function LiveFeed({ project, limit = 40, title = "What just happened", he
           <EmptyState>{project ? "Nothing has happened in " + project + " yet. New posts, decisions and task updates show up here as they happen." : "Nothing has happened yet. New posts, decisions and task updates show up here as they happen."}</EmptyState>
         </div>
       ) : (
-        <ul className="scroll-thin divide-y divide-border/70 overflow-y-auto" style={height ? { maxHeight: height } : undefined}>
+        // A list that scrolls takes the keyboard's focus, so the arrow keys can scroll it.
+        <ul className="scroll-thin divide-y divide-border/70 overflow-y-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" style={height ? { maxHeight: height } : undefined} tabIndex={height ? 0 : undefined} aria-label={height ? "Events, newest first" : undefined}>
           {rows.map((e) => {
             const who = actorName(e);
             const text = detailText(e, project);

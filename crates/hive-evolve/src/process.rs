@@ -10,6 +10,7 @@ use std::time::Duration;
 /// Nice level of every process a measurement starts (harness, scorer and
 /// what they build), the level the daemon gives the runs it dispatches: a
 /// measurement must never crowd out the person using the machine.
+#[cfg(unix)]
 pub(crate) const MEASUREMENT_NICE: i32 = 10;
 
 /// How many fixtures the current measurement runs at once; `isolated_env`
@@ -322,6 +323,10 @@ pub(crate) fn prepare_measurement_caches(home: &str) -> std::io::Result<()> {
                 std::os::unix::fs::symlink(&shared, &dir)?;
                 continue;
             }
+            // No link off unix yet (symlinks need privileges on Windows):
+            // the per-home directory is made below as in a bare environment.
+            #[cfg(not(unix))]
+            let _ = shared;
         }
         std::fs::create_dir_all(dir)?;
     }
@@ -649,7 +654,9 @@ impl Drop for SignalStop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::sync::mpsc;
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[test]

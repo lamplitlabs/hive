@@ -663,8 +663,8 @@ impl Hands {
     /// step 1b): an SSH private key on stdin, written beside the clone with
     /// mode 0600 for the seconds of the push and removed whatever the push
     /// did. An empty stdin pushes with what git on this machine already
-    /// uses. Only a `hive/` branch, and only one the remote does not hold
-    /// yet: a branch already there (an open pull request a reviewer may have
+    /// uses. Only a `hive/` branch (or one under `pulse/`, the prefix from
+    /// before the rename), and only one the remote does not hold yet: a branch already there (an open pull request a reviewer may have
     /// pushed to) stays the brain's delivery to update, never this push's to
     /// overwrite.
     pub fn push(&mut self, job: &str, url: &str, sha: &str, head: &str) -> Result<()> {
@@ -677,7 +677,7 @@ impl Hands {
             return Err(hands_die("bad sha"));
         }
         if !HANDS_BRANCH_RE.is_match(head)
-            || !head.starts_with("hive/")
+            || !crate::names::agent_branch(head)
             || head.contains("..")
             || head.ends_with('/')
         {
@@ -1541,6 +1541,14 @@ mod tests {
         let mut h = make_hands(&wd, key);
         let err = h.push(job, &url, &sha, "main").unwrap_err().to_string();
         assert!(err.contains("hive/ branch"), "{err}");
+        // A branch made before the rename is an agent's branch too: the
+        // prefix lets it through, and it fails on the key like any other.
+        let mut h = make_hands(&wd, "junk");
+        let err = h
+            .push(job, &url, &sha, "pulse/a/job")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not an ssh private key"), "{err}");
 
         let mut h = make_hands(&wd, key);
         h.push(job, &url, &sha, "hive/a/job").unwrap();

@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { showApiError } from "@/components/hive/confirm";
 import { ProjectAvatar } from "@/components/hive/avatar";
-import { ListRow, ListRows } from "@/components/hive/list-row";
+import { ListItem, ListRow, ListRows } from "@/components/hive/list-row";
 import { PageHeader } from "@/components/hive/page-header";
 import { Disclosure, EmptyState, ErrorNotice, Notice, SkeletonRows } from "@/components/hive/panel";
 import { SectionHeading } from "@/components/hive/section-heading";
@@ -380,7 +380,7 @@ function EntryRow({
   };
   if (editing) {
     return (
-      <div className="px-3 py-2" data-row>
+      <ListItem className="px-3 py-2" data-row>
         <EntryEditor
           file={file}
           entry={entry}
@@ -388,7 +388,7 @@ function EntryRow({
           keepMine={keepMine}
           onBusy={(b) => setBusy(b ? "save" : null)}
         />
-      </div>
+      </ListItem>
     );
   }
   return (

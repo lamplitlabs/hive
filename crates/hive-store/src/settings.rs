@@ -255,12 +255,12 @@ pub static EVOLVE_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static DAEMON_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","brain.code"=>"clone","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","landing.merge_check"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","git.github_app.app_id"=>"","git.github_app.installation_id"=>"","git.github_app.private_key_ref"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","hub.allow_remote"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
+    || map! {"verify.lock"=>"off","daemon.self_update"=>"on","brain.code"=>"clone","executor.transport"=>"local","daemon.self_update_retry_minutes"=>"60","daemon.self_update_settle_minutes"=>"60","daemon.recover"=>"on","daemon.recover_limit"=>"3","daemon.recover_days"=>"7","daemon.min_free_mb"=>"10240","daemon.setup_mb"=>"1024","daemon.unfit_reprobe_minutes"=>"60","daemon.sweep"=>"on","daemon.sweep_grace_minutes"=>"30","daemon.sweep_branch_days"=>"7","daemon.chat_worktree_keep_days"=>"3","daemon.sweep_keep_days"=>"30","daemon.transcript_keep_days"=>"14","daemon.artifact_keep_days"=>"30","daemon.sweep_runners"=>"","daemon.runner_keep_days"=>"30","daemon.log_keep_days"=>"14","daemon.log_max_mb"=>"32","daemon.vacuum_free_mb"=>"256","daemon.archive_days"=>"90","daemon.build_cache"=>"on","daemon.build_cache_keep_days"=>"7","landing.push"=>"off","landing.auto_stash"=>"on","landing.ui_report"=>"require","landing.base_red_retry_minutes"=>"10","landing.setup_repair"=>"on","landing.merge_check"=>"on","hygiene.cargo_target"=>"on","hygiene.cargo_target_hours"=>"24","landing.verify_memo"=>"on","landing.verify_memo_hours"=>"24","push.credential"=>"","git.github_app.app_id"=>"","git.github_app.installation_id"=>"","git.github_app.private_key_ref"=>"","heartbeat.dead_after"=>"300","board.stale_days"=>"7","daemon.planner_cache_ttl_seconds"=>"600","daemon.restart_drain_minutes"=>"30","daemon.restart_hold"=>"on","daemon.hold_seconds"=>"120","daemon.pass_seconds"=>"60","daemon.stage_budget_seconds"=>"60","daemon.nice"=>"5","daemon.build_jobs"=>"0","daemon.keep_awake"=>"off","dependencies.security_updates"=>"on","dependencies.min_release_age_days"=>"3","dependencies.alert_check_minutes"=>"60","dependencies.major_updates"=>"ask","pipeline.watch"=>"fix","pipeline.wait_hours"=>"3","review.merge"=>"auto","review.max_files"=>"20","review.max_lines"=>"600","machine.labels"=>"","machine.reserve"=>"off","backup.to"=>"","update.latest_url"=>"","hub.allow_remote"=>"","hub.hosts"=>"","update.channel"=>"auto","backup.every_hours"=>"24","backup.keep"=>"14","backup.subscription"=>"",},
 );
 pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
-        "daemon.self_update"=>("choice",None,["on","off","release"],None,"on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - a hosted brain holds no Hive source (ADR-070 rule 1); off: builds are yours (ADR-035; the launcher turns it off after a crash-loop)"),
-        "brain.code"=>("choice",None,["clone","none"],None,"clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the lead and suggestion-review jobs, which run in an empty workspace and plan from the board, the task text and the diffs hands report, while every job that needs the code (tasks, verify, review, measurement) waits for a hand (ADR-070 rule 6, docs/security.md)"),
+        "daemon.self_update"=>("choice",None,["on","off","release"],None,"on: after a landing in the brain the daemon rebuilds hive from the clean checkout, smoke-tests it, installs it and restarts after its runs in flight; release: the daemon installs each newer published release that update.latest_url names (checked against its SHA256SUMS, signed, smoke-tested) and restarts after its runs in flight, never building from source - for a machine that holds no Hive source, such as one installed from a release; off: builds are yours (ADR-035; the launcher turns it off after a crash-loop). Neither mode writes over a hive that a package manager such as Homebrew installed: that manager upgrades it (docs/release.md)"),
+        "brain.code"=>("choice",None,["clone","none"],None,"clone: the brain clones a project to run its jobs, check scripts and landing experiments under HIVE_HOME/work; none: no project code is ever checked out on the brain - its own slot takes only the project lead's jobs and the reflection (kinds lead and reflect), which run in an empty workspace and plan from the board, the task text and the diffs hands report; every job that works in the code waits for a hand, check and watch scripts are held, and a review job, which needs the code and the store both, has no machine to run on yet (ADR-070 rule 6, docs/security.md)"),
         "daemon.self_update_retry_minutes"=>("count",Some(1),[],None,"minutes the daemon waits before building again after a failed build or smoke test"),
         "daemon.self_update_settle_minutes"=>("count",Some(0),[],None,"minutes the brain's HEAD must stand unchanged before the daemon rebuilds hive onto it, so a burst of landings builds once rather than once per landing (default 60: every rebuild ends in a restart window that refuses the long kinds of run); 0 builds as soon as HEAD differs"),
         "daemon.recover"=>("choice",None,["on","off"],None,"on: the daemon recovers failed jobs by itself - a transient failure runs again after a growing pause, a failure in the work becomes one corrected job carrying the failure, a structural one waits for its own fix - and writes the repeated causes down as memory records that later briefs carry; off: a failed job stays failed until `hive job retry` (ADR-036)"),
@@ -311,17 +311,18 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
         "landing.merge_check"=>("choice",None,["on","off"],None,"on: before a task's pull request opens, the daemon compiles the tree its finished branches make together (cargo check --workspace --all-targets, Cargo projects only); a tree that does not compile goes to a fix job on the task, then to you, instead of onto the forge where every job built on it fails its check. off: branches that merge without a conflict open the pull request as they are"),
         "landing.setup_repair"=>("choice",None,["on","off"],None,"on: when the setup the environment recipe (or the lockfile heuristic) describes fails at a commit of the default branch - in the landing's worktree, or twice the same way in a worker's clone - the daemon plans one repair job for the project (source setup:<slug>, at most three a day) that fixes the fault where it is (the recipe record, the verify command, a lockfile that outran its manifest) and proves the setup passes there; the repair job runs without the recipe's setup and through a setup unfit mark, and a landing whose setup passes clears that mark. off: the landing retries on landing.setup_retry_minutes and the owner fixes it"),
         "pipeline.wait_hours"=>("count",Some(1),[],None,"hours a push's workflow runs may stay queued or running before the daemon stops waiting on them and tells the owner (pipeline.gave-up)"),
-        "review.merge"=>("choice",None,["auto","ask"],None,"auto: the review agent merges a Hive pull request itself when it is small, stays off guarded paths and the check is green; anything else goes to the owner with the review's findings. ask: the agent still reviews every pull request and leaves its findings, but every merge waits for the owner"),
-        "review.max_files"=>("count",Some(1),[],None,"files a pull request may touch and still be merged by the review agent; above it the review goes to the owner with the agent's findings"),
-        "review.max_lines"=>("count",Some(1),[],None,"lines (added plus deleted, not counting generated files such as lockfiles and build output) a pull request may change and still be merged by the review agent; above it the review goes to the owner"),
+        "review.merge"=>("choice",None,["auto","ask"],None,"auto: the review agent merges a Hive pull request itself when it stays off guarded paths, the check is green and the whole diff is what the title and body say; anything else goes to the owner with the review's findings (size alone hands nothing to the owner). ask: the agent still reviews every pull request and leaves its findings, but every merge waits for the owner"),
+        "review.max_files"=>("count",Some(1),[],None,"files a pull request may touch before the review agent reads it file by file; it still merges one whose every file is what the title and body say, and hands the owner what it cannot account for (size alone hands nothing to the owner)"),
+        "review.max_lines"=>("count",Some(1),[],None,"lines (added plus deleted, not counting generated files such as lockfiles and build output) a pull request may change before the review agent reads it file by file, as for review.max_files"),
         "dependencies.major_updates"=>("choice",None,["ask","auto"],None,"ask: a security fix that needs a major upgrade (the first patched version is outside the installed version's compatible range) is put to the owner as a finding with a Yes (queue the upgrade) and a No; auto: the daemon queues it like any other security update, moving the package to the newest version of the patched range that is dependencies.min_release_age_days old, the worker making the code changes the new major needs and the project's checks deciding"),
         "backup.to"=>("text",None,[],None,"where copies of the store (hive.sqlite) go, off this machine: a directory that already exists (/Volumes/Kingston/hive, ~/Library/Mobile Documents/com~apple~CloudDocs/hive - a drive that is not mounted is refused, never a folder made on the boot disk), az://ACCOUNT/CONTAINER[/PREFIX] (Azure Blob Storage through the az CLI you are logged in to; the account key is read for the seconds of the upload and never written, the login is used when it cannot be), or `run: COMMAND {file} {name}` (rclone, aws s3 cp, scp, ... with the gzip file's path and name filled in). Each backup is a consistent copy (VACUUM INTO) checked with quick_check, gzipped, its sha256 noted; `hive backup` takes one now. Empty: no backups"),
         "backup.every_hours"=>("count",Some(0),[],None,"hours between two backups the daemon takes to backup.to on its maintenance pass; a failed one is tried again after an hour; 0 leaves backups to `hive backup`"),
         "backup.keep"=>("count",Some(0),[],None,"copies of this machine's store kept at a directory or Azure destination, the newest first; older ones are removed after each backup; 0 keeps every copy"),
         "backup.subscription"=>("text",None,[],None,"the Azure subscription (name or id) that holds the az:// account in backup.to, when it is not the az CLI's default one: every az call a backup makes (keys list, upload, list, delete) carries it as --subscription, so the key is found and the login's token is cut for that tenant. Empty: the CLI's default subscription"),
         "update.channel"=>("choice",None,["auto","source","release"],None,"how this machine gets a newer Hive. source: the daemon rebuilds hive from the brain project's checkout after a landing (daemon.self_update); release: hive update downloads the published release named by update.latest_url, checks it against the release's SHA256SUMS and installs it, every command says once per release that one is out, and the daemon never rebuilds from source. auto (the default): source when a brain project is registered and cargo is on PATH, release otherwise"),
-        "hub.allow_remote"=>("text",None,[],None,"the hosted front's origin (https://team.example.com) the console may be reached through from anywhere (ADR-070 rule 5): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only"),
-        "update.latest_url"=>("text",None,[],None,"where the daemon looks, at most once a day, for the latest Hive release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, hive version and the console say so with the release link. The check downloads and installs nothing; hive update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network"),
+        "hub.allow_remote"=>("text",None,[],None,"the origin of a front you run yourself (https://team.example.com) the console may be reached through from anywhere; Hive ships no front (ADR-071): hive hub --front-port N then opens a second 127.0.0.1 listener for the front's relay, every read through it needs this setting and every write through it is refused unless it carries a passkey signature of a registered member (/api/v1/members, GET /api/v1/nonce) that the brain verifies itself, so the front cannot forge one. It counts only when the owner set it, never an agent. Empty (the default): nothing is served to the front and the console stays 127.0.0.1-only"),
+        "hub.hosts"=>("text",None,[],None,"extra host names the console answers to, comma-separated (for example hive.example.com, when a proxy of yours forwards that name to 127.0.0.1); empty: localhost and IP addresses only. The console refuses every other Host header, so a web page that points a name of its own at 127.0.0.1 (DNS rebinding) cannot reach it; the routes a hand calls are exempt. Counts only when the owner set it"),
+        "update.latest_url"=>("text",None,[],None,"where the daemon looks, at most once a day, for the latest Hive release: an http(s) URL answering JSON - a GitHub releases/latest URL (https://api.github.com/repos/OWNER/REPO/releases/latest), a GitHub releases list, or {\"version\": \"v1.2.3\", \"url\": \"https://...\"}. When it names a version newer than the running one, hive version and the console say so with the release link. The check downloads and installs nothing; hive update installs the release (update.channel, docs/release.md). Empty (the default): no check and no network by itself; only hive update, when you run it yourself, then looks at Hive's own releases (https://api.github.com/repos/lamplitlabs/hive/releases/latest) for that one run, and says so first"),
         "daemon.nice"=>("count",Some(0),[],None,"nice level the daemon's own process runs at from startup (setpriority), under the owner's foreground work at 0 and over its job children at 10, so planning, sweeps and landing passes yield to what the owner is doing while the loop still comes before the fleet's builds; 0 leaves the level the service started it at"),
         "daemon.build_jobs"=>("count",Some(0),[],None,"parallel compile jobs a build the daemon causes may use: exported as CARGO_BUILD_JOBS to its job children, their pre-commit verification and the landing verification when the environment does not set it, and passed as -j to the self-update build; 0 is half the physical cores, so no single build takes the whole machine"),
         "daemon.keep_awake"=>("choice",None,["off","on","always"],None,"on: while the daemon runs and the machine is plugged in it holds this machine awake the way Copilot CLI's keep-alive does (macOS: caffeinate -d -i -s, so the display stays on and the screen saver stays off too; Linux: systemd-inhibit), so overnight runs are not lost to sleep, and the console shifts to its awake theme; on battery a Mac holds nothing until the charger is back. always: holds on battery too, display included. off: the machine sleeps as its power settings say. A paused or stopped daemon holds nothing, and closing a laptop's lid still sleeps a Mac without an external display. Each tick the daemon also notices when the machine slept anyway (the wall clock jumped while the loop waited) and says for how long"),
@@ -372,6 +373,11 @@ pub const OWNER_PATHS: &[&str] = &[
     ".hive/agents/",
     ".hive/roles/",
     ".hive/kinds/",
+    // The same folders under the project folder's name from before the
+    // rename (`legacy::LEGACY_PROJECT_DIR`): read alike, so closed alike.
+    ".pulse/agents/",
+    ".pulse/roles/",
+    ".pulse/kinds/",
 ];
 pub static OWNER_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -674,7 +680,7 @@ fn allow_remote_origin(text: &str) -> Result<String> {
     }
     let refuse = || {
         input_err(format!(
-            "hub.allow_remote takes the hosted front's https origin, such as https://team.example.com, or empty to keep the console 127.0.0.1-only; not {}",
+            "hub.allow_remote takes the https origin of a front you run, such as https://team.example.com, or empty to keep the console 127.0.0.1-only; not {}",
             py_repr(text)
         ))
     };
@@ -703,6 +709,36 @@ fn allow_remote_origin(text: &str) -> Result<String> {
         return Err(refuse());
     }
     Ok(format!("https://{rest}"))
+}
+
+/// `hub.hosts`: empty or `off` lists no name; otherwise host names separated
+/// by commas - letters, digits, dots and dashes, with no scheme, port or
+/// path - stored lower-cased, each once, as `a, b`.
+fn hub_host_names(text: &str) -> Result<String> {
+    if text.is_empty() || text.eq_ignore_ascii_case("off") {
+        return Ok(String::new());
+    }
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    let mut names: Vec<String> = Vec::new();
+    for name in text.split(',') {
+        let name = name.trim().to_ascii_lowercase();
+        if name.len() > 253 || !name.split('.').all(label_ok) {
+            return Err(input_err(format!(
+                "hub.hosts takes host names separated by commas, such as hive.example.com, console.example.org (letters, digits, dots and dashes; no scheme, no port, no path), or empty for localhost and IP addresses only; not {}",
+                py_repr(text)
+            )));
+        }
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names.join(", "))
 }
 
 pub fn validate_setting(name: &str, value: &str) -> Result<String> {
@@ -801,6 +837,9 @@ pub fn validate_setting(name: &str, value: &str) -> Result<String> {
     }
     if name == "hub.allow_remote" {
         return allow_remote_origin(text);
+    }
+    if name == "hub.hosts" {
+        return hub_host_names(text);
     }
     if name == "update.latest_url" {
         let url = text.to_string();
@@ -1185,6 +1224,27 @@ impl Store {
             .ok()?;
         (!value.is_empty() && human_actor(&by)).then_some(value)
     }
+    /// The host names the owner listed in `hub.hosts`, lower-cased; none
+    /// while it is empty or an agent was the last to set it, so no agent
+    /// can add a name the console answers to.
+    pub fn hub_hosts(&self) -> Vec<String> {
+        let Ok(conn) = self.conn() else {
+            return Vec::new();
+        };
+        let row: rusqlite::Result<(String, String)> = conn.query_row(
+            "SELECT value, updated_by FROM settings WHERE name = 'hub.hosts'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        );
+        match row {
+            Ok((value, by)) if human_actor(&by) => value
+                .split(',')
+                .map(|name| name.trim().to_ascii_lowercase())
+                .filter(|name| !name.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
     pub fn settings(&self) -> Result<BTreeMap<String, String>> {
         let rows = self.setting_rows()?;
         Ok(rows.into_iter().map(|r| (r.name, r.value)).collect())
@@ -1300,6 +1360,83 @@ mod tests {
         );
         s.set_setting("human", "hub.allow_remote", "").unwrap();
         assert_eq!(s.hub_allow_remote(), None);
+    }
+
+    #[test]
+    fn hub_hosts_takes_host_names_and_counts_only_from_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        assert_eq!(default_setting("hub.hosts"), "");
+        assert!(daemon_setting_names().contains(&"hub.hosts".to_string()));
+        assert_eq!(DAEMON_RULES["hub.hosts"].kind, "text");
+        for (given, want) in [
+            ("", ""),
+            ("off", ""),
+            (
+                "hive.example.com, console.example.org",
+                "hive.example.com, console.example.org",
+            ),
+            (
+                " console.example.org ,hive.example.com,console.example.org ",
+                "console.example.org, hive.example.com",
+            ),
+            // Upper case is not refused: the name is stored lower-cased.
+            ("EVIL.example", "evil.example"),
+            ("hive", "hive"),
+        ] {
+            assert_eq!(
+                validate_setting("hub.hosts", given).unwrap(),
+                want,
+                "{given}"
+            );
+        }
+        for bad in [
+            "https://x",
+            "x:8765",
+            "x/y",
+            "*.example.com",
+            "hive..example.com",
+            "-hive.example.com",
+            "hive.example.com,",
+            "hive example.com",
+            "hive_box",
+            "[::1]",
+        ] {
+            let err = validate_setting("hub.hosts", bad).unwrap_err().to_string();
+            assert!(
+                err.contains("host names separated by commas, such as hive.example.com"),
+                "{bad}: {err}"
+            );
+        }
+        unsafe { std::env::set_var("HIVE_JOB", "") };
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Options {
+            home: dir.path().display().to_string(),
+            create: true,
+            ..Options::default()
+        })
+        .unwrap();
+        assert!(s.hub_hosts().is_empty());
+        s.set_setting("cinder", "hub.hosts", "hive.example.com")
+            .unwrap();
+        assert!(s.hub_hosts().is_empty(), "an agent cannot add a name");
+        s.set_setting(
+            "human",
+            "hub.hosts",
+            "Hive.Example.com, console.example.org",
+        )
+        .unwrap();
+        assert_eq!(s.hub_hosts(), ["hive.example.com", "console.example.org"]);
+        s.set_setting("cinder", "hub.hosts", "hive.example.com, evil.example")
+            .unwrap();
+        assert!(
+            s.hub_hosts().is_empty(),
+            "an agent's value does not count, whatever the owner listed before"
+        );
+        s.set_setting("human:dashboard", "hub.hosts", "hive.example.com")
+            .unwrap();
+        assert_eq!(s.hub_hosts(), ["hive.example.com"]);
+        s.set_setting("human", "hub.hosts", "").unwrap();
+        assert!(s.hub_hosts().is_empty());
     }
 
     #[test]

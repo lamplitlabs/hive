@@ -9,9 +9,9 @@
     "check:      `npm run check` = typecheck (tsc --noEmit) + lint (eslint) + build + test. All API calls are relative /api/v1/...; the TypeScript contract lives in src/lib/api.ts.",
     "routes:     / (hub), /project/?slug=&tab=, /tasks/, /votes/?project=&status=&kind=, /records/?id=, /compute/, /settings/, /harness/, /connections/?project=&tab= - state in search params, no dynamic segments.",
     "design:     \"the daily briefing\" - plain words (src/lib/words.ts is the vocabulary: runner, machines, private tests, statusWord()), marigold only for what waits on the owner, flat cards, details folded. Tokens live in src/app/globals.css (oklch palette from .github/assets/hive-logo.svg; ink primary buttons, teal for links/focus/active nav, marigold `you`, one --kind-*/--status-* tint per kind and status, series colours for charts). Geist Sans and Geist Mono (variable woff2, OFL-geist.txt) are vendored in public/fonts and preloaded; Atkinson Hyperlegible Next and Mono stay vendored beside them (latin + latin-ext, OFL-atkinson-*.txt) as the Readable font option (`<html data-font=\"readable\">`, Settings > Appearance, src/components/shell/appearance-state.ts) so the export needs no network at build or run time. Adding something (a model provider, a machine, a tool) is a step-by-step modal wizard on the shared Stepper (src/components/hive/stepper.tsx) ending in a review step; Settings shows one section at a time, named by the URL hash; the sidebar foot carries the runner and model-provider status, each linking to its fix.",
-    "overrides:  hono is a transitive dev dependency (shadcn -> @modelcontextprotocol/sdk). The override pins it to the newest patched release that was at least 3 days old when adopted (the owner's release-age rule, 2026-10-26); bump or drop the pin when a newer release is old enough. minimatch 11.0.3 is forced over every consumer (Dependabot #34, GHSA-g3hv-75wg-m249; owner-allowed major, 2026-11-01). v11 dropped the default export and makeRe, so eslint-plugin-react/import/jsx-a11y rules that call minimatch() (react/no-danger, react/forbid-component-props, react/jsx-pascal-case, react/jsx-handler-names, react/no-unstable-nested-components, import/order, import/no-internal-modules, import/no-extraneous-dependencies, jsx-a11y/label-has-associated-control) throw if enabled - none is in the eslint-config-next set used here; drop the pin once those plugins depend on minimatch >= 11.0.1."
+    "overrides:  hono and @hono/node-server are transitive dev dependencies (shadcn -> @modelcontextprotocol/sdk). The overrides pin them to the newest patched release that was at least 3 days old when adopted (the owner's release-age rule, 2026-10-26); bump or drop the pin when a newer release is old enough. minimatch 11.0.3 is forced over every consumer (Dependabot #34, GHSA-g3hv-75wg-m249; owner-allowed major, 2026-11-01). v11 dropped the default export and makeRe, so eslint-plugin-react/import/jsx-a11y rules that call minimatch() (react/no-danger, react/forbid-component-props, react/jsx-pascal-case, react/jsx-handler-names, react/no-unstable-nested-components, import/order, import/no-internal-modules, import/no-extraneous-dependencies, jsx-a11y/label-has-associated-control) throw if enabled - none is in the eslint-config-next set used here; drop the pin once those plugins depend on minimatch >= 11.0.1."
   ],
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -31,7 +31,7 @@
     "cmdk": "^1.1.1",
     "cn": "^0.2.6",
     "lucide-react": "^1.41.0",
-    "next": "^16.4.6",
+    "next": "16.4.6",
     "next-themes": "^0.4.6",
     "radix-ui": "^1.6.7",
     "react": "19.3.1",
@@ -55,7 +55,8 @@
   },
   "overrides": {
     "body-parser": "2.4.0",
-    "hono": "4.13.13",
+    "@hono/node-server": "2.1.8",
+    "hono": "4.13.19",
     "zod": "4.6.6",
     "minimatch": "11.0.3"
   }

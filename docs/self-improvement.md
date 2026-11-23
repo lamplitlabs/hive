@@ -176,8 +176,9 @@ pipeline decide it there like any other branch, the lane's state reads `pr`
 and the result post on the suggestion thread names the pull request until
 the merge finalizes the experiment (a project without an upstream lands it
 locally as before). The experiment branch keeps its `evolve/<id>` name on
-the forge, which the reviewer's rule reads as a branch not of Hive's own
-making and hands to you ([The complexity rule](review.md#the-complexity-rule)).
+the forge, and the reviewer's rule reads it as one of Hive's own branches,
+so the reviewer may merge it like any other
+([The complexity rule](review.md#the-complexity-rule)).
 When the gates allow, the
 daemon runs the cycle by itself; the command is the by-hand alternative.
 
@@ -251,8 +252,15 @@ checkout commits `docs/evolution/constitution.md` / `evaluators.md` gets those
 files indexed as `EVO-constitution-<slug>` / `EVO-evaluators-<slug>`; any other
 project gets a copy of the template's text marked `seeded_from` in its
 frontmatter, with `loop: off`, no baseline and `Product scope: allowed` (amend
-the line to `operating-layer` to keep product cards out), so nothing runs until
-you edit it (`hive record amend EVO-constitution-<slug> --body-file FILE`).
+the line to `operating-layer` to keep product cards out). You edit the text
+with `hive record amend EVO-constitution-<slug> --body-file FILE`.
+
+The program does not read that `loop: off` line. The switch for measured
+experiments is the setting `evolve.loop`, `0` by default: while it is `0` the
+daemon plans no baseline job and the loop runs no experiment. That does not
+mean nothing runs. With the loop off agents still post suggestions and vote,
+and the runner still builds a voted suggestion that passes the gates as an
+ordinary job, which must turn its own check from failing to passing.
 
 An existing record is never touched. You do not have to write the text yourself
 (ADR-046): while a project's constitution or evaluators is still the seeded
@@ -292,7 +300,7 @@ reaches its scale, or whose script changed, is re-armed with a fresh date
 evolve seed [--project P]` seeds both for a project registered earlier (`hive
 evolve fixture seed` for the fixtures alone, which also derives); `hive evolve
 fixture list|disable` manages fixtures. The baseline is the daemon's: once the
-records and at least one enabled fixture exist and `loop: on`, it plans a
+records and at least one enabled fixture exist and `evolve.loop` is `1`, it plans a
 `baseline` job that measures the default branch, archives the score and
 refreshes the experiment-lane baseline cache for that default-branch commit and
 fixture hash (a failure posts a finding and is retried after
@@ -302,8 +310,8 @@ the SHA-256 of the enabled fixture definitions, the held-out fixture marker and
 harness-affecting settings; `evolve.baseline_ttl_hours` defaults to `24`, and
 `0` means cached baselines never expire. The job's run log lists every public
 fixture's score and, for a 0, the scorer's one-line reason. The two private
-held-out fixtures - the proof that the loop is not grading itself - are the
-daemon's too by default (`evolve.heldout auto`): it creates
+held-out fixtures - tests kept outside every repository, which no agent is
+handed - are the daemon's too by default (`evolve.heldout auto`): it creates
 `~/.hive/private/heldout`, writes one fixture per tick through a sealed model
 call and marks each as generated (`evolve status` says `2 ready (2 generated)`
 once the loop may open, the archive carries `heldout_generated`), and keeps
@@ -429,7 +437,46 @@ and falls back to `PULSE_MEASURE_CHANGED`. The measurement exports each
 `HIVE_MEASURE_*` variable under its `PULSE_MEASURE_*` name too, and runs a
 scorer stored as `pulse evolve ...` through its own executable, like one
 stored as `hive evolve ...`, so fixtures added before the rename keep their
-scope.
+scope. The rename still breaks a scorer that opens a path by its old name:
+`behaviour-settings-documented` read `crates/pulse-store/src/settings.rs`,
+printed no number on every tree after `crates/hive-store` replaced it, and
+scored `0` on base and variant alike. It was disabled in sitting 26. Check a
+fixture's paths against the tree with `sh -c "$SCORER"` from a checkout. A
+scorer that always prints the same number makes no sound.
+
+A count gains reach when it reads the project's own check output rather than
+the source text. `behaviour-hub-pinned-tests-pass` (sitting 26, weight 2) runs
+the hub's `node --test` on the test files that pin the changed hub modules
+(`src/**/X.ts`, `X.tsx` or `X.mjs` maps to `X.test.mjs`, `mock/X.mjs` to
+`mock/X.test.mjs`, and a changed `X.test.mjs` counts as itself). It prints the
+`# pass N` count plus one, higher is better. With no scope it runs the whole
+hub suite (679 at `91a70dff`). The offset holds every per-card base at `0.5`,
+even when the card touches no hub module, so no two cards on one commit score
+its base two ways. A card that adds the first test file for a hub module
+counts 1 on the base and N+1 on the variant, so the fixture scores `1.0`. A
+card that adds tests to an existing file scores above `0.5`, and one that
+breaks a pinned test scores below it. Only passing tests count, so the check
+must stay green for the card to gain. Like `behaviour-hub-console-tests` it
+runs node's own runner from `web/hub` without `node_modules`. A test that
+needs a package fails there and does not count on either tree. Its first form,
+without the offset (`behaviour-hub-changed-tests-pass`), was disabled before
+it ran a cycle.
+
+A pass count of the project's own tests works the same way, and it is the
+fixture a card that adds tests moves. `behaviour-hub-pinned-tests-pass`
+(sitting 26) runs the hub's `node --test` over the tests that pin the changed
+hub modules. `behaviour-crate-tests-pass` (sitting 31) is its Rust twin. 14 of
+the 20 cycles before it changed `crates/` and all of them tied. For each changed
+`crates/CRATE/src/MOD.rs` it runs `cargo test --offline --locked -q -p CRATE
+--lib -- MOD::` (`--bins` for a crate without a `lib.rs`; `lib.rs`, `main.rs`
+and `mod.rs` name their module; a crate root alone is skipped because it would
+run the whole crate). It then prints `1 +` the summed `N passed`. Without a
+scope it prints `1 +` the number of `#[test]` attributes under `crates/*/src`
+(2986 at a2a7125f, scale 5972), so it builds nothing. A card that adds a
+passing test to the module it changes scores above `0.5`, and one that breaks
+that module's tests scores below it. A scoped run with a cold target dir took
+about a minute for two crates. The measurement points `CARGO_TARGET_DIR` at the
+recipe's built target, so a warm run takes seconds.
 Such a fixture answers `scope: diff` after its score line, the log marks it
 `[diff-scoped]` and the archive row records it (`diff_scoped` in the measurement and in the `evolution.archived` event). A
 diff-scoped score is per card, so the cached project baseline never serves it:
@@ -448,6 +495,23 @@ events) and add it up over the listed files only, as
 that tests the module it touches drops that count from, say, 7 to 0 and scores
 1.0 against the base's 0.5, which at weight 2 of a total near 35 moves the
 composite by about 0.029 on its own.
+The Rust side has the same count: `behaviour-crate-untested-lines` (RSI
+sitting 33, lower is better) builds `cargo test -p CRATE --lib|--bins` with
+`-C instrument-coverage` for every crate a card changes, runs the tests of
+each changed module (`MOD::`, a changed `MOD_tests.rs` counting for `MOD.rs`),
+and prints one plus the lines of those modules that `llvm-cov export` reports
+uncovered. It needs an `llvm-cov` and `llvm-profdata` of rustc's LLVM major
+(the toolchain's `llvm-tools`, Homebrew `llvm@N` or `/usr/lib/llvm-N`); without
+them it prints 1 on both trees, a tie. Before it builds it runs `cargo clean
+-p` for each changed crate under `$CARGO_TARGET_DIR/rust-coverage`: the base
+and the variant share that directory and a crate's hash, and Cargo serves the
+newer tree's test binary to the older tree, whose sources have older mtimes,
+so both trees would read one tree's numbers. Counting passed tests runs into
+the same thing: adding one `load_thresholds` test to
+`crates/hive-tally/src/thresholds.rs` left a test-count fixture at 4 passed on
+both trees. The uncovered-lines count went from 58 to 19 and scored `0.7532`.
+Without a diff scope it counts the `crates/*/src` modules that have no
+`#[test]` and no `MOD_tests.rs` (83 at `c386053b`).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
@@ -844,7 +908,7 @@ record, read with `hive record show WF-evolve`.
 | `pipeline.wait_hours` | `3` hours | How long the daemon waits for a run that is still going before it records `gave-up` and leaves the push to you. At least `1`. |
 | `machine.labels` | empty | What this machine offers beyond its OS and chip, as words a project or job can need (`gpu`, `android`, a tool's name), comma-separated; `xcode` and `docker` it finds on its own ([Machines](machines.md#machines-what-runs-where)). Paired hands carry theirs in `hive executor label`. |
 | `executor.transport` | `local` | `local`: this machine runs its own jobs in a clone under the hive home. `local-hand`: it leases them to the `hive-hand` installed beside `hive` over a pipe (ADR-070 step 1b). The hand clones in `HIVE_HOME/hands`, runs the worker there and, once the commits pass the identity check, pushes the job's branch with the key `push.credential` names, handed to it for that one push. Lead, review and suggestion-review jobs stay local, and a failed hand push is left to the delivery pass ([Machines](machines.md)). |
-| `brain.code` | `clone` | Whether this machine keeps a copy of the projects' code (ADR-070 rule 6). `clone`: every run here clones the project, as always. `none`: no checkout of any project on this machine - it leases only the `lead` and `reflect` jobs, which plan from the board in an empty workspace; every other job, check script and the source self-update wait for a hand, and `hive run` of such a job is refused. The hosted brain sets it ([Security notes](security.md)). |
+| `brain.code` | `clone` | Whether this machine keeps a copy of the projects' code (ADR-070 rule 6). `clone`: every run here clones the project, as always. `none`: no checkout of any project on this machine - it leases only the `lead` and `reflect` jobs, which plan from the board in an empty workspace. The jobs that work in the code wait for a hand; a `review` job needs the code and the store both, so no machine takes it yet; check and watch scripts are held, and the source self-update stands down. A run asked for by hand (`hive work --job ID`) does not start a job that needs the code here either. The image in `deploy/` sets it on every start ([Security notes](security.md#a-brain-without-the-code-braincode-none)). |
 | `daemon.self_update` | `on` | `on`: the daemon rebuilds hive from the brain project's checkout after a landing touches the binary's sources ([Self-update](runner.md#services-and-self-update)); `release`: it installs the newer published release `update.latest_url` names instead, checked hourly, with no source and no cargo on the machine ([Releases](release.md#daemonself_update-release-a-machine-without-source)); `off` leaves hive alone. |
 | `machine.reserve` | `off` | `on`: this machine takes only the jobs that need something it offers and leaves the rest of the queue to the other machines - the only Mac kept for the iOS app. Paired hands: `hive executor reserve NAME`. |
 | `dependencies.security_updates` | `on` | `on`: the daemon reads every active GitHub project's open Dependabot alerts and queues one security update job per affected manifest ([Dependencies](landing.md#dependencies-security-alerts-and-the-release-age-rule)); `off` leaves the alerts to you. |
@@ -898,7 +962,8 @@ record, read with `hive record show WF-evolve`.
 | `toolkit.suggest_days` | `30` days (`0` turns it off) | Days before the daemon asks the owner again about a tool or skill a project's shape asks for (`hive toolkit`), one question per project at a time on the board thread `toolkit/tool-<name>` or `toolkit/skill-<recipe>`; a yes adds it. While `owner.presence` is `away` nothing is asked: a drafted skill or a tool without a secret is added and said so on the thread; a tool that needs a secret waits for the owner. |
 | `goal.review_days` | `7` days (minimum `1`) | Days between the lead's readings of the project goal. `hive goal review` and the hub's goal panel score the last work against the goal from the store and blend in the lead's latest reading (a `finding` on `goal/review` with a `Score: NN` line) while it is this recent; older, and the lead's brief asks for a new one. |
 | `evolve.limits` | `none` | Optional loop budget such as `cycles=20,hours=48`; `none` does not remove runner caps. |
-| `hub.allow_remote` | empty (this machine only) | The team front's `https://` origin (ADR-070 rule 5). While set, the hub's front relay listener (`hive hub --front-port N`, 127.0.0.1 only) serves reads and accepts a write only when a registered member's passkey signed it over a nonce from `GET /api/v1/nonce`; empty closes the relay (403). Counts only when the owner set it - an agent's value is ignored. See [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere) and [security](security.md). |
+| `hub.allow_remote` | empty (this machine only) | The `https://` origin of a front you run yourself; Hive ships none (ADR-071). While set, the hub's front relay listener (`hive hub --front-port N`, 127.0.0.1 only) serves reads and accepts a write only when a registered member's passkey signed it over a nonce from `GET /api/v1/nonce`; empty closes the relay (403). Counts only when the owner set it - an agent's value is ignored. See [Reaching the console from anywhere](console.md#reaching-the-console-from-anywhere) and [security](security.md). |
+| `hub.hosts` | empty (localhost and IP addresses only) | Extra host names the console answers to, separated by commas, for a proxy of yours that forwards a name to 127.0.0.1. Every other `Host` gets 403, which stops a web page that points a name of its own at 127.0.0.1 (DNS rebinding). The routes a hand calls are exempt. Counts only when the owner set it. See [security](security.md#loopback-only). |
 
 The team secret vault (ADR-070 step 4) adds no setting. What a job may be
 granted is the project's recipe `secrets:` list, and values are set with
@@ -911,8 +976,12 @@ their defaults in [Evolve settings](evolve.md).
 
 These are defaults, not the owner's effective values. Read those with
 `hive settings get NAME` or `hive settings list --json` (also includes
-defaults, validation rules and descriptions). Only the owner changes caps;
-neither an unlimited loop nor these docs adds a measurement-wide credit budget.
+defaults, validation rules and descriptions). The rule is that only the
+owner changes caps. It is a rule and not a lock: the program does not refuse
+`hive settings set` for a cap or an `evolve.*` setting from an agent's
+shell, and the event log records who ran it
+([security.md](security.md#agents)). Neither an unlimited loop nor these
+docs adds a measurement-wide credit budget.
 
 Applicability notes for the historical legacy fixtures (F03, F08) live in the
 `EVO-archive` record (`hive record show EVO-archive`).

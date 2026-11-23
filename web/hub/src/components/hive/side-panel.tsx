@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 //
 // The page lays out:
 //   <div className="flex items-start gap-0">
-//     <main className="min-w-0 flex-1">...list...</main>
+//     <div className="min-w-0 flex-1">...list...</div>
 //     <SidePanel open={!!id} onClose={() => setId(null)} title=...>...</SidePanel>
 //   </div>
 

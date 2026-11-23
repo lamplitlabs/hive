@@ -9,7 +9,7 @@
 // room widens the column, and the × on a tab puts it away. The rules (which
 // step opens what, what comes to the front) live in lib/canvas.ts.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AppWindowIcon,
   CircleCheckIcon,
@@ -312,6 +312,27 @@ export function Canvas({
   const local = useMemo(() => localPages(steps), [steps]);
   const active = ctl.tabs.find((t) => t.id === ctl.active);
   const strip = useRef<HTMLDivElement | null>(null);
+  const closeHint = useId();
+  // Delete on a tab closes it (the way a tab list is closed from the
+  // keyboard). Once the closed tab is gone from the page, the tab now in
+  // front takes the focus it held; with no tab left, the "+" beside the
+  // strip. The page may draw the whole canvas again when a tab closes, so
+  // this looks in the document, not in this strip, and gives up after a
+  // moment rather than wait for ever.
+  const closeFromKeyboard = (id: string) => {
+    ctl.close(id);
+    let frames = 0;
+    const settle = () => {
+      const canvas = document.querySelector<HTMLElement>("[data-canvas]");
+      const gone = !Array.from(document.querySelectorAll<HTMLElement>("[data-canvas] [data-tab]")).some((el) => el.dataset.tab === id);
+      if (canvas && gone) {
+        (canvas.querySelector<HTMLElement>('[data-active="true"] [role="tab"]') ?? canvas.querySelector<HTMLElement>("[data-canvas-open]"))?.focus();
+        return;
+      }
+      if (++frames < 30) requestAnimationFrame(settle);
+    };
+    requestAnimationFrame(settle);
+  };
   // When the tabs would not all fit with their names, the ones behind keep
   // only their icons; the one in front always has its name.
   const stripWidth = useWidth(strip);
@@ -348,10 +369,13 @@ export function Canvas({
             // sub-sessions, steps - the same numbers the "+" menu shows.
             const n = t.key ? undefined : counts[t.kind];
             return (
+              // The tab is the button that brings it in front. The cross beside
+              // it is the mouse's way to close; a tab may hold no control of
+              // its own, so the keyboard closes with Delete (the hint under
+              // the strip says so to a screen reader).
               <div
                 key={t.id}
-                role="tab"
-                aria-selected={on}
+                data-tab={t.id}
                 data-active={on}
                 className={cn(
                   "group/tab relative flex h-9 max-w-[12rem] shrink-0 items-center text-[13px] transition-colors",
@@ -364,7 +388,15 @@ export function Canvas({
               >
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={on}
+                  aria-describedby={closeHint}
                   onClick={() => ctl.select(t.id)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Delete" || e.metaKey || e.ctrlKey || e.altKey) return;
+                    e.preventDefault();
+                    closeFromKeyboard(t.id);
+                  }}
                   className={cn(
                     "flex min-w-0 items-center gap-1.5 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md",
                     iconOnly && "px-1.5",
@@ -389,6 +421,7 @@ export function Canvas({
                     <span
                       className="live-dot size-1.5 shrink-0 rounded-full bg-primary"
                       data-live="true"
+                      role="img"
                       aria-label="a command is running"
                     />
                   ) : null}
@@ -396,14 +429,15 @@ export function Canvas({
                 {iconOnly ? null : (
                   <button
                     type="button"
+                    tabIndex={-1}
+                    aria-hidden="true"
                     onClick={() => ctl.close(t.id)}
                     className={cn(
                       "ml-0.5 mr-1 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground",
                       !on &&
                         "opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100",
                     )}
-                    aria-label={"Close " + t.label}
-                    title="Close"
+                    title={"Close " + t.label}
                   >
                     <XIcon className="size-3.5" />
                   </button>
@@ -412,6 +446,9 @@ export function Canvas({
             );
           })}
         </div>
+        <span id={closeHint} className="sr-only">
+          Press Delete to close this tab.
+        </span>
         <OpenMenu
           ctl={ctl}
           menu={menu}
@@ -563,6 +600,7 @@ function OpenMenu({
           className="shrink-0"
           aria-label="Open something on the canvas"
           title="Open…"
+          data-canvas-open
         >
           <PlusIcon />
         </Button>

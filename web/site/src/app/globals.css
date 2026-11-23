@@ -1,23 +1,53 @@
-@layer theme, base, clerk, components, utilities;
 @import "tailwindcss";
 
-@custom-variant dark (&:is(.dark *));
-
 /*
-  hivefleet.dev - the front door to Hive.
+  hivefleet.dev - the public site of Hive, the open-source tool.
 
   The same voice and the same ink as the console (web/hub/src/app/globals.css):
-  plain words, one accent (teal) for what you can do, the brand gradient only
-  on the mark, Geist for everything. Light by default, dark when the browser
-  asks for it (prefers-color-scheme); no toggle, the page is a sheet of paper.
+  plain words, one accent (teal) for what you can do, the brand sweep only on
+  the mark and one word of a headline, Geist for everything. The page is a
+  sheet of paper: light by default, dark when the browser asks for it
+  (prefers-color-scheme); no toggle.
+
+  One thing is the site's own: the night field, the brand's dark ground with a
+  faint honeycomb and a glow (scripts/brand.py draws the same field on the
+  social card). The header, the top band of a page and the footer sit on it in
+  both schemes; everything between them is paper and ink. Inside `.night` the
+  tokens take their night values, so a link, a border or the focus ring there
+  needs no colour of its own.
 */
 
+/*
+  Each family is two faces. The first holds what a page here shows: Latin,
+  punctuation, arrows, mathematical signs and box drawing. The second is the
+  whole font, and a browser fetches it only for a page that shows another of
+  its characters: extended Latin, Greek, Cyrillic, Vietnamese, the rarer
+  signs. scripts/subset-fonts.py writes the first file and both ranges, and
+  its --check says when they no longer agree.
+*/
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/geist-sans-latin.woff2") format("woff2-variations"), url("/fonts/geist-sans-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+2000-206F, U+20AC, U+2122, U+2190-22FF, U+2500-257F;
+}
 @font-face {
   font-family: "Geist";
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
   src: url("/fonts/geist-sans-variable.woff2") format("woff2-variations"), url("/fonts/geist-sans-variable.woff2") format("woff2");
+  unicode-range: U+0100-017E, U+018F-0192, U+01A0-01A1, U+01AF-01B0, U+01CD-01CE, U+01E4-01E9, U+0218-021B, U+0237, U+0259, U+02B9-02BC, U+02C6-02C8, U+02D8-02DD, U+0300-0328, U+0335-0338, U+039B, U+03A9, U+03BB-03C0, U+0400-0475, U+0490-04A3, U+04AE-04C0, U+04CF-04EF, U+0E3F, U+1E20-1E21, U+1E80-1E85, U+1E9E-1EF9, U+2070, U+2074-2079, U+2080-2089, U+20AA, U+20B1, U+20B4, U+20B9, U+20BD, U+2116-2117, U+2126, U+2153-2155, U+215B-215E, U+2460-2468, U+24EA, U+24FF, U+25B2-25B3, U+25B6-25B7, U+25BC-25BD, U+25C0-25C1, U+25CA-25CC, U+25CF, U+2639-263A, U+2776-277E, U+3003, U+301C, U+A78B-A78C, U+F8FF, U+FB01-FB02;
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/geist-mono-latin.woff2") format("woff2-variations"), url("/fonts/geist-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+2000-206F, U+20AC, U+2122, U+2190-22FF, U+2500-257F;
 }
 @font-face {
   font-family: "Geist Mono";
@@ -25,6 +55,7 @@
   font-weight: 100 900;
   font-display: swap;
   src: url("/fonts/geist-mono-variable.woff2") format("woff2-variations"), url("/fonts/geist-mono-variable.woff2") format("woff2");
+  unicode-range: U+0100-017E, U+018F-0192, U+01A0-01A1, U+01AF-01B0, U+01CD-01CE, U+01E4-01E9, U+0218-021B, U+0237, U+0259, U+02B9-02BC, U+02C6-02C8, U+02D8-02DD, U+0300-0328, U+0335-0338, U+039B, U+03A9, U+03BB-03C0, U+0400-0475, U+0490-04A3, U+04AE-04C0, U+04CF-04EF, U+0E3F, U+1E20-1E21, U+1E80-1E85, U+1E9E-1EF9, U+2070, U+2074-2079, U+2080-2089, U+20AA, U+20B1, U+20B4, U+20B9, U+20BD, U+2107, U+2116-2117, U+2153-2155, U+215B-215E, U+2326-2327, U+232B, U+23CE, U+240B-240C, U+2423, U+2460-2468, U+24EA, U+24FF, U+2580-259F, U+25B2-25B3, U+25B6-25B7, U+25BC-25BD, U+25C0-25C1, U+25CA-25CC, U+25CF, U+2776-277E, U+3003, U+301C, U+A78B-A78C, U+F8FF;
 }
 
 @theme inline {
@@ -50,6 +81,7 @@
   --color-brand-mint: var(--brand-mint);
   --color-brand-sky: var(--brand-sky);
   --color-brand-violet: var(--brand-violet);
+  --color-code: var(--code-bg);
   --radius-card: 1rem;
   --shadow-card: 0 1px 2px oklch(0 0 0 / 0.04), 0 8px 24px -12px oklch(0.26 0.04 262 / 0.18);
   --shadow-pop: 0 2px 6px oklch(0 0 0 / 0.06), 0 24px 48px -24px oklch(0.26 0.04 262 / 0.35);
@@ -67,6 +99,10 @@
   --gradient-brand: linear-gradient(135deg, var(--brand-mint) 0%, var(--brand-sky) 52%, var(--brand-violet) 100%);
   /* the same sweep as ink: deep enough to read as text on the paper */
   --gradient-brand-ink: linear-gradient(135deg, oklch(0.55 0.12 172) 0%, oklch(0.5 0.13 228) 52%, oklch(0.5 0.18 285) 100%);
+
+  /* the night field: the two ends of the brand's dark ground, the same in both schemes */
+  --night-1: #0c1530;
+  --night-2: #060a14;
 
   /* paper and ink */
   --background: oklch(0.985 0.002 255);
@@ -91,9 +127,14 @@
   --you-ink: oklch(0.48 0.1 78);
   --you-soft: oklch(0.97 0.035 85);
 
-  /* Clerk's components follow the page */
-  --clerk-primary: var(--primary);
-  --clerk-background: var(--card);
+  /* code: a quiet box, and the few colours the build-time highlighter uses */
+  --code-bg: oklch(0.965 0.005 255);
+  --code-inline: oklch(0.26 0.04 262 / 0.065);
+  --code-comment: oklch(0.47 0.02 255);
+  --code-string: oklch(0.44 0.11 152);
+  --code-keyword: oklch(0.45 0.17 290);
+  --code-name: oklch(0.45 0.13 240);
+  --code-number: oklch(0.48 0.13 55);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -118,7 +159,45 @@
     --shadow-pop: 0 2px 6px oklch(0 0 0 / 0.4), 0 24px 48px -24px oklch(0 0 0 / 0.7);
     /* on dark paper the bright sweep reads as text already */
     --gradient-brand-ink: var(--gradient-brand);
+    --code-bg: oklch(0.215 0.016 262);
+    --code-inline: oklch(1 0 0 / 0.085);
+    --code-comment: oklch(0.7 0.02 255);
+    --code-string: oklch(0.83 0.12 160);
+    --code-keyword: oklch(0.8 0.11 292);
+    --code-name: oklch(0.82 0.09 228);
+    --code-number: oklch(0.84 0.1 72);
   }
+}
+
+/* On the night field every token takes its night value, whatever the scheme. */
+.night {
+  color-scheme: dark;
+  --background: var(--night-1);
+  --foreground: oklch(0.965 0.008 255);
+  --card: oklch(1 0 0 / 0.05);
+  --card-foreground: var(--foreground);
+  --muted: oklch(1 0 0 / 0.08);
+  --muted-foreground: oklch(0.82 0.025 255);
+  --border: oklch(1 0 0 / 0.14);
+  --primary: oklch(0.97 0.008 255);
+  --primary-strong: oklch(1 0 0);
+  --primary-foreground: var(--night-1);
+  --teal: oklch(0.87 0.13 176);
+  --teal-soft: oklch(0.87 0.13 176 / 0.13);
+  --you: oklch(0.83 0.12 82);
+  --you-ink: oklch(0.86 0.11 82);
+  --you-soft: oklch(0.83 0.12 82 / 0.14);
+  --shadow-card: 0 1px 2px oklch(0 0 0 / 0.3), 0 8px 24px -12px oklch(0 0 0 / 0.5);
+  --shadow-pop: 0 2px 6px oklch(0 0 0 / 0.4), 0 24px 60px -24px oklch(0 0 0 / 0.8);
+  --gradient-brand-ink: var(--gradient-brand);
+  --code-bg: oklch(0 0 0 / 0.32);
+  --code-inline: oklch(1 0 0 / 0.1);
+  --code-comment: oklch(0.74 0.03 255);
+  --code-string: oklch(0.86 0.13 165);
+  --code-keyword: oklch(0.82 0.11 292);
+  --code-name: oklch(0.84 0.09 225);
+  --code-number: oklch(0.86 0.1 72);
+  color: var(--foreground);
 }
 
 @layer base {
@@ -128,6 +207,7 @@
   html {
     -webkit-text-size-adjust: 100%;
     scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
@@ -138,7 +218,359 @@
     outline-offset: 2px;
   }
   ::selection {
-    background: var(--teal-soft);
+    background: color-mix(in oklab, var(--teal) 28%, transparent);
+  }
+  summary {
+    cursor: pointer;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* The first stop of the Tab key: out of sight until it has the focus. */
+  .skip-link {
+    @apply fixed top-3 left-3 z-50 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground;
+    transform: translateY(-200%);
+  }
+  .skip-link:focus {
+    transform: none;
+  }
+
+  .btn {
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-full px-5 text-sm font-medium whitespace-nowrap transition-colors;
+  }
+  .btn-primary {
+    @apply bg-primary text-primary-foreground hover:bg-primary-strong;
+  }
+  .btn-quiet {
+    @apply border border-border bg-card text-foreground hover:bg-muted;
+  }
+  .btn-sm {
+    @apply h-9 px-4;
+  }
+
+  /* A link in running text. */
+  .link {
+    @apply text-link underline decoration-1 underline-offset-[3px] hover:decoration-2;
+  }
+
+  /*
+    The night field. The glows are the social card's (sky to the left, violet
+    to the right); the honeycomb is one tile, repeated and faded out.
+  */
+  .night-field {
+    position: relative;
+    isolation: isolate;
+    background:
+      radial-gradient(52% 70% at 12% 42%, rgb(17 191 240 / 0.17), transparent 72%),
+      radial-gradient(46% 62% at 90% 18%, rgb(135 122 247 / 0.2), transparent 72%),
+      linear-gradient(135deg, var(--night-1), var(--night-2));
+  }
+  .night-field::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='104' viewBox='0 0 60 104'%3E%3Cpath d='M30 0L60 17.33V52L30 69.33L0 52V17.33ZM30 69.33V104' fill='none' stroke='%239fd8ff' stroke-opacity='.1'/%3E%3C/svg%3E");
+    background-size: 60px 104px;
+    -webkit-mask-image: radial-gradient(120% 100% at 72% 0%, #000 12%, transparent 76%);
+    mask-image: radial-gradient(120% 100% at 72% 0%, #000 12%, transparent 76%);
+  }
+
+  /* A pointy-top hexagon: the shape of the mark's core, for a step's number or an icon. */
+  .hex {
+    clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  }
+
+  /* The mark painted with the brand sweep (the stops live in <SweepDefs/>), with its glow. */
+  .mark-sweep g[stroke] {
+    stroke: url(#hive-sweep);
+  }
+  .mark-sweep g[fill="currentColor"] {
+    fill: url(#hive-sweep);
+  }
+  .mark-glow {
+    filter: drop-shadow(0 0 14px rgb(17 191 240 / 0.45));
+  }
+
+  /* Code: one box for the docs' fenced blocks and the pages' samples. Wide lines scroll inside it. */
+  .code-block,
+  .prose pre {
+    @apply overflow-x-auto rounded-xl border border-border bg-code font-mono;
+    padding: 0.95rem 1.1rem;
+    font-size: 0.8125rem;
+    line-height: 1.7;
+    tab-size: 2;
+    color: var(--foreground);
+  }
+  .code-block code,
+  .prose pre code {
+    display: block;
+    width: max-content;
+    min-width: 100%;
+    white-space: pre;
+    font: inherit;
+  }
+
+  /*
+    The few colours of the highlighter (highlight.js classes, written at build
+    time). Shell built-ins keep the text colour on purpose: the highlighter
+    takes the `set` of `hive settings set` and the `test` of `npm test` for
+    them, and a coloured word in the middle of a command reads as emphasis.
+  */
+  .hljs-comment,
+  .hljs-quote {
+    color: var(--code-comment);
+    font-style: italic;
+  }
+  .hljs-string,
+  .hljs-regexp,
+  .hljs-addition,
+  .hljs-symbol,
+  .hljs-bullet {
+    color: var(--code-string);
+  }
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-meta,
+  .hljs-doctag,
+  .hljs-section {
+    color: var(--code-keyword);
+  }
+  .hljs-title,
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-name,
+  .hljs-type,
+  .hljs-variable,
+  .hljs-template-variable {
+    color: var(--code-name);
+  }
+  .hljs-number,
+  .hljs-deletion {
+    color: var(--code-number);
+  }
+
+  /*
+    Long text: the docs, and the pages that explain. A measure a line can be
+    read at, air between paragraphs (the docs run to very long ones), tables
+    that scroll sideways in their own box, code that never widens the page.
+  */
+  .prose {
+    font-size: 1rem;
+    line-height: 1.75;
+    overflow-wrap: break-word;
+  }
+  @media (min-width: 48rem) {
+    .prose {
+      font-size: 1.0625rem;
+    }
+  }
+  .prose > * + * {
+    margin-top: 1.2em;
+  }
+  .prose > :first-child {
+    margin-top: 0;
+  }
+  .prose :where(p, ul, ol, blockquote, h3, h4, h5, h6) {
+    max-width: 60ch;
+  }
+  .prose p {
+    text-wrap: pretty;
+  }
+  .prose :where(h2, h3, h4, h5, h6) {
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    line-height: 1.3;
+    text-wrap: balance;
+    scroll-margin-top: 5.5rem;
+  }
+  .prose h2 {
+    margin-top: 2.4em;
+    padding-top: 1.4em;
+    border-top: 1px solid var(--border);
+    font-size: 1.5em;
+  }
+  .prose > h2:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+  .prose h3 {
+    margin-top: 2em;
+    font-size: 1.2em;
+  }
+  .prose h4 {
+    margin-top: 1.8em;
+    font-size: 1.05em;
+  }
+  .prose :where(h5, h6) {
+    margin-top: 1.6em;
+    font-size: 1em;
+    color: var(--muted-foreground);
+  }
+  .prose :where(h2, h3, h4, h5, h6) + * {
+    margin-top: 0.7em;
+  }
+  .prose a:not(.anchor, .btn) {
+    color: var(--teal);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  .prose a:not(.anchor, .btn):hover {
+    text-decoration-thickness: 2px;
+  }
+  .prose .anchor::before {
+    content: "#";
+  }
+  .prose .anchor {
+    margin-left: 0.4em;
+    font-weight: 400;
+    color: var(--muted-foreground);
+    text-decoration: none;
+    opacity: 0;
+  }
+  .prose :where(h2, h3, h4, h5, h6):hover .anchor {
+    opacity: 1;
+  }
+  @media (hover: none) {
+    .prose .anchor {
+      opacity: 0.55;
+    }
+  }
+  .prose strong {
+    font-weight: 600;
+  }
+  .prose :not(pre) > code {
+    border-radius: 0.3em;
+    background: var(--code-inline);
+    padding: 0.1em 0.32em;
+    font-family: var(--font-code);
+    font-size: 0.86em;
+    overflow-wrap: anywhere;
+  }
+  /* Code inside a link keeps the link's colour on the page's own ground: the tinted box would cost it contrast. */
+  .prose a:not(.anchor, .btn) > code {
+    background: none;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .prose pre,
+  .prose figure {
+    margin-top: 1.3em;
+    margin-bottom: 1.3em;
+  }
+  .prose figure > pre {
+    margin: 0;
+  }
+  .prose ul {
+    list-style: disc;
+    padding-left: 1.3em;
+  }
+  .prose ol {
+    list-style: decimal;
+    padding-left: 1.5em;
+  }
+  .prose li {
+    padding-left: 0.2em;
+  }
+  .prose li + li,
+  .prose li > :where(ul, ol) {
+    margin-top: 0.5em;
+  }
+  .prose li > p + p {
+    margin-top: 0.8em;
+  }
+  .prose li::marker {
+    color: var(--muted-foreground);
+  }
+  .prose .contains-task-list {
+    list-style: none;
+    padding-left: 0.2em;
+  }
+  .prose .task-list-item input {
+    margin-right: 0.55em;
+    accent-color: var(--teal);
+  }
+  .prose blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 1.1em;
+    color: var(--muted-foreground);
+  }
+  .prose del {
+    color: var(--muted-foreground);
+  }
+  .prose hr {
+    margin: 2.6em 0;
+    border-top: 1px solid var(--border);
+  }
+  .prose img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.6rem;
+  }
+  .prose .table-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--card);
+  }
+  .prose table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+  .prose :where(th, td) {
+    padding: 0.65rem 0.85rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .prose th {
+    background: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .prose td {
+    min-width: 6.5rem;
+    border-top: 1px solid var(--border);
+  }
+  /*
+    A table that names its rows down its first column (src/lib/markdown.ts):
+    those cells are headers to a screen reader and cells to the eye, and the
+    empty corner above them is a cell that looks like the headings beside it.
+  */
+  .prose tbody th {
+    min-width: 6.5rem;
+    border-top: 1px solid var(--border);
+    background: none;
+    font-weight: inherit;
+    white-space: normal;
+  }
+  .prose thead td {
+    border-top: 0;
+    background: var(--muted);
+  }
+  /* The last column is where a table explains itself: give it room, and let the box scroll. */
+  .prose td:last-child:not(:first-child) {
+    min-width: 17rem;
+  }
+  .prose :where(td, tbody th):first-child code {
+    overflow-wrap: normal;
   }
 }
 
@@ -153,14 +585,6 @@
   color: transparent;
 }
 
-/* The hero's paper: a faint wash of the brand at the top, fading to the page. */
-@utility surface-hero {
-  background:
-    radial-gradient(60rem 28rem at 50% -8rem, oklch(0.87 0.15 170 / 0.16), transparent 70%),
-    radial-gradient(40rem 20rem at 85% 0, oklch(0.65 0.18 285 / 0.1), transparent 70%),
-    var(--background);
-}
-
 /* Shadows the console uses on its cards. */
 @utility shadow-card {
   box-shadow: var(--shadow-card);
@@ -169,7 +593,7 @@
   box-shadow: var(--shadow-pop);
 }
 
-/* The hive cell draws itself once when the page opens. */
+/* The mark's brackets draw themselves once when the page opens. */
 @keyframes hive-draw {
   from {
     stroke-dashoffset: 1;
