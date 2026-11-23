@@ -122,11 +122,15 @@ domain is not something a commit can fix, and a red run would only send an
 agent after it.
 
 The workflow can also be started by hand
-(`gh workflow run deploy-site.yml`). Such a run deploys the branch it was
-started on, and to production: the deploy job does not ask which branch it
-is on. Once the three secrets are set, start it on `main` only. While one
-is missing, a run on a branch is a way to run the checks on Linux, and it
-deploys nothing.
+(`gh workflow run deploy-site.yml`). Its deploy job does not ask which
+branch it is on, so by itself it would put a branch on the public address.
+The repository's `production` environment is what stops that: it allows
+deployments from `main` only (Settings, Environments, production,
+Deployment branches and tags). A run started on another branch still runs
+the checks on Linux, then fails at the deploy job with "Branch ... is not
+allowed to deploy to production due to environment protection rules", and
+deploys nothing. A copy or a fork of this repository has no such rule
+until someone sets it.
 
 The same three commands deploy from a checkout, with a Vercel login in
 place of the token. In `web/site` of a clean checkout of `main` that
