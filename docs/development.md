@@ -122,11 +122,15 @@ domain is not something a commit can fix, and a red run would only send an
 agent after it.
 
 The workflow can also be started by hand
-(`gh workflow run deploy-site.yml`). Such a run deploys the branch it was
-started on, and to production: the deploy job does not ask which branch it
-is on. Once the three secrets are set, start it on `main` only. While one
-is missing, a run on a branch is a way to run the checks on Linux, and it
-deploys nothing.
+(`gh workflow run deploy-site.yml`). Its deploy job does not ask which
+branch it is on, so by itself it would put a branch on the public address.
+The repository's `production` environment is what stops that: it allows
+deployments from `main` only (Settings, Environments, production,
+Deployment branches and tags). A run started on another branch still runs
+the checks on Linux, then fails at the deploy job with "Branch ... is not
+allowed to deploy to production due to environment protection rules", and
+deploys nothing. A copy or a fork of this repository has no such rule
+until someone sets it.
 
 The same three commands deploy from a checkout, with a Vercel login in
 place of the token. In `web/site` of a clean checkout of `main` that
@@ -145,8 +149,11 @@ owner's steps.
 
 1. **The repository is public.** Until it is, every link from the site to
    GitHub answers 404 for a reader, and the installer cannot download a
-   release. Making a repository public publishes its whole history, so
-   look through it first.
+   release. Making a repository public publishes more than its branches,
+   so look through all of it first: every tag, every pull request with
+   the commits it carries, and commits that were force-pushed away, which
+   GitHub goes on serving to anyone who has their id. Squashing a branch
+   removes none of that, and an owner cannot delete a pull request.
 2. **A release is published** with the four archives and `SHA256SUMS`
    ([What a release must carry](release.md#what-a-release-must-carry)).
 3. **The Homebrew tap holds the formula**
@@ -154,6 +161,12 @@ owner's steps.
    Homebrew line of the install page fails.
 4. **The three Vercel secrets are set**, so that a push deploys (above).
 5. **The domain points at the Vercel project** (the next paragraph).
+
+The repository has been public since 23 November 2026. It was published
+as a new repository that holds `main` from 1 November 2026 on and the
+release tags, and nothing older. The pull requests #1 to #234 that commit
+messages on `main` name were made before that and are not public; the
+first pull request of the public repository is #235.
 
 `npm run check:live -- --site URL` looks at another address instead: a
 preview of a deploy, or this machine while it serves `web/site/out`.
