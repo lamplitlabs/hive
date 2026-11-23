@@ -132,8 +132,9 @@ it queues an ordinary job with `source = schedule:SCHED-NNN`, created by the
 agent that set the schedule, and moves the schedule on one cadence. Whichever
 worker takes the job is the scheduled agent for that run; the brief carries a
 footer naming the schedule, the run number and who set it. One open job per
-schedule: while the previous run's job is still queued or leased, the tick is
-skipped (event `schedule.skipped`) and the schedule still moves on; ticks a
+schedule: while the previous run's job is still queued, leased or blocked,
+the tick is skipped (event `schedule.skipped`) and the schedule still moves
+on; ticks a
 stopped daemon missed collapse into one. A schedule with `--at` keeps its time
 of day through a late tick or a `hive schedule run`: a daily one comes back
 to the next `at` after the run, a longer cadence to the first `at` a whole
@@ -228,9 +229,9 @@ schedule's last output; `hive schedule log SCHED-NNN` prints it.
 The job a script queues is an ordinary job with `source = schedule:SCHED-NNN`,
 the schedule's tier and priority, created by the agent that set the schedule,
 and the same one-open-job rule as a standing job: while the job from the last
-red run or trigger is queued or leased, a red run or a trigger queues nothing
-new (event `schedule.skipped`), so a check that stays red for a week makes one
-job, not seven. A red check's brief says which script failed, with which exit
+red run or trigger is queued, leased or blocked, a red run or a trigger queues
+nothing new (event `schedule.skipped`), so a check that stays red while that
+job is open makes one job, not one for every run. A red check's brief says which script failed, with which exit
 code, when, on which commit, with the output tail, and asks for the check to
 pass on the default branch - or, if the check itself is wrong, for the script
 to be fixed or the schedule ended with `hive schedule end SCHED-NNN --note
@@ -318,7 +319,7 @@ nothing.
 # .hive/automations/deps-audit.yaml   - the file name is the automation's name
 title: Audit the dependencies
 every: 1d
-at: "02:00"                      # UTC; quote it, YAML reads 02:00 as a number otherwise
+at: "02:00"                      # UTC; Hive reads it with or without the quotes
 brief: Run the audit and fix what it names.
 ```
 
@@ -407,8 +408,9 @@ transitions a folder that stays broken is not posted about again.
 folders the harness offers the model as the `skill` tool - and registers each
 as a [`hive skill`](#shared-skills-hive-skill) of the project, so a recipe
 the repository carries also reaches the brief's skill list, remote workers,
-`hive skill show NAME`, the hub's *Skills* tab, and a schedule's `skill:`
-line. The folder name is the skill's name (it must be a slug); the description
+`hive skill show NAME`, the hub's **Connections** page, and a schedule's `skill:`
+line. The skill's name is the front matter's `name:` when there is one, else
+the folder's name (it must be a slug); the description
 comes from the front matter's `description:` when there is one, else the
 first line of text that is not a heading, cut at 200 characters; the body is
 the file's body plus a footer listing the support files beside it, which a
@@ -583,8 +585,9 @@ it waits in the gallery. The daemon asks once per role per
 on a project, the other seats wait their turn. A **yes** on that question
 seats the lead: the question carries the line `lead-role: <slug> <role>`, so
 the yes queues no worker and the daemon seats it on its next pass (event
-`lead.decided`). The hub's project overview shows the same suggestions in its
-**Leads** panel with a one-click seat, and **Seat a lead** opens a gallery -
+`lead.decided`). The project's **Team & tools** tab in the hub shows the same
+suggestions in its **Leads** panel with a one-click seat, and **Seat a lead**
+opens a gallery -
 an illustrated card per role nobody sits in, the suggested ones marked, and
 one card for a word of your own with the role word, title, cadence and brief;
 `hive lead suggest` prints the suggestions with the command for each.
@@ -801,13 +804,13 @@ skill, a tool without a secret - and says so on the thread (a `result` with
 were present; event `toolkit.added`) with the line that undoes it (`hive
 skill disable NAME`, `hive mcp disable NAME`); a tool that needs a secret
 stays a card on the hub and is asked about when you are back. The
-hub's project overview shows the same
+project's **Team & tools** tab in the hub shows the same
 suggestions in its **Toolkit** panel - an illustrated card per tool and
 skill; pick one to read why, what it reaches and the shell line, then add it
 with a click (a tool that needs a secret opens the Add tool form filled in,
 for the secret reference; a skill can be edited first) - and the Connections
-page lists them under each tab as **Tools Hive suggests** and **Skills Hive
-suggests**. The hub serves them at `GET /api/v1/toolkit?project=` (`{project,
+page lists them as **Suggested for your projects**, above its tools, and
+**Skills Hive suggests**, among its skills. The hub serves them at `GET /api/v1/toolkit?project=` (`{project,
 tools, skills, catalog}`; without `project=`, every active project) and `POST
 /api/v1/toolkit` (`{project, kind: tool|skill, name}`).
 
@@ -963,14 +966,17 @@ A worker on a remote executor has no store and no credentials, so its brief
 says the servers exist but are reachable only from the local executor, and
 asks it to request the data through a `FINDING:` line to its lead.
 
-The hub has the same registry under **Connections**: the list with each
-server's scope, transport, status and last check; *Add MCP server* with the
+The hub has the same registry under **Connections**: a card for each
+server with its scope and status, which opens to its transport, its address
+and its last check; **Add connection**, which
+opens **Add a tool**: pick a well-known tool or start blank, then the
 transport choice, every auth type and its one-line explanation, the secret
 reference with the accepted shapes and a pointer to the credentials settings
-(or, for `oauth`, a note that the card's *Sign in* follows after saving),
-environment rows for stdio servers and the note; and per row *Connect* (the
-server's name, version and tools, or the error with its fix), *Enable* /
-*Disable* and *Edit*. An `oauth` server's card also shows whether this
+(or, for `oauth`, a note that the card's **Sign in** follows after saving),
+environment rows for stdio servers and the note; and in each card's menu
+**Check now** (the server's name, version and tools, or the error with its
+fix; **Connect now** before the first check), **Edit** and **Turn off** /
+**Turn on**. An `oauth` server's card also shows whether this
 machine is signed in and offers **Sign in** / **Sign out**: the hub runs the
 same discovery and registration `hive mcp login` does, then hands you the
 one step - approve in a new tab (code flow) or type the short code on the
@@ -991,9 +997,9 @@ server object carries `sign_in: {signed_in, note}`. Agents can register
 servers too (`created_by` says who); whoever adds one, the row never carries
 more than the reference, and a stdio command runs as the same user the
 agent's shell already has. Events: `mcp.added`, `mcp.updated`, `mcp.checked`,
-`mcp.enabled`, `mcp.disabled`, `mcp.signed_in`, `mcp.signed_out`. Exposing MCP
-tools natively to the harness's model, without the shell, is a possible
-follow-up; today the bridge is the CLI.
+`mcp.enabled`, `mcp.disabled`, `mcp.signed_in`, `mcp.signed_out`. The
+harness also offers the tools of these servers to the model directly,
+without the shell: [MCP servers as tools](harness.md#mcp-servers-as-tools).
 
 ## Shared skills: `hive skill`
 
@@ -1032,8 +1038,9 @@ with every project - so two projects may each keep a `release`, while a
 shared `release` blocks a project's own; by name, `show`, `update`, `enable`
 and `disable` look from your shell's project (`HIVE_PROJECT`) first and ask
 for the id when several projects use the name. The hub's
-**Connections** page has a *Skills* tab: the list, *Add skill* with a
-markdown editor and preview, *Read*, *Edit*, *Enable* / *Disable*; routes
+**Connections** page lists the skills below the tools, a card each: **Add
+skill** with a markdown editor and preview, and in a card's menu **Read**,
+**Edit** and **Turn off** / **Turn on**; routes
 `/api/v1/skills`, `/api/v1/skills/{id}` (`GET`, `PATCH`) and
 `/api/v1/skills/{id}/status`. Events: `skill.added`, `skill.updated`,
 `skill.enabled`, `skill.disabled`.
@@ -1083,11 +1090,11 @@ at the same commit. Still no model call.
 
 The default is a cache, not a decision: it follows the README, the commit
 history, the project name and the verification command as they change, while
-an owner's goal never moves. The console labels **Owner set** and **Project
-default** separately. Set up to 4,000 characters in
-**Project → Overview → Edit goal**, or confirm **Use project default** to
-restore the generated direction. Goals are shared with agents, so do not
-include credentials or private data.
+an owner's goal never moves. The console marks the goal **Set by you** or
+**Written by Hive**. Set up to 4,000 characters with **Edit**, beside
+**Goal** on the project's **Overview**; `hive goal reset` restores the
+generated direction. Goals are shared with agents, so do not include
+credentials or private data.
 
 New agent runs read the current goal, including work already queued before an
 owner edit. A running agent keeps its existing brief. Re-registering or
@@ -1114,14 +1121,16 @@ audited without copying the goal text into events.
 
 ### Goal review: how far the work has moved it
 
-A goal is only useful if someone checks the work against it. Under the goal
-on **Project → Overview** sits a **Goal review**: a score out of 100 with a
-verdict (*on track*, *slipping*, *stalled*, or *too quiet to score*), one bar
-per signal, what the score says the owner should do, the lead's latest
+A goal is only useful if someone checks the work against it. `hive goal
+review --project my-app` prints the goal review: a score out of 100 with a
+verdict (*on track*, *slipping*, *stalled*, or *too quiet to score*), one
+line per signal, what the score says the owner should do, the lead's latest
 reading, and - when the lead thinks the goal itself is wrong - the goal it
-proposes, taken with one **Use this goal** or dismissed. `hive goal review
---project my-app` prints the same (`--json` for the whole record); the route
-is `GET /api/v1/projects/{slug}/goal/review`, read-only.
+proposes, with the `hive decide` line that takes it and the one that
+dismisses it (`--json` for the whole record). The route is
+`GET /api/v1/projects/{slug}/goal/review`, read-only. The console's
+**Overview** shows the goal and its **Edit** button; it does not show the
+review.
 
 The score is computed from the store, no model call, over a window of twice
 `goal.review_days` (at least seven days):

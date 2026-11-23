@@ -7,8 +7,7 @@ classified from what the runner wrote. A transient failure - the machine, the
 runner or the moment: a lost run, a runner error, an unreachable executor, a
 timeout, a branch that no longer merges with the default branch or a default
 branch that was already red before the job - runs again after a growing pause (5 min, 15, 45, ... at most 6 h),
-with its stale branch removed first (a red-base re-run then waits behind the
-project's fix job until the branch is green, so it is not thrown away twice). A deterministic
+with its stale branch removed first. A deterministic
 failure - the work: a non-zero exit, a reported failure, no report or commits
 that fail the check - becomes one corrected job whose brief carries the failure
 and the run log's tail; a task's job instead goes back to the lead to re-plan
@@ -538,6 +537,9 @@ the lead gets a standing brief: read the board's queue, the failed
 jobs of the week, the plans and decisions, queue up to `lead.idle_max_jobs`
 (default 3) Tier 0/1 worker jobs and tell the owner in the project's chat what
 it queued and why, or say in its summary that nothing was worth queueing.
+While the fleet is idle (fewer than half of the local worker slots busy and
+nothing queued) the wait is divided by `lead.idle_factor` (default 3, never
+under an hour).
 Role leads (`hive lead`) sit on their own cadence regardless of the owner's
 quiet: an `rsi` lead reads the loop, a `docs` lead the pages a merge left
 behind, a `security` lead the dependencies, a `monitor` lead the checks.
@@ -629,7 +631,7 @@ busy`, ...) follows the same rule: it is logged when the reason changes or a
 run started in between, and otherwise summarised once an hour as
 `idle: <reason> (unchanged for 1h, 240 ticks)`.
 Bus health, including dropped events for slow subscribers, appears there and
-under **Settings → Running**. `hive status` also reports planner cache hit/miss
+under **Settings → This machine**. `hive status` also reports planner cache hit/miss
 counts from the daemon heartbeat.
 `hive queue` marks such cards `not planned:` with the reason and counts each
 project's plannable items; the console's Votes page shows the same gate on
@@ -638,7 +640,7 @@ the card.
 ## When the owner is away
 
 What the daemon does when the owner is away (`hive settings set
-owner.presence away`, or **Settings → Owner** in the console; `present` is
+owner.presence away`, or **Here or away** under **Settings → General → You** in the console; `present` is
 the default): nothing is parked for your approval that a project's lead can
 judge. Each project's lead is woken by the project's awaiting board proposals
 (each presented at most once per six hours), reads them in its brief with the
@@ -678,14 +680,20 @@ and writes its reasoning in the task's thread instead of ending with
 you can do goes in its report; a stopped loop, a sign-in or a missing secret
 is a card on the hub already). The daemon asks nothing either: the toolkit a
 project's shape asks for is added on its own and said so on the board (see
-[The toolkit](board.md#the-toolkit-hive-toolkit)), and open lead seats stay in the gallery unasked. What
+[The toolkit](board.md#the-toolkit-hive-toolkit)), and open lead seats stay in the gallery unasked,
+except one: a `security` lead is seated, once, for a project whose
+dependencies nothing audits, and the board says so with the command that
+ends it. What
 still waits for you, away or not: hard stops
 (`STOP`, the evolve loop-gate question), money (compute requests -
 `compute.auto_approve` and the caps are how you pre-authorize spend), Tier 2
 decisions (accepting or declining ADRs, `hive record accept`), the
 constitution's protected sections, `docs/evolution/evaluators.md` and
 `.github/`, proposals that authorize a command (`pair:` / `onboard:`
-markers, ADR-021), and the kill switch. A proposal whose headline names an
+markers, ADR-021), and the kill switch. For decision records and compute
+requests that is the rule the agents are given: `hive record accept` and
+`hive compute approve` are not refused under an agent's name
+([security.md](security.md#agents)). A proposal whose headline names an
 ADR or whose text points at one of those owner-only paths is never put to the
 lead - the daemon skips it, `hive decide` refuses the lead's yes *and* no on
 it, and the card waits on the Proposals page for you. The same holds for a

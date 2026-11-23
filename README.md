@@ -297,14 +297,17 @@ skill folders; nothing else of Hive's is committed.
 
 ## Documentation
 
-This README is the overview and the first task. The reference lives in
-`docs/`, one file per part, and the site renders the same files at
+This README is the overview and the first task. The guides in
+`docs/how-to/` each take one job from start to finish, in the console and
+in a terminal. The reference lives in `docs/`, one file per part. The site
+renders the same files at
 [hivefleet.dev/docs](https://hivefleet.dev/docs/). The agents keep their
 decisions, plans, guides and lessons as records in the store, where the
 console searches them and `hive ask` answers from them.
 
 | Read | For |
 | --- | --- |
+| [Guides](docs/how-to/README.md) | one job each, start to finish: set up a first project, a tour of the console, give a task, review and merge the work, answer what waits for you, schedules, role leads, skills and tools, sessions, the rules, the self-improvement loop, a second machine, models and budgets, keeping Hive running, troubleshooting |
 | [Concepts](docs/concepts.md) | start here: the cast, the store, tasks and jobs, the board, the constitution and tiers, the loop step by step, machines, delivery by pull request |
 | [Questions people ask](docs/faq.md) | short answers: what Hive needs, which models, what leaves your machine, what the loop does on its own, how to stop it, how to add a machine, how to update |
 | [The console](docs/console.md) | the console, for the owner: starting it, the sidebar's pages, Home, For you, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Reports and Ask |

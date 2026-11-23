@@ -1,7 +1,8 @@
 # Questions people ask
 
 Short answers, each with the page that has the detail. If yours is not
-here, [Concepts](concepts.md) explains how the parts fit.
+here, [Concepts](concepts.md) explains how the parts fit. To get one thing
+done, step by step, open the [guides](how-to/README.md).
 
 ## What is Hive?
 
@@ -42,6 +43,7 @@ OpenAI-compatible endpoint is the `custom` provider.
 You can give the runs that change code one model (`worker_model`), the
 lighter runs another (`light_model`) and the loop's measurements a third
 (`measure_model`). See [Providers, sign-in and models](harness.md#providers-sign-in-and-models).
+Step by step: [Choose models and set budgets](how-to/models.md).
 
 ## Does my code leave my machine?
 
@@ -77,7 +79,9 @@ every commit and again at the end. When the steps are done their branches
 are merged into one pull request. A review agent checks it out, runs the
 check, reads the diff, and merges it, asks for changes or hands it to you.
 You watch all of it as one conversation and can type into it at any point.
-See [Tasks](console.md#tasks) and [Delivery](landing.md).
+See [Tasks](console.md#tasks) and [Delivery](landing.md). Step by step:
+[Give a task and steer it](how-to/tasks.md) and
+[Review and merge the work](how-to/pull-requests.md).
 
 ## How is it different from running one coding agent?
 
@@ -129,12 +133,15 @@ to make it wait for you.
 The kill switch and the caps are yours by rule, not by lock: the program
 does not refuse `hive start` or `hive settings set` from an agent's shell
 (see [Is it safe to let agents run commands on my machine?](#is-it-safe-to-let-agents-run-commands-on-my-machine)).
-See also [Concepts](concepts.md#the-self-improvement-loop).
+See also [Concepts](concepts.md#the-self-improvement-loop). Step by step:
+[Turn on the self-improvement loop](how-to/self-improvement-loop.md).
 
 ## How do I stop it?
 
-- `hive stop` is the kill switch. The runner stops after the runs in
-  flight finish. `hive start` lets it run again. The rule is that only you
+- `hive stop` is the kill switch. The runner starts nothing new and
+  leaves the runs in flight to finish; after `minutes_per_job` plus five
+  minutes it ends the ones still going. A session you have open in the
+  console keeps working. `hive start` lets the runner run again. The rule is that only you
   run `hive start`; the program does not refuse it from an agent's shell,
   and the event log records who ran it.
 - **Cancel run** on a run's page, or `hive harness cancel ID`, stops one
@@ -144,6 +151,8 @@ See also [Concepts](concepts.md#the-self-improvement-loop).
   leaves the rest running.
 - `hive service uninstall` removes the user services, so nothing starts
   again by itself.
+
+Step by step: [Set the rules agents work under](how-to/rules.md).
 
 ## How do I add a machine?
 
@@ -192,7 +201,8 @@ On the Machines page, **Add a machine**. There are two main ways:
 The same page registers a machine you prepared by hand, and asks a cloud
 for one once you have set a provider and caps. Then say what a project's
 jobs need (`hive init PATH --needs macos,xcode`) and the queue sends each
-job to a machine that offers it. See [Machines](machines.md).
+job to a machine that offers it. See [Machines](machines.md). Step by
+step: [Add a second machine](how-to/add-a-machine.md).
 
 ## Does it work on Windows?
 
@@ -246,7 +256,8 @@ runner once its runs in flight have ended or been put on hold
 work. A `hive hub` you started by hand keeps running the old program until
 you start it again. If you build Hive from a checkout you registered as the
 brain project, the runner rebuilds itself from that checkout instead. See
-[Releases and `hive update`](release.md).
+[Releases and `hive update`](release.md). Step by step:
+[Keep Hive running, updated and backed up](how-to/operations.md).
 
 If Homebrew installed your `hive`, upgrade it with
 `brew upgrade hivefleet`. Homebrew owns that file, so `hive update` names
@@ -297,8 +308,9 @@ rules, and the program checks only part of them:
 - **The kill switch and the settings.** The rule is that only you run
   `hive start` and only you change the caps. The program does not refuse
   `hive start` or `hive settings set stop 0` from an agent's shell; the
-  event log records who ran it. A `hive` command run under an agent's name
-  is refused only the `owner.*` settings and `push.credential`, and a
+  event log records who ran it. Of the settings, a `hive` command run
+  under an agent's name is refused only the `owner.*` ones and
+  `push.credential`, and a
   value an agent wrote for `hub.allow_remote`, `hub.hosts` or `owner.presence` is
   ignored.
 - **Votes and variants.** These are held to the rule in code: no vote can
@@ -329,6 +341,8 @@ directories are in the same folder. `backup.to` names where a daily copy
 of the store goes. `hive remove project <slug>` deactivates a project, and
 `--forget` deletes the rows of one that is already inactive and whose
 checkout is gone. See [Removing your data](security.md#removing-your-data).
+[Keep Hive running, updated and backed up](how-to/operations.md) goes
+through removing Hive in order.
 
 ## Something is stuck. Where do I look?
 
@@ -340,7 +354,8 @@ project's work. For failed jobs, a project's Overview links **Jobs that
 failed** to the Runs page, where they can be retried, and
 `hive jobs --all` lists them in a terminal
 with what each one ended on. A waiting pull request says why on its task's
-delivery line. See [Recovery and hygiene](recovery.md).
+delivery line. See [Recovery and hygiene](recovery.md), and
+[Troubleshooting](how-to/troubleshooting.md) for each symptom and its fix.
 
 ## How do I contribute, or report a problem?
 

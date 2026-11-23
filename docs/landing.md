@@ -260,8 +260,8 @@ number the list missed; both read `state`, `mergedAt`, `url`, `headRefName`,
 
 The pass remembers what it delivered in the event log alone: the newest of
 `land.pr`, `land.merged` and `land.pr-closed` for a task, job or branch says
-whether a pull request is open, so a daemon restart loses nothing and `hive
-events --action 'land.*'` is the whole history.
+whether a pull request is open, so a daemon restart loses nothing, and the
+`land.*` rows of `hive events --project <slug>` are the whole history.
 
 `gh` is the GitHub CLI logged in on this machine; its login never reaches git.
 A machine often has more than one login (`gh auth status` lists them), and `gh`
@@ -439,7 +439,9 @@ do not clear by themselves:
   The note carries git's words with secrets removed.
 - **`gh` could not open or read the pull request**: no account that can see
   the repository, a rate limit, GitHub down. The note names the account and
-  the command that failed; the pass tries again next time.
+  the command that failed. The work is held like any other: the pass does not
+  try it again until the work changes (a job of the task brings new commits,
+  or the project's newest open pull request changes).
 - **The branch is gone**: a job whose branch no longer exists in the checkout
   is held once and forgets the branch, so it is not asked about again.
 - **A follow-up is not built on the pull request**: a `pr-fix` job's branch
@@ -485,14 +487,14 @@ land* and *Reviewing* groups are gone with the local landing they described.
   nothing: a pass opens at most ten pull requests per project.
 - `hive land --dry-run` lists what the next pass would deliver, per project,
   without pushing anything: where the pull requests go (`pull requests go to
-  origin/main <url>`, or `no upstream, finished branches land locally on
+  origin/main (<url>)`, or `no upstream, finished branches land locally on
   main`), then each task with its jobs and branches, each job's branch and
   whether it becomes a pull request or a push onto one, and each conversation
   branch with how far ahead it is and how old its last commit is.
 - `hive land --project X --branch B` proposes `B` as a pull request: the
   branch is pushed and a pull request opened from it into the upstream default
-  branch, delivered and reviewed like any other; it prints `<slug> proposed: B
-  #n <url>`, or says the branch is delivered already (`--propose` is accepted
+  branch, delivered and reviewed like any other; it prints `proposed pr <slug>
+  B: #n opened <url>`, or says the branch is delivered already (`--propose` is accepted
   as an alias; a conversation's **Open PR for review** button runs the same).
   A branch not under `hive/` counts as a person's to the reviewer, so it is
   handed to you rather than merged ([The complexity
@@ -532,10 +534,10 @@ keeps its meaning for the fast-forward of a dirty checkout
 ([above](#the-local-default-branch-follows-the-upstream)) and for `hive land
 --local`; `landing.verify_memo` and `landing.verify_memo_hours` govern the
 local landings and the run's own check ([The verify
-command](#the-verify-command)). `landing.base_red_retry_minutes` and
-`landing.setup_repair` keep their meaning for the runs and local landings
-that find the default branch red or its setup broken ([A red default
-branch](#a-red-default-branch)). `push.credential` is used for the push and
+command](#the-verify-command)). `landing.base_red_retry_minutes` keeps its
+meaning for a local landing that finds the default branch red ([A red default
+branch](#a-red-default-branch)), and `landing.setup_repair` for the runs and
+local landings that find the setup broken. `push.credential` is used for the push and
 the fetch alike ([Credentials](#credentials)). Patches the old flow saved
 under `~/.hive/patches/<slug>/` stay where they are; only a local landing
 writes there now.
@@ -564,9 +566,10 @@ settings read right:
   it does needs the checkout to hold still.
 - **The red-base fix and the setup repair at landing.** A landing that found
   the default branch itself failing the check held the project's landings and
-  queued a fix job; one whose worktree setup failed queued a repair. Both are
-  still planned from the runs that find the same thing ([A red default
-  branch](#a-red-default-branch)); a landing no longer finds it first.
+  queued a fix job; one whose worktree setup failed queued a repair. The
+  repair is still planned from the runs that find the same thing. The fix job
+  and the hold are gone: a run that finds the default branch red says so and
+  is tried again ([A red default branch](#a-red-default-branch)).
 - **Resync.** When someone had moved the upstream, the landing merged the
   remote commits in as a landing of their own and re-applied the local
   commits the upstream lacked onto its tip, with a `task` job per commit that
@@ -867,9 +870,7 @@ from its harness session once the owner's run has a lane. The daemon says
 `<project>: <job> (improve) holds after its current step so the owner's <job>
 can start; it carries on later`, writes a `job.yield` event on the fleet job
 (`project`, `run`, `to`), and the held run's summary reads `held so the owner's
-work could start first after N steps`. The owner's own runs are never held, and
-a project whose default branch is red is left alone: the owner's task waits
-behind the fix job there and holding the fix would only lengthen the wait.
+work could start first after N steps`. The owner's own runs are never held.
 
 The narrowed lanes are the fleet's, not the owner's. On the brain the check
 takes twenty to twenty-seven minutes against a forty-minute commit cap, so one
@@ -963,23 +964,30 @@ model merely wandered. A run the provider never answered fails the check.
 
 ### A red default branch
 
-A red default branch is also a plan, not just a hold: the first run that
-finds the base itself failing the verify command - a run whose own check
-failed asks whether the base was already red before charging the job - records it (`base.red`
-event, one `finding` on the project's `runner/verify` thread with the check's
-tail), queues one `improve` job to make the check pass - source
-`redbase:<slug>`, priority above the planner's improve jobs, a brief that
-carries the command, the exit code and the failing lines and forbids loosening
-or skipping the check; a corrected job keeps the source if it fails - and holds
-the project's other work on the branch (improve, task, experiment and clean
-jobs) with its attempts intact until the default branch moves; research, ballots,
-answers and leads keep running, and the idle line counts the held jobs (`2 jobs
-of blog wait for a green default branch (3f9c… is red; fix job … leased)`).
+When a run's own check fails, the run asks whether the base was already red
+before it charges the job: it runs the same check on the base tree, the
+commit the job branched from, in a throwaway worktree beside the clone. When
+the base fails too, the run's summary says so (`... the base <sha> was already
+red before this job (verify exit N on the base tree), so this is not a
+regression the job introduced; nothing landed`), the run's commits are kept so
+that a retry can start from them, and the failure counts as transient: the job
+runs again after a growing pause
+([Failed jobs and recovery](recovery.md#failed-jobs-and-recovery)).
+
+Nothing more follows from a red default branch under delivery by pull
+request. The local landing queued one fix job for it, held the project's
+other work and asked the owner after half an hour; none of the three is in
+the runner today, so nothing sets out to repair a default branch that stays
+red. Give the project a task for it, or fix it by hand. A project without an
+upstream, which still lands locally, keeps one rule of its own: when the
+merged result fails the check and the default branch fails it too, the
+branch is kept and the landing waits `landing.base_red_retry_minutes` (10)
+before it is tried again (event `land.base-red`).
 
 A check that did not run to a verdict - the disk under `daemon.min_free_mb`
 (exit 71), the verify lock given up (exit 75), a timeout, a worktree that could
-not be made - says nothing about either tree: the run waits as before, but the base is not recorded red and the branch is not charged, and the
-base tree is not checked again when the job's own check could not run.
+not be made - says nothing about either tree: the base is not called red, and
+the base tree is not checked at all when the job's own check could not run.
 
 The base check reads and leaves the same verified-tree memos as the run's own
 check ([The verify command](#the-verify-command)): a base tree this user
@@ -990,18 +998,6 @@ this store`), and a base the check passes here is memoed for the next run that
 fails on it. The measured reason: the three brain runs that failed their check
 on 2026-11-04 each re-checked the same main tree, fifteen to twenty-five
 minutes of the lock apiece, to learn the same thing.
-
-The hold lifts on the tick after the default branch moves (`base.moved`),
-whoever moved it, and when the fix job ends with no commit and the daemon's own
-check of the default branch as it stands passes (`base.green`, a finding on the
-same thread; the red was never the tree's own, or was fixed without moving the
-branch); if half an hour passes with no fix job open and the base still red,
-the daemon asks the owner once (`default branch main is still red at …`, a
-question marked for the owner) with the two ways out - merge a fix by hand,
-or give the project a check it can pass with `hive init PATH --verify CMD` - and
-answers its own question when the branch moves or the hold lifts. In the week
-before this landed, 42 runs across 40 jobs on one machine each spent a worker
-to learn the same thing and threw their commits away.
 
 A branch that changes `docs/context/environment.md` alone was yours to merge
 under the local landing (ADR-026: the daemon held the branch and asked once
@@ -1165,9 +1161,9 @@ whose fix came back blocked reads as yours, not as looked after), with `--projec
 <slug>` for one, `--all` for every active project, `--limit N` for more
 history and `--json` for the records (`head` holds the sha, `by`, `read`,
 `next` and `waiting_since`); `hive pipeline --check` reads GitHub now
-instead of waiting for the daemon's pass. A task's conversation in the hub
-shows the verdict on its own push on the delivery line
-(`delivery.pipeline` and `delivery.pipeline_job` in `GET /api/v1/tasks/<id>`).
+instead of waiting for the daemon's pass. `GET /api/v1/tasks/<id>` carries
+the verdict on a task's own push (`delivery.pipeline` and
+`delivery.pipeline_job`); the console's delivery line does not show it.
 
 ## Dependencies: security alerts and the release-age rule
 

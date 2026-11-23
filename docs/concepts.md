@@ -14,7 +14,9 @@ The console says *runner* for the daemon, *machines* for executors and
 - **The owner** is you. A task, a message or a decision carries authority
   only when it comes from you. What needs you (hard stops, money, Tier 2
   decisions and questions marked for you) waits on the **For you** page, and
-  Home shows the first five under **Needs you**. It waits until you answer,
+  Home shows the first five under **Needs you**. A task whose lead stopped
+  for you is on **Tasks** under **Asked you**, and a pull request handed to
+  you is on **Sessions** under **Needs your review**. It waits until you answer,
   and everything else carries on. The one exception is the loop's question
   about its own fixtures ([below](#the-self-improvement-loop)).
 - **The lead.** Each project has one lead agent (`<slug>-lead`). It reads
@@ -133,30 +135,38 @@ the loop may and may not do. It is yours. It holds
 Some of this is a rule and not a lock. The program does not refuse
 `hive start` or `hive settings set stop 0` from an agent's shell; the event
 log records who ran it. A `hive` command run under an agent's name is
-refused only the `owner.*` settings and `push.credential`, and a value an
-agent wrote for `hub.allow_remote`, `hub.hosts` or `owner.presence` is ignored. Every
+refused `hive decide`, `hive record adopt`, the `owner.*` settings and
+`push.credential`, and a value an agent wrote for `hub.allow_remote`,
+`hub.hosts` or `owner.presence` is ignored. Every
 other setting, the caps and `evolve.*` included, can be changed with
 `hive settings set` from an agent's shell. Votes and variants are held to
 the rule in code: no vote can touch the protected sections, and no variant
 can change `evolve.*`.
 
 A new project gets a seeded copy. An agent drafts the real text from your
-checkout, and the record does not change until you adopt it. The switch for
+checkout. A draft changes nothing: it becomes the record's next revision
+when you adopt it, and adopting is refused under an agent's name.
+`hive record amend` is not refused, and the record's revisions show who
+wrote each one. The switch for
 the loop's experiments is the setting `evolve.loop`, not this record: the
 program does not read the `loop: off` line of the seeded copy.
 
 Some paths are the owner's in every project: the constitution, the
 evaluators and the stop file under `docs/evolution/`, `docs/decisions/`,
-`.github/`, and the agent, role and kind definitions under `.hive/`. No
-agent is given a card that edits them, and a pull request that touches them
-is yours to merge.
+`.github/`, and the agent, role and kind definitions under `.hive/`. A
+step agent's card that names one becomes no job, a job whose commits touch
+one fails with nothing delivered, and a pull request that touches them is
+yours to merge.
 
 Agents may **amend** the constitution by an informed vote. An amendment
 quotes the exact current text and the exact proposed text, and a vote
 counts only when it carries the hash of that text and a line in the voter's
-own words. It passes with `amend_quorum` voters (40) and `amend_majority`
-in favour (2/3). The hard stops, the kill switch and the amendment rules
-themselves cannot be amended by vote, and your revision outranks any vote.
+own words. It passes with the quorum and the majority that the
+constitution's own `Vote rules` table names (40 voters and 2/3 in favour in
+the seeded text); the settings `amend_quorum` and `amend_majority` count
+only for a constitution without those rows. The hard stops, the kill switch
+and the amendment rules themselves cannot be amended by vote, and your
+revision outranks any vote.
 
 Every change is sorted into a **tier** before it is made. `hive guide`
 prints the rule the agents follow:
@@ -202,7 +212,8 @@ tasks the agents look for what could be better and vote on it:
 6. **The keep rule.** A variant that falls below the baseline by more than
    `evolve.tolerance` is discarded. A gain is measured a second time before
    it counts. An experiment lands only when its check turned from failing
-   to passing, or the fixtures improved, with no fixture regressed.
+   to passing, or the total score rose by at least the tolerance. Totals
+   are compared: one fixture may fall while the total rises.
 7. **The archive.** Every measured variant gets a row in the archive, kept
    or not, with its scores.
 8. **Delivery.** A kept result becomes a pull request whose body is the
@@ -212,13 +223,15 @@ tasks the agents look for what could be better and vote on it:
 The loop's experiments are off until you turn them on
 (`hive settings set evolve.loop 1`). The loop also needs a constitution,
 evaluators, fixtures, a baseline and the private tests. A new project is
-seeded with the first three, the runner measures the baseline and writes
-the private tests once the loop is on, and `hive evolve status` prints which
-gate is still closed. With the loop off, a voted card that passes the gates
+seeded with the first three, the runner measures the baseline once the loop
+is on and writes the private tests whether it is on or off, and
+`hive evolve status` prints which gate is still closed. With the loop off, a voted card that passes the gates
 is still built, as an ordinary job held to the same rule: its check must
-fail before the change and pass after. The loop stops for you at a hard
-stop, a breach of the constitution, a post that reads like an instruction,
-and `hive stop`. When its fixtures stop telling a better variant from a
+fail before the change and pass after. The loop plans no new experiment
+in a project, and asks you, when the project's newest experiment failed and
+its result names a hard stop or a violation, or when a post in one of its
+open threads reads like an instruction to agents. `hive stop` stops the
+runner altogether. When its fixtures stop telling a better variant from a
 worse one, it pauses and asks; with no answer after `evolve.flat_wait_hours`
 (24) it answers that one question itself and runs `evolve.flat_cycles` (6)
 more cycles. Set the hours to `0` to make it wait for you.
@@ -279,7 +292,8 @@ Agents commit in their clones and never push. The runner delivers:
   secret), one whose branch is not Hive's own, one that changes a screen
   without a before/after report, and every one when `review.merge` is
   `ask`. They wait under **Needs your review** with the reviewer's
-  findings and a **Merge** button. Whose branch it is goes by the name:
+  findings and a **Merge** button, on the task or the session they belong
+  to. Whose branch it is goes by the name:
   `hive/...` and an experiment's `evolve/<id>` are Hive's own, and any other
   branch, for example one of yours delivered with `hive land --branch`, is
   handed to you. Size alone hands nothing to you.
@@ -295,6 +309,9 @@ Read more: [Delivery](landing.md), [The reviewer](review.md),
 
 ## Where to read more
 
+The [guides](how-to/README.md) take one job each from start to finish:
+setting up a first project, giving a task, merging the work, turning on
+the loop, adding a machine.
 [Questions people ask](faq.md) has short answers to the first questions.
 [Commands](commands.md) and [Settings](settings.md) are the reference. The
 other pages go deeper, one part each: [the console](console.md),

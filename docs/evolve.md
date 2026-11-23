@@ -9,9 +9,9 @@ the reason, and the setting keeps its old value.
 These settings are the owner's to change. That is a rule, not a lock. A
 variant overlay cannot change them: `evolve.*` is in the immutable set, and a
 variant that names one is refused when it is registered. The command line
-holds less: a `hive` command run under an agent's name is refused only the
-`owner.*` settings and `push.credential`, so `hive settings set` from an
-agent's shell can change an `evolve.*` setting. The event log records who ran
+holds less: of the settings, a `hive` command run under an agent's name is
+refused only the `owner.*` ones and `push.credential`, so
+`hive settings set` from an agent's shell can change an `evolve.*` setting. The event log records who ran
 it.
 
 This page covers the evolve settings that [Democracy and
@@ -28,7 +28,7 @@ self-improvement](self-improvement.md) does not explain. The loop itself, and
 | Setting | Default | Takes | What it does |
 | --- | --- | --- | --- |
 | `evolve.draft_hours` | `24` | whole number, `0` or more | Hours between the `reflect` drafting jobs (source `draft:<slug>`) the planner queues for a project whose constitution or evaluators is still the seeded template text (ADR-046). `0` turns the planner's drafting off; the console's **Draft it for me** still queues one, and the planner says `the planner's drafting jobs are off (evolve.draft_hours 0)`. A value that does not parse counts as `24`. See [Seeded records](self-improvement.md#seeded-records-and-starter-fixtures). |
-| `evolve.heldout_dir` | empty | a directory path, never a credential | The owner-private directory holding the private held-out fixtures (`H01.request`, `H01.score`, ...). Empty until something sets it: under `evolve.heldout auto` the daemon sets it to `~/.hive/private/heldout` the first time it writes a fixture; `hive evolve setup DIR` and the console's Held-out fixtures dialog set it to the directory you pick. The directory must be outside every registered project and the fleet area, mode `0700`. The path is never quoted to agents: it is masked in events, hook details and logs, and a request under it cannot be imported as a public fixture. |
+| `evolve.heldout_dir` | empty | a directory path, never a credential | The owner-private directory holding the private held-out fixtures (`H01.request`, `H01.score`, ...). Empty until something sets it: under `evolve.heldout auto` the daemon sets it to `~/.hive/private/heldout` the first time it writes a fixture; `hive evolve setup DIR` and the console's **Private tests** dialog set it to the directory you pick. The directory must be outside every registered project and the fleet area, mode `0700`. The path is never quoted to agents: it is masked in events, hook details and logs, and a request under it cannot be imported as a public fixture. |
 
 ## Agent-program variants (ADR-049)
 
