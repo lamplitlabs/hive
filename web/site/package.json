@@ -6,6 +6,8 @@
     "No server, nothing to log in to, no secrets: every page is plain HTML written at build time. The docs pages are the repository's docs/**/*.md (../../docs), rendered by src/lib/markdown.ts and ordered by src/lib/docs.ts; a new file there gets a page without a change here.",
     "prebuild: scripts/prebuild.mjs copies ../../scripts/install.sh to public/install.sh (git-ignored), which the site serves at /install.sh; without the file it says so and the build goes on.",
     "check: `npm run check` = typecheck (next typegen, then tsc --noEmit, so a removed route never fails on stale .next/types) + lint (eslint) + build + test (node --test) + check:out (scripts/check-out.mjs: every internal link and #anchor of the export resolves, every page has its title, description, canonical address and JSON-LD, the sitemap lists exactly what was exported).",
+    "check:live: `npm run check:live` asks the public internet, with no login, for what the site promises a reader: the domain serves this site and the installer of this checkout, the repository is public, the latest release carries what the installer downloads, the Homebrew tap holds the formula. It is not part of `check` (a build must not depend on the network) and nothing it reports can be fixed by a commit: docs/development.md, \"Going public\".",
+    "pictures: scripts/prebuild.mjs copies every image under ../../docs to public/docs-media/ (git-ignored), and a docs page shows a picture from there, sized from the file's own header. The pictures of the console are docs/how-to/images/console-*.webp, 1440 by 900; public/console-home-2x.webp is the Home one at twice the pixels, for the landing page.",
     "fonts: public/fonts holds Geist and Geist Mono whole (geist-*-variable.woff2) and cut down to Latin, punctuation, arrows, mathematical signs and box drawing (geist-*-latin.woff2). Every page loads the cut files; a browser fetches the whole ones only for a page that shows another script (the unicode-range lines in src/app/globals.css). `python3 scripts/subset-fonts.py` writes the cut files and those lines, and `--check` says when they no longer agree; it needs fonttools and brotli and is not part of the build.",
     "dependencies: the Markdown packages (unified, remark-*, rehype-*) run at build time only; none of them reaches the browser. The lockfile holds versions published before 2026-11-17 (the three-day release-age rule): add or update with `npm install --before=<date three days back>`."
   ],
@@ -20,6 +22,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test 'src/**/*.test.mjs'",
     "check:out": "node scripts/check-out.mjs",
+    "check:live": "node scripts/check-live.mjs",
     "check": "npm run typecheck && npm run lint && npm run build && npm run test && npm run check:out"
   },
   "dependencies": {
