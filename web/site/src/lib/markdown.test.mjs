@@ -216,6 +216,22 @@ test("a picture kept under docs/ is the site's own file: sized, and a link to it
   assert.equal(md.docMediaPath(".github/assets/console-task.png"), null);
 });
 
+test("a heading inside a quote, a list or the footnotes starts a section too: the search follows the table of contents", () => {
+  const r = render(
+    "# T\n\nBefore the first heading[^1], with `evolve.loop`.\n\n## One\n\nText one.\n\n> ### In a quote\n>\n> Quoted words and `hive pair`.\n\nAfter the quote.\n\n- item\n\n  ### In a list\n\n  Listed words.\n\n#### A small heading\n\nSmall words.\n\n[^1]: The note.\n",
+  );
+  assert.deepEqual(r.toc.map((t) => t.id), ["one", "in-a-quote", "in-a-list", "footnote-label"]);
+  assert.deepEqual(r.sections.slice(1).map((s) => s.id), r.toc.map((t) => t.id));
+  const text = Object.fromEntries(r.sections.map((s) => [s.id, s.text]));
+  // What follows a heading is its section's, in the order of the page, until the next h2 or h3 wherever that stands.
+  assert.equal(text.one, "Text one.");
+  assert.equal(text["in-a-quote"], "Quoted words and hive pair. After the quote. item");
+  assert.equal(text["in-a-list"], "Listed words. A small heading Small words.");
+  assert.match(text["footnote-label"], /^The note\./);
+  assert.deepEqual(r.sections.find((s) => s.id === "in-a-quote").code, ["hive pair"]);
+  assert.deepEqual(r.sections[0].code, ["evolve.loop"]);
+});
+
 test("the links of a text, as written and in order; code and front matter are not read for links", () => {
   const source = "---\ntitle: [no](front.md)\n---\n# T\n\n[one](b.md) and [two](./a.md#top), then [one again](b.md).\n\n```md\n[not](z.md)\n```\n\n`[nor](y.md)` but <https://example.com/x> and ![a picture](p.png).\n";
   assert.deepEqual(md.markdownLinks(source), ["b.md", "./a.md#top", "b.md", "https://example.com/x"]);

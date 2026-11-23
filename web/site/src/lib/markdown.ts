@@ -348,22 +348,35 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
       }
     });
 
-    // The body cut at its h2 and h3 headings, as text: what the search index is made of.
+    // The body cut at its h2 and h3 headings, as text: what the search index is made of. The cut follows every such
+    // heading, as the table of contents does: one inside a quote, a list or the footnotes starts a section too.
     let section: Section = { id: "", text: "", code: [] };
     out.sections.push(section);
-    for (const node of tree.children) {
-      if (node.type !== "element") continue;
-      if (node.tagName === "h2" || node.tagName === "h3") {
-        section = { id: typeof node.properties.id === "string" ? node.properties.id : "", text: "", code: [] };
-        out.sections.push(section);
-        continue;
+    const cuts = (node: Element) => node.tagName === "h2" || node.tagName === "h3";
+    const holdsCut = (node: Element): boolean => node.children.some((c) => c.type === "element" && (cuts(c) || holdsCut(c)));
+    const say = (text: string) => {
+      const words = text.replace(/\s+/g, " ").trim();
+      if (words) section.text += `${section.text ? " " : ""}${words}`;
+    };
+    const cut = (nodes: readonly (HastRootContent | ElementContent)[]) => {
+      for (const node of nodes) {
+        if (node.type === "text") say(node.value);
+        if (node.type !== "element") continue;
+        if (cuts(node)) {
+          section = { id: typeof node.properties.id === "string" ? node.properties.id : "", text: "", code: [] };
+          out.sections.push(section);
+        } else if (holdsCut(node)) {
+          cut(node.children);
+        } else {
+          say(hastToString(node));
+          const into = section;
+          visit(node, "element", (n, _i, parent) => {
+            if (n.tagName === "code" && !(parent?.type === "element" && parent.tagName === "pre")) into.code.push(hastToString(n).replace(/\s+/g, " ").trim());
+          });
+        }
       }
-      section.text += `${section.text ? " " : ""}${hastToString(node).replace(/\s+/g, " ").trim()}`;
-      const into = section;
-      visit(node, "element", (n, _i, parent) => {
-        if (n.tagName === "code" && !(parent?.type === "element" && parent.tagName === "pre")) into.code.push(hastToString(n).replace(/\s+/g, " ").trim());
-      });
-    }
+    };
+    cut(tree.children);
 
     // Wide things scroll inside their own box, and a keyboard can reach them.
     visit(tree, "element", (node, index, parent) => {
