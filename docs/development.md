@@ -121,6 +121,23 @@ domain's page, is a warning on the run and not a failure: pointing the
 domain is not something a commit can fix, and a red run would only send an
 agent after it.
 
+The workflow can also be started by hand
+(`gh workflow run deploy-site.yml`). Such a run deploys the branch it was
+started on, and to production: the deploy job does not ask which branch it
+is on. Once the three secrets are set, start it on `main` only. While one
+is missing, a run on a branch is a way to run the checks on Linux, and it
+deploys nothing.
+
+The same three commands deploy from a checkout, with a Vercel login in
+place of the token. In `web/site` of a clean checkout of `main` that
+passes `npm run check`, set `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` to the
+team's and the project's ids, then run
+`npx vercel pull --yes --environment=production`, `npx vercel build --prod`
+and `npx vercel deploy --prebuilt --prod`. What is uploaded is the build's
+output, not the source. Until `VERCEL_DEPLOY_TOKEN` is set this is the only
+way the site changes, and the site shows the docs of the commit that was
+deployed, not of `main`.
+
 **Going public** takes five things. `npm run check:live` in `web/site`
 asks the public internet for each, with no login, and says which are
 still open. None of them is something a commit can do; they are the
@@ -141,11 +158,13 @@ owner's steps.
 `npm run check:live -- --site URL` looks at another address instead: a
 preview of a deploy, or this machine while it serves `web/site/out`.
 
-**Putting the domain on the site** is the owner's step, done once. On
-21 November 2026 `hivefleet.dev` is parked at its registrar, Hostinger: its
-nameservers are `aster.dns-parking.com` and `helios.dns-parking.com`, and
-every address under it, `/install.sh` included, answers with the
-registrar's parking page.
+**Putting the domain on the site** is the owner's step, done once, and it
+is done: since 23 November 2026 `hivefleet.dev` points at the Vercel
+project and serves the site, and `www.hivefleet.dev` redirects to it. The
+records are at the registrar, Hostinger, on its own nameservers
+(`aster.dns-parking.com` and `helios.dns-parking.com`). The steps stay
+here for the day the site moves to another project, or the domain to
+another DNS host.
 
 1. **Add the domain to the Vercel project.** In Vercel, open the project
    this workflow deploys to, then **Settings**, then **Domains**. Choose
@@ -170,9 +189,10 @@ registrar's parking page.
    and that the `CNAME` target is the project's own, of the form
    `d1d4fc829fe7bc7c.vercel-dns-017.com`. So copy what the page shows,
    the dot at the end of the target included, and not a value from here
-   or from another project. First remove what the parking left under the
-   same two names: the `A` record of the apex (`2.57.91.91` today) and
-   the `CNAME` that points `www` at `hivefleet.dev`. Leave no other `A`
+   or from another project. First remove what is already under the same
+   two names. While the domain was parked at Hostinger, that was an `A`
+   record on the apex (`2.57.91.91`) and a `CNAME` that pointed `www` at
+   `hivefleet.dev`. Leave no other `A`
    record and no `AAAA` record on the apex: Vercel does not serve IPv6.
    The nameservers stay as they are. Vercel's own pages for this are
    [adding a domain](https://vercel.com/docs/domains/working-with-domains/add-a-domain)
@@ -190,8 +210,8 @@ curl -fsSL https://hivefleet.dev/install.sh | head -2   # the installer's first 
 ```
 
 The first answers with `content-type: text/plain`, which
-`web/site/vercel.json` sets for the installer; the parking page answers
-`text/html`. The second prints `#!/bin/sh` and
+`web/site/vercel.json` sets for the installer; a registrar's parking page
+answers `text/html`. The second prints `#!/bin/sh` and
 `# The Hive installer, for macOS and Linux.` And the workflow's last step,
 **Check the installer at the public address**, stops warning: it prints
 `https://hivefleet.dev/install.sh serves scripts/install.sh of this commit`.
