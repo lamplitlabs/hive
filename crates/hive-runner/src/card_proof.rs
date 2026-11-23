@@ -86,14 +86,15 @@ fn proof(rc: Option<i32>, out: &str, base_rc: Option<i32>, base_out: &str) -> Pr
     }
 }
 
-/// A check passes when it exits 0 and its test runner ran a test.
+/// A check passes when it exits 0 and its test runner ran a test; the
+/// evolve planner retires a voted card by the same rule.
 fn passed(rc: Option<i32>, out: &str) -> bool {
-    rc == Some(0) && !hive_evolve::ran_no_test(out)
+    hive_evolve::check_passed(rc, out)
 }
 
 /// Output that is one integer: a count.
 fn count(out: &str) -> Option<u64> {
-    out.trim().parse().ok()
+    hive_evolve::check_count(out)
 }
 
 fn side(rc: Option<i32>, out: &str) -> String {
