@@ -1,0 +1,281 @@
+name: Install check
+
+# Installs Hive the way a person does, on every kind of machine GitHub has
+# one of, and tries what was installed: the program starts, it makes a store
+# and reads it, and its console answers (scripts/tests/smoke-installed.sh).
+#
+#   script   the install line on macOS and Linux, arm64 and x86_64
+#   linux    the install line in other Linux systems, each in a container,
+#            and the two the release is not built for, which must be told so
+#   brew     brew install lamplitlabs/tap/hivefleet on macOS and Linux
+#   wsl      the install line inside WSL on Windows, the console asked from
+#            Windows, and the services under the user's systemd
+#
+# On a schedule and by hand it takes the installer the site serves and the
+# latest release: what a person gets today. On a pull request that changes
+# the installer it takes scripts/install.sh from the pull request, against
+# the latest release. Homebrew always reads the tap, so the brew job is left
+# out of a pull request.
+#
+# It reads no secret and writes nothing: the token it runs with can only
+# read. docs/release.md, "Where a release is tried", is the list this
+# workflow keeps true.
+
+on:
+  schedule:
+    # Mondays, 05:17 UTC.
+    - cron: "17 5 * * 1"
+  pull_request:
+    paths:
+      - "scripts/install.sh"
+      - "scripts/tests/smoke-installed.sh"
+      - ".github/workflows/install-check.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # What `install` runs in every job below. Inside WSL and inside a container
+  # the checkout is not at hand, so those jobs spell the same choice out.
+  FROM_SITE: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  script:
+    name: install line, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-26
+          - macos-15
+          - macos-15-intel
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: The machine
+        run: |
+          uname -a
+          if command -v sw_vers > /dev/null; then sw_vers; fi
+          if [ -r /etc/os-release ]; then
+            sed -n '1,4p' /etc/os-release
+            getconf GNU_LIBC_VERSION || true
+          fi
+      - name: Install hive
+        run: |
+          if [ "$FROM_SITE" = true ]; then
+            curl -fsSL https://hivefleet.dev/install.sh | sh
+          else
+            sh scripts/install.sh
+          fi
+      - name: hive runs
+        run: sh scripts/tests/smoke-installed.sh "$HOME/.hive/bin/hive"
+      - name: Install hive-hand
+        run: |
+          if [ "$FROM_SITE" = true ]; then
+            curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand
+          else
+            sh scripts/install.sh --hand
+          fi
+          "$HOME/.hive-hand/bin/hive-hand" --version
+
+  linux:
+    name: install line, other Linux systems
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: In a container of each
+        run: |
+          set -u
+          failed=0
+          : > rows.md
+          if [ "$FROM_SITE" = true ]; then
+            install='curl -fsSL https://hivefleet.dev/install.sh | sh'
+          else
+            install='sh /src/scripts/install.sh'
+          fi
+          # try IMAGE WANT SETUP: SETUP gives the image what the installer
+          # asks of any machine (curl, tar, gzip). WANT is "runs", or the
+          # words the installer must say when the release does not fit.
+          try() {
+            image=$1 want=$2 setup=$3
+            echo "::group::$image"
+            if out="$(docker run --rm -v "$PWD:/src:ro" "$image" sh -c "$setup; $install && \$HOME/.hive/bin/hive version" 2>&1)"; then
+              status=0
+            else
+              status=$?
+            fi
+            echo "$out" | tail -n 12
+            echo "::endgroup::"
+            if [ "$want" = runs ]; then
+              if [ "$status" -eq 0 ]; then result="installs and starts"; else result="DOES NOT INSTALL"; failed=1; fi
+            elif [ "$status" -ne 0 ] && echo "$out" | grep -qF "$want"; then
+              result="is told: $want"
+            else
+              result="WAS NOT TOLD: $want"
+              failed=1
+            fi
+            printf '| %s | %s |\n' "$image" "$result" >> rows.md
+          }
+          apt='apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq curl ca-certificates > /dev/null 2>&1'
+          try debian:12 runs "$apt"
+          try debian:13 runs "$apt"
+          try ubuntu:22.04 runs "$apt"
+          try fedora:latest runs "true"
+          try rockylinux:9 runs "true"
+          try amazonlinux:2023 runs "dnf install -y -q tar gzip > /dev/null 2>&1"
+          try archlinux:latest runs "true"
+          try opensuse/tumbleweed:latest runs "command -v curl > /dev/null || zypper -n -q install curl > /dev/null 2>&1"
+          try ubuntu:20.04 "does not start on this machine" "$apt"
+          try alpine:latest "uses musl as its C library" "apk add -q curl"
+          {
+            echo "| image | result |"
+            echo "| --- | --- |"
+            cat rows.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
+
+  brew:
+    name: Homebrew, ${{ matrix.os }}
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-26
+          - macos-15-intel
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+    env:
+      HOMEBREW_NO_ANALYTICS: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Homebrew
+        run: |
+          set -euo pipefail
+          if ! command -v brew > /dev/null; then
+            if [[ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+              NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            fi
+            echo "/home/linuxbrew/.linuxbrew/bin" >> "$GITHUB_PATH"
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          fi
+          brew --version
+      - name: brew install hivefleet
+        run: |
+          set -euo pipefail
+          brew install lamplitlabs/tap/hivefleet
+          hive version
+          brew test lamplitlabs/tap/hivefleet
+      - name: hive runs
+        run: sh scripts/tests/smoke-installed.sh hive
+      - name: brew install hivefleet-hand
+        # On Linux, Homebrew 7.0 often ends the second install of a session
+        # from one tap with "Broken pipe", and the same line run again goes
+        # through (docs/release.md, "Homebrew"). So the line is run twice
+        # before it counts as failed.
+        run: |
+          set -uo pipefail
+          brew install lamplitlabs/tap/hivefleet-hand || {
+            echo "::warning::the first try failed; trying once more"
+            brew install lamplitlabs/tap/hivefleet-hand
+          } || exit 1
+          hive-hand --version
+          brew test lamplitlabs/tap/hivefleet-hand
+
+  wsl:
+    name: WSL, ${{ matrix.distribution }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [Ubuntu-24.04, Debian-13]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: ${{ matrix.distribution }}
+          additional-packages: curl ca-certificates procps
+          # An ordinary user, as a person's WSL has: the services are that
+          # user's, not root's.
+          wsl-shell-user: owner
+      - name: The machine, from inside
+        shell: wsl-bash {0}
+        run: |
+          uname -a
+          sed -n '1,4p' /etc/os-release
+          getconf GNU_LIBC_VERSION
+          id
+          echo "process 1 is $(ps -p 1 -o comm=)"
+      - name: Install hive
+        shell: wsl-bash {0}
+        env:
+          WSLENV: FROM_SITE
+        run: |
+          if [ "$FROM_SITE" = true ]; then
+            curl -fsSL https://hivefleet.dev/install.sh | sh
+          else
+            sh scripts/install.sh
+          fi
+      - name: hive runs
+        shell: wsl-bash {0}
+        run: sh scripts/tests/smoke-installed.sh "$HOME/.hive/bin/hive"
+      - name: The services, under the user's systemd
+        shell: wsl-bash {0}
+        run: |
+          set -eu
+          export PATH="$HOME/.hive/bin:$PATH"
+          cd "$HOME"
+          hive init --store-only
+          hive service install
+          sleep 10
+          hive service status
+          test "$(systemctl --user is-active hive-daemon)" = active
+          test "$(systemctl --user is-active hive-hub)" = active
+          # Under WSL the PATH carries the Windows one, spaces and all. When
+          # systemd reads a unit's environment only in part, its journal says
+          # so, as it did up to v0.1.6.
+          if journalctl --user --no-pager -u hive-daemon -u hive-hub | grep -F "Invalid environment assignment"; then
+            echo "::error::systemd read the environment of a unit only in part"
+            exit 1
+          fi
+      - name: The console of the service, asked by a Windows program
+        shell: pwsh
+        run: |
+          $found = @()
+          foreach ($i in 1..20) {
+            foreach ($h in 'localhost', '127.0.0.1') {
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing -Uri "http://${h}:8765/" -TimeoutSec 3
+                if ($r.StatusCode -eq 200 -and $r.Content -match '<title>Hive</title>') { $found += $h }
+              } catch { }
+            }
+            if ($found.Count -gt 0) { break }
+            Start-Sleep -Seconds 1
+          }
+          if ($found.Count -eq 0) {
+            Write-Output "::error::the console inside WSL did not answer a Windows program on port 8765"
+            exit 1
+          }
+          Write-Output "the console inside WSL answers a Windows program at: $($found -join ', ')"
+          exit 0
+      - name: The services, removed
+        if: ${{ !cancelled() }}
+        shell: wsl-bash {0}
+        run: |
+          "$HOME/.hive/bin/hive" service uninstall || true

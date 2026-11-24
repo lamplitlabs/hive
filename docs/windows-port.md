@@ -40,7 +40,7 @@ step a third one, the real target:
    fails there will fail on Windows. A pass is strong evidence, not proof:
    it does not exercise Windows-only std APIs or the third-party crates'
    own Windows builds. Those need the real target (see
-   [Proposed CI](#proposed-ci-owner-owned)).
+   [CI](#ci-owner-owned)).
 
 3. **The real target**, on one of GitHub's Windows machines
    (`windows-2025`, Rust 1.100): `cargo check --locked --workspace
@@ -284,15 +284,16 @@ behind `cfg(unix)` with a non-unix fallback that compiles.
   tree hashes and diffs will differ from the macOS ones. `hive_gitenv::env()`
   should set `GIT_CONFIG_PARAMETERS`/`-c core.autocrlf=false`.
 
-## Proposed CI (owner-owned)
+## CI (owner-owned)
 
-`.github/` is the owner's, so this page only proposes. There are two pieces.
+`.github/` is the owner's. There are two pieces: a check that runs, and a
+release target that this page only proposes.
 
 **A check, now.** `cargo check --locked --workspace --all-targets` on a
 Windows machine for every change under `crates/`, so that a unix-only call
 without a sibling is seen the day it is made. It is the real-target
 counterpart of `scripts/check-not-unix.sh`, and it sees into other crates,
-which the script cannot. Proposed as `.github/workflows/windows-check.yml`:
+which the script cannot. It is `.github/workflows/windows-check.yml`:
 
 ```yaml
   check:
@@ -309,6 +310,12 @@ which the script cannot. Proposed as `.github/workflows/windows-check.yml`:
 It runs no test: too many do not pass yet
 ([What the real target says](#what-the-real-target-says)). A crate can be
 added to a `cargo test` step there as its tests turn green.
+
+The runner watches the runs its own pushes set off, so a red run on a pull
+request Hive opened becomes a finding and one fix job
+([Pipelines](landing.md#pipelines-what-a-push-set-running-on-github)). The
+failed step ends by naming `scripts/check-not-unix.sh`, which a worker can
+run where it is.
 
 **A release target, later.** A job in the release workflow beside the macOS
 one, once work runs on Windows. A `hive.exe` that cannot run a job would
