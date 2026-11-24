@@ -463,10 +463,13 @@ export interface EvolveGate {
   constitution?: EvolveRecordRef | null;
   evaluators?: EvolveRecordRef | null;
   // ADR-031: the daemon records the baseline. The newest open baseline job
-  // (null when none is open), and when the newest one failed within the last
-  // 24 hours - the daemon retries after that - as RFC3339, "" otherwise.
+  // (null when none is open), and when the newest one failed while the daemon
+  // still holds it as RFC3339 ("" otherwise), with the time the daemon plans
+  // it again (baseline.retry_hours after the failure, lane.short_retry_minutes
+  // for a transient cause; "" without a hold, absent from an older hub).
   baseline_job?: BaselineJobRef | null;
   baseline_failed_at?: string;
+  baseline_retry_at?: string;
 }
 
 export interface ProjectCardData extends Partial<EvolveGate> {
@@ -545,6 +548,10 @@ export function evolveGate(
         (v) => typeof v === "string",
       );
       if (failed !== undefined) g.baseline_failed_at = failed;
+      const retry = [src.baseline_retry_at, other?.baseline_retry_at].find(
+        (v) => typeof v === "string",
+      );
+      if (retry !== undefined) g.baseline_retry_at = retry;
       return g;
     }
   }
@@ -2580,10 +2587,11 @@ export interface EvolveGates {
   evaluators: boolean;
   baseline: number | null; // the recorded baseline score, null when none
   baseline_id?: string;
-  // ADR-031: the daemon's baseline job while it measures, and the time of a
-  // failure within the last 24 hours ("" when none) - see EvolveGate.
+  // ADR-031: the daemon's baseline job while it measures, the time of a
+  // failure it still holds ("" when none) and when it retries - see EvolveGate.
   baseline_job?: BaselineJobRef | null;
   baseline_failed_at?: string;
+  baseline_retry_at?: string;
   public_fixtures: number;
   // ADR-033: `generated` counts the ready fixtures the daemon wrote sealed;
   // an older hub omits it.

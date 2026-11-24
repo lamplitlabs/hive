@@ -4,7 +4,7 @@
 // node --test reaches it through the inbox's tests (inbox-state.test.mjs);
 // evolve.tsx re-exports every name for its callers.
 import type { EvolveGate, EvolveLevel } from "../../lib/api";
-import { andList } from "../../lib/format";
+import { andList, span } from "../../lib/format";
 
 // The two records self-improvement reads, by what they are for.
 export const RECORD_WORD = { constitution: "Constitution", evaluators: "Scoring rules" } as const;
@@ -122,4 +122,21 @@ export function foldSteps(steps: GateStep[]): GateStep[] {
   const rest = steps.filter((s) => s.kind !== "heldout");
   const at = steps.indexOf(shared[0]);
   return [...rest.slice(0, at), one, ...rest.slice(at)];
+}
+
+// When the daemon measures a failed starting score again, as the console
+// says it. The hub names the time (`baseline_retry_at`, ADR-031): the
+// failure plus `baseline.retry_hours`, or `lane.short_retry_minutes` for a
+// transient cause. The console never assumes a period of its own; an older
+// hub that sends no time gets "later". `soon` is true once the time is
+// within the minute (or has passed): the daemon picks it up on its next
+// round.
+export type BaselineRetry = { soon: boolean; inText: string; atText: string };
+
+export function baselineRetry(retryAt: string | undefined, now: number): BaselineRetry {
+  const at = retryAt ? Date.parse(retryAt) : NaN;
+  if (!Number.isFinite(at)) return { soon: false, inText: "later", atText: "" };
+  const left = (at - now) / 1000;
+  if (left < 60) return { soon: true, inText: "on its next round", atText: retryAt as string };
+  return { soon: false, inText: "in " + span(left), atText: retryAt as string };
 }

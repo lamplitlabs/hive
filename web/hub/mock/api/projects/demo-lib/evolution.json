@@ -121,6 +121,7 @@
   "gates": {
     "baseline": null,
     "baseline_failed_at": "",
+    "baseline_retry_at": "",
     "baseline_job": null,
     "cap_reached": false,
     "constitution": true,

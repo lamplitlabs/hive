@@ -242,6 +242,7 @@ async function init() {
     evaluators: p.evaluators ?? null,
     baseline_job: p.baseline_job ?? null,
     baseline_failed_at: p.baseline_failed_at ?? "",
+    baseline_retry_at: p.baseline_retry_at ?? "",
   });
   state.projects = org.projects
     .filter((p) => p.kind !== "commons")
@@ -2610,6 +2611,7 @@ async function handle(req, res) {
             "none - the daemon plans the baseline job on its next tick (hive daemon)",
           baseline_job: null,
           baseline_failed_at: "",
+          baseline_retry_at: "",
           constitution: seeded("constitution"),
           evaluators: seeded("evaluators"),
         };
@@ -4403,6 +4405,7 @@ async function handle(req, res) {
       "evaluators",
       "baseline_job",
       "baseline_failed_at",
+      "baseline_retry_at",
     ];
     const projects = org.projects
       .filter(

@@ -10,11 +10,11 @@ import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, 
 import { DecideButtons } from "./decide-buttons";
 import { HeldoutButton } from "./heldout";
 import { evolvePlanningView } from "./evolve-planning";
-import { RECORD_WORD, gateStep, noneStep, type GateStep } from "./evolve-gate";
+import { RECORD_WORD, baselineRetry, gateStep, noneStep, type GateStep } from "./evolve-gate";
 import { Disclosure, Kv, Notice, Panel } from "./panel";
 import { Mono, ProjectLink, ToneBadge, When, Who } from "./who";
 import { cn } from "@/lib/utils";
-import { andList, fmtDate, num, parseDate, plural, rel, sentence } from "@/lib/format";
+import { andList, fmtDate, num, plural, rel, sentence } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { useApi, useNow } from "@/lib/use-api";
 import { projectPath, type EvolutionDoc, type EvolveFixture, type EvolveGate, type EvolveGates, type EvolveLevel, type EvolveRecordRef, type OwnerQuestion } from "@/lib/api";
@@ -204,28 +204,22 @@ export function EvolveBadges({ g, className }: { g: EvolveGate; className?: stri
 // ----- the starting score (baseline, ADR-031) ----------------------------------
 
 // Where the baseline stands for a project, from the row's gate fields. The
-// daemon measures it (ADR-031): a job in flight, a failure it retries after
-// 24 hours, or - fixtures ready and no step named for the owner - its next
+// daemon measures it (ADR-031): a job in flight, a failure it retries at the
+// time the hub names, or - fixtures ready and no step named for the owner - its next
 // tick; with evolve.loop off it waits for the loop instead. An older hub's
 // `hive job add ... experiment` step counts as the daemon's turn too: the
 // console never asks the owner to queue the baseline.
-export type BaselineState = { kind: "recorded" } | { kind: "measuring"; id: string; status: string } | { kind: "failed"; at: string } | { kind: "waiting"; on: "daemon" | "loop" } | { kind: "none" };
+export type BaselineState = { kind: "recorded" } | { kind: "measuring"; id: string; status: string } | { kind: "failed"; at: string; retryAt?: string } | { kind: "waiting"; on: "daemon" | "loop" } | { kind: "none" };
 
 export function baselineState(g: EvolveGate): BaselineState {
   if (g.baseline) return { kind: "recorded" };
   if (g.baseline_job) return { kind: "measuring", id: g.baseline_job.id, status: g.baseline_job.status };
-  if (g.baseline_failed_at) return { kind: "failed", at: g.baseline_failed_at };
+  if (g.baseline_failed_at) return { kind: "failed", at: g.baseline_failed_at, retryAt: g.baseline_retry_at || undefined };
   const next = g.evolve_next.trim();
   if (g.fixtures_enabled > 0 && (next === "" || noneStep(next).none || next.startsWith("hive job add"))) return { kind: "waiting", on: "daemon" };
   if (g.fixtures_enabled > 0 && next.startsWith("hive settings set evolve.loop")) return { kind: "waiting", on: "loop" };
   return { kind: "none" };
 }
-
-// Hours until the daemon retries a failed baseline: 24 from the failure, never below 0.
-export const retryHours = (failedAt: string, now: number): number => {
-  const t = parseDate(failedAt);
-  return t ? Math.max(0, Math.round(24 - (now - t.getTime()) / 3600000)) : 24;
-};
 
 // The starting score in words, for a chip or a sentence.
 function baselineWords(st: BaselineState, now: number, s?: number | null): { text: string; title: string; tone: "ok" | "info" | "warn" | "neutral" } {
@@ -235,8 +229,12 @@ function baselineWords(st: BaselineState, now: number, s?: number | null): { tex
     case "measuring":
       return { text: st.status === "leased" ? "Measuring the starting score" : "Starting score: about to be measured", title: "The runner's measuring job (" + st.id + ")", tone: "info" };
     case "failed": {
-      const h = retryHours(st.at, now);
-      return { text: "Starting score failed " + rel(st.at, now) + ", " + (h ? "retry in " + plural(h, "hour") : "retrying soon"), title: "The runner's measurement failed at " + fmtDate(st.at) + ". It tries again after 24 hours. Nothing for you to do.", tone: "warn" };
+      const r = baselineRetry(st.retryAt, now);
+      return {
+        text: "Starting score failed " + rel(st.at, now) + ", " + (r.soon ? "retrying soon" : "retry " + r.inText),
+        title: "The runner's measurement failed at " + fmtDate(st.at) + ". " + (r.atText ? "It tries again at " + fmtDate(r.atText) + "." : "It tries again later.") + " Nothing for you to do.",
+        tone: "warn",
+      };
     }
     case "waiting":
       return st.on === "loop"
@@ -273,6 +271,7 @@ export function gateOfStatus(s: EvolveGates, docs?: { constitution: EvolutionDoc
   };
   if (s.baseline_job !== undefined) g.baseline_job = s.baseline_job;
   if (typeof s.baseline_failed_at === "string") g.baseline_failed_at = s.baseline_failed_at;
+  if (typeof s.baseline_retry_at === "string") g.baseline_retry_at = s.baseline_retry_at;
   if (docs) {
     g.constitution = ref(docs.constitution);
     g.evaluators = ref(docs.evaluators);
@@ -391,8 +390,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className, 
   const optional = none.none && /^or\s+hive\b/.test(none.why) ? none.why.replace(/^or\s+/, "") : "";
   const idle = (): string => {
     if (bl?.kind === "failed") {
-      const hrs = retryHours(bl.at, now);
-      return "Nothing waits for you. Measuring the starting score failed " + rel(bl.at, now) + "; the runner tries again " + (hrs ? "in about " + plural(hrs, "hour") : "on its next round") + ".";
+      return "Nothing waits for you. Measuring the starting score failed " + rel(bl.at, now) + "; the runner tries again " + baselineRetry(bl.retryAt, now).inText + ".";
     }
     if (bl?.kind === "measuring") return "Nothing waits for you. The runner is " + (bl.status === "leased" ? "measuring" : "about to measure") + " the starting score.";
     if (none.why && !optional) return "Nothing waits for you: " + none.why.replace(/\.$/, "") + ".";

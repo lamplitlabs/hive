@@ -261,6 +261,9 @@ pub struct LoopStatus {
     pub baseline_job: Option<JobRef>,
     #[serde(rename = "baseline_failed_at")]
     pub baseline_failed_at: String,
+    /// When the daemon plans the failed baseline again (RFC3339), "" without a failure hold.
+    #[serde(rename = "baseline_retry_at", default)]
+    pub baseline_retry_at: String,
     #[serde(rename = "baseline_cache", default)]
     pub baseline_cache: crate::baseline_cache::BaselineCacheSummary,
     #[serde(rename = "baseline_fixtures", default)]
@@ -452,11 +455,20 @@ pub fn recent_baseline_failure(s: &hive_store::Store, project: &str, now: &str) 
         .unwrap_or_default())
 }
 
-pub fn recent_baseline_failure_hold(
-    s: &hive_store::Store,
-    project: &str,
-    now: &str,
-) -> Result<Option<(String, String)>> {
+/// How long the daemon holds a failed baseline before planning it again:
+/// `lane.short_retry_minutes` for a transient cause, `baseline.retry_hours`
+/// otherwise.
+fn baseline_retry_after(s: &hive_store::Store, reason: &str) -> chrono::Duration {
+    if baseline_failure_transient(reason) {
+        chrono::Duration::minutes(baseline_short_retry_minutes(s))
+    } else {
+        chrono::Duration::hours(baseline_retry_hours(s))
+    }
+}
+
+/// The newest finished baseline job of a project when it failed: its
+/// finish time and result. `None` when the newest one did not fail.
+fn last_failed_baseline(s: &hive_store::Store, project: &str) -> Result<Option<(String, String)>> {
     let conn = s.conn()?;
     let row: Option<(String, String, String)> = conn
         .query_row(
@@ -467,19 +479,43 @@ pub fn recent_baseline_failure_hold(
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some((status, finished, result)) = row else {
+    Ok(row
+        .filter(|(status, _, _)| status == "failed")
+        .map(|(_, finished, result)| (finished, result)))
+}
+
+/// When the daemon plans the baseline again after the failure that holds
+/// it (RFC3339): the failure's time plus the hold `baseline_retry_after`
+/// gives it. "" when no failure holds the baseline at `now` or the time
+/// does not parse. The console counts down to it instead of assuming a
+/// retry period of its own.
+pub fn baseline_retry_at(s: &hive_store::Store, project: &str, now: &str) -> Result<String> {
+    if recent_baseline_failure_hold(s, project, now)?.is_none() {
+        return Ok(String::new());
+    }
+    let Some((finished, result)) = last_failed_baseline(s, project)? else {
+        return Ok(String::new());
+    };
+    Ok(DateTime::parse_from_rfc3339(&finished)
+        .map(|t| {
+            (t + baseline_retry_after(s, &result))
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        })
+        .unwrap_or_default())
+}
+
+pub fn recent_baseline_failure_hold(
+    s: &hive_store::Store,
+    project: &str,
+    now: &str,
+) -> Result<Option<(String, String)>> {
+    let Some((finished, result)) = last_failed_baseline(s, project)? else {
         return Ok(None);
     };
-    if status != "failed" {
-        return Ok(None);
-    }
     let failed_at = DateTime::parse_from_rfc3339(&finished);
     let at = DateTime::parse_from_rfc3339(now);
-    let retry = if baseline_failure_transient(&result) {
-        chrono::Duration::minutes(baseline_short_retry_minutes(s))
-    } else {
-        chrono::Duration::hours(baseline_retry_hours(s))
-    };
+    let retry = baseline_retry_after(s, &result);
     if failed_at.is_err()
         || at.is_err()
         || at.unwrap().signed_duration_since(failed_at.unwrap()) < retry
@@ -582,6 +618,9 @@ pub(crate) fn loop_status(s: &hive_store::Store, project: &str) -> Result<LoopSt
         .as_ref()
         .map(|(failed_at, _)| failed_at.clone())
         .unwrap_or_default();
+    if baseline_hold.is_some() {
+        status.baseline_retry_at = baseline_retry_at(s, project, &s.now())?;
+    }
     status.baseline_cache = crate::baseline_cache::baseline_cache_summary(s, project)?;
     set_headroom(s, &mut status, project)?;
     let mut stmt = conn.prepare(&format!(
@@ -1240,6 +1279,60 @@ mod tests {
     }
 
     #[test]
+    fn baseline_retry_at_follows_the_daemons_hold() {
+        let _serial = crate::test_helpers::serial();
+        let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
+        let _guard = hive_testutil::env_lock();
+        let s = test_store();
+        disable_project_hook();
+        unsafe { std::env::set_var("HIVE_NOW", "2026-09-06T10:00:00Z") };
+        test_project(&s, "demo");
+        let fail = |at: &str, result: &str| {
+            unsafe { std::env::set_var("HIVE_NOW", at) };
+            let (job, _) = hive_board::add_job(
+                &s,
+                hive_board::JobInput {
+                    project: "demo".into(),
+                    kind: "baseline".into(),
+                    title: "Record baseline".into(),
+                    source: "baseline:demo".into(),
+                    created_by: "daemon".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            hive_board::finish_job(&s, &job.id, "aurora", "failed", result, "", None).unwrap();
+        };
+        assert_eq!(
+            baseline_retry_at(&s, "demo", "2026-09-06T10:00:00Z").unwrap(),
+            ""
+        );
+        // A setting the owner changed moves the retry, not a period the console assumes.
+        s.set_setting("human", "baseline.retry_hours", "2").unwrap();
+        fail("2026-09-06T11:00:00Z", "measurement failed");
+        assert_eq!(
+            baseline_retry_at(&s, "demo", "2026-09-06T12:59:59Z").unwrap(),
+            "2026-09-06T13:00:00Z"
+        );
+        assert_eq!(
+            baseline_retry_at(&s, "demo", "2026-09-06T13:00:00Z").unwrap(),
+            ""
+        );
+        // A transient cause is retried after lane.short_retry_minutes.
+        fail("2026-09-06T14:00:00Z", "runner error: provider unreachable");
+        assert_eq!(
+            baseline_retry_at(&s, "demo", "2026-09-06T14:01:00Z").unwrap(),
+            "2026-09-06T14:02:00Z"
+        );
+        unsafe { std::env::set_var("HIVE_NOW", "2026-09-06T14:01:00Z") };
+        assert_eq!(
+            status(&s, "demo").unwrap().baseline_retry_at,
+            "2026-09-06T14:02:00Z"
+        );
+        unsafe { std::env::remove_var("HIVE_NOW") };
+    }
+
+    #[test]
     fn status_baseline_row_job_and_failure() {
         let _serial = crate::test_helpers::serial();
         let _status_guard = STATUS_TEST_LOCK.lock().unwrap();
@@ -1292,6 +1385,7 @@ mod tests {
         .unwrap();
         st = status(&s, "demo").unwrap();
         assert_eq!(st.baseline_failed_at, "2026-09-06T11:00:00Z");
+        assert_eq!(st.baseline_retry_at, "2026-09-06T17:00:00Z");
         assert_eq!(
             st.reason,
             "baseline measurement failed at 2026-09-06T11:00:00Z; the daemon retries after 6 hours"
@@ -1301,6 +1395,7 @@ mod tests {
         unsafe { std::env::set_var("HIVE_NOW", "2026-09-06T17:00:00Z") };
         st = status(&s, "demo").unwrap();
         assert!(st.baseline_failed_at.is_empty());
+        assert!(st.baseline_retry_at.is_empty());
         assert_eq!(st.reason, "no baseline measured yet");
         unsafe { std::env::set_var("HIVE_NOW", "2026-09-06T12:00:00Z") };
         let (cancelled, _) = hive_board::add_job(
