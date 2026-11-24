@@ -11,8 +11,14 @@
 # real `cargo check --target x86_64-pc-windows-msvc` stays the proof
 # (Windows-only std APIs and third-party crates are not exercised here).
 #
+# A site that names a Windows call cannot be compiled here, so it has three
+# siblings: cfg(unix), cfg(windows) and cfg(not(any(unix, windows))). The
+# third is the one this check compiles. The copy holds no console sources,
+# so hive-hub embeds its placeholder page (HIVE_HUB_SKIP_BUILD).
+#
 # Usage: sh scripts/check-not-unix.sh [--all-targets] CRATE...
 #        sh scripts/check-not-unix.sh --leaves [--all-targets]
+#        sh scripts/check-not-unix.sh --all [--all-targets]     every crate
 # Exit status is cargo's; the scratch copy is removed afterwards. Any warning
 # fails the check (-D warnings), so off-unix noise cannot creep back in; only
 # unexpected_cfgs is allowed, for the hive_unix_off cfg this script invents.
@@ -25,21 +31,22 @@ hive-provider-fake hive-board hive-tasks hive-goals hive-goals-command
 hive-tally hive-records hive-codedelivery hive-mcp hive-voice hive-hooks
 hive-testutil"
 
+root=$(git rev-parse --show-toplevel)
 targets=""
 crates=""
 for a in "$@"; do
   case $a in
   --all-targets) targets=--all-targets ;;
   --leaves) crates="$crates $LEAVES" ;;
+  --all) crates="$crates $(cd "$root" && git ls-files crates | cut -d/ -f2 | sort -u | tr '\n' ' ')" ;;
   *) crates="$crates $a" ;;
   esac
 done
 if [ -z "$crates" ]; then
-  echo "usage: $0 [--all-targets] (--leaves | CRATE...)" >&2
+  echo "usage: $0 [--all-targets] (--leaves | --all | CRATE...)" >&2
   exit 2
 fi
 
-root=$(git rev-parse --show-toplevel)
 ws=$(mktemp -d "${TMPDIR:-/tmp}/hive-not-unix.XXXXXX")
 trap 'rm -rf "$ws"' EXIT
 (cd "$root" && git ls-files -z Cargo.toml Cargo.lock crates | xargs -0 tar -cf - | tar -xf - -C "$ws")

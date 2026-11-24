@@ -206,9 +206,9 @@ step: [Add a second machine](how-to/add-a-machine.md).
 
 ## Does it work on Windows?
 
-Not yet. Hive runs on macOS and Linux. A port is in progress: the lower
-crates already compile off unix, and the runner and the console do not yet
-([Windows port](windows-port.md)).
+Not yet. Hive runs on macOS and Linux. A port is in progress: every crate
+compiles for Windows and the program starts there and serves the console,
+but it does not run work yet ([Windows port](windows-port.md)).
 
 ## Which git hosts does it work with?
 

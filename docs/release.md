@@ -394,11 +394,13 @@ brew audit --strict --formula you/try/hivefleet
 
 ## Windows
 
-Not built yet. The runner and daemon use unix-only process, signal and file
-APIs (`std::os::unix` on about 160 lines in 84 files; services via
-launchd/systemd), so a Windows release means porting those first (TASK-091,
-[windows-port.md](windows-port.md)), not just adding a build target. The
-installer says so on Windows and stops.
+No release is built for Windows yet. The workspace compiles there, and the
+`hive.exe` that gives starts and serves the console, but the calls that
+start a job, follow it and stop it are still stubs off unix, and the
+services are launchd's and systemd's. A release would not run work, so
+there is none until those are ported
+([windows-port.md](windows-port.md)). The installer says so on Windows and
+stops.
 
 ## The two channels: `update.channel`
 
