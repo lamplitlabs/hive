@@ -213,8 +213,11 @@ whole (hive, hive-ask, hive-bus, hive-cli, hive-codedelivery, hive-gitenv,
 hive-goals, hive-goals-command, hive-provider and its five providers,
 hive-records, hive-tasks, hive-testutil, hive-voice). Most of the failures
 are in hive-evolve (105 of 228), hive-harness (32 of 382), hive-store (19
-of 145) and hive-cred (13 of 16). They have a few causes, and each is a
-piece of the port:
+of 145) and hive-cred (13 of 16). A later run, with the tests of the last
+two crates gated, gave hive-hub 226 passed and 18 failed. hive-runner did
+not finish: it was stopped after 20 minutes with 398 tests passed and 187
+failed, several of them still waiting on a process that the stubs cannot
+follow. The failures have a few causes, and each is a piece of the port:
 
 - **Paths.** `canonicalize` gives Windows' long form, `\\?\C:\...`, and
   `git` and `sh` do not take it (`git init: cannot mkdir \\?\C:\...`).
