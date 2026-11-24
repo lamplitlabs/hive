@@ -61,8 +61,30 @@
 # machine gets and exits; VERIFY_CPUS stands in for the CPU count there
 # (scripts/tests/verify-check-test.sh).
 #
+# The pre-commit gate narrows the check to what the commit can break. The
+# hook the runner installs exports HIVE_VERIFY_BASE, the commit the job
+# started from: a cold full check takes 53-57 minutes on a 2-CPU hand, and
+# the hook's `git commit` is killed at 40 (harness.commit_timeout), so a
+# worker there could never commit. With HIVE_VERIFY_BASE set, the crates
+# whose files changed since that commit are checked, with every workspace
+# crate that depends on them (cargo tree -i, dev and build edges too); a
+# crate whose changes are all test-only files (tests/, benches/, tests.rs,
+# *_tests.rs, test_helpers*.rs: compiled only into its own tests) is
+# checked alone. fmt stays whole; clippy, the test binaries and the doc
+# tests take -p for those crates; the hand's release build and strings run
+# only when hive-hand is among them. Any change outside crates/ (the
+# manifest, the lock file, scripts/, docs/, web/ that hive-hub embeds), a
+# crate this tree does not have, a base that is not a commit here, or a
+# cargo tree that fails runs the full check, as does a scope that comes to
+# every crate. A narrowed run writes `scoped` to HIVE_VERIFY_SCOPE_FILE when
+# the hook names one, and the hook then writes no verified-tree memo: the
+# run's own check and the landing, which never set HIVE_VERIFY_BASE, still
+# run everything. `--scope` prints the decision and exits
+# (scripts/tests/verify-check-test.sh).
+#
 # Usage: scripts/verify-check.sh            (the check)
 #        scripts/verify-check.sh --pool     (print the pool size and exit)
+#        scripts/verify-check.sh --scope    (print the pre-commit scope and exit)
 #        scripts/verify-check.sh --chunk S C (internal: one chunk of the pool)
 set -e
 
@@ -93,8 +115,110 @@ pool_size() {
   echo "$size"
 }
 
+# Sets scope_crates to the packages the check is narrowed to, space
+# separated, or to nothing for the full check, and scope_why to the reason
+# (see above).
+scope() {
+  scope_crates=
+  scope_why=
+  scope_base=${HIVE_VERIFY_BASE:-}
+  if [ -z "$scope_base" ]; then
+    scope_why="no HIVE_VERIFY_BASE"
+    return 0
+  fi
+  if ! git rev-parse -q --verify "$scope_base^{commit}" > /dev/null 2>&1; then
+    scope_why="HIVE_VERIFY_BASE=$scope_base is not a commit of this tree"
+    return 0
+  fi
+  # The working tree against the base, committed, staged and unstaged alike,
+  # and the files git does not track yet (cargo builds a new tests/x.rs all
+  # the same): what the check is about to build.
+  if ! scope_changed=$(git diff --name-only --no-renames "$scope_base" -- 2> /dev/null) ||
+    ! scope_new=$(git ls-files --others --exclude-standard 2> /dev/null); then
+    scope_why="git could not list the changes since $scope_base"
+    return 0
+  fi
+  scope_changed=$(printf '%s\n%s\n' "$scope_changed" "$scope_new" | grep . || true)
+  if [ -z "$scope_changed" ]; then
+    scope_why="nothing changed since $scope_base"
+    return 0
+  fi
+  scope_code=
+  scope_tests=
+  while IFS= read -r scope_path; do
+    case "$scope_path" in
+      crates/*/*) ;;
+      *)
+        scope_why="$scope_path is outside crates/"
+        return 0
+        ;;
+    esac
+    scope_dir=${scope_path#crates/}
+    scope_dir=${scope_dir%%/*}
+    if [ ! -f "crates/$scope_dir/Cargo.toml" ]; then
+      scope_why="crates/$scope_dir has no Cargo.toml"
+      return 0
+    fi
+    scope_name=$(sed -n 's/^name *= *"\(.*\)" *$/\1/p' "crates/$scope_dir/Cargo.toml" | head -n 1)
+    if [ -z "$scope_name" ]; then
+      scope_why="crates/$scope_dir/Cargo.toml names no package"
+      return 0
+    fi
+    case "${scope_path#crates/"$scope_dir"/}" in
+      tests/* | benches/* | src/tests.rs | src/*/tests.rs | src/*_tests.rs | src/test_helpers.rs | src/test_helpers_*.rs)
+        scope_tests="$scope_tests $scope_name"
+        ;;
+      *)
+        scope_code="$scope_code $scope_name"
+        ;;
+    esac
+  done << EOF
+$scope_changed
+EOF
+  scope_all=$(cargo tree --workspace --offline --depth 0 -e normal --prefix none 2> /dev/null |
+    sed -n 's/^\([^ ]*\) v[^ ]* (\/.*/\1/p' | sort -u)
+  if [ -z "$scope_all" ]; then
+    scope_why="cargo tree could not list the workspace"
+    return 0
+  fi
+  scope_set=
+  if [ -n "$scope_code" ]; then
+    set --
+    for scope_name in $scope_code; do
+      set -- "$@" -i "$scope_name"
+    done
+    if ! scope_set=$(cargo tree --workspace --offline -e normal,build,dev --prefix none "$@" 2> /dev/null); then
+      scope_why="cargo tree could not list what depends on$scope_code"
+      return 0
+    fi
+    scope_set=$(printf '%s\n' "$scope_set" | sed -n 's/^\([^ ]*\) v[^ ]* (\/.*/\1/p')
+  fi
+  scope_set=$(printf '%s\n' $scope_set $scope_tests | sort -u)
+  if [ -z "$scope_set" ]; then
+    scope_why="no workspace crate is affected"
+    return 0
+  fi
+  if [ "$(printf '%s\n' "$scope_set" | grep -c .)" -ge "$(printf '%s\n' "$scope_all" | grep -c .)" ]; then
+    scope_why="every crate depends on what changed"
+    return 0
+  fi
+  scope_crates=$(printf '%s\n' "$scope_set" | tr '\n' ' ')
+  scope_crates=${scope_crates% }
+  scope_why="$(printf '%s\n' "$scope_set" | grep -c .) of $(printf '%s\n' "$scope_all" | grep -c .) crates are affected by the changes since $scope_base"
+}
+
 if [ "${1:-}" = "--pool" ]; then
   pool_size
+  exit 0
+fi
+
+if [ "${1:-}" = "--scope" ]; then
+  scope
+  if [ -n "$scope_crates" ]; then
+    echo "crates: $scope_crates"
+  else
+    echo "full: $scope_why"
+  fi
   exit 0
 fi
 
@@ -175,15 +299,41 @@ export CARGO_TARGET_DIR
 export CARGO_INCREMENTAL
 
 began=$(date +%s)
+# The pre-commit gate's scope (see above): -p for each affected crate, or
+# the whole workspace.
+scope
+if [ -n "$scope_crates" ]; then
+  echo "verify-check: scoped to $scope_crates ($scope_why); the landing runs the full check"
+  if [ -n "${HIVE_VERIFY_SCOPE_FILE:-}" ]; then
+    echo scoped > "$HIVE_VERIFY_SCOPE_FILE" || true
+  fi
+  set --
+  doc=
+  for scope_name in $scope_crates; do
+    set -- "$@" -p "$scope_name"
+    # `cargo test --doc` refuses a package without a library (hive-hand).
+    if [ -f "crates/$scope_name/src/lib.rs" ]; then
+      doc="$doc -p $scope_name"
+    fi
+  done
+else
+  if [ -n "${HIVE_VERIFY_BASE:-}" ]; then
+    echo "verify-check: full check: $scope_why"
+  fi
+  set -- --workspace
+  doc=--workspace
+fi
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy "$@" --all-targets -- -D warnings
 # The hand links none of the brain and carries none of its brief text
 # (ADR-070 rule 1): its dependency graph, the check's own self-test on a bad
 # manifest, and the release binary a customer installs.
 sh scripts/check-hand-deps.sh deps
 sh scripts/check-hand-deps.sh self-test
-cargo build -q -p hive-hand --release
-sh scripts/check-hand-deps.sh strings "$CARGO_TARGET_DIR/release/hive-hand"
+if [ -z "$scope_crates" ] || printf ' %s ' "$scope_crates" | grep -q ' hive-hand '; then
+  cargo build -q -p hive-hand --release
+  sh scripts/check-hand-deps.sh strings "$CARGO_TARGET_DIR/release/hive-hand"
+fi
 
 # A check killed outright (the daemon's timeout) cannot run its trap; its
 # directory is swept by a later run once it is a day old.
@@ -195,7 +345,7 @@ trap 'exit 130' INT TERM HUP
 mkdir -p "$work/chunk" "$work/log" "$work/tmp" "$work/status"
 export VERIFY_CHECK_WORK="$work"
 
-cargo test --workspace --no-run --message-format=json-render-diagnostics > "$work/build.json"
+cargo test "$@" --no-run --message-format=json-render-diagnostics > "$work/build.json"
 # One line per test binary: its package's manifest and the executable.
 grep '"profile":{[^}]*"test":true}' "$work/build.json" | grep '"executable":"' |
   sed -n 's/.*"manifest_path":"\([^"]*\)".*"executable":"\([^"]*\)".*/\1	\2/p' > "$work/binaries" || true
@@ -206,7 +356,10 @@ fi
 built=$(date +%s)
 
 # Doc tests are compiled by rustdoc, not listed: cargo runs them as before.
-cargo test --workspace --doc
+if [ -n "$doc" ]; then
+  # shellcheck disable=SC2086 # one word per flag
+  cargo test $doc --doc
+fi
 
 per=${VERIFY_CHUNK_TESTS:-20}
 pool=$(pool_size)

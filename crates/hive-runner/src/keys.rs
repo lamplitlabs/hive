@@ -124,6 +124,15 @@ pub(crate) const PRE_COMMIT_HOOK_UNSET: &str = "unset GIT_INDEX_FILE GIT_PREFIX 
 /// inside the lock that every other verifier keys by (`run::verify_memo_key`,
 /// landing's `vc_run`). The two differ only by the touch, which says nothing
 /// about what was verified.
+///
+/// `base` is the commit the job started from. The hook exports it as
+/// `HIVE_VERIFY_BASE` with a fresh `HIVE_VERIFY_SCOPE_FILE` beside it, so a
+/// check that can narrow itself to what changed since the base does
+/// (`scripts/verify-check.sh` checks the affected crates only: a cold full
+/// check outlasts `harness.commit_timeout` on a 2-CPU hand). A check that
+/// narrowed itself writes to the scope file, and the hook then writes no
+/// verified-tree memo: the memo stands for the full check, which the run's
+/// own check and the landing still run. An empty `base` exports nothing.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pre_commit_hook_script(
     check_cmd: &str,
@@ -134,6 +143,7 @@ pub(crate) fn pre_commit_hook_script(
     hive_home: &str,
     project: &str,
     agent: &str,
+    base: &str,
 ) -> String {
     let mut b = String::new();
     b.push_str("#!/bin/sh\n");
@@ -148,6 +158,7 @@ pub(crate) fn pre_commit_hook_script(
         }
     }
     prepend_verify_memo_skip(&mut b, memo_cmd, clone, hive_home, project);
+    prepend_verify_scope(&mut b, base);
     // The verify runs in a subshell: the lock wrapper ends in `exit`, which
     // would otherwise leave the hook before the memo below is written.
     b.push_str("(\n");
@@ -156,10 +167,41 @@ pub(crate) fn pre_commit_hook_script(
     } else {
         b.push_str(&crate::recipe::mise_wrap_shell(pins, check_cmd, clone));
     }
-    b.push_str("\n)\nrc=$?\nif [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi\n");
+    b.push_str("\n)\nrc=$?\n");
+    b.push_str(VERIFY_SCOPE_READ);
+    b.push_str("if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi\n");
+    b.push_str("if [ -n \"$hive_scoped\" ]; then\n  echo \"hive: the commit's check was scoped to what changed since the job's base; no verified-tree memo is written, so the run's check and the landing run the full check\" >&2\n  exit 0\nfi\n");
     append_verify_memo_hook(&mut b, memo_cmd, clone, hive_home, project, agent);
     b
 }
+
+/// Exports `HIVE_VERIFY_BASE` and `HIVE_VERIFY_SCOPE_FILE` for the check
+/// (see [`pre_commit_hook_script`]). Without a scope file to read back the
+/// base is not exported either: a check that narrowed itself unseen would
+/// leave a memo for a full check that never ran.
+fn prepend_verify_scope(b: &mut String, base: &str) {
+    let base = base.trim();
+    if base.is_empty() {
+        b.push_str("hive_scope_file=\n");
+        return;
+    }
+    let base_q = crate::util::shell_quote(base);
+    let _ = writeln!(
+        b,
+        "hive_scope_file=$(mktemp \"${{TMPDIR:-/tmp}}/hive-verify-scope.XXXXXX\" 2>/dev/null || true)
+if [ -n \"$hive_scope_file\" ]; then
+  export HIVE_VERIFY_BASE={base_q} HIVE_VERIFY_SCOPE_FILE=\"$hive_scope_file\"
+fi"
+    );
+}
+
+/// Reads back whether the check narrowed itself, then removes the scope file.
+const VERIFY_SCOPE_READ: &str = "hive_scoped=
+if [ -n \"$hive_scope_file\" ]; then
+  if [ -s \"$hive_scope_file\" ]; then hive_scoped=1; fi
+  rm -f \"$hive_scope_file\"
+fi
+";
 
 /// The gate skips the rerun when this store already holds a fresh memo for the
 /// identical index tree verified with the identical verify command: the memo
@@ -740,6 +782,7 @@ mod tests {
             "/home/me/.hive",
             "proj",
             "aurora",
+            "",
         );
         assert!(script.contains(&check), "{script}");
         assert!(
@@ -768,6 +811,7 @@ mod tests {
             "/home/me/.hive",
             "proj",
             "aurora",
+            "",
         );
         let hash = crate::verify_memo::verify_sha256("cargo test -p hive-runner");
         assert!(script.contains("git write-tree"), "{script}");
@@ -795,6 +839,108 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The hook hands the check the job's base (`HIVE_VERIFY_BASE`), so a
+    /// check like scripts/verify-check.sh can test only the crates a commit
+    /// touches and fit `harness.commit_timeout` on a 2-CPU hand. A check that
+    /// narrowed itself says so in `HIVE_VERIFY_SCOPE_FILE`; the hook then
+    /// writes no verified-tree memo, so the run's check and the landing, which
+    /// trust that memo, still run the full check. A check that ran in full
+    /// writes the memo as before, and a hook installed without a base exports
+    /// neither variable.
+    #[test]
+    fn pre_commit_hook_hands_the_base_to_the_check_and_writes_no_memo_for_a_scoped_check() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        git_in(&clone, &["init", "-q", "-b", "main"]);
+        git_in(&clone, &["config", "user.email", "t@example.com"]);
+        git_in(&clone, &["config", "user.name", "t"]);
+        git_in(&clone, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(clone.join("a.txt"), "base\n").unwrap();
+        git_in(&clone, &["add", "a.txt"]);
+        git_in(&clone, &["commit", "-q", "-m", "base"]);
+        let base = git_in(&clone, &["rev-parse", "HEAD"]);
+        let seen = dir.path().join("seen");
+        let scope_files = dir.path().join("scope-files");
+        // The check records the base it was given and narrows itself while
+        // a `scoped` file sits in the clone, as verify-check.sh does when
+        // only some crates changed.
+        let verify = format!(
+            "printf '%s\\n' \"${{HIVE_VERIFY_BASE:-none}}\" >> {seen}\nprintf '%s\\n' \"${{HIVE_VERIFY_SCOPE_FILE:-}}\" >> {files}\nif [ -f scoped ] && [ -n \"${{HIVE_VERIFY_SCOPE_FILE:-}}\" ]; then echo scoped > \"$HIVE_VERIFY_SCOPE_FILE\"; fi",
+            seen = crate::util::shell_quote(&seen.display().to_string()),
+            files = crate::util::shell_quote(&scope_files.display().to_string()),
+        );
+        let clone_s = clone.display().to_string();
+        let home_s = home.display().to_string();
+        let script = pre_commit_hook_script(
+            &verify,
+            &verify,
+            None,
+            &[],
+            &clone_s,
+            &home_s,
+            "proj",
+            "aurora",
+            &base,
+        );
+        write_pre_commit_hook(&clone_s, &script).unwrap();
+        let memo = |tree: &str| {
+            crate::verify_memo::lookup(&home_s, "proj", tree, &verify, 24, chrono::Utc::now())
+        };
+        let seen_lines = || {
+            std::fs::read_to_string(&seen)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        // A scoped check: the commit lands, no memo stands for its tree.
+        std::fs::write(clone.join("scoped"), "").unwrap();
+        git_in(&clone, &["add", "scoped"]);
+        git_in(&clone, &["commit", "-q", "-m", "scoped"]);
+        assert_eq!(seen_lines(), vec![base.clone()], "the check gets the base");
+        let scoped_tree = git_in(&clone, &["rev-parse", "HEAD^{tree}"]);
+        assert!(
+            memo(&scoped_tree).is_none(),
+            "a scoped check leaves no memo for the full check to trust"
+        );
+        // So the same tree is checked again on the next commit.
+        git_in(&clone, &["commit", "-q", "--amend", "-m", "scoped again"]);
+        assert_eq!(seen_lines().len(), 2, "no memo, so the check runs again");
+
+        // A full check: the memo is written as before.
+        git_in(&clone, &["rm", "-q", "scoped"]);
+        git_in(&clone, &["commit", "-q", "-m", "full"]);
+        let full_tree = git_in(&clone, &["rev-parse", "HEAD^{tree}"]);
+        assert!(memo(&full_tree).is_some(), "a full check writes its memo");
+        let files = std::fs::read_to_string(&scope_files).unwrap_or_default();
+        assert_eq!(files.lines().count(), 3, "{files}");
+        for file in files.lines() {
+            assert!(
+                !file.is_empty() && !std::path::Path::new(file).exists(),
+                "the hook removes the scope file {file:?} once it read it"
+            );
+        }
+
+        // Without a base the hook exports nothing.
+        let bare = pre_commit_hook_script(
+            &verify,
+            &verify,
+            None,
+            &[],
+            &clone_s,
+            &home_s,
+            "proj",
+            "aurora",
+            "",
+        );
+        assert!(!bare.contains("export HIVE_VERIFY_BASE"), "{bare}");
+        assert!(script.contains("export HIVE_VERIFY_BASE="), "{script}");
     }
 
     /// A commit of a tree already verified on this store with the same command
@@ -828,6 +974,7 @@ mod tests {
             &home_s,
             "proj",
             "aurora",
+            "",
         );
         write_pre_commit_hook(&clone_s, &script).unwrap();
 
@@ -894,6 +1041,7 @@ mod tests {
             &home.display().to_string(),
             "proj",
             "aurora",
+            "",
         );
         write_pre_commit_hook(&clone.display().to_string(), &script).unwrap();
 

@@ -75,6 +75,9 @@ pub(crate) trait Executor {
     /// `memo_cmd` is the check as every verifier keys its memo, the bare
     /// command inside the lock (`run::verify_memo_key`), so a memo the hook
     /// writes is good for the run's own check, a landing and a base check.
+    /// `base` is the commit the job started from: the hook hands it to the
+    /// check so a check that can narrow itself to what changed does
+    /// (`keys::pre_commit_hook_script`).
     #[allow(clippy::too_many_arguments)]
     fn install_pre_commit_hook(
         &self,
@@ -85,6 +88,7 @@ pub(crate) trait Executor {
         hive_home: &str,
         project: &str,
         agent: &str,
+        base: &str,
     ) -> Result<()>;
     fn fetch_source(&self) -> String;
     fn fetch_env(&self) -> Vec<String>;
@@ -516,6 +520,7 @@ impl Executor for LocalExec {
         hive_home: &str,
         project: &str,
         agent: &str,
+        base: &str,
     ) -> Result<()> {
         if check_cmd.is_empty() {
             return Ok(());
@@ -531,6 +536,7 @@ impl Executor for LocalExec {
                 hive_home,
                 project,
                 agent,
+                base,
             ),
         )
     }
@@ -1019,6 +1025,7 @@ impl Executor for SshExec {
         hive_home: &str,
         project: &str,
         agent: &str,
+        base: &str,
     ) -> Result<()> {
         if check_cmd.is_empty() {
             return Ok(());
@@ -1032,6 +1039,7 @@ impl Executor for SshExec {
             hive_home,
             project,
             agent,
+            base,
         );
         let (rc, out, err) = self.call(
             &["hook".into(), self.local.job.str("id")],
