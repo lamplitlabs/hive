@@ -247,6 +247,13 @@ jobs:
           hive service status
           test "$(systemctl --user is-active hive-daemon)" = active
           test "$(systemctl --user is-active hive-hub)" = active
+          # Under WSL the PATH carries the Windows one, spaces and all. When
+          # systemd reads a unit's environment only in part, its journal says
+          # so, as it did up to v0.1.6.
+          if journalctl --user --no-pager -u hive-daemon -u hive-hub | grep -F "Invalid environment assignment"; then
+            echo "::error::systemd read the environment of a unit only in part"
+            exit 1
+          fi
       - name: The console of the service, asked by a Windows program
         shell: pwsh
         run: |
