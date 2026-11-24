@@ -1686,6 +1686,7 @@ pub(crate) fn run_job(
                 &home,
                 &project.str("slug"),
                 agent,
+                &base,
             )?;
         }
         let shown = cmd
@@ -4485,6 +4486,7 @@ mod tests {
             _: &str,
             _: &str,
             _: &str,
+            _: &str,
         ) -> Result<()> {
             Ok(())
         }
@@ -4558,6 +4560,7 @@ mod tests {
             _: &str,
             _: Option<&crate::recipe::Recipe>,
             _: &[String],
+            _: &str,
             _: &str,
             _: &str,
             _: &str,
@@ -4910,6 +4913,7 @@ mod tests {
                     &s.home,
                     "proj",
                     "aurora",
+                    "",
                 ),
             )
             .unwrap();

@@ -3041,6 +3041,7 @@ mod tests {
             "/home/me/.hive",
             "proj",
             "aurora",
+            "",
         );
         assert!(
             script.contains("export CI=1 FOO='bar baz'"),
@@ -3090,6 +3091,7 @@ mod tests {
             "/home/me/.hive",
             "proj",
             "aurora",
+            "",
         );
         assert!(
             script.contains("export CI=1"),
