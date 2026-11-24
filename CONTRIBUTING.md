@@ -36,7 +36,11 @@ It runs `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
 with `verify-check: ok`. It takes a while: the tests run in chunks, half
 as many at once as the machine has CPUs (at least 2, at most 8);
 `VERIFY_POOL=N` sets that number and `sh scripts/verify-check.sh --pool`
-prints the one it would use. For a quick loop, run the part you changed:
+prints the one it would use. A worker's pre-commit gate is narrower: with
+`HIVE_VERIFY_BASE` set it checks only the crates changed since that commit and
+the crates that depend on them (a console change checks `hive-hub` and `hive`),
+and `sh scripts/verify-check.sh --scope` prints the decision; the landing and a
+plain run still check everything. For a quick loop, run the part you changed:
 
 ```bash
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
