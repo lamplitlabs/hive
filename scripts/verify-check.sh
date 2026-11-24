@@ -70,10 +70,14 @@
 # crate that depends on them (cargo tree -i, dev and build edges too); a
 # crate whose changes are all test-only files (tests/, benches/, tests.rs,
 # *_tests.rs, test_helpers*.rs: compiled only into its own tests) is
-# checked alone. fmt stays whole; clippy, the test binaries and the doc
-# tests take -p for those crates; the hand's release build and strings run
-# only when hive-hand is among them. Any change outside crates/ (the
-# manifest, the lock file, scripts/, docs/, web/ that hive-hub embeds), a
+# checked alone. A change under web/hub (the console) counts as hive-hub
+# code, which builds and embeds it, so it checks hive-hub and hive; one
+# under web/hub/mock also checks hive-store, whose settings test reads the
+# mock (scripts/tests/verify-check-hub-scope-test.sh). fmt stays whole;
+# clippy, the test binaries and the doc tests take -p for those crates;
+# the hand's release build and strings run only when hive-hand is among
+# them. Any other change outside crates/ (the manifest, the lock file,
+# scripts/, docs/, web/site), a
 # crate this tree does not have, a base that is not a commit here, or a
 # cargo tree that fails runs the full check, as does a scope that comes to
 # every crate. A narrowed run writes `scoped` to HIVE_VERIFY_SCOPE_FILE when
@@ -148,6 +152,24 @@ scope() {
   while IFS= read -r scope_path; do
     case "$scope_path" in
       crates/*/*) ;;
+      web/hub/*)
+        # The console is hive-hub's code: its build.rs builds web/hub into
+        # the export server.rs embeds, and its tests read files under
+        # web/hub/src. The mock is read by hive-store's settings test too.
+        if [ ! -f crates/hive-hub/Cargo.toml ]; then
+          scope_why="$scope_path is outside crates/ and this tree has no crates/hive-hub"
+          return 0
+        fi
+        scope_code="$scope_code hive-hub"
+        case "$scope_path" in
+          web/hub/mock/*)
+            if [ -f crates/hive-store/Cargo.toml ]; then
+              scope_tests="$scope_tests hive-store"
+            fi
+            ;;
+        esac
+        continue
+        ;;
       *)
         scope_why="$scope_path is outside crates/"
         return 0
