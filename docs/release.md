@@ -190,6 +190,12 @@ as it should be, on Ubuntu 20.04 (glibc 2.31), AlmaLinux 8 (2.28) and
 Alpine (musl). Amazon Linux's container image has no `tar`, which the
 installer asks for by name.
 
+The workflow `.github/workflows/install-check.yml` asks the same of the
+latest release every Monday, of a pull request that changes the installer,
+and when it is started by hand: the install line on macOS and Linux, in
+containers of the other Linux systems, through Homebrew, and inside WSL
+with the services and the console asked from Windows. It reads no secret.
+
 To try an installed `hive` on your own machine the same way:
 
 ```sh

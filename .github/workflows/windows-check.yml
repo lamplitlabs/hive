@@ -1,0 +1,76 @@
+name: Windows check
+
+# Compiles the whole workspace, tests included, for Windows on a Windows
+# machine. The port is not finished: hive does not run work on Windows
+# itself yet (docs/windows-port.md). What this keeps is the step already
+# taken: every crate compiles there, so a change that uses a unix-only call
+# without a sibling for other systems is seen the day it is made, not when
+# someone next tries to build for Windows.
+#
+# scripts/check-not-unix.sh asks nearly the same on a Mac or a Linux machine
+# with no Windows toolchain. This is the proof on the real target: it also
+# sees what another crate offers on Windows only, which the script cannot.
+#
+# It runs no test. A good part of the tests do not pass on Windows yet, and
+# the port page tracks which.
+#
+# Hive's runner watches the runs its own pushes set off (docs/landing.md,
+# "Pipelines"), so a red run here on a pull request Hive opened becomes a
+# finding and a fix job. The last lines of the failed step are what that
+# job is told, which is why they name the check a worker can run itself.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-check.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/windows-check.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: cargo check, x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      # The console is not what is checked here: embed the placeholder page.
+      HIVE_HUB_SKIP_BUILD: "1"
+      # aws-lc-sys ships its assembly built, so the machine needs no NASM.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_INCREMENTAL: "0"
+      # Plain text: the last lines of a failed step are handed to a worker.
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc -vV
+      - name: cargo check, libraries, programs and tests
+        shell: bash
+        run: |
+          if ! cargo check --locked --workspace --all-targets; then
+            echo
+            echo "This does not compile for Windows (x86_64-pc-windows-msvc)."
+            echo "A unix-only call needs a sibling for other systems: docs/windows-port.md."
+            echo "Most of it shows on a Mac or a Linux machine too, with:"
+            echo "  sh scripts/check-not-unix.sh --all --all-targets"
+            exit 1
+          fi
