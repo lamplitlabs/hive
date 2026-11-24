@@ -2992,9 +2992,18 @@ fn symlink_lock(pid: &str, path: &Path) -> std::io::Result<()> {
     unix_fs::symlink(pid, path)
 }
 
+/// Off unix the lock is a file, made only when none is there, so a lock
+/// that is held is never written over. Its holder is not read back the way
+/// a link's target is, so a lock that a crash left behind stays until it is
+/// removed by hand.
 #[cfg(not(unix))]
 fn symlink_lock(pid: &str, path: &Path) -> std::io::Result<()> {
-    std::fs::write(path, pid)
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(pid.as_bytes())
 }
 
 fn verify_lock_safe_slug(slug: &str) -> String {

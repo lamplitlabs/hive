@@ -159,7 +159,9 @@ callers, and not the port: the port replaces it.
     callers ask before they take a lock from its holder or sweep a
     directory, so no lock is stolen and nothing is removed from under a
     process that may still run; what a crash left behind waits for its age
-    rule.
+    rule. The verify lock is a link on unix and was a file written over
+    off unix, which took the lock from any holder: it is now made only
+    when none is there, and one left behind waits for a hand.
   - `hive daemon` takes a **fresh heartbeat for a live daemon**, as it
     cannot ask the pid, and so does not start a second daemon on one store.
   - The watchdog has **no SIGUSR1** to ask for a stack dump with. Its
