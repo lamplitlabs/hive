@@ -191,12 +191,14 @@ impl DaemonWatchdog {
 
 /// The SIGUSR1 subscription: dropped when the watchdog's run ends, which
 /// unregisters the handler.
+#[cfg(unix)]
 struct Usr1 {
     signals: crossbeam_channel::Receiver<()>,
     handle: Option<signal_hook::iterator::Handle>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(unix)]
 impl Usr1 {
     fn notify() -> Self {
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -225,6 +227,7 @@ impl Usr1 {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Usr1 {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
@@ -232,6 +235,26 @@ impl Drop for Usr1 {
         }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+    }
+}
+
+/// Off unix there is no SIGUSR1 to ask for a dump with, so nothing ever
+/// arrives. The sender is kept: a channel whose sender is gone reads as
+/// ready for ever, and the watchdog would write dump after dump.
+#[cfg(not(unix))]
+struct Usr1 {
+    signals: crossbeam_channel::Receiver<()>,
+    _open: crossbeam_channel::Sender<()>,
+}
+
+#[cfg(not(unix))]
+impl Usr1 {
+    fn notify() -> Self {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        Self {
+            signals: rx,
+            _open: tx,
         }
     }
 }

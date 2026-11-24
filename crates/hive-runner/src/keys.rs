@@ -10,11 +10,25 @@ pub(crate) use hive_hand_core::local::{
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 pub(crate) static OWNER_PATHS: &[&str] = hive_tally::OWNER_PATHS;
+
+/// Sets a file's permission bits.
+#[cfg(unix)]
+fn set_mode(path: impl AsRef<Path>, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// Off unix there are no mode bits: the file keeps what its directory gives
+/// it. An owner-only ACL is an open step of the port (docs/windows-port.md).
+#[cfg(not(unix))]
+fn set_mode(_path: impl AsRef<Path>, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 pub(crate) fn make_run_key(path: &str, agent: &str, run_id: &str) -> Result<String> {
     let pub_path = format!("{path}.pub");
     let _ = std::fs::remove_file(path);
@@ -64,7 +78,7 @@ pub(crate) fn make_run_key(path: &str, agent: &str, run_id: &str) -> Result<Stri
             );
         }
     }
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    let _ = set_mode(path, 0o600);
     if !crate::util::file_exists(path) {
         return Err(crate::util::fail(1, format!("the run's signing key was not written at {path}; commits would fail at commit time (ADR-022)")).into());
     }
@@ -217,7 +231,7 @@ pub(crate) fn write_pre_commit_hook(clone: &str, script: &str) -> Result<()> {
         .join("hooks")
         .join("pre-commit");
     std::fs::write(&hook, script)?;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    set_mode(&hook, 0o755)?;
     Ok(())
 }
 pub fn signers_line(agent: &str, pubkey: &str) -> String {
@@ -308,7 +322,7 @@ pub(crate) fn landing_problems(
     if let Err(e) = std::fs::write(signers_path, signers_line(agent, pubkey)) {
         return vec![format!("could not write the allowed-signers file: {e}")];
     }
-    let _ = std::fs::set_permissions(signers_path, std::fs::Permissions::from_mode(0o600));
+    let _ = set_mode(signers_path, 0o600);
     let format = "%H%x1f%G?%x1f%an%x1f%ae%x1f%(trailers:key=Hive-Agent,valueonly,separator=%x1d)%x1f%(trailers:key=Hive-Job,valueonly,separator=%x1d)%x1e";
     let allowed = format!("gpg.ssh.allowedSignersFile={signers_path}");
     let format_arg = format!("--format={format}");

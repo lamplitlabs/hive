@@ -39,6 +39,9 @@ const INPUTS: &[&str] = &[
 ];
 
 const SKIP_ENV: &str = "HIVE_HUB_SKIP_BUILD";
+/// npm as a program to start. On Windows it is a batch file, and a batch
+/// file is only found under its full name.
+const NPM: &str = if cfg!(windows) { "npm.cmd" } else { "npm" };
 
 const PLACEHOLDER: &str = "<!doctype html>\n<html lang=\"en\">\n<head><meta charset=\"utf-8\"><title>Hive console</title></head>\n<body><p>The Hive console was not built: install Node.js 22+ and rebuild <code>hive</code>.</p></body>\n</html>\n";
 
@@ -87,7 +90,7 @@ fn main() {
 /// Whether `npm` can be started at all; a failure of any other kind is left
 /// to the real run, which reports it.
 fn npm_available() -> bool {
-    match Command::new("npm").arg("--version").output() {
+    match Command::new(NPM).arg("--version").output() {
         Ok(output) => output.status.success(),
         Err(err) => err.kind() != std::io::ErrorKind::NotFound,
     }
@@ -109,7 +112,7 @@ fn needs_install(hub: &Path) -> bool {
 }
 
 fn npm(hub: &Path, args: &[&str]) {
-    let output = Command::new("npm")
+    let output = Command::new(NPM)
         .args(args)
         .current_dir(hub)
         // Keep the build off the network and out of git's hook environment:

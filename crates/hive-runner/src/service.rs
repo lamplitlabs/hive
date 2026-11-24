@@ -442,7 +442,12 @@ pub(crate) fn unit_commands(
     action: String,
 ) -> Vec<Vec<String>> {
     if kind == "launchd" {
-        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        #[cfg(unix)]
+        let uid = unsafe { libc::getuid() };
+        // launchd is macOS's, so off unix this arm is not asked for.
+        #[cfg(not(unix))]
+        let uid = 0;
+        let domain = format!("gui/{uid}");
         return match action.as_str() {
             "install" => vec![
                 vec![

@@ -28,11 +28,13 @@ pub(crate) static HANDOVER_DELAY: std::sync::LazyLock<Mutex<Duration>> =
 
 /// SIGTERM and SIGINT cancel the token while the guard lives; dropping it
 /// unregisters the handlers again.
+#[cfg(unix)]
 struct SignalStop {
     handle: signal_hook::iterator::Handle,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(unix)]
 impl SignalStop {
     fn notify(cancel: &hive_bus::CancellationToken) -> Result<Self> {
         let mut signals = signal_hook::iterator::Signals::new([
@@ -55,9 +57,65 @@ impl SignalStop {
     }
 }
 
+#[cfg(unix)]
 impl Drop for SignalStop {
     fn drop(&mut self) {
         self.handle.close();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// signal-hook has no signal iterator off unix. There the first Ctrl+C sets
+/// a flag (signal_hook::flag) and a watcher thread turns it into the cancel;
+/// dropping the guard unregisters the handler and stops the watcher. The
+/// same shape as hive-evolve's `SignalStop`.
+#[cfg(not(unix))]
+struct SignalStop {
+    id: Option<signal_hook::SigId>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(not(unix))]
+impl SignalStop {
+    fn notify(cancel: &hive_bus::CancellationToken) -> Result<Self> {
+        let hit = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (cancel, watch_hit, watch_stop) = (cancel.clone(), hit.clone(), stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("hub-signals".into())
+            .spawn(move || {
+                while !watch_stop.load(Ordering::Relaxed) {
+                    if watch_hit.load(Ordering::Relaxed) {
+                        cancel.cancel();
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })?;
+        // Built before the handler so a failed registration stops the watcher.
+        let mut guard = Self {
+            id: None,
+            stop,
+            thread: Some(thread),
+        };
+        guard.id = Some(signal_hook::flag::register(
+            signal_hook::consts::SIGINT,
+            hit,
+        )?);
+        Ok(guard)
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for SignalStop {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            signal_hook::low_level::unregister(id);
+        }
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }

@@ -256,6 +256,39 @@ pub fn status_line(home: &Path) -> String {
     }
 }
 
+/// A symlink to a directory. Windows tells a link to a directory from a
+/// link to a file; unix has one kind.
+#[cfg(unix)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn symlink_dir(_target: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// A symlink to a file.
+#[cfg(unix)]
+fn symlink_file(target: &str, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_file(target: &str, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn symlink_file(_target: &str, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
 /// Replaces `link` with a symlink to `target` in one step: the new link is
 /// made beside it and renamed over, so no reader sees the name missing.
 fn replace_symlink(link: &Path, target: &Path) -> Result<()> {
@@ -267,10 +300,7 @@ fn replace_symlink(link: &Path, target: &Path) -> Result<()> {
         std::process::id()
     ));
     let _ = fs::remove_file(&tmp);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(target, &tmp)?;
-    #[cfg(not(unix))]
-    std::os::windows::fs::symlink_dir(target, &tmp)?;
+    symlink_dir(target, &tmp)?;
     if let Ok(meta) = fs::symlink_metadata(link)
         && meta.is_dir()
     {
@@ -543,10 +573,7 @@ fn is_mount_point(_dir: &Path) -> bool {
 fn probe_symlinks(target: &Path) -> Result<()> {
     let probe = target.join(format!(".symlink-probe.{}", std::process::id()));
     let _ = fs::remove_file(&probe);
-    #[cfg(unix)]
-    let made = std::os::unix::fs::symlink("probe", &probe);
-    #[cfg(not(unix))]
-    let made = std::os::windows::fs::symlink_file("probe", &probe);
+    let made = symlink_file("probe", &probe);
     let _ = fs::remove_file(&probe);
     made.map_err(|e| {
         anyhow!(

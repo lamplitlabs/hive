@@ -707,9 +707,13 @@ fn record(s: &hive_store::Store, o: &Outcome) {
 
 /// This machine's name, as a file name part: `Manishs-MacBook-Pro-2`.
 pub(crate) fn host_name() -> String {
+    #[cfg(unix)]
     let raw = nix::unistd::gethostname()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_default();
+    // Off unix: the name the system puts in the environment (Windows).
+    #[cfg(not(unix))]
+    let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
     let short = raw.split('.').next().unwrap_or_default();
     let clean: String = short
         .chars()

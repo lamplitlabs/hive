@@ -414,12 +414,23 @@ fn first_line(text: &str) -> String {
         .to_string()
 }
 
+#[cfg(unix)]
 pub(crate) fn process_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
     let rc = unsafe { libc::kill(pid, 0) };
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Off unix a process cannot be asked whether it lives yet
+/// (docs/windows-port.md), so a pid on record reads as alive. That is the
+/// careful side for every caller here: no lock is taken from its holder and
+/// nothing is swept from under a process that may still run. The price is
+/// that what a crash left behind waits for its age rule, or for a hand.
+#[cfg(not(unix))]
+pub(crate) fn process_alive(pid: i32) -> bool {
+    pid > 0
 }
 
 pub(crate) fn round_duration(d: std::time::Duration) -> String {

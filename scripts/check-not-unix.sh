@@ -59,6 +59,7 @@ for c in $crates; do
     s/cfg_attr\(unix,/cfg_attr(hive_unix_off,/g;
     s/cfg\(all\(unix,/cfg(all(hive_unix_off,/g;
     s/cfg\(all\(test, unix\)\)/cfg(all(test, hive_unix_off))/g;
+    s/cfg\(not\(any\(unix, windows\)\)\)/cfg(not(any(hive_unix_off, windows)))/g;
     s/target_os = "(macos|linux)"/target_os = "hive_off"/g;
     s/std::os::unix/std::os::hive_unix_off/g;
     s/signal_hook::iterator/signal_hook::hive_iterator_off/g;
@@ -68,6 +69,8 @@ for c in $crates; do
 done
 
 cd "$ws"
+# The copy holds no console sources, so hive-hub embeds its placeholder page.
+export HIVE_HUB_SKIP_BUILD=1
 # Build into the caller's target dir when set, so a second run is warm; the
 # rewritten sources fingerprint differently, so they never serve a real build.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ws/target}/not-unix"
