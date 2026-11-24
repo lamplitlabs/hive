@@ -615,6 +615,31 @@ base, scoring `0.6667` against `0.5000`. A warm scoped run takes about
 3 seconds per crate, because the clean only rebuilds the changed crate.
 Without a scope it prints `1 +` the `#[test]` count under `crates/*/src`
 (raw 3047 at `7263eee0`, scored `0.5000` by `hive evolve measure --ref HEAD`).
+In the 20 cycles up to B-118, a Rust card added on average 4 `unwrap()`,
+`expect(`, `panic!` or `todo!` calls and removed almost none. No fixture
+saw them: `metric-unwrap-outside-tests` counts `.unwrap()` over the whole
+tree, so five more sites out of about 800 is a tie. `behaviour-crate-panic-sites-copy`
+(RSI sitting 35, metric, weight 2, lower is better) counts those sites in the
+files a card changes. Each one is a place where the daemon, the hub or the
+hand crashes for its user instead of returning an error that names a next
+step. The fixture runs the project's own lint, `cargo clippy -p CRATE
+--no-deps`, with `clippy::unwrap_used`, `expect_used`, `panic`, `todo` and
+`unimplemented` raised to warnings, on the non-test targets of every changed
+crate. It builds in `$CARGO_TARGET_DIR/crate-panic-sites` after `cargo clean
+-p`, for the same reason as above. It prints `1 +` the distinct primary spans
+inside the changed `.rs` files. It lints a writable copy of the tree (under
+`HIVE_MEASURE_SCRATCH`, without `.git`, `target`, `node_modules` or `out`),
+with `HIVE_HUB_SKIP_BUILD=1` and `--keep-going`. The measured clone is
+read-only, so `crates/hive-hub/build.rs` cannot write `web/hub/out` there.
+When the hub build fails, Cargo skips `hive-hub` and `hive`, and every crate
+after the first failure goes unlinted too. Its first registration,
+`behaviour-crate-panic-sites`, linted in place and saw 92 of the 796 sites at
+`b016ab2b`, so it is disabled. Any scorer that builds the workspace inside the
+measured clone meets the same wall. Adding one `.unwrap()` to
+`crates/hive-tally/src/gate.rs` scored the variant `0.4828` (raw 15) against
+the base's `0.5000` (raw 14), in about 20 s. A diff with no crate source prints
+1 on both trees. Without a scope it lints the whole workspace (raw 796 at
+`b016ab2b`, 20 s warm and up to about 3 minutes cold).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
