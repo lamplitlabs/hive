@@ -7,7 +7,7 @@ import { test } from "node:test";
 // package-less measure clone too.
 register("../project/tsx-test-loader.mjs", import.meta.url);
 
-const { RECORD_WORD, foldSteps, gateStep, noneStep, splitAlternative } = await import("./evolve-gate.ts");
+const { RECORD_WORD, baselineRetry, foldSteps, gateStep, noneStep, splitAlternative } = await import("./evolve-gate.ts");
 
 const ref = (id) => ({ id, rev: 1, seeded: false, seeded_from: "" });
 const gate = (evolve_next, extra = {}) => ({ fixtures_enabled: 6, baseline: true, evolve_level: "L1", evolve_next, ...extra });
@@ -74,4 +74,19 @@ test("foldSteps folds the per-machine private tests into one card where the firs
   assert.deepEqual(folded.map((s) => s.kind), ["seed", "heldout", "constitution"]);
   assert.deepEqual(folded[1].slugs, ["demo", "web", "api"]);
   assert.match(folded[1].body, /serves demo, web and api;/);
+});
+
+test("baselineRetry counts down to the hub's retry time and never assumes a period", () => {
+  const failed = Date.parse("2026-11-09T08:00:00Z");
+  // baseline.retry_hours is 6 by default: the hub names 14:00, not 08:00 the next day.
+  assert.deepEqual(baselineRetry("2026-11-09T14:00:00Z", failed + 3600_000), { soon: false, inText: "in 5 hours", atText: "2026-11-09T14:00:00Z" });
+  // A transient failure is retried after lane.short_retry_minutes.
+  assert.deepEqual(baselineRetry("2026-11-09T08:02:00Z", failed), { soon: false, inText: "in 2 minutes", atText: "2026-11-09T08:02:00Z" });
+  // Due or past: the daemon picks it up on its next round.
+  assert.equal(baselineRetry("2026-11-09T08:00:30Z", failed).soon, true);
+  assert.equal(baselineRetry("2026-11-09T07:00:00Z", failed).inText, "on its next round");
+  // An older hub sends no time: the console does not invent one.
+  assert.deepEqual(baselineRetry(undefined, failed), { soon: false, inText: "later", atText: "" });
+  assert.deepEqual(baselineRetry("", failed), { soon: false, inText: "later", atText: "" });
+  assert.deepEqual(baselineRetry("not a time", failed), { soon: false, inText: "later", atText: "" });
 });

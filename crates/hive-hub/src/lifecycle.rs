@@ -570,6 +570,7 @@ pub(crate) fn project_gates(s: &hive_store::Store, slug: String) -> JsonMap {
         ),
         ("baseline_job", Value::Null),
         ("baseline_failed_at", json!("")),
+        ("baseline_retry_at", json!("")),
     ]);
     if let Ok(status) = hive_evolve::status(s, &slug) {
         gates.insert("fixtures_enabled".into(), json!(status.public_fixtures));
@@ -589,6 +590,7 @@ pub(crate) fn project_gates(s: &hive_store::Store, slug: String) -> JsonMap {
             "baseline_failed_at".into(),
             json!(status.baseline_failed_at),
         );
+        gates.insert("baseline_retry_at".into(), json!(status.baseline_retry_at));
     }
     gates
 }
@@ -1689,6 +1691,7 @@ mod tests {
             "baseline",
             "baseline_job",
             "baseline_failed_at",
+            "baseline_retry_at",
             "public_fixtures",
             "heldout",
             "kept",
@@ -1817,11 +1820,13 @@ mod tests {
                 "evaluators",
                 "baseline_job",
                 "baseline_failed_at",
+                "baseline_retry_at",
             ] {
                 assert!(row.contains_key(key), "row lacks {key}: {row:?}");
             }
             assert_eq!(row["baseline_job"], Value::Null);
             assert_eq!(row["baseline_failed_at"], "");
+            assert_eq!(row["baseline_retry_at"], "");
         }
         assert_eq!(seeded["fixtures_enabled"], 6);
         assert_eq!(seeded["baseline"], false);
@@ -2095,6 +2100,12 @@ mod tests {
         assert_eq!(g["baseline_job"], Value::Null);
         assert_eq!(g["baseline_failed_at"], s.now());
         let retry_hours = s.setting("baseline.retry_hours", "");
+        let failed_at = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+        let retry_at = (failed_at + chrono::Duration::hours(retry_hours.parse().unwrap()))
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        assert_eq!(row["baseline_retry_at"], retry_at);
+        assert_eq!(g["baseline_retry_at"], retry_at);
         assert!(
             g["reason"]
                 .as_str()
