@@ -308,8 +308,8 @@ pub(crate) fn unit_file_text(
         ),
         "Restart=always".to_string(),
         "RestartSec=30".to_string(),
-        format!("Environment=PATH={path_env}"),
-        format!("Environment=HIVE_HOME={hive_home}"),
+        systemd_env_line("PATH", &path_env),
+        systemd_env_line("HIVE_HOME", &hive_home),
         format!("StandardOutput=append:{log_path}"),
         format!("StandardError=append:{log_path}"),
         String::new(),
@@ -318,6 +318,31 @@ pub(crate) fn unit_file_text(
         String::new(),
     ]
     .join("\n")
+}
+
+/// One `Environment=` line of a systemd unit. systemd splits what follows
+/// at spaces and reads quotes and backslashes as its own, so a value that
+/// holds any of them goes inside double quotes with `"` and `\` escaped:
+/// under WSL the PATH carries `/mnt/c/Program Files` and the like, and
+/// unquoted it was cut at the first space. `%` starts a specifier in a unit
+/// file, so it is doubled. A line end inside the value is written as an
+/// escape: systemd ends a line at a bare carriage return too, and a `PATH`
+/// set in a profile saved with Windows line ends carries one. A value
+/// systemd reads whole as it stands is written as before.
+pub(crate) fn systemd_env_line(name: &str, value: &str) -> String {
+    let value = value.replace('%', "%%");
+    let reads_whole = !value
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '\\'));
+    if reads_whole {
+        return format!("Environment={name}={value}");
+    }
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    format!("Environment=\"{name}={escaped}\"")
 }
 
 pub(crate) fn launcher_path(hive_home: String) -> String {
@@ -1051,6 +1076,41 @@ mod tests {
         fn drop(&mut self) {
             *crate::sign::SIGNING_SYSTEM.write().unwrap() = String::new();
         }
+    }
+
+    #[test]
+    fn a_systemd_unit_keeps_an_environment_value_with_a_space_whole() {
+        // Under WSL the Windows PATH follows the Linux one, spaces and all.
+        let unit = service_file_text(
+            "systemd".into(),
+            60,
+            "/opt/hive".into(),
+            "/h/.hive/logs/daemon.log".into(),
+            "/usr/bin:/mnt/c/Program Files/Git/cmd:/mnt/c/100%/bin".into(),
+            "/h/.hive".into(),
+        );
+        assert!(
+            unit.contains(
+                "\nEnvironment=\"PATH=/usr/bin:/mnt/c/Program Files/Git/cmd:/mnt/c/100%%/bin\"\n"
+            ),
+            "{unit}"
+        );
+        // A value systemd reads whole as it stands is written as before.
+        assert!(
+            unit.contains("\nEnvironment=HIVE_HOME=/h/.hive\n"),
+            "{unit}"
+        );
+        assert_eq!(
+            systemd_env_line("K", r#"a "b" \c"#),
+            r#"Environment="K=a \"b\" \\c""#
+        );
+        assert_eq!(systemd_env_line("K", "it's"), r#"Environment="K=it's""#);
+        // A line end would cut the line short, so it is written as an escape.
+        assert_eq!(
+            systemd_env_line("K", "/usr/bin\r"),
+            r#"Environment="K=/usr/bin\r""#
+        );
+        assert_eq!(systemd_env_line("K", "a\nb"), r#"Environment="K=a\nb""#);
     }
 
     #[test]
