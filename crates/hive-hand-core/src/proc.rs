@@ -536,7 +536,8 @@ pub fn worker_env_with_cli_path(base: &[String], extra: &BTreeMap<String, String
     env_with(base, &merged)
 }
 
-#[cfg(test)]
+// Unix-only: they drive `/bin/sh` and real process groups.
+#[cfg(all(test, unix))]
 mod process_tree_tests {
     use super::*;
 

@@ -18,7 +18,7 @@
 # unexpected_cfgs is allowed, for the hive_unix_off cfg this script invents.
 set -eu
 
-LEAVES="hive-gitenv hive-cred hive-store hive-bus hive-cli
+LEAVES="hive-gitenv hive-hand-core hive-hand hive-cred hive-store hive-bus hive-cli
 hive-cred-setup hive-cred-command hive-provider hive-provider-anthropic
 hive-provider-copilot hive-provider-gemini hive-provider-openai
 hive-provider-fake hive-board hive-tasks hive-goals hive-goals-command

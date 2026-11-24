@@ -158,10 +158,16 @@ fn keygen(home: &Path) -> Result<String> {
     Ok(std::fs::read_to_string(public)?.trim().to_string())
 }
 
+#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
+
+/// Off unix there are no mode bits: the file keeps what its directory gives
+/// it. An owner-only ACL is an open step of the port (docs/windows-port.md).
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) {}
 
 /// What `hive-hand join` says about this machine.
 #[derive(Debug, Clone, Default)]
@@ -473,12 +479,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         let public = keygen(&home).unwrap();
         assert!(public.starts_with("ssh-ed25519 "), "{public}");
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home.join(KEY_FILE))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "the private key is the hand's alone");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(home.join(KEY_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "the private key is the hand's alone");
+        }
         assert_eq!(keygen(&home).unwrap(), public, "the key is made once");
         let message = connect_message("dev-1", "abc");
         let sig = sign(&home, &message).unwrap();

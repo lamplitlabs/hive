@@ -255,6 +255,7 @@ pub fn of(program: &Path) -> Option<Managed> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn scratch() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("hive");

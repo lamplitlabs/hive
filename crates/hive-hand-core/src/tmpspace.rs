@@ -21,10 +21,19 @@ pub fn free_space(dir: &str) -> Result<u64> {
 }
 // statvfs counts blocks in a u32 on macOS and a u64 on Linux, so the widening
 // is needed on one and a no-op clippy flags on the other.
+#[cfg(unix)]
 #[allow(clippy::useless_conversion)]
 pub fn real_free_space(dir: &str) -> Result<u64> {
     let st = nix::sys::statvfs::statvfs(std::path::Path::new(dir))?;
     Ok(u64::from(st.blocks_available()) * st.fragment_size())
+}
+
+/// Off unix the free space is not read yet, so it never holds a run back.
+/// The Windows port reads it with `GetDiskFreeSpaceExW`
+/// (docs/windows-port.md).
+#[cfg(not(unix))]
+pub fn real_free_space(_dir: &str) -> Result<u64> {
+    Ok(u64::MAX)
 }
 pub fn preflight_tmp_space(dir: &str, min: u64) -> Result<()> {
     let free = free_space(dir).map_err(|e| crate::error::errorf(1, &format!("setup-error: worker TMPDIR {dir} is unusable ({e}); the worker was not started so no work is lost"), "", ""))?;
