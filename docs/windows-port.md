@@ -1,8 +1,9 @@
 # Windows port
 
 Hive builds and ships for macOS and Linux today. On Windows it runs inside
-WSL, the Linux that Windows runs, and that needs no port. This page is
-about the other way: Hive on Windows itself, as a `hive.exe`.
+WSL, the Linux that Windows runs, and that needs no port
+([Run Hive on Windows](how-to/windows.md)). This page is about the other
+way: Hive on Windows itself, as a `hive.exe`.
 
 Where that stands: the whole workspace compiles for
 `x86_64-pc-windows-msvc`, and the `hive.exe` it gives starts, makes a store

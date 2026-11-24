@@ -1,5 +1,6 @@
 #!/bin/sh
-# The Hive installer, for macOS and Linux.
+# The Hive installer, for macOS and Linux. On Windows it is for the Linux
+# that WSL runs: there it is on a Linux like any other.
 #
 #   curl -fsSL https://hivefleet.dev/install.sh | sh
 #   curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand
@@ -43,7 +44,7 @@ has() {
 # Printed line by line and not from a here-document: ksh93 never returns
 # from one that a cut-off download leaves open.
 usage() {
-  info "Install Hive on macOS or Linux."
+  info "Install Hive on macOS or Linux, or on Windows inside WSL."
   info ""
   info "  curl -fsSL https://hivefleet.dev/install.sh | sh"
   info "  curl -fsSL https://hivefleet.dev/install.sh | sh -s -- [options]"
@@ -158,6 +159,28 @@ no_release() {
   exit 1
 }
 
+# A shell on Windows that is not WSL: Git Bash, MSYS or Cygwin. WSL calls
+# itself Linux and never comes here. No build line: the source does not
+# give a working program on Windows itself yet either.
+on_windows() {
+  warn "install.sh: $program does not run on Windows itself yet ($machine)."
+  warn "It runs inside WSL, the Linux that Windows can run. To get WSL, in"
+  warn "PowerShell:"
+  warn ""
+  warn "  wsl --install"
+  warn ""
+  warn "Then, in the Linux it sets up, run this line:"
+  warn ""
+  if [ "$program" = hive ]; then
+    warn "  curl -fsSL https://hivefleet.dev/install.sh | sh"
+  else
+    warn "  curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand"
+  fi
+  warn ""
+  warn "Every step: https://hivefleet.dev/docs/how-to/windows/"
+  exit 1
+}
+
 # Sets target, the Rust target triple the release archive is named for,
 # and machine, what this system calls itself.
 find_target() {
@@ -184,7 +207,7 @@ find_target() {
       os_part=unknown-linux-gnu
       ;;
     MINGW* | MSYS* | CYGWIN* | Windows* | windows*)
-      fail "Hive does not run on Windows yet ($machine). A port is in progress."
+      on_windows
       ;;
     *)
       no_release

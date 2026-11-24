@@ -4,7 +4,8 @@ Each guide takes one job from start to finish: what to click in the console, wha
 
 New to Hive? [Install it](../../README.md#install), then follow the first
 three guides in order. After that, pick the one you need. If a word is
-new, [Concepts](../concepts.md) explains how the parts fit.
+new, [Concepts](../concepts.md) explains how the parts fit. On Windows,
+Hive runs inside WSL: the guide for that is under "Keep it running".
 
 ## Start here
 
@@ -50,6 +51,9 @@ new, [Concepts](../concepts.md) explains how the parts fit.
 
 - [Keep Hive running, updated and backed up](operations.md): services,
   updates, backups, moving a checkout and removing Hive.
+- [Run Hive on Windows](windows.md): install Hive inside WSL, open the
+  console in your Windows browser, and keep it running with no window
+  open.
 - [Troubleshooting](troubleshooting.md): where to look first, and the fix
   for each common symptom.
 

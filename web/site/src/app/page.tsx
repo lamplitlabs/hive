@@ -184,7 +184,7 @@ export default function Home() {
         <div className="mx-auto grid max-w-6xl gap-12 px-5 pt-14 pb-16 sm:px-8 md:pt-20 md:pb-24 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14">
           <div className="min-w-0">
             <HiveMark className="mark-sweep mark-glow size-16 sm:size-20" draw />
-            <p className="mt-8 font-mono text-xs font-medium tracking-[0.18em] text-teal uppercase">Open source · MIT · macOS and Linux</p>
+            <p className="mt-8 font-mono text-xs font-medium tracking-[0.18em] text-teal uppercase">Open source · MIT · macOS, Linux and WSL</p>
             <h1 id="hero-title" className="mt-4 text-[2.3rem] leading-[1.08] font-semibold tracking-tight text-balance sm:text-6xl sm:leading-[1.05]">
               The <span className="text-brand whitespace-nowrap">self-improving</span> agent harness.
             </h1>
@@ -192,7 +192,7 @@ export default function Home() {
             <div className="mt-8 max-w-xl">
               <CopyLine command={INSTALL.script} what="the install command" />
               <p className="mt-2.5 text-sm text-muted-foreground">
-                macOS and Linux. It installs <code className="font-mono text-[0.92em] text-foreground">~/.hive/bin/hive</code>.{" "}
+                macOS and Linux, and Windows inside WSL. It installs <code className="font-mono text-[0.92em] text-foreground">~/.hive/bin/hive</code>.{" "}
                 <Link href={`${PAGES.install.path}#from-source`} className="link">
                   Or build from source
                 </Link>
