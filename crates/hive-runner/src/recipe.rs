@@ -3110,10 +3110,10 @@ mod tests {
         crate::keys::write_pre_commit_hook(&clone.display().to_string(), "#!/bin/sh\nexit 0\n")
             .unwrap();
         let hook = clone.join(".git/hooks/pre-commit");
-        let st = std::fs::metadata(&hook).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let st = std::fs::metadata(&hook).unwrap();
             assert_ne!(
                 st.permissions().mode() & 0o111,
                 0,

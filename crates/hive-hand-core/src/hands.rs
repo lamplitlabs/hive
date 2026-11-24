@@ -372,10 +372,14 @@ impl Hands {
             })
             .unwrap_or_else(|| "0".into());
         // The passwd entry of the real uid, not $USER.
+        #[cfg(unix)]
         let user = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
             .flatten()
             .map_or_else(|| "?".to_string(), |u| u.name);
+        // Off unix there is no passwd entry: the name the session carries.
+        #[cfg(not(unix))]
+        let user = std::env::var("USERNAME").unwrap_or_else(|_| "?".to_string());
         let lookup = if hive_lookup.is_empty() {
             String::new()
         } else {
@@ -1658,8 +1662,11 @@ mod tests {
     #[test]
     fn hands_key_refuses_signing_key_without_key_file() {
         let _serial = crate::test_helpers::serial();
-        if unsafe { libc::getuid() } == 0 {
-            return;
+        #[cfg(unix)]
+        {
+            if unsafe { libc::getuid() } == 0 {
+                return;
+            }
         }
         let job = "job-20260918T000000Z-abcdef";
         for (name, stdin, readonly, want_err, want_key) in [
@@ -1685,6 +1692,10 @@ mod tests {
                 true,
             ),
         ] {
+            // Mode bits are what stops the write, so that case is unix-only.
+            if readonly && !cfg!(unix) {
+                continue;
+            }
             let workdir = tempfile::tempdir().unwrap();
             let dir = workdir.path().join(job);
             let clone = dir.join("clone");

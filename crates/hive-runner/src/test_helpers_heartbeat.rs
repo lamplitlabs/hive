@@ -7,7 +7,6 @@ use chrono::{DateTime, Utc};
 use crossbeam_channel::{Receiver, Sender};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::ffi::CString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -159,6 +158,7 @@ static OPEN_FIFOS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::n
 static FIFO_JANITOR: std::sync::Once = std::sync::Once::new();
 
 fn register_fifo(path: &Path) {
+    #[cfg(unix)]
     FIFO_JANITOR.call_once(|| unsafe {
         libc::atexit(release_open_fifos);
     });
@@ -193,6 +193,7 @@ fn release_fifos(paths: Vec<PathBuf>) {
 /// ourselves: an O_RDWR|O_NONBLOCK open of a FIFO returns at once and counts
 /// as a writer, so the reader's `open()` completes and its `read` gets a line.
 /// A worker that has not reached `open()` yet fails on the removed path.
+#[cfg(unix)]
 fn release_fifo_reader(path: &Path) {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
@@ -219,11 +220,17 @@ fn release_fifo_reader(path: &Path) {
     }
 }
 
+/// Off unix there is no FIFO, so no reader waits on one.
+#[cfg(not(unix))]
+fn release_fifo_reader(_path: &Path) {}
+
 /// A FIFO in a scratch directory of its own; `finish_heartbeat_fifo` or
 /// `discard_heartbeat_fifo` removes the directory, or the gate's `Drop` does.
 /// Whatever is left when the test binary exits is released and removed by the
 /// FIFO janitor, so a failed test never leaves a worker behind.
+#[cfg(unix)]
 pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
+    use std::ffi::CString;
     let path = heartbeat_temp_dir().keep().join("finish");
     let c_path = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
     let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
@@ -241,6 +248,13 @@ pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
             path.display().to_string(),
         ],
     )
+}
+
+/// Off unix there is no FIFO for the quiet worker to wait on, so a test
+/// that asks for one stops here and says why.
+#[cfg(not(unix))]
+pub(crate) fn heartbeat_fifo() -> (String, Vec<String>) {
+    panic!("the quiet worker waits on a FIFO, which only unix has");
 }
 
 /// Releases the worker: the blocking write waits for the reader to open the

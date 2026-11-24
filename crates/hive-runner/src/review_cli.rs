@@ -585,6 +585,7 @@ mod tests {
         );
         let path = bin.path().join("gh");
         std::fs::write(&path, body).unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();

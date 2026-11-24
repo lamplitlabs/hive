@@ -304,12 +304,16 @@ mod tests {
     use crate::test_helpers::{TEST_NOW, new_bare_repo, new_store, serial};
     use crate::test_helpers_daemon::{must_one, must_rows, set_setting};
     use crate::test_helpers_hands::{TEST_EXECUTOR_TOKEN, write_executor_token};
-    use crate::test_helpers_provider::{invoke, invoke_ok, with_stdin};
+    #[cfg(unix)]
+    use crate::test_helpers_provider::with_stdin;
+    use crate::test_helpers_provider::{invoke, invoke_ok};
     use crate::test_helpers_token::{FakeGitHub, FakeGitHubState, fixed_wall_clock, time_date};
     use crate::util::json_map;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
+    #[cfg(unix)]
     #[test]
     fn executor_token_command() {
         let _serial = serial();

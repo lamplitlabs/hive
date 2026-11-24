@@ -1259,6 +1259,7 @@ mod tests {
         assert_eq!(d.asked(&DISK_FLOOR), 0, "{out}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_bulk_disk_away_asks_the_owner_once_and_answers_when_it_is_back() {
         let _serial = crate::test_helpers::serial();

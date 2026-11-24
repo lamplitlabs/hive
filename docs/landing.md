@@ -1458,6 +1458,6 @@ on macOS, a 0600 file under `$HIVE_HOME/secrets/` on Linux, or the
 1Password's Linux agent asks the same questions as the macOS one, and a
 `systemd --user` service does not even see its socket, so the reasons for a
 key of the daemon's own hold there too. Windows is not a host for the daemon
-today - the module does not build there (process groups, signals and disk
-statistics are POSIX-only), so nothing in this section applies until that is
-a decision of its own.
+today - the module builds there but runs no work (process groups, signals and
+disk statistics are stubs off unix, [windows-port.md](windows-port.md)), so
+nothing in this section applies until that is a decision of its own.

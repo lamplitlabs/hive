@@ -244,6 +244,7 @@ impl ScratchDir {
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0)
         ));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);

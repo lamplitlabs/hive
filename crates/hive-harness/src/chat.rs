@@ -364,8 +364,10 @@ fn spawn_prompter(
                                 }
                                 Input::Line(unescape_continuations(&line))
                             }
-                            Err(ReadlineError::Interrupted)
-                            | Err(ReadlineError::Signal(rustyline::error::Signal::Interrupt)) => {
+                            Err(ReadlineError::Interrupted) => Input::Interrupt,
+                            // rustyline has this signal on unix only.
+                            #[cfg(unix)]
+                            Err(ReadlineError::Signal(rustyline::error::Signal::Interrupt)) => {
                                 Input::Interrupt
                             }
                             Err(_) => Input::Eof,

@@ -583,7 +583,6 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_daemon::set_setting;
-    use std::os::unix::fs::PermissionsExt;
 
     const SLUGS: &[&str] = &["proj"];
 
@@ -597,8 +596,14 @@ mod tests {
         let path = Path::new(dir).join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, body).unwrap();
-        let mode = if executable { 0o755 } else { 0o644 };
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if executable { 0o755 } else { 0o644 };
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = executable;
         run(dir, &["git", "add", "-A"]);
         run(
             dir,

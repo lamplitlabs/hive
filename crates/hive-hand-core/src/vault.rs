@@ -293,9 +293,13 @@ pub fn wrap(key: &DataKey, recipient_b64: &str) -> Result<String> {
 
 /// This machine's short host name: the `brain:<host>` holder of the key.
 pub fn host() -> String {
+    #[cfg(unix)]
     let raw = nix::unistd::gethostname()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_default();
+    // Off unix: the name the system puts in the environment (Windows).
+    #[cfg(not(unix))]
+    let raw = std::env::var("COMPUTERNAME").unwrap_or_default();
     let short = raw.split('.').next().unwrap_or_default().to_string();
     if short.is_empty() {
         "host".into()

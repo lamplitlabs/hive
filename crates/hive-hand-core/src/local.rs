@@ -15,7 +15,6 @@ use anyhow::Result;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -135,7 +134,12 @@ pub fn configure_clone_identity(
     std::fs::create_dir_all(&hooks)?;
     let hook = hooks.join("prepare-commit-msg");
     std::fs::write(&hook, hook_text)?;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    // Off unix a file has no exec bit to set.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    }
     Ok(())
 }
 

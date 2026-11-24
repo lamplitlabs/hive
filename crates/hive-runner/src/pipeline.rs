@@ -3410,6 +3410,7 @@ esac
         );
         let path = d.join("gh");
         std::fs::write(&path, script).expect("fake gh script");
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))

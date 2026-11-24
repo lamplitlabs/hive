@@ -3727,6 +3727,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn daemon_holds_all_work_while_the_bulk_volume_is_away() {
         let _serial = crate::test_helpers::serial();

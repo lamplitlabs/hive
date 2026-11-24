@@ -327,7 +327,7 @@ console searches them and `hive ask` answers from them.
 | [Commands](docs/commands.md) | every command with its usage and flags, generated from the binary's own help |
 | [Settings](docs/settings.md) | every setting with its default and what it does, generated from the binary |
 | [Development](docs/development.md) | building and testing Hive itself, the crate map, diagrams in the docs, upgrading from older Hive, sharing a copy |
-| [Windows port](docs/windows-port.md) | every unix-only site per crate with its Windows replacement, what already builds off unix, and the emulated check |
+| [Windows port](docs/windows-port.md) | Hive on Windows itself: what compiles and starts there, every unix-only site per crate with its Windows replacement, and the emulated check |
 | [The owner reservation](docs/owner-reservation.md) | a design note: the local slot kept for your own work, when a run yields to it, and the one event per long wait |
 
 `docs/decisions/` holds the decision records kept in the repository:

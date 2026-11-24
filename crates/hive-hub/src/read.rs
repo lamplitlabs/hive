@@ -917,9 +917,18 @@ impl Handler {
 /// This machine's name as the console shows it in the sidebar header: what
 /// `gethostname` says with a trailing `.local` (mDNS on a Mac) dropped,
 /// `""` when the system cannot say.
+#[cfg(unix)]
 pub(crate) fn host_name() -> String {
     nix::unistd::gethostname()
         .map(|h| trim_host_name(&h.to_string_lossy()))
+        .unwrap_or_default()
+}
+
+/// Off unix: the name the system puts in the environment (Windows).
+#[cfg(not(unix))]
+pub(crate) fn host_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .map(|h| trim_host_name(&h))
         .unwrap_or_default()
 }
 
