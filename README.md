@@ -129,7 +129,9 @@ list.
 ## Install
 
 You need macOS or Linux, and a model: a GitHub account with a Copilot seat,
-an API key for another provider, or a local model server. To deliver work as
+an API key for another provider, or a local model server. On Windows, Hive
+runs inside WSL, the Linux that Windows runs
+([Run Hive on Windows](docs/how-to/windows.md)). To deliver work as
 pull requests Hive uses `git` and the GitHub CLI ([`gh`](https://cli.github.com)),
 signed in to an account that can see your repository: it opens, reads and
 merges pull requests through `gh`. Agents run on the harness built into
@@ -140,7 +142,7 @@ merges pull requests through `gh`. Agents run on the harness built into
    would rather read it first.
 
    ```bash
-   curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive
+   curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS, Linux and WSL; installs ~/.hive/bin/hive
    ```
 
    Or with Homebrew. The formula is called `hivefleet` because Homebrew
@@ -148,7 +150,7 @@ merges pull requests through `gh`. Agents run on the harness built into
    ([Homebrew](docs/release.md#homebrew)).
 
    ```bash
-   brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive
+   brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS, Linux and WSL; installs hive
    ```
 
    Or build it from source. The build exports the console (`web/hub/`) and
@@ -307,7 +309,7 @@ console searches them and `hive ask` answers from them.
 
 | Read | For |
 | --- | --- |
-| [Guides](docs/how-to/README.md) | one job each, start to finish: set up a first project, a tour of the console, give a task, review and merge the work, answer what waits for you, schedules, role leads, skills and tools, sessions, the rules, the self-improvement loop, a second machine, models and budgets, keeping Hive running, troubleshooting |
+| [Guides](docs/how-to/README.md) | one job each, start to finish: set up a first project, a tour of the console, give a task, review and merge the work, answer what waits for you, schedules, role leads, skills and tools, sessions, the rules, the self-improvement loop, a second machine, models and budgets, keeping Hive running, Hive on Windows, troubleshooting |
 | [Concepts](docs/concepts.md) | start here: the cast, the store, tasks and jobs, the board, the constitution and tiers, the loop step by step, machines, delivery by pull request |
 | [Questions people ask](docs/faq.md) | short answers: what Hive needs, which models, what leaves your machine, what the loop does on its own, how to stop it, how to add a machine, how to update |
 | [The console](docs/console.md) | the console, for the owner: starting it, the sidebar's pages, Home, For you, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Reports and Ask |
@@ -327,7 +329,7 @@ console searches them and `hive ask` answers from them.
 | [Commands](docs/commands.md) | every command with its usage and flags, generated from the binary's own help |
 | [Settings](docs/settings.md) | every setting with its default and what it does, generated from the binary |
 | [Development](docs/development.md) | building and testing Hive itself, the crate map, diagrams in the docs, upgrading from older Hive, sharing a copy |
-| [Windows port](docs/windows-port.md) | Hive on Windows itself: what compiles and starts there, every unix-only site per crate with its Windows replacement, and the emulated check |
+| [Windows port](docs/windows-port.md) | Hive on Windows itself, without WSL: how far the port is, every unix-only site per crate with its Windows replacement, and the emulated check |
 | [The owner reservation](docs/owner-reservation.md) | a design note: the local slot kept for your own work, when a run yields to it, and the one event per long wait |
 
 `docs/decisions/` holds the decision records kept in the repository:

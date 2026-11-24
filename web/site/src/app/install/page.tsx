@@ -46,7 +46,8 @@ export default function InstallPage() {
         <H2 id="need">What you need</H2>
         <ul>
           <li>
-            macOS or Linux. Windows is not supported today; <Link href="/docs/windows-port/">a port is in progress</Link>.
+            macOS or Linux. On Windows, Hive runs inside WSL, the Linux that Windows runs:{" "}
+            <Link href="/docs/how-to/windows/">Run Hive on Windows</Link> has the steps. It does not run on Windows itself yet.
           </li>
           <li>A model: a GitHub Copilot seat, an API key for another model provider, or a local model server.</li>
           <li>
@@ -57,7 +58,7 @@ export default function InstallPage() {
         </ul>
 
         <H2 id="install">1. Install</H2>
-        <CodeBlock code={INSTALL.blocks.script} title="macOS and Linux" copy={INSTALL.script} copyWhat="the install command" />
+        <CodeBlock code={INSTALL.blocks.script} title="macOS, Linux and WSL" copy={INSTALL.script} copyWhat="the install command" />
         <p>
           The installer is one shell script. It is{" "}
           <a href={repoFile("scripts/install.sh")} rel="noopener noreferrer">
@@ -71,9 +72,19 @@ export default function InstallPage() {
           The first <code>hive hub</code> on a machine makes the store, <code>~/.hive/hive.sqlite</code>, and says so in one line.{" "}
           <code>hive init --store-only</code> makes one without starting the console, for a service or a script.
         </p>
+        <h3 id="windows">On Windows</h3>
+        <p>
+          Hive runs inside WSL, the Linux that Windows runs. Get WSL once, in PowerShell opened as administrator, and restart when it asks:
+        </p>
+        <CodeBlock code="wsl --install" lang="powershell" title="In PowerShell" />
+        <p>
+          Then open the Linux it set up, and run the install line above in it. The console opens in your Windows browser at the same address.{" "}
+          <Link href="/docs/how-to/windows/">Run Hive on Windows</Link> has every step, and how to keep Hive running once the window is closed.
+        </p>
         <h3 id="homebrew">With Homebrew</h3>
         <p>
-          On macOS and Linux, Homebrew installs the same binary and puts it on your path itself, so only the last two lines above are left to run.
+          On macOS and Linux, and inside WSL, Homebrew installs the same binary and puts it on your path itself, so only the last two lines above are
+          left to run.
           The formula is called <code>hivefleet</code> because Homebrew has another <code>hive</code>.
         </p>
         <CodeBlock code={INSTALL.blocks.brew} title="With Homebrew" copy={INSTALL.brew} copyWhat="the Homebrew command" />

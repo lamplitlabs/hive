@@ -760,12 +760,27 @@ want_err "cargo install --git https://github.com/lamplitlabs/hive"
 want_empty "$t_home"
 finish
 
-begin "Windows is told that Hive does not run there yet, with no build line"
+begin "a Windows shell that is not WSL is told the way through WSL, with no build line"
 t_os=MINGW64_NT-10.0-19045
 t_arch=x86_64
 run_installer
 want_status 1
-want_err "Hive does not run on Windows yet"
+want_err "hive does not run on Windows itself yet (MINGW64_NT-10.0-19045 x86_64)."
+want_err "  wsl --install"
+want_err "  curl -fsSL https://hivefleet.dev/install.sh | sh"
+want_no_err "sh -s -- --hand"
+want_err "https://hivefleet.dev/docs/how-to/windows/"
+want_no_err "cargo"
+want_empty "$t_home"
+finish
+
+begin "for hive-hand the same shell is given the line with --hand"
+t_os=MSYS_NT-10.0-22631
+t_arch=x86_64
+run_installer --hand
+want_status 1
+want_err "hive-hand does not run on Windows itself yet (MSYS_NT-10.0-22631 x86_64)."
+want_err "  curl -fsSL https://hivefleet.dev/install.sh | sh -s -- --hand"
 want_no_err "cargo"
 want_empty "$t_home"
 finish

@@ -37,8 +37,8 @@ export const INSTALL = {
   brew: "brew install lamplitlabs/tap/hivefleet",
   source: "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive",
   blocks: {
-    script: "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive",
-    brew: "brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive",
+    script: "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS, Linux and WSL; installs ~/.hive/bin/hive",
+    brew: "brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS, Linux and WSL; installs hive",
     source: "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+",
     after: [
       'export PATH="$HOME/.hive/bin:$PATH"    # add to your shell profile',
@@ -76,10 +76,10 @@ export const PAGES = {
     path: "/install/",
     title: "Install Hive and run your first task",
     description:
-      "Install Hive on macOS or Linux, open the console on 127.0.0.1:8765, connect a model, add a project, start the runner and give its lead agent a first task.",
+      "Install Hive on macOS, Linux or Windows with WSL, open the console on 127.0.0.1:8765, connect a model, add a project and give its lead agent a first task.",
     nav: "Install",
     summary: "The install line, building from source, and the first task step by step.",
-    keywords: "quickstart quick start getting started download setup set up homebrew brew curl cargo tutorial",
+    keywords: "quickstart quick start getting started download setup set up homebrew brew curl cargo tutorial windows wsl",
   },
   harness: {
     path: "/harness/",

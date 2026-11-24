@@ -22,9 +22,9 @@ test("the words are the open tool's: the category line and the one sentence", ()
 test("the install lines are the contract's, character for character", () => {
   assert.equal(site.INSTALL.script, "curl -fsSL https://hivefleet.dev/install.sh | sh");
   assert.equal(site.INSTALL.source, "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive");
-  assert.equal(site.INSTALL.blocks.script, "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive");
+  assert.equal(site.INSTALL.blocks.script, "curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS, Linux and WSL; installs ~/.hive/bin/hive");
   assert.equal(site.INSTALL.brew, "brew install lamplitlabs/tap/hivefleet");
-  assert.equal(site.INSTALL.blocks.brew, "brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive");
+  assert.equal(site.INSTALL.blocks.brew, "brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS, Linux and WSL; installs hive");
   assert.equal(
     site.INSTALL.blocks.source,
     "cargo install --git https://github.com/lamplitlabs/hive --locked --root ~/.hive hive   # from source: Rust 1.95+, Node.js 22+",

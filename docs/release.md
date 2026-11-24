@@ -14,7 +14,7 @@ another machine runs to take work from your Hive
 ## Installing
 
 ```bash
-curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS and Linux; installs ~/.hive/bin/hive
+curl -fsSL https://hivefleet.dev/install.sh | sh      # macOS, Linux and WSL; installs ~/.hive/bin/hive
 ```
 
 then
@@ -46,10 +46,12 @@ curl -fsSL https://raw.githubusercontent.com/lamplitlabs/hive/main/scripts/insta
 What it does, in order:
 
 1. **Finds the machine.** macOS or Linux, on arm64 or x86_64
-   ([the targets](#the-targets)). On anything else it names the machine,
-   prints the line that builds Hive from source and stops. A Linux whose
-   C library is musl (Alpine, for one) is told that the release is built
-   for glibc.
+   ([the targets](#the-targets)). The Linux that WSL runs on Windows is a
+   Linux here. On anything else it names the machine, prints the line that
+   builds Hive from source and stops. A Linux whose C library is musl
+   (Alpine, for one) is told that the release is built for glibc. A Windows
+   shell that is not WSL (Git Bash, MSYS, Cygwin) is told that Hive runs
+   inside WSL, with the two lines that get it there ([Windows](#windows)).
 2. **Finds the release.** The latest one, or the one you name. It reads
    the release's `SHA256SUMS` first, and that file names the release's
    archives. So it makes no call to the GitHub API, and GitHub's hourly
@@ -168,6 +170,36 @@ that `curl` downloads and the installer copies, but Finder may refuse one
 that a browser downloaded (`xattr -d com.apple.quarantine hive` clears
 that).
 
+### Where a release is tried
+
+On 24 November 2026 the install line was run for v0.1.6 on each system
+below, on GitHub's machines, and what it installed was tried with
+`scripts/tests/smoke-installed.sh`: the program starts, it makes a store
+and reads it, and its console answers.
+
+| System | Processor | How |
+| --- | --- | --- |
+| macOS 26, macOS 15 | arm64 and x86_64 | the install line; Homebrew |
+| Ubuntu 26.04, 24.04, 22.04 | x86_64 and arm64 | the install line; Homebrew on 24.04 |
+| Debian 13 and 12, Fedora, Rocky Linux 9, Amazon Linux 2023, Arch, openSUSE Tumbleweed | x86_64 | the install line, in a container |
+| Windows Server 2025 with WSL 2: Ubuntu 24.04, Ubuntu 22.04, Debian 13 | x86_64 | the install line inside the Linux, typed there, in PowerShell and in the old command prompt; the console asked from Windows; the services, on Ubuntu 24.04 and Debian 13; Homebrew inside Ubuntu 24.04 |
+
+v0.1.6 asks for glibc 2.34, which is why it starts on Rocky Linux 9 (2.34)
+and Ubuntu 22.04 (2.35), below the 2.36 a release promises. It was told no,
+as it should be, on Ubuntu 20.04 (glibc 2.31), AlmaLinux 8 (2.28) and
+Alpine (musl). Amazon Linux's container image has no `tar`, which the
+installer asks for by name.
+
+To try an installed `hive` on your own machine the same way:
+
+```sh
+sh scripts/tests/smoke-installed.sh              # ~/.hive/bin/hive
+sh scripts/tests/smoke-installed.sh "$(command -v hive)"
+```
+
+It gives the program a home of its own in a temporary directory, so your
+Hive is not read and not changed, and it calls no model.
+
 ### `hive-hand`
 
 ```sh
@@ -189,7 +221,7 @@ return by itself. `hive-hand dial` is for every later start.
 ### Homebrew
 
 ```bash
-brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS and Linux; installs hive
+brew install lamplitlabs/tap/hivefleet   # with Homebrew, on macOS, Linux and WSL; installs hive
 ```
 
 and on a machine that only takes work from your Hive:
@@ -206,7 +238,8 @@ how Homebrew is told that you trust this one formula of a tap that is not
 its own.
 
 Homebrew downloads the archive the installer would take, for macOS or
-Linux on arm64 or x86_64, and checks it against the SHA-256 written in the
+Linux on arm64 or x86_64 (the Linux inside WSL is one), and checks it
+against the SHA-256 written in the
 formula. That digest is the archive's line in the release's `SHA256SUMS`,
 so the check proves what the installer's check proves and no more
 ([above](#installing)). Nothing is built on your machine. Homebrew puts
@@ -234,6 +267,15 @@ about your folders across upgrades
 left as Homebrew wrote it, and every version is a new file in a new place.
 So macOS may ask again, after an upgrade, about a project that lives under
 Desktop, Documents or Downloads.
+
+**On Linux**, Homebrew 7.0 can end an install with
+`lamplitlabs/tap/hivefleet-hand: Broken pipe`. Run the same line again. On
+GitHub's x86_64 machines this happened to the second formula installed
+from the tap in one session, ten times in thirteen, and never to the
+first. The second try went through each time, six of six. It did not
+happen with `HOMEBREW_GITHUB_API_TOKEN` set (four of four), on arm64
+(three of three) or on macOS. The formula is not what fails: whichever of
+the two is installed first goes in, and the other is the one that stops.
 
 ### Checking a download by hand
 
@@ -349,9 +391,26 @@ release and pushes them there in its last job, when the secret
    the Actions variable `HOMEBREW_TAP_REPOSITORY` to `OWNER/homebrew-NAME`;
    Homebrew calls that tap `OWNER/NAME`.
 2. Make a fine-grained personal access token whose only repository is the
-   tap, with the permission **Contents: Read and write**.
+   tap, with the permission **Contents: Read and write**. GitHub makes
+   one in the browser only, under **Settings**, **Developer settings**,
+   **Personal access tokens**, **Fine-grained tokens**, **Generate new
+   token**. This address opens that form with the name, the owner, the
+   longest expiry GitHub offers and the permission filled in:
+
+   ```text
+   https://github.com/settings/personal-access-tokens/new?name=hive+homebrew+tap&target_name=lamplitlabs&expires_in=366&contents=write
+   ```
+
+   Under **Repository access** choose **Only select repositories** and
+   pick the tap, then **Generate token** and copy it. It is shown once.
 3. Save it in the Hive repository as the Actions secret
-   `HOMEBREW_TAP_TOKEN`.
+   `HOMEBREW_TAP_TOKEN`: `gh secret set HOMEBREW_TAP_TOKEN --repo
+   lamplitlabs/hive`, which asks for the token, or **Settings**, **Secrets
+   and variables**, **Actions**, **New repository secret**.
+
+The token ends on the day you chose, a year on at most. Note the day: an
+expired token fails the tap job, and the answer is a new token under the
+same secret name.
 
 What the job does and does not do:
 
@@ -394,13 +453,38 @@ brew audit --strict --formula you/try/hivefleet
 
 ## Windows
 
-No release is built for Windows yet. The workspace compiles there, and the
-`hive.exe` that gives starts and serves the console, but the calls that
-start a job, follow it and stop it are still stubs off unix, and the
-services are launchd's and systemd's. A release would not run work, so
-there is none until those are ported
-([windows-port.md](windows-port.md)). The installer says so on Windows and
-stops.
+Hive runs on Windows inside WSL, the Linux that Windows runs. There it is
+the Linux release, installed by the same line, and nothing in it is
+special to Windows ([Run Hive on Windows](how-to/windows.md) has the
+steps):
+
+```powershell
+wsl --install        # once, in PowerShell as administrator; restart, then give the Linux a user name
+wsl sh -c "curl -fsSL https://hivefleet.dev/install.sh | sh"
+```
+
+The second line is the install line, handed to the Linux from PowerShell.
+Typed in the Linux itself it is the line as everywhere else.
+
+What was tried there, and what to know:
+
+- The console runs in the Linux and opens in a Windows browser, at
+  `http://127.0.0.1:8765` or `http://localhost:8765`. `hive hub` cannot
+  open the browser itself from inside the Linux, and prints the address.
+- `hive service install` works where `systemd` is the Linux's process 1,
+  as it is in the Ubuntu that `wsl --install` gives. The services are the
+  Linux user's and start when the Linux does.
+- Windows stops a Linux that no window uses, after about 15 seconds, and
+  Hive with it. `instanceIdleTimeout=-1` under `[general]` in the Windows
+  user's `.wslconfig` keeps it running: with that, the console still
+  answered six minutes after the last window closed.
+- WSL 2 is what was tried, on x86_64. GitHub's arm64 Windows machines
+  cannot run WSL 2, so arm64 is untried.
+
+There is no release for Windows itself, and the installer says so in a
+Windows shell that is not WSL. The whole workspace compiles for Windows,
+and the `hive.exe` that gives starts and serves the console, but it does
+not run work yet: [windows-port.md](windows-port.md) says what is left.
 
 ## The two channels: `update.channel`
 

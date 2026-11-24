@@ -31,13 +31,13 @@ export const FAQS: readonly FaqEntry[] = [
   },
   {
     q: "What do I need to run it?",
-    a: "macOS or Linux. A model: a GitHub Copilot seat, an API key for another provider, or a local server. To deliver work as pull requests: `git`, and the GitHub CLI (`gh`) logged in as a GitHub user who can see the repository. Hive opens, reads and merges pull requests through `gh`. One command installs the binary; building from source needs Rust 1.95 or newer and Node.js 22 or newer.",
+    a: "macOS or Linux; on Windows, WSL. A model: a GitHub Copilot seat, an API key for another provider, or a local server. To deliver work as pull requests: `git`, and the GitHub CLI (`gh`) logged in as a GitHub user who can see the repository. Hive opens, reads and merges pull requests through `gh`. One command installs the binary; building from source needs Rust 1.95 or newer and Node.js 22 or newer.",
     more: { label: "Install Hive", href: "/install/" },
   },
   {
     q: "Does Hive run on Windows?",
-    a: "Not today. Hive runs on macOS and Linux. A Windows port is in progress, and the documentation tracks how far it is.",
-    more: { label: "The Windows port", href: "/docs/windows-port/" },
+    a: "Yes, inside WSL, the Linux that Windows runs. The install line is the same there, the console opens in your Windows browser, and the services run under the Linux's systemd. Hive does not run on Windows itself yet: that port compiles, and the documentation tracks how far it is.",
+    more: { label: "Run Hive on Windows", href: "/docs/how-to/windows/" },
   },
   {
     q: "How do I add another machine?",

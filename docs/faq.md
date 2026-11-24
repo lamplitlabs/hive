@@ -14,7 +14,8 @@ and deliver it as pull requests.
 
 ## What does Hive need to run?
 
-- macOS or Linux.
+- macOS or Linux. On Windows, WSL
+  ([Does it work on Windows?](#does-it-work-on-windows)).
 - A model: a GitHub account with a Copilot seat, an API key for another
   provider, or a local model server.
 - To deliver work as pull requests: `git`, and the GitHub CLI (`gh`) signed
@@ -206,9 +207,13 @@ step: [Add a second machine](how-to/add-a-machine.md).
 
 ## Does it work on Windows?
 
-Not yet. Hive runs on macOS and Linux. A port is in progress: every crate
-compiles for Windows and the program starts there and serves the console,
-but it does not run work yet ([Windows port](windows-port.md)).
+Yes, inside WSL, the Linux that Windows runs. The install line is the same
+there, the console opens in your Windows browser, and the services run
+under the Linux's `systemd` ([Run Hive on Windows](how-to/windows.md)).
+
+Not on Windows itself yet. That port compiles, and the `hive.exe` it gives
+starts and serves the console, but it does not run work
+([Windows port](windows-port.md)).
 
 ## Which git hosts does it work with?
 
