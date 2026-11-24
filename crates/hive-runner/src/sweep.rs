@@ -5443,6 +5443,7 @@ mod tests {
         let why = held_why_text(&rep.held, &format!("hive/w/{orphan}"));
         assert!(why.contains("removed after 7d"), "why = {why:?}");
     }
+    #[cfg(unix)]
     #[test]
     fn sweep_old_logs_and_patches() {
         let _serial = crate::test_helpers::serial();
@@ -5975,6 +5976,7 @@ mod tests {
             "sweep did not log WAL checkpoint work: {lines:?}"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn sweep_stale_push_keys() {
         let _serial = crate::test_helpers::serial();

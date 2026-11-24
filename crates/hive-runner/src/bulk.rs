@@ -720,8 +720,7 @@ mod tests {
     use crate::test_helpers::new_store;
 
     fn link(target: &Path, at: &Path) {
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(target, at).unwrap();
+        symlink_dir(target, at).unwrap();
     }
 
     fn marker(dir: &Path, id: &str) {

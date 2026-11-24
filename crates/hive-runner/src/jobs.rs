@@ -3514,6 +3514,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             );
         }
         // The darwin install writes the launcher, executable, and the plist points at it; uninstall removes both.
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let fi = std::fs::metadata(crate::service::launcher_path(hive_home_s.clone()));
@@ -3577,6 +3578,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         crate::service::set_service_sleep(old_sleep);
         let _ = crate::service::set_run_service(old);
     }
+    #[cfg(unix)]
     #[test]
     fn service_hub_unit_and_idempotent_install() {
         let _serial = crate::test_helpers::serial();
@@ -4635,6 +4637,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "count\u{0}JOB-1\u{0}abc\u{0}"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn launcher_returns_the_child_exit_and_forwards_term() {
         let _serial = crate::test_helpers::serial();

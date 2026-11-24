@@ -1048,6 +1048,10 @@ mod tests {
             ),
             ("task done", "connection reset", "superseded", "", "skipped"),
         ] {
+            // A link to nothing is made with a unix call below.
+            if name == "project dangling stop" && !cfg!(unix) {
+                continue;
+            }
             let (s, mut root) = repair_fixture();
             let id = "job-repair";
             repair_failure(&s, id, result_text);
@@ -1089,6 +1093,7 @@ mod tests {
                     let dir = root.join("docs").join("evolution");
                     std::fs::create_dir_all(&dir).expect("mkdir stop dir");
                     if name == "project dangling stop" {
+                        #[cfg(unix)]
                         std::os::unix::fs::symlink("missing-stop-note", dir.join("STOP"))
                             .expect("symlink STOP");
                     } else {

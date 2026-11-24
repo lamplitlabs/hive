@@ -285,6 +285,8 @@ pub(crate) fn key_file(mode: u32) -> String {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod key");
     }
+    #[cfg(not(unix))]
+    let _ = mode;
     path.display().to_string()
 }
 

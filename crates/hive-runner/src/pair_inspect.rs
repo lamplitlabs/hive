@@ -453,6 +453,8 @@ mod tests {
             let tool = which::which(name).unwrap_or_else(|_| panic!("{name} missing"));
             #[cfg(unix)]
             std::os::unix::fs::symlink(tool, shared_bin.path().join(name)).expect("symlink tool");
+            #[cfg(not(unix))]
+            let _ = tool;
         }
         let hasher_bin = shared_bin.path().join("hasher");
         let fail_bin = shared_bin.path().join("fail");

@@ -409,6 +409,7 @@ mod tests {
 
     /// A repository with one commit and an fsmonitor hook script that never
     /// answers: it notes its pid and its background child's, then waits.
+    #[cfg(unix)]
     fn repo_with_hanging_fsmonitor() -> (tempfile::TempDir, String, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
@@ -427,6 +428,7 @@ mod tests {
             ),
         )
         .unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -443,11 +445,13 @@ mod tests {
         (dir, root, pids)
     }
 
+    #[cfg(unix)]
     fn pid_alive(pid: i32) -> bool {
         // SAFETY: signal 0 only checks that the pid exists.
         unsafe { libc::kill(pid, 0) == 0 }
     }
 
+    #[cfg(unix)]
     #[test]
     fn git_timeout_kills_a_git_that_hangs_and_everything_it_started() {
         let _serial = crate::test_helpers::serial();
@@ -492,6 +496,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn git_runs_with_fsmonitor_off_beside_the_lockdown_config() {
         let _serial = crate::test_helpers::serial();

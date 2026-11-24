@@ -74,7 +74,8 @@ pub(crate) fn invoke_ok(s: &hive_store::Store, name: &str, project: &str, args: 
 
 /// Runs f with stdin reading text, as `... | hive executor token --with-token` would. The pipe's
 /// read end is dup2'd onto fd 0 for the process and restored afterwards. Callers hold `serial()`
-/// so nothing else reads stdin meanwhile.
+/// so nothing else reads stdin meanwhile. Unix-only: it swaps descriptor 0.
+#[cfg(unix)]
 pub(crate) fn with_stdin(text: &str, f: impl FnOnce()) {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let (r, mut w) = std::io::pipe().expect("pipe");

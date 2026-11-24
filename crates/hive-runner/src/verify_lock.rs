@@ -304,6 +304,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn verify_lock_removes_a_dead_holder_and_leaves_a_live_one() {
         let home = tempfile::tempdir().unwrap();

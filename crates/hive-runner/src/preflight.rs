@@ -88,6 +88,7 @@ mod tests {
         fs::set_permissions(path, perm).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn hive_on_path_finds_executable_on_worker_path() {
         let _serial = crate::test_helpers::serial();
@@ -112,6 +113,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn hive_on_path_missing_is_setup_error() {
         let _serial = crate::test_helpers::serial();

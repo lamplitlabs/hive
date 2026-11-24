@@ -938,10 +938,13 @@ done
 "#;
 
     fn script(dir: &std::path::Path, name: &str, text: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         path.display().to_string()
     }
 
@@ -1152,6 +1155,7 @@ done
         let fake = script(dir.path(), "fake-mcp.sh", FAKE_SERVER);
         let token = dir.path().join("token");
         std::fs::write(&token, "tok-hub-secret-1\n").unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();

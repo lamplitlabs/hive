@@ -1344,15 +1344,16 @@ mod end_to_end {
             String::from_utf8_lossy(&joined.stderr)
         );
         assert!(String::from_utf8_lossy(&joined.stdout).contains("as far-box"));
-        let key_mode = {
+        #[cfg(unix)]
+        {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(hand_home.path().join("device_key"))
+            let key_mode = std::fs::metadata(hand_home.path().join("device_key"))
                 .unwrap()
                 .permissions()
                 .mode()
-                & 0o777
-        };
-        assert_eq!(key_mode, 0o600);
+                & 0o777;
+            assert_eq!(key_mode, 0o600);
+        }
         let again = hand_cmd(&["join", "--brain", &brain, &code.code])
             .env("HIVE_HAND_JOIN_ONLY", "1")
             .output()

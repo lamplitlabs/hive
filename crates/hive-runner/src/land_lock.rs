@@ -237,7 +237,6 @@ fn fmt_duration_round_minutes(d: Duration) -> String {
 mod tests {
     use super::*;
     use crate::test_helpers::run;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn landing_leaves_index_lock_when_holders_unknown() {
@@ -320,7 +319,11 @@ mod tests {
         let lock = Path::new(&dir).join(".git").join("index.lock");
 
         std::fs::write(&lock, "").expect("lock");
-        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        }
         let fresh = crate::land::land_pending(
             &s,
             proj.clone(),
