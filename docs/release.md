@@ -195,6 +195,9 @@ latest release every Monday, of a pull request that changes the installer,
 and when it is started by hand: the install line on macOS and Linux, in
 containers of the other Linux systems, through Homebrew, and inside WSL
 with the services and the console asked from Windows. It reads no secret.
+It leaves out macOS 15 on Apple silicon, where GitHub often has no machine
+to give and then cancels the job: the release workflow starts the program
+on that system for every release, on the machine that builds it.
 
 To try an installed `hive` on your own machine the same way:
 

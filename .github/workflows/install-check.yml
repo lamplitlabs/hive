@@ -20,6 +20,19 @@ name: Install check
 # It reads no secret and writes nothing: the token it runs with can only
 # read. docs/release.md, "Where a release is tried", is the list this
 # workflow keeps true.
+#
+# One system of that list is left out: macOS 15 on Apple silicon. GitHub
+# often has no macos-15 machine to give. A job that gets none at once is
+# tried again five minutes later, and after fifteen minutes GitHub cancels
+# it with "The job was not acquired by Runner of type hosted". On 24
+# November 2026 that ended three of ten tries of that one job, and the run
+# was red with nothing wrong in Hive. Apple silicon is still tried, on
+# macOS 26, and macOS 15 is, on an Intel machine. The release workflow
+# starts the program on macOS 15 on Apple silicon for every release, on the
+# machine that builds it. Put `macos-15` back in the list below when
+# GitHub's jobs there no longer carry the note "Due to capacity
+# constraints, jobs targeting macOS arm64 runners may experience longer
+# queue times".
 
 on:
   schedule:
@@ -54,7 +67,6 @@ jobs:
       matrix:
         os:
           - macos-26
-          - macos-15
           - macos-15-intel
           - ubuntu-24.04
           - ubuntu-24.04-arm
