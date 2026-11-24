@@ -832,7 +832,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hive"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-ask",
@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "hive-ask"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-board",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "hive-board"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "hive-bus"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "hive-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-hand-core",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "hive-codedelivery"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-store",
@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "hive-cred"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hex",
@@ -974,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "hive-cred-command"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-cli",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "hive-cred-setup"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-cred",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "hive-evolve"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "hive-gitenv"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "hive-testutil",
  "tempfile",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "hive-goals"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "hive-goals-command"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-board",
@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "hive-hand"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-hand-core",
@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "hive-hand-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "hive-harness"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "hive-hooks"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "hive-hub"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "hive-inspect"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "hive-mcp"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "hive-provider"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "hive-provider-anthropic"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "hive-provider-copilot"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "hive-provider-fake"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-provider",
@@ -1325,7 +1325,7 @@ dependencies = [
 
 [[package]]
 name = "hive-provider-gemini"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-provider",
@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "hive-provider-openai"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "hive-records"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "hive-runner"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "hive-store"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "hive-tally"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "hive-tasks"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "hive-testutil"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "hive-gitenv",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "hive-voice"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "flate2",
