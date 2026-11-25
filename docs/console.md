@@ -802,7 +802,10 @@ cannot leave one billing - and removes the `hands-cr-NNN` executors older
 daemons left behind once their machine is released. A request that failed before a machine was ready
 gives its hours back to the day's `compute.max_hours_per_day`: nothing was
 bought, so the retry that fixes the cause is not held by the attempt that found
-it. Each executor row offers the same preview-then-remove as `hive remove
+it. The daemon's own next request waits first, 5 minutes and longer after
+each further failure ([machines.md](machines.md#machines-what-runs-where),
+"When a request fails"); a request you make yourself does not. Each
+executor row offers the same preview-then-remove as `hive remove
 executor`.
 
 **Add machine** on the same

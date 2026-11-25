@@ -437,6 +437,8 @@ impl ComputeWorker {
                     let worker = self.clone();
                     let id = req.id.clone();
                     self.start(&id, move || worker.release(&c, req, &why));
+                } else {
+                    self.say_past_hours(&req, now);
                 }
             }
         }
@@ -518,66 +520,18 @@ impl ComputeWorker {
         if cur.status != "approved" {
             return;
         }
-        let caps = match hive_tasks::get_caps(&self.s) {
-            Ok(c) => c,
-            Err(e) => {
-                self.fail(req, &crate::run::err_message(&e));
+        let p = match checks_before_provider(&self.s, &req, &self.s.now()) {
+            Ok(p) => p,
+            Err(why) if why == hive_tasks::NO_LOGIN_SOURCE => {
+                self.no_source_finding(req.clone(), &self.s.now());
+                self.say_line(format!("compute {} held: {}", req.id, why));
+                return;
+            }
+            Err(why) => {
+                self.fail(req, &why);
                 return;
             }
         };
-        let why = caps_allow(caps.clone(), req.clone(), &self.s.now());
-        if !why.is_empty() {
-            if why == hive_tasks::NO_LOGIN_SOURCE {
-                self.no_source_finding(req.clone(), &self.s.now());
-                self.say_line(format!("compute {} held: {}", req.id, why));
-            } else {
-                self.fail(req, &why);
-            }
-            return;
-        }
-        let Some(p) = provider_named(&caps.provider) else {
-            self.fail(
-                req.clone(),
-                &format!(
-                    "no compute provider {} is built in (have: {})",
-                    crate::board::py_repr(caps.provider),
-                    provider_names().join(", ")
-                ),
-            );
-            return;
-        };
-        // The binary the machine would be paired with must be resolvable before
-        // anything is bought: CR-001/CR-002 paid for a VM that was then failed
-        // for want of a linux/amd64 hive. The probe (env var, sibling file,
-        // cross-build dry check) never builds; the real resolution runs again
-        // in pair_machine once the machine exists.
-        let size = if req.size.trim().is_empty() {
-            self.s
-                .setting(&hive_store::compute_size_setting(&p.name()), "")
-        } else {
-            req.size.clone()
-        };
-        let arch = hands_arch_for_size(&p.name(), &size);
-        crate::pair::set_hands_source_root(brain_source_root(&self.s));
-        // A test may replace the resolver itself; that override is authoritative.
-        let blocked = if crate::pair::hands_binary_overridden() {
-            (crate::pair::HANDS_BINARY
-                .read()
-                .expect("hands_binary poisoned"))(&arch)
-            .err()
-            .map(|e| crate::run::err_message(&e))
-        } else {
-            match crate::pair::hands_binary_plan(&arch) {
-                crate::pair::HandsBinaryPlan::Missing(_) => {
-                    Some(crate::pair::hands_binary_plan_line(&arch))
-                }
-                _ => None,
-            }
-        };
-        if let Some(reason) = blocked {
-            self.fail(req, &format!("{reason}; no machine was bought"));
-            return;
-        }
         if let Err(e) =
             hive_tasks::set_compute_status(&self.s, &req.id, "provisioning", "", &self.o.actor)
         {
@@ -646,32 +600,21 @@ impl ComputeWorker {
                 req.id, m.executor, m.provider, m.name, req.hours
             ),
             &format!(
-                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for project `{}` (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; `hive executor list` shows it meanwhile.\n\nReason given: {}\n",
+                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for project `{}` (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; once the hours are over it takes no new work, and a run in flight then is finished first. `hive executor list` shows it meanwhile.\n\nReason given: {}\n",
                 req.requested_by, m.name, m.provider, m.executor, req.project, req.decided_by, req.hours, COMPUTE_IDLE_MINUTES, req.reason
             ),
         );
         self.say_line(format!("compute {} ready: executor {}", req.id, m.executor));
     }
     pub(crate) fn release_due(&self, req: hive_tasks::ComputeRequest, now: &str) -> String {
-        let (m, mrow) = load_machine(&self.s, &req.id);
-        let mut ready_at = req.updated_at.clone();
-        if !mrow.0.is_empty() && !mrow.str("created_at").is_empty() {
-            ready_at = mrow.str("created_at");
-        }
-        let mut executor = req.executor.clone();
-        if let Some(m) = &m
-            && !m.executor.is_empty()
-        {
-            executor = m.executor.clone();
-        }
+        let (executor, ready_at) = rented(&self.s, &req);
         if !executor.is_empty() && crate::executor::executor_running(&self.s, &executor, now) > 0 {
             return String::new();
         }
         if ready_at.is_empty() {
             return String::new();
         }
-        let age = crate::util::must_iso(now) - crate::util::must_iso(&ready_at);
-        if req.hours > 0 && age >= chrono::Duration::hours(req.hours as i64) {
+        if hours_up(&req, &ready_at, now) {
             return format!("its {} hour(s) are up", req.hours);
         }
         let mut last = ready_at;
@@ -692,6 +635,22 @@ impl ComputeWorker {
             return format!("the executor sat idle for {} minutes", COMPUTE_IDLE_MINUTES);
         }
         String::new()
+    }
+    /// A rental past its hours that a run in flight keeps up: said once, in the daemon log and
+    /// on the request's card, since the machine stays and takes nothing from the queue.
+    fn say_past_hours(&self, req: &hive_tasks::ComputeRequest, now: &str) {
+        let (executor, ready_at) = rented(&self.s, req);
+        if !hours_up(req, &ready_at, now) {
+            return;
+        }
+        let note = format!(
+            "its {} hour(s) are up: {executor} takes no new work and is released when its last run ends",
+            req.hours
+        );
+        if req.note != note {
+            let _ = hive_tasks::note_compute(&self.s, &req.id, &note);
+            self.say_line(format!("compute {}: {note}", req.id));
+        }
     }
     pub(crate) fn release(
         &self,
@@ -1042,6 +1001,48 @@ impl Leftover {
         }
     }
 }
+/// The executor a ready request's machine runs as and when it became ready: the machine row's
+/// word, else the request's own.
+fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, String) {
+    let (m, mrow) = load_machine(s, &req.id);
+    let mut ready_at = req.updated_at.clone();
+    if !mrow.0.is_empty() && !mrow.str("created_at").is_empty() {
+        ready_at = mrow.str("created_at");
+    }
+    let mut executor = req.executor.clone();
+    if let Some(m) = &m
+        && !m.executor.is_empty()
+    {
+        executor = m.executor.clone();
+    }
+    (executor, ready_at)
+}
+/// Whether the hours a ready request asked for are over, counted from when its machine was ready.
+fn hours_up(req: &hive_tasks::ComputeRequest, ready_at: &str, now: &str) -> bool {
+    !ready_at.is_empty()
+        && req.hours > 0
+        && crate::util::must_iso(now) - crate::util::must_iso(ready_at)
+            >= chrono::Duration::hours(req.hours as i64)
+}
+/// The rented machines whose hours are up. They get no new work (`run::executor_slots`), so the
+/// runs in flight on them are their last and `release_due` lets them go when those end.
+/// Measured on one hub before this: a machine approved for 4 hours was released after 21.9 and
+/// another after 12.1; 17 of the first one's 22 runs began after its hours were up, because the
+/// queue leased to it again each time a run ended and a machine with a run in flight is not
+/// released.
+pub(crate) fn rentals_past_hours(
+    s: &hive_store::Store,
+    now: &str,
+) -> std::collections::BTreeSet<String> {
+    hive_tasks::list_compute(s, "", "ready")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|req| {
+            let (executor, ready_at) = rented(s, req);
+            (!executor.is_empty() && hours_up(req, &ready_at, now)).then_some(executor)
+        })
+        .collect()
+}
 pub(crate) fn compute_finding(
     s: &hive_store::Store,
     actor: &str,
@@ -1091,6 +1092,78 @@ pub(crate) fn caps_allow(
         return hive_tasks::NO_LOGIN_SOURCE.into();
     }
     String::new()
+}
+/// What the worker checks before it asks the provider for anything, in its order: the caps, that
+/// the provider is built in, and that the binary the machine would be paired with can be
+/// resolved. `Err` is the reason the request fails with, or `NO_LOGIN_SOURCE`, which holds it
+/// instead.
+pub(crate) fn checks_before_provider(
+    s: &hive_store::Store,
+    req: &hive_tasks::ComputeRequest,
+    now: &str,
+) -> std::result::Result<Arc<dyn Provider>, String> {
+    let caps = hive_tasks::get_caps(s).map_err(|e| crate::run::err_message(&e))?;
+    let why = caps_allow(caps.clone(), req.clone(), now);
+    if !why.is_empty() {
+        return Err(why);
+    }
+    let Some(p) = provider_named(&caps.provider) else {
+        return Err(format!(
+            "no compute provider {} is built in (have: {})",
+            crate::board::py_repr(caps.provider),
+            provider_names().join(", ")
+        ));
+    };
+    // The binary the machine would be paired with must be resolvable before
+    // anything is bought: CR-001/CR-002 paid for a VM that was then failed
+    // for want of a linux/amd64 hive. The probe (env var, sibling file,
+    // cross-build dry check) never builds; the real resolution runs again
+    // in pair_machine once the machine exists.
+    let size = if req.size.trim().is_empty() {
+        s.setting(&hive_store::compute_size_setting(&p.name()), "")
+    } else {
+        req.size.clone()
+    };
+    let arch = hands_arch_for_size(&p.name(), &size);
+    crate::pair::set_hands_source_root(brain_source_root(s));
+    // A test may replace the resolver itself; that override is authoritative.
+    let blocked = if crate::pair::hands_binary_overridden() {
+        (crate::pair::HANDS_BINARY
+            .read()
+            .expect("hands_binary poisoned"))(&arch)
+        .err()
+        .map(|e| crate::run::err_message(&e))
+    } else {
+        match crate::pair::hands_binary_plan(&arch) {
+            crate::pair::HandsBinaryPlan::Missing(_) => {
+                Some(crate::pair::hands_binary_plan_line(&arch))
+            }
+            _ => None,
+        }
+    };
+    if let Some(reason) = blocked {
+        return Err(format!("{reason}; no machine was bought"));
+    }
+    Ok(p)
+}
+/// Why the worker would fail a request the daemon filed at `now` in those checks, which need no
+/// request to be asked: no hands binary for the provider's size, a cap that allows nothing, a
+/// provider that is not built in. `None` when the worker would go on to the provider, or would
+/// hold the request for a login source rather than fail it.
+pub(crate) fn would_fail_before_provider(
+    s: &hive_store::Store,
+    hours: i32,
+    now: &str,
+) -> Option<String> {
+    let next = hive_tasks::ComputeRequest {
+        hours,
+        at: now.to_string(),
+        ..Default::default()
+    };
+    checks_before_provider(s, &next, now)
+        .err()
+        .filter(|why| why != hive_tasks::NO_LOGIN_SOURCE)
+        .map(|why| redact_secrets(&why))
 }
 /// The local ssh files a provisioning writes for one machine, removed: the `Host hands-cr-N`
 /// block the pairing makes for the hive user, the `Host hive-cr-N-admin` block for the admin

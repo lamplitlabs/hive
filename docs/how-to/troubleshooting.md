@@ -16,6 +16,7 @@ runs today 0 of 2 (jobs_per_day)
 runner     running allowed
 harness    native · GitHub Copilot · not signed in - Sign in with GitHub (Settings -> Harness) ...
 daemon     never started
+executors  local active (0/5 busy)
 ```
 
 | Line | What it tells you |
@@ -24,6 +25,7 @@ daemon     never started
 | `runner` | `running allowed`, or that the kill switch (`hive stop`) is on |
 | `harness` | the model provider, and whether it is signed in |
 | `runs today` | the jobs started today, against the cap `jobs_per_day` |
+| `executors` | this machine (`local`) and every other machine that runs jobs, each with its state (`active`, `drained`, `unreachable`) and how many of its slots are busy. After a `;` come the projects a machine cannot run now, each with the reason (`lacks node@22 for my-app`). Removed machines are counted at the end, not listed: `2 removed` |
 | `capacity`, `waiting` | there only while jobs wait: how many are queued, and what holds them back |
 | `planner`, `recovery` | with a project's name: why nothing is planned for a project that has nothing queued, and what became of its failed jobs |
 
