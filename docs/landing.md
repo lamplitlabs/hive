@@ -949,8 +949,11 @@ once per change rather than per tick. A queue behind held slots is as short of
 hands as one behind busy slots: once an improve or task job has waited half an
 hour that way, the daemon rents a machine itself when `compute.auto_approve` is
 on and `compute.max_vms` and `compute.max_hours_per_day` allow (one open
-request at a time, four hours, `AUTO_COMPUTE_HOURS`), and otherwise posts
-`hands wanted` to the owner once, saying why no machine was rented. A job
+request at a time, four hours, `AUTO_COMPUTE_HOURS`). Otherwise it says why
+in the log (`hands wanted: the daemon rents none (compute.auto_approve is
+off)`, said again when the reason changes) and posts `hands wanted` to the
+owner once; after a request that failed it waits and asks again by itself
+(`docs/machines.md`, "When a request fails"). A job
 whose needs only a rented machine meets does not wait for the slots to fill:
 it rents after ten minutes on the same terms (`docs/machines.md`, "When no
 machine fits").
