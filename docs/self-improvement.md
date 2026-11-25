@@ -640,6 +640,22 @@ measured clone meets the same wall. Adding one `.unwrap()` to
 the base's `0.5000` (raw 14), in about 20 s. A diff with no crate source prints
 1 on both trees. Without a scope it lints the whole workspace (raw 796 at
 `b016ab2b`, 20 s warm and up to about 3 minutes cold).
+No fixture ran the shell scripts' own tests, so cards on the scripts under
+`scripts/` went unmeasured. Those scripts are the pre-commit gate
+(`verify-check.sh`), the installer (`install.sh`) and the Homebrew formula.
+In the week up to B-119, B-117 and two refused `verify-check.sh` cards
+changed them, and they tied or were refused. `behaviour-script-cases-pass`
+(RSI sitting 36, metric, weight 2, higher is better) runs the tests a change
+touches. That means a changed `scripts/tests/X-test.sh` itself. For a changed
+`scripts/X.sh`, it is every `scripts/tests/X-test.sh` and
+`scripts/tests/X-*-test.sh`. It adds up the passed cases each test prints
+(`N passed, M failed` or `N of M cases passed`). A test that exits non-zero or
+prints no count adds 0. It needs no build, so it runs in the read-only measure
+clone (all four tests pass in a read-only copy of the tree). Adding one `pool` case to
+`verify-check-test.sh` scored 31 against the base's 30 (`0.5167`). Raising
+`verify-check.sh`'s pool cap from 8 to 9 scored 9 against 38 (`0.1184`). A
+diff with no script prints 1 on both trees. Without a scope it runs every test
+(raw 113 at `bf08b5e3`, about 20 s).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
