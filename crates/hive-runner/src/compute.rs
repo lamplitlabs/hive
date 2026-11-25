@@ -520,66 +520,18 @@ impl ComputeWorker {
         if cur.status != "approved" {
             return;
         }
-        let caps = match hive_tasks::get_caps(&self.s) {
-            Ok(c) => c,
-            Err(e) => {
-                self.fail(req, &crate::run::err_message(&e));
+        let p = match checks_before_provider(&self.s, &req, &self.s.now()) {
+            Ok(p) => p,
+            Err(why) if why == hive_tasks::NO_LOGIN_SOURCE => {
+                self.no_source_finding(req.clone(), &self.s.now());
+                self.say_line(format!("compute {} held: {}", req.id, why));
+                return;
+            }
+            Err(why) => {
+                self.fail(req, &why);
                 return;
             }
         };
-        let why = caps_allow(caps.clone(), req.clone(), &self.s.now());
-        if !why.is_empty() {
-            if why == hive_tasks::NO_LOGIN_SOURCE {
-                self.no_source_finding(req.clone(), &self.s.now());
-                self.say_line(format!("compute {} held: {}", req.id, why));
-            } else {
-                self.fail(req, &why);
-            }
-            return;
-        }
-        let Some(p) = provider_named(&caps.provider) else {
-            self.fail(
-                req.clone(),
-                &format!(
-                    "no compute provider {} is built in (have: {})",
-                    crate::board::py_repr(caps.provider),
-                    provider_names().join(", ")
-                ),
-            );
-            return;
-        };
-        // The binary the machine would be paired with must be resolvable before
-        // anything is bought: CR-001/CR-002 paid for a VM that was then failed
-        // for want of a linux/amd64 hive. The probe (env var, sibling file,
-        // cross-build dry check) never builds; the real resolution runs again
-        // in pair_machine once the machine exists.
-        let size = if req.size.trim().is_empty() {
-            self.s
-                .setting(&hive_store::compute_size_setting(&p.name()), "")
-        } else {
-            req.size.clone()
-        };
-        let arch = hands_arch_for_size(&p.name(), &size);
-        crate::pair::set_hands_source_root(brain_source_root(&self.s));
-        // A test may replace the resolver itself; that override is authoritative.
-        let blocked = if crate::pair::hands_binary_overridden() {
-            (crate::pair::HANDS_BINARY
-                .read()
-                .expect("hands_binary poisoned"))(&arch)
-            .err()
-            .map(|e| crate::run::err_message(&e))
-        } else {
-            match crate::pair::hands_binary_plan(&arch) {
-                crate::pair::HandsBinaryPlan::Missing(_) => {
-                    Some(crate::pair::hands_binary_plan_line(&arch))
-                }
-                _ => None,
-            }
-        };
-        if let Some(reason) = blocked {
-            self.fail(req, &format!("{reason}; no machine was bought"));
-            return;
-        }
         if let Err(e) =
             hive_tasks::set_compute_status(&self.s, &req.id, "provisioning", "", &self.o.actor)
         {
@@ -1140,6 +1092,78 @@ pub(crate) fn caps_allow(
         return hive_tasks::NO_LOGIN_SOURCE.into();
     }
     String::new()
+}
+/// What the worker checks before it asks the provider for anything, in its order: the caps, that
+/// the provider is built in, and that the binary the machine would be paired with can be
+/// resolved. `Err` is the reason the request fails with, or `NO_LOGIN_SOURCE`, which holds it
+/// instead.
+pub(crate) fn checks_before_provider(
+    s: &hive_store::Store,
+    req: &hive_tasks::ComputeRequest,
+    now: &str,
+) -> std::result::Result<Arc<dyn Provider>, String> {
+    let caps = hive_tasks::get_caps(s).map_err(|e| crate::run::err_message(&e))?;
+    let why = caps_allow(caps.clone(), req.clone(), now);
+    if !why.is_empty() {
+        return Err(why);
+    }
+    let Some(p) = provider_named(&caps.provider) else {
+        return Err(format!(
+            "no compute provider {} is built in (have: {})",
+            crate::board::py_repr(caps.provider),
+            provider_names().join(", ")
+        ));
+    };
+    // The binary the machine would be paired with must be resolvable before
+    // anything is bought: CR-001/CR-002 paid for a VM that was then failed
+    // for want of a linux/amd64 hive. The probe (env var, sibling file,
+    // cross-build dry check) never builds; the real resolution runs again
+    // in pair_machine once the machine exists.
+    let size = if req.size.trim().is_empty() {
+        s.setting(&hive_store::compute_size_setting(&p.name()), "")
+    } else {
+        req.size.clone()
+    };
+    let arch = hands_arch_for_size(&p.name(), &size);
+    crate::pair::set_hands_source_root(brain_source_root(s));
+    // A test may replace the resolver itself; that override is authoritative.
+    let blocked = if crate::pair::hands_binary_overridden() {
+        (crate::pair::HANDS_BINARY
+            .read()
+            .expect("hands_binary poisoned"))(&arch)
+        .err()
+        .map(|e| crate::run::err_message(&e))
+    } else {
+        match crate::pair::hands_binary_plan(&arch) {
+            crate::pair::HandsBinaryPlan::Missing(_) => {
+                Some(crate::pair::hands_binary_plan_line(&arch))
+            }
+            _ => None,
+        }
+    };
+    if let Some(reason) = blocked {
+        return Err(format!("{reason}; no machine was bought"));
+    }
+    Ok(p)
+}
+/// Why the worker would fail a request the daemon filed at `now` in those checks, which need no
+/// request to be asked: no hands binary for the provider's size, a cap that allows nothing, a
+/// provider that is not built in. `None` when the worker would go on to the provider, or would
+/// hold the request for a login source rather than fail it.
+pub(crate) fn would_fail_before_provider(
+    s: &hive_store::Store,
+    hours: i32,
+    now: &str,
+) -> Option<String> {
+    let next = hive_tasks::ComputeRequest {
+        hours,
+        at: now.to_string(),
+        ..Default::default()
+    };
+    checks_before_provider(s, &next, now)
+        .err()
+        .filter(|why| why != hive_tasks::NO_LOGIN_SOURCE)
+        .map(|why| redact_secrets(&why))
 }
 /// The local ssh files a provisioning writes for one machine, removed: the `Host hands-cr-N`
 /// block the pairing makes for the hive user, the `Host hive-cr-N-admin` block for the admin
