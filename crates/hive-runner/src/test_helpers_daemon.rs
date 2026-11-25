@@ -290,11 +290,18 @@ pub(crate) fn key_file(mode: u32) -> String {
     path.display().to_string()
 }
 
+/// An `ssh` on PATH that runs the command git hands it on this machine -
+/// in `HIVE_TEST_SSH_ROOT` when a test sets it, the directory its
+/// `git@host:PATH` urls are served from - after writing its arguments to
+/// the record file returned, and the mode and the first bytes of the key it
+/// was given beside it. With `HIVE_TEST_SSH_REFUSE` set it says that
+/// instead and exits 255, as ssh does when the host turns the key away.
 pub(crate) fn fake_ssh() -> (String, Vec<hive_testutil::SetenvGuard>) {
     let dir = tempfile::tempdir().expect("ssh temp").keep();
     let record = dir.join("record");
     let script = r#"#!/bin/sh
 printf '%s\n' "$@" > "$HIVE_TEST_SSH_RECORD"
+if [ -n "$HIVE_TEST_SSH_REFUSE" ]; then echo "$HIVE_TEST_SSH_REFUSE" >&2; exit 255; fi
 key=""
 prev=""
 for a in "$@"; do
@@ -308,6 +315,7 @@ if [ -n "$key" ]; then
   head -c 30 "$key" > "$HIVE_TEST_SSH_RECORD.head"
 fi
 for a in "$@"; do last="$a"; done
+[ -n "$HIVE_TEST_SSH_ROOT" ] && cd "$HIVE_TEST_SSH_ROOT"
 exec sh -c "$last"
 "#;
     let ssh = dir.join("ssh");

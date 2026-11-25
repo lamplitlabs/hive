@@ -1282,20 +1282,24 @@ fn push_rev(
         Some(sha) => format!("--force-with-lease=refs/heads/{head}:{sha}"),
         None => "--force".to_string(),
     };
-    let pushed = crate::util::git_timeout_env(
+    let (pushed, https) = crate::forge::git_upstream_said(
         root,
         Duration::from_secs(300),
         &env,
+        &up.url,
         &["push", &force, &up.url, &format!("{src}:refs/heads/{head}")],
     );
     cleanup("", &[]);
     if !pushed.ok() {
+        let why = format!("{} {}", pushed.stderr, pushed.stdout);
         return Err(hive_cred::redact(
             &format!(
-                "push of {} to {head} on {} failed: {}",
+                "push of {} to {head} on {} {}: {}{}",
                 src.strip_prefix("refs/heads/").unwrap_or(src),
                 up.name(),
-                crate::run::squeeze(&format!("{} {}", pushed.stderr, pushed.stdout), 200)
+                crate::forge::failed_after(https.as_deref()),
+                crate::run::squeeze(&why, 200),
+                crate::forge::auth_fix(up, &env, &why)
             ),
             &[],
         ));
@@ -1650,10 +1654,11 @@ fn fetch_head(
     if !why.is_empty() {
         return Err(why);
     }
-    let fetched = crate::util::git_timeout_env(
+    let (fetched, https) = crate::forge::git_upstream_said(
         root,
         Duration::from_secs(120),
         &env,
+        &up.url,
         &[
             "fetch",
             "--quiet",
@@ -1677,8 +1682,9 @@ fn fetch_head(
         }
         return Err(hive_cred::redact(
             &format!(
-                "fetch of {head} from {} failed: {}",
+                "fetch of {head} from {} {}: {}",
                 up.name(),
+                crate::forge::failed_after(https.as_deref()),
                 crate::run::squeeze(&fetched.stderr, 200)
             ),
             &[],
