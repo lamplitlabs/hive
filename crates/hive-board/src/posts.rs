@@ -268,6 +268,36 @@ fn open_owner_question_with_summary(
     Ok(None)
 }
 
+/// Hours in which one asker's repeats of an open owner question add no
+/// second `question.deduped` event.
+const DEDUPE_EVENT_HOURS: i64 = 24;
+
+/// Whether the event log already says, within [`DEDUPE_EVENT_HOURS`], that
+/// `asker` asked the open question `question` again. A caller may ask on
+/// every tick: the daemon's planner does for a thread it found stuck, for as
+/// long as the question is handed back to it. With an event for each ask,
+/// one question that had been open for two months took 2,378 events in a
+/// day.
+fn dedupe_recorded_lately(
+    conn: &Connection,
+    s: &hive_store::Store,
+    question: &str,
+    asker: &str,
+) -> Result<bool> {
+    let last: Option<String> = conn
+        .query_row(
+            "SELECT at FROM events WHERE action = 'question.deduped' AND subject = ? AND actor = ? ORDER BY seq DESC LIMIT 1",
+            params![question, asker],
+            |r| r.get(0),
+        )
+        .optional()?;
+    // An event whose time does not parse limits nothing: the ask is recorded.
+    let (Some(Ok(last)), Ok(now)) = (last.map(|at| parse_iso(&at)), parse_iso(&s.now())) else {
+        return Ok(false);
+    };
+    Ok(now - last < chrono::Duration::hours(DEDUPE_EVENT_HOURS))
+}
+
 pub fn create_post(s: &hive_store::Store, input: PostInput) -> Result<Post> {
     let conn = s.conn()?;
     create_post_conn(s, &conn, input)
@@ -347,18 +377,20 @@ pub(crate) fn create_post_conn(
             open_owner_question_with_summary(conn, &input.project, &normalized)?
     {
         let existing_id = existing.id.clone();
-        event_conn(
-            conn,
-            s,
-            &agent_name,
-            "question.deduped",
-            &existing_id,
-            hive_store::Detail::json(json!({
-                "existing": existing_id,
-                "project": input.project,
-                "summary": summary,
-            }))?,
-        )?;
+        if !dedupe_recorded_lately(conn, s, &existing_id, &agent_name)? {
+            event_conn(
+                conn,
+                s,
+                &agent_name,
+                "question.deduped",
+                &existing_id,
+                hive_store::Detail::json(json!({
+                    "existing": existing_id,
+                    "project": input.project,
+                    "summary": summary,
+                }))?,
+            )?;
+        }
         existing.deduped = true;
         return Ok(existing);
     }
@@ -816,6 +848,10 @@ mod tests {
     }
 
     fn owner_question(s: &hive_store::Store, project: &str, summary: &str) -> Post {
+        owner_question_by(s, "alice", project, summary)
+    }
+
+    fn owner_question_by(s: &hive_store::Store, agent: &str, project: &str, summary: &str) -> Post {
         create_post(
             s,
             PostInput {
@@ -824,7 +860,7 @@ mod tests {
                 area: "owner".into(),
                 thread: format!("ask-{}", slugify_n(summary, 20)),
                 summary: summary.into(),
-                agent: "alice".into(),
+                agent: agent.into(),
                 for_owner: true,
                 ..Default::default()
             },
@@ -849,6 +885,55 @@ mod tests {
             count_rows(&s, "events", "action = 'question.deduped'", &[]),
             1
         );
+    }
+
+    /// A caller that asks on every tick, as the planner does for a thread it
+    /// found stuck, gets the open question back each time. The event log
+    /// takes one `question.deduped` event a day for it, not one per ask.
+    #[test]
+    fn owner_question_dedupe_records_an_askers_repeats_once_a_day() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let recorded = || count_rows(&s, "events", "action = 'question.deduped'", &[]);
+        let first = owner_question(&s, "demo", "Stuck thread: 3 jobs in a row changed no code");
+        for jobs in [4, 5, 4, 5] {
+            let again = owner_question(
+                &s,
+                "demo",
+                &format!("Stuck thread: {jobs} jobs in a row changed no code"),
+            );
+            assert_eq!(again.id, first.id);
+            assert!(again.deduped, "every repeat is still deduped");
+        }
+        assert_eq!(count_rows(&s, "posts", "kind = 'question'", &[]), 1);
+        assert_eq!(recorded(), 1, "four repeats of one asker within a day");
+        // Another asker of the same question is a new fact.
+        let other = owner_question_by(
+            &s,
+            "bob",
+            "demo",
+            "Stuck thread: 6 jobs in a row changed no code",
+        );
+        assert_eq!(other.id, first.id);
+        assert!(other.deduped);
+        assert_eq!(recorded(), 2);
+        // A day on, the first asker's repeats are recorded once more.
+        let next_day = hive_store::Store::open(hive_store::Options {
+            home: s.home.clone(),
+            now: plus_hours(TEST_NOW, 24.0).unwrap(),
+            skip_records: true,
+            ..Default::default()
+        })
+        .unwrap();
+        for jobs in [7, 8] {
+            let again = owner_question(
+                &next_day,
+                "demo",
+                &format!("Stuck thread: {jobs} jobs in a row changed no code"),
+            );
+            assert!(again.deduped);
+        }
+        assert_eq!(recorded(), 3);
     }
 
     #[test]
