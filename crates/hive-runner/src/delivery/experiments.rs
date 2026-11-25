@@ -256,10 +256,11 @@ pub(super) fn delete_remote_branch(
     if !why.is_empty() {
         return Err(why);
     }
-    let pushed = crate::util::git_timeout_env(
+    let pushed = crate::forge::git_upstream(
         root,
         Duration::from_secs(120),
         &env,
+        &up.url,
         &[
             "push",
             &format!("--force-with-lease=refs/heads/{head}:{sha}"),

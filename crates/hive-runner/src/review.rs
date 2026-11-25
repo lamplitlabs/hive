@@ -1571,10 +1571,11 @@ pub(crate) fn checkout_into(
             return Err(why);
         }
         let pull_ref = format!("+refs/pull/{number}/head:refs/heads/{branch}");
-        let fetched = crate::util::git_timeout_env(
+        let fetched = crate::forge::git_upstream(
             dir,
             Duration::from_secs(300),
             &env,
+            &url,
             &["fetch", "--quiet", "--no-tags", &url, &pull_ref],
         );
         cleanup("", &[]);

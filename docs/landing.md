@@ -1436,6 +1436,86 @@ cred token|set|clear` or sets `push.credential`; agents may read `hive cred
 status`. Rolling back is `hive cred clear` (ADR-037's behaviour
 returns at once), then revoke the service account and the deploy key.
 
+### An upstream with an https url
+
+Git offers a key over ssh only. An upstream whose url is an https one
+(`origin` cloned over https, with no ssh push url beside it) therefore
+ignores the daemon's key: the push fails with `could not read Username for
+'https://github.com': terminal prompts disabled`, however good the key is.
+Nine deliveries of one project were held that way in three days, while a
+project with an ssh push url beside the same kind of url delivered.
+
+So with `push.credential` set, a push or fetch that GitHub refuses for want
+of a credential is made once more over ssh:
+
+- the daemon runs the command against the url as the checkout has it, as
+  before;
+- when all git answers is `fatal: could not read Username for
+  'https://github.com': terminal prompts disabled` and the url is GitHub's
+  (`https://github.com/OWNER/REPO`, with or without `.git`), it runs the
+  same command against `git@github.com:OWNER/REPO.git`, with the key.
+
+Both are read strictly, because a push must never go anywhere but where the
+url points:
+
+- git ends the host at the first `/`, `?` or `#`, so
+  `https://HOST?@github.com/OWNER/REPO` goes to HOST. Only GitHub's address,
+  one `/` and the two names count, the names of letters, digits, `.`, `_`
+  and `-` alone. A url with a user name, a port, a query, a fragment, a
+  further path or a trailing `/` stays on the url it has;
+- git's answer must end with that line and hold nothing else; only its
+  notice of a redirect within GitHub (`warning: redirecting to
+  https://github.com/...`) may come before it. The line names the address
+  git asked the credential for, but one such line among others proves
+  nothing. The host git reached writes part of what git prints: a server's
+  error comes out as `fatal: remote error:` and the server's own words,
+  line breaks included, so a host can end git's answer with this very
+  line. And that host is not always the url's: the checkout's own config
+  may send the url elsewhere (`url.*.insteadOf`), and a server may redirect
+  it. So a line before or after it, another address in it, or the address
+  with the repository's path (`credential.useHttpPath`) leaves the command
+  where it failed. So does a failure that names no address (`unable to get
+  password from user`, which git says where `credential.interactive` is
+  `never`) or asks for the password alone (`could not read Password`, where
+  the config names the user). The note says what to do;
+- the url must be the one git asks. Where the checkout's own config puts
+  another in its place (`url.*.insteadOf`: `git ls-remote --get-url URL`
+  answers another url), nothing is tried over ssh, whatever git says. The
+  host such a url is sent to can send git on to GitHub, and GitHub's
+  question is then git's own answer although the command went elsewhere
+  first.
+
+This holds for every push and fetch the daemon makes on the upstream: a
+branch pushed or deleted, the default branch and a pull request's head
+fetched, the head a review checks out. The checkout's config is not changed.
+A command that succeeds over https is not touched - a GitHub App token
+(below), or a credential the checkout's own config holds. A credential git
+has and the forge refuses (`Authentication failed`) is not a reason to try
+ssh either. Without `push.credential`, and for a url on any other host,
+nothing is tried over ssh.
+
+When the command fails over ssh as well, the note of a push or of a pull
+request head's fetch says both, since you know the remote as an https one:
+`push of B to B on origin/main failed over https (what git said), then over
+ssh with the daemon's key: what ssh said`.
+
+A push that still fails for an authentication reason ends its hold's note
+with one sentence on what to do:
+
+| Git or ssh said | The note ends with |
+| --- | --- |
+| `could not read Username` or `Password`, `unable to get password from user`, `Authentication failed`, `The requested URL returned error: 403` | *git has no credential that opens this https url: give origin an ssh push url (git remote set-url --push origin git@github.com:OWNER/REPO.git)*, with the remote's own name, and `SSH-URL` where the url has no ssh form (another host, or a shape that is not read) |
+| the same with a GitHub App token in force | *GitHub refused the App's token: install the GitHub App on this repository with read and write access to its contents* |
+| `Permission denied (publickey)` or `Permission to OWNER/REPO.git denied to ...` over ssh, with `push.credential` set | *the forge refused the key push.credential names: add its public key to the repository as a deploy key with write access, or name a key that may push with hive cred set* |
+| the same without `push.credential` | *the forge refused this machine's ssh keys: give the daemon a key of its own with hive cred set* |
+| `Host key verification failed` | *ssh does not know the forge's host key: connect to the forge over ssh once by hand, as the user the daemon runs as, and accept it* |
+
+After a retry over ssh the sentence follows what ssh said. To name another
+key while a project's upstream is an https url, run `hive cred set REF
+--no-probe`. The probe of `hive cred set` makes a dry-run push to each
+project's remote, by the remote's own url, with the key alone. An https url
+ignores the key, so the probe fails there and nothing is saved.
+
 ### One git login for every machine: a GitHub App (ADR-070 step 3)
 
 A push key belongs to one machine. A GitHub App is logged in to once, on the
