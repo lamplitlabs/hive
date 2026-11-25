@@ -677,7 +677,12 @@ suggestion card doubles the plain cadence and divides the daily cap by the
 same factor (never below one job a day), up to eight times - `(last run
 empty, cadence x2)`, `(2 empty runs in a row, cadence x4)`, `(3 empty runs
 in a row, cadence x8)` - and a run that leaves a card resets it; the idle
-shortcut, when it applies, is not stretched. A `needs votes` card
+shortcut, when it applies, is not stretched. Only the wait since the last
+research job stretches. The quiet time after any other job stays
+`lead.research_minutes`, however far research has backed off, so the jobs
+the fleet queues by itself on a standing cadence (a lead's standing brief,
+a role lead's sitting, a schedule's job) do not hold research longer as it
+backs off. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
