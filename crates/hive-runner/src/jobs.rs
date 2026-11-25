@@ -8798,6 +8798,171 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         ));
     }
 
+    /// The VM steps of the statements that finished on the connections a
+    /// test put this on: SQLite's own count of the work a query did, the
+    /// same on a fast machine and a loaded one.
+    static VM_STEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn count_vm_steps(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Profile(stmt, _) = event {
+            VM_STEPS.fetch_add(
+                stmt.get_status(rusqlite::StatementStatus::VmStep) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+
+    /// Every connection the store lends from here on tells `watcher` of
+    /// each statement it finishes.
+    fn watch_statements(s: &hive_store::Store, watcher: fn(rusqlite::trace::TraceEvent<'_>)) {
+        let pool = (0..hive_store::MAX_POOL)
+            .map(|_| s.conn().unwrap())
+            .collect::<Vec<_>>();
+        for conn in &pool {
+            conn.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+                Some(watcher),
+            );
+        }
+    }
+
+    /// A thread the daemon or a watcher writes a finding to on every run
+    /// grows without end, and almost none of it is for the owner. The look
+    /// for the owner's open asks read that whole thread once per finding on
+    /// it, on every planning pass of an away owner: one thread of 9,084
+    /// findings was 82 million rows and 25 seconds a pass.
+    #[test]
+    fn a_thread_of_thousands_of_findings_is_read_once_per_ask_not_once_per_finding() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        const FINDINGS: i64 = 2000;
+        let conn = s.conn().unwrap();
+        crate::util::exec1(
+            &*conn,
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1) \
+             INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, created_at) \
+             SELECT printf('watch-%05d', i), 'proj', 'security', 'dependabot', 'finding', 'daemon', \
+                    strftime('%Y-%m-%dT%H:%M:%SZ', '2026-09-01T00:00:00Z', '+' || i || ' minutes'), \
+                    'Alerts read: none open', ?2 FROM n",
+            &[&FINDINGS, &crate::test_helpers::TEST_NOW],
+        );
+        // On that thread and one more, every way an ask is marked and every
+        // way it stops waiting: (id, thread, kind, minute, on, resolution,
+        // extra). A mark may be the front matter's word; a post that says
+        // false, either way, is not marked; a row from before `extra` held
+        // JSON is nobody's ask.
+        crate::util::exec1(
+            &*conn,
+            r#"INSERT INTO posts (id, project, area, thread, kind, agent, date, on_post, resolution, summary, extra, created_at)
+               SELECT column1, 'proj', 'security', column2, column3, 'daemon', '2026-09-03T00:' || column4 || ':00Z', column5, column6, column1, column7, ?1
+               FROM (VALUES
+                 ('frontmatter', 'dependabot', 'finding', '00', '', '', '{"for_owner":"true"}'),
+                 ('not-json', 'dependabot', 'finding', '01', '', '', 'not json'),
+                 ('waits', 'dependabot', 'finding', '02', '', '', '{"for_owner":true}'),
+                 ('settled', 'dependabot', 'finding', '03', '', '', '{"for_owner":true}'),
+                 ('settles', 'dependabot', 'result', '04', 'settled', 'declined', '{}'),
+                 ('answered', 'dependabot', 'finding', '05', '', '', '{"for_owner":true}'),
+                 ('answers', 'dependabot', 'answer', '06', 'answered', '', '{}'),
+                 ('decided', 'dependabot', 'finding', '07', '', '', '{"for_owner":true}'),
+                 ('major', 'dependabot', 'finding', '08', '', '', '{"for_owner":true}'),
+                 ('handoff', 'backup', 'handoff', '09', '', '', '{"for_owner":true}'),
+                 ('closes', 'backup', 'result', '10', '', 'dropped', '{}'),
+                 ('says-false', 'dependabot', 'finding', '11', '', '', '{"for_owner":false}'),
+                 ('frontmatter-false', 'dependabot', 'finding', '12', '', '', '{"for_owner":"false"}'))"#,
+            &[&crate::test_helpers::TEST_NOW],
+        );
+        crate::util::exec1(
+            &*conn,
+            "INSERT INTO decisions (post_id, project, answer, decided_at) VALUES ('decided', 'proj', 'no', ?)",
+            &[&crate::test_helpers::TEST_NOW],
+        );
+        crate::util::event_at(
+            &*conn,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            "security.major",
+            "proj",
+            json!({"number": 20, "package": "next", "post": "major"}),
+        );
+        drop(conn);
+        watch_statements(&s, count_vm_steps);
+
+        let before = VM_STEPS.load(std::sync::atomic::Ordering::Relaxed);
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        let steps = VM_STEPS.load(std::sync::atomic::Ordering::Relaxed) - before;
+        assert_eq!(
+            asks.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["frontmatter", "waits"],
+            "{asks:?}"
+        );
+        assert!(
+            steps > 0 && steps < 200 * FINDINGS as u64,
+            "{steps} VM steps for a thread of {FINDINGS} findings: it is read once per finding on it"
+        );
+    }
+
+    /// The store file of the test that set it, and the SELECTs its watched
+    /// connections have finished since.
+    static CLOSE_BETWEEN: Mutex<Option<(String, u32)>> = Mutex::new(None);
+
+    /// After the second SELECT - the first ask of the thread has been asked
+    /// whether it still waits, the second has not - a result closes the
+    /// thread, from a connection of its own.
+    fn close_the_thread_between_two_asks(event: rusqlite::trace::TraceEvent<'_>) {
+        let rusqlite::trace::TraceEvent::Profile(stmt, _) = event else {
+            return;
+        };
+        let mut slot = CLOSE_BETWEEN.lock().unwrap();
+        let Some((store, selects)) = slot.as_mut() else {
+            return;
+        };
+        if !stmt.sql().trim_start().starts_with("SELECT") {
+            return;
+        }
+        *selects += 1;
+        if *selects == 2 {
+            rusqlite::Connection::open(store.as_str())
+                .unwrap()
+                .execute(
+                    "INSERT INTO posts (id, project, area, thread, kind, agent, date, resolution, summary, created_at) \
+                     VALUES ('closes', 'proj', 'security', 'backup', 'result', 'daemon', '2026-09-03T00:02:00Z', 'dropped', 'closes', '2026-09-03T00:02:00Z')",
+                    [],
+                )
+                .unwrap();
+        }
+    }
+
+    /// The asks were one statement, so one view of the board. Read as a
+    /// list and then asked one by one, a result that closed a thread in
+    /// between kept the thread's earlier asks and dropped its later ones.
+    #[test]
+    fn a_result_posted_while_the_asks_are_read_closes_its_thread_for_all_or_none() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            r#"INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, extra, created_at)
+               SELECT column1, 'proj', 'security', 'backup', 'handoff', 'daemon', column2, column1, '{"for_owner":true}', column2
+               FROM (VALUES ('first', '2026-09-03T00:00:00Z'), ('second', '2026-09-03T00:01:00Z'))"#,
+            &[],
+        );
+        watch_statements(&s, close_the_thread_between_two_asks);
+        *CLOSE_BETWEEN.lock().unwrap() = Some((s.path.clone(), 0));
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        *CLOSE_BETWEEN.lock().unwrap() = None;
+        assert_eq!(
+            asks.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["first", "second"],
+            "the thread closed for one of its asks and not the other"
+        );
+        assert!(
+            crate::lead::owner_addressed_asks(&s, "proj".into()).is_empty(),
+            "no result was posted while the asks were read"
+        );
+    }
+
     #[test]
     fn project_goal_all_worker_kinds_read_latest_at_render() {
         let _serial = crate::test_helpers::serial();

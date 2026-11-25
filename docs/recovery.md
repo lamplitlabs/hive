@@ -764,7 +764,14 @@ report with a `DECIDE:` line for each - yes queues the work the post's Yes
 line names as "Act on the lead's yes (owner away): ..." (a handoff or
 suggestion that is Tier 0 or 1 work inside the constitution), no closes it
 with the lead's reason (an advisory with no fixed version is "keep
-watching"; a stale handoff is closed as such). The same guards apply as for
+watching"; a stale handoff is closed as such). The daemon looks for
+these posts on every planning pass, in one read of the board: a result
+posted meanwhile closes a thread for all of its asks or for none. It
+reads the mark first and asks only a marked post whether it still
+waits, because that question reads the post's whole thread. A thread
+that takes a finding on every run is then read once for each ask on
+it, not once for each finding; asking every finding took 25 seconds of
+each pass when one thread held 9,084. The same guards apply as for
 proposals, and a finding the security watcher posted about a **major
 dependency upgrade** is never the lead's: the daemon skips the lead's
 `DECIDE:` on it and leaves it to you or to `dependencies.major_updates` -

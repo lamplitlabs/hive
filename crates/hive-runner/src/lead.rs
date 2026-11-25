@@ -1058,10 +1058,21 @@ pub(crate) fn owner_ask_is_open(conn: &rusqlite::Connection, post_id: &str) -> b
 /// findings (the owner's or the setting's call). While the owner is away
 /// these are the lead's to decide; the hub lists the same posts under "For
 /// you".
+///
+/// The mark is read first, and only a marked post is asked whether it still
+/// waits: that question reads the post's whole thread, and a thread the
+/// daemon or a watcher writes to on every run holds thousands of findings
+/// that are nobody's ask. Asked of every finding, one thread of 9,084 was
+/// read 9,084 times over, 25 seconds of every planning pass of an away
+/// owner.
 pub(crate) fn owner_addressed_asks(s: &hive_store::Store, slug: String) -> Vec<OwnerQuestion> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
+    // One read transaction for the whole list, as when it was one
+    // statement: a result posted while a thread's asks are being asked
+    // closes the thread for all of them or for none.
+    let _snapshot = conn.unchecked_transaction();
     let marks = vec!["?"; OWNER_ASK_DECIDE_KINDS.len()].join(", ");
     let mut args: Vec<&dyn rusqlite::ToSql> = vec![&slug];
     args.extend(
@@ -1069,22 +1080,25 @@ pub(crate) fn owner_addressed_asks(s: &hive_store::Store, slug: String) -> Vec<O
             .iter()
             .map(|k| k as &dyn rusqlite::ToSql),
     );
+    // The CASE keeps `json_extract` from a row whose extra is not JSON,
+    // where it is an error; `post_for_owner` below stays the rule for what
+    // the mark must say.
     must_rows(
         &conn,
         &format!(
             "SELECT p.id, p.area, p.thread, p.agent, p.kind, p.summary, p.body, p.extra FROM posts p \
              WHERE p.project = ? AND p.kind IN ({marks}) AND p.area <> 'jobs' \
-               AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) \
-               AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.on_post = p.id AND a.kind = 'answer') \
-               AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = p.project AND r.area = p.area AND r.thread = p.thread \
-                                 AND COALESCE(r.resolution, '') <> '' AND (COALESCE(r.on_post, '') = '' OR r.on_post = p.id)) \
-               AND NOT EXISTS (SELECT 1 FROM events e WHERE e.action = 'security.major' AND json_extract(e.detail, '$.post') = p.id) \
+               AND CASE WHEN json_valid(p.extra) THEN json_extract(p.extra, '$.for_owner') END IS NOT NULL \
              ORDER BY p.date, p.rowid"
         ),
         &args,
     )
     .into_iter()
     .filter(|r| hive_store::post_for_owner(&r.str("extra")).unwrap_or(false))
+    .filter(|r| {
+        let id = r.str("id");
+        owner_ask_is_open(&conn, &id) && !is_security_major_finding(&conn, &id)
+    })
     .map(|r| {
         let (yes, no) = ask_meanings(&r.str("body"));
         OwnerQuestion {
