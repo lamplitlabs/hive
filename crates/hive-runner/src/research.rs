@@ -443,6 +443,13 @@ pub(crate) fn research_due(
     } else {
         format!(" ({})", why.join(", "))
     };
+    // The back-off stretches the wait since the last research, not the quiet
+    // time after other work. Stretched too, that window (eight hours at x8
+    // of the default hour) outlasted the six quiet hours after which the
+    // lead gets its standing brief, a job like any other here, so it never
+    // opened again, and only a research run can end the back-off: the
+    // projects of one installation got no research job for over two weeks.
+    let quiet = minutes;
     if idle {
         minutes = (minutes / factor).max(10);
     } else {
@@ -482,8 +489,8 @@ pub(crate) fn research_due(
             false,
         );
     }
-    if !idle && !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", &[&slug, &since]).0.is_empty() {
-        return (ResearchFocus::default(), format!("a job was created in the last {minutes}m{suffix}"), false);
+    if !idle && !must_one(&conn, "SELECT 1 AS x FROM jobs WHERE project = ? AND created_at >= ? AND kind NOT IN ('reflect', 'ballot') LIMIT 1", &[&slug, &plus_minutes(&now, -(quiet as f64))]).0.is_empty() {
+        return (ResearchFocus::default(), format!("a job was created in the last {quiet}m{suffix}"), false);
     }
     let mut per_day = setting_int(s, "lead.research_per_day");
     if per_day < 1 {
@@ -1483,6 +1490,114 @@ mod tests {
         research_run(&s, "d", &plus_minutes(TEST_NOW, -70.0), 6, true);
         let (_, reason, ok) = research_due(&s, "proj".into(), TEST_NOW.into());
         assert!(ok && reason.is_empty(), "{ok} {reason:?}");
+    }
+
+    /// A store whose `proj` had three empty research runs yesterday: the
+    /// back-off is at its cap, so two research jobs are eight hours apart
+    /// and the day's twelve are one, and the eight hours are over.
+    fn store_at_the_back_off_cap() -> crate::test_helpers::TestStore {
+        let s = new_store();
+        new_repo(&s);
+        join(&s, "alice");
+        for (k, v) in [
+            ("lead.research_minutes", "60"),
+            ("lead.idle_factor", "1"),
+            ("lead.research_per_day", "12"),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        for (id, hours) in [("a", -22.0), ("b", -20.0), ("c", -18.0)] {
+            research_run(&s, id, &plus_hours(TEST_NOW, hours), 6, false);
+        }
+        assert_eq!(empty_research_streak(&s, "proj"), 3);
+        s
+    }
+
+    /// The lead's standing brief for `proj`, queued at `at` and finished at
+    /// once: a job the fleet queues by itself, after `lead.idle_hours`
+    /// without another.
+    fn standing_brief(s: &hive_store::Store, at: &str) {
+        s.conn()
+            .expect("conn")
+            .execute(
+                "INSERT INTO jobs (id, project, kind, tier, title, brief, source, priority, status, created_at, created_by, finished_at) VALUES (?, 'proj', 'lead', 1, 'standing brief', '', ?, 0, 'done', ?, 'daemon', ?)",
+                rusqlite::params![format!("job-brief-{}", stamp_of(at)), format!("lead-idle:proj:{}", stamp_of(at)), at, at],
+            )
+            .expect("insert standing brief");
+    }
+
+    #[test]
+    fn research_at_the_back_off_cap_runs_again_between_standing_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_at_the_back_off_cap();
+        // The lead gets its standing brief every six hours, so no eight
+        // hours pass without a new job. Two days of planning passes ten
+        // minutes apart, from 10:00; every research run finishes at once
+        // and leaves no card.
+        let mut researched = Vec::new();
+        for minutes in (0..48 * 60).step_by(10) {
+            let now = plus_minutes(TEST_NOW, minutes);
+            if minutes % 360 == 0 {
+                standing_brief(&s, &now);
+            }
+            if research_due(&s, "proj".into(), now.clone()).2 {
+                research_run(&s, &format!("m{minutes}"), &now, 6, false);
+                researched.push(minutes);
+            }
+        }
+        // Research runs again once the brief is an hour old, then at each
+        // midnight: the eight hours were over by 19:20 and 08:10, but the
+        // day's one job was spent.
+        assert_eq!(researched, [70, 840, 2280]);
+    }
+
+    #[test]
+    fn backed_off_research_still_waits_out_new_work_and_the_daily_cap() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_at_the_back_off_cap();
+        let due = |minutes: i32| {
+            let (_, reason, ok) = research_due(&s, "proj".into(), plus_minutes(TEST_NOW, minutes));
+            (ok, reason)
+        };
+        // A worker job queued now holds research while it is open and, once
+        // it is done, for the plain hour.
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "improve".into(),
+            "Implement suggestion".into(),
+            "one variable".into(),
+            1,
+            10,
+            "suggestion:x".into(),
+            "daemon".into(),
+            true,
+        )
+        .expect("worker job");
+        assert_eq!(due(0), (false, "a job is open".into()));
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &job.str("id")],
+        );
+        assert_eq!(
+            due(60),
+            (
+                false,
+                "a job was created in the last 60m (3 empty runs in a row, cadence x8)".into()
+            )
+        );
+        assert_eq!(due(61), (true, String::new()));
+        // The run that follows spends the day's one job: eight hours later
+        // the cap holds the next.
+        research_run(&s, "d", &plus_minutes(TEST_NOW, 61), 6, false);
+        assert_eq!(
+            due(61 + 481),
+            (
+                false,
+                "1 of 1 research jobs today (4 empty runs in a row, cadence x8)".into()
+            )
+        );
     }
 
     #[test]
