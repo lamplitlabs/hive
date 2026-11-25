@@ -677,7 +677,12 @@ suggestion card doubles the plain cadence and divides the daily cap by the
 same factor (never below one job a day), up to eight times - `(last run
 empty, cadence x2)`, `(2 empty runs in a row, cadence x4)`, `(3 empty runs
 in a row, cadence x8)` - and a run that leaves a card resets it; the idle
-shortcut, when it applies, is not stretched. A `needs votes` card
+shortcut, when it applies, is not stretched. Only the wait since the last
+research job stretches. The quiet time after any other job stays
+`lead.research_minutes`, however far research has backed off, so the jobs
+the fleet queues by itself on a standing cadence (a lead's standing brief,
+a role lead's sitting, a schedule's job) do not hold research longer as it
+backs off. A `needs votes` card
 gets a ballot job after `lead.ballot_hours` (default 1) only when an active
 non-author agent could still vote on it, one ballot per project per that many
 hours and at most `lead.ballot_cap` cards (default 10), closest to quorum
@@ -764,7 +769,14 @@ report with a `DECIDE:` line for each - yes queues the work the post's Yes
 line names as "Act on the lead's yes (owner away): ..." (a handoff or
 suggestion that is Tier 0 or 1 work inside the constitution), no closes it
 with the lead's reason (an advisory with no fixed version is "keep
-watching"; a stale handoff is closed as such). The same guards apply as for
+watching"; a stale handoff is closed as such). The daemon looks for
+these posts on every planning pass, in one read of the board: a result
+posted meanwhile closes a thread for all of its asks or for none. It
+reads the mark first and asks only a marked post whether it still
+waits, because that question reads the post's whole thread. A thread
+that takes a finding on every run is then read once for each ask on
+it, not once for each finding; asking every finding took 25 seconds of
+each pass when one thread held 9,084. The same guards apply as for
 proposals, and a finding the security watcher posted about a **major
 dependency upgrade** is never the lead's: the daemon skips the lead's
 `DECIDE:` on it and leaves it to you or to `dependencies.major_updates` -
