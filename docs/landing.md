@@ -397,13 +397,58 @@ when `landing.auto_stash` is on (the default), as the old landing stashed
 around a merge; with it off the branch is left alone, the daemon records
 `land.sync-skipped` with what holds it back (at most once an hour per
 project, so the log does not fill with the same line) and tries again on the
-next pass - commit or stash your changes and the branch follows. A local
-default branch that has diverged from the upstream - commits of its own that
-the forge lacks, which only a `hive land --branch B --local` or a merge by
-hand makes now - is not merged for you: on the default branch the
-fast-forward fails and `land.fast-forward` says so (`ok` false, `why`); on
-another branch the ref is not moved. Push or reset the local commits and the
-branch follows again.
+next pass - commit or stash your changes and the branch follows.
+
+A local default branch that has diverged from the upstream - each holds
+commits the other lacks, so no fast-forward follows - is never merged for
+you and never stashed for. What the pass does depends on whose history
+changed:
+
+- **The upstream's history was rewritten and the local branch holds no work
+  of its own** - the upstream was squashed or force-pushed, and the checkout
+  still holds the history from before. The pass realigns the branch to the
+  upstream by itself when two things are both true. The local tip holds the
+  same files as the upstream's tip (the same tree), so no file changes. And
+  the local tip is a commit the upstream held before (the reflog of the
+  tracking ref names it), so every local commit was once the upstream's. A
+  history you rewrote in this checkout and have not pushed yet fails the
+  second test and is not moved back. Before the move the old tip is kept
+  under `refs/hive/backup/<branch>/<UTC time>`, for example
+  `refs/hive/backup/main/20261201T093000Z`: `git log` reads it, `git branch
+  NAME <that ref>` makes a branch of it, and Hive never deletes it. The
+  branch moves by ref (`git update-ref`, with a reflog message) whether it
+  is checked out or not; no file and no index entry is written. The move is
+  `land.realigned` in the log (`from`, `to`, `backup`) and a `landing
+  realigned <slug>: main -> origin/main ...` line in the daemon log. The
+  branch is never moved under a working tree, whatever `landing.auto_stash`
+  says. That is a checkout that has the default branch with uncommitted
+  changes - the project's own, or any other worktree of it - and a rebase,
+  a merge, a cherry-pick or a bisect in progress on the branch in any
+  worktree. (Git ends a rebase by updating the branch from the commit it
+  started at, so a branch moved meanwhile would make the rebase fail.) A
+  worktree git cannot list or read counts too: nothing moves on a guess.
+  You are told as below; once the changes are stashed, the operation is
+  finished or aborted, or git can read the worktree again, the next pass
+  realigns.
+- **Anything else** - the local branch holds commits the upstream never
+  held (only a `hive land --branch B --local`, a commit or a merge by hand
+  makes them now), or its files differ from the upstream's. The pass does
+  not move the branch. It records the failure once for each pair of local
+  tip and upstream tip, not on every pass (`land.fast-forward` with `ok`
+  false and `why`, `from`, `to`, `ahead`; one line in the daemon log, which
+  `hive land` run by hand prints on every run), and it asks you once: a
+  question marked for you on the project's `runner/default-branch` thread
+  says what happened, why the branch was not moved, and the two ways out.
+  Keep the upstream's history: save the local commits under another name
+  (`git branch main-local main`), then `git reset --keep origin/main` with
+  the branch checked out, or `git branch -f main origin/main` from another
+  branch. Or keep the local commits: rebase them onto the upstream and push
+  them or open a pull request with them, or, when the local history is the
+  one to keep, push it over the upstream's (`git push --force-with-lease
+  origin main:main`). A tip that moves after that adds one event and one
+  log line, and no second question. When the branch can follow the upstream
+  again, the daemon answers the question itself. A question or an answer
+  the store would not take is posted on the next pass.
 
 Following the upstream is what keeps Hive updating itself: the brain project
 (Hive on the machine that runs it) rebuilds and restarts the daemon when its
@@ -432,7 +477,8 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
 | `land.merge-broken` | a task's job branches merged onto its base without a conflict, but the merged tree does not compile (`landing.merge_check`), and a job was queued to make them compile together | `project`, `task`, `tip` (the merged commit that failed), `base`, `jobs`, `branches` (the job branches merged this pass), `errors` (cargo's error lines, at most 20), `follow_up` (the fix job) |
 | `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |
-| `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not |
+| `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not; a diverged branch is recorded once for each pair of tips, with `why`, `from`, `to` and `ahead` |
+| `land.realigned` | the local default branch held no work of its own and was moved to an upstream whose history was rewritten | `project`, `branch`, `upstream`, `from`, `to` (the full commit ids), `backup` (the ref that keeps the old tip), `ahead`, `behind` |
 | `land.sync-skipped` | the local default branch was left behind the upstream because the checkout is dirty and `landing.auto_stash` is off | `project`, `branch`, `upstream`, `behind`, `why`; at most once an hour per project |
 
 The reviewer's events (`review.queued`, `review.merged`, `review.changes`,
@@ -535,7 +581,8 @@ that could not be made - the review job ended twice without a verdict on the
 same head - is the reviewer's `review.failed`, and the pull request waits for
 you ([The reviewer](review.md#when-the-review-fails)). A checkout that cannot
 follow the upstream is `land.fast-forward` with `ok` false or
-`land.sync-skipped` (above).
+`land.sync-skipped`, and a branch that has diverged is a question for you,
+asked once ([above](#the-local-default-branch-follows-the-upstream)).
 
 ## Where the work stands in the hub
 
@@ -563,7 +610,11 @@ land* and *Reviewing* groups are gone with the local landing they described.
   merged; task done`, `… closed unmerged; the branch stays on the remote`)
   and `<slug>: nothing waiting` when there is nothing to do; a project
   without an upstream prints `<slug>: no upstream, landing locally` and the
-  local landing's lines. `--limit` is accepted for older scripts and does
+  local landing's lines. A project whose default branch has diverged from
+  its upstream prints where that stands on every run, with the reason the
+  pass found this time, where the daemon logs it once
+  ([above](#the-local-default-branch-follows-the-upstream)).
+  `--limit` is accepted for older scripts and does
   nothing: a pass opens at most ten pull requests per project.
 - `hive land --dry-run` lists what the next pass would deliver, per project,
   without pushing anything: where the pull requests go (`pull requests go to

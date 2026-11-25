@@ -632,7 +632,14 @@ pub(crate) fn cmd_land(c: &mut Context, fs: &FlagSet, _args: &[String]) -> Resul
             // One delivery pass for the project: the pull requests owed,
             // the open ones settled, the default branch brought up to its
             // upstream (delivery.rs) - what the daemon does every pass.
-            let lines = crate::delivery::tend(&s, std::slice::from_ref(&proj), &now);
+            let mut lines = crate::delivery::tend(&s, std::slice::from_ref(&proj), &now);
+            // The pass says a default branch that cannot follow its
+            // upstream once; a run by hand says where it stands each time.
+            if let Some(line) = crate::forge::diverged_standing(&s, &proj)
+                && !lines.iter().any(|said| said.contains(&line))
+            {
+                lines.push(line);
+            }
             if lines.is_empty() {
                 c.printf(format_args!("{slug}: nothing waiting\n"))?;
             }
@@ -2638,6 +2645,133 @@ mod tests {
         assert!(
             code == 2 && err_text.contains("land --local needs --branch"),
             "{code} {err_text:?}"
+        );
+    }
+
+    #[test]
+    fn land_by_hand_says_every_time_where_a_diverged_default_branch_stands() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = crate::test_helpers_daemon::fake_gh();
+        let s = new_store();
+        let (_proj, repo, bare) = crate::test_helpers_daemon::push_fixture(&s);
+        // A commit of the owner's on main that is never pushed, and an
+        // upstream that moved on without it.
+        std::fs::write(std::path::Path::new(&repo).join("mine.txt"), "mine\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "local work"]);
+        let upstream = |args: &[&str]| {
+            let mut argv = vec!["git", "--git-dir", bare.as_str()];
+            argv.extend_from_slice(args);
+            run(".", &argv).trim().to_string()
+        };
+        let tip = upstream(&["rev-parse", "refs/heads/main"]);
+        let tree = upstream(&["rev-parse", "refs/heads/main^{tree}"]);
+        let next = upstream(&["commit-tree", &tree, "-p", &tip, "-m", "more"]);
+        upstream(&["update-ref", "refs/heads/main", &next]);
+        let recorded = || {
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.fast-forward'",
+                &[],
+            )
+        };
+
+        crate::forge::forget_sync_memo();
+        let (out, err_text, code) = invoke(&s, "land", "proj", &[]);
+        assert!(
+            code == 0
+                && out.starts_with(
+                    "proj: main has diverged from origin/main (1 ahead, 1 behind) and was not moved"
+                )
+                && out.lines().count() == 1,
+            "land: {code} {out:?} {err_text:?}"
+        );
+        assert_eq!(recorded(), 1);
+
+        // The pair is recorded, so a second run writes nothing; it says
+        // where the branch stands all the same.
+        crate::forge::forget_sync_memo();
+        let (again, _, code) = invoke(&s, "land", "proj", &[]);
+        assert_eq!((code, again.as_str()), (0, out.as_str()));
+        assert_eq!(recorded(), 1);
+
+        // The owner keeps the upstream's history: nothing is left to say.
+        run(&repo, &["git", "reset", "-q", "--keep", "origin/main"]);
+        crate::forge::forget_sync_memo();
+        let (out, _, code) = invoke(&s, "land", "proj", &[]);
+        assert_eq!((code, out.as_str()), (0, "proj: nothing waiting\n"));
+    }
+
+    #[test]
+    fn land_by_hand_gives_the_reason_the_last_pass_found() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = crate::test_helpers_daemon::fake_gh();
+        let s = new_store();
+        let (_proj, repo, bare) = crate::test_helpers_daemon::push_fixture(&s);
+        // Main as the upstream had it, then the upstream replaced by one
+        // commit that holds the same files: Hive would realign main, but
+        // for the edit in its checkout.
+        std::fs::write(std::path::Path::new(&repo).join("second.txt"), "second\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "second"]);
+        run(&repo, &["git", "push", "-q", "origin", "main"]);
+        let upstream = |args: &[&str]| {
+            let mut argv = vec!["git", "--git-dir", bare.as_str()];
+            argv.extend_from_slice(args);
+            run(".", &argv).trim().to_string()
+        };
+        let tree = upstream(&["rev-parse", "refs/heads/main^{tree}"]);
+        let squashed = upstream(&["commit-tree", &tree, "-m", "the history as one commit"]);
+        upstream(&["update-ref", "refs/heads/main", &squashed]);
+        std::fs::write(
+            std::path::Path::new(&repo).join("README.md"),
+            "# edited by hand\n",
+        )
+        .unwrap();
+        let recorded_and_asked = || {
+            let count = |sql: &str| crate::test_helpers::count(&s, sql, &[]);
+            (
+                count("SELECT COUNT(*) AS n FROM events WHERE action = 'land.fast-forward'"),
+                count(
+                    "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question' AND thread = 'default-branch'",
+                ),
+            )
+        };
+
+        crate::forge::forget_sync_memo();
+        let (out, err_text, code) = invoke(&s, "land", "proj", &[]);
+        assert!(
+            code == 0 && out.contains("has uncommitted changes") && out.lines().count() == 1,
+            "land: {code} {out:?} {err_text:?}"
+        );
+        assert_eq!(recorded_and_asked(), (1, 1));
+
+        // The edit is stashed and a rebase of main stops at a step: the
+        // same two commits, held by something else now.
+        run(&repo, &["git", "stash", "-q"]);
+        run(
+            &repo,
+            &[
+                "sh",
+                "-c",
+                "git rebase -q -x 'test -f go' HEAD~1 >/dev/null 2>&1 || true",
+            ],
+        );
+        crate::forge::forget_sync_memo();
+        let (out, _, code) = invoke(&s, "land", "proj", &[]);
+        assert!(
+            code == 0
+                && out.contains("a rebase is in progress on it")
+                && !out.contains("uncommitted changes")
+                && out.lines().count() == 1,
+            "land again: {code} {out:?}"
+        );
+        assert_eq!(
+            recorded_and_asked(),
+            (1, 1),
+            "the same pair recorded or asked twice"
         );
     }
 }
