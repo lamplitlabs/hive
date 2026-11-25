@@ -3604,7 +3604,7 @@ fn checkout_state_pair(root: &str, default_branch: &str) -> (bool, bool) {
     )
 }
 
-fn git_failure_result(g: &crate::util::GitResult) -> String {
+pub(crate) fn git_failure_result(g: &crate::util::GitResult) -> String {
     if let Some(e) = &g.err {
         return e.clone();
     }

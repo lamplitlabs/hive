@@ -540,6 +540,25 @@ board, never a question, and no compute is bought while there is no login
 source to give a new machine. `compute.self_heal=0` and `compute.self_retire=0`
 switch the two halves off.
 
+## A default branch that cannot follow its upstream
+
+What the daemon does on its own when a project's local default branch and
+its upstream have diverged, so that no fast-forward follows
+([Delivery](landing.md#the-local-default-branch-follows-the-upstream) has
+the detail). When the upstream's history was rewritten and the local branch
+holds no work of its own - the same files as the upstream's tip, and a tip
+the upstream held before - the daemon realigns the branch to the upstream.
+The old tip is kept under `refs/hive/backup/<branch>/<UTC time>`, the branch
+moves by ref, no file is written, and `land.realigned` records it. A branch
+that any worktree has checked out with uncommitted changes, or that a
+rebase, a merge, a cherry-pick or a bisect is in progress on, is left alone
+until that is over, and so is one whose worktrees git cannot list or read.
+Whenever the daemon does not move the branch, it records one failed
+`land.fast-forward` for each pair of local tip and upstream tip, asks you
+once on the project's `runner/default-branch` thread with the two ways out,
+and answers that question itself when the branch can follow the upstream
+again. The sweep never removes a backup ref.
+
 ## When the owner is quiet: handoffs, idle leads and research
 
 Who queues work on its own while the owner is quiet, and from what (the

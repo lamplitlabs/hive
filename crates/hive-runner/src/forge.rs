@@ -197,8 +197,8 @@ pub(crate) fn fast_forward_default(
         if from.is_empty() || to.is_empty() {
             return None;
         }
-        // Only a fast-forward moves by ref; a diverged branch is the
-        // sync's to merge.
+        // Only a fast-forward moves by ref; a diverged branch is
+        // `diverged_default`'s.
         let ancestor = crate::util::git_timeout(
             root,
             Duration::from_secs(20),
@@ -292,8 +292,11 @@ pub(crate) fn forget_sync_memo() {
 /// branch has the default branch moved by ref; a dirty checkout of the
 /// default branch is stashed around the fast-forward when
 /// `landing.auto_stash` is on, else left alone with a `land.sync-skipped`
-/// event at most once an hour. Returns the log line when something was
-/// done or could not be.
+/// event at most once an hour. A branch the upstream no longer descends
+/// from is not fast-forwarded and never stashed for: `diverged_default`
+/// realigns it when it holds no work of its own and tells the owner once
+/// when it does. Returns the log line when something was done or could
+/// not be.
 pub(crate) fn sync_default_from_upstream(
     s: &hive_store::Store,
     project: &crate::util::Row,
@@ -337,7 +340,14 @@ pub(crate) fn sync_default_from_upstream(
     .parse::<i32>()
     .unwrap_or(0);
     if behind == 0 {
+        diverged_over(s, project, &def, &up, None, actor, now);
         return None;
+    }
+    match is_ancestor(&root, &format!("refs/heads/{def}"), &up.upstream_ref) {
+        Some(false) => return diverged_default(s, project, &def, &up, actor, now, behind),
+        Some(true) => diverged_over(s, project, &def, &up, None, actor, now),
+        // Git could not say; the fast-forward below finds out.
+        None => {}
     }
     let name = up.name();
     let (on_default, clean) = checkout_state(&root, &def);
@@ -406,6 +416,579 @@ pub(crate) fn sync_default_from_upstream(
         now,
         behind,
     )
+}
+
+/// The owner's question about a default branch that cannot follow its
+/// upstream: its coalesce kind and its thread under `runner`.
+const DIVERGED_ASK: &str = "default-branch";
+/// The `meta` key under which a project remembers what was last recorded
+/// for its diverged default branch (`tell_diverged_once`), so a pair is
+/// recorded once however many passes see it and the owner is asked once
+/// for a divergence.
+const DIVERGED_META_PREFIX: &str = "land-diverged:";
+
+/// Whether `a` is `b` or an ancestor of it, so a fast-forward takes `a` to
+/// `b`; None when git cannot say (a timeout, a missing object), which is
+/// never read as diverged.
+fn is_ancestor(root: &str, a: &str, b: &str) -> Option<bool> {
+    let r = crate::util::git_timeout(
+        root,
+        Duration::from_secs(20),
+        &["merge-base", "--is-ancestor", a, b],
+    );
+    match (r.err.is_none(), r.code) {
+        (true, 0) => Some(true),
+        (true, 1) => Some(false),
+        _ => None,
+    }
+}
+
+/// A local default branch its upstream no longer descends from: an
+/// upstream whose history was replaced left the same fast-forward failing
+/// on every pass, and nothing told the owner. The branch is realigned to
+/// the upstream only when it holds no work of its own, which takes both
+/// proofs: its tree is the upstream tip's, so not one file differs, and
+/// its tip is a value the tracking ref held before (`was_upstream`), so
+/// every commit on it was once the upstream's - a branch rewritten in this
+/// checkout and not pushed yet fails the second and is never moved back.
+/// A branch a working tree holds is left alone, and never stashed for
+/// this (`held_by_a_worktree`). Whatever is not realigned is the owner's to
+/// settle and is said once (`tell_diverged_once`).
+fn diverged_default(
+    s: &hive_store::Store,
+    project: &crate::util::Row,
+    def: &str,
+    up: &Upstream,
+    actor: &str,
+    now: &str,
+    behind: i32,
+) -> Option<String> {
+    let root = project.str("path");
+    let slug = project.str("slug");
+    let name = up.name();
+    let rev = |r: &str| {
+        let out = crate::util::git_timeout(
+            &root,
+            Duration::from_secs(10),
+            &["rev-parse", "--verify", "--quiet", r],
+        );
+        if out.ok() {
+            out.stdout.trim().to_string()
+        } else {
+            String::new()
+        }
+    };
+    let from = rev(&format!("refs/heads/{def}^{{commit}}"));
+    let to = rev(&format!("{}^{{commit}}", up.upstream_ref));
+    // Everything below is about these two commits; a branch that moved
+    // since the pass looked is judged on the next one.
+    if from.is_empty() || to.is_empty() || is_ancestor(&root, &from, &to) != Some(false) {
+        return None;
+    }
+    let tips = Tips {
+        from: &from,
+        to: &to,
+        behind,
+    };
+    let tree = rev(&format!("{from}^{{tree}}"));
+    let same_files = !tree.is_empty() && tree == rev(&format!("{to}^{{tree}}"));
+    let why = match (same_files, was_upstream(&root, &up.upstream_ref, &from)) {
+        (false, false) => format!(
+            "its files differ from {name}'s and the upstream never held its tip, so it holds work of its own"
+        ),
+        (false, true) => format!(
+            "the upstream held its tip before the rewrite, but its files differ from {name}'s now, and Hive realigns only a branch that holds the same files"
+        ),
+        (true, false) => format!(
+            "its files are the same as {name}'s, but the upstream never held its tip (the tracking ref's reflog has no such entry), so the history that was rewritten may be the local one"
+        ),
+        (true, true) => match held_by_a_worktree(&root, def) {
+            Some(held) => format!("it holds no work of its own, but {held}"),
+            None => match realign(&root, def, &name, &tips, now) {
+                Ok(backup) => {
+                    let ahead = tips.ahead(&root);
+                    if let Ok(conn) = s.conn() {
+                        crate::util::event_at(
+                            &conn,
+                            now,
+                            actor,
+                            "land.realigned",
+                            &slug,
+                            serde_json::json!({"project": slug, "branch": def, "upstream": name, "from": from, "to": to,
+                                "backup": backup, "ahead": ahead, "behind": behind}),
+                        );
+                    }
+                    diverged_over(s, project, def, up, Some(&backup), actor, now);
+                    return Some(format!(
+                        "landing realigned {slug}: {def} -> {name}, whose history was rewritten ({ahead} local {} gave way to {behind}, the files are the same); the old tip {} is kept at {backup}",
+                        crate::util::plural(ahead, "commit"),
+                        crate::recipe::short(&from, 12),
+                    ));
+                }
+                Err(why) => format!(
+                    "it holds no work of its own, but git refused the realignment ({why}); Hive tries again on every pass"
+                ),
+            },
+        },
+    };
+    tell_diverged_once(s, project, def, up, actor, now, &tips, &why)
+}
+
+/// The two tips of a default branch that cannot follow its upstream, and
+/// how many commits the upstream holds that the branch lacks.
+struct Tips<'a> {
+    from: &'a str,
+    to: &'a str,
+    behind: i32,
+}
+
+impl Tips<'_> {
+    /// How many commits the branch holds that the upstream lacks.
+    fn ahead(&self, root: &str) -> i32 {
+        crate::util::git_timeout(
+            root,
+            Duration::from_secs(30),
+            &[
+                "rev-list",
+                "--count",
+                &format!("{}..{}", self.to, self.from),
+            ],
+        )
+        .stdout
+        .trim()
+        .parse::<i32>()
+        .unwrap_or(0)
+    }
+}
+
+/// Git's own words for a call that failed, short enough for a line and
+/// with secrets removed; a call that ran out of time says so.
+fn git_said(failed: &crate::util::GitResult) -> String {
+    hive_cred::redact(
+        &crate::run::squeeze(&crate::land::git_failure_result(failed), 160),
+        &[],
+    )
+}
+
+/// Why the default branch must not be moved under a working tree, or None
+/// when none stands in the way. One reason is a worktree that has the
+/// branch checked out with uncommitted changes, the project's own checkout
+/// or a linked one. The other is an operation in progress on the branch,
+/// which a clean `git status` does not show: a rebase and a bisect detach
+/// HEAD and name the branch in their own files, and a rebase ends with an
+/// update of the branch from the tip it started at, which fails when the
+/// branch moved meanwhile; a merge and a cherry-pick run in the worktree
+/// that has the branch checked out (`under_way`). A worktree git cannot
+/// list or read is a reason too, whichever call fails or runs out of time
+/// and whichever of git's notes cannot be read: nothing is moved on a
+/// guess. Only a worktree whose folder is gone is passed over.
+fn held_by_a_worktree(root: &str, def: &str) -> Option<String> {
+    let list = crate::util::git_timeout(
+        root,
+        Duration::from_secs(30),
+        &["worktree", "list", "--porcelain"],
+    );
+    if !list.ok() {
+        return Some(format!(
+            "git could not list the worktrees that may have it checked out ({}); Hive tries again on every pass",
+            git_said(&list)
+        ));
+    }
+    for wt in hive_hand_core::worktree::parse_worktrees(&list.stdout) {
+        let path = wt.path.as_str();
+        if wt.bare || !std::path::Path::new(path).is_dir() {
+            continue;
+        }
+        let unread = |why: &str| {
+            format!(
+                "git could not read the worktree at {path} ({why}); Hive tries again on every pass"
+            )
+        };
+        let dir = crate::util::git_timeout(
+            path,
+            Duration::from_secs(10),
+            &["rev-parse", "--absolute-git-dir"],
+        );
+        if !dir.ok() || dir.stdout.trim().is_empty() {
+            return Some(unread(&git_said(&dir)));
+        }
+        let on_it = wt.branch == def;
+        if on_it {
+            let status = crate::util::git_timeout(
+                path,
+                Duration::from_secs(60),
+                &["status", "--porcelain", "--untracked-files=no"],
+            );
+            if !status.ok() {
+                return Some(unread(&git_said(&status)));
+            }
+            if !status.stdout.trim().is_empty() {
+                return Some(format!(
+                    "its checkout at {path} has uncommitted changes; Hive realigns it once they are stashed or that checkout is on another branch"
+                ));
+            }
+        }
+        match under_way(std::path::Path::new(dir.stdout.trim()), def, on_it) {
+            Err(unreadable) => return Some(unread(&unreadable)),
+            Ok(Some(what)) => {
+                return Some(format!(
+                    "a {what} is in progress on it in {path}; Hive realigns it once that is finished or aborted"
+                ));
+            }
+            Ok(None) => {}
+        }
+    }
+    None
+}
+
+/// What git's own notes in a worktree's git directory say is under way on
+/// the default branch. A rebase and a bisect name the branch in a file; a
+/// merge and a cherry-pick leave their mark in the worktree that has the
+/// branch checked out (`on_it`). Err names a note that is there and cannot
+/// be read: it may name the branch.
+fn under_way(
+    dir: &std::path::Path,
+    def: &str,
+    on_it: bool,
+) -> Result<Option<&'static str>, String> {
+    let names = |file: &str, branch: &str| match std::fs::read_to_string(dir.join(file)) {
+        Ok(text) => Ok(text.trim() == branch),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{file}: {e}")),
+    };
+    let branch_ref = format!("refs/heads/{def}");
+    Ok(
+        if names("rebase-merge/head-name", &branch_ref)?
+            || names("rebase-apply/head-name", &branch_ref)?
+        {
+            Some("rebase")
+        } else if names("BISECT_START", def)? {
+            Some("bisect")
+        } else if on_it && dir.join("MERGE_HEAD").exists() {
+            Some("merge")
+        } else if on_it && dir.join("CHERRY_PICK_HEAD").exists() {
+            Some("cherry-pick")
+        } else {
+            None
+        },
+    )
+}
+
+/// Whether the tracking ref `up_ref` once held `sha`, by its reflog: as a
+/// value a fetch or a push left there, or as the value the oldest entry
+/// moved away from (a clone writes no entry for the tip it starts with, so
+/// the first forced fetch is the only record of it).
+fn was_upstream(root: &str, up_ref: &str, sha: &str) -> bool {
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(30), args);
+    let log = git(&["reflog", "show", "--format=%H", up_ref]);
+    if !log.ok() {
+        return false;
+    }
+    let held: Vec<&str> = log.stdout.lines().map(str::trim).collect();
+    if held.contains(&sha) {
+        return true;
+    }
+    let before = git(&[
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("{up_ref}@{{{}}}", held.len()),
+    ]);
+    !held.is_empty() && before.ok() && before.stdout.trim() == sha
+}
+
+/// Moves the default branch to the upstream's tip by ref, with the old tip
+/// kept under `refs/hive/backup/<branch>/<UTC stamp>` first (a backup of
+/// that tip an earlier try left is used again, and none is ever
+/// overwritten). The two tips hold the same tree, so neither the index nor
+/// a file changes whether the branch is checked out or not. Returns the
+/// backup ref, or git's words when the old tip could not be kept or the
+/// branch moved meanwhile.
+fn realign(
+    root: &str,
+    def: &str,
+    name: &str,
+    tips: &Tips<'_>,
+    now: &str,
+) -> Result<String, String> {
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(30), args);
+    let kept = format!("refs/hive/backup/{def}/");
+    let mut backup = git(&[
+        "for-each-ref",
+        "--count=1",
+        &format!("--points-at={}", tips.from),
+        "--format=%(refname)",
+        &kept,
+    ])
+    .stdout
+    .trim()
+    .to_string();
+    if backup.is_empty() {
+        backup = format!("{kept}{}", crate::util::stamp_of(now));
+        let made = git(&[
+            "update-ref",
+            "-m",
+            &format!("hive: {def} before it was realigned to {name}"),
+            &backup,
+            tips.from,
+            "",
+        ]);
+        if !made.ok() {
+            return Err(format!(
+                "the old tip could not be kept at {backup}: {}",
+                git_said(&made)
+            ));
+        }
+    }
+    let moved = git(&[
+        "update-ref",
+        "-m",
+        &format!(
+            "hive: {def} realigned to {name}, whose history was rewritten; the old tip is {backup}"
+        ),
+        &format!("refs/heads/{def}"),
+        tips.to,
+        tips.from,
+    ]);
+    if !moved.ok() {
+        return Err(git_said(&moved));
+    }
+    Ok(backup)
+}
+
+/// Records that the default branch cannot follow its upstream, once for
+/// each pair of tips: a failed `land.fast-forward` with the two tips and
+/// the reason. The first pair of a divergence also asks the owner what to
+/// keep (`ask_about_diverged`); a tip that moves after that is a new pair
+/// to record, not a new question. An ask the store refused is made again
+/// on every pass until it goes through. What was recorded is remembered in
+/// `meta` until the branch can follow again (`diverged_over`): the pair,
+/// whether the owner was asked, and the line in its parts, so a daemon
+/// that restarts says nothing twice. When something else holds the same
+/// pair on a later pass (an edit was stashed, a rebase began), the reason
+/// alone is rewritten there, for a run by hand to read
+/// (`diverged_standing`): no event, no question, no line. Returns the log
+/// line the first time a pair is seen, and again when an ask that was owed
+/// went through; None otherwise.
+#[allow(clippy::too_many_arguments)]
+fn tell_diverged_once(
+    s: &hive_store::Store,
+    project: &crate::util::Row,
+    def: &str,
+    up: &Upstream,
+    actor: &str,
+    now: &str,
+    tips: &Tips<'_>,
+    why: &str,
+) -> Option<String> {
+    let root = project.str("path");
+    let slug = project.str("slug");
+    let name = up.name();
+    let key = format!("{DIVERGED_META_PREFIX}{slug}");
+    let mut told = diverged_told(s, &slug);
+    let same_pair = told["from"] == tips.from && told["to"] == tips.to;
+    let asked_before = told["asked"] == true;
+    if same_pair && asked_before {
+        if told["why"] != why {
+            told["why"] = why.into();
+            let _ = s.set_meta(&key, &told.to_string());
+        }
+        return None;
+    }
+    let (ahead, behind) = (tips.ahead(&root), tips.behind);
+    if !same_pair && let Ok(conn) = s.conn() {
+        crate::util::event_at(
+            &conn,
+            now,
+            actor,
+            "land.fast-forward",
+            &slug,
+            serde_json::json!({"project": slug, "branch": def, "upstream": name, "behind": behind, "ok": false,
+                "why": why, "from": crate::recipe::short(tips.from, 12), "to": crate::recipe::short(tips.to, 12),
+                "ahead": ahead}),
+        );
+    }
+    let (asked, how) = if asked_before {
+        (
+            true,
+            "the owner was asked when it first diverged".to_string(),
+        )
+    } else {
+        match ask_about_diverged(s, project, def, up, actor, now, tips, ahead, why) {
+            Ok(Some(post)) => (true, format!("the owner is asked ({})", post.str("id"))),
+            Ok(None) => (
+                true,
+                "the owner's question about it is still open".to_string(),
+            ),
+            Err(e) => (
+                false,
+                format!(
+                    "the owner could not be asked ({}); Hive asks again on the next pass",
+                    crate::run::squeeze(&e.to_string(), 160)
+                ),
+            ),
+        }
+    };
+    let head = format!(
+        "{slug}: {def} has diverged from {name} ({ahead} ahead, {behind} behind) and was not moved"
+    );
+    let _ = s.set_meta(
+        &key,
+        &serde_json::json!({"from": tips.from, "to": tips.to, "asked": asked, "head": head, "why": why, "how": how})
+            .to_string(),
+    );
+    (!same_pair || asked).then(|| diverged_line(&head, why, &how))
+}
+
+/// The line a diverged default branch is said with: where it stands
+/// (`head`), why it was not moved, and how the owner was asked.
+fn diverged_line(head: &str, why: &str, how: &str) -> String {
+    format!("{head}: {why}; {how}")
+}
+
+/// What `tell_diverged_once` last recorded for the project's default
+/// branch: `from`, `to`, `asked`, and the line's `head`, `why` and `how`;
+/// null when nothing is recorded.
+fn diverged_told(s: &hive_store::Store, slug: &str) -> serde_json::Value {
+    s.meta(&format!("{DIVERGED_META_PREFIX}{slug}"))
+        .ok()
+        .and_then(|(told, _)| serde_json::from_str(&told).ok())
+        .unwrap_or_default()
+}
+
+/// Where a diverged default branch stands, for a pass run by hand (`hive
+/// land`): the daemon says the line once for a pair of tips, a person who
+/// asks is told every time. It is the recorded line with the reason the
+/// last pass found, read and not written again, and None once the branch
+/// can follow its upstream.
+pub(crate) fn diverged_standing(
+    s: &hive_store::Store,
+    project: &crate::util::Row,
+) -> Option<String> {
+    let told = diverged_told(s, &project.str("slug"));
+    let said = |part: &str| told[part].as_str().unwrap_or_default();
+    if said("head").is_empty() {
+        return None;
+    }
+    let root = project.str("path");
+    let def = crate::baseline::default_branch(project.clone());
+    let up = upstream_of(&root, &def)?;
+    let local = format!("refs/heads/{def}");
+    (is_ancestor(&root, &local, &up.upstream_ref) == Some(false)
+        && is_ancestor(&root, &up.upstream_ref, &local) == Some(false))
+    .then(|| diverged_line(said("head"), said("why"), said("how")))
+}
+
+/// Asks the owner what to keep when the default branch cannot follow its
+/// upstream: one question marked for the owner on `runner/default-branch`
+/// that says what happened, why Hive did not move the branch and the two
+/// ways out. It goes through the daemon's coalescing ask, so one that is
+/// still open is never asked a second time (None). Err when the board
+/// would not take it.
+#[allow(clippy::too_many_arguments)]
+fn ask_about_diverged(
+    s: &hive_store::Store,
+    project: &crate::util::Row,
+    def: &str,
+    up: &Upstream,
+    actor: &str,
+    now: &str,
+    tips: &Tips<'_>,
+    ahead: i32,
+    why: &str,
+) -> anyhow::Result<Option<crate::util::Row>> {
+    let root = project.str("path");
+    let slug = project.str("slug");
+    let name = up.name();
+    let behind = tips.behind;
+    let unrelated = crate::util::git_timeout(
+        &root,
+        Duration::from_secs(30),
+        &["merge-base", tips.from, tips.to],
+    )
+    .stdout
+    .trim()
+    .is_empty();
+    let dir = crate::util::shell_quote(&root);
+    let body = format!(
+        "The local default branch `{def}` of {slug} (the checkout at {root}) cannot follow its upstream `{name}` by a fast-forward. `{def}` is at {} and holds {ahead} {} the upstream lacks; `{name}` is at {} and holds {behind} {} `{def}` lacks{}. Hive only ever fast-forwards `{def}`, so it stays where it is: new work is still cut from it, and a pull request cut from it may be refused by the forge or carry the difference.\n\n\
+Why Hive did not move it: {why}.\n\n\
+Two ways out:\n\n\
+1. Keep the upstream's history. Save the local commits under a name of their own (`git -C {dir} branch {def}-local {def}`), then move `{def}`: `git -C {dir} reset --keep {name}` with `{def}` checked out, or `git -C {dir} branch -f {def} {name}` from another branch.\n\
+2. Keep the local commits. Rebase them onto `{name}` and push them or open a pull request with them; or, when the local history is the one to keep, put it in the upstream's place: `git -C {dir} push --force-with-lease {} {def}:{}`.\n\n\
+After either, `{def}` follows `{name}` again on the next delivery pass and Hive answers this question itself. It is asked once: the daemon records a tip that moves meanwhile and does not ask again.\n",
+        crate::recipe::short(tips.from, 12),
+        crate::util::plural(ahead, "commit"),
+        crate::recipe::short(tips.to, 12),
+        crate::util::plural(behind, "commit"),
+        if unrelated {
+            "; the two share no commit, as after a history was replaced"
+        } else {
+            ""
+        },
+        up.remote,
+        up.remote_branch,
+    );
+    crate::hygiene::post_daemon_owner_question(
+        s,
+        crate::hygiene::DaemonQuestionAsk {
+            project: slug.clone(),
+            ask_kind: DIVERGED_ASK.into(),
+            area: "runner".into(),
+            thread: DIVERGED_ASK.into(),
+            summary: crate::util::trunc(
+                &format!(
+                    "{def} of {slug} has diverged from {name} and Hive did not move it: keep the upstream's history or the local commits?"
+                ),
+                230,
+            ),
+            body,
+            actor: actor.to_string(),
+            now: now.to_string(),
+        },
+    )
+}
+
+/// Ends what `tell_diverged_once` began once the branch can follow its
+/// upstream again - it was realigned (`backup` names where its old tip is
+/// kept), or the owner moved it or pushed it: the owner's open question is
+/// answered, and only then is what was recorded forgotten, so an answer
+/// the store refused is given on the next pass. For a project that was
+/// never told it is one `meta` read; for one that was, the branch must
+/// hold the upstream's tip or be an ancestor of it, by git's own word.
+fn diverged_over(
+    s: &hive_store::Store,
+    project: &crate::util::Row,
+    def: &str,
+    up: &Upstream,
+    backup: Option<&str>,
+    actor: &str,
+    now: &str,
+) {
+    let slug = project.str("slug");
+    let key = format!("{DIVERGED_META_PREFIX}{slug}");
+    if !s.meta(&key).is_ok_and(|(_, found)| found) {
+        return;
+    }
+    let (root, local) = (project.str("path"), format!("refs/heads/{def}"));
+    if is_ancestor(&root, &local, &up.upstream_ref) != Some(true)
+        && is_ancestor(&root, &up.upstream_ref, &local) != Some(true)
+    {
+        return;
+    }
+    let name = up.name();
+    let outcome = match backup {
+        Some(backup) => format!(
+            "Hive realigned {def} to {name}: it held no work of its own, and its old tip is kept at {backup}"
+        ),
+        None => format!("{def} can follow {name} again; nothing is left to decide"),
+    };
+    crate::idle_hold::answer(s, project, DIVERGED_ASK, &outcome, &outcome, now, actor);
+    if crate::hygiene::open_daemon_questions_of_kind(s, &slug, DIVERGED_ASK).is_empty()
+        && let Ok(conn) = s.conn()
+    {
+        let _ = conn.execute("DELETE FROM meta WHERE key = ?", [&key]);
+    }
 }
 
 /// Whether HEAD is the default branch and whether the tracked files are
@@ -712,6 +1295,1084 @@ mod tests {
         assert_eq!(
             sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, true),
             None
+        );
+    }
+
+    /// A project whose local main and its origin hold the same three
+    /// commits, the last two pushed from this checkout.
+    fn followed_fixture(s: &hive_store::Store) -> (crate::util::Row, String, String) {
+        let (proj, repo, bare) = push_fixture(s);
+        for name in ["first.txt", "second.txt"] {
+            std::fs::write(Path::new(&repo).join(name), format!("{name}\n")).unwrap();
+            run(&repo, &["git", "add", "-A"]);
+            run(&repo, &["git", "commit", "-q", "-m", name]);
+        }
+        run(&repo, &["git", "push", "-q", "origin", "main"]);
+        (proj, repo, bare)
+    }
+
+    fn bare_git(bare: &str, args: &[&str]) -> String {
+        let mut argv = vec!["git", "--git-dir", bare];
+        argv.extend_from_slice(args);
+        run(".", &argv).trim().to_string()
+    }
+
+    /// The upstream's owner replaces main with one commit that holds the
+    /// same files, as a force-push from another clone does; returns it.
+    fn squash_upstream(bare: &str) -> String {
+        let tree = bare_git(bare, &["rev-parse", "refs/heads/main^{tree}"]);
+        let squashed = bare_git(
+            bare,
+            &["commit-tree", &tree, "-m", "the history as one commit"],
+        );
+        bare_git(bare, &["update-ref", "refs/heads/main", &squashed]);
+        squashed
+    }
+
+    /// The owner's questions about a default branch that cannot follow its
+    /// upstream, asked so far and still open.
+    fn diverged_questions(s: &hive_store::Store) -> (i32, usize) {
+        (
+            count(
+                s,
+                "SELECT COUNT(*) AS n FROM posts WHERE project = 'proj' AND kind = 'question' AND area = 'runner' AND thread = 'default-branch' AND json_extract(extra, '$.for_owner') = 1",
+                &[],
+            ),
+            crate::hygiene::open_daemon_questions_of_kind(s, "proj", "default-branch").len(),
+        )
+    }
+
+    fn backup_refs(repo: &str) -> String {
+        run(
+            repo,
+            &["git", "for-each-ref", "--format=%(refname)", "refs/hive/"],
+        )
+    }
+
+    fn head_branch(repo: &str) -> String {
+        run(repo, &["git", "rev-parse", "--abbrev-ref", "HEAD"])
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn a_default_branch_with_no_work_of_its_own_is_realigned_to_a_rewritten_upstream() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        std::fs::write(Path::new(&repo).join("untracked.txt"), "not git's\n").unwrap();
+        let written = |name: &str| {
+            std::fs::metadata(Path::new(&repo).join(name))
+                .and_then(|m| m.modified())
+                .unwrap()
+        };
+        let before = (written("README.md"), written("second.txt"));
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref().is_some_and(|l| l
+                .contains("landing realigned proj: main -> origin/main")
+                && l.contains("refs/hive/backup/main/20260906T100000Z")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        assert_eq!(head_branch(&repo), "main");
+        let d = last_detail(&s, "land.realigned");
+        assert_eq!(d["from"], old.as_str(), "{d}");
+        assert_eq!(d["to"], squashed.as_str(), "{d}");
+        assert_eq!(d["backup"], "refs/hive/backup/main/20260906T100000Z", "{d}");
+        assert_eq!(
+            (d["ahead"].as_i64(), d["behind"].as_i64()),
+            (Some(3), Some(1)),
+            "{d}"
+        );
+        assert_eq!(
+            ref_of(&repo, "refs/hive/backup/main/20260906T100000Z"),
+            old,
+            "the old tip is not kept"
+        );
+        assert_eq!(
+            run(&repo, &["git", "status", "--porcelain"]),
+            "?? untracked.txt\n",
+            "the checkout is not as it was"
+        );
+        assert_eq!(
+            (written("README.md"), written("second.txt")),
+            before,
+            "a file was written"
+        );
+        assert_eq!(count_events(&s, "land.realigned"), 1);
+        assert_eq!(count_events(&s, "land.fast-forward"), 0);
+        assert_eq!(diverged_questions(&s), (0, 0));
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, true),
+            None,
+            "nothing is left to follow"
+        );
+    }
+
+    #[test]
+    fn a_default_branch_that_is_not_checked_out_is_realigned_by_ref() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        run(&repo, &["git", "checkout", "-q", "-b", "work/elsewhere"]);
+        std::fs::write(
+            Path::new(&repo).join("README.md"),
+            "# dirty on another branch\n",
+        )
+        .unwrap();
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("landing realigned proj: main -> origin/main")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        let d = last_detail(&s, "land.realigned");
+        assert_eq!(
+            ref_of(&repo, d["backup"].as_str().unwrap_or("no-backup")),
+            old,
+            "{d}"
+        );
+        assert_eq!(head_branch(&repo), "work/elsewhere");
+        assert_eq!(ref_of(&repo, "HEAD"), old);
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&repo).join("README.md")).unwrap(),
+            "# dirty on another branch\n"
+        );
+    }
+
+    #[test]
+    fn a_default_branch_with_work_of_its_own_is_not_moved_and_the_owner_is_asked_once() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        std::fs::write(Path::new(&repo).join("mine.txt"), "never pushed\n").unwrap();
+        run(&repo, &["git", "add", "-A"]);
+        run(&repo, &["git", "commit", "-q", "-m", "local work"]);
+        let own = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref().is_some_and(|l| l
+                .contains("proj: main has diverged from origin/main (4 ahead, 1 behind)")
+                && l.contains("not moved")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), own);
+        let d = last_detail(&s, "land.fast-forward");
+        assert_eq!(d["ok"], false, "{d}");
+        assert_eq!(d["from"], &own[..12], "{d}");
+        assert_eq!(d["to"], &squashed[..12], "{d}");
+        assert_eq!(
+            (d["ahead"].as_i64(), d["behind"].as_i64()),
+            (Some(4), Some(1)),
+            "{d}"
+        );
+        assert!(
+            d["why"]
+                .as_str()
+                .is_some_and(|w| w.contains("files differ")),
+            "{d}"
+        );
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+        let asked = crate::hygiene::open_daemon_questions_of_kind(&s, "proj", "default-branch");
+        let (summary, body) = (asked[0].str("summary"), asked[0].str("body"));
+        assert!(
+            summary.contains("main of proj has diverged from origin/main"),
+            "{summary}"
+        );
+        assert!(
+            body.contains("reset --keep origin/main")
+                && body.contains("push --force-with-lease origin main:main"),
+            "the two ways out are not both named: {body}"
+        );
+
+        // The same two commits on the passes that follow: nothing is
+        // written and nothing is said again.
+        for minutes in [2, 4] {
+            let later = crate::util::plus_minutes(TEST_NOW, minutes);
+            assert_eq!(
+                sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+                None,
+                "said again after {minutes} minutes"
+            );
+        }
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        // The upstream moves on: the new pair is recorded once, and the
+        // question that is open stands for it too.
+        let tip = bare_git(&bare, &["rev-parse", "refs/heads/main"]);
+        let tree = bare_git(&bare, &["rev-parse", "refs/heads/main^{tree}"]);
+        let next = bare_git(&bare, &["commit-tree", &tree, "-p", &tip, "-m", "more"]);
+        bare_git(&bare, &["update-ref", "refs/heads/main", &next]);
+        for minutes in [6, 8] {
+            let later = crate::util::plus_minutes(TEST_NOW, minutes);
+            let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+            assert_eq!(line.is_some(), minutes == 6, "{line:?}");
+        }
+        assert_eq!(count_events(&s, "land.fast-forward"), 2);
+        assert_eq!(diverged_questions(&s), (1, 1));
+        assert_eq!(ref_of(&repo, "refs/heads/main"), own);
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+        assert_eq!(backup_refs(&repo), "");
+
+        // The owner keeps the upstream's history: the branch follows
+        // again and the daemon answers its own question.
+        run(&repo, &["git", "reset", "-q", "--keep", "origin/main"]);
+        let later = crate::util::plus_minutes(TEST_NOW, 10);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(diverged_questions(&s), (1, 0));
+        let answer = must_one(
+            &s,
+            "SELECT * FROM posts WHERE project = 'proj' AND kind = 'answer' AND thread = 'default-branch'",
+            &[],
+        );
+        assert_eq!(answer.str("resolution"), "answered", "{answer:?}");
+        assert_eq!(answer.str("on_post"), asked[0].str("id"), "{answer:?}");
+    }
+
+    #[test]
+    fn a_dirty_checkout_of_a_rewritten_default_branch_is_not_touched() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        let readme = Path::new(&repo).join("README.md");
+        std::fs::write(&readme, "# edited by hand\n").unwrap();
+        let written = || {
+            std::fs::metadata(&readme)
+                .and_then(|m| m.modified())
+                .unwrap()
+        };
+        let before = written();
+        forget_sync_memo();
+        // landing.auto_stash is on, the default: a fast-forward would
+        // stash the edit; a realignment leaves the checkout alone.
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && l.contains("uncommitted changes")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(
+            std::fs::read_to_string(&readme).unwrap(),
+            "# edited by hand\n"
+        );
+        assert_eq!(written(), before, "the edit was stashed and put back");
+        assert_eq!(run(&repo, &["git", "stash", "list"]), "");
+        assert_eq!(backup_refs(&repo), "");
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None,
+            "said twice"
+        );
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+
+        // The owner stashes the edit: the branch is realigned on the next
+        // pass and the question is answered.
+        run(&repo, &["git", "stash", "-q"]);
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("landing realigned proj: main -> origin/main")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        assert_eq!(diverged_questions(&s), (1, 0));
+        run(&repo, &["git", "stash", "pop", "-q"]);
+        assert_eq!(
+            std::fs::read_to_string(&readme).unwrap(),
+            "# edited by hand\n"
+        );
+    }
+
+    #[test]
+    fn a_default_branch_rewritten_in_this_checkout_is_not_realigned() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        // The owner squashes main here and has not pushed it yet: the same
+        // files as the upstream's, under a tip the upstream never held.
+        let tree = ref_of(&repo, "refs/heads/main^{tree}");
+        let squashed = run(&repo, &["git", "commit-tree", &tree, "-m", "squashed here"])
+            .trim()
+            .to_string();
+        run(&repo, &["git", "reset", "-q", "--hard", &squashed]);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref().is_some_and(|l| l
+                .contains("proj: main has diverged from origin/main (1 ahead, 3 behind)")
+                && l.contains("not moved")
+                && l.contains("the upstream never held its tip")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        assert_eq!(backup_refs(&repo), "");
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        // The push the owner meant to make ends it.
+        run(&repo, &["git", "push", "-q", "--force", "origin", "main"]);
+        assert_eq!(bare_ref(&bare, "refs/heads/main"), squashed);
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(diverged_questions(&s), (1, 0));
+    }
+
+    #[test]
+    fn a_rewritten_upstream_that_holds_other_files_is_left_to_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        // The upstream is replaced by one commit that holds other files
+        // (here the ones before `second.txt`): nothing local was ever
+        // unpushed, yet following would change the checkout's files.
+        let tree = bare_git(&bare, &["rev-parse", "refs/heads/main~1^{tree}"]);
+        let other = bare_git(&bare, &["commit-tree", &tree, "-m", "rewritten"]);
+        bare_git(&bare, &["update-ref", "refs/heads/main", &other]);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref().is_some_and(|l| l
+                .contains("proj: main has diverged from origin/main (3 ahead, 1 behind)")
+                && l.contains("the upstream held its tip before the rewrite")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert!(Path::new(&repo).join("second.txt").exists());
+        assert_eq!(backup_refs(&repo), "");
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        // The owner closes the question without settling it and the
+        // upstream moves on: the new pair is recorded, and the owner is
+        // not asked a second time.
+        let asked = crate::hygiene::open_daemon_questions_of_kind(&s, "proj", "default-branch");
+        let later = crate::util::plus_minutes(TEST_NOW, 1);
+        crate::board::create_post(
+            &s,
+            later.clone(),
+            crate::board::PostOpts {
+                kind: "answer".into(),
+                project: "proj".into(),
+                area: "runner".into(),
+                thread: "default-branch".into(),
+                summary: "I will look at it next week".into(),
+                body: "Not now.\n".into(),
+                on: asked[0].str("id"),
+                agent: crate::board::actor_agent(&s, crate::util::HUMAN_AGENT.to_string()),
+                date: later,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(diverged_questions(&s), (1, 0));
+        let next = bare_git(&bare, &["commit-tree", &tree, "-p", &other, "-m", "more"]);
+        bare_git(&bare, &["update-ref", "refs/heads/main", &next]);
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("(3 ahead, 2 behind)")
+                    && l.contains("the owner was asked when it first diverged")),
+            "{line:?}"
+        );
+        assert_eq!(count_events(&s, "land.fast-forward"), 2);
+        assert_eq!(diverged_questions(&s), (1, 0));
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+    }
+
+    #[test]
+    fn a_realignment_git_refuses_is_said_once_and_made_on_a_later_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        // A hook of the owner's that refuses every update of main, as a
+        // lock left behind does.
+        let hook = Path::new(&repo).join(".git/hooks/reference-transaction");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\nwhile read -r old new name; do\n    [ \"$name\" = refs/heads/main ] && exit 1\ndone\nexit 0\n",
+        )
+        .unwrap();
+        run(&repo, &["chmod", "+x", ".git/hooks/reference-transaction"]);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && l.contains("git refused the realignment")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        let kept = "refs/hive/backup/main/20260906T100000Z";
+        assert_eq!(backup_refs(&repo).trim(), kept);
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None,
+            "said twice"
+        );
+        assert_eq!(
+            backup_refs(&repo).trim(),
+            kept,
+            "the same tip kept a second time"
+        );
+
+        // The hook is gone: the next pass moves the branch, with the
+        // backup the first try made.
+        std::fs::remove_file(&hook).unwrap();
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(
+            line.as_deref().is_some_and(|l| l
+                .contains("landing realigned proj: main -> origin/main")
+                && l.contains(kept)),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        assert_eq!(backup_refs(&repo).trim(), kept);
+        assert_eq!(ref_of(&repo, kept), old);
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 0));
+    }
+
+    #[test]
+    fn a_checkout_whose_tracking_ref_never_moved_before_the_rewrite_is_realigned() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        // As after a clone: the tracking ref holds the tip and has no
+        // reflog, so the first entry is the forced fetch itself.
+        run(
+            &repo,
+            &[
+                "git",
+                "reflog",
+                "expire",
+                "--expire=all",
+                "refs/remotes/origin/main",
+            ],
+        );
+        assert_eq!(
+            run(
+                &repo,
+                &["git", "reflog", "show", "refs/remotes/origin/main"]
+            ),
+            ""
+        );
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("landing realigned proj: main -> origin/main")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        assert_eq!(ref_of(&repo, "refs/hive/backup/main/20260906T100000Z"), old);
+    }
+
+    fn realigned(line: &Option<String>) -> bool {
+        line.as_deref()
+            .is_some_and(|l| l.contains("landing realigned proj: main -> origin/main"))
+    }
+
+    /// A commit of the owner's on main that was never pushed.
+    fn commit_local_work(repo: &str, name: &str) -> String {
+        std::fs::write(Path::new(repo).join(name), "never pushed\n").unwrap();
+        run(repo, &["git", "add", "-A"]);
+        run(repo, &["git", "commit", "-q", "-m", "local work"]);
+        ref_of(repo, "refs/heads/main")
+    }
+
+    /// One more commit on the upstream's main, with the files it had.
+    fn commit_upstream(bare: &str) -> String {
+        let tip = bare_git(bare, &["rev-parse", "refs/heads/main"]);
+        let tree = bare_git(bare, &["rev-parse", "refs/heads/main^{tree}"]);
+        let next = bare_git(bare, &["commit-tree", &tree, "-p", &tip, "-m", "more"]);
+        bare_git(bare, &["update-ref", "refs/heads/main", &next]);
+        next
+    }
+
+    /// The store refuses every new post, as a board that cannot be written
+    /// does; `accept_posts` ends it.
+    fn refuse_posts(s: &hive_store::Store) {
+        exec1(
+            s,
+            "CREATE TRIGGER no_posts BEFORE INSERT ON posts BEGIN SELECT RAISE(ABORT, 'the board cannot be written'); END",
+            &[],
+        );
+    }
+
+    fn accept_posts(s: &hive_store::Store) {
+        exec1(s, "DROP TRIGGER no_posts", &[]);
+    }
+
+    #[test]
+    fn a_dirty_worktree_that_has_the_default_branch_is_not_moved_under() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        // The project's own checkout is on another branch and clean; main
+        // is checked out in a linked worktree, with an edit not committed.
+        run(&repo, &["git", "checkout", "-q", "-b", "work/elsewhere"]);
+        let wt = Path::new(&s.home)
+            .join("tmp")
+            .join(format!("main-{}", uuid::Uuid::new_v4()));
+        let wt_dir = wt.display().to_string();
+        run(&repo, &["git", "worktree", "add", "-q", &wt_dir, "main"]);
+        let readme = wt.join("README.md");
+        std::fs::write(&readme, "# edited in a worktree\n").unwrap();
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && l.contains("has uncommitted changes")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(backup_refs(&repo), "");
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        // The edit is put away, and a rebase of main stops in that
+        // worktree: it is clean now and still not moved under.
+        run(&wt_dir, &["git", "stash", "-q"]);
+        run(
+            &wt_dir,
+            &[
+                "sh",
+                "-c",
+                "git rebase -q -x 'test -f go' HEAD~1 >/dev/null 2>&1 || true",
+            ],
+        );
+        assert_eq!(head_branch(&wt_dir), "HEAD", "the rebase did not stop");
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None,
+            "the same pair said twice"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+
+        // The rebase ends: the next pass realigns.
+        std::fs::write(wt.join("go"), "").unwrap();
+        run(&wt_dir, &["git", "rebase", "--continue"]);
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(realigned(&line), "{line:?}");
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+        assert_eq!(ref_of(&wt_dir, "HEAD"), squashed);
+        assert_eq!(
+            run(&wt_dir, &["git", "status", "--porcelain"]),
+            "?? go\n",
+            "the worktree is not as it was"
+        );
+        assert_eq!(diverged_questions(&s), (1, 0));
+        run(&wt_dir, &["git", "stash", "pop", "-q"]);
+        assert_eq!(
+            std::fs::read_to_string(&readme).unwrap(),
+            "# edited in a worktree\n"
+        );
+    }
+
+    #[test]
+    fn a_rebase_of_the_default_branch_in_progress_is_not_moved_under() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        // The owner's rebase of main stops at a step that fails: HEAD is
+        // detached, the checkout is clean, and git ends the rebase with an
+        // update of main from the tip it started at.
+        run(
+            &repo,
+            &[
+                "sh",
+                "-c",
+                "git rebase -q -x 'test -f go' HEAD~1 >/dev/null 2>&1 || true",
+            ],
+        );
+        assert_eq!(head_branch(&repo), "HEAD", "the rebase did not stop");
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && l.contains("a rebase is in progress on it")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(backup_refs(&repo), "");
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+
+        // The step passes now and the rebase ends as it would have without
+        // Hive; the next pass realigns.
+        std::fs::write(Path::new(&repo).join("go"), "").unwrap();
+        run(&repo, &["git", "rebase", "--continue"]);
+        assert_eq!(head_branch(&repo), "main");
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(realigned(&line), "{line:?}");
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+    }
+
+    #[test]
+    fn a_merge_cherry_pick_or_bisect_on_the_default_branch_is_not_moved_under() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        // What is under way, and how the line names it. The first three
+        // leave the checkout clean, so only git's own files say so; the
+        // last is a rebase by the apply backend, stopped on a conflict.
+        for (begun, what) in [
+            ("merge", "merge"),
+            ("cherry-pick", "cherry-pick"),
+            ("bisect", "bisect"),
+            ("rebase --apply", "rebase"),
+        ] {
+            let s = new_store();
+            let (proj, repo, bare) = followed_fixture(&s);
+            let old = ref_of(&repo, "refs/heads/main");
+            let squashed = squash_upstream(&bare);
+            let git = |args: &[&str]| {
+                let mut argv = vec!["git"];
+                argv.extend_from_slice(args);
+                run(&repo, &argv);
+            };
+            let side_branch = |from: &str, file: &str| {
+                git(&["checkout", "-q", "-b", "side", from]);
+                std::fs::write(Path::new(&repo).join(file), "side\n").unwrap();
+                git(&["add", "-A"]);
+                git(&["commit", "-q", "-m", "side"]);
+                git(&["checkout", "-q", "main"]);
+            };
+            match begun {
+                "merge" => {
+                    side_branch("main", "side.txt");
+                    git(&["merge", "-q", "-s", "ours", "--no-commit", "side"]);
+                }
+                "cherry-pick" => {
+                    run(
+                        &repo,
+                        &["sh", "-c", "git cherry-pick HEAD >/dev/null 2>&1 || true"],
+                    );
+                }
+                "bisect" => {
+                    git(&["bisect", "start"]);
+                    git(&["bisect", "bad"]);
+                    git(&["bisect", "good", "HEAD~2"]);
+                }
+                _ => {
+                    side_branch("main~1", "second.txt");
+                    run(
+                        &repo,
+                        &[
+                            "sh",
+                            "-c",
+                            "git rebase --apply --onto side HEAD~1 >/dev/null 2>&1 || true",
+                        ],
+                    );
+                }
+            }
+            if begun != "rebase --apply" {
+                assert_eq!(
+                    run(&repo, &["git", "status", "--porcelain"]),
+                    "",
+                    "{begun}: the checkout is not clean"
+                );
+            }
+            forget_sync_memo();
+            let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+            assert!(
+                line.as_deref()
+                    .is_some_and(|l| l.contains(&format!("a {what} is in progress on it"))),
+                "{begun}: {line:?}"
+            );
+            assert_eq!(ref_of(&repo, "refs/heads/main"), old, "{begun}");
+            assert_eq!(count_events(&s, "land.realigned"), 0, "{begun}");
+
+            match begun {
+                "merge" => git(&["merge", "--abort"]),
+                "cherry-pick" => git(&["cherry-pick", "--abort"]),
+                "bisect" => git(&["bisect", "reset"]),
+                _ => git(&["rebase", "--abort"]),
+            }
+            let later = crate::util::plus_minutes(TEST_NOW, 2);
+            let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+            assert!(realigned(&line), "{begun}: {line:?}");
+            assert_eq!(ref_of(&repo, "refs/heads/main"), squashed, "{begun}");
+        }
+    }
+
+    #[test]
+    fn a_worktree_git_cannot_read_is_not_moved_under() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        // A linked worktree on a branch of its own whose `.git` file
+        // points nowhere: its folder is there, and git cannot say whether
+        // a rebase or a bisect of main is under way in it.
+        let wt = Path::new(&s.home)
+            .join("tmp")
+            .join(format!("other-{}", uuid::Uuid::new_v4()));
+        let wt_dir = wt.display().to_string();
+        run(
+            &repo,
+            &[
+                "git",
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "work/other",
+                &wt_dir,
+                "main",
+            ],
+        );
+        let link = wt.join(".git");
+        let was = std::fs::read(&link).unwrap();
+        std::fs::write(&link, "gitdir: /nowhere/at/all\n").unwrap();
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && l.contains("git could not read the worktree at")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(backup_refs(&repo), "");
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+
+        // The worktree is mended: the next pass realigns.
+        std::fs::write(&link, was).unwrap();
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(realigned(&line), "{line:?}");
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+    }
+
+    #[test]
+    fn a_checkout_git_cannot_read_is_not_said_to_have_uncommitted_changes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        // Main is checked out in a linked worktree whose index git cannot
+        // read: `git status` fails there, which says nothing about changes.
+        run(&repo, &["git", "checkout", "-q", "-b", "work/elsewhere"]);
+        let wt = Path::new(&s.home)
+            .join("tmp")
+            .join(format!("main-{}", uuid::Uuid::new_v4()));
+        let wt_dir = wt.display().to_string();
+        run(&repo, &["git", "worktree", "add", "-q", &wt_dir, "main"]);
+        let index = Path::new(run(&wt_dir, &["git", "rev-parse", "--absolute-git-dir"]).trim())
+            .join("index");
+        let was = std::fs::read(&index).unwrap();
+        std::fs::write(&index, "not an index\n").unwrap();
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("git could not read the worktree at")
+                    && !l.contains("uncommitted changes")),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+
+        std::fs::write(&index, was).unwrap();
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(realigned(&line), "{line:?}");
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+    }
+
+    #[test]
+    fn a_note_of_gits_that_cannot_be_read_is_not_moved_under() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        let old = ref_of(&repo, "refs/heads/main");
+        let squashed = squash_upstream(&bare);
+        // A rebase stopped in the checkout, and the file in which git
+        // names the branch it rebases cannot be read: it may be main.
+        run(
+            &repo,
+            &[
+                "sh",
+                "-c",
+                "git rebase -q -x 'test -f go' HEAD~1 >/dev/null 2>&1 || true",
+            ],
+        );
+        assert_eq!(head_branch(&repo), "HEAD", "the rebase did not stop");
+        run(&repo, &["chmod", "000", ".git/rebase-merge/head-name"]);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        // (A superuser reads the file all the same and sees the rebase.)
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && (l.contains("git could not read the worktree at")
+                        || l.contains("a rebase is in progress on it"))),
+            "{line:?}"
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/main"), old);
+        assert_eq!(count_events(&s, "land.realigned"), 0);
+
+        run(&repo, &["chmod", "644", ".git/rebase-merge/head-name"]);
+        run(&repo, &["git", "rebase", "--abort"]);
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(realigned(&line), "{line:?}");
+        assert_eq!(ref_of(&repo, "refs/heads/main"), squashed);
+    }
+
+    #[test]
+    fn an_ask_the_store_refuses_is_made_on_a_later_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        commit_local_work(&repo, "mine.txt");
+        squash_upstream(&bare);
+        refuse_posts(&s);
+        forget_sync_memo();
+        let line = sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("proj: main has diverged from origin/main")
+                    && l.contains("the owner could not be asked")),
+            "{line:?}"
+        );
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (0, 0));
+
+        // Still refused: the pair is not recorded a second time and
+        // nothing is said.
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+
+        // The board can be written again: the owner is asked, once.
+        accept_posts(&s);
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.contains("the owner is asked")),
+            "{line:?}"
+        );
+        assert_eq!(diverged_questions(&s), (1, 1));
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        let later = crate::util::plus_minutes(TEST_NOW, 6);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(diverged_questions(&s), (1, 1));
+    }
+
+    #[test]
+    fn an_answer_the_store_refuses_is_given_on_a_later_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        commit_local_work(&repo, "mine.txt");
+        squash_upstream(&bare);
+        forget_sync_memo();
+        assert!(sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false).is_some());
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        // The owner settles it while the board cannot be written: the
+        // question stays open, and so does what Hive owes it.
+        run(&repo, &["git", "reset", "-q", "--keep", "origin/main"]);
+        refuse_posts(&s);
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        accept_posts(&s);
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(diverged_questions(&s), (1, 0), "the answer was never given");
+    }
+
+    #[test]
+    fn a_second_divergence_after_the_first_ended_is_recorded_and_asked_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo, bare) = followed_fixture(&s);
+        commit_local_work(&repo, "mine.txt");
+        squash_upstream(&bare);
+        forget_sync_memo();
+        assert!(sync_default_from_upstream(&s, &proj, "daemon", TEST_NOW, false).is_some());
+        assert_eq!(count_events(&s, "land.fast-forward"), 1);
+        assert_eq!(diverged_questions(&s), (1, 1));
+
+        // The owner keeps the upstream's history: the first one is over.
+        run(&repo, &["git", "reset", "-q", "--keep", "origin/main"]);
+        let later = crate::util::plus_minutes(TEST_NOW, 2);
+        assert_eq!(
+            sync_default_from_upstream(&s, &proj, "daemon", &later, true),
+            None
+        );
+        assert_eq!(diverged_questions(&s), (1, 0));
+
+        // Weeks later the same happens again: a commit here that is never
+        // pushed, and an upstream that moves on without it.
+        commit_local_work(&repo, "again.txt");
+        commit_upstream(&bare);
+        let later = crate::util::plus_minutes(TEST_NOW, 4);
+        let line = sync_default_from_upstream(&s, &proj, "daemon", &later, true);
+        assert!(
+            line.as_deref().is_some_and(
+                |l| l.contains("(1 ahead, 1 behind)") && l.contains("the owner is asked")
+            ),
+            "{line:?}"
+        );
+        assert_eq!(count_events(&s, "land.fast-forward"), 2);
+        assert_eq!(diverged_questions(&s), (2, 1));
+    }
+
+    #[test]
+    fn realign_refuses_a_branch_that_moved_since_it_was_read() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (_proj, repo, _bare) = followed_fixture(&s);
+        // What a pass read, and the commit the owner made right after it.
+        let read = ref_of(&repo, "refs/heads/main");
+        let tip = commit_local_work(&repo, "mine.txt");
+        let tree = ref_of(&repo, &format!("{read}^{{tree}}"));
+        let upstream = run(&repo, &["git", "commit-tree", &tree, "-m", "rewritten"])
+            .trim()
+            .to_string();
+        let tips = Tips {
+            from: &read,
+            to: &upstream,
+            behind: 1,
+        };
+        let refused = realign(&repo, "main", "origin/main", &tips, TEST_NOW);
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(
+            ref_of(&repo, "refs/heads/main"),
+            tip,
+            "the owner's commit is off the branch"
+        );
+    }
+
+    #[test]
+    fn realign_never_overwrites_a_backup() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (_proj, repo, _bare) = followed_fixture(&s);
+        let first = ref_of(&repo, "refs/heads/main");
+        let tree = ref_of(&repo, "refs/heads/main^{tree}");
+        let rewritten = |message: &str| {
+            run(&repo, &["git", "commit-tree", &tree, "-m", message])
+                .trim()
+                .to_string()
+        };
+        let (second, third) = (rewritten("rewritten"), rewritten("rewritten again"));
+        let tips = Tips {
+            from: &first,
+            to: &second,
+            behind: 1,
+        };
+        let kept = realign(&repo, "main", "origin/main", &tips, TEST_NOW).unwrap();
+        assert_eq!(kept, "refs/hive/backup/main/20260906T100000Z");
+        assert_eq!(ref_of(&repo, &kept), first);
+        assert_eq!(ref_of(&repo, "refs/heads/main"), second);
+
+        // Another tip in the same second: the name is taken, so the tip
+        // cannot be kept and the branch stays where it is.
+        let tips = Tips {
+            from: &second,
+            to: &third,
+            behind: 1,
+        };
+        let refused = realign(&repo, "main", "origin/main", &tips, TEST_NOW);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("could not be kept")),
+            "{refused:?}"
+        );
+        assert_eq!(ref_of(&repo, &kept), first, "the backup was overwritten");
+        assert_eq!(
+            ref_of(&repo, "refs/heads/main"),
+            second,
+            "the branch moved without its tip kept"
         );
     }
 }
