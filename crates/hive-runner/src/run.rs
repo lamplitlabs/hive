@@ -7921,14 +7921,20 @@ mod tests {
             let _ = done_tx.send(());
         });
         failure_gate.wait(&done_rx);
-        crate::test_helpers_heartbeat::lifecycle_eventually("the daemon's second loop", || {
-            let beat = crate::util::must_one(
-                &s.conn().unwrap(),
-                "SELECT json_extract(value, '$.loops') AS loops FROM meta WHERE key = 'daemon'",
-                &[],
-            );
-            !beat.0.is_empty() && beat.int("loops") >= 2
-        });
+        // The batch is mixed once the daemon has reported the successful run
+        // while the failing one is still held at the gate, so wait for that
+        // report (report() clears all_errors before it says the line). Not a
+        // heartbeat of the daemon's second loop: a bounded daemon with one
+        // run in flight waits for that run's result before the loop's
+        // heartbeat (daemon.rs, `max_loops > 0 && inflight.len() == 1`), so
+        // when the success was reported before loop 2 began (a loaded
+        // machine) its beat came only after the gate opened, and the test
+        // held the gate for it until the 60 s cancel: result=interrupted.
+        let reported = format!("done {} ", first.str("id"));
+        crate::test_helpers_heartbeat::lifecycle_eventually(
+            "the daemon's report of the successful run",
+            || out.string().lines().any(|line| line.starts_with(&reported)),
+        );
         failure_gate.release();
         crate::test_helpers_heartbeat::wait_lifecycle_run(&done_rx);
         let result = result_rx.recv().unwrap();
