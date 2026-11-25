@@ -111,6 +111,35 @@ same words does not ask again. While a rented machine is on its way the log
 says so (`machine wanted: compute request CR-012 is provisioning; waiting
 for the machine`) and nothing else is asked for.
 
+**When a request fails.** A request that fails before its machine is ready
+is not followed by another on the next tick. The daemon waits first: 5
+minutes after one failure, then 15, 45 and 135 minutes, then 6 hours, for as
+long as requests fail one after another. Each failed request counts, whoever
+made it and whatever its reason, back to 48 hours before the newest one. A
+request that got its machine ends the run; one you denied changes nothing.
+The log says until when, and you are asked nothing, since the daemon asks
+again by itself: `the last 2 request(s) failed before a machine was ready
+(CR-012: …); the daemon asks again after …`. After the wait the daemon asks
+what the compute worker checks before it calls the provider: a Linux `hive`
+for the size's architecture, a `compute.max_hours_per_day` above zero, a
+provider this build has. While one of them would fail the next request it
+makes none, and the log says why: `the daemon rents none (CR-012 failed
+before a machine was ready and the next request would fail too: …)`. It
+tells you too, as for any machine it may not rent, and it asks on the first
+tick the checks pass. Both lines begin `machine wanted:` when a job needs a
+machine no paired one is, and `hands wanted:` when every slot is busy.
+
+The wait and the look at the worker's checks hold only the daemon's own
+requests. One you make is filed whatever the last one did. From the console
+it goes to the compute worker, which fails it for the same reason while the
+cause stands. `hive compute request` has a check of its own: it is refused
+before it is filed while no Linux `hive` can be sent (`compute request
+refused before a machine: …`). Measured before this rule: 11,034 requests in
+under two hours, up to 243 a minute, each failed for want of a Linux `hive`
+and replaced on the next tick; and 56 in a row that each bought a machine,
+failed 5.6 minutes later on average and released it, 2.8 machine-hours for
+nothing.
+
 **What a rented machine has.** It starts from the image: git, Python 3,
 build tools, mise. Everything else a project's jobs need comes from the
 project's environment recipe (`docs/context/environment.md`, `hive env
