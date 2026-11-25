@@ -190,10 +190,14 @@ impl DaemonWatchdog {
 }
 
 /// The SIGUSR1 subscription: dropped when the watchdog's run ends, which
-/// unregisters the handler.
+/// unregisters the handler. A sender is kept for the subscription's life:
+/// when the handler cannot be registered or its thread cannot start, the
+/// thread's sender is gone, and a channel with no sender left reads as ready
+/// for ever - the watchdog would write dump after dump.
 #[cfg(unix)]
 struct Usr1 {
     signals: crossbeam_channel::Receiver<()>,
+    _open: crossbeam_channel::Sender<()>,
     handle: Option<signal_hook::iterator::Handle>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -201,26 +205,32 @@ struct Usr1 {
 #[cfg(unix)]
 impl Usr1 {
     fn notify() -> Self {
+        Self::listen(|| signal_hook::iterator::Signals::new([signal_hook::consts::SIGUSR1]))
+    }
+
+    fn listen(register: impl FnOnce() -> std::io::Result<signal_hook::iterator::Signals>) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(1);
-        let Ok(mut signals) = signal_hook::iterator::Signals::new([signal_hook::consts::SIGUSR1])
-        else {
+        let Ok(mut signals) = register() else {
             return Self {
                 signals: rx,
+                _open: tx,
                 handle: None,
                 thread: None,
             };
         };
         let handle = signals.handle();
+        let send = tx.clone();
         let thread = std::thread::Builder::new()
             .name("daemon-watchdog-usr1".into())
             .spawn(move || {
                 for _ in signals.forever() {
-                    let _ = tx.try_send(());
+                    let _ = send.try_send(());
                 }
             })
             .ok();
         Self {
             signals: rx,
+            _open: tx,
             handle: Some(handle),
             thread,
         }
@@ -473,6 +483,21 @@ mod tests {
             calls.lock().unwrap().is_empty(),
             "a beating loop drew calls: {:?}",
             calls.lock().unwrap()
+        );
+    }
+
+    // A SIGUSR1 handler that could not be registered leaves the channel
+    // empty, not disconnected: a disconnected channel is ready on every
+    // select and the watchdog would write a dump each turn.
+    #[cfg(unix)]
+    #[test]
+    fn usr1_that_cannot_register_never_reads_as_a_signal() {
+        let _serial = crate::test_helpers::serial();
+        let usr1 = Usr1::listen(|| Err(std::io::Error::other("refused")));
+        assert_eq!(
+            usr1.signals.recv_timeout(Duration::from_millis(20)),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout),
+            "a failed registration reads as a signal"
         );
     }
 
