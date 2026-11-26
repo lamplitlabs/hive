@@ -206,6 +206,7 @@ pub fn request_compute(
         && caps.vms_now < caps.max_vms
         && (caps.max_hours_per_day == 0 || caps.hours_today + hours <= caps.max_hours_per_day)
         && caps.login_source;
+    let landing = machine_landing_line(s)?;
     let now = s.now();
     let tx = s.begin()?;
     let id = next_id(&tx, "compute_requests", "CR-")?;
@@ -221,7 +222,7 @@ pub fn request_compute(
         "compute.requested",
         &id,
         hive_store::Detail::json(
-            json!({"project": project, "size": size, "hours": hours, "status": status}),
+            json!({"project": project, "size": size, "hours": hours, "status": status, "machines": landing}),
         )?,
     )?;
     if auto {
@@ -232,6 +233,11 @@ pub fn request_compute(
             "{agent} asks for one {size} machine for {hours} hours.\n\nReason: {reason}\n\nCaps: {} of {} machines in use, auto_approve={}.\n\nApprove with `hive compute approve {id} --words '...'` or deny with `hive compute deny {id} --words '...'` (or from the hub's Compute page).\n",
             caps.vms_now, caps.max_vms, caps.auto_approve
         );
+        if !landing.is_empty() {
+            body.push('\n');
+            body.push_str(&landing);
+            body.push('\n');
+        }
         if !caps.login_source {
             body.push_str("\nHeld: ");
             body.push_str(NO_LOGIN_SOURCE);
@@ -248,6 +254,42 @@ pub fn request_compute(
     tx.commit()?;
     get_compute(s, &id)
 }
+
+/// How many of the last runs with commits on rented or paired machines came
+/// back to land (TASK-133): the runs counted are the most recent
+/// [`MACHINE_RUNS_SEEN`] finished runs with commits on any executor but this
+/// machine, and a run came back when it ended `done` - its commits were
+/// fetched to the brain and handed to the landing. A request for a machine
+/// says it, so nobody rents a machine whose work cannot come back. Empty
+/// when no machine has run work with commits yet.
+pub fn machine_landing_line(s: &hive_store::Store) -> Result<String> {
+    let conn = s.conn()?;
+    let (seen, landed, last): (i64, i64, String) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(status = 'done'), 0), COALESCE(MAX(CASE WHEN status = 'done' THEN finished_at END), '')
+         FROM (SELECT status, finished_at FROM runs
+               WHERE executor NOT IN ('', 'local') AND commits > 0 AND finished_at != ''
+                 AND status != 'running'
+               ORDER BY finished_at DESC, id DESC LIMIT ?)",
+        [MACHINE_RUNS_SEEN],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if seen == 0 {
+        return Ok(String::new());
+    }
+    let mut line = format!(
+        "Machines so far: {landed} of the last {seen} runs with commits on rented or paired machines landed"
+    );
+    if landed == 0 {
+        line.push_str(" - their work did not come back; check `hive executor list` before relying on a new machine");
+    } else if !last.is_empty() {
+        line.push_str(&format!(" (the last at {last})"));
+    }
+    line.push('.');
+    Ok(line)
+}
+
+/// The window [`machine_landing_line`] counts.
+pub const MACHINE_RUNS_SEEN: i64 = 20;
 
 pub fn approve(
     s: &hive_store::Store,

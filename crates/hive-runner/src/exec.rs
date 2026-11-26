@@ -92,6 +92,27 @@ pub(crate) trait Executor {
     ) -> Result<()>;
     fn fetch_source(&self) -> String;
     fn fetch_env(&self) -> Vec<String>;
+    /// A second way to the run's commits when the fetch from
+    /// [`fetch_source`](Self::fetch_source) failed: a git bundle file the
+    /// machine made with its `bundle` verb, or empty when there is none. An
+    /// ssh machine has it: a hand whose `git-upload-pack` does not answer
+    /// (every hand before TASK-133) still sends its commits this way.
+    fn fetch_fallback(&self) -> String {
+        String::new()
+    }
+    /// How a person gets the run's commits from the machine by hand, for a
+    /// failure that could not fetch them; empty when the executor cannot say.
+    fn fetch_by_hand(&self, root: &str, branch: &str) -> String {
+        let _ = (root, branch);
+        String::new()
+    }
+    /// Ends a run whose commits could not be fetched: the clone stays on the
+    /// machine for whoever fetches it ([`fetch_by_hand`](Self::fetch_by_hand)),
+    /// only what the brain holds for the run goes. Executors whose clone is
+    /// not elsewhere clean up as usual.
+    fn keep_work(&self) -> Vec<crate::tidy::Leftover> {
+        self.cleanup()
+    }
     /// Whether the run's accepted commits are pushed from where they were
     /// made ([`push_from_hand`](Self::push_from_hand)) rather than by the
     /// brain's delivery: a local `hive-hand` (`executor.transport
@@ -1125,6 +1146,60 @@ impl Executor for SshExec {
                 ),
             )]),
         )
+    }
+    fn fetch_fallback(&self) -> String {
+        // A local hand's clone is a path and a dial hand's answer already is
+        // the bundle: neither has a second way.
+        if self.pushes()
+            || self.local.row.str("kind") == crate::dial::DIAL_KIND
+            || !SHA_RE.is_match(&self.base)
+        {
+            return String::new();
+        }
+        let path = self.dial_result_bundle();
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+            path
+        } else {
+            String::new()
+        }
+    }
+    fn fetch_by_hand(&self, root: &str, branch: &str) -> String {
+        if self.pushes() || self.local.row.str("kind") == crate::dial::DIAL_KIND {
+            return String::new();
+        }
+        let job = self.local.job.str("id");
+        let mut line = format!(
+            "the clone stays on {name} at {clone} until it is fetched or {name} is released; get the work with `git -C {root} fetch {src} +HEAD:refs/heads/{branch}`",
+            name = self.name(),
+            clone = self.local.clone_dir,
+            src = self.fetch_source(),
+        );
+        // The bundle verb answers on a hand whose upload-pack does not.
+        if SHA_RE.is_match(&self.base)
+            && let Ok(argv) = crate::executor::ssh_command(
+                &self.local.row,
+                &["bundle".into(), job, self.base.clone()],
+            )
+        {
+            line.push_str(&format!(
+                ", or as a bundle with `{} | base64 -d > work.bundle && git -C {root} fetch $PWD/work.bundle +HEAD:refs/heads/{branch}`",
+                crate::util::shell_join(&argv)
+            ));
+        }
+        line
+    }
+    fn keep_work(&self) -> Vec<crate::tidy::Leftover> {
+        let _ = std::fs::remove_file(&self.bundle);
+        let _ = std::fs::remove_file(format!("{}.result", self.bundle));
+        crate::keys::remove_run_key(&self.local.key);
+        if self.pushes() || self.local.row.str("kind") == crate::dial::DIAL_KIND {
+            return self.cleanup();
+        }
+        self.local.log.add(format!(
+            "the clone on {} is kept: its commits were not fetched (TASK-133)",
+            self.name()
+        ));
+        Vec::new()
     }
     fn cleanup(&self) -> Vec<crate::tidy::Leftover> {
         let _ = std::fs::remove_file(&self.bundle);

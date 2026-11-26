@@ -1320,6 +1320,9 @@ pub(crate) fn run_job(
     let mut outcome = crate::brief::Outcome::default();
     let mut transport_error = false;
     let mut fault = false;
+    // The run's commits are on the machine and could not be fetched: its
+    // clone stays there (Executor::keep_work) instead of being cleaned.
+    let mut work_not_fetched = false;
     let mut unfit: Option<crate::executor::ExecutorUnfit> = None;
     // The recipe did not parse: the project's fault, not the run's, so the
     // job keeps its attempt and waits for dispatch to release the project.
@@ -2261,19 +2264,34 @@ pub(crate) fn run_job(
                     summary = format!("{commits} commit(s) but {verify_note}; nothing landed");
                     // The clone goes when the run ends: keep its commits so a
                     // retry can start from them instead of from the run record.
+                    let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
+                    let mut fetch_failed = false;
                     let kept = crate::land::keep_failed_work(
-                        &cancel,
                         &root,
-                        ex.fetch_source(),
-                        &ex.fetch_env(),
+                        |dst| {
+                            let ok = matches!(
+                                fetch_run_work(s, &cancel, ex.as_ref(), &job.str("id"), &root, dst, &log),
+                                Ok(o) if o.exit_code == 0
+                            );
+                            fetch_failed = !ok;
+                            ok
+                        },
                         &base,
-                        &crate::land::failed_work_branch(agent, &job.str("id")),
+                        &kept_branch,
                         &home,
                         &project.str("slug"),
                     );
                     if !kept.is_empty() {
                         log.add(format!("the failed run's work: {kept}"));
                         summary.push_str(&format!("; {kept}"));
+                    } else if fetch_failed && !root.is_empty() {
+                        // The commits are only on the machine: its clone
+                        // stays, and the summary says how to get them.
+                        let how = ex.fetch_by_hand(&root, &kept_branch);
+                        if !how.is_empty() {
+                            work_not_fetched = true;
+                            summary.push_str(&format!("; its commits could not be fetched: {how}"));
+                        }
                     }
                     // A check that did not run (the disk under the floor, the
                     // lock given up) says nothing about the base either; its
@@ -2336,34 +2354,25 @@ pub(crate) fn run_job(
                         branch.clear();
                     } else {
                         let holding = format!("refs/hive/landing/{}", job.str("id"));
-                        let fetched = crate::proc::run_group(
+                        let fetched = fetch_run_work(
+                            s,
                             &cancel,
-                            &[
-                                "git".into(),
-                                "-C".into(),
-                                root.clone(),
-                                "fetch".into(),
-                                "-q".into(),
-                                "--no-tags".into(),
-                                ex.fetch_source(),
-                                format!("+HEAD:{holding}"),
-                            ],
-                            "",
-                            &ex.fetch_env(),
-                            &[],
-                            Duration::from_secs(300),
+                            ex.as_ref(),
+                            &job.str("id"),
+                            &root,
+                            &holding,
+                            &log,
                         )?;
-                        log.add(format!(
-                            "$ git fetch <{} clone> HEAD:{}\n{}",
-                            ex.name(),
-                            holding,
-                            fetched.stderr
-                        ));
                         if fetched.exit_code != 0 {
                             status = "failed".into();
+                            let how = ex.fetch_by_hand(&root, &branch);
                             branch.clear();
                             summary =
                                 format!("could not land the branch: {}", fetched.stderr.trim());
+                            if !how.is_empty() {
+                                work_not_fetched = true;
+                                summary.push_str(&format!("; {how}"));
+                            }
                         } else {
                             let signers = work_dir
                                 .join(format!("{}.signers", job.str("id")))
@@ -2566,7 +2575,23 @@ pub(crate) fn run_job(
     // still registered on the clone goes now and is written down against it.
     // A held run keeps its clone for the run that carries on.
     let held_clone = status == "held" && !ex.remote();
-    let left = if held_clone { ex.hold() } else { ex.cleanup() };
+    let left = if held_clone {
+        ex.hold()
+    } else if work_not_fetched {
+        // Written down against the machine: the lease keeps code-changing
+        // work off it until a fetch from it works again (TASK-133).
+        crate::util::event_at(
+            &s.conn()?,
+            &s.now(),
+            "runner",
+            crate::executor::FETCH_FAILED_EVENT,
+            &ex.name(),
+            json!({"job": job.str("id"), "run": run_id, "clone": ex.clone()}),
+        );
+        ex.keep_work()
+    } else {
+        ex.cleanup()
+    };
     if !ex.remote() {
         // Evidence stays for the hub; a folder with nothing in it goes with
         // the clone (a held run's next pass makes it again).
@@ -2576,6 +2601,8 @@ pub(crate) fn run_job(
     if ex.started() {
         let clone_text = if held_clone {
             format!("clone kept for the next run ({work_mb} MB)")
+        } else if work_not_fetched {
+            format!("clone kept on {}: its commits were not fetched", ex.name())
         } else if ex.remote() {
             format!("clone removed on {}", ex.name())
         } else {
@@ -4050,6 +4077,81 @@ fn record_verified_tree(
         agent,
         clone,
     );
+}
+
+/// Fetches the run's `HEAD` from the executor into `refspec_dst` of the
+/// owner's checkout at `root`: from [`Executor::fetch_source`] first, and
+/// when that fails from [`Executor::fetch_fallback`] - for an ssh machine a
+/// bundle its `bundle` verb made, which reaches the commits on a hand whose
+/// `git-upload-pack` does not answer (every hand before TASK-133: 34 runs on
+/// rented machines failed "Could not read from remote repository" between
+/// 2026-11-01 and 2026-11-26 while their bundle verb answered). A fetch
+/// that failed both ways is written down as an `executor.fetch-failed` event
+/// against the executor (the lease keeps code-changing work off it until it
+/// fetches again); returns the last attempt's outcome.
+pub(crate) fn fetch_run_work(
+    s: &hive_store::Store,
+    cancel: &hive_bus::CancellationToken,
+    ex: &dyn Executor,
+    job: &str,
+    root: &str,
+    dst: &str,
+    log: &crate::exec::RunLog,
+) -> Result<crate::proc::Outcome> {
+    let fetch = |source: String, env: &[String]| {
+        crate::proc::run_group(
+            cancel,
+            &[
+                "git".into(),
+                "-C".into(),
+                root.to_string(),
+                "fetch".into(),
+                "-q".into(),
+                "--no-tags".into(),
+                source,
+                format!("+HEAD:{dst}"),
+            ],
+            "",
+            env,
+            &[],
+            Duration::from_secs(300),
+        )
+    };
+    let fetched = fetch(ex.fetch_source(), &ex.fetch_env())?;
+    log.add(format!(
+        "$ git fetch <{} clone> HEAD:{}\n{}",
+        ex.name(),
+        dst,
+        fetched.stderr
+    ));
+    if fetched.exit_code == 0 {
+        crate::executor::note_fetch_ok(s, &ex.name(), &s.now(), job);
+        return Ok(fetched);
+    }
+    if cancel.is_cancelled() {
+        return Ok(fetched);
+    }
+    let bundle = ex.fetch_fallback();
+    if bundle.is_empty() {
+        return Ok(fetched);
+    }
+    let again = fetch(bundle, &crate::util::git_env(&[]))?;
+    log.add(format!(
+        "$ git fetch <{} bundle> HEAD:{}\n{}",
+        ex.name(),
+        dst,
+        again.stderr
+    ));
+    if again.exit_code == 0 {
+        log.add(format!(
+            "the fetch from {} failed ({}); its commits came back as a bundle instead",
+            ex.name(),
+            crate::util::trunc(fetched.stderr.trim(), 200)
+        ));
+        crate::executor::note_fetch_ok(s, &ex.name(), &s.now(), job);
+        return Ok(again);
+    }
+    Ok(fetched)
 }
 
 /// `base_tree_verify` behind the verify memo: a base tree this user already

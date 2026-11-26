@@ -1166,6 +1166,48 @@ fn compute_post_summary_limit() {
 }
 
 #[test]
+fn compute_request_says_how_many_machine_runs_landed() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    assert_eq!(machine_landing_line(&s).unwrap(), "");
+    let conn = s.conn().unwrap();
+    let add = |id: &str, executor: &str, status: &str, commits: i64, at: &str| {
+        conn.execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, commits, executor) VALUES (?, ?, 'w', 'demo', ?, ?, ?, ?, ?)",
+            params![id, format!("job-{id}"), at, at, status, commits, executor],
+        )
+        .unwrap();
+    };
+    // Two runs with commits on machines whose work never came back, one
+    // without commits and one on this machine: neither of those counts.
+    add("r1", "hands-cr-1", "failed", 2, "2026-11-20T10:00:00Z");
+    add("r2", "hands-cr-1", "failed", 1, "2026-11-21T10:00:00Z");
+    add("r3", "hands-cr-1", "done", 0, "2026-11-22T10:00:00Z");
+    add("r4", "local", "done", 3, "2026-11-22T11:00:00Z");
+    let line = machine_landing_line(&s).unwrap();
+    assert!(
+        line.starts_with("Machines so far: 0 of the last 2 runs with commits"),
+        "{line}"
+    );
+    assert!(line.contains("did not come back"), "{line}");
+    let r = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 100, "a big run").unwrap();
+    let body: String = conn
+        .query_row(
+            "SELECT body FROM posts WHERE id = ?",
+            [&r.proposal_post],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(body.contains(&line), "{body}");
+    add("r5", "hands-cr-2", "done", 1, "2026-11-23T10:00:00Z");
+    let line = machine_landing_line(&s).unwrap();
+    assert_eq!(
+        line,
+        "Machines so far: 1 of the last 3 runs with commits on rented or paired machines landed (the last at 2026-11-23T10:00:00Z)."
+    );
+}
+
+#[test]
 fn compute_auto_approve_under_caps_else_proposal() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
