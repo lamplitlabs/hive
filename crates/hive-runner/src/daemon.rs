@@ -2065,6 +2065,9 @@ pub(crate) fn daemon(
                     binary.refused_queued = crate::restart::fits_phrase(
                         &crate::restart::refused_queued_work(s, &inflight, &now),
                     );
+                    // The build's wait for that work is bounded from the
+                    // arming of a restart already pending (selfupdate gate).
+                    binary.restart_armed = restart.armed_at().to_string();
                     let inflight_jobs = inflight
                         .values()
                         .map(|d| (d.job.str("id"), true))

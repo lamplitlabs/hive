@@ -383,7 +383,15 @@ commit. Nor
 does it start while a fleet improve, task or experiment job is queued that the
 restart the build ends in would refuse (its run is not expected to end before
 the runs in flight): the daemon says `building once the queued improve runs on
-<project> have started` once and lets them start first, for at most an hour.
+<project> have started, ..., or at <time> (daemon.restart_max_minutes)` once
+and lets them start first, for at most `daemon.restart_max_minutes` (90; an
+hour when it is 0). The wait counts from the first pass that waited, or from
+the arming of a restart already pending when that is earlier, and a queue that
+empties for a pass and fills again does not start it over. Past it the daemon
+says `building past the queued task runs on <project>, waited for since <time>`
+and builds: the queued work stays queued and starts under the next daemon. On
+2026-11-26 a priority-0 audit queued on the brain behind the owner's tasks held
+every build for seven hours.
 The owner's queued work is never among those: the restart does not refuse
 it, so the build does not wait for it.
 A merge that touches nothing the binary is built from is not built at all:

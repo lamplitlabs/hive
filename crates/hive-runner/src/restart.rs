@@ -75,6 +75,17 @@ impl Restart {
         self.forced
     }
 
+    /// When (store clock) the pending restart was armed; empty when none
+    /// is. The self-update build's wait for queued work the restart would
+    /// refuse counts its bound (daemon.restart_max_minutes) from here.
+    pub(crate) fn armed_at(&self) -> &str {
+        if self.pending.is_some() || self.forced {
+            &self.since
+        } else {
+            ""
+        }
+    }
+
     /// Whether the owner's ask without "now" has the daemon draining.
     pub(crate) fn console_draining(&self) -> bool {
         self.console_drain && self.pending.is_some()
