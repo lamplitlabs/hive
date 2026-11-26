@@ -18,6 +18,7 @@ import { createReportsMock } from "./reports.mjs";
 import { createKpisMock } from "./kpis.mjs";
 import { createAutomationsMock } from "./automations.mjs";
 import { funnelOf } from "./funnel.mjs";
+import { projectLifecycle, taskLifecycle } from "./lifecycle.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "api");
 // The job artifact folders under root/jobs/<id>/artifacts, read on demand.
@@ -4288,6 +4289,19 @@ async function handle(req, res) {
       details,
     ).tasks;
     return send(res, 200, { tasks: tasks.map(strip) });
+  }
+  if (segs[0] === "tasks" && segs.length === 2 && segs[1] === "lifecycle") {
+    const p = q.get("project");
+    if (!p) return fail(res, 400, "Which project?", "tasks/lifecycle needs ?project=", "add ?project=SLUG");
+    const details = state.tasks
+      .filter((t) => t.project === p)
+      .map((t) => taskDetailScenario(t._detail, now()));
+    return send(res, 200, projectLifecycle(p, details));
+  }
+  if (segs[0] === "tasks" && segs.length === 3 && segs[2] === "lifecycle") {
+    const t = state.tasks.find((x) => x.id === segs[1]);
+    if (!t) return fail(res, 404, "no such task", segs[1] + " is not in the store", "open it from the Tasks page");
+    return send(res, 200, taskLifecycle(taskDetailScenario(t._detail, now())));
   }
   if (segs[0] === "tasks" && segs.length === 2) {
     const t = state.tasks.find((x) => x.id === segs[1]);

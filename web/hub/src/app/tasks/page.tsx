@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ColumnsIcon, ListIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { ColumnsIcon, ListIcon, PlusIcon, RouteIcon, SearchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/hive/page-header";
 import { EmptyState, ErrorNotice, SkeletonPage, SkeletonRows } from "@/components/hive/panel";
 import { SectionHeading } from "@/components/hive/section-heading";
 import { useViewMode } from "@/components/hive/view-toggle";
+import { PhasesView } from "@/components/tasks/lifecycle";
 import { TaskCard } from "@/components/tasks/task-card";
 import { NewTaskDialog } from "@/components/tasks/task-dialogs";
 import { TASK_COLUMNS } from "@/components/tasks/task-columns";
@@ -45,14 +46,23 @@ const STATUS_FILTERS: [string, string][] = [
   ["all", "All"],
 ];
 
-type View = "board" | "list";
+type View = "board" | "list" | "phases";
 
 // Board or List, remembered per browser under the shared view-mode key
 // ("cards" is the board, "table" the list); the board is the default.
-function useView(): [View, (v: View) => void] {
+// Phases (a project's tasks by lifecycle phase, TASK-141) rides in the URL
+// as ?view=phases, so a link can open it.
+function useView(phases: boolean, setPhases: (on: boolean) => void): [View, (v: View) => void] {
   const [mode, setMode] = useViewMode("tasks", "cards");
-  const set = useCallback((v: View) => setMode(v === "list" ? "table" : "cards"), [setMode]);
-  return [mode === "table" ? "list" : "board", set];
+  const set = useCallback(
+    (v: View) => {
+      if (v === "phases") return setPhases(true);
+      setMode(v === "list" ? "table" : "cards");
+      if (phases) setPhases(false);
+    },
+    [setMode, phases, setPhases],
+  );
+  return [phases ? "phases" : mode === "table" ? "list" : "board", set];
 }
 
 // One sentence on the list in view: how many are open and what needs you.
@@ -101,7 +111,6 @@ function TasksScreen() {
     if (stale) router.replace(hrefs.task(stale));
   }, [stale, router]);
   const [text, setText] = useState("");
-  const [view, setView] = useView();
   const setParams = useCallback(
     (patch: Record<string, string | null | undefined>) => {
       const q = new URLSearchParams(sp.toString());
@@ -114,6 +123,8 @@ function TasksScreen() {
     },
     [sp, router, pathname],
   );
+  const setPhases = useCallback((on: boolean) => setParams({ view: on ? "phases" : null }), [setParams]);
+  const [view, setView] = useView(sp.get("view") === "phases", setPhases);
   // /tasks/?new=1 opens the New task dialog on load (other pages link here
   // for it); closing it drops the param so a reload does not reopen it.
   const [creating, setCreating] = useState(false);
@@ -187,6 +198,9 @@ function TasksScreen() {
             <TabsTrigger value="list">
               <ListIcon data-icon="inline-start" aria-hidden /> List
             </TabsTrigger>
+            <TabsTrigger value="phases" title="A project's tasks by lifecycle phase">
+              <RouteIcon data-icon="inline-start" aria-hidden /> Phases
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <Select value={project || "__all"} onValueChange={(v) => setParams({ project: v === "__all" ? null : v })}>
@@ -241,6 +255,8 @@ function TasksScreen() {
         </ErrorNotice>
       ) : !q.data ? (
         <SkeletonRows n={8} />
+      ) : view === "phases" ? (
+        <PhasesView project={project} tasks={status === "active" ? searched : rows} />
       ) : !rows.length && !(view === "board" && status === "active" && searched.length) ? (
         <EmptyState title={emptyTitle} action={emptyAction}>
           {empty}
