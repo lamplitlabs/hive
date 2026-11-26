@@ -594,7 +594,9 @@ pub(crate) fn land_experiment_context(
     // no upstream at all lands locally as before. Returns the lane's
     // (state, note): `pr` when the pull request is open, the landing's own
     // states on the local path, `deferred` when the push or gh failed (held
-    // once as `land.pr-held`; the lane retries on its schedule).
+    // as `land.pr-held`, as the delivery pass holds its own work: the lane
+    // asks on its schedule, and a try goes to the forge once the hold's
+    // wait is over).
     let deliver_kept = |archive_id: String, summary: String| -> (String, String) {
         if crate::forge::upstream_of(&root, &def).is_none() {
             return match crate::land::land_branch(
@@ -630,45 +632,15 @@ pub(crate) fn land_experiment_context(
                 format!("delivered as pull request #{number} {url}"),
             ),
             Err(note) => {
-                let sha = crate::util::git_timeout(
-                    &root,
-                    Duration::from_secs(10),
-                    &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
-                )
-                .stdout
-                .trim()
-                .to_string();
-                let work = format!("{branch} {}", crate::recipe::short(&sha, 12));
-                if let Ok(conn) = s.conn() {
-                    let held = crate::util::query_rows(
-                        &conn,
-                        "SELECT detail FROM events WHERE subject = ? AND action = 'land.pr-held'
-                         AND json_extract(detail, '$.job') = ? ORDER BY seq DESC LIMIT 1",
-                        &[&slug, &job.str("id")],
-                    )
-                    .unwrap_or_default()
-                    .first()
-                    .is_some_and(|r| {
-                        serde_json::from_str::<serde_json::Value>(&r.str("detail"))
-                            .ok()
-                            .and_then(|d| {
-                                d.get("work").and_then(|w| w.as_str()).map(str::to_string)
-                            })
-                            .as_deref()
-                            == Some(work.as_str())
-                    });
-                    if !held {
-                        crate::util::event_at(
-                            &conn,
-                            &now,
-                            &actor,
-                            "land.pr-held",
-                            &slug,
-                            serde_json::json!({"project": slug, "job": job.str("id"), "experiment": job.str("id"),
-                                "archive": archive_id, "work": work, "note": note}),
-                        );
-                    }
-                }
+                crate::delivery::hold_experiment(
+                    s,
+                    &now,
+                    &actor,
+                    &project,
+                    &job,
+                    &archive_id,
+                    &note,
+                );
                 ("deferred".into(), note)
             }
         }
@@ -1692,6 +1664,154 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "the merge did not finalize the experiment for evolve"
+        );
+    }
+
+    /// A kept experiment whose push failed is tried again when its hold's
+    /// wait is over, as any failed delivery is, and goes out once the
+    /// upstream is back. The lane's tries used to hear "delivered already"
+    /// from the one hold until the lane gave the experiment up.
+    #[test]
+    fn a_kept_experiment_whose_push_failed_is_delivered_once_the_upstream_is_back() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        let bare = Path::new(&s.home)
+            .join("tmp")
+            .join(format!("origin-{}.git", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        let bare = bare.display().to_string();
+        run(".", &["git", "init", "--bare", "-q", "-b", "main", &bare]);
+        run(&root, &["git", "remote", "add", "origin", &bare]);
+        run(&root, &["git", "push", "-q", "-u", "origin", "main"]);
+        let land = |minutes: i32| {
+            land_experiment(
+                &s,
+                project.clone(),
+                job.clone(),
+                "daemon".into(),
+                crate::util::plus_minutes(TEST_NOW, minutes),
+                true,
+            )
+        };
+        let holds = || {
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.pr-held'",
+                &[],
+            )
+        };
+
+        // The upstream is out of reach when the measurement says keep.
+        run(
+            &root,
+            &[
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                &format!("{bare}.gone"),
+            ],
+        );
+        let (state, note) = land(0);
+        assert_eq!(state, "deferred", "{note}");
+        assert!(note.contains(" but push of "), "{note}");
+        assert_eq!(holds(), 1);
+
+        // Still out of reach when the lane tries again after the hold's
+        // five minutes: the try fails, and is held and counted anew.
+        let (state, note) = land(20);
+        assert_eq!(state, "deferred", "{note}");
+        assert!(note.contains(" but fetch of "), "{note}");
+        assert_eq!(holds(), 2);
+
+        // The upstream is back. The new hold stands for its fifteen
+        // minutes, then the lane's try opens the pull request.
+        run(&root, &["git", "remote", "set-url", "origin", &bare]);
+        let (state, note) = land(34);
+        assert_eq!(state, "deferred", "{note}");
+        assert_eq!(holds(), 2);
+        let (state, note) = land(40);
+        assert_eq!(state, "pr", "{note}");
+        assert!(
+            note.contains("delivered as pull request #7"),
+            "note: {note}"
+        );
+    }
+
+    /// A forge that stays down is asked on the waits of any failed
+    /// delivery, however often the lane tries. The lane tries again two
+    /// minutes after a failure it reads as passing, and a forge that
+    /// answers 429 is one: with a hold that was written once every try
+    /// after its first five minutes was a push, about 700 of them in the
+    /// lane's one day. Now that day is eight calls to the forge - the
+    /// push, and seven times the read of the branch a later try starts
+    /// with - and the lane's other tries make none.
+    #[test]
+    fn a_forge_that_stays_down_is_asked_eight_times_in_the_lanes_day() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let (s, project, job, root, _calls) = measured_keep_fixture();
+        // What git asked the forge for, call by call.
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let log = asked.clone();
+        let forge = hive_testutil::httptest::Server::new(move |req| {
+            log.lock().unwrap().push(req.query().to_string());
+            hive_testutil::httptest::Response::text(429, "slow down\n")
+        });
+        run(
+            &root,
+            &[
+                "git",
+                "remote",
+                "add",
+                "origin",
+                &format!("{}/owner/repo.git", forge.url()),
+            ],
+        );
+        let asked = || asked.lock().unwrap().clone();
+
+        // The lane's day: each try comes when the lane's own wait for the
+        // answer before it is over.
+        let (mut minutes, mut tries) = (0, 0);
+        while minutes <= 24 * 60 {
+            let (state, note) = land_experiment(
+                &s,
+                project.clone(),
+                job.clone(),
+                "daemon".into(),
+                crate::util::plus_minutes(TEST_NOW, minutes),
+                true,
+            );
+            assert_eq!(state, "deferred", "{note}");
+            let wait = crate::daemon_maintenance::experiment_retry(&s, &state, &note);
+            if tries == 0 {
+                assert!(note.contains("returned error: 429"), "{note}");
+                assert_eq!(wait, Duration::from_secs(120), "{note}");
+            }
+            tries += 1;
+            minutes += (wait.as_secs() / 60) as i32;
+        }
+        let asked = asked();
+        assert_eq!(asked.len(), 8, "{tries} tries asked the forge: {asked:?}");
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|query| query.contains("git-receive-pack"))
+                .count(),
+            1,
+            "{asked:?}"
+        );
+        assert!(tries > 70, "the lane tried {tries} times in its day");
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'land.pr-held'",
+                &[],
+            ),
+            8
         );
     }
 
