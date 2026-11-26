@@ -1227,6 +1227,103 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         cancel.cancel();
     }
 
+    /// TASK-138 item 1: a rented machine that holds a clone whose commits could not be fetched
+    /// is not released when it sits idle for `COMPUTE_IDLE_MINUTES` - the clone is the run's
+    /// only copy while its summary says how to fetch it. The card says why the machine stays;
+    /// once the clone is fetched (or its approved hours are up) it goes as before. Before this,
+    /// `release_due` did not look at kept clones and the work was lost after thirty minutes.
+    #[test]
+    fn an_idle_rental_holding_unfetched_work_is_not_released() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "ready", "request: {got:?}\n{log}");
+        let after = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        // A run that committed ended ten minutes in; its commits could not be fetched.
+        crate::test_helpers_daemon::queued_job(&s, "job-kept", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'failed' WHERE id = 'job-kept'",
+            &[],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, commits, executor) VALUES ('run-kept', 'job-kept', 'aurora', 'proj', ?, ?, 'failed', 1, 'hands-cr-001')",
+            &[&after(5.0), &after(10.0)],
+        );
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            &after(10.0),
+            "runner",
+            crate::executor::FETCH_FAILED_EVENT,
+            "hands-cr-001",
+            serde_json::json!({"job": "job-kept", "run": "run-kept", "clone": "/srv/hive/job-kept/clone"}),
+        );
+        let cancel = hive_bus::CancellationToken::new();
+        let worker = crate::compute::new_compute_worker(
+            &cancel,
+            &s,
+            crate::compute::ComputeOpts {
+                actor: TEST_DAEMON.into(),
+                hub_home: h.hub_home.clone(),
+            },
+        );
+        assert_eq!(
+            worker.release_due(got.clone(), &after(60.0)),
+            "",
+            "an idle machine holding unfetched work was due for release"
+        );
+        let tick = |now: &str| {
+            let mut lines = worker.tick(&cancel, now);
+            worker.wait(Duration::from_secs(60));
+            lines.extend(worker.drain());
+            lines
+        };
+        let lines = tick(&after(60.0));
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "ready", "{lines:?}");
+        assert!(
+            got.note.contains("holds the clone(s) of job-kept")
+                && got.note.contains("not released while idle"),
+            "the card does not say why the machine stays: {:?}",
+            got.note
+        );
+        assert!(az.deleted().is_empty(), "{lines:?}");
+        // Inside its hours an idle machine with kept work stays; when they are up it goes,
+        // and the reason names what went with it.
+        let why = worker.release_due(got.clone(), &after(121.0));
+        assert!(
+            why.starts_with("its 2 hour(s) are up") && why.contains("job-kept"),
+            "{why}"
+        );
+        // Once the clone is fetched the idle rule applies again.
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            &after(70.0),
+            "daemon",
+            crate::executor::KEPT_GONE_EVENT,
+            "hands-cr-001",
+            serde_json::json!({"job": "job-kept", "run": "run-kept", "why": "fetched"}),
+        );
+        assert_eq!(
+            worker.release_due(got, &after(71.0)),
+            format!(
+                "the executor sat idle for {} minutes",
+                crate::compute::COMPUTE_IDLE_MINUTES
+            )
+        );
+        cancel.cancel();
+    }
+
     /// A failure after the machine exists releases it (VM and its siblings) before the request
     /// is failed, as the Go runner did; the machine row keeps the released time.
     #[test]

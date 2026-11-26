@@ -4565,6 +4565,25 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         refuse_bundle: bool,
         check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
     ) {
+        committing_run_on_a_hand_whose_fetch_fails_checked(refuse_bundle, "", check);
+    }
+    /// [`committing_run_on_a_hand_whose_fetch_fails`] with the project's
+    /// check set to `verify_cmd` (empty: none).
+    fn committing_run_on_a_hand_whose_fetch_fails_checked(
+        refuse_bundle: bool,
+        verify_cmd: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(refuse_bundle));
+        committing_run_on_a_hand_whose_fetch_fails_switched(refuse, verify_cmd, check);
+    }
+    /// The same with the bundle's refusal behind a switch the test may flip
+    /// after the run: the machine's bundle verb answers again.
+    fn committing_run_on_a_hand_whose_fetch_fails_switched(
+        refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        verify_cmd: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
         let _serial = crate::test_helpers::serial();
         let _guard = hive_testutil::env_lock();
         if which::which("ssh-keygen").is_err() {
@@ -4574,6 +4593,13 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
         let s = crate::test_helpers::new_store();
         let (_proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        if !verify_cmd.is_empty() {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+                &[&verify_cmd],
+            );
+        }
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
             .unwrap();
@@ -4618,7 +4644,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 })
                 .map(|raw| String::from_utf8_lossy(&raw).to_string())
                 .unwrap_or_default();
-            if refuse_bundle && verb.starts_with("bundle\u{0}") {
+            if refuse.load(std::sync::atomic::Ordering::SeqCst) && verb.starts_with("bundle\u{0}") {
                 return Ok((1, String::new(), "bundle: refused".into()));
             }
             runner(c, a, i, t)
@@ -4773,6 +4799,163 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             .unwrap();
             assert!(!crate::executor::fetch_broken(s, "hands"));
             assert_eq!(lease("aurora").str("id"), next.str("id"));
+        });
+    }
+
+    /// TASK-138 item 4: a run whose check failed on a base that was already
+    /// red, with neither the fetch nor the bundle bringing its commits back,
+    /// still says how to get them. Before, the red base verdict rewrote the
+    /// summary and added back only the (empty) kept-branch clause, so the
+    /// clone sat on the machine with no word of where or how.
+    #[test]
+    fn a_red_base_keeps_the_how_to_of_work_left_on_the_machine() {
+        committing_run_on_a_hand_whose_fetch_fails_checked(
+            true,
+            "false",
+            |s, run, job, workdir| {
+                assert_eq!(run.str("status"), "failed", "run {run:?}");
+                let summary = run.str("summary");
+                assert!(
+                    summary.contains("was already red before this job"),
+                    "the base verdict is not in the summary: {summary}"
+                );
+                assert!(
+                    summary.contains("its commits could not be fetched")
+                        && summary.contains("the clone stays on hands at")
+                        && summary.contains("git -C ")
+                        && summary
+                            .contains(&crate::land::failed_work_branch("aurora", &job.str("id"))),
+                    "the red base dropped how to get the work: {summary}"
+                );
+                assert!(
+                    workdir
+                        .join(job.str("id"))
+                        .join("clone")
+                        .join("note.txt")
+                        .exists(),
+                    "the machine's clone was cleaned"
+                );
+                assert!(crate::executor::fetch_broken(s, "hands"));
+            },
+        );
+    }
+
+    /// TASK-138 item 2: a machine marked after one failed fetch finds its
+    /// way back without a hand. `hive executor list` says why it takes no
+    /// code work; the daemon's fetch probe tries the kept clone again on its
+    /// pass, says when it fails, and once the machine answers brings the
+    /// commits to the failed-work branch, removes the clone (item 3) and
+    /// clears the mark. Before, the mark stayed until the owner activated
+    /// the machine, and the list showed nothing.
+    #[test]
+    fn a_machine_whose_fetch_failed_is_fetched_again_by_the_daemon() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let switch = refuse.clone();
+        committing_run_on_a_hand_whose_fetch_fails_switched(refuse, "", |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            assert!(crate::executor::fetch_broken(s, "hands"));
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(clone.join("note.txt").exists());
+            let now = s.now();
+            let list = crate::commands::executors_text(s, &now);
+            assert!(
+                list.contains("fetch FAILED at")
+                    && list.contains(&format!(
+                        "1 kept clone(s) hold commits only it has ({})",
+                        job.str("id")
+                    ))
+                    && list.contains("hive executor activate hands"),
+                "the executor list does not say why the machine is idle: {list}"
+            );
+            let cancel = hive_bus::CancellationToken::new();
+            // The machine still does not answer: the probe says so, the
+            // mark and the clone stay.
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &now, "daemon");
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.starts_with("fetch probe of hands failed")),
+                "{lines:?}"
+            );
+            assert!(crate::executor::fetch_broken(s, "hands"));
+            assert!(clone.join("note.txt").exists());
+            let list = crate::commands::executors_text(s, &now);
+            assert!(list.contains("last fetch try "), "{list}");
+            // Not again inside the probe's spacing.
+            assert_eq!(
+                crate::kept_work::tend_kept_work(s, &cancel, &now, "daemon"),
+                Vec::<String>::new()
+            );
+            // The machine answers again: the next due probe fetches the work.
+            switch.store(false, std::sync::atomic::Ordering::SeqCst);
+            let later =
+                crate::util::plus_minutes(&now, (crate::executor::KEPT_FETCH_MINUTES + 1) as f64);
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &later, "daemon");
+            assert!(
+                lines.iter().any(|l| l.starts_with(&format!(
+                    "kept work of {} fetched from hands",
+                    job.str("id")
+                ))),
+                "{lines:?}"
+            );
+            let root = crate::util::project_row(s, "proj").str("path");
+            let branch = crate::land::failed_work_branch("aurora", &job.str("id"));
+            assert_eq!(
+                crate::test_helpers::run(
+                    std::path::Path::new(&root),
+                    &["git", "log", "-1", "--format=%s", &branch]
+                )
+                .trim(),
+                "note",
+                "the kept commit is not on {branch}"
+            );
+            assert!(!clone.exists(), "the fetched clone stays on the machine");
+            assert!(
+                !crate::executor::fetch_broken(s, "hands"),
+                "the mark stays after the fetch"
+            );
+            assert!(crate::executor::kept_work(s, "hands").is_empty());
+            assert!(!crate::commands::executors_text(s, &later).contains("fetch FAILED"));
+        });
+    }
+
+    /// TASK-138 item 3: a clone kept on a machine goes once its job is
+    /// closed, and a machine left with nothing kept has its mark lifted, so
+    /// the next code run tests the fetch. Before, the clone, its run key and
+    /// whatever the worker left stayed on the machine for good.
+    #[test]
+    fn a_kept_clone_is_removed_once_its_job_is_closed() {
+        committing_run_on_a_hand_whose_fetch_fails(true, |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(clone.join("note.txt").exists());
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                &[&job.str("id")],
+            );
+            let cancel = hive_bus::CancellationToken::new();
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &s.now(), "daemon");
+            assert!(
+                lines.iter().any(|l| l
+                    == &format!(
+                        "kept clone of {} removed from hands: its job is cancelled",
+                        job.str("id")
+                    )),
+                "{lines:?}"
+            );
+            assert!(
+                !workdir.join(job.str("id")).exists(),
+                "the closed job's clone stays"
+            );
+            assert!(crate::executor::kept_left(s, "hands").is_empty());
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.starts_with("fetch mark lifted on hands")),
+                "{lines:?}"
+            );
+            assert!(!crate::executor::fetch_broken(s, "hands"));
         });
     }
 

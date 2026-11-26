@@ -52,6 +52,7 @@ pub(crate) mod idle_hold;
 pub mod idle_log;
 pub mod inbox;
 pub mod jobs;
+pub(crate) mod kept_work;
 pub mod keys;
 pub mod land;
 pub mod land_lock;
