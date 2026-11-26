@@ -114,8 +114,10 @@ Where no reason holds, the verdict is one of three:
   same gate stands in front of the hub's Merge button. Then it merges on
   the forge (`gh pr merge --merge --delete-branch`, as the `gh` account
   that works for this repository; without `--delete-branch` while another
-  open pull request is based on its head, since GitHub would close that
-  one, and delivery deletes the branch once it has moved it) and records
+  pull request still open on the forge is based on its head - whatever its
+  own review said, a "changes" verdict or a hand-off to you included -
+  since GitHub would close that one, and delivery deletes the branch once
+  it has moved it) and records
   `review.merged` with `by: <the agent>`, the job, `head_sha`, `checks`
   and `branch_kept_for` (the pull requests the branch was kept for); the delivery pass
   sees the merge on its next poll, records `land.merged`, closes the task

@@ -139,6 +139,16 @@ pub(crate) fn stacked_on(pr: &OpenPr, def: &str) -> Option<String> {
 /// The open Hive pull requests of a project, oldest number first: every
 /// number whose newest state event is a `land.pr`.
 pub(crate) fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<OpenPr> {
+    pr_states(q, slug)
+        .into_iter()
+        .filter(|(action, _)| opens_review(action))
+        .map(|(_, pr)| pr)
+        .collect()
+}
+
+/// Every Hive pull request of a project with a `land.pr`, oldest number
+/// first, with the newest state event that stands for it.
+fn pr_states(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(String, OpenPr)> {
     let rows = crate::util::query_rows(
         q,
         &format!(
@@ -160,8 +170,26 @@ pub(crate) fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> 
     }
     latest
         .into_values()
-        .filter(|(action, _)| opens_review(action))
-        .filter_map(|(_, pr)| pr)
+        .filter_map(|(action, pr)| Some((action, pr?)))
+        .collect()
+}
+
+/// The Hive pull requests of a project that are still open on the forge,
+/// oldest number first: every number whose newest state event neither
+/// merged nor closed it. Unlike [`open_prs`] (the ones open for review),
+/// a pull request under a "changes" verdict, a waiting merge or a hand-off
+/// to the owner is here too: its branch and its base are still the
+/// forge's.
+pub(crate) fn forge_open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<OpenPr> {
+    pr_states(q, slug)
+        .into_iter()
+        .filter(|(action, _)| {
+            !matches!(
+                action.as_str(),
+                "land.merged" | "land.pr-closed" | "review.merged"
+            )
+        })
+        .map(|(_, pr)| pr)
         .collect()
 }
 
@@ -1266,27 +1294,16 @@ fn try_merge(
     } else {
         view.head.clone()
     };
-    // A pull request whose approved merge waits is still open on the forge.
+    // Every pull request the forge still has open counts, whatever its
+    // review said: one under a "changes" verdict (its fix job is running),
+    // one whose approved merge waits, one handed to the owner (#267 closed
+    // when #266 merged while its fix job ran).
     let stacked_above: Vec<i64> = match s.conn() {
-        Ok(c) if !head.is_empty() => {
-            let waiting: Vec<i64> = waiting_merges(&c, &slug)
-                .into_iter()
-                .map(|(_, w)| w.number)
-                .collect();
-            let mut above: Vec<i64> = open_prs(&c, &slug)
-                .into_iter()
-                .chain(
-                    waiting
-                        .iter()
-                        .filter_map(|n| pr_state(&c, &slug, *n).map(|(p, _)| p)),
-                )
-                .filter(|p| p.number != number && p.base == head)
-                .map(|p| p.number)
-                .collect();
-            above.sort_unstable();
-            above.dedup();
-            above
-        }
+        Ok(c) if !head.is_empty() => forge_open_prs(&c, &slug)
+            .into_iter()
+            .filter(|p| p.number != number && p.base == head)
+            .map(|p| p.number)
+            .collect(),
         _ => Vec::new(),
     };
     let number_arg = number.to_string();
@@ -2942,6 +2959,81 @@ mod tests {
         assert!(merges[1].contains("--delete-branch"), "{merges:?}");
         let merged = events(&s, "review.merged");
         assert!(merged[1].get("branch_kept_for").is_none(), "{}", merged[1]);
+    }
+
+    /// A pull request stacked on the one that merges keeps that branch
+    /// whatever its own review said: under a "changes" verdict (its fix job
+    /// running) or handed to the owner it is out of the review queue but
+    /// still open on the forge, and `--delete-branch` would close it for
+    /// good (#267 closed so when #266 merged on 26 November).
+    #[test]
+    fn a_merge_keeps_its_branch_for_a_stacked_pull_request_under_changes_or_with_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        let merge_lines = |log: &str| -> Vec<String> {
+            std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.starts_with("pr merge"))
+                .map(str::to_string)
+                .collect()
+        };
+        for (i, verdict) in ["review.changes", "review.owner"].into_iter().enumerate() {
+            let below = 7 + 10 * i as i64;
+            let above = below + 1;
+            land_pr(&s, below, "task", "TASK-001", "JOB-a");
+            view_with(&view, |v| {
+                v["number"] = json!(below);
+                v["url"] = json!(format!("https://github.com/o/r/pull/{below}"));
+            });
+            event(
+                &s,
+                TEST_NOW,
+                "daemon",
+                "land.pr",
+                "proj",
+                json!({"project": "proj", "kind": "task", "task": "TASK-002", "number": above,
+                    "url": format!("https://github.com/o/r/pull/{above}"), "head": "hive/task/TASK-002",
+                    "base": "hive/task/TASK-001", "stack_on": below, "to": "def456", "opened": true,
+                    "title": "stacked"}),
+            );
+            event(
+                &s,
+                TEST_NOW,
+                "reviewer-1",
+                verdict,
+                "proj",
+                json!({"project": "proj", "number": above, "note": "fix it"}),
+            );
+            assert!(
+                open_prs(&s.conn().unwrap(), "proj")
+                    .iter()
+                    .all(|p| p.number != above),
+                "out of the review queue under {verdict}"
+            );
+
+            merge(&s, &proj, below, "owner", "owner", TEST_NOW).unwrap();
+            let merges = merge_lines(&log);
+            assert_eq!(merges.len(), i + 1, "{merges:?}");
+            assert!(
+                !merges[i].contains("--delete-branch"),
+                "{verdict}: {merges:?}"
+            );
+            let merged = events(&s, "review.merged");
+            assert_eq!(merged[i]["branch_kept_for"], json!([above]), "{verdict}");
+            // The one below is merged now; the next round starts afresh.
+            event(
+                &s,
+                TEST_NOW,
+                "daemon",
+                "land.merged",
+                "proj",
+                json!({"project": "proj", "number": above}),
+            );
+        }
     }
 
     /// The owner's click, like the reviewer's verdict, goes through the

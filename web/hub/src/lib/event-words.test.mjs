@@ -67,6 +67,15 @@ test("land.pr says whether it opened, refreshed or moved the pull request", () =
   assert.equal(at({ opened: false }), "updated pull request #5 with new work");
 });
 
+test("a join of a task's clashing branches reads apart from a redo", () => {
+  assert.equal(eventVerb({ action: "land.rebase", subject: "demo-app", detail: { files: ["a.rs"] } }), VERB["land.rebase"]);
+  assert.equal(
+    eventVerb({ action: "land.rebase", subject: "demo-app", detail: { files: ["a.rs"], join: true } }),
+    "asked a worker to merge a task\u2019s finished pieces that clash with each other",
+  );
+  assert.equal(eventDetailText({ action: "land.rebase", detail: { files: ["a.rs"], join: true } }), "Both changed a.rs");
+});
+
 test("job.recover reads by its outcome; the runner's sleep says how long", () => {
   const recover = (outcome) => eventVerb({ action: "job.recover", subject: "job-1", detail: { outcome } });
   assert.equal(recover("retried"), "tried a job again");
