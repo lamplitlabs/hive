@@ -1204,7 +1204,9 @@ work goes first in its own project: while an owner-driven work job (`task:`,
 `security:`) is queued in a project, the fleet's work jobs of that project stay
 in the queue, and when the lanes in the owner's job's way are held and some by
 the fleet's runs - the narrowed lanes (fewer than the share), the owner's own
-bound under the verify lock (below), or every slot of the fleet - the daemon
+bound under the verify lock (below), or every slot of the fleet (no slot the
+dispatch would offer this tick: a paired machine's free slot or the load
+governor's room here, not the fleet's nominal total) - the daemon
 asks the youngest of those runs to hold at its current
 step - the same hold the restart uses: the clone and its commits stay, the job
 goes back to the queue costing it no attempt, and the same agent carries it on

@@ -117,6 +117,46 @@ pub static AGENT_SPEC_CHECK: RwLock<Option<AgentSpecCheckFn>> = RwLock::new(None
 /// The agent a job, a schedule or a hook is asked to run as (`--run-as
 /// NAME`), trimmed and checked: a name of the agent-file shape that the
 /// installed check accepts for `project`. Empty is fine: the runner picks.
+/// A `task:` source makes the job the owner's work: it leases past its
+/// project's share and may take every free slot but the one kept back
+/// (TASK-136). `hive job add` takes such a source only when it names a
+/// task that exists and is still open (not done or cancelled); a typo or a
+/// closed task would otherwise queue fleet work with the owner's priority.
+/// Any other source passes unchecked.
+pub fn check_task_source(s: &hive_store::Store, source: &str) -> Result<()> {
+    if !source.starts_with(hive_store::TASK_SOURCE_PREFIX) {
+        return Ok(());
+    }
+    let fix = "hive task list shows the open tasks; queue the job with --source task:TASK-NNN (or task:TASK-NNN:label) of one of them, or with another source";
+    let Some(id) = hive_store::task_source_id(source) else {
+        return Err(refuse_fix(
+            2,
+            format!("{} names no task", py_repr(source)),
+            "a task: source is the owner's work and leases past its project's share",
+            fix,
+        ));
+    };
+    let status: Option<String> = s
+        .conn()?
+        .query_row("SELECT status FROM tasks WHERE id = ?", [id], |r| r.get(0))
+        .optional()?;
+    match status.as_deref() {
+        None => Err(refuse_fix(
+            2,
+            format!("No task {id}"),
+            "a task: source is the owner's work and leases past its project's share",
+            fix,
+        )),
+        Some(status @ ("done" | "cancelled")) => Err(refuse_fix(
+            2,
+            format!("Task {id} is {status}"),
+            "a closed task queues no more work as the owner's",
+            format!("hive task show {id} says how it ended; {fix}"),
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 pub fn check_run_as(s: &hive_store::Store, project: &str, name: &str) -> Result<String> {
     let name = name.trim().to_string();
     if name.is_empty() {
@@ -1668,6 +1708,17 @@ mod tests {
         (dir, s, p)
     }
 
+    /// A task row in `status`, so a `task:` source names one.
+    fn task_row(s: &hive_store::Store, id: &str, status: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO tasks (id, project, title, status, priority, created_by, created_at, updated_at, current_rev) VALUES (?, 'demo', 'A task', ?, 0, 'human', ?, ?, 1)",
+                params![id, status, TEST_NOW, TEST_NOW],
+            )
+            .unwrap();
+    }
+
     fn make_failed_job(s: &hive_store::Store, project: &str, source: &str) -> Job {
         let (job, _) = add_job(
             s,
@@ -1917,6 +1968,7 @@ mod tests {
     fn job_add_run_as_pins_an_agent() {
         let _serial = crate::test_helpers::serial();
         let (_dir, s, _p) = fixture();
+        task_row(&s, "9", "open");
         let (_, err) = run_cmd(
             &s,
             Some(hive_cli::Context {
@@ -3152,10 +3204,67 @@ mod tests {
     }
 
     #[test]
+    fn job_add_takes_a_task_source_only_for_a_task_still_open() {
+        // Review of PR 276: a task: source is the owner's work, which leases
+        // past its project's share and takes every free slot but the one
+        // kept back, and `hive job add --source task:x` checked nothing.
+        let _serial = crate::test_helpers::serial();
+        no_tty();
+        let (_dir, s, _p) = fixture();
+        task_row(&s, "TASK-007", "in_progress");
+        task_row(&s, "TASK-008", "done");
+        task_row(&s, "TASK-009", "cancelled");
+        let add = |source: &str| {
+            run_cmd(
+                &s,
+                Some(hive_cli::Context {
+                    agent: "alice".into(),
+                    project: "demo".into(),
+                    ..test_context()
+                }),
+                &["job", "add", "--title", source, "--source", source],
+            )
+        };
+        let queued = || {
+            s.conn()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        for (source, what) in [
+            ("task:TASK-404", "No task TASK-404"),
+            ("task:TASK-404:ui", "No task TASK-404"),
+            ("task:", "'task:' names no task"),
+            ("task:TASK-008", "Task TASK-008 is done"),
+            ("task:TASK-009:ui", "Task TASK-009 is cancelled"),
+        ] {
+            let (_, err) = add(source);
+            let err = err.expect_err(source);
+            assert_eq!(what_any(&err), what, "{source}");
+            assert_eq!(code(Some(&err)), 2, "{source}");
+        }
+        assert_eq!(queued(), 0, "a refused source queues nothing");
+        // An open task, with or without a label, and any other source.
+        for source in [
+            "task:TASK-007",
+            "task:TASK-007:ui",
+            "lead-idle:demo:1",
+            "test",
+        ] {
+            let (out, err) = add(source);
+            assert!(err.is_ok(), "{source}: {err:?}");
+            assert!(out.trim().starts_with("job-"), "{source}: {out:?}");
+        }
+        assert_eq!(queued(), 4);
+        assert!(check_task_source(&s, "").is_ok());
+    }
+
+    #[test]
     fn jobs_add_finish() {
         let _serial = crate::test_helpers::serial();
         no_tty();
         let (_dir, s, p) = fixture();
+        task_row(&s, "1", "planned");
         let (out, err) = run_cmd(
             &s,
             Some(hive_cli::Context {

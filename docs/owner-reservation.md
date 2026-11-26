@@ -67,6 +67,10 @@ the lane is free:
 - **The lane.** The lanes in the owner job's way are held, some of them by
   the fleet: the project's narrowed lanes (fewer than its share), the owner's
   bound under `verify.lock` (share plus one), or every slot of the fleet. The
+  fleet is full when no slot would be offered to the owner's job this tick:
+  no free slot on a paired machine and no room the load governor gives here
+  (`daemon_load::owner_room`). This is not the fleet's nominal total, which
+  stays the same when the kernel's memory warning halves the cap. The
   plain share is not in its way, since the owner's work leases past it; a
   fleet run is not asked to hold while a free slot would start the owner's job.
 - **Everywhere.** No console drain is running (a drain starts nothing), and

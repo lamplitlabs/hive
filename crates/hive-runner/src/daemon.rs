@@ -2408,6 +2408,8 @@ pub(crate) fn daemon(
                     .values()
                     .filter(|d| d.slot == crate::executor::LOCAL_EXECUTOR)
                     .count();
+                let measuring = crate::daemon_load::measuring(&s.home);
+                let update_waits = usize::from(crate::selfupdate::update_pending());
                 let local = if !gate.is_empty() {
                     Some(gate.clone())
                 } else {
@@ -2415,16 +2417,37 @@ pub(crate) fn daemon(
                         &limits,
                         &pressure,
                         running_local,
-                        crate::daemon_load::measuring(&s.home),
-                        usize::from(crate::selfupdate::update_pending()),
+                        measuring,
+                        update_waits,
                         owner_running_local,
                     )
                 };
+                // The slots the dispatch below would offer the owner's job
+                // with no run asked to hold: the paired machines' free
+                // slots, and this machine's as far as the governor's room
+                // goes (none behind the login gate, which closed them).
+                let local_offered = slots
+                    .iter()
+                    .filter(|n| *n == crate::executor::LOCAL_EXECUTOR)
+                    .count();
+                let local_room = crate::daemon_load::owner_room(
+                    &limits,
+                    &pressure,
+                    running_local,
+                    measuring,
+                    update_waits,
+                    owner_running_local,
+                );
+                let free_slots = slots.len() - local_offered + local_offered.min(local_room);
                 let pass = crate::yield_lane::yield_lanes_if_admitted(
                     s,
                     &now,
                     &actor,
-                    &crate::yield_lane::OwnerAdmission { everywhere, local },
+                    &crate::yield_lane::OwnerAdmission {
+                        everywhere,
+                        local,
+                        free_slots: Some(free_slots),
+                    },
                 );
                 for line in pass.asked {
                     say(&o, line);
@@ -5206,6 +5229,12 @@ mod tests {
         /// The fake worker runs until the test ends (`finish` drops the gate
         /// file), five minutes at most.
         fn start() -> Self {
+            Self::start_with(|_| {})
+        }
+
+        /// [`Self::start`] with `seed` run on the store before the daemon's
+        /// first tick.
+        fn start_with(seed: impl FnOnce(&hive_store::Store)) -> Self {
             hive_bus::reset_default();
             let s = new_store();
             new_bare_repo(&s);
@@ -5223,6 +5252,7 @@ mod tests {
                 s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
             }
             crate::capacity::pin_per_project(&s, 4);
+            seed(&s);
             let out = OutBuf::new();
             let rowless = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(LeaseLineWriter {
@@ -5468,6 +5498,136 @@ mod tests {
                 "{text}"
             );
             assert_eq!(live.yields(), 1, "{text}");
+        }));
+        live.finish(result);
+    }
+
+    /// Today's reflect of `proj` is done, so the planner adds no run beside
+    /// the ones a test counts.
+    fn reflected_today(s: &hive_store::Store) {
+        exec1(
+            s,
+            "INSERT INTO jobs (id, project, kind, title, tier, priority, source, status, created_by, created_at, finished_at) VALUES ('job-reflected', 'proj', 'reflect', 'Daily reflect', 0, 1, ?, 'done', 'daemon', ?, ?)",
+            &[
+                &format!("reflect:proj:{}", &TEST_NOW[..10]),
+                &TEST_NOW,
+                &TEST_NOW,
+            ],
+        );
+    }
+
+    #[test]
+    fn daemon_asks_a_fleet_run_to_yield_when_the_halved_cap_is_full_under_the_fleet_total() {
+        // Review of PR 276: at the plain share the yield's one trigger is a
+        // full fleet, and it compared the jobs in flight with the fleet's
+        // nominal total. With the cap halved by the kernel's memory warning
+        // two runs fill a machine of four slots: the owner's next task
+        // waited beside them and no fleet run was asked to hold.
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start_with(|s| {
+            s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
+                .unwrap();
+            reflected_today(s);
+        });
+        let fleet = live.add("Fleet one", "test");
+        let owner = live.add("Owner's step", "task:TASK-001");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.wait_for(
+                &|t| {
+                    t.contains(&format!("leased {fleet}")) && t.contains(&format!("leased {owner}"))
+                },
+                "the fleet's run and the owner's",
+            );
+            let run = crate::util::must_one(
+                &*live.s.conn().unwrap(),
+                "SELECT id, agent FROM runs WHERE job_id = ? AND status = 'running'",
+                &[&fleet],
+            );
+            live.s
+                .begin_harness_session(hive_store::HarnessSession {
+                    id: format!("h-{fleet}"),
+                    run_id: run.str("id"),
+                    job_id: fleet.clone(),
+                    agent: run.str("agent"),
+                    project: "proj".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            // The kernel's memory warning halves the cap of four to two, and
+            // two runs fill it - one the owner's, so no express slot - while
+            // the fleet's nominal total is still four.
+            drop(calm);
+            let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+                mem_warning: true,
+                ..crate::daemon_load::CALM
+            });
+            assert_eq!(crate::capacity::fleet(&live.s).total, 4);
+            let next = live.add("Owner's next step", "task:TASK-001:next");
+            let text = live.wait_for(
+                &|t| t.contains("holds after its current step"),
+                "the yield of the fleet run over the halved cap",
+            );
+            assert!(
+                text.contains(&format!(
+                    "{fleet} (task) holds after its current step so the owner's {next} can start"
+                )),
+                "{text}"
+            );
+            assert_eq!(live.yields(), 1, "{text}");
+            assert!(!text.contains(&format!("leased {next}")), "{text}");
+        }));
+        live.finish(result);
+    }
+
+    #[test]
+    fn daemon_runs_a_locked_projects_owner_work_to_its_share_plus_one() {
+        // Review of PR 276: with `verify.lock` on, the owner's work past
+        // the share stops at the share plus one (jobs.rs owner_work_bound),
+        // since a run's commit cap is fixed when it starts. Under the real
+        // dispatch loop at a share of one, with four slots free: two of the
+        // owner's three tasks start, the third waits, and the fleet's job
+        // of the project waits behind the owner's.
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start_with(|s| {
+            for (k, v) in [
+                ("capacity", "4"),
+                (crate::verify_lock::SETTING, crate::verify_lock::PROJECT),
+            ] {
+                s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+            }
+            crate::capacity::pin_per_project(s, 1);
+            reflected_today(s);
+        });
+        assert_eq!(crate::jobs::owner_work_bound(&live.s), Some(2));
+        let tasks = (1..=3)
+            .map(|n| live.add(&format!("Owner's task {n}"), &format!("task:TASK-00{n}")))
+            .collect::<Vec<_>>();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let text = live.wait_for(
+                &|t| t.matches("leased job-").count() >= 2,
+                "the owner's two runs",
+            );
+            assert!(
+                text.contains(&format!("leased {}", tasks[0]))
+                    && text.contains(&format!("leased {}", tasks[1])),
+                "{text}"
+            );
+            // More ticks: a fleet job of the project wakes the loop, and
+            // neither it nor the owner's third task starts, with two of
+            // the four slots still free.
+            let fleet = live.add("Fleet wake", "test");
+            std::thread::sleep(Duration::from_millis(1500));
+            live.add("Fleet wake two", "test");
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = live.out.string();
+            assert_eq!(text.matches("leased job-").count(), 2, "{text}");
+            assert!(!text.contains(&format!("leased {}", tasks[2])), "{text}");
+            assert!(!text.contains(&format!("leased {fleet}")), "{text}");
+            assert_eq!(crate::jobs::occupied_work_jobs(&live.s, "proj"), 2);
         }));
         live.finish(result);
     }
