@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, daemonUpdateText, pendingUpdate, serviceSetupAction } from "./daemon-control-state.ts";
+import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, daemonUpdateText, pendingUpdate, serviceSetupAction, updatePendingText } from "./daemon-control-state.ts";
 import { HANDOVER_WAIT_MS, waitForServiceHandover } from "./service-handover.ts";
 import { writes } from "../../lib/api.ts";
 
@@ -156,7 +156,7 @@ test("a fresh heartbeat is ok and reads running; a pending update and an exit ar
   const restarting = daemonControlState(inputs({ runner: snapshot(draining) }));
   assert.equal(restarting.label, "alive");
   assert.equal(restarting.tone, "ok");
-  assert.deepEqual(restarting.update, { since: null, inflight: 2, dispatching: true, waits: [] });
+  assert.deepEqual(restarting.update, { since: null, inflight: 2, dispatching: true, waits: [], until: null });
   assert.match(restarting.description, /newer hive built/);
   assert.match(restarting.description, /2 runs in progress/);
   assert.match(restarting.description, /nothing to start by hand/);
@@ -398,4 +398,27 @@ test("leaving the page cancels an in-flight handover without a reload or another
   await flush();
   t.mock.timers.tick(HANDOVER_WAIT_MS);
   assert.equal(loads, 1);
+});
+
+// A restart armed at 05:42Z had not come by 12:07Z on 2026-11-26: the owner's
+// queue kept the handover open. The heartbeat says since when it is pending and
+// when its bound (daemon.restart_max_minutes) stops new runs; the console says both.
+test("a pending restart says since when and when new runs stop", () => {
+  const now = Date.parse("2026-11-26T06:52:00Z");
+  const r = runner("alive");
+  r.daemon.note = "restarting: 1 in flight; the new build waits for fjord's task on brain (10m so far)";
+  r.daemon.restart = { since: "2026-11-26T05:42:00Z", inflight: 1, dispatching: true, until: "2026-11-26T07:12:00Z", waits_for: [{ agent: "fjord", kind: "task", project: "brain", job: "j1", started_at: "2026-11-26T06:42:00Z" }] };
+  const state = daemonControlState(inputs({ runner: snapshot(r) }), now);
+  assert.equal(state.update?.until, "2026-11-26T07:12:00Z");
+  assert.equal(updatePendingText(state.update, now), "Pending for 1 hour 10 minutes; new runs, yours included, stop starting in 20 minutes");
+  assert.match(state.description, /Pending for 1 hour 10 minutes; new runs, yours included, stop starting in 20 minutes \(daemon.restart_max_minutes\)\./);
+  // Past the bound: nothing new starts.
+  const late = Date.parse("2026-11-26T07:20:00Z");
+  assert.equal(updatePendingText(pendingUpdate(r.daemon, late), late), "Pending for 1 hour 38 minutes; its time limit is up, so nothing new starts until it has swapped");
+  // An older daemon without a bound: since when only, or that nothing starts.
+  const old = { note: "restarting", restart: { since: "2026-11-26T06:42:00Z", inflight: 1, waits_for: [] } };
+  assert.equal(pendingUpdate(old, now)?.until, null);
+  assert.equal(updatePendingText(pendingUpdate(old, now), now), "Pending for 10 minutes");
+  assert.equal(updatePendingText(pendingUpdate({ note: "restarting: 2 in flight" }, now), now), "");
+  assert.equal(updatePendingText(pendingUpdate({ note: "x", restart: { since: "", inflight: 1, dispatching: false, waits_for: [] } }, now), now), "Nothing new starts");
 });
