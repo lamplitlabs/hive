@@ -61,7 +61,9 @@ pub(crate) fn review_branch(number: i64) -> String {
 /// The events that end a pull request's review: once the newest of these
 /// for a number is not `land.pr`, nothing is queued for it. `review.failed`
 /// is not among them: a failed review is tried once more (`MAX_ATTEMPTS`).
-const STATE_ACTIONS: &str = "('land.pr', 'land.merged', 'land.pr-closed', 'review.merged', 'review.owner', 'review.changes')";
+/// `review.merge-wait` is: the reviewer said merge and the merge waits for
+/// its checks or the forge ([`retry_merges`]), with no second review.
+const STATE_ACTIONS: &str = "('land.pr', 'land.merged', 'land.pr-closed', 'review.merged', 'review.owner', 'review.changes', 'review.merge-wait')";
 
 /// An open Hive pull request as the newest `land.pr` for its number
 /// describes it.
@@ -648,7 +650,7 @@ pub(crate) fn review_brief(
     b.push("5. Exactly ONE verdict command:".into());
     if reasons.is_empty() {
         b.push(format!(
-            "   - `hive review merge {n}` - correct, safe, in scope, check green: it merges on GitHub and records review.merged. The command reads the pull request on GitHub first and refuses, without a verdict, a head that moved since this review was queued, a draft, a failing or still running check, or a merge GitHub blocks; a refusal is not a failure, so read the reason and finish the job with it."
+            "   - `hive review merge {n}` - correct, safe, in scope, check green: it merges on GitHub and records review.merged. The command reads the pull request on GitHub first and refuses, without a verdict, a head that moved since this review was queued, a draft, a failing or still running check, or a merge GitHub blocks; a refusal is not a failure, so read the reason and finish the job with it. Checks still running, or GitHub refusing the merge with a 5xx or an internal error, keep your verdict: the command says the merge waits, and the daemon merges once the checks pass or GitHub answers - finish the job, do not review again."
         ));
         b.push(format!(
             "   - `hive review changes {n} --note \"<the exact fixes>\"` - fixable: GitHub gets the request, and one follow-up job makes the fixes on the pull request's head; your note is its brief, so name files and what to change."
@@ -811,8 +813,9 @@ pub(crate) fn queue_review(
 }
 
 /// The maintenance pass over the projects' pull requests: honours the
-/// owner's Merge clicks (`review.ask`), records review jobs that ended
-/// without a verdict, and queues one review job per project.
+/// owner's Merge clicks (`review.ask`), merges the approved pull requests
+/// whose merge waited (`review.merge-wait`), records review jobs that
+/// ended without a verdict, and queues one review job per project.
 pub(crate) fn tend_reviews(s: &hive_store::Store, projects: &[Row], now: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for p in projects {
@@ -820,6 +823,7 @@ pub(crate) fn tend_reviews(s: &hive_store::Store, projects: &[Row], now: &str) -
             continue;
         }
         lines.extend(honour_asks(s, p, now));
+        lines.extend(retry_merges(s, p, now));
         lines.extend(tend_project(s, p, now));
     }
     lines
@@ -884,7 +888,7 @@ fn honour_asks(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
 
 /// Merges a pull request as the owner (`review.merged` with `by: owner`),
 /// bypassing the complexity rule: the hub's Merge button and `hive review
-/// merge N --by owner` come here. The forge's own gate ([`merge_refusal`])
+/// merge N --by owner` come here. The forge's own gate ([`refusal_of`])
 /// is not bypassed: a red or running check, a draft, a blocked pull
 /// request or a head that moved since the hub showed it is refused, and
 /// the ask stands for the next pass. A failure of gh is a `review.failed`.
@@ -938,6 +942,19 @@ fn seen_head(
         })
 }
 
+/// What kind of thing stands between a pull request and its merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    /// Merged or closed on the forge already: the landing poll records it.
+    Settled,
+    /// Only checks still queued or running: nothing failed yet, so a
+    /// reviewer's merge verdict waits for them ([`merge_or_wait`]).
+    Pending,
+    /// A red check, a conflict, a rule of the repository, a draft, a head
+    /// that moved: a person decides.
+    Stop,
+}
+
 /// Why `gh pr merge` must not be asked for this pull request as the forge
 /// shows it now, or None when nothing stands in the way: the head moved
 /// since Hive reviewed (or pushed) it, it is a draft, a check failed or
@@ -945,12 +962,17 @@ fn seen_head(
 /// conflicts, `BLOCKED`: a rule of the repository, `BEHIND`: the base must
 /// be merged in first). A pull request with no checks at all passes: the
 /// project may have no CI, and the caller records that none reported.
-pub(crate) fn merge_refusal(view: &PrView, seen: Option<&SeenHead>) -> Option<String> {
+/// The [`Gate`] says what kind of refusal it is.
+fn refusal_of(view: &PrView, seen: Option<&SeenHead>) -> Option<(Gate, String)> {
     let n = view.number;
+    let other = |why: String| Some((Gate::Stop, why));
     if !view.state.is_empty() && view.state != "OPEN" {
-        return Some(format!(
-            "pull request #{n} is {} on GitHub; nothing to merge",
-            view.state.to_ascii_lowercase()
+        return Some((
+            Gate::Settled,
+            format!(
+                "pull request #{n} is {} on GitHub; nothing to merge",
+                view.state.to_ascii_lowercase()
+            ),
         ));
     }
     if let Some(seen) = seen
@@ -959,7 +981,7 @@ pub(crate) fn merge_refusal(view: &PrView, seen: Option<&SeenHead>) -> Option<St
     {
         let was = crate::recipe::short(&seen.sha, 12);
         let now = crate::recipe::short(&view.head_sha, 12);
-        return Some(if seen.reviewed {
+        return other(if seen.reviewed {
             format!(
                 "the pull request moved since it was reviewed: reviewed {was}, now {now}; it is reviewed again"
             )
@@ -970,30 +992,33 @@ pub(crate) fn merge_refusal(view: &PrView, seen: Option<&SeenHead>) -> Option<St
         });
     }
     if view.is_draft {
-        return Some(format!(
+        return other(format!(
             "pull request #{n} is a draft; GitHub does not merge a draft"
         ));
     }
     if !view.failing_checks.is_empty() {
-        return Some(format!(
+        return other(format!(
             "pull request #{n} has failing checks: {}; a red check is never merged",
             view.failing_checks.join(", ")
         ));
     }
     if !view.pending_checks.is_empty() {
-        return Some(format!(
-            "pull request #{n} has checks pending: {}; it is merged when they are green",
-            view.pending_checks.join(", ")
+        return Some((
+            Gate::Pending,
+            format!(
+                "pull request #{n} has checks pending: {}; it is merged when they are green",
+                view.pending_checks.join(", ")
+            ),
         ));
     }
     match view.merge_state.as_str() {
-        "DIRTY" => Some(format!(
+        "DIRTY" => other(format!(
             "pull request #{n} conflicts with its base (mergeStateStatus DIRTY); delivery merges the base in when that is clean"
         )),
-        "BLOCKED" => Some(format!(
+        "BLOCKED" => other(format!(
             "pull request #{n} is blocked on GitHub (mergeStateStatus BLOCKED: a required check, review or rule of the repository is not met)"
         )),
-        "BEHIND" => Some(format!(
+        "BEHIND" => other(format!(
             "pull request #{n} is behind its base (mergeStateStatus BEHIND); the base must be merged in before GitHub takes it"
         )),
         _ => None,
@@ -1023,7 +1048,7 @@ fn ci_expected(s: &hive_store::Store, project: &Row) -> bool {
 /// `branch_kept_for` names them), then `review.merged`; on a gh failure of the merge `review.failed` with the
 /// error. Returns the pull request's url. Refused before gh is asked to
 /// merge, and without a `review.failed`: a pull request stacked on another
-/// (its turn has not come), and whatever [`merge_refusal`] names from the
+/// (its turn has not come), and whatever [`refusal_of`] names from the
 /// forge's view - the head moved since it was reviewed, a draft, a red or
 /// running check, a blocked or dirty merge state. None of these is a
 /// failure of the merge; an owner's ask stands until the next pass finds
@@ -1053,6 +1078,48 @@ pub(crate) fn merge_viewed(
     actor: &str,
     now: &str,
 ) -> Result<String, String> {
+    match try_merge(s, project, number, viewed, by, actor, now) {
+        Tried::Merged(url) => Ok(url),
+        Tried::Refused(_, why) | Tried::Unread(why) => Err(why),
+        Tried::Failed { url, error } => {
+            let slug = project.str("slug");
+            event(
+                s,
+                now,
+                actor,
+                "review.failed",
+                &slug,
+                json!({"project": slug, "number": number, "url": url, "error": error}),
+            );
+            Err(error)
+        }
+    }
+}
+
+/// What one merge attempt came to.
+enum Tried {
+    /// Merged: `review.merged` is recorded; the pull request's url.
+    Merged(String),
+    /// Not asked of gh: the gate ([`refusal_of`]) or the stack said no.
+    Refused(Gate, String),
+    /// `gh pr view` could not be read.
+    Unread(String),
+    /// `gh pr merge` failed; nothing is recorded yet.
+    Failed { url: String, error: String },
+}
+
+/// The merge itself: the gate, `gh pr merge`, and `review.merged` when it
+/// went through. A failure is returned, not recorded: [`merge_viewed`]
+/// records it as `review.failed`, [`merge_or_wait`] may wait instead.
+fn try_merge(
+    s: &hive_store::Store,
+    project: &Row,
+    number: i64,
+    viewed: Option<&PrView>,
+    by: &str,
+    actor: &str,
+    now: &str,
+) -> Tried {
     let slug = project.str("slug");
     let (known, seen) = match s.conn().ok() {
         Some(c) => (
@@ -1063,18 +1130,22 @@ pub(crate) fn merge_viewed(
     };
     let def = crate::baseline::default_branch(project.clone());
     if let Some(below) = known.as_ref().and_then(|p| stacked_on(p, &def)) {
-        return Err(format!(
-            "pull request #{number} is stacked on {below}; {below} must merge first"
-        ));
+        return Tried::Refused(
+            Gate::Stop,
+            format!("pull request #{number} is stacked on {below}; {below} must merge first"),
+        );
     }
     let url = known.as_ref().map(|p| p.url.clone()).unwrap_or_default();
     let repo = repo_of(project, &url);
     let view = match viewed {
         Some(v) => v.clone(),
-        None => pr_view(s, &slug, &repo, number)?,
+        None => match pr_view(s, &slug, &repo, number) {
+            Ok(v) => v,
+            Err(e) => return Tried::Unread(e),
+        },
     };
-    if let Some(why) = merge_refusal(&view, seen.as_ref()) {
-        return Err(why);
+    if let Some((gate, why)) = refusal_of(&view, seen.as_ref()) {
+        return Tried::Refused(gate, why);
     }
     // A branch another open pull request is based on stays: GitHub closes
     // the pull requests whose base branch `--delete-branch` deletes, and a
@@ -1086,12 +1157,27 @@ pub(crate) fn merge_viewed(
     } else {
         view.head.clone()
     };
+    // A pull request whose approved merge waits is still open on the forge.
     let stacked_above: Vec<i64> = match s.conn() {
-        Ok(c) if !head.is_empty() => open_prs(&c, &slug)
-            .into_iter()
-            .filter(|p| p.number != number && p.base == head)
-            .map(|p| p.number)
-            .collect(),
+        Ok(c) if !head.is_empty() => {
+            let waiting: Vec<i64> = waiting_merges(&c, &slug)
+                .into_iter()
+                .map(|(_, w)| w.number)
+                .collect();
+            let mut above: Vec<i64> = open_prs(&c, &slug)
+                .into_iter()
+                .chain(
+                    waiting
+                        .iter()
+                        .filter_map(|n| pr_state(&c, &slug, *n).map(|(p, _)| p)),
+                )
+                .filter(|p| p.number != number && p.base == head)
+                .map(|p| p.number)
+                .collect();
+            above.sort_unstable();
+            above.dedup();
+            above
+        }
         _ => Vec::new(),
     };
     let number_arg = number.to_string();
@@ -1118,21 +1204,364 @@ pub(crate) fn merge_viewed(
                 );
             }
             event(s, now, actor, "review.merged", &slug, detail);
-            Ok(url)
+            Tried::Merged(url)
         }
-        Err(e) => {
-            let e = hive_cred::redact(&e, &[]);
+        Err(e) => Tried::Failed {
+            url,
+            error: hive_cred::redact(&e, &[]),
+        },
+    }
+}
+
+/// What a reviewer's merge verdict came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// Merged on the forge; the pull request's url.
+    Merged(String),
+    /// The verdict stands and the merge waits (`review.merge-wait`): for
+    /// checks still running, or for the forge after it refused the merge
+    /// for a passing reason. The words say what is waited for.
+    Waits(String),
+}
+
+/// Whether a failed `gh pr merge` (or `gh pr view`) failed for a reason
+/// that passes on its own: GitHub answered 5xx or an internal error, the
+/// call timed out, or the base moved under the merge. A conflict, a red
+/// check, a rule of the repository or a refused credential does not.
+pub(crate) fn passing_forge_error(error: &str) -> bool {
+    static FIVE_XX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(http|status|error)[ :]*5\d\d\b|\b5\d\d (internal|bad gateway|service|gateway)",
+        )
+        .expect("5xx pattern")
+    });
+    let low = error.to_ascii_lowercase();
+    FIVE_XX.is_match(error)
+        || [
+            "internal server error",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+            "something went wrong",
+            "an internal error",
+            "did not finish within",
+            "base branch was modified",
+            "connection reset",
+            "i/o timeout",
+            "tls handshake timeout",
+        ]
+        .iter()
+        .any(|m| low.contains(m))
+}
+
+/// The reviewer's merge verdict: [`merge_viewed`], except that a verdict
+/// the forge cannot honour yet for a passing reason is kept rather than
+/// failed. Checks still running record `review.merge-wait` (`waiting:
+/// checks`) and the pass merges once they pass; a `gh pr merge` that
+/// failed with a 5xx or an internal error records it (`waiting: forge`)
+/// and the pass tries again on the recovery back-off ([`retry_merges`]).
+/// Neither queues a new review nor asks the owner. Everything else - a
+/// conflict, a red check, a rule of the repository, a moved head - is
+/// refused or failed as before.
+pub(crate) fn merge_or_wait(
+    s: &hive_store::Store,
+    project: &Row,
+    number: i64,
+    viewed: Option<&PrView>,
+    by: &str,
+    actor: &str,
+    now: &str,
+) -> Result<Verdict, String> {
+    let slug = project.str("slug");
+    let wait = |waiting: &str, error: &str, attempt: i64| {
+        let url = s
+            .conn()
+            .ok()
+            .and_then(|c| pr_state(&c, &slug, number))
+            .map(|(p, _)| p.url)
+            .unwrap_or_default();
+        let head = viewed.map(|v| v.head_sha.clone()).unwrap_or_default();
+        let w = MergeWait {
+            number,
+            url,
+            by: by.to_string(),
+            reviewer: actor.to_string(),
+            head_sha: head,
+            waiting: waiting.to_string(),
+            error: error.to_string(),
+            attempt,
+            due: String::new(),
+        };
+        Verdict::Waits(record_wait(s, &slug, w, actor, now))
+    };
+    match try_merge(s, project, number, viewed, by, actor, now) {
+        Tried::Merged(url) => Ok(Verdict::Merged(url)),
+        Tried::Refused(Gate::Pending, why) => Ok(wait("checks", &why, 0)),
+        Tried::Refused(_, why) | Tried::Unread(why) => Err(why),
+        Tried::Failed { error, .. } if passing_forge_error(&error) => Ok(wait("forge", &error, 1)),
+        Tried::Failed { url, error } => {
             event(
                 s,
                 now,
                 actor,
                 "review.failed",
                 &slug,
-                json!({"project": slug, "number": number, "url": url, "error": e}),
+                json!({"project": slug, "number": number, "url": url, "error": error}),
             );
-            Err(e)
+            Err(error)
         }
     }
+}
+
+/// A merge verdict that waits, as its `review.merge-wait` event carries it.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct MergeWait {
+    number: i64,
+    url: String,
+    /// Who the merge is for (`review.merged`'s `by`).
+    by: String,
+    /// The reviewer whose verdict it is.
+    reviewer: String,
+    head_sha: String,
+    /// `checks` (a check still runs) or `forge` (GitHub refused the merge
+    /// for a passing reason).
+    waiting: String,
+    /// The refusal or gh's error.
+    error: String,
+    /// How many merges the forge refused so far (0 while checks run).
+    attempt: i64,
+    /// When the next merge is tried; empty: on every pass.
+    due: String,
+}
+
+impl MergeWait {
+    fn from_detail(d: &Value) -> Self {
+        let s = |k: &str| d[k].as_str().unwrap_or_default().to_string();
+        MergeWait {
+            number: d["number"].as_i64().unwrap_or(0),
+            url: s("url"),
+            by: s("by"),
+            reviewer: s("reviewer"),
+            head_sha: s("head_sha"),
+            waiting: s("waiting"),
+            error: s("error"),
+            attempt: d["attempt"].as_i64().unwrap_or(0),
+            due: s("due"),
+        }
+    }
+}
+
+/// The one line that says what a waiting merge waits for: the Sessions
+/// page shows it under the pull request (the event's `note`) and the
+/// daemon log prints it.
+fn wait_words(w: &MergeWait) -> String {
+    if w.waiting == "checks" {
+        let names = w
+            .error
+            .split_once("checks pending: ")
+            .map(|(_, rest)| rest.split(';').next().unwrap_or(rest).trim().to_string())
+            .unwrap_or_default();
+        if names.is_empty() {
+            "approved; the merge waits for the checks still running".to_string()
+        } else {
+            format!("approved; the merge waits for the checks still running ({names})")
+        }
+    } else {
+        format!(
+            "approved; GitHub refused the merge ({}); retried at {} (attempt {})",
+            crate::run::squeeze(
+                w.error
+                    .strip_prefix("gh pr merge failed: ")
+                    .or_else(|| w.error.strip_prefix("gh pr view failed: "))
+                    .unwrap_or(&w.error),
+                120
+            ),
+            w.due,
+            w.attempt + 1
+        )
+    }
+}
+
+/// Records `review.merge-wait` for `w`, its `due` set from the recovery
+/// back-off when the forge refused (5, 15, 45, 135 minutes, then 6 hours);
+/// returns the words of what is waited for.
+fn record_wait(
+    s: &hive_store::Store,
+    slug: &str,
+    mut w: MergeWait,
+    actor: &str,
+    now: &str,
+) -> String {
+    w.due = if w.waiting == "forge" {
+        crate::util::format_iso(
+            crate::util::must_iso(now)
+                + chrono::Duration::from_std(crate::failure::recover_backoff(
+                    (w.attempt - 1).max(0) as i32,
+                ))
+                .unwrap_or_else(|_| chrono::Duration::zero()),
+        )
+    } else {
+        String::new()
+    };
+    let words = wait_words(&w);
+    event(
+        s,
+        now,
+        actor,
+        "review.merge-wait",
+        slug,
+        json!({"project": slug, "number": w.number, "url": w.url, "by": w.by,
+            "reviewer": w.reviewer, "head_sha": w.head_sha, "waiting": w.waiting,
+            "error": w.error, "attempt": w.attempt, "due": w.due, "note": words}),
+    );
+    words
+}
+
+/// The pull requests whose reviewer's merge waits: the newest state event
+/// of the number is a `review.merge-wait`. (seq, wait) oldest number first.
+fn waiting_merges(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(i64, MergeWait)> {
+    let rows = crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT seq, action, detail FROM events WHERE subject = ? AND action IN {STATE_ACTIONS} ORDER BY seq"
+        ),
+        &[&slug],
+    )
+    .unwrap_or_default();
+    let mut latest: std::collections::BTreeMap<i64, (i64, String, Value)> = Default::default();
+    for r in rows {
+        let detail: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
+        if let Some(n) = detail["number"].as_i64() {
+            latest.insert(n, (r.int("seq") as i64, r.str("action"), detail));
+        }
+    }
+    latest
+        .into_values()
+        .filter(|(_, action, _)| action == WAIT_ACTION)
+        .map(|(seq, _, d)| (seq, MergeWait::from_detail(&d)))
+        .collect()
+}
+
+/// The event a reviewer's merge verdict that waits records.
+pub(crate) const WAIT_ACTION: &str = "review.merge-wait";
+
+fn wait_logged_key(slug: &str, number: i64) -> String {
+    format!("review-wait-logged:{slug}:{number}")
+}
+
+/// The pass over merge verdicts that wait (`review.merge-wait`): once due,
+/// the pull request is read again and merged when the gate is clear - no
+/// new review run, no owner. Checks still running keep it waiting (read on
+/// every pass); a passing forge error waits for the next step of the
+/// recovery back-off; a gate that turned (a failed check, a conflict, a
+/// rule of the repository, a moved head) or a merge error that does not
+/// pass hands the pull request to the owner as a refused merge always did.
+/// Each wait is said once in the daemon log.
+fn retry_merges(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
+    let slug = project.str("slug");
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for (_, w) in waiting_merges(&conn, &slug) {
+        let n = w.number;
+        if !w.due.is_empty() && crate::util::must_iso(&w.due) > crate::util::must_iso(now) {
+            continue;
+        }
+        let by = if w.by.is_empty() {
+            ACTOR
+        } else {
+            w.by.as_str()
+        };
+        let again = |waiting: &str, error: &str, attempt: i64| MergeWait {
+            waiting: waiting.to_string(),
+            error: error.to_string(),
+            attempt,
+            ..w.clone()
+        };
+        match try_merge(s, project, n, None, by, ACTOR, now) {
+            Tried::Merged(url) => {
+                let _ = s.set_meta(&wait_logged_key(&slug, n), "");
+                lines.push(format!(
+                    "review {slug}: #{n} merged after waiting ({}) {url}",
+                    if w.waiting == "checks" {
+                        "for its checks".to_string()
+                    } else {
+                        format!("{} refused merges", w.attempt)
+                    }
+                ));
+            }
+            Tried::Refused(Gate::Settled, _) => {}
+            Tried::Refused(Gate::Pending, why) => {
+                if w.waiting != "checks" || w.error != why {
+                    record_wait(s, &slug, again("checks", &why, w.attempt), ACTOR, now);
+                }
+            }
+            Tried::Refused(Gate::Stop, why) => {
+                hand_waiting_to_owner(s, project, &w, &why, now);
+                lines.push(format!(
+                    "review {slug}: #{n} handed to the owner: the approved merge cannot go through: {why}"
+                ));
+            }
+            Tried::Unread(e) => {
+                record_wait(s, &slug, again("forge", &e, w.attempt + 1), ACTOR, now);
+            }
+            Tried::Failed { error, .. } if passing_forge_error(&error) => {
+                record_wait(s, &slug, again("forge", &error, w.attempt + 1), ACTOR, now);
+            }
+            Tried::Failed { error, .. } => {
+                hand_waiting_to_owner(s, project, &w, &error, now);
+                lines.push(format!(
+                    "review {slug}: #{n} handed to the owner: the approved merge failed: {error}"
+                ));
+            }
+        }
+    }
+    // One line per wait, when it starts or changes: the newest
+    // review.merge-wait not said yet.
+    for (seq, w) in waiting_merges(&conn, &slug) {
+        let key = wait_logged_key(&slug, w.number);
+        let said = s.meta(&key).map(|m| m.0).unwrap_or_default();
+        if said == seq.to_string() {
+            continue;
+        }
+        let _ = s.set_meta(&key, &seq.to_string());
+        lines.push(format!("review {slug}: #{} {}", w.number, wait_words(&w)));
+    }
+    lines
+}
+
+/// A merge that waited and can no longer go through goes to the owner the
+/// way a refused merge does: `review.owner` with the refusal as its reason.
+fn hand_waiting_to_owner(
+    s: &hive_store::Store,
+    project: &Row,
+    w: &MergeWait,
+    why: &str,
+    now: &str,
+) {
+    let slug = project.str("slug");
+    let _ = s.set_meta(&wait_logged_key(&slug, w.number), "");
+    let pr = s
+        .conn()
+        .ok()
+        .and_then(|c| pr_state(&c, &slug, w.number))
+        .map(|(p, _)| p)
+        .unwrap_or_else(|| OpenPr {
+            number: w.number,
+            url: w.url.clone(),
+            ..Default::default()
+        });
+    let reviewer = if w.reviewer.is_empty() {
+        "The reviewer".to_string()
+    } else {
+        w.reviewer.clone()
+    };
+    let note = format!(
+        "{reviewer} approved pull request #{} and its merge waited; it cannot go through now: {why}",
+        w.number
+    );
+    hand_to_owner(s, project, &pr, &[why.to_string()], &note, ACTOR, now);
 }
 
 /// One project's pass: review jobs that ended without a verdict become
@@ -1239,7 +1668,7 @@ fn settle_finished(
         slug,
         pr.number,
         queued_seq,
-        "('review.merged', 'review.changes', 'review.owner', 'review.failed')",
+        "('review.merged', 'review.changes', 'review.owner', 'review.failed', 'review.merge-wait')",
     )
     .is_empty()
     {
@@ -2429,6 +2858,285 @@ mod tests {
         // Settled: nothing more.
         assert!(tend(&s).is_empty());
         assert_eq!(events(&s, "review.owner").len(), 1);
+    }
+
+    /// Queues the review of #7 and ends its job, as a reviewer that gave
+    /// its verdict and finished does; returns the job's id.
+    fn reviewed(s: &hive_store::Store, proj: &Row) -> String {
+        tend_reviews(s, std::slice::from_ref(proj), TEST_NOW);
+        let job = jobs_of(s, "review")[0].str("id");
+        exec1(
+            s,
+            "UPDATE jobs SET status = 'done', result = 'SUMMARY: reviewed #7: merge' WHERE id = ?",
+            &[&job],
+        );
+        job
+    }
+
+    fn merges(log: &str) -> usize {
+        calls(log)
+            .iter()
+            .filter(|c| c.starts_with("pr merge"))
+            .count()
+    }
+
+    #[test]
+    fn an_approved_merge_the_forge_refuses_with_5xx_is_retried_on_the_back_off() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        let task =
+            hive_tasks::new(&s, "proj", "Add the thing", "b", 0, hive_store::HUMAN_AGENT).unwrap();
+        land_pr(&s, 7, "task", &task.id, "JOB-a");
+        reviewed(&s, &proj);
+        std::fs::write(bin.path().join("fail"), "merge\n").unwrap();
+        std::fs::write(
+            bin.path().join("failmsg"),
+            "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+        )
+        .unwrap();
+        let tend = |at: &str| tend_reviews(&s, std::slice::from_ref(&proj), at);
+
+        // The reviewer's verdict: GitHub answers 502, the verdict stands.
+        let v = merge_or_wait(&s, &proj, 7, None, "reviewer-1", "reviewer-1", TEST_NOW).unwrap();
+        let Verdict::Waits(words) = v else {
+            panic!("{v:?}")
+        };
+        assert!(
+            words.contains("GitHub refused the merge (HTTP 502"),
+            "{words}"
+        );
+        assert!(
+            words.contains("retried at 2026-09-06T10:05:00Z (attempt 2)"),
+            "{words}"
+        );
+        assert!(
+            events(&s, "review.failed").is_empty(),
+            "a passing refusal is no failure"
+        );
+        let wait = events(&s, WAIT_ACTION);
+        assert_eq!(wait.len(), 1);
+        assert_eq!(wait[0]["waiting"], "forge");
+        assert_eq!(wait[0]["due"], "2026-09-06T10:05:00Z");
+        assert_eq!(merges(&log), 1);
+
+        // Inside the back-off: no merge, no review, no owner; the daemon log
+        // says once what is waited for.
+        let lines = tend(TEST_NOW);
+        assert_eq!(
+            lines,
+            [format!("review proj: #7 {words}")],
+            "one line for the wait"
+        );
+        assert!(
+            tend(&crate::util::plus_minutes(TEST_NOW, 2)).is_empty(),
+            "said once"
+        );
+        assert_eq!(merges(&log), 1);
+
+        // Due: the second 502 waits for the next step, 15 minutes on.
+        let at = crate::util::plus_minutes(TEST_NOW, 5);
+        let lines = tend(&at);
+        assert_eq!(merges(&log), 2);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("retried at 2026-09-06T10:20:00Z (attempt 3)")),
+            "{lines:?}"
+        );
+        assert!(tend(&crate::util::plus_minutes(TEST_NOW, 19)).is_empty());
+        assert_eq!(merges(&log), 2);
+
+        // GitHub answers again: merged, with the one review run it had.
+        std::fs::write(bin.path().join("fail"), "").unwrap();
+        let lines = tend(&crate::util::plus_minutes(TEST_NOW, 20));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 merged after waiting (2 refused merges)")),
+            "{lines:?}"
+        );
+        assert_eq!(merges(&log), 3);
+        let merged = events(&s, "review.merged");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["by"], "reviewer-1");
+        assert_eq!(jobs_of(&s, "review").len(), 1, "no second review run");
+        assert!(
+            events(&s, "review.owner").is_empty(),
+            "the owner was not asked"
+        );
+        assert!(events(&s, "review.failed").is_empty());
+        let msgs = hive_tasks::messages(&s, "proj", &task.id, "", "").unwrap();
+        assert!(
+            !msgs.iter().any(|m| m.body.contains("waits for your merge")),
+            "{msgs:?}"
+        );
+        let pr = hive_tasks::pr_states_for(&s, "proj")
+            .unwrap()
+            .into_iter()
+            .find(|p| p.number == 7)
+            .unwrap();
+        assert_eq!(pr.state, "merged");
+        assert!(tend(&crate::util::plus_minutes(TEST_NOW, 400)).is_empty());
+        assert_eq!(merges(&log), 3);
+    }
+
+    #[test]
+    fn an_approved_merge_waits_for_a_pending_check_and_merges_when_it_passes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        reviewed(&s, &proj);
+        view_with(&view, |v| {
+            v["statusCheckRollup"] = json!([
+                {"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "CheckRun", "name": "ci/build", "status": "IN_PROGRESS", "conclusion": null}
+            ]);
+        });
+        let tend = |at: &str| tend_reviews(&s, std::slice::from_ref(&proj), at);
+
+        let v = merge_or_wait(&s, &proj, 7, None, "reviewer-1", "reviewer-1", TEST_NOW).unwrap();
+        assert_eq!(
+            v,
+            Verdict::Waits(
+                "approved; the merge waits for the checks still running (ci/build)".into()
+            )
+        );
+        assert_eq!(merges(&log), 0, "a running check is not merged");
+        let wait = events(&s, WAIT_ACTION);
+        assert_eq!(wait[0]["waiting"], "checks");
+        assert_eq!(wait[0]["due"], "", "checks are read on every pass");
+        let pr = hive_tasks::pr_states_for(&s, "proj")
+            .unwrap()
+            .into_iter()
+            .find(|p| p.number == 7)
+            .unwrap();
+        assert_eq!(pr.state, "merge_waiting");
+        assert_eq!(
+            pr.note,
+            "approved; the merge waits for the checks still running (ci/build)"
+        );
+        assert!(!pr.can_merge);
+
+        // Still running: one log line, then quiet; nothing new recorded.
+        let lines = tend(TEST_NOW);
+        assert_eq!(
+            lines,
+            ["review proj: #7 approved; the merge waits for the checks still running (ci/build)"]
+        );
+        assert!(tend(&crate::util::plus_minutes(TEST_NOW, 1)).is_empty());
+        assert_eq!(events(&s, WAIT_ACTION).len(), 1);
+        assert_eq!(merges(&log), 0);
+
+        // The check passed: merged on the next pass, without a review.
+        view_with(&view, |_| {});
+        let lines = tend(&crate::util::plus_minutes(TEST_NOW, 2));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 merged after waiting (for its checks)")),
+            "{lines:?}"
+        );
+        assert_eq!(merges(&log), 1);
+        assert_eq!(events(&s, "review.merged").len(), 1);
+        assert_eq!(jobs_of(&s, "review").len(), 1);
+        assert!(events(&s, "review.owner").is_empty());
+    }
+
+    #[test]
+    fn an_approved_merge_that_meets_a_conflict_goes_to_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        reviewed(&s, &proj);
+        let tend = |at: &str| tend_reviews(&s, std::slice::from_ref(&proj), at);
+
+        // A conflict at the verdict is refused as it always was: no wait.
+        view_with(&view, |v| v["mergeStateStatus"] = json!("DIRTY"));
+        let e =
+            merge_or_wait(&s, &proj, 7, None, "reviewer-1", "reviewer-1", TEST_NOW).unwrap_err();
+        assert!(e.contains("conflicts with its base"), "{e}");
+        assert!(events(&s, WAIT_ACTION).is_empty());
+        // A merge gh refuses for a reason that does not pass fails as before.
+        view_with(&view, |_| {});
+        std::fs::write(bin.path().join("fail"), "merge\n").unwrap();
+        std::fs::write(
+            bin.path().join("failmsg"),
+            "GraphQL: Pull Request is not mergeable (mergePullRequest)",
+        )
+        .unwrap();
+        let e =
+            merge_or_wait(&s, &proj, 7, None, "reviewer-1", "reviewer-1", TEST_NOW).unwrap_err();
+        assert!(e.contains("not mergeable"), "{e}");
+        assert_eq!(events(&s, "review.failed").len(), 1);
+        assert!(events(&s, WAIT_ACTION).is_empty());
+
+        // A 503 waits; by the time it is due the base moved into a conflict:
+        // the pull request goes to the owner with the reason.
+        std::fs::write(bin.path().join("failmsg"), "HTTP 503: Service Unavailable").unwrap();
+        let v = merge_or_wait(&s, &proj, 7, None, "reviewer-1", "reviewer-1", TEST_NOW).unwrap();
+        assert!(matches!(v, Verdict::Waits(_)), "{v:?}");
+        std::fs::write(bin.path().join("fail"), "").unwrap();
+        view_with(&view, |v| v["mergeStateStatus"] = json!("DIRTY"));
+        let lines = tend(&crate::util::plus_minutes(TEST_NOW, 5));
+        assert!(
+            lines.iter().any(|l| l.contains(
+                "#7 handed to the owner: the approved merge cannot go through: pull request #7 conflicts with its base"
+            )),
+            "{lines:?}"
+        );
+        let owner = events(&s, "review.owner");
+        assert_eq!(owner.len(), 1);
+        assert!(
+            owner[0]["reasons"][0]
+                .as_str()
+                .unwrap()
+                .contains("conflicts with its base"),
+            "{owner:?}"
+        );
+        assert!(
+            owner[0]["note"]
+                .as_str()
+                .unwrap()
+                .contains("reviewer-1 approved pull request #7"),
+            "{owner:?}"
+        );
+        assert_eq!(merges(&log), 2, "the conflict was not sent to gh");
+        // Settled with the owner: no retry, no new review.
+        assert!(tend(&crate::util::plus_minutes(TEST_NOW, 500)).is_empty());
+        assert_eq!(jobs_of(&s, "review").len(), 1);
+    }
+
+    #[test]
+    fn passing_forge_errors_are_5xx_and_internal_errors_only() {
+        for e in [
+            "gh pr merge failed: HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+            "gh pr merge failed: HTTP 500: Internal Server Error",
+            "gh pr merge failed: GraphQL: Something went wrong while executing your query. This may be the result of a timeout",
+            "gh pr merge failed: GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)",
+            "gh pr merge did not finish within 180s",
+            "gh pr merge failed: HTTP 503",
+        ] {
+            assert!(passing_forge_error(e), "{e}");
+        }
+        for e in [
+            "gh pr merge failed: GraphQL: Pull Request is not mergeable (mergePullRequest)",
+            "gh pr merge failed: HTTP 405: Required status check \"ci\" is failing",
+            "gh pr merge failed: HTTP 422: Changes must be made through a pull request",
+            "gh pr merge failed: HTTP 403: Resource not accessible by integration",
+            "gh pr merge failed: merge conflict between base and head",
+            "gh pr merge failed: Pull request #502 is not mergeable",
+        ] {
+            assert!(!passing_forge_error(e), "{e}");
+        }
     }
 
     #[test]

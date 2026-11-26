@@ -18,9 +18,9 @@ pub const PR_HEAD: &str = "hive/landed";
 /// The events that say where a pull request stands, every one carrying its
 /// `number`: the delivery's own (`land.pr` opened or brought up to date,
 /// `land.merged`, `land.pr-closed`) and the reviewer's (`review.queued`,
-/// `review.owner`, `review.changes`, `review.failed`, `review.merged`), plus
-/// the owner's `review.ask`.
-pub const PR_ACTIONS: [&str; 9] = [
+/// `review.owner`, `review.changes`, `review.failed`, `review.merged`,
+/// `review.merge-wait`), plus the owner's `review.ask`.
+pub const PR_ACTIONS: [&str; 10] = [
     "land.pr",
     "land.merged",
     "land.pr-closed",
@@ -30,6 +30,7 @@ pub const PR_ACTIONS: [&str; 9] = [
     "review.changes",
     "review.failed",
     "review.merged",
+    "review.merge-wait",
 ];
 
 /// The event the hub writes when the owner clicks Merge on a pull request
@@ -64,7 +65,9 @@ pub struct TaskDelivery {
     /// review has started; `in_review`: the reviewer is at it;
     /// `needs_owner`: the reviewer handed it to the owner (`reasons`,
     /// `note`); `merge_asked`: the owner clicked Merge and the daemon is
-    /// merging; `changes_requested`: the reviewer asked for changes
+    /// merging; `merge_waiting`: the reviewer said merge and the merge
+    /// waits for its checks or for GitHub (`note` says which); the daemon
+    /// merges it with no further review; `changes_requested`: the reviewer asked for changes
     /// (`note`, `follow_up` names the job); `review_failed`: the review or
     /// the merge did not go through (`note`). `merged`: it was merged and
     /// the task is done. Older work may still show `landed`, `pushed`, `pr`
@@ -141,7 +144,8 @@ pub struct PrState {
     pub head: String,
     pub base: String,
     /// `pr_open`, `in_review`, `needs_owner`, `merge_asked`,
-    /// `changes_requested`, `review_failed`, `merged` or `closed` (closed
+    /// `merge_waiting`, `changes_requested`, `review_failed`, `merged` or
+    /// `closed` (closed
     /// without merging), as `TaskDelivery::state` words them.
     pub state: String,
     pub reasons: Vec<String>,
@@ -190,7 +194,9 @@ fn list_of(v: &serde_json::Value, key: &str) -> Vec<String> {
 /// right away when its `reasons` say the reviewer will hand it over;
 /// `review.owner` is `needs_owner`; the owner's `review.ask` is
 /// `merge_asked`; `review.changes` is `changes_requested`; `review.failed`
-/// is `review_failed`; `review.merged` or `land.merged` is `merged` and
+/// is `review_failed`; `review.merge-wait` (the reviewer said merge and the
+/// merge waits for its checks or the forge) is `merge_waiting`, its note
+/// the one line saying what is waited for; `review.merged` or `land.merged` is `merged` and
 /// `land.pr-closed` is `closed` - both final, so a review event that
 /// arrives late changes nothing. The Merge button is offered only in
 /// `needs_owner` and `review_failed`: everywhere else the reviewer or the
@@ -280,6 +286,12 @@ pub fn pr_state_of(events: &[LandEvent]) -> PrState {
             "review.failed" => {
                 p.state = "review_failed".into();
                 p.note = text_of(&v, "error");
+                p.follow_up.clear();
+            }
+            "review.merge-wait" => {
+                p.state = "merge_waiting".into();
+                p.reasons.clear();
+                p.note = text_of(&v, "note");
                 p.follow_up.clear();
             }
             _ => continue,

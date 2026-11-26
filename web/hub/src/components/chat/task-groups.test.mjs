@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GROUP_ORDER, entryGroup, entryId, foldedEntries, jobWaitingForPr, listEntries, prGroupOf, prMood, sessionWords, stepWords, taskFinished, taskGroup, taskGroupOf, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
+import { GROUP_ORDER, entryGroup, entryId, foldedEntries, jobWaitingForPr, listEntries, prGroupOf, prMood, prWaitLine, sessionWords, stepWords, taskFinished, taskGroup, taskGroupOf, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
 
 const session = (over = {}) => ({ job: "job-1", kind: "feature", title: "Build it", job_status: "queued", agent: "", session: "", status: "", started_at: "", updated_at: "", ended_at: "", cost: 0, steps: 0, ...over });
 const task = (over = {}) => ({ id: "TASK-001", project: "one", title: "Ship it", status: "in_progress", priority: 10, lead: "one-lead", created_by: "owner", created_at: "", updated_at: "", last_at: "", messages: 0, last_message_at: "", last_author: "", needs_you: false, sessions: [], ...over });
@@ -108,9 +108,9 @@ test("work done without a pull request yet waits for one: a step by its branch, 
   assert.equal(entryGroup(entries[0]), "review");
 });
 
-test("a pull request's review state groups the entry first: the owner's two states on top, the reviewer's four under In review, merged and closed by the entry's own status", () => {
+test("a pull request's review state groups the entry first: the owner's two states on top, the reviewer's five under In review, merged and closed by the entry's own status", () => {
   for (const state of ["needs_owner", "review_failed"]) assert.equal(prGroupOf(state), "needs_review", state);
-  for (const state of ["pr_open", "in_review", "merge_asked", "changes_requested"]) assert.equal(prGroupOf(state), "review", state);
+  for (const state of ["pr_open", "in_review", "merge_asked", "merge_waiting", "changes_requested"]) assert.equal(prGroupOf(state), "review", state);
   for (const state of ["merged", "closed", "", undefined, null, "odd"]) assert.equal(prGroupOf(state), null, String(state));
   assert.equal(prMood("needs_owner").word, "Needs your review");
   assert.equal(prMood("needs_owner").tone, "wait");
@@ -255,4 +255,19 @@ test("a report note says what the sub-conversation did", () => {
   assert.equal(reportVerb("finished"), "finished");
   assert.equal(reportVerb("asks"), "asks you");
   assert.equal(reportVerb("odd"), "reports");
+});
+
+test("an approved pull request whose merge waits says what it waits for, in one line", () => {
+  assert.equal(prMood("merge_waiting").word, "Approved, merge waits");
+  assert.equal(prMood("merge_waiting").tone, "neutral");
+  assert.equal(
+    prWaitLine("merge_waiting", "approved; the merge waits for the checks still running (ci/build)"),
+    "The merge waits for the checks still running (ci/build)",
+  );
+  assert.equal(
+    prWaitLine("merge_waiting", "approved; GitHub refused the merge (HTTP 502); retried at 2026-09-06T10:05:00Z (attempt 2)"),
+    "GitHub refused the merge (HTTP 502); retried at 2026-09-06T10:05:00Z (attempt 2)",
+  );
+  assert.equal(prWaitLine("merge_waiting", ""), "");
+  assert.equal(prWaitLine("review_failed", "approved; anything"), "", "only a waiting merge has the line");
 });
