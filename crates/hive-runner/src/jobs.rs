@@ -141,19 +141,13 @@ pub(crate) fn parallel_per_project(s: &hive_store::Store) -> i32 {
 /// The job kinds whose runs commit and so run the project's check under the
 /// verify lock (a clone's pre-commit hook, the post-run check, the landing):
 /// these share a project's work lanes. Research, ballots and answers read
-/// and post; they keep the plain `parallel_per_project` limit. The project
-/// lead's own sitting is outside that count ([`LEAD_SITTING_SQL`]): it is
-/// the owner's work directing the fleet's, and with the limit at two and two
-/// long fleet runs in the project it once waited 54 minutes for a lane the
-/// express slot had already offered it.
+/// and post; they keep the plain `parallel_per_project` limit. The owner's
+/// work ([`OWNER_DRIVEN_SQL`], the project lead's sitting among it) is
+/// outside that count: the lead's sitting once waited 54 minutes for a lane
+/// the express slot had already offered it, and on 2026-11-26 eight owner
+/// tasks ran one at a time while the share of one lane of five went to
+/// idle work elsewhere (TASK-136, `lease_job`).
 pub(crate) const WORK_KINDS: &[&str] = &["improve", "task"];
-
-/// A project lead's sitting over `j`: the lead jobs the daemon queues for the
-/// owner's tasks and messages, not a role lead's standing sitting
-/// (`lead-role:` sources queue with the fleet). One lead agent leases one
-/// job at a time, so letting it past the plain `parallel_per_project` count
-/// is at most one short run over the limit.
-pub(crate) const LEAD_SITTING_SQL: &str = "(j.kind = 'lead' AND j.source NOT LIKE 'lead-role:%')";
 
 /// [`WORK_KINDS`] as a SQL list for `kind IN (...)`.
 pub(crate) fn work_kinds_sql() -> String {
@@ -251,8 +245,9 @@ pub(crate) const WORK_WAITED_HOURS: i32 = 2;
 /// (`task:TASK-NNN` or `task:TASK-NNN:label`), and the security updates the
 /// owner's standing rule queues (`security:` sources, `security.rs`). They
 /// lease before the fleet's own work and alone through the express lane;
-/// they are bounded by the plain `parallel_per_project` count alone, not
-/// by a project's narrowed work lanes, and they fit every restart window
+/// they are bounded by the free slots alone, not by a project's share
+/// (`parallel_per_project`, TASK-136) nor its narrowed work lanes, and they
+/// fit every restart window
 /// (an owner's task on the brain once queued 13 hours with no attempt,
 /// behind one narrowed lane and through the day's restart windows).
 /// A role lead's sittings (`lead-role:` sources) are standing work, not the
@@ -563,11 +558,21 @@ pub(crate) fn lease_job(
                 Value::String("lease expired".into()),
             );
         }
-        // The plain per-project count holds every kind but the project lead's
-        // own sitting (LEAD_SITTING_SQL): the lead plans the owner's work and
-        // waits for no fleet run of its project.
+        // The plain per-project count (the project's share of the fleet)
+        // holds the fleet's own work alone; the owner's work
+        // (OWNER_DRIVEN_SQL, the project lead's sitting among it) takes any
+        // slot the daemon finds free, past its project's share. The share is
+        // the fleet total over the projects with a queued or leased job, so
+        // eight projects holding one idle job each left the owner's project
+        // one lane of five: on 2026-11-26 the brain ran eight owner tasks at
+        // priority 80 one at a time, some 105 minutes "lanes full", while
+        // the other slots ran lead sittings and a ballot elsewhere (TASK-136).
+        // The bound that remains is the slots themselves: the daemon leases
+        // only into a free one, the owner's work first (ORDER BY below), the
+        // project that waited longest first among owners. The share still
+        // spreads the fleet's work, plans it (plan.rs) and gates research.
         let mut sql = format!(
-            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({LEAD_SITTING_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?)"
+            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({OWNER_DRIVEN_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?)"
         );
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
         // A project whose checks take turns runs only as many of the fleet's
@@ -1588,6 +1593,88 @@ mod tests {
         )
         .unwrap();
         job.str("id")
+    }
+
+    #[test]
+    fn the_owners_tasks_take_free_slots_past_the_share_idle_projects_leave_them() {
+        // TASK-136, 2026-11-26: eight projects each held a job, so a
+        // project's share was one slot of five, and the brain ran the
+        // owner's eight priority-80 tasks one at a time ("lanes full" for
+        // up to 105 minutes) while the other slots ran idle work elsewhere.
+        // The owner's work now takes any free slot past its project's
+        // share; the fleet's own work keeps the share.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        // The share as the daemon computes it: five slots, eight projects.
+        crate::capacity::unpin_per_project(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "5")
+            .unwrap();
+        let others = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
+        for slug in others {
+            let now = s.now();
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?, ?, ?, '', 0, '', 'main', 'active', ?, ?, ?)",
+                    rusqlite::params![slug, slug, format!("/nowhere/{slug}"), now, hive_store::HUMAN_AGENT, now],
+                )
+                .unwrap();
+        }
+        let owner = (1..=4)
+            .map(|n| queue(&s, "proj", "task", &format!("task:TASK-10{n}"), 80))
+            .collect::<Vec<_>>();
+        let idle = others
+            .iter()
+            .map(|slug| queue(&s, slug, "improve", &format!("lead-idle:{slug}:1"), 1))
+            .collect::<Vec<_>>();
+        // A second low-priority job in one idle project: the fleet's work
+        // stays inside the share.
+        let idle_2 = queue(&s, "p1", "improve", "lead-idle:p1:2", 1);
+        let fleet = crate::capacity::fleet(&s);
+        assert_eq!(
+            (fleet.total, fleet.busy_projects, fleet.per_project),
+            (5, 8, 1),
+            "{}",
+            fleet.line()
+        );
+        let agents = ["aurora", "borealis", "cinder", "dusk", "ember"];
+        for name in agents {
+            join(&s, name);
+        }
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .str("id")
+        };
+        // The five slots: the owner's four tasks first, all of them in
+        // flight at once in their one project, then one idle job.
+        let leased = agents.iter().map(|a| lease(a)).collect::<Vec<_>>();
+        assert_eq!(
+            leased[..4],
+            owner[..],
+            "the owner's tasks ran one at a time"
+        );
+        assert_eq!(leased[4], idle[0], "{leased:?}");
+        // The daemon leases only into a free slot, so past the five nothing
+        // more starts; asked for one more anyway, the fleet's work keeps its
+        // share: p1, already running one job, does not get its second.
+        join(&s, "fjord");
+        assert_eq!(
+            lease("fjord"),
+            idle[1],
+            "fleet work leased past its project's share"
+        );
+        let conn = s.conn().unwrap();
+        assert_eq!(super::job_row(&conn, idle_2).str("status"), "queued");
     }
 
     #[test]
