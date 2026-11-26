@@ -395,6 +395,64 @@ fn last_event(
     value: &str,
     holds: bool,
 ) -> Option<(String, Value)> {
+    last_event_at(q, slug, field, value, holds).map(|(action, detail, _)| (action, detail))
+}
+
+/// [`last_event`] with the time the event was written.
+fn last_event_at(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    field: &str,
+    value: &str,
+    holds: bool,
+) -> Option<(String, Value, String)> {
+    last_events(q, slug, field, value, holds, 1)
+        .into_iter()
+        .next()
+}
+
+/// The newest delivery events about one piece of work, newest first, at
+/// most `limit` of them, each as [`last_event_at`] gives the newest.
+fn last_events(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    field: &str,
+    value: &str,
+    holds: bool,
+    limit: usize,
+) -> Vec<(String, Value, String)> {
+    let Some(about) = about_work(field) else {
+        return Vec::new();
+    };
+    let actions = if holds {
+        "'land.pr', 'land.pr-held', 'land.merged', 'land.pr-closed'"
+    } else {
+        DELIVERED
+    };
+    delivery_rows(
+        q,
+        &format!(
+            "SELECT action, detail, at FROM events WHERE subject = ?1 AND action IN ({actions})
+             AND json_valid(detail) AND {about}
+             ORDER BY seq DESC LIMIT {limit}"
+        ),
+        slug,
+        value,
+    )
+}
+
+/// The events that say a work went to the forge or came back from it.
+const DELIVERED: &str = "'land.pr', 'land.merged', 'land.pr-closed'";
+
+/// The SQL condition that an event's detail is about the work `?2` names
+/// in `field`; a job is also found in the `jobs` list of a pull request
+/// that carried it, and in a pull request whose head is the job's branch:
+/// one proposed by hand (`hive land --branch`) before such a pull request
+/// named its job. Without that the job path answered `Open` for a branch
+/// already on a pull request, merged the stack's top into it and pushed
+/// it - the head of the pull request by hand and the base of the one above,
+/// which the forge then took for merged.
+fn about_work(field: &str) -> Option<String> {
     let path = match field {
         "task" => "$.task",
         "job" => "$.job",
@@ -402,31 +460,65 @@ fn last_event(
         "head" => "$.head",
         _ => return None,
     };
-    let actions = if holds {
-        "'land.pr', 'land.pr-held', 'land.merged', 'land.pr-closed'"
-    } else {
-        "'land.pr', 'land.merged', 'land.pr-closed'"
-    };
     let in_jobs = if field == "job" {
-        " OR EXISTS (SELECT 1 FROM json_each(detail, '$.jobs') WHERE value = ?2)"
+        " OR EXISTS (SELECT 1 FROM json_each(detail, '$.jobs') WHERE value = ?2)
+          OR json_extract(detail, '$.head') = (SELECT j.branch FROM jobs j WHERE j.id = ?2 AND j.branch <> '')"
     } else {
         ""
+    };
+    Some(format!("(json_extract(detail, '{path}') = ?2{in_jobs})"))
+}
+
+/// Every `land.pr-held` about one piece of work written after its newest
+/// `land.pr`, `land.merged` or `land.pr-closed` (by `seq`), newest first,
+/// with no row limit: a safety decision read from these holds (`tried_since`)
+/// must not lapse because more of them were written than a window holds.
+/// A store that cannot be read is an error, not "no holds": the decision
+/// fails closed.
+fn holds_since_delivery(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    field: &str,
+    value: &str,
+) -> Result<Vec<Value>, String> {
+    let Some(about) = about_work(field) else {
+        return Ok(Vec::new());
     };
     let rows = crate::util::query_rows(
         q,
         &format!(
-            "SELECT action, detail FROM events WHERE subject = ?1 AND action IN ({actions})
-             AND json_valid(detail) AND (json_extract(detail, '{path}') = ?2{in_jobs})
-             ORDER BY seq DESC LIMIT 1"
+            "SELECT detail FROM events WHERE subject = ?1 AND action = 'land.pr-held'
+             AND json_valid(detail) AND {about}
+             AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE subject = ?1
+                 AND action IN ({DELIVERED}) AND json_valid(detail) AND {about}), 0)
+             ORDER BY seq DESC"
         ),
         &[&slug, &value],
     )
-    .unwrap_or_default();
-    let last = rows.first()?;
-    Some((
-        last.str("action"),
-        serde_json::from_str(&last.str("detail")).unwrap_or(Value::Null),
-    ))
+    .map_err(|e| format!("{STORE_UNREAD}the holds of {value} could not be read: {e}"))?;
+    Ok(rows
+        .iter()
+        .map(|row| serde_json::from_str(&row.str("detail")).unwrap_or(Value::Null))
+        .collect())
+}
+
+fn delivery_rows(
+    q: &(impl crate::util::Querier + ?Sized),
+    sql: &str,
+    slug: &str,
+    value: &str,
+) -> Vec<(String, Value, String)> {
+    crate::util::query_rows(q, sql, &[&slug, &value])
+        .unwrap_or_default()
+        .iter()
+        .map(|row| {
+            (
+                row.str("action"),
+                serde_json::from_str(&row.str("detail")).unwrap_or(Value::Null),
+                row.str("at"),
+            )
+        })
+        .collect()
 }
 
 /// The newest `land.pr` of pull request `number`, as its detail.
@@ -490,27 +582,275 @@ fn event(s: &hive_store::Store, now: &str, action: &str, slug: &str, detail: Val
 }
 
 /// A hold already recorded for exactly this work (`key`), newer than any
-/// pull request of it: the pass does not retry a conflict or a push failure
-/// until the work changes.
+/// pull request of it, that still stands at `now`. A hold about the work
+/// itself (a conflict, a branch that is gone) stands until the work
+/// changes. One written because the way to the forge failed (`forge_fault`)
+/// clears with its cause, which no commit of the work repairs, so it stands
+/// for a wait and then the pass tries the same work again. The wait is the
+/// pause of a failed job's recovery (`failure::recover_backoff`: 5 minutes,
+/// then 15, 45 and 135, then 6 hours), by the tries in a row the hold
+/// carries (`hold`): an outage of minutes heals within minutes, and a fault
+/// that lasts is tried four times a day, never every pass. Before this
+/// such a hold stood until the branch moved: three finished jobs stood for
+/// a day after an account was repaired, and nine after a remote was.
 fn held_already(
     q: &(impl crate::util::Querier + ?Sized),
     slug: &str,
     field: &str,
     value: &str,
     key: &str,
+    now: &str,
 ) -> bool {
-    last_event(q, slug, field, value, true)
-        .is_some_and(|(action, d)| action == "land.pr-held" && field_of(&d, "work") == key)
+    last_event_at(q, slug, field, value, true).is_some_and(|(action, d, at)| {
+        action == "land.pr-held"
+            && field_of(&d, "work") == key
+            // A hold for a newer job carrying the same commits is read
+            // again each pass (`repeated_by`): it stands while that job's
+            // pull request is open or merged, not until the work changes.
+            && d.get("repeated_by").is_none()
+            && !(forge_fault(&field_of(&d, "note"))
+                && crate::failure::recover_due(at, forge_tries(&d) - 1).as_str() <= now)
+    })
+}
+
+/// The tries in a row a forge hold stands for (`tries`). A hold without
+/// the count is the first: one from before the count was kept, or a kept
+/// experiment's, which the experiment lane writes once and then retries on
+/// its own schedule (`experiment.rs`).
+fn forge_tries(hold: &Value) -> i32 {
+    let tries = hold.get("tries").and_then(Value::as_i64).unwrap_or(1);
+    i32::try_from(tries.max(1)).unwrap_or(i32::MAX)
+}
+
+/// How the note of a push or fetch starts when the push credential could
+/// not be read for it.
+const PUSH_CREDENTIAL: &str = "push credential: ";
+
+/// How the note of a delivery starts when the store could not be read to
+/// decide its lease: passing like a failure on the way to the forge, so the
+/// hold is tried again after its wait, and never a push on that silence.
+const STORE_UNREAD: &str = "store not read: ";
+
+/// Whether a hold's note names a failure on the way to the forge rather
+/// than the work: a push or a fetch git could not make (`push_rev`,
+/// `fetch_head`), a `gh` call that failed (`landing_pr.rs`), a push
+/// credential that could not be read, a store that could not be read to
+/// decide a push's lease (`STORE_UNREAD`). Any other note is the work's, and
+/// so is one that only begins with a branch of such a name. A push the
+/// upstream answered and turned down (`rejected`) and a pull request with
+/// nothing to show (`landing_pr::gh_failure`) open their notes otherwise
+/// for that reason: no later try changes the answer.
+fn forge_fault(note: &str) -> bool {
+    // A fix's fetch names the pull request first (`deliver_fix`).
+    let note = note
+        .strip_prefix("pull request #")
+        .and_then(|rest| rest.split_once(": "))
+        .map_or(note, |(_, why)| why);
+    [
+        "push of ",
+        "fetch of ",
+        "gh pr ",
+        "gh did not name ",
+        "gh (the GitHub CLI) ",
+        PUSH_CREDENTIAL,
+        STORE_UNREAD,
+    ]
+    .iter()
+    .any(|said| note.starts_with(said))
+}
+
+/// The note of a push that was turned down for what it is: git refused it
+/// itself (`! [rejected]`: a lease that no longer holds), or the upstream
+/// refused it for a rule of the repository (`! [remote rejected]` with a
+/// hook that declined, a protected branch, a push declined by a rule, a
+/// non-fast-forward). The same push gets the same answer, so the note
+/// opens with the upstream, not with the push (`forge_fault` reads how a
+/// note begins), and its hold stands until the work changes. The upstream
+/// reports its own passing trouble under the same mark - a ref it could
+/// not lock, objects it could not store - and any reason that is not a
+/// rule stays a failed push, which is tried again. The reason is the text
+/// inside the line's final parentheses (`reason_of`): the line also names
+/// the branches, and a branch named like a rule (`fix/non-fast-forward`)
+/// must not make every passing trouble of its push a standing hold. Read
+/// from all git said: the note keeps the last 200 characters, which can
+/// start after the mark.
+fn rejected(
+    pushed: &crate::util::GitResult,
+    src: &str,
+    head: &str,
+    up: &Upstream,
+) -> Option<String> {
+    // "hook declined" is also how a pre-receive hook and a protected
+    // branch are worded.
+    const RULES: &[&str] = &[
+        "hook declined",
+        "push declined due to",
+        "refusing to allow",
+        "non-fast-forward",
+    ];
+    let said = format!("{} {}", pushed.stderr, pushed.stdout);
+    let turned_down = !pushed.ok()
+        && said.lines().map(str::trim_start).any(|line| {
+            line.starts_with("! [rejected]")
+                || (line.starts_with("! [remote rejected]")
+                    && reason_of(line)
+                        .is_some_and(|why| RULES.iter().any(|rule| why.contains(rule))))
+        });
+    turned_down.then(|| {
+        hive_cred::redact(
+            &format!(
+                "{} rejected the push of {} to {head}: {}",
+                up.name(),
+                src.strip_prefix("refs/heads/").unwrap_or(src),
+                crate::run::squeeze(&said, 200)
+            ),
+            &[],
+        )
+    })
+}
+
+/// The reason git gives at the end of a status line of a push, inside its
+/// final parentheses: `! [remote rejected] a -> a (hook declined)` gives
+/// `hook declined`. The reason may hold parentheses of its own, so the
+/// group is the one the line's last `)` closes, matched back to its `(`.
+/// `None` when the line does not end in such a group.
+fn reason_of(line: &str) -> Option<&str> {
+    let line = line.trim_end();
+    let body = line.strip_suffix(')')?;
+    let mut depth = 0usize;
+    for (i, c) in body.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' if depth == 0 => return Some(&body[i + 1..]),
+            '(' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What the holds since a work's last delivery on record say of the tries
+/// made since, when one of them failed on the way to the forge: such a try
+/// may have pushed the branch before the call that failed. The holds since
+/// that delivery are read, not the newest alone: a try that found commits
+/// on the upstream and did not push over them is held for the work, and
+/// the next change of the work must not push over them either.
+struct Tried {
+    /// The commit the last of those tries left on the upstream, with the
+    /// work key it was a push of: a task's hold records it (`pushed`) when
+    /// the push went through and a later step failed.
+    pushed: Option<(String, String)>,
+}
+
+/// `Err` when the holds cannot be read: the caller holds the delivery
+/// rather than push with a plain force over what a hold it could not read
+/// said it would not push over.
+fn tried_since(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    field: &str,
+    value: &str,
+) -> Result<Option<Tried>, String> {
+    // Every hold since the last delivery, however many: each refusal to
+    // push is a hold of its own, and a new one is written whenever the
+    // hold key changes (each pull request the project opens moves the
+    // stack's top). A window of the newest few would let the forge hold
+    // fall out of it, and the next try would push with a plain force over
+    // the commits the holds since said it would not push over.
+    let holds = holds_since_delivery(q, slug, field, value)?;
+    Ok(holds
+        .iter()
+        .any(|hold| forge_fault(&field_of(hold, "note")))
+        .then(|| Tried {
+            pushed: holds.iter().find_map(|hold| {
+                Some((
+                    hold.get("pushed")?.as_str()?.to_string(),
+                    field_of(hold, "work"),
+                ))
+            }),
+        }))
 }
 
 fn field_of(v: &Value, name: &str) -> String {
     field(v, name).to_string()
 }
 
-fn hold(s: &hive_store::Store, now: &str, slug: &str, mut detail: Value, note: &str) {
+/// Records that the work `detail` names (`task`, `job` or `head`, with its
+/// `work` key) could not be delivered, and why. A hold for a failure on the
+/// way to the forge (`forge_fault`) carries `tries`: one more than the
+/// forge hold it follows for the same work key, one when the work's newest
+/// event is anything else - a delivery, a hold for another key, a hold
+/// about the work. `held_already` reads its wait from that.
+fn hold(s: &hive_store::Store, now: &str, slug: &str, detail: Value, note: &str) {
+    hold_as(s, now, ACTOR, slug, detail, note);
+}
+
+/// A kept experiment the experiment lane could not deliver, held as the
+/// pass holds its own work: not again while a hold for the same work
+/// stands, and anew - counted, and dated to this try - when a try the wait
+/// let through fails too. So the lane's tries reach the forge on the waits
+/// of any failed delivery, however often the lane asks. With one hold,
+/// never written again, every try after its first five minutes went to
+/// the forge: one every two minutes, about 700 in the lane's day, when
+/// the forge answered 429.
+pub(crate) fn hold_experiment(
+    s: &hive_store::Store,
+    now: &str,
+    actor: &str,
+    project: &Row,
+    job: &Row,
+    archive: &str,
+    note: &str,
+) {
+    let slug = project.str("slug");
+    let id = job.str("id");
+    let branch = job.str("branch");
+    let work = work_key(
+        &branch,
+        &rev(&project.str("path"), &format!("refs/heads/{branch}")),
+    );
+    let held = s
+        .conn()
+        .is_ok_and(|conn| held_already(&conn, &slug, "job", &id, &work, now));
+    if !held {
+        hold_as(
+            s,
+            now,
+            actor,
+            &slug,
+            json!({"job": id, "experiment": id, "archive": archive, "work": work}),
+            note,
+        );
+    }
+}
+
+/// [`hold`], written as `actor`.
+fn hold_as(
+    s: &hive_store::Store,
+    now: &str,
+    actor: &str,
+    slug: &str,
+    mut detail: Value,
+    note: &str,
+) {
     detail["project"] = json!(slug);
     detail["note"] = json!(note);
-    event(s, now, "land.pr-held", slug, detail);
+    if forge_fault(note) {
+        let before = s.conn().ok().and_then(|conn| {
+            let (name, id) = ["task", "job", "head"]
+                .into_iter()
+                .find_map(|name| Some((name, detail.get(name)?.as_str()?)))?;
+            let (action, last) = last_event(&conn, slug, name, id, true)?;
+            (action == "land.pr-held"
+                && field(&last, "work") == field(&detail, "work")
+                && forge_fault(field(&last, "note")))
+            .then(|| forge_tries(&last))
+        });
+        detail["tries"] = json!(before.unwrap_or(0).saturating_add(1));
+    }
+    if let Ok(conn) = s.conn() {
+        crate::util::event_at(&conn, now, actor, "land.pr-held", slug, detail);
+    }
 }
 
 /// What the next delivery of a piece of work is, given its newest event
@@ -526,6 +866,7 @@ enum Next {
     Open,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn next_for(
     q: &(impl crate::util::Querier + ?Sized),
     root: &str,
@@ -534,8 +875,9 @@ fn next_for(
     value: &str,
     sha: &str,
     held_key: &str,
+    now: &str,
 ) -> Next {
-    if held_already(q, slug, field, value, held_key) {
+    if held_already(q, slug, field, value, held_key, now) {
         return Next::Nothing;
     }
     match last_event(q, slug, field, value, false) {
@@ -754,6 +1096,9 @@ fn recorded_base(
     })
 }
 
+/// Who `take_in`'s merges are committed as; `own_tip` knows them by it.
+const TAKE_IN_EMAIL: &str = "hive@localhost";
+
 /// Builds `branch` on the stack's top: the top's head merged into the
 /// branch in a scratch worktree (the branch is Hive's own, so a merge
 /// commit on it is fine) and the local ref moved to the merge. Returns the
@@ -783,18 +1128,29 @@ fn take_in(root: &str, branch: &str, sha: &str, base: &Base) -> Result<String, S
     }
     let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
     let what = base.describe();
-    let m = in_wt(&[
-        "-c",
-        "user.name=Hive",
-        "-c",
-        "user.email=hive@localhost",
-        "merge",
-        "--no-ff",
-        "--no-edit",
-        "-m",
-        &format!("Merge {what} into {branch}"),
-        &base.sha,
-    ]);
+    // The committer is pinned in the environment too, where it wins over
+    // `-c`: `own_tip` knows these merges by it.
+    let committer = [
+        "GIT_COMMITTER_NAME=Hive".to_string(),
+        format!("GIT_COMMITTER_EMAIL={TAKE_IN_EMAIL}"),
+    ];
+    let m = crate::util::git_timeout_env(
+        &wt_path,
+        Duration::from_secs(300),
+        &committer,
+        &[
+            "-c",
+            "user.name=Hive",
+            "-c",
+            &format!("user.email={TAKE_IN_EMAIL}"),
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "-m",
+            &format!("Merge {what} into {branch}"),
+            &base.sha,
+        ],
+    );
     let result = if m.ok() {
         let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
         let moved = git(&["update-ref", &format!("refs/heads/{branch}"), &tip, sha]);
@@ -831,18 +1187,40 @@ fn take_in(root: &str, branch: &str, sha: &str, base: &Base) -> Result<String, S
     result
 }
 
+/// Why a delivery failed, as the note of its hold, with the commit the try
+/// left on the upstream when it got as far as the push: the pull request
+/// is found or opened after it. A later try of a task goes by that commit
+/// to tell its own push from somebody else's (`task_retry`).
+#[derive(Debug)]
+struct Undelivered {
+    note: String,
+    pushed: Option<String>,
+}
+
+impl From<String> for Undelivered {
+    fn from(note: String) -> Self {
+        Undelivered { note, pushed: None }
+    }
+}
+
 /// Why a task's pull request could not be built this pass.
 #[derive(Debug)]
 enum TaskFault {
     Conflict(Box<Conflict>),
     /// Merged without a conflict, but the merged tree does not compile.
     Broken(Box<merge_check::Broken>),
-    Other(String),
+    Other(Undelivered),
 }
 
 impl From<String> for TaskFault {
     fn from(note: String) -> Self {
-        TaskFault::Other(note)
+        TaskFault::Other(note.into())
+    }
+}
+
+impl From<Undelivered> for TaskFault {
+    fn from(why: Undelivered) -> Self {
+        TaskFault::Other(why)
     }
 }
 
@@ -856,6 +1234,9 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         return land_locally(s, project, now);
     };
     let ready = ready_work(s, project, now);
+    let retries = retries_this_pass(s, &root, &def, &slug, &ready, now);
+    // A held work the pass would try again but has no room for this pass.
+    let mut deferred = 0usize;
     let mut lines = Vec::new();
     let mut opened = 0usize;
     for rt in &ready.tasks {
@@ -865,13 +1246,12 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         // (a retry's new run) is new work the pass tries again, rather than
         // waiting for a new job of the task.
         let Ok(conn) = s.conn() else { break };
-        let top = if rt.open.is_none() {
-            stack_top(&conn, &slug)
-        } else {
-            None
-        };
-        let key = stack_key(task_work_key(&root, &rt.branches), top.as_ref());
-        if held_already(&conn, &slug, "task", task, &key) {
+        let (key, top) = task_key(&conn, &root, &slug, rt);
+        if held_already(&conn, &slug, "task", task, &key, now) {
+            continue;
+        }
+        if !retries.allows("task", task, &key) {
+            deferred += 1;
             continue;
         }
         drop(conn);
@@ -889,9 +1269,13 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
             Err(TaskFault::Broken(b)) => {
                 lines.push(merge_check::fix_or_hold(s, project, rt, &key, *b, now))
             }
-            Err(TaskFault::Other(note)) => {
-                hold(s, now, &slug, json!({"task": task, "work": key}), &note);
-                lines.push(format!("task pr {slug} {task}: held: {note}"));
+            Err(TaskFault::Other(why)) => {
+                let mut held = json!({"task": task, "work": key});
+                if let Some(sha) = &why.pushed {
+                    held["pushed"] = json!(sha);
+                }
+                hold(s, now, &slug, held, &why.note);
+                lines.push(format!("task pr {slug} {task}: held: {}", why.note));
             }
         }
     }
@@ -903,7 +1287,7 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         if !exists {
             if !why.is_empty() {
                 let Ok(conn) = s.conn() else { break };
-                if !held_already(&conn, &slug, "job", &id, &branch) {
+                if !held_already(&conn, &slug, "job", &id, &branch, now) {
                     drop(conn);
                     hold(s, now, &slug, json!({"job": id, "work": branch}), &why);
                     lines.push(format!("job pr {slug} {id}: held: {why}"));
@@ -919,21 +1303,46 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
             lines.push(format!("job pr {slug} {id}: {note}; {said}"));
             continue;
         }
-        let sha = rev(&root, &format!("refs/heads/{branch}"));
         let Ok(conn) = s.conn() else { break };
-        // A fix goes onto the pull request it fixes, wherever that stands
-        // in the stack; only a pull request of the job's own stacks.
-        let top = if rj.fix_of.is_none() {
-            stack_top(&conn, &slug)
-        } else {
-            None
-        };
-        let key = stack_key(work_key(&branch, &sha), top.as_ref());
-        let next = next_for(&conn, &root, &slug, "job", &id, &sha, &key);
-        drop(conn);
+        let (key, sha, top) = job_key(&conn, &root, &slug, rj);
+        let next = next_for(&conn, &root, &slug, "job", &id, &sha, &key, now);
         if next == Next::Nothing {
             continue;
         }
+        // A try again of a job whose commits a newer finished job carries
+        // on a pull request still open or merged: held for that, under the
+        // branch and commit alone, which stands whatever pull request the
+        // work would stack on. It is read again each pass: should the newer
+        // job's pull request close unmerged, this one is tried again.
+        if retries.again("job", &id, &key)
+            && let Some(newer) = repeated_by(&conn, &root, &def, &slug, job, &sha)
+        {
+            let key = work_key(&branch, &own_tip(&root, &sha));
+            if repeat_held(&conn, &slug, &id, &key, &newer.job) {
+                continue;
+            }
+            drop(conn);
+            let note = format!(
+                "{branch} is not tried again: job {} finished later and its pull request #{} ({}) carries every commit of it",
+                newer.job,
+                newer.number,
+                if newer.merged { "merged" } else { "open" }
+            );
+            hold(
+                s,
+                now,
+                &slug,
+                json!({"job": id, "work": key, "repeated_by": newer.job}),
+                &note,
+            );
+            lines.push(format!("job pr {slug} {id}: held: {note}"));
+            continue;
+        }
+        if !retries.allows("job", &id, &key) {
+            deferred += 1;
+            continue;
+        }
+        drop(conn);
         let res = match rj.fix_of {
             Some(n) => deliver_fix(s, project, &up, job, n, &sha, now),
             None => {
@@ -960,11 +1369,15 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         }
         let key = work_key(&cb.branch, &cb.sha);
         let Ok(conn) = s.conn() else { break };
-        let next = next_for(&conn, &root, &slug, "head", &cb.branch, &cb.sha, &key);
-        drop(conn);
+        let next = next_for(&conn, &root, &slug, "head", &cb.branch, &cb.sha, &key, now);
         if next == Next::Nothing {
             continue;
         }
+        if !retries.allows("head", &cb.branch, &key) {
+            deferred += 1;
+            continue;
+        }
+        drop(conn);
         // A change that has a face opens its pull request with its report
         // (`landing.ui_report = require`): the session is asked once and the
         // pull request waits for it a while (ui_evidence.rs).
@@ -1003,7 +1416,373 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
             }
         }
     }
+    if deferred > 0 {
+        lines.push(format!(
+            "{slug}: {deferred} held deliveries wait for a later pass ({RETRIES_PER_PASS} are tried again a pass, the oldest hold first)"
+        ));
+    }
     lines
+}
+
+/// A task's hold key and the open pull request it would stack on: every
+/// job branch with its sha now, and the stack's top when the task has no
+/// pull request open.
+fn task_key(
+    q: &(impl crate::util::Querier + ?Sized),
+    root: &str,
+    slug: &str,
+    rt: &ReadyTask,
+) -> (String, Option<Value>) {
+    let top = if rt.open.is_none() {
+        stack_top(q, slug)
+    } else {
+        None
+    };
+    (
+        stack_key(task_work_key(root, &rt.branches), top.as_ref()),
+        top,
+    )
+}
+
+/// A job's hold key, its branch's sha and the pull request it would stack
+/// on. A fix goes onto the pull request it fixes, wherever that stands in
+/// the stack; only a pull request of the job's own stacks.
+fn job_key(
+    q: &(impl crate::util::Querier + ?Sized),
+    root: &str,
+    slug: &str,
+    rj: &ReadyJob,
+) -> (String, String, Option<Value>) {
+    let branch = rj.job.str("branch");
+    let sha = rev(root, &format!("refs/heads/{branch}"));
+    let top = if rj.fix_of.is_none() {
+        stack_top(q, slug)
+    } else {
+        None
+    };
+    (
+        stack_key(work_key(&branch, &own_tip(root, &sha)), top.as_ref()),
+        sha,
+        top,
+    )
+}
+
+/// The commit a branch at `sha` stands for as a job's work: the tip, or,
+/// when `take_in` merged the stack's top into it, the commit below those
+/// merges along the first parents. Moving a job's branch onto a new top is
+/// no change of the job's work: a hold keyed on it still stands for the
+/// moved branch, and a try of it is a try again, which waits for its hold
+/// and counts against the bound of a pass. Only `take_in`'s own merges are
+/// passed over (committed as `hive@localhost`): a merge the worker made is
+/// its work, and may be what resolved a conflict.
+fn own_tip(root: &str, sha: &str) -> String {
+    if sha.is_empty() {
+        return String::new();
+    }
+    let log = crate::util::git_timeout(
+        root,
+        Duration::from_secs(20),
+        &[
+            "log",
+            "--first-parent",
+            "-n",
+            "64",
+            "--format=%H %ce %P",
+            sha,
+        ],
+    );
+    if !log.ok() {
+        return sha.to_string();
+    }
+    for line in log.stdout.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(commit), Some(email)) = (parts.next(), parts.next()) else {
+            break;
+        };
+        let take_in_merge = email == TAKE_IN_EMAIL && parts.count() > 1;
+        if !take_in_merge {
+            return commit.to_string();
+        }
+    }
+    sha.to_string()
+}
+
+/// A work's newest delivery event when that event is a hold, as its `seq`
+/// and the `work` key it was held for.
+fn newest_hold(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    field: &str,
+    value: &str,
+) -> Option<(i64, String)> {
+    let about = about_work(field)?;
+    let rows = crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT action, seq, detail FROM events WHERE subject = ?1
+             AND action IN ('land.pr-held', {DELIVERED})
+             AND json_valid(detail) AND {about} ORDER BY seq DESC LIMIT 1"
+        ),
+        &[&slug, &value],
+    )
+    .unwrap_or_default();
+    rows.first()
+        .filter(|row| row.str("action") == "land.pr-held")
+        .map(|row| {
+            let detail = serde_json::from_str(&row.str("detail")).unwrap_or(Value::Null);
+            (i64::from(row.int("seq")), field_of(&detail, "work"))
+        })
+}
+
+/// Whether a try under hold key `key` is a try again of the work its
+/// newest hold (`held`) was written for: the same branches at the same
+/// commits. The pull request the work would stack on may have moved
+/// (`stack_key`'s ` on #N`): another pull request opening moves it under
+/// every held work at once. A work whose own commits changed is new work,
+/// tried at once.
+fn same_work(held: &str, key: &str) -> bool {
+    let bare = |k: &str| match k.rsplit_once(" on #") {
+        Some((work, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            work.to_string()
+        }
+        _ => k.to_string(),
+    };
+    bare(held) == bare(key)
+}
+
+/// Held deliveries one pass tries again. When holds stop standing together
+/// (a forge that is back, a pull request that moves the stack's top under
+/// every held work), a project must not get a pull request for each of them
+/// at once: on 26 November one new pull request released 38 holds of one
+/// project together. The rest wait for the next pass.
+const RETRIES_PER_PASS: usize = 3;
+
+type WorkId = (&'static str, String);
+
+/// The held works this pass tries again: of those whose hold no longer
+/// stands, the `RETRIES_PER_PASS` with the oldest holds. Work never held,
+/// and work whose commits changed since its hold (`same_work`), is new and
+/// not counted. A job a newer finished job repeats is held for that instead
+/// (`repeated_by`) and takes no place.
+#[derive(Debug, Default)]
+struct Retries {
+    /// Each ready work whose newest delivery event is a hold, with that
+    /// hold's `work` key.
+    held: BTreeMap<WorkId, String>,
+    chosen: std::collections::BTreeSet<WorkId>,
+}
+
+impl Retries {
+    /// Whether a try of this work under hold key `key` is a try again.
+    fn again(&self, field: &'static str, value: &str, key: &str) -> bool {
+        self.held
+            .get(&(field, value.to_string()))
+            .is_some_and(|held| same_work(held, key))
+    }
+
+    /// Whether the pass may try this work under hold key `key`: it is not
+    /// a try again, or it is one of the retries chosen for this pass.
+    fn allows(&self, field: &'static str, value: &str, key: &str) -> bool {
+        !self.again(field, value, key) || self.chosen.contains(&(field, value.to_string()))
+    }
+}
+
+/// Ranks the held works of `ready` for this pass: one query a ready work,
+/// and the hold keys and forge waits of the held ones only.
+fn retries_this_pass(
+    s: &hive_store::Store,
+    root: &str,
+    def: &str,
+    slug: &str,
+    ready: &Ready,
+    now: &str,
+) -> Retries {
+    let mut r = Retries::default();
+    let Ok(conn) = s.conn() else {
+        return r;
+    };
+    let mut due: Vec<(i64, WorkId)> = Vec::new();
+    for rt in &ready.tasks {
+        let Some((seq, held)) = newest_hold(&conn, slug, "task", &rt.task) else {
+            continue;
+        };
+        let (key, _) = task_key(&conn, root, slug, rt);
+        if same_work(&held, &key) && !held_already(&conn, slug, "task", &rt.task, &key, now) {
+            due.push((seq, ("task", rt.task.clone())));
+        }
+        r.held.insert(("task", rt.task.clone()), held);
+    }
+    for rj in &ready.jobs {
+        let id = rj.job.str("id");
+        let Some((seq, held)) = newest_hold(&conn, slug, "job", &id) else {
+            continue;
+        };
+        let (key, sha, _) = job_key(&conn, root, slug, rj);
+        if same_work(&held, &key)
+            && next_for(&conn, root, slug, "job", &id, &sha, &key, now) != Next::Nothing
+            && repeated_by(&conn, root, def, slug, &rj.job, &sha).is_none()
+        {
+            due.push((seq, ("job", id.clone())));
+        }
+        r.held.insert(("job", id), held);
+    }
+    for cb in ready.conversations.iter().filter(|cb| cb.settled()) {
+        let Some((seq, held)) = newest_hold(&conn, slug, "head", &cb.branch) else {
+            continue;
+        };
+        let key = work_key(&cb.branch, &cb.sha);
+        if same_work(&held, &key)
+            && next_for(&conn, root, slug, "head", &cb.branch, &cb.sha, &key, now) != Next::Nothing
+        {
+            due.push((seq, ("head", cb.branch.clone())));
+        }
+        r.held.insert(("head", cb.branch.clone()), held);
+    }
+    due.sort();
+    r.chosen = due
+        .into_iter()
+        .take(RETRIES_PER_PASS)
+        .map(|(_, work)| work)
+        .collect();
+    r
+}
+
+/// A newer finished job that carries a held job's commits, and where it
+/// carries them: on its pull request still open, or merged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Repeat {
+    job: String,
+    number: i64,
+    merged: bool,
+}
+
+/// How many newer finished jobs `repeated_by` reads for one held job, the
+/// newest first.
+const REPEAT_CANDIDATES: usize = 50;
+
+/// The commits a job made itself on its branch at `sha`: those after the
+/// default branch along the first parents, merges left out - the stack's
+/// top merged in by `take_in` is a merge, and what it brought sits on its
+/// second parent, so it is not the job's.
+fn own_commits(root: &str, def: &str, sha: &str) -> Vec<String> {
+    let listed = crate::util::git_timeout(
+        root,
+        Duration::from_secs(30),
+        &[
+            "rev-list",
+            "--first-parent",
+            "--no-merges",
+            &format!("refs/heads/{def}..{sha}"),
+        ],
+    );
+    if !listed.ok() {
+        return Vec::new();
+    }
+    listed
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether every commit of `own` is in `other` by its change: reachable
+/// from it, or the same patch there (`git cherry`, which compares patch
+/// ids, so a commit picked or rebased onto another branch counts).
+fn carried_by(root: &str, def: &str, sha: &str, own: &[String], other: &str) -> bool {
+    let cherry = crate::util::git_timeout(
+        root,
+        Duration::from_secs(60),
+        &["cherry", other, sha, &format!("refs/heads/{def}")],
+    );
+    if !cherry.ok() {
+        return false;
+    }
+    let missing: std::collections::BTreeSet<&str> = cherry
+        .stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("+ "))
+        .map(str::trim)
+        .collect();
+    !own.iter().any(|c| missing.contains(c.as_str()))
+}
+
+/// The newest job finished after `job` whose delivered or open work
+/// carries every commit `job` made itself on its branch at `sha`: its pull
+/// request is open, or merged, and holds those commits by their change
+/// (`carried_by`). Trying `job` again would open a second pull request of
+/// the same commits. Where the jobs came from says nothing: one source
+/// names different work from one sitting to the next (a lead's idle work
+/// counts again at every sitting, a schedule does what it finds, a newer
+/// security job answers only the alerts the older one left). A newer job
+/// whose delivery is held, or whose pull request was closed unmerged,
+/// carries nothing; nor does a job with no commits of its own.
+fn repeated_by(
+    q: &(impl crate::util::Querier + ?Sized),
+    root: &str,
+    def: &str,
+    slug: &str,
+    job: &Row,
+    sha: &str,
+) -> Option<Repeat> {
+    if sha.is_empty() {
+        return None;
+    }
+    let own = own_commits(root, def, sha);
+    if own.is_empty() {
+        return None;
+    }
+    let newer = crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT j.id FROM jobs j
+             WHERE j.project = ?1 AND j.status = 'done' AND j.id <> ?2
+             AND (j.created_at > ?3 OR (j.created_at = ?3 AND j.finished_at > ?4))
+             ORDER BY j.created_at DESC, j.finished_at DESC LIMIT {REPEAT_CANDIDATES}"
+        ),
+        &[
+            &slug,
+            &job.str("id"),
+            &job.str("created_at"),
+            &job.str("finished_at"),
+        ],
+    )
+    .unwrap_or_default();
+    newer.into_iter().find_map(|other| {
+        let id = other.str("id");
+        let (action, d) = last_event(q, slug, "job", &id, false)?;
+        if action != "land.pr" && action != "land.merged" {
+            return None;
+        }
+        let number = number_of(&d);
+        // What went to the forge, not what the branch holds now: the
+        // pushed head of the pull request on record.
+        let to = pr_event(q, slug, number).map(|pr| field_of(&pr, "to"))?;
+        if to.is_empty() || rev(root, &format!("{to}^{{commit}}")).is_empty() {
+            return None;
+        }
+        carried_by(root, def, sha, &own, &to).then(|| Repeat {
+            job: id,
+            number,
+            merged: action == "land.merged",
+        })
+    })
+}
+
+/// Whether the job's newest delivery event is the hold `repeated_by`
+/// wrote for this very work (`key`) and newer job: written once, and read
+/// again each pass, so it stands while that job's work is open or merged.
+fn repeat_held(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    job: &str,
+    key: &str,
+    newer: &str,
+) -> bool {
+    last_event(q, slug, "job", job, true).is_some_and(|(action, d)| {
+        action == "land.pr-held" && field(&d, "work") == key && field(&d, "repeated_by") == newer
+    })
 }
 
 /// What `hive land --dry-run` prints: the work a pass would deliver.
@@ -1161,7 +1940,7 @@ fn deliver_work(
     up: &Upstream,
     work: Work<'_>,
     now: &str,
-) -> Result<Delivered, String> {
+) -> Result<Delivered, Undelivered> {
     let slug = project.str("slug");
     let root = project.str("path");
     let def = crate::baseline::default_branch(project.clone());
@@ -1171,7 +1950,21 @@ fn deliver_work(
             .map(|d| field_of(d, "to"))
             .filter(|to| !to.is_empty())
     });
-    push(s, &root, up, &work.local, &work.head, lease.as_deref())?;
+    let lease = match lease {
+        Some(tip) => Some(tip),
+        None => first_push_lease(s, &slug, &root, up, &work)?,
+    };
+    // The upstream holds the tip already when a try before this one
+    // pushed it and nothing has changed: nothing to push.
+    if lease.as_deref() != Some(work.sha.as_str()) {
+        push(s, &root, up, &work.local, &work.head, lease.as_deref())?;
+    }
+    // From here the branch on the upstream is at the tip, and a failure
+    // says so.
+    let pushed = |note: String| Undelivered {
+        note,
+        pushed: Some(work.sha.clone()),
+    };
     let from = {
         let base = crate::util::git_timeout(
             &root,
@@ -1201,7 +1994,9 @@ fn deliver_work(
             &up.repo,
             &work.head,
             &work.base.branch,
-        )? {
+        )
+        .map_err(&pushed)?
+        {
             Some((n, u)) => (n, u, false),
             None => {
                 let (n, u) = crate::landing_pr::create_pull_request(
@@ -1212,7 +2007,8 @@ fn deliver_work(
                     &work.base.branch,
                     &work.title,
                     &work.body,
-                )?;
+                )
+                .map_err(&pushed)?;
                 (n, u, true)
             }
         },
@@ -1249,10 +2045,64 @@ fn deliver_work(
     })
 }
 
+/// The lease of a branch no pull request is on record for. Its first push
+/// forces (`push`) - but not after a hold for a failure on the way to the
+/// forge (`tried_since`). A try made since may have pushed the branch
+/// before the call that failed: `gh pr create` fails after the push, and
+/// its answer can be lost once the pull request is open. And somebody may
+/// have pushed onto the branch during the wait. So the branch on the
+/// upstream is read first, as the head of an open pull request is: not
+/// there, the push must find it so (an empty lease); there with nothing the
+/// tip has not, the push leases on it; there with commits the tip has not,
+/// nothing is pushed and the note says so. None when the push is a first
+/// one as far as the record goes.
+fn first_push_lease(
+    s: &hive_store::Store,
+    slug: &str,
+    root: &str,
+    up: &Upstream,
+    work: &Work<'_>,
+) -> Result<Option<String>, String> {
+    // The work as its holds name it: a task or a job by its id (an
+    // experiment is held as its job), any other branch by its name.
+    let (field, value) = work
+        .ids
+        .iter()
+        .find(|(name, _)| matches!(*name, "task" | "job"))
+        .map_or(("head", work.head.as_str()), |(name, id)| {
+            (*name, id.as_str())
+        });
+    // A store that cannot be read says nothing of the tries since: the
+    // delivery is held, never pushed with a plain force on that silence.
+    let conn = s.conn().map_err(|e| {
+        format!(
+            "{STORE_UNREAD}the lease of {} could not be decided: {e}",
+            work.head
+        )
+    })?;
+    let retried = tried_since(&conn, slug, field, value)?.is_some();
+    drop(conn);
+    if !retried {
+        return Ok(None);
+    }
+    let there = fetch_head(s, root, up, &work.head)?;
+    if there.is_empty() || there == work.sha || is_ancestor(root, &there, &work.sha) {
+        return Ok(Some(there));
+    }
+    Err(format!(
+        "{head} on {remote} is at {}, which the branch here is not built on, and a try after a failed one does not push over it: take those commits into {local}, or delete {head} on {remote} and run hive land --branch {local}",
+        crate::recipe::short(&there, 12),
+        local = work.local,
+        head = work.head,
+        remote = up.remote
+    ))
+}
+
 /// Pushes `local` to `head` on the upstream. A known previous tip is the
-/// lease; the first push of a branch forces, since the `hive/` namespace
-/// on the remote is the daemon's own and a bare `--force-with-lease` has no
-/// tracking ref to read when the push goes to a url.
+/// lease, and an empty one says the upstream has no such branch; the first
+/// push of a branch forces, since the `hive/` namespace on the remote is
+/// the daemon's own and a bare `--force-with-lease` has no tracking ref to
+/// read when the push goes to a url.
 fn push(
     s: &hive_store::Store,
     root: &str,
@@ -1274,9 +2124,14 @@ fn push_rev(
     head: &str,
     lease: Option<&str>,
 ) -> Result<(), String> {
-    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
+    let (mut env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
+    // The push's status line is read below (`rejected`): a rule the
+    // upstream turned the push down for stands, a passing trouble is tried
+    // again. So the push speaks git's own tongue whatever the daemon's
+    // locale, as the fetch does (`fetch_head`).
+    env.push("LC_ALL=C".into());
     if !why.is_empty() {
-        return Err(why);
+        return Err(format!("{PUSH_CREDENTIAL}{why}"));
     }
     let force = match lease {
         Some(sha) => format!("--force-with-lease=refs/heads/{head}:{sha}"),
@@ -1290,6 +2145,9 @@ fn push_rev(
         &["push", &force, &up.url, &format!("{src}:refs/heads/{head}")],
     );
     cleanup("", &[]);
+    if let Some(note) = rejected(&pushed, src, head, up) {
+        return Err(note);
+    }
     if !pushed.ok() {
         let why = format!("{} {}", pushed.stderr, pushed.stdout);
         return Err(hive_cred::redact(
@@ -1307,6 +2165,68 @@ fn push_rev(
     Ok(())
 }
 
+/// What a try of a task with no pull request on record finds of its branch
+/// on the upstream after a failure on the way to the forge (`tried_since`):
+/// the commit the push is to find there (empty: no such branch), and
+/// whether the branch is to be left as it is. None when the push is a
+/// first one as far as the record goes, and forces.
+///
+/// A try made since may have pushed the branch before `gh` failed, and
+/// somebody may have pushed onto it during the wait. What the branch holds
+/// does not tell the two apart: a build stacked on a pull request that has
+/// since closed holds the task's commits and that one's too, and once a
+/// rebase job has replaced the task's branches it holds none of them. So
+/// Hive goes by what it recorded. The branch is its own at the commit a try
+/// since pushed (`pushed` of its hold), and at the last push of the task's
+/// own pull request once that is closed: it keeps its branch on the
+/// upstream, and the task's next round has the same name for its own.
+/// There the branch is replaced by a build on the base as it is now, as a
+/// first delivery makes it, leasing on that commit - or left, when it is
+/// the build of this very work (`key`) on a base (`start`) that has not
+/// moved. At any other commit nothing is pushed, and the note says so.
+fn task_retry(
+    s: &hive_store::Store,
+    project: &Row,
+    up: &Upstream,
+    task: &str,
+    head: &str,
+    key: &str,
+    start: &str,
+) -> Result<Option<(String, bool)>, String> {
+    let slug = project.str("slug");
+    let root = project.str("path");
+    // A store that cannot be read holds the delivery: the build after this
+    // would replace the branch on the upstream with a plain force.
+    let conn = s
+        .conn()
+        .map_err(|e| format!("{STORE_UNREAD}the lease of {head} could not be decided: {e}"))?;
+    let Some(tried) = tried_since(&conn, &slug, "task", task)? else {
+        return Ok(None);
+    };
+    let closed = last_event(&conn, &slug, "task", task, false)
+        .filter(|(action, _)| action != "land.pr")
+        .and_then(|(_, closed)| pr_event(&conn, &slug, number_of(&closed)))
+        .filter(|pr| field(pr, "head") == head)
+        .map(|pr| field_of(&pr, "to"));
+    drop(conn);
+    let there = fetch_head(s, &root, up, head)?;
+    if there.is_empty() {
+        return Ok(Some((there, false)));
+    }
+    match tried.pushed {
+        Some((sha, work)) if sha == there => {
+            let same = work == key && is_ancestor(&root, start, &there);
+            Ok(Some((there, same)))
+        }
+        _ if closed.as_deref() == Some(there.as_str()) => Ok(Some((there, false))),
+        _ => Err(format!(
+            "{head} on {remote} holds commits Hive did not put there (it is at {}), and a try after a failed one does not push over them: delete {head} on {remote} once nothing there is wanted; the task's pull request opens when its work next changes",
+            crate::recipe::short(&there, 12),
+            remote = up.remote
+        )),
+    }
+}
+
 /// Builds `hive/task-<id>` from its base plus every job branch, pushes
 /// it and opens (or finds) its pull request. The base is the default branch,
 /// or the head of the stack's top `top` when another pull request is open:
@@ -1314,7 +2234,9 @@ fn push_rev(
 /// already, the base is the one on record, and the rebuilt branch also
 /// takes in whatever the pull request's head holds beyond the job branches
 /// (a reviewer's or the owner's commits on the forge), so a follow-up job
-/// never pushes those away, and the push expects that head.
+/// never pushes those away, and the push expects that head. A try after a
+/// hold for a failure on the way to the forge reads the branch on the
+/// upstream first and goes by what Hive recorded of it (`task_retry`).
 fn deliver_task(
     s: &hive_store::Store,
     project: &Row,
@@ -1361,6 +2283,35 @@ fn deliver_task(
         }
         None => None,
     };
+    // What a try after a failure on the way to the forge finds of the
+    // branch on the upstream: the commit the push is to find there, and
+    // whether the branch is this very build.
+    let retry = match &rt.open {
+        Some(_) => None,
+        None => {
+            let key = stack_key(task_work_key(&root, branches), top);
+            task_retry(s, project, up, task, &head, &key, &start)?
+        }
+    };
+    let work = |sha: String, lease: Option<String>| Work {
+        kind: "task",
+        ids: vec![("task", task.to_string())],
+        jobs: branches.iter().map(|(j, _)| j.clone()).collect(),
+        title: format!("{task}: {}", rt.title),
+        body: task_body(task, &rt.title, branches),
+        local: head.clone(),
+        head: head.clone(),
+        sha,
+        base: base.clone(),
+        open: rt.open.clone(),
+        lease,
+    };
+    if let Some((there, true)) = &retry {
+        // Nothing to build and nothing to push: the pull request is what
+        // is still to open.
+        let left = work(there.clone(), Some(there.clone()));
+        return Ok(deliver_work(s, project, up, left, now)?.line);
+    }
     let git = |args: &[&str]| crate::util::git_timeout(&root, Duration::from_secs(120), args);
     let git_dir = git(&["rev-parse", "--absolute-git-dir"])
         .stdout
@@ -1436,11 +2387,12 @@ fn deliver_task(
                     files: unmerged,
                     base: base.clone(),
                 })),
-                _ => TaskFault::Other(format!(
+                _ => format!(
                     "{what} does not merge cleanly onto {} with the task's other branches: {}",
                     base.describe(),
                     crate::run::squeeze(&format!("{} {}", m.stdout, m.stderr), 200)
-                )),
+                )
+                .into(),
             });
             break;
         }
@@ -1488,26 +2440,8 @@ fn deliver_task(
     }
     let _ = git(&["worktree", "remove", "--force", &wt_path]);
     result?;
-    let delivered = deliver_work(
-        s,
-        project,
-        up,
-        Work {
-            kind: "task",
-            ids: vec![("task", task.to_string())],
-            jobs: branches.iter().map(|(j, _)| j.clone()).collect(),
-            title: format!("{task}: {}", rt.title),
-            body: task_body(task, &rt.title, branches),
-            local: head.clone(),
-            head,
-            sha: tip,
-            base,
-            open: rt.open.clone(),
-            lease: remote_head,
-        },
-        now,
-    )?
-    .line;
+    let lease = remote_head.or(retry.map(|(there, _)| there));
+    let delivered = deliver_work(s, project, up, work(tip, lease), now)?.line;
     Ok(format!("{delivered}{skipped}"))
 }
 
@@ -1650,9 +2584,14 @@ fn fetch_head(
     head: &str,
 ) -> Result<String, String> {
     let tracking = format!("refs/remotes/{}/{head}", up.remote);
-    let (env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
+    let (mut env, cleanup, why) = crate::forge::remote_credential_env(s, root.to_string(), &up.url);
+    // Whether the upstream has the branch is read from git's words below,
+    // and a try after a failed one decides by it. So this fetch speaks
+    // git's own tongue whatever the daemon's locale: a translated git said
+    // it otherwise, and every such try failed here.
+    env.push("LC_ALL=C".into());
     if !why.is_empty() {
-        return Err(why);
+        return Err(format!("{PUSH_CREDENTIAL}{why}"));
     }
     let (fetched, https) = crate::forge::git_upstream_said(
         root,
@@ -1775,6 +2714,7 @@ fn deliver_job(
         },
         now,
     )
+    .map_err(|why| why.note)
 }
 
 fn job_body(job: &Row) -> String {
@@ -1948,6 +2888,16 @@ fn deliver_proposed(
     if let Some(id) = &conversation {
         ids.push(("conversation", id.clone()));
     }
+    // A finished job's branch proposed by hand is that job's delivery: the
+    // pull request names the job, so the job path finds it open and leaves
+    // the branch alone, and merging it clears the job's branch.
+    let jobs = if conversation.is_some() {
+        Vec::new()
+    } else {
+        job_of_branch(s, &project.str("slug"), branch)
+            .into_iter()
+            .collect()
+    };
     deliver_work(
         s,
         project,
@@ -1955,7 +2905,7 @@ fn deliver_proposed(
         Work {
             kind: "proposed",
             ids,
-            jobs: Vec::new(),
+            jobs,
             title,
             body,
             local: branch.to_string(),
@@ -1970,6 +2920,21 @@ fn deliver_proposed(
         },
         now,
     )
+    .map_err(|why| why.note)
+}
+
+/// The finished job whose branch `branch` is, if any.
+fn job_of_branch(s: &hive_store::Store, slug: &str, branch: &str) -> Option<String> {
+    let conn = s.conn().ok()?;
+    let id = crate::util::query_one(
+        &conn,
+        "SELECT id FROM jobs WHERE project = ? AND branch = ? AND status = 'done'
+         ORDER BY finished_at DESC LIMIT 1",
+        &[&slug, &branch],
+    )
+    .ok()??
+    .str("id");
+    (!id.is_empty()).then_some(id)
 }
 
 /// `hive land --branch B`: pushes the branch and opens its pull request
@@ -2026,6 +2991,7 @@ pub(crate) fn propose_branch(
         branch,
         &sha,
         &stack_key(work_key(branch, &sha), top.as_ref()),
+        now,
     );
     drop(conn);
     if next == Next::Nothing {
@@ -2177,6 +3143,7 @@ pub(crate) fn deliver_experiment(
         &id,
         &sha,
         &stack_key(work_key(&branch, &sha), top.as_ref()),
+        now,
     );
     drop(conn);
     if next == Next::Nothing {
@@ -2231,7 +3198,8 @@ pub(crate) fn deliver_experiment(
             lease: None,
         },
         now,
-    )?;
+    )
+    .map_err(|why| why.note)?;
     Ok((d.number, d.url, d.opened))
 }
 
@@ -5297,6 +6265,1749 @@ mod tests {
         assert!(gh.calls().is_empty());
         assert!(tend_proj(&s, &proj, TEST_NOW).is_empty(), "not retried");
         assert_eq!(events(&s, "land.pr-held"), 1);
+    }
+
+    /// A push that fails holds the work for a wait, not until the work
+    /// changes: what broke the push is repaired outside the work, and the
+    /// finished branch used to stand until somebody moved it. The wait
+    /// grows with the tries that failed in a row, as a failed job's
+    /// recovery does, so an outage of minutes heals in minutes and a fault
+    /// that lasts is tried four times a day.
+    #[test]
+    fn a_failed_push_is_tried_again_after_5_15_45_and_135_minutes_then_every_six_hours() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let tip = ref_of(&repo, "refs/heads/hive/worker/a");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let held = format!(
+            "job pr proj {id}: held: push of hive/worker/a to hive/worker/a on origin/main failed: "
+        );
+        // A later try reads the branch on the upstream before it pushes.
+        let held_again =
+            format!("job pr proj {id}: held: fetch of hive/worker/a from origin/main failed: ");
+
+        // The upstream is out of reach: the push fails and the job is held.
+        run(
+            &repo,
+            &[
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                &format!("{bare}.gone"),
+            ],
+        );
+        let lines = tend_proj(&s, &proj, &at(0));
+        assert!(lines.iter().any(|l| l.starts_with(&held)), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-held"), 1);
+
+        // Still out of reach: each try that fails writes one hold and makes
+        // the next wait longer, and a hold a minute younger than its wait
+        // is not tried.
+        let mut now = 0;
+        for (tries, wait) in [(2, 5), (3, 15), (4, 45), (5, 135), (6, 360), (7, 360)] {
+            tend_proj(&s, &proj, &at(now + wait - 1));
+            assert_eq!(
+                events(&s, "land.pr-held"),
+                tries - 1,
+                "tried a minute before its {wait} minutes were over"
+            );
+            now += wait;
+            let lines = tend_proj(&s, &proj, &at(now));
+            assert!(
+                lines.iter().any(|l| l.starts_with(&held_again)),
+                "{lines:?}"
+            );
+            assert_eq!(
+                events(&s, "land.pr-held"),
+                tries,
+                "not tried after {wait} minutes"
+            );
+            assert_eq!(last_detail(&s, "land.pr-held")["tries"], tries);
+        }
+
+        // The upstream is back. The newest hold stands for its wait, then
+        // the same commit is delivered.
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &at(now + 359));
+        assert!(lines.is_empty(), "{lines:?}");
+        let lines = tend_proj(&s, &proj, &at(now + 360));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #7 opened https://github.com/o/r/pull/7"
+            )]
+        );
+        assert_eq!(bare_ref(&bare, "refs/heads/hive/worker/a"), tip);
+        assert_eq!(events(&s, "land.pr-held"), 7);
+    }
+
+    /// The tries are of one piece of work failing in a row. A new commit
+    /// is new work, tried at once and counted from one; so is whatever
+    /// fails after a delivery that went through.
+    #[test]
+    fn a_new_commit_or_a_delivery_starts_the_wait_of_a_failed_push_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        let tries = || last_detail(&s, "land.pr-held")["tries"].clone();
+
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+        tend_proj(&s, &proj, &at(5));
+        assert_eq!(events(&s, "land.pr-held"), 2);
+        assert_eq!(tries(), 2, "the next wait is 15 minutes");
+
+        // A new commit a minute later: tried at once, counted from one, and
+        // tried again 5 minutes on.
+        commit_on(&repo, "hive/worker/a", "more.txt");
+        tend_proj(&s, &proj, &at(6));
+        assert_eq!(events(&s, "land.pr-held"), 3);
+        assert_eq!(tries(), 1);
+        tend_proj(&s, &proj, &at(10));
+        assert_eq!(events(&s, "land.pr-held"), 3, "tried within 5 minutes");
+        tend_proj(&s, &proj, &at(11));
+        assert_eq!(events(&s, "land.pr-held"), 4);
+        assert_eq!(tries(), 2);
+
+        // The upstream is back and the branch goes out when its 15 minutes
+        // are over. What fails after that starts at one again.
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &at(26));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #7 opened https://github.com/o/r/pull/7"
+            )]
+        );
+        commit_on(&repo, "hive/worker/a", "again.txt");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(27));
+        assert_eq!(events(&s, "land.pr-held"), 5);
+        assert_eq!(tries(), 1);
+    }
+
+    /// The count a forge hold carries, hold by hold: the holds in a row
+    /// for one work key, whatever on the way to the forge failed. A new
+    /// key, a delivery and a hold about the work itself each end it.
+    #[test]
+    fn a_forge_hold_counts_the_holds_in_a_row_for_the_same_work() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let held = |work: &str, note: &str| {
+            hold(
+                &s,
+                TEST_NOW,
+                "proj",
+                json!({"job": "job-1", "work": work}),
+                note,
+            );
+            last_detail(&s, "land.pr-held")["tries"].clone()
+        };
+        let push = "push of hive/w/a to hive/w/a on origin/main failed: no route to host";
+        assert_eq!(held("hive/w/a 111", push), 1);
+        assert_eq!(
+            held("hive/w/a 111", "gh pr create failed: HTTP 502: Bad Gateway"),
+            2
+        );
+        assert_eq!(held("hive/w/a 111", push), 3);
+        assert_eq!(held("hive/w/a 222", push), 1, "a new work key");
+        assert_eq!(held("hive/w/a 222", push), 2);
+        event(
+            &s,
+            TEST_NOW,
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "job": "job-1", "number": 7, "to": "222"}),
+        );
+        assert_eq!(held("hive/w/a 222", push), 1, "after a delivery");
+        assert_eq!(
+            held(
+                "hive/w/a 222",
+                "hive/w/a does not merge cleanly onto main, which it would stack on: conflicts in a.txt"
+            ),
+            Value::Null,
+            "a hold about the work carries no count"
+        );
+        assert_eq!(held("hive/w/a 222", push), 1, "after a hold about the work");
+    }
+
+    /// A push credential that cannot be read is no fault of the work
+    /// either: the hold names it and is tried again after its wait.
+    #[test]
+    fn a_hold_for_a_push_credential_that_cannot_be_read_is_tried_again_after_its_wait() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let tip = ref_of(&repo, "refs/heads/hive/worker/a");
+        set_setting(&s, "push.credential", "file:///nonexistent/push-key");
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.starts_with(&format!(
+                "job pr proj {id}: held: push credential: /nonexistent/push-key: no such file or directory"
+            ))),
+            "{lines:?}"
+        );
+
+        // The reference is repaired: nothing within the first wait, the
+        // branch after it.
+        set_setting(&s, "push.credential", "");
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 4));
+        assert!(lines.is_empty(), "{lines:?}");
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 5));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #7 opened https://github.com/o/r/pull/7"
+            )]
+        );
+        assert_eq!(bare_ref(&bare, "refs/heads/hive/worker/a"), tip);
+    }
+
+    /// A hold about the work itself is not a matter of waiting: a branch
+    /// that conflicts with the pull request it would stack on stands until
+    /// the work changes, however old the hold is.
+    /// The jobs of `land.pr` (or any other action) events, oldest first.
+    fn jobs_of_events(s: &hive_store::Store, action: &str) -> Vec<String> {
+        must_rows(
+            s,
+            "SELECT json_extract(detail, '$.job') AS job FROM events WHERE action = ? ORDER BY seq",
+            &[&action],
+        )
+        .iter()
+        .map(|row| row.str("job"))
+        .collect()
+    }
+
+    /// When holds stop standing together - the forge is back - a pass tries
+    /// a few of them again, the oldest hold first, and leaves the rest for
+    /// the next pass: one repair does not open a pull request for every
+    /// held job at once.
+    #[test]
+    fn a_pass_tries_a_few_holds_again_the_oldest_first() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        for n in 0..5 {
+            push_branch(&s, &proj, &repo, &format!("hive/worker/j{n}"));
+        }
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+
+        // Work never held is not bounded: all five are tried and held.
+        tend_proj(&s, &proj, &at(0));
+        let first = jobs_of_events(&s, "land.pr-held");
+        assert_eq!(first.len(), 5, "{first:?}");
+
+        // Their waits are over and the forge is still down: three are tried
+        // again, the oldest holds, and two wait.
+        let lines = tend_proj(&s, &proj, &at(5));
+        assert!(
+            lines.contains(&format!(
+                "proj: 2 held deliveries wait for a later pass ({RETRIES_PER_PASS} are tried again a pass, the oldest hold first)"
+            )),
+            "{lines:?}"
+        );
+        assert_eq!(jobs_of_events(&s, "land.pr-held")[5..], first[..3]);
+
+        // The three held again wait 15 minutes, the two left 5 from the
+        // first hold; with the forge back the two oldest holds go first,
+        // then the oldest of the three.
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &at(20));
+        // They open in the order the pass reads its work (the jobs' own),
+        // which keeps a stack in the order its work was done.
+        let sorted = |mut ids: Vec<String>| {
+            ids.sort();
+            ids
+        };
+        let opened = jobs_of_events(&s, "land.pr");
+        assert_eq!(
+            sorted(opened),
+            sorted(vec![first[3].clone(), first[4].clone(), first[0].clone()]),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("proj: 2 held deliveries wait")),
+            "{lines:?}"
+        );
+
+        // The next pass takes the rest.
+        let lines = tend_proj(&s, &proj, &at(21));
+        let opened = jobs_of_events(&s, "land.pr");
+        assert_eq!(opened.len(), 5, "{lines:?}");
+        assert_eq!(sorted(opened[3..].to_vec()), sorted(first[1..3].to_vec()));
+        assert!(tend_proj(&s, &proj, &at(22)).is_empty());
+    }
+
+    /// A job's branch with `from`'s own commit picked onto it: a newer job
+    /// that carries the older one's change, by its patch.
+    fn carrying(s: &hive_store::Store, proj: &Row, repo: &str, name: &str, from: &str) -> String {
+        let id = push_branch(s, proj, repo, name).str("id");
+        run(repo, &["git", "checkout", "-q", name]);
+        run(repo, &["git", "cherry-pick", from]);
+        run(repo, &["git", "checkout", "-q", "main"]);
+        id
+    }
+
+    /// Sets a job's source and the time it was made.
+    fn sourced(s: &hive_store::Store, id: &str, source: &str, created: &str) {
+        exec1(
+            s,
+            "UPDATE jobs SET source = ?, created_at = ? WHERE id = ?",
+            &[&source, &created, &id],
+        );
+    }
+
+    /// A held job is not tried again while a newer finished job's pull
+    /// request, open or merged, carries every commit of it (by patch, so a
+    /// commit picked onto the newer branch counts): the older one would
+    /// open a second pull request of the same change. The hold is read
+    /// again each pass, and once the newer pull request closes unmerged the
+    /// older one goes.
+    #[test]
+    fn a_held_job_whose_commits_a_newer_open_pull_request_carries_waits_for_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let old = push_branch(&s, &proj, &repo, "hive/worker/old").str("id");
+        let old_tip = ref_of(&repo, "refs/heads/hive/worker/old");
+        sourced(&s, &old, "schedule:SCHED-1", "2026-09-06T08:00:00Z");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+        assert_eq!(events(&s, "land.pr-held"), 1);
+
+        // A newer job of another source carries the old one's change, and
+        // opens its pull request while the old one waits.
+        let new = carrying(&s, &proj, &repo, "hive/worker/new", &old_tip);
+        sourced(&s, &new, "suggestion:x", "2026-09-06T09:00:00Z");
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &at(1));
+        assert_eq!(
+            jobs_of_events(&s, "land.pr"),
+            std::slice::from_ref(&new),
+            "{lines:?}"
+        );
+
+        let lines = tend_proj(&s, &proj, &at(5));
+        let held = format!(
+            "job pr proj {old}: held: hive/worker/old is not tried again: job {new} finished later and its pull request #7 (open) carries every commit of it"
+        );
+        assert_eq!(lines, [held], "{lines:?}");
+        assert_eq!(last_detail(&s, "land.pr-held")["repeated_by"], new);
+        for minutes in [60, 24 * 60] {
+            let lines = tend_proj(&s, &proj, &at(minutes));
+            assert!(lines.is_empty(), "{lines:?}");
+        }
+        assert_eq!(jobs_of_events(&s, "land.pr"), std::slice::from_ref(&new));
+
+        // The newer pull request is closed unmerged: the old job goes.
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, &at(25 * 60));
+        assert_eq!(
+            jobs_of_events(&s, "land.pr"),
+            [new.clone(), old.clone()],
+            "{lines:?}"
+        );
+    }
+
+    /// One source names different work from one sitting to the next: a
+    /// lead's idle work counts again at every sitting, a schedule does what
+    /// it finds. A newer job of the same source whose commits are not the
+    /// held one's leaves it to be tried again.
+    #[test]
+    fn a_newer_job_of_the_same_source_with_other_commits_does_not_hold_the_older() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let source = "lead-idle:proj:2026-09-06:1";
+        let old = push_branch(&s, &proj, &repo, "hive/worker/old").str("id");
+        sourced(&s, &old, source, "2026-09-06T08:00:00Z");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+
+        let new = push_branch(&s, &proj, &repo, "hive/worker/new").str("id");
+        sourced(&s, &new, source, "2026-09-06T09:00:00Z");
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        tend_proj(&s, &proj, &at(1));
+        let lines = tend_proj(&s, &proj, &at(5));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with(&format!("job pr proj job {old}: #8 opened"))),
+            "{lines:?}"
+        );
+        assert_eq!(jobs_of_events(&s, "land.pr"), [new, old]);
+    }
+
+    /// A newer job carrying the held one's commits counts only once its
+    /// work is on the forge: one whose own delivery is held carries
+    /// nothing yet, and the older job is tried again.
+    #[test]
+    fn a_newer_job_whose_own_delivery_is_held_does_not_hold_the_older() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let old = push_branch(&s, &proj, &repo, "hive/worker/old").str("id");
+        let old_tip = ref_of(&repo, "refs/heads/hive/worker/old");
+        sourced(&s, &old, "schedule:SCHED-1", "2026-09-06T08:00:00Z");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+        let new = carrying(&s, &proj, &repo, "hive/worker/new", &old_tip);
+        sourced(&s, &new, "schedule:SCHED-1", "2026-09-06T09:00:00Z");
+        tend_proj(&s, &proj, &at(1));
+        assert_eq!(events(&s, "land.pr-held"), 2);
+
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &at(5));
+        assert_eq!(jobs_of_events(&s, "land.pr"), [old], "{lines:?}");
+    }
+
+    /// Whether a try is a try again of a held work reads the hold key
+    /// without the pull request the work would stack on.
+    #[test]
+    fn a_try_again_is_the_same_branches_at_the_same_commits_whatever_the_stack() {
+        assert!(same_work("hive/w/a abc on #7", "hive/w/a abc on #9"));
+        assert!(same_work("hive/w/a abc", "hive/w/a abc on #9"));
+        assert!(!same_work("hive/w/a abc", "hive/w/a def"));
+    }
+
+    /// A pull request opening moves the stack's top under every held job,
+    /// and so changes every hold key at once: on 26 November one new pull
+    /// request released 38 holds of one project. Those are tries again,
+    /// three a pass, not new work.
+    #[test]
+    fn holds_released_by_a_moving_top_are_tried_a_few_a_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        push_branch(&s, &proj, &repo, "hive/worker/top");
+        tend_proj(&s, &proj, &at(0));
+        assert_eq!(events(&s, "land.pr"), 1);
+
+        // Five jobs finish while the forge is out of reach: each is held
+        // on its way to stack on #7.
+        for n in 0..5 {
+            push_branch(&s, &proj, &repo, &format!("hive/worker/j{n}"));
+        }
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(1));
+        assert_eq!(events(&s, "land.pr-held"), 5);
+        assert!(
+            last_detail(&s, "land.pr-held")["work"]
+                .as_str()
+                .unwrap()
+                .ends_with(" on #7")
+        );
+
+        // The forge is back and a new job opens #8 inside their waits.
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        push_branch(&s, &proj, &repo, "hive/worker/moves");
+        let lines = tend_proj(&s, &proj, &at(2));
+        assert_eq!(events(&s, "land.pr"), 2, "{lines:?}");
+
+        // Every hold key moved with the top: three are tried, two wait.
+        let lines = tend_proj(&s, &proj, &at(3));
+        assert_eq!(events(&s, "land.pr"), 5, "{lines:?}");
+        assert!(
+            lines.contains(&format!(
+                "proj: 2 held deliveries wait for a later pass ({RETRIES_PER_PASS} are tried again a pass, the oldest hold first)"
+            )),
+            "{lines:?}"
+        );
+    }
+
+    /// A try built on the stack's top merges the top into the job's branch
+    /// (`take_in`) before it pushes. When the forge call after the push
+    /// fails, the branch stays moved, but the work is the same: the hold
+    /// stands for its wait and the next try is a try again.
+    #[test]
+    fn a_job_branch_take_in_moved_is_still_the_held_work() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        push_branch(&s, &proj, &repo, "hive/worker/top");
+        tend_proj(&s, &proj, &at(0));
+        let id = push_branch(&s, &proj, &repo, "hive/worker/a").str("id");
+        let tip = ref_of(&repo, "refs/heads/hive/worker/a");
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        let lines = tend_proj(&s, &proj, &at(1));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj {id}: held: gh pr create failed: HTTP 502: Bad Gateway"
+            )]
+        );
+        let moved = ref_of(&repo, "refs/heads/hive/worker/a");
+        assert_ne!(moved, tip, "take_in merged the top into the branch");
+        assert_eq!(own_tip(&repo, &moved), tip);
+
+        gh.heal();
+        let lines = tend_proj(&s, &proj, &at(2));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-held"), 1);
+        let lines = tend_proj(&s, &proj, &at(6));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with(&format!("job pr proj job {id}: #8 opened"))),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_hold_about_the_work_itself_is_not_tried_again_after_the_wait() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        push_branch(&s, &proj, &repo, "hive/worker/a");
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(events(&s, "land.pr"), 1);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/b");
+        commit_on(&repo, "hive/worker/b", "hive_worker_a.txt");
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj {}: held: hive/worker/b does not merge cleanly onto hive/worker/a (pull request #7), which it would stack on: conflicts in hive_worker_a.txt",
+                job.str("id")
+            )]
+        );
+        assert_eq!(events(&s, "land.pr-held"), 1);
+        let lines = tend_proj(&s, &proj, &crate::util::plus_hours(TEST_NOW, 24.0));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr-held"), 1);
+    }
+
+    /// What a hold's note starts with says whose it is: the notes the push,
+    /// the fetch, `gh` and the push credential write are the forge's, and
+    /// every note about the branches themselves is the work's.
+    #[test]
+    fn a_hold_is_the_forges_or_the_works_by_what_its_note_names() {
+        for (note, forge) in [
+            (
+                "push of hive/w/a to hive/w/a on origin/main failed: fatal: unable to access",
+                true,
+            ),
+            (
+                "fetch of hive/task-T-1 from origin/main failed: Connection refused",
+                true,
+            ),
+            (
+                "pull request #7: fetch of hive/w/a from origin/main failed: no output",
+                true,
+            ),
+            ("push credential: op read failed: op timed out", true),
+            (
+                "gh pr create as someone failed: HTTP 502: Bad Gateway",
+                true,
+            ),
+            ("gh did not name the pull request for hive/w/a", true),
+            (
+                "gh (the GitHub CLI) is not installed where the daemon can run it; install it and run gh auth login as the user the daemon runs as",
+                true,
+            ),
+            ("gh pr list answered oddly: expected value", true),
+            (
+                "gh does not merge cleanly onto main, which it would stack on: conflicts in a.txt",
+                false,
+            ),
+            ("gh (job j-1) is not in /srv/checkout", false),
+            (
+                "hive/w/b does not merge cleanly onto hive/w/a (pull request #7), which it would stack on: conflicts in push of.txt",
+                false,
+            ),
+            ("hive/w/a (job j-1) is not in /srv/checkout", false),
+            (
+                "hive/w/a (pull request #7, which the work would stack on) is gone from origin",
+                false,
+            ),
+            ("pull request #7 has no head branch on record", false),
+            (
+                "hive/w/c is not built on the head of pull request #7 (0123456789ab); rebase it onto hive/w/a first",
+                false,
+            ),
+            ("worktree add failed: fatal: could not lock", false),
+            (
+                "origin/main rejected the push of hive/w/a to hive/w/a: ! [remote rejected] hive/w/a -> hive/w/a (pre-receive hook declined)",
+                false,
+            ),
+            (
+                "nothing to open a pull request for: gh pr create failed: pull request create failed: GraphQL: No commits between main and hive/w/a (createPullRequest)",
+                false,
+            ),
+            (
+                "hive/w/a on origin is at 0123456789ab, which the branch here is not built on, and a try after a failed one does not push over it: take those commits into hive/w/a, or delete hive/w/a on origin and run hive land --branch hive/w/a",
+                false,
+            ),
+            (
+                "hive/task-T-1 on origin holds commits Hive did not put there (it is at 0123456789ab), and a try after a failed one does not push over them: delete hive/task-T-1 on origin once nothing there is wanted; the task's pull request opens when its work next changes",
+                false,
+            ),
+            (
+                "push of hive/w/a to hive/w/a on origin/main failed: ! [remote rejected] hive/w/a -> hive/w/a (failed to lock)",
+                true,
+            ),
+        ] {
+            assert_eq!(forge_fault(note), forge, "{note}");
+        }
+    }
+
+    /// A push the upstream answers and turns down is about what was
+    /// pushed, not the way there: a hook that refuses the branch, here. No
+    /// later try changes the answer, so the hold opens with the upstream,
+    /// not with the push, and stands until the work changes.
+    #[test]
+    fn a_push_the_upstream_rejects_is_the_works_and_is_not_tried_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let hook = std::path::Path::new(&bare).join("hooks/pre-receive");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho 'GH001: Large files detected.' >&2\nexit 1\n",
+        )
+        .unwrap();
+        run(".", &["chmod", "+x", &hook.display().to_string()]);
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        let held = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("job pr proj {id}: held: ")))
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(
+            held.contains(
+                ": held: origin/main rejected the push of hive/worker/a to hive/worker/a: "
+            ) && held.contains("(pre-receive hook declined)"),
+            "{held}"
+        );
+        for minutes in [5, 360, 24 * 60] {
+            tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, minutes));
+        }
+        assert_eq!(
+            events(&s, "land.pr-held"),
+            1,
+            "a push the upstream rejected was tried again"
+        );
+    }
+
+    /// So is a lease that no longer holds: somebody pushed onto the pull
+    /// request's head, and the push of the branch's new commits is turned
+    /// down for it. What was pushed there stays.
+    #[test]
+    fn a_push_whose_lease_no_longer_holds_is_the_works_and_is_not_tried_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(events(&s, "land.pr"), 1);
+
+        run(&repo, &["git", "branch", "hand", "hive/worker/a"]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(&repo, &["git", "push", "-q", &bare, "hand:hive/worker/a"]);
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        commit_on(&repo, "hive/worker/a", "more.txt");
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        let held = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("job pr proj {id}: held: ")))
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(
+            held.contains(
+                ": held: origin/main rejected the push of hive/worker/a to hive/worker/a: "
+            ) && held.contains("(stale info)"),
+            "{held}"
+        );
+        for minutes in [5, 360, 24 * 60] {
+            tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, minutes));
+        }
+        assert_eq!(
+            events(&s, "land.pr-held"),
+            1,
+            "a push whose lease did not hold was tried again"
+        );
+        assert_eq!(bare_ref(&bare, "refs/heads/hive/worker/a"), hand);
+    }
+
+    /// And so is `gh pr create` answering that the branch holds nothing
+    /// its base has not: the note opens with that, not with the call.
+    #[test]
+    fn a_pull_request_with_no_commits_to_show_is_the_works_and_is_not_tried_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        gh.fail_creates(
+            "pull request create failed: GraphQL: No commits between main and hive/worker/a (createPullRequest)",
+        );
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj {}: held: nothing to open a pull request for: gh pr create failed: pull request create failed: GraphQL: No commits between main and hive/worker/a (createPullRequest)",
+                job.str("id")
+            )]
+        );
+        for minutes in [5, 360, 24 * 60] {
+            tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, minutes));
+        }
+        assert_eq!(
+            events(&s, "land.pr-held"),
+            1,
+            "a pull request with nothing to show was tried again"
+        );
+    }
+
+    /// A try after a hold for a failure on the way to the forge does not
+    /// force the branch onto the upstream, as a first push does. An earlier
+    /// try pushed it before `gh` failed, and somebody may have pushed onto
+    /// it since. So the branch there is read first: as the try left it, it
+    /// stays as it is; holding commits the local branch has not, it is not
+    /// pushed over, and the hold says so until the work changes.
+    #[test]
+    fn a_retry_does_not_push_over_commits_added_to_the_branch_on_the_upstream() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let tip = ref_of(&repo, "refs/heads/hive/worker/a");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let on_forge = || bare_ref(&bare, "refs/heads/hive/worker/a");
+
+        // The push goes through and `gh pr create` fails, twice.
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        let down = [format!(
+            "job pr proj {id}: held: gh pr create failed: HTTP 502: Bad Gateway"
+        )];
+        assert_eq!(tend_proj(&s, &proj, &at(0)), down);
+        assert_eq!(on_forge(), tip);
+        assert_eq!(tend_proj(&s, &proj, &at(5)), down);
+        assert_eq!(on_forge(), tip);
+
+        // Somebody pushes a commit onto the branch during the wait, and gh
+        // answers again.
+        run(&repo, &["git", "branch", "hand", "hive/worker/a"]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(&repo, &["git", "push", "-q", &bare, "hand:hive/worker/a"]);
+        gh.heal();
+        let lines = tend_proj(&s, &proj, &at(20));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj {id}: held: hive/worker/a on origin is at {}, which the branch here is not built on, and a try after a failed one does not push over it: take those commits into hive/worker/a, or delete hive/worker/a on origin and run hive land --branch hive/worker/a",
+                crate::recipe::short(&hand, 12)
+            )]
+        );
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        assert_eq!(events(&s, "land.pr"), 0);
+
+        // The hold is about the work: it stands, however old it is.
+        let lines = tend_proj(&s, &proj, &at(24 * 60));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(on_forge(), hand);
+
+        // The branch moves without those commits: new work, and still not
+        // pushed over them.
+        commit_on(&repo, "hive/worker/a", "more.txt");
+        let lines = tend_proj(&s, &proj, &at(24 * 60));
+        assert!(
+            lines.len() == 1 && lines[0].contains("which the branch here is not built on"),
+            "{lines:?}"
+        );
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+
+        // With those commits in the branch it goes out, on top of them.
+        run(&repo, &["git", "branch", "-f", "hive/worker/a", "hand"]);
+        let tip = commit_on(&repo, "hive/worker/a", "more.txt");
+        let lines = tend_proj(&s, &proj, &at(24 * 60));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #7 opened https://github.com/o/r/pull/7"
+            )]
+        );
+        assert_eq!(on_forge(), tip);
+    }
+
+    /// The refusal to push over somebody's commits does not lapse however
+    /// many holds follow it: each refusal is a hold of its own, and a new
+    /// one is written whenever the hold key changes (each pull request the
+    /// project opens moves the stack's top). Here 65 of them stand between
+    /// the forge hold and the next change of the work - one more than the
+    /// 64 a window on the history used to read - and that change is still
+    /// not pushed over the commits on the upstream.
+    #[test]
+    fn a_retry_does_not_push_over_commits_on_the_upstream_after_65_holds() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let tip = ref_of(&repo, "refs/heads/hive/worker/a");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let on_forge = || bare_ref(&bare, "refs/heads/hive/worker/a");
+
+        // The push goes through and `gh pr create` fails.
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        tend_proj(&s, &proj, &at(0));
+        assert_eq!(on_forge(), tip);
+
+        // Somebody pushes onto the branch; the next try is held for it.
+        run(&repo, &["git", "branch", "hand", "hive/worker/a"]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(&repo, &["git", "push", "-q", &bare, "hand:hive/worker/a"]);
+        gh.heal();
+        let lines = tend_proj(&s, &proj, &at(20));
+        assert!(
+            lines.len() == 1 && lines[0].contains("which the branch here is not built on"),
+            "{lines:?}"
+        );
+
+        // 65 more holds about the work, each for another key.
+        let conn = s.conn().unwrap();
+        for n in 0..65 {
+            crate::util::event_at(
+                &conn,
+                &at(30 + n),
+                ACTOR,
+                "land.pr-held",
+                "proj",
+                json!({
+                    "job": id,
+                    "work": format!("hive/worker/a {} on #{n}", crate::recipe::short(&tip, 12)),
+                    "note": format!("hive/worker/a on origin is at {}, which the branch here is not built on", crate::recipe::short(&hand, 12)),
+                }),
+            );
+        }
+        drop(conn);
+        assert!(
+            s.conn()
+                .is_ok_and(|conn| tried_since(&conn, "proj", "job", &id).unwrap().is_some()),
+            "the forge hold fell out of what was read"
+        );
+
+        // The work changes: still not pushed over those commits.
+        commit_on(&repo, "hive/worker/a", "more.txt");
+        let lines = tend_proj(&s, &proj, &at(24 * 60));
+        assert!(
+            lines.len() == 1 && lines[0].contains("which the branch here is not built on"),
+            "{lines:?}"
+        );
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        assert_eq!(events(&s, "land.pr"), 0);
+    }
+
+    /// What a try reads of the tries before it ends at the work's last
+    /// delivery: a forge hold before a pull request opened, merged or closed
+    /// says nothing of the branch since.
+    #[test]
+    fn the_tries_since_end_at_the_works_last_delivery() {
+        let s = new_store();
+        let conn = s.conn().unwrap();
+        let hold = |at: &str, note: &str, pushed: Option<&str>| {
+            let mut d = json!({"job": "j-1", "work": "hive/w/a abc", "note": note});
+            if let Some(sha) = pushed {
+                d["pushed"] = json!(sha);
+            }
+            crate::util::event_at(&conn, at, ACTOR, "land.pr-held", "proj", d);
+        };
+        assert!(tried_since(&conn, "proj", "job", "j-1").unwrap().is_none());
+        hold(TEST_NOW, "gh pr create failed: HTTP 502", Some("abc"));
+        for _ in 0..65 {
+            hold(
+                TEST_NOW,
+                "hive/w/a on origin is at def, which the branch here is not built on",
+                None,
+            );
+        }
+        let tried = tried_since(&conn, "proj", "job", "j-1")
+            .unwrap()
+            .expect("a forge hold since");
+        assert_eq!(tried.pushed, Some(("abc".into(), "hive/w/a abc".into())));
+        // Another job's holds and another project's are not this work's.
+        assert!(tried_since(&conn, "proj", "job", "j-2").unwrap().is_none());
+        assert!(tried_since(&conn, "other", "job", "j-1").unwrap().is_none());
+        // A pull request that carried the job ends what is read.
+        crate::util::event_at(
+            &conn,
+            TEST_NOW,
+            ACTOR,
+            "land.pr",
+            "proj",
+            json!({"jobs": ["j-1"], "number": 3, "to": "abc"}),
+        );
+        assert!(tried_since(&conn, "proj", "job", "j-1").unwrap().is_none());
+        hold(
+            TEST_NOW,
+            "push of hive/w/a to hive/w/a on origin/main failed: x",
+            None,
+        );
+        let tried = tried_since(&conn, "proj", "job", "j-1")
+            .unwrap()
+            .expect("a forge hold since");
+        assert_eq!(
+            tried.pushed, None,
+            "the push recorded before the pull request"
+        );
+        for action in ["land.merged", "land.pr-closed"] {
+            crate::util::event_at(
+                &conn,
+                TEST_NOW,
+                ACTOR,
+                action,
+                "proj",
+                json!({"job": "j-1"}),
+            );
+            assert!(
+                tried_since(&conn, "proj", "job", "j-1").unwrap().is_none(),
+                "{action}"
+            );
+            hold(
+                TEST_NOW,
+                "fetch of hive/w/a from origin/main failed: x",
+                None,
+            );
+        }
+    }
+
+    /// A task's branch is built for its pull request, so what it holds does
+    /// not say whose it is. A try after a hold for a failure on the way to
+    /// the forge goes by Hive's own record instead: the hold of a try whose
+    /// push went through names the commit it pushed. The branch at that
+    /// commit is left as it is while nothing has changed, and at any other
+    /// commit - somebody pushed onto it - it is not pushed over: the hold
+    /// says so until the work changes.
+    #[test]
+    fn a_task_retry_leaves_its_own_push_as_it_is_and_does_not_push_over_anybody_elses() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        let lines = tend_proj(&s, &proj, &at(0));
+        assert!(
+            lines.iter().any(|l| l.starts_with(&format!(
+                "task pr proj {task}: held: gh pr create failed: HTTP 502: Bad Gateway"
+            ))),
+            "{lines:?}"
+        );
+        let pushed = on_forge();
+        assert_eq!(last_detail(&s, "land.pr-held")["pushed"], pushed);
+
+        // gh still fails when the wait is over: the branch is not built
+        // and pushed a second time. (Git dates a commit to the second, so
+        // a build made within the same second would be the same commit.)
+        std::thread::sleep(Duration::from_millis(1100));
+        tend_proj(&s, &proj, &at(5));
+        assert_eq!(events(&s, "land.pr-held"), 2);
+        assert_eq!(on_forge(), pushed, "the retry pushed a new tip");
+
+        // Somebody pushes a commit onto it, and gh answers again.
+        run(&repo, &["git", "branch", "hand", &pushed]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(
+            &repo,
+            &["git", "push", "-q", &bare, &format!("hand:{head}")],
+        );
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        gh.heal();
+        let lines = tend_proj(&s, &proj, &at(20));
+        assert_eq!(
+            lines,
+            [format!(
+                "task pr proj {task}: held: {head} on origin holds commits Hive did not put there (it is at {}), and a try after a failed one does not push over them: delete {head} on origin once nothing there is wanted; the task's pull request opens when its work next changes",
+                crate::recipe::short(&hand, 12)
+            )]
+        );
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        let lines = tend_proj(&s, &proj, &at(24 * 60));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr"), 0);
+
+        // The branch is deleted there and the work changes: a first
+        // delivery.
+        run(
+            ".",
+            &[
+                "git",
+                "--git-dir",
+                &bare,
+                "update-ref",
+                "-d",
+                &format!("refs/heads/{head}"),
+            ],
+        );
+        let more = commit_on(&repo, "hive/worker/a", "more.txt");
+        let lines = tend_proj(&s, &proj, &at(24 * 60));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        assert!(is_ancestor(&repo, &more, &on_forge()));
+        assert!(!is_ancestor(&repo, &hand, &on_forge()));
+    }
+
+    /// An earlier try built the task on the pull request the stack then
+    /// had on top, pushed it, and `gh` failed. That pull request is closed
+    /// unmerged before the next try. The task's commits are all in the
+    /// branch on the upstream, and so are the closed pull request's: the
+    /// branch is Hive's own push, and is replaced by a build on the base
+    /// as it is now, as a first delivery would make it.
+    #[test]
+    fn a_task_retry_after_the_pull_request_below_closed_drops_that_ones_commits() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        push_branch(&s, &proj, &repo, "hive/worker/n");
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(last_detail(&s, "land.pr")["number"], 7);
+        let below = ref_of(&repo, "refs/heads/hive/worker/n");
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        tend_proj(&s, &proj, TEST_NOW);
+        let pushed = on_forge();
+        assert!(
+            is_ancestor(&repo, &below, &pushed),
+            "the task was not built on pull request #7"
+        );
+
+        gh.set_state(7, "CLOSED");
+        gh.heal();
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 1));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #8 opened"))),
+            "{lines:?}"
+        );
+        assert_eq!(last_detail(&s, "land.pr")["base"], "main");
+        assert!(
+            !is_ancestor(&repo, &below, &on_forge()),
+            "the closed pull request's commits are in the task's"
+        );
+        for branch in ["hive/worker/a", "hive/worker/b"] {
+            assert!(
+                is_ancestor(
+                    &repo,
+                    &ref_of(&repo, &format!("refs/heads/{branch}")),
+                    &on_forge()
+                ),
+                "{branch} is not in the pull request"
+            );
+        }
+    }
+
+    /// A task's retry reads every hold since its last delivery too: 65
+    /// holds after the forge hold (more than a window of 64 held) and the
+    /// branch somebody pushed onto is still not replaced.
+    #[test]
+    fn a_task_retry_does_not_push_over_commits_on_the_upstream_after_65_holds() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_branches(&s, &proj, &repo, "One thing", &["hive/worker/a"]);
+        let head = task_branch(&task);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        tend_proj(&s, &proj, TEST_NOW);
+        let pushed = on_forge();
+        run(&repo, &["git", "branch", "hand", &pushed]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(
+            &repo,
+            &["git", "push", "-q", &bare, &format!("hand:{head}")],
+        );
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        gh.heal();
+
+        let conn = s.conn().unwrap();
+        for n in 0..65 {
+            crate::util::event_at(
+                &conn,
+                &crate::util::plus_minutes(TEST_NOW, 1 + n),
+                ACTOR,
+                "land.pr-held",
+                "proj",
+                json!({
+                    "task": task,
+                    "work": format!("hive/worker/a x on #{n}"),
+                    "note": format!("{head} on origin holds commits Hive did not put there"),
+                }),
+            );
+        }
+        drop(conn);
+        run(&repo, &["git", "branch", "-f", "hive/worker/a", "main"]);
+        commit_on(&repo, "hive/worker/a", "rebased.txt");
+        let lines = tend_proj(&s, &proj, &crate::util::plus_hours(TEST_NOW, 24.0));
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        assert!(
+            lines.len() == 1 && lines[0].contains("holds commits Hive did not put there"),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr"), 0);
+    }
+
+    /// A conversation's branch is pushed as it is, and a try after a
+    /// failed one reads the upstream first, as a job's does: somebody's
+    /// commit there is not pushed over.
+    #[test]
+    fn a_conversation_retry_does_not_push_over_commits_on_the_upstream() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        seed_conversation(&s, "abc123", &repo);
+        run(&repo, &["git", "branch", "hive/chat-abc123", "main"]);
+        let tip = commit_dated(
+            &repo,
+            "hive/chat-abc123",
+            "chat.txt",
+            "2026-09-06T09:00:00Z",
+        );
+        let on_forge = || bare_ref(&bare, "refs/heads/hive/chat-abc123");
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(
+            lines,
+            ["proposed proj hive/chat-abc123: held: gh pr create failed: HTTP 502: Bad Gateway"]
+        );
+        assert_eq!(on_forge(), tip);
+
+        run(&repo, &["git", "branch", "hand", "hive/chat-abc123"]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(
+            &repo,
+            &["git", "push", "-q", &bare, "hand:hive/chat-abc123"],
+        );
+        gh.heal();
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 5));
+        assert!(
+            lines.len() == 1
+                && lines[0].starts_with(
+                    "proposed proj hive/chat-abc123: held: hive/chat-abc123 on origin is at"
+                )
+                && lines[0].contains("which the branch here is not built on"),
+            "{lines:?}"
+        );
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        assert_eq!(events(&s, "land.pr"), 0);
+    }
+
+    /// A kept experiment's branch goes the same way: after a failed try the
+    /// upstream is read first and somebody's commit there is not pushed
+    /// over.
+    #[test]
+    fn an_experiment_retry_does_not_push_over_commits_on_the_upstream() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "evolve/e1");
+        exec1(
+            &s,
+            "UPDATE jobs SET kind = 'experiment' WHERE id = ?",
+            &[&job.str("id")],
+        );
+        let job = job_row(&s, &job.str("id"));
+        let tip = ref_of(&repo, "refs/heads/evolve/e1");
+        let on_forge = || bare_ref(&bare, "refs/heads/evolve/e1");
+        let deliver = |now: &str| deliver_experiment(&s, &proj, &job, "B-1", "run-1", "kept", now);
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        let note = deliver(TEST_NOW).unwrap_err();
+        assert!(note.starts_with("gh pr create failed"), "{note}");
+        hold_experiment(&s, TEST_NOW, ACTOR, &proj, &job, "B-1", &note);
+        assert_eq!(on_forge(), tip);
+
+        run(&repo, &["git", "branch", "hand", "evolve/e1"]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(&repo, &["git", "push", "-q", &bare, "hand:evolve/e1"]);
+        gh.heal();
+        let note = deliver(&crate::util::plus_minutes(TEST_NOW, 5)).unwrap_err();
+        assert!(
+            note.contains("which the branch here is not built on"),
+            "{note}"
+        );
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        assert_eq!(events(&s, "land.pr"), 0);
+    }
+
+    /// A store that cannot be read says nothing of the tries before: the
+    /// lease is not decided on that silence, the delivery is held.
+    #[test]
+    fn a_lease_the_store_cannot_decide_holds_the_delivery() {
+        let s = new_store();
+        let conn = s.conn().unwrap();
+        conn.execute_batch("ALTER TABLE events RENAME TO events_gone")
+            .unwrap();
+        let err = tried_since(&conn, "proj", "job", "j-1")
+            .map(|_| ())
+            .unwrap_err();
+        assert!(err.starts_with(STORE_UNREAD), "{err}");
+        assert!(forge_fault(&err), "{err}");
+        conn.execute_batch("ALTER TABLE events_gone RENAME TO events")
+            .unwrap();
+    }
+
+    /// `hive land --branch` on a finished job's branch is that job's
+    /// delivery: its pull request names the job, and the next pass leaves
+    /// the branch alone. Before, the job path answered `Open`, merged the
+    /// stack's top into the branch and pushed it: the head of the pull
+    /// request by hand and the base of the one above, which the forge then
+    /// took for merged (azure-compliance, 26 November). A pull request on
+    /// record with the job's branch as its head and no job named (one
+    /// proposed by hand before) counts the same.
+    #[test]
+    fn a_job_branch_delivered_by_hand_is_not_delivered_again_by_the_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let a = push_branch(&s, &proj, &repo, "hive/worker/a").str("id");
+        let b = push_branch(&s, &proj, &repo, "hive/worker/b").str("id");
+        let tip_a = ref_of(&repo, "refs/heads/hive/worker/a");
+
+        let d = propose_branch(&s, &proj, "hive/worker/a", TEST_NOW).unwrap();
+        assert_eq!((d.number, d.opened), (7, true));
+        assert_eq!(last_detail(&s, "land.pr")["jobs"], json!([a]));
+        let d = propose_branch(&s, &proj, "hive/worker/b", TEST_NOW).unwrap();
+        assert_eq!((d.number, d.opened), (8, true));
+
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 1));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(events(&s, "land.pr"), 2);
+        assert_eq!(ref_of(&repo, "refs/heads/hive/worker/a"), tip_a);
+        assert_eq!(bare_ref(&bare, "refs/heads/hive/worker/a"), tip_a);
+        assert!(open_pr_for_job(&s.conn().unwrap(), "proj", &b).is_some());
+
+        // A land.pr by hand from before, naming no job: found by its head.
+        let c = push_branch(&s, &proj, &repo, "hive/worker/c").str("id");
+        let tip_c = ref_of(&repo, "refs/heads/hive/worker/c");
+        run(&repo, &["git", "push", "-q", &bare, "hive/worker/c"]);
+        let conn = s.conn().unwrap();
+        crate::util::event_at(
+            &conn,
+            TEST_NOW,
+            ACTOR,
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "proposed", "number": 9,
+                "url": "https://github.com/o/r/pull/9", "head": "hive/worker/c",
+                "base": "main", "remote": "origin", "to": tip_c, "jobs": [], "opened": true}),
+        );
+        assert!(open_pr_for_job(&conn, "proj", &c).is_some());
+        drop(conn);
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 2));
+        assert!(!lines.iter().any(|l| l.contains(&c)), "{lines:?}");
+        assert_eq!(ref_of(&repo, "refs/heads/hive/worker/c"), tip_c);
+        assert_eq!(events(&s, "land.pr"), 3);
+    }
+
+    /// A rebase job replaced the task's one branch, so none of the task's
+    /// commits is in the branch an earlier try pushed - and somebody has
+    /// pushed a commit onto that. It is not Hive's push any more, whatever
+    /// it holds: it is not replaced.
+    #[test]
+    fn a_task_retry_does_not_replace_a_branch_somebody_pushed_onto_once_its_branches_moved() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_branches(&s, &proj, &repo, "One thing", &["hive/worker/a"]);
+        let head = task_branch(&task);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        tend_proj(&s, &proj, TEST_NOW);
+        let pushed = on_forge();
+
+        run(&repo, &["git", "branch", "hand", &pushed]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(
+            &repo,
+            &["git", "push", "-q", &bare, &format!("hand:{head}")],
+        );
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        run(&repo, &["git", "branch", "-f", "hive/worker/a", "main"]);
+        commit_on(&repo, "hive/worker/a", "rebased.txt");
+        gh.heal();
+
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 1));
+        assert_eq!(on_forge(), hand, "the commit pushed there is gone");
+        assert!(
+            lines.len() == 1 && lines[0].contains("holds commits Hive did not put there"),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr"), 0);
+    }
+
+    /// The base moved during the wait. The branch on the upstream is
+    /// Hive's own push, built on the base as it was: it is replaced by a
+    /// build on the base as it is now, and not built on.
+    #[test]
+    fn a_task_retry_after_its_base_moved_replaces_its_own_push() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        tend_proj(&s, &proj, &at(0));
+        let pushed = on_forge();
+        let moved = move_base_on_forge(&repo, &bare, "base.txt");
+        gh.heal();
+        // Held for its wait; the local default branch follows the upstream.
+        tend_proj(&s, &proj, &at(1));
+        assert_eq!(ref_of(&repo, "refs/heads/main"), moved);
+        assert_eq!(on_forge(), pushed);
+
+        let lines = tend_proj(&s, &proj, &at(5));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        let built = on_forge();
+        assert_eq!(last_detail(&s, "land.pr")["to"], built);
+        assert!(is_ancestor(&repo, &moved, &built), "not on the new base");
+        assert!(
+            !is_ancestor(&repo, &pushed, &built),
+            "built on the push an earlier try made"
+        );
+        for branch in ["hive/worker/a", "hive/worker/b"] {
+            assert!(
+                is_ancestor(
+                    &repo,
+                    &ref_of(&repo, &format!("refs/heads/{branch}")),
+                    &built
+                ),
+                "{branch} is not in the pull request"
+            );
+        }
+    }
+
+    /// The push that replaces Hive's own leases on the commit that was
+    /// read. Somebody pushes onto the branch after the try read it and
+    /// before it pushes (a hook of the checkout stands in for them: it
+    /// runs when the build's worktree is made): the push is refused, and
+    /// what they pushed stays.
+    #[test]
+    fn a_task_retry_is_refused_when_the_upstream_branch_moves_after_it_was_read() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+
+        gh.fail_creates("HTTP 502: Bad Gateway");
+        tend_proj(&s, &proj, TEST_NOW);
+        let pushed = on_forge();
+        // The work changes, so the next try builds and pushes anew.
+        commit_on(&repo, "hive/worker/a", "more.txt");
+        run(&repo, &["git", "branch", "hand", &pushed]);
+        let hand = commit_on(&repo, "hand", "hand.txt");
+        run(&repo, &["git", "push", "-q", &bare, "hand:refs/heads/hand"]);
+        run(&repo, &["git", "branch", "-D", "hand"]);
+        let hook = std::path::Path::new(&repo).join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ngit --git-dir '{bare}' update-ref refs/heads/{head} {hand}\n"
+            ),
+        )
+        .unwrap();
+        run(".", &["chmod", "+x", &hook.display().to_string()]);
+        gh.heal();
+
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 1));
+        std::fs::remove_file(&hook).unwrap();
+        let held = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("task pr proj {task}: held: ")))
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(
+            held.contains(&format!(
+                ": held: origin/main rejected the push of {head} to {head}: "
+            )) && held.contains("(stale info)"),
+            "{held}"
+        );
+        assert_eq!(on_forge(), hand, "what was pushed there is gone");
+        assert_eq!(events(&s, "land.pr"), 0);
+    }
+
+    /// What the try finds on the upstream may be what the task's own pull
+    /// request left there: one closed unmerged keeps its branch, and the
+    /// task's next round has the same name for its own. Hive knows that
+    /// commit from the pull request's record, and replaces it.
+    #[test]
+    fn a_task_retry_replaces_what_its_closed_pull_request_left_on_the_upstream() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        let head = task_branch(&task);
+        let on_forge = || bare_ref(&bare, &format!("refs/heads/{head}"));
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(last_detail(&s, "land.pr")["number"], 7);
+        let left = on_forge();
+        gh.set_state(7, "CLOSED");
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(events(&s, "land.pr-closed"), 1);
+        assert_eq!(on_forge(), left);
+
+        // The task's next round is one new job. The upstream is out of
+        // reach for its first try, and back for the second.
+        let next = push_branch(&s, &proj, &repo, "hive/worker/c");
+        exec1(
+            &s,
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{task}"), &next.str("id")],
+        );
+        run(
+            &repo,
+            &[
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                &format!("{bare}.gone"),
+            ],
+        );
+        tend_proj(&s, &proj, TEST_NOW);
+        assert_eq!(events(&s, "land.pr-held"), 1);
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 5));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #8 opened"))),
+            "{lines:?}"
+        );
+        assert!(
+            !is_ancestor(&repo, &left, &on_forge()),
+            "the pull request holds what the closed one left"
+        );
+        assert!(is_ancestor(
+            &repo,
+            &ref_of(&repo, "refs/heads/hive/worker/c"),
+            &on_forge()
+        ));
+    }
+
+    /// The upstream turns a push down for its own passing trouble under
+    /// the same mark as for its rules: a ref it could not lock, objects it
+    /// could not store. That is the way to the forge, and is tried again.
+    #[test]
+    fn a_push_the_upstream_could_not_take_is_tried_again() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        // Another process of the upstream holds the branch's lock.
+        let lock = std::path::Path::new(&bare).join("refs/heads/hive/worker/a.lock");
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        std::fs::write(&lock, "").unwrap();
+
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.starts_with(&format!(
+                "job pr proj {id}: held: push of hive/worker/a to hive/worker/a on origin/main failed: "
+            ))),
+            "{lines:?}"
+        );
+
+        std::fs::remove_file(&lock).unwrap();
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 5));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #7 opened https://github.com/o/r/pull/7"
+            )]
+        );
+    }
+
+    /// Which pushes git reports as turned down are about the work: every
+    /// one the client refused (`! [rejected]`), and of those the upstream
+    /// refused (`! [remote rejected]`) the ones it refused for a rule of
+    /// the repository.
+    #[test]
+    fn a_rejected_push_is_the_works_when_a_rule_turned_it_down() {
+        let up = Upstream {
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            upstream_ref: "refs/remotes/origin/main".into(),
+            url: "https://github.com/owner/repo.git".into(),
+            repo: "owner/repo".into(),
+        };
+        for (mark, work) in [
+            ("! [rejected]        a -> a (stale info)", true),
+            ("! [rejected]        a -> a (fetch first)", true),
+            ("! [rejected]        a -> a (non-fast-forward)", true),
+            (
+                "! [remote rejected] a -> a (pre-receive hook declined)",
+                true,
+            ),
+            ("! [remote rejected] a -> a (hook declined)", true),
+            (
+                "! [remote rejected] a -> a (protected branch hook declined)",
+                true,
+            ),
+            (
+                "! [remote rejected] a -> a (push declined due to repository rule violations)",
+                true,
+            ),
+            (
+                "! [remote rejected] a -> a (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)",
+                true,
+            ),
+            ("! [remote rejected] a -> a (non-fast-forward)", true),
+            ("! [remote rejected] a -> a (unpacker error)", false),
+            (
+                "! [remote rejected] a -> a (unable to migrate objects to permanent storage)",
+                false,
+            ),
+            (
+                "! [remote rejected] a -> a (missing necessary objects)",
+                false,
+            ),
+            ("! [remote rejected] a -> a (failed to update ref)", false),
+            ("! [remote rejected] a -> a (failed to lock)", false),
+            (
+                "! [remote rejected] a -> a (transaction failed to start)",
+                false,
+            ),
+        ] {
+            let pushed = crate::util::GitResult {
+                code: 1,
+                stderr: format!(
+                    "To https://github.com/owner/repo.git\n {mark}\nerror: failed to push some refs to 'https://github.com/owner/repo.git'\n"
+                ),
+                ..Default::default()
+            };
+            assert_eq!(
+                rejected(&pushed, "refs/heads/a", "a", &up).is_some(),
+                work,
+                "{mark}"
+            );
+        }
+    }
+
+    /// The rule a remote rejection names is read from its reason alone,
+    /// the text inside the status line's final parentheses: the line also
+    /// names the branches, and a branch named like a rule does not make a
+    /// passing trouble of its push a hold about the work.
+    #[test]
+    fn a_remote_rejection_is_the_works_by_its_reason_not_by_the_branch_it_names() {
+        let up = Upstream {
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            upstream_ref: "refs/remotes/origin/main".into(),
+            url: "https://github.com/owner/repo.git".into(),
+            repo: "owner/repo".into(),
+        };
+        for branch in [
+            "fix/non-fast-forward",
+            "hive/hook-declined",
+            "a-hook declined",
+            "push-declined-due-to",
+            "refusing-to-allow",
+            "x(non-fast-forward)",
+        ] {
+            for (reason, work) in [
+                ("failed to lock", false),
+                ("unpacker error", false),
+                ("failed to update ref", false),
+                ("pre-receive hook declined", true),
+                ("non-fast-forward", true),
+            ] {
+                let mark = format!("! [remote rejected] {branch} -> {branch} ({reason})");
+                let pushed = crate::util::GitResult {
+                    code: 1,
+                    stderr: format!("To https://github.com/owner/repo.git\n {mark}\n"),
+                    ..Default::default()
+                };
+                let src = format!("refs/heads/{branch}");
+                assert_eq!(
+                    rejected(&pushed, &src, branch, &up).is_some(),
+                    work,
+                    "{mark}"
+                );
+            }
+        }
+        assert_eq!(
+            reason_of("! [remote rejected] a -> a (hook declined)"),
+            Some("hook declined")
+        );
+        assert_eq!(
+            reason_of("! [remote rejected] a -> a (refusing to allow a token (classic) to push)  "),
+            Some("refusing to allow a token (classic) to push")
+        );
+        assert_eq!(reason_of("! [remote rejected] non-fast-forward -> a"), None);
+        assert_eq!(reason_of("! [remote rejected] a -> a hook declined)"), None);
+    }
+
+    /// Whether the upstream has the branch is read from git's words, so
+    /// the read speaks git's own tongue whatever the daemon's locale. Here
+    /// git says everything in another one unless it is told `LC_ALL=C`: a
+    /// try after a first push that failed still finds the branch not
+    /// there, and delivers.
+    #[test]
+    fn a_retry_reads_the_upstream_whatever_tongue_git_speaks() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a");
+        let id = job.str("id");
+        let tip = ref_of(&repo, "refs/heads/hive/worker/a");
+        let bin = tempfile::tempdir().unwrap();
+        let git = bin.path().join("git");
+        std::fs::write(
+            &git,
+            format!(
+                "#!/bin/sh\nreal='{}'\n[ \"$LC_ALL\" = C ] && exec \"$real\" \"$@\"\nsaid=\"$0.said.$$\"\n\"$real\" \"$@\" 2>\"$said\"\ncode=$?\n[ -s \"$said\" ] && echo 'Fehler: das ist in einer anderen Sprache gesagt' >&2\nrm -f \"$said\"\nexit $code\n",
+                hive_gitenv::git_program().display()
+            ),
+        )
+        .unwrap();
+        run(".", &["chmod", "+x", &git.display().to_string()]);
+        let _path = hive_testutil::setenv(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.path().display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+
+        run(
+            &repo,
+            &[
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                &format!("{bare}.gone"),
+            ],
+        );
+        // The push speaks git's own tongue too: its status line is read
+        // for the reason the upstream gave (`rejected`).
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines.iter().any(
+                |l| l.contains("held: push of hive/worker/a") && !l.contains("anderen Sprache")
+            ),
+            "{lines:?}"
+        );
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 5));
+        assert_eq!(
+            lines,
+            [format!(
+                "job pr proj job {id}: #7 opened https://github.com/o/r/pull/7"
+            )]
+        );
+        assert_eq!(bare_ref(&bare, "refs/heads/hive/worker/a"), tip);
     }
 
     /// The worker marks its job done itself, naming the branch the runner
