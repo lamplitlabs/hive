@@ -292,7 +292,9 @@ function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>[
   return (
     <>
       <Pair yes={yes} no={no} yesLabel="Approve" noLabel="Deny" />
+      {/* One dialog for both answers: the key mounts it anew for each, so the words Deny opens with are never sent with an Approve. */}
       <ConfirmDialog
+        key={which ?? "closed"}
         open={which !== null}
         onOpenChange={(v) => !v && setWhich(null)}
         title={approve ? "Approve the extra machine?" : "Deny the extra machine?"}

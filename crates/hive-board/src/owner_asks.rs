@@ -274,6 +274,12 @@ pub fn with_default_owner_answers(
     if crate::ask_options::ask_options(body).ready() {
         return body.to_string();
     }
+    // The loop's stop keeps the console's own pair (keep paused, carry
+    // on). The daemon asks it, and the daemon's "Hand it to an agent" would
+    // record a yes: the loop would run on past its stop with no job started.
+    if kind == "question" && summary == hive_store::EVOLUTION_STOP_SUMMARY {
+        return body.to_string();
+    }
     if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
         return format!("{}\n\n{FLAT_PAUSE_ANSWERS}", body.trim_end());
     }
@@ -503,6 +509,18 @@ mod tests {
             with_default_owner_answers("question", "proj-lead", "Go on?", "Bare.", false),
             "Bare."
         );
+        // The loop's stop is the daemon's question too, and keeps the
+        // console's own pair: "Hand it to an agent" would record a yes and
+        // the loop would run on (second review of pull request 278).
+        let stop = with_default_owner_answers(
+            "question",
+            "daemon",
+            hive_store::EVOLUTION_STOP_SUMMARY,
+            "The loop stopped: a constraint was violated.",
+            false,
+        );
+        assert_eq!(stop, "The loop stopped: a constraint was violated.");
+        assert!(!crate::ask_options::ask_options(&stop).ready());
     }
 
     #[test]
