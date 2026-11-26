@@ -8,10 +8,10 @@ export const SITE = {
   domain: "hivefleet.dev",
   url: "https://hivefleet.dev",
   /** The category line. */
-  tagline: "The self-improving agent harness",
+  tagline: "The agent harness that improves your projects, and itself",
   /** The one sentence every package uses. */
   sentence:
-    "Hive is an open-source harness for coding agents. It runs on your own machine as one binary, improves itself under rules you write, and pairs more machines when the work needs them.",
+    "Hive is an open-source harness for coding agents. It runs on your own machine as one binary. It does the tasks you give it, keeps a project's standing work going with automations, and improves every project it works on, its own source included, under rules you write. It pairs more machines when the work needs them.",
   repo: "https://github.com/lamplitlabs/hive",
   license: "MIT",
   holder: "Lamplit Labs",
@@ -66,11 +66,11 @@ export type SitePage = {
 export const PAGES = {
   home: {
     path: "/",
-    title: "Hive: the self-improving agent harness",
+    title: "Hive: the agent harness that improves your projects",
     description:
-      "An open-source harness for coding agents. One binary on your own machine, self-improvement under rules you write, and more machines when the work needs them.",
+      "An open-source harness for coding agents on your own machine. It does your tasks, runs automations and improves every project it works on, under your rules.",
     nav: "Home",
-    summary: "What Hive is, how a task goes, the self-improvement loop, pairing machines and the questions people ask first.",
+    summary: "What Hive is, how a task goes, automations, role leads, the self-improvement loop, pairing machines and the questions people ask first.",
   },
   install: {
     path: "/install/",
@@ -93,7 +93,7 @@ export const PAGES = {
     path: "/rsi/",
     title: "Self-improvement under a constitution (RSI)",
     description:
-      "How Hive improves itself: agents suggest and vote, a check must fail today and pass with the change, results are measured, and you write the constitution.",
+      "How Hive improves each project it works on, itself included: agents suggest and vote, a check must fail today and pass, and you write the constitution.",
     nav: "Self-improvement",
     summary: "Suggestions, votes, the check that must fail today, experiments, private tests, the archive, the constitution, hard stops and the kill switch.",
   },

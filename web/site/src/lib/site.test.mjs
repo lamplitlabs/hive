@@ -14,9 +14,13 @@ test("the site names hivefleet.dev and the repository", () => {
 });
 
 test("the words are the open tool's: the category line and the one sentence", () => {
-  assert.equal(site.SITE.tagline, "The self-improving agent harness");
+  assert.equal(site.SITE.tagline, "The agent harness that improves your projects, and itself");
   assert.match(site.SITE.sentence, /^Hive is an open-source harness for coding agents\./);
   assert.match(site.SITE.sentence, /your own machine as one binary/);
+  // What it improves is every project it works on, not only itself (TASK-127).
+  assert.match(site.SITE.sentence, /automations/);
+  assert.match(site.SITE.sentence, /improves every project it works on, its own source included, under rules you write/);
+  assert.doesNotMatch(JSON.stringify(site.PAGES), /self-improving|improves itself/i);
 });
 
 test("the install lines are the contract's, character for character", () => {

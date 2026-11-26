@@ -4,16 +4,18 @@ import {
   ArrowRightIcon,
   ArrowUpRightIcon,
   BookOpenIcon,
+  CalendarClockIcon,
   DatabaseIcon,
   DownloadIcon,
   GitPullRequestIcon,
   InboxIcon,
   LockIcon,
+  MessagesSquareIcon,
   NetworkIcon,
   RefreshCwIcon,
   ScaleIcon,
   ScrollTextIcon,
-  SquareTerminalIcon,
+  UserCogIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Frame } from "@/components/chrome";
@@ -32,16 +34,37 @@ export const metadata: Metadata = pageMetadata(PAGES.home);
 
 const PILLARS = [
   {
-    icon: SquareTerminalIcon,
-    title: "A harness of its own",
-    text: "Every agent runs on Hive's own harness: a tool loop with limits, deny rules, hooks, MCP servers, skills, helpers and sub-sessions. GitHub Copilot is the default model provider. OpenAI, Anthropic, Gemini and ten OpenAI-compatible vendors take a key, and local servers need none.",
-    href: PAGES.harness.path,
-    more: "How an agent runs",
+    icon: MessagesSquareIcon,
+    title: "Tasks as conversations",
+    text: "Write what you want in the console. The project's lead agent cuts it into steps and hands them to agents, and the whole task is one conversation you can steer.",
+    href: "/docs/how-to/tasks/",
+    more: "Give a task",
+  },
+  {
+    icon: GitPullRequestIcon,
+    title: "Pull requests with a reviewer",
+    text: "Each step runs in a throwaway clone and must pass the project's test command, when one is set. Finished work becomes a pull request that a review agent merges or hands to you.",
+    href: "/docs/how-to/pull-requests/",
+    more: "Review and merge",
+  },
+  {
+    icon: CalendarClockIcon,
+    title: "Automations",
+    text: "A project keeps its standing work as files under .hive/automations: schedules, checks, watches and skill runs. Every machine that tends the project applies the committed files.",
+    href: "/docs/how-to/schedules/",
+    more: "Run work on a schedule",
+  },
+  {
+    icon: UserCogIcon,
+    title: "Role leads",
+    text: "Give one concern of a project, such as its docs, its tests or its security, an agent of its own that looks after it on a cadence.",
+    href: "/docs/how-to/role-leads/",
+    more: "Seat role leads",
   },
   {
     icon: ScaleIcon,
     title: "Self-improvement under a constitution",
-    text: "Agents post suggestions and vote on them. When you turn the loop on, it builds the top voted one on an experiment branch, measures it and delivers what was kept as a pull request. The constitution is yours: hard stops, paths the loop may never touch, and a kill switch.",
+    text: "Hive improves each project it works on, and runs the same loop on its own source. Agents post suggestions and vote on them. When you turn the loop on, it builds the top voted one on an experiment branch, measures it and delivers what was kept as a pull request. The constitution is yours: hard stops, paths the loop may never touch, and a kill switch.",
     href: PAGES.rsi.path,
     more: "How the loop works",
   },
@@ -186,7 +209,7 @@ export default function Home() {
             <HiveMark className="mark-sweep mark-glow size-16 sm:size-20" draw />
             <p className="mt-8 font-mono text-xs font-medium tracking-[0.18em] text-teal uppercase">Open source · MIT · macOS, Linux and WSL</p>
             <h1 id="hero-title" className="mt-4 text-[2.3rem] leading-[1.08] font-semibold tracking-tight text-balance sm:text-6xl sm:leading-[1.05]">
-              The <span className="text-brand whitespace-nowrap">self-improving</span> agent harness.
+              The agent harness that <span className="text-brand">improves your projects</span>, and itself.
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-pretty text-muted-foreground">{SITE.sentence}</p>
             <div className="mt-8 max-w-xl">
@@ -245,13 +268,17 @@ export default function Home() {
         <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
           <div className="max-w-2xl">
             <Eyebrow>What it is</Eyebrow>
-            <Heading id="pillars-title">Three things in one binary.</Heading>
+            <Heading id="pillars-title">One binary for the whole of a project&apos;s work.</Heading>
             <p className="mt-4 text-pretty text-muted-foreground">
-              Hive is one binary (<code className="font-mono text-[0.9em]">hive</code>), one SQLite file and one console. You give a project&apos;s lead agent a
-              task and watch the agents work on it.
+              Hive is one binary (<code className="font-mono text-[0.9em]">hive</code>), one SQLite file and one console. Every agent runs on{" "}
+              <Link href={PAGES.harness.path} className="link">
+                Hive&apos;s own harness
+              </Link>
+              : a tool loop with limits, deny rules, hooks, MCP servers, skills, helpers and sub-sessions, on GitHub Copilot by default, a key for another
+              provider, or a local server.
             </p>
           </div>
-          <ul className="mt-12 grid gap-5 lg:grid-cols-3">
+          <ul className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {PILLARS.map((p) => (
               <li key={p.title} className="flex flex-col rounded-card border border-border bg-card p-6 shadow-card">
                 <span className="hex inline-flex h-11 w-[2.4rem] items-center justify-center bg-teal-soft text-teal">
