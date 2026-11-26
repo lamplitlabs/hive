@@ -846,6 +846,7 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             }
             let p = current_project(s, &c.project)?;
             let agent = check_run_as(s, &p.slug, &fs.get_string("run-as"))?;
+            check_task_source(s, &fs.get_string("source"))?;
             let (j, created) = add_job(
                 s,
                 JobInput {
