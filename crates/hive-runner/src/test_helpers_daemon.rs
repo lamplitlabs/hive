@@ -759,9 +759,17 @@ impl FakeGh {
         std::fs::write(self.dir.join("fail"), why).expect("fake gh failure");
     }
 
-    /// Reads answer again after [`FakeGh::fail_reads`].
+    /// Makes `pr create` fail with `why` on stderr and open nothing, until
+    /// [`FakeGh::heal`]: gh or the forge refusing the pull request.
+    pub(crate) fn fail_creates(&self, why: &str) {
+        std::fs::write(self.dir.join("fail-create"), why).expect("fake gh failure");
+    }
+
+    /// Calls answer again after [`FakeGh::fail_reads`] and
+    /// [`FakeGh::fail_creates`].
     pub(crate) fn heal(&self) {
         let _ = std::fs::remove_file(self.dir.join("fail"));
+        let _ = std::fs::remove_file(self.dir.join("fail-create"));
     }
 
     /// Sets pull request `n`'s state: `OPEN`, `MERGED` or `CLOSED`.
@@ -899,6 +907,7 @@ case "$1 $2 $3" in
     done
     echo "[${{out%,}}]" ;;
   "pr create --head")
+    [ -e "$d/fail-create" ] && {{ cat "$d/fail-create" >&2; exit 1; }}
     n=$(cat "$d/next"); echo $((n + 1)) > "$d/next"
     echo OPEN > "$d/state/$n"; echo "$head" > "$d/heads/$n"; echo "$title" > "$d/titles/$n"; echo "$base" > "$d/bases/$n"; echo "$n" > "$d/byhead/$key"
     echo "https://github.com/o/r/pull/$n" ;;

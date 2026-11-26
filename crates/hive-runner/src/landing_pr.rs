@@ -538,6 +538,15 @@ fn gh_failure(what: &str, why: &str) -> String {
     } else {
         squeezed
     };
+    // GitHub's answer to a pull request whose head holds nothing its base
+    // has not. No later try opens it, so the note opens with that and not
+    // with the call: a hold is the forge's or the work's by how its note
+    // begins (`delivery::forge_fault`). GitHub says the same words, after
+    // "Head sha can't be blank", for a head it cannot find, which a later
+    // try may: that stays the call's failure.
+    if why.contains("No commits between") && !why.contains("sha can't be blank") {
+        return format!("nothing to open a pull request for: {what} failed: {squeezed}");
+    }
     format!("{what} failed: {squeezed}")
 }
 
@@ -731,6 +740,27 @@ exit 1
                 "  HTTP 403: Resource not accessible  \n by integration "
             ),
             "gh pr create failed: HTTP 403: Resource not accessible by integration"
+        );
+    }
+
+    /// GitHub says "No commits between" for a head that holds nothing its
+    /// base has not, which no later try changes, and says it too, among
+    /// other things, for a head it cannot find, which a later try may.
+    #[test]
+    fn gh_failure_tells_nothing_to_show_from_a_head_github_cannot_find() {
+        assert_eq!(
+            gh_failure(
+                "gh pr create",
+                "pull request create failed: GraphQL: No commits between main and hive/w/a (createPullRequest)"
+            ),
+            "nothing to open a pull request for: gh pr create failed: pull request create failed: GraphQL: No commits between main and hive/w/a (createPullRequest)"
+        );
+        assert_eq!(
+            gh_failure(
+                "gh pr create",
+                "pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between main and hive/w/a, Head ref must be a branch (createPullRequest)"
+            ),
+            "gh pr create failed: pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between main and hive/w/a, Head ref must be a branch (createPullRequest)"
         );
     }
 
