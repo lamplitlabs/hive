@@ -1730,11 +1730,32 @@ with one sentence on what to do:
 | the same without `push.credential` | *the forge refused this machine's ssh keys: give the daemon a key of its own with hive cred set* |
 | `Host key verification failed` | *ssh does not know the forge's host key: connect to the forge over ssh once by hand, as the user the daemon runs as, and accept it* |
 
-After a retry over ssh the sentence follows what ssh said. To name another
-key while a project's upstream is an https url, run `hive cred set REF
---no-probe`. The probe of `hive cred set` makes a dry-run push to each
-project's remote, by the remote's own url, with the key alone. An https url
-ignores the key, so the probe fails there and nothing is saved.
+After a retry over ssh the sentence follows what ssh said.
+
+Two more pushes hold an ssh key and follow the same rule, read by the same
+code (`hive_gitenv::forge`: the url's ssh form, GitHub's question, and
+whether the repository's config sends the url elsewhere, asked with the
+push's own environment and given up after 10 seconds), so the three cannot
+drift apart:
+
+- the probe of `hive cred set` makes a dry-run push to each project's
+  remote with the key alone. On a GitHub https url it is made once more
+  over the url's ssh form when GitHub asking for a credential is all git
+  says, and that answer decides whether the key is saved; a refusal there
+  names both answers (`failed over https (...), then over ssh (...)`).
+  The test is
+  `hive-cred-setup` `the_probe_reaches_an_https_github_remote_over_ssh_with_the_key`;
+- a paired machine's own push with the key the brain leased it
+  ([Machines](machines.md)): the hand pushes to the url, and when GitHub
+  asks for a credential it pushes once more over the url's ssh form, with
+  the key. Its output says `pushed over ssh (git@github.com:OWNER/REPO.git)`;
+  a push that fails both ways says what https said, then what ssh said.
+  The test is `hive-hand-core`
+  `hands_push_reaches_an_https_github_url_over_ssh_with_the_leased_key`.
+
+Neither writes to the repository's config. A hand and the probe read urls
+against `https://github.com` (`HIVE_FORGE_WEB` names another, for a test's
+git server); the daemon reads them against its GitHub App endpoint.
 
 ### One git login for every machine: a GitHub App (ADR-070 step 3)
 

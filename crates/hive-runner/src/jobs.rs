@@ -7319,7 +7319,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         for (k, v) in [
             ("compute.provider", "azure"),
             ("compute.max_vms", "1"),
-            ("compute.max_hours_per_day", "1"),
+            ("compute.max_hours_per_day", "4"),
             ("compute.azure.vm_size", "Standard_B2ms"),
         ] {
             s.set_setting(crate::util::HUMAN_AGENT, k, v).unwrap();
@@ -7327,6 +7327,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let req = hive_tasks::request_compute(&s, "proj", "aurora", "Standard_B2ms", 4, "long run")
             .unwrap();
         hive_tasks::approve(&s, &req.id, "fine", crate::util::HUMAN_AGENT).unwrap();
+        // The owner lowers the cap after approving: the worker checks it again.
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.max_hours_per_day", "1")
+            .unwrap();
         let w = crate::compute::new_compute_worker(
             &hive_bus::CancellationToken::new(),
             &s,

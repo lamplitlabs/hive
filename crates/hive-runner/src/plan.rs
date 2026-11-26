@@ -1125,6 +1125,8 @@ pub(crate) fn stuck_threads(
         closed: bool,
     }
     let mut episodes: BTreeMap<String, Episode> = BTreeMap::new();
+    // The job whose commit last moved a thread on, by thread.
+    let mut moved_by: BTreeMap<String, String> = BTreeMap::new();
     for r in must_rows(
         &conn,
         "SELECT j.id, j.status, j.result, j.finished_at, (j.branch != '' OR EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.project = j.project AND (r.agent = j.lease_agent OR j.lease_agent = '') AND (r.status = 'running' OR r.commits > 0))) AS committed, p.area || '/' || p.thread AS key FROM jobs j JOIN posts p ON p.id = substr(j.source, instr(j.source, ':') + 1) WHERE j.project = ? AND j.status IN ('done', 'failed') AND j.kind != 'reflect' AND (j.source LIKE 'suggestion:%' OR j.source LIKE 'handoff:%' OR j.source LIKE 'question:%') ORDER BY j.finished_at DESC, j.created_at DESC",
@@ -1139,7 +1141,8 @@ pub(crate) fn stuck_threads(
         if r.int("committed") != 0 || r.str("finished_at") <= reset {
             ep.closed = true;
             if r.str("finished_at") > reset {
-                reset_at.insert(key, r.str("finished_at"));
+                reset_at.insert(key.clone(), r.str("finished_at"));
+                moved_by.insert(key, r.str("id"));
             }
             continue;
         }
@@ -1151,6 +1154,7 @@ pub(crate) fn stuck_threads(
             trunc(&r.str("result"), 120)
         ));
     }
+    close_moved_on_stuck_questions(s, &conn, &slug, &now, &actor, &moved_by);
     for (key, ep) in episodes {
         if ep.ids.len() < limit as usize {
             continue;
@@ -1243,7 +1247,95 @@ pub(crate) fn suggestion_quality_score(body: String) -> i32 {
     score.clamp(0, 100)
 }
 
-pub(crate) const STUCK_THREAD_SUMMARY: &str = "Stuck thread:";
+pub(crate) const STUCK_THREAD_SUMMARY: &str = hive_store::STUCK_THREAD_SUMMARY;
+
+/// Answer every open stuck-thread question whose own thread has moved on: a
+/// job from it committed after the question was asked, and no other question
+/// of the thread is open (an answer there would settle it too). The question stood for
+/// a run of jobs that changed nothing; once the thread moves, nobody has that
+/// to decide any more, and an old question must not wait in the owner's inbox
+/// for a thread that is long past it. A thread that sticks again later gets a
+/// new question of its own (`stuck_threads` asks once per episode).
+fn close_moved_on_stuck_questions(
+    s: &hive_store::Store,
+    conn: &rusqlite::Connection,
+    slug: &str,
+    now: &str,
+    actor: &str,
+    moved_by: &BTreeMap<String, String>,
+) {
+    if moved_by.is_empty() {
+        return;
+    }
+    // Every reader of the board (`open_questions`, the hub's inbox) takes a later answer in a
+    // thread as settling every earlier question of that thread, whatever post it names. So the
+    // closing answer is posted only while the stuck question is the one open question of its
+    // thread: an owner's question beside it stays open, and the stuck one closes on a later pass,
+    // once that question is settled.
+    let mut open_in_thread: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for r in open_questions(s, slug.to_string(), now.to_string()) {
+        open_in_thread
+            .entry(format!("{}/{}", r.str("area"), r.str("thread")))
+            .or_default()
+            .push(r.str("id"));
+    }
+    let like = format!("{STUCK_THREAD_SUMMARY}%");
+    let open = must_rows(
+        conn,
+        "SELECT q.id, q.area, q.thread, q.date FROM posts q WHERE q.project = ? AND q.kind = 'question' AND q.summary LIKE ?
+         AND NOT EXISTS (SELECT 1 FROM posts a WHERE a.kind = 'answer' AND (a.on_post = q.id OR (a.project = q.project AND a.area = q.area AND a.thread = q.thread AND a.date > q.date)))
+         AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = q.project AND r.area = q.area AND r.thread = q.thread AND r.resolution != '')
+         ORDER BY q.date, q.id",
+        &[&slug, &like],
+    );
+    for q in open {
+        let key = format!("{}/{}", q.str("area"), q.str("thread"));
+        let Some(job) = moved_by.get(&key) else {
+            continue;
+        };
+        let committed_at =
+            must_one(conn, "SELECT finished_at FROM jobs WHERE id = ?", &[job]).str("finished_at");
+        if committed_at <= q.str("date") {
+            continue;
+        }
+        if open_in_thread
+            .get(&key)
+            .is_some_and(|ids| ids.iter().any(|id| *id != q.str("id")))
+        {
+            continue;
+        }
+        let summary = format!("Thread moved on: job {job} committed; nothing left to decide");
+        let body = format!(
+            "Stuck-thread question {} asked for a decision on thread {key} because its worker jobs changed no code. Job {job} from this thread committed since ({committed_at}), so the thread moved on and the question is closed. The planner seeds jobs from the thread again; it asks anew if the thread sticks again.\n",
+            q.str("id")
+        );
+        if let Err(e) = crate::board::create_post(
+            s,
+            now.to_string(),
+            crate::board::PostOpts {
+                kind: "answer".into(),
+                project: slug.to_string(),
+                area: q.str("area"),
+                thread: q.str("thread"),
+                on: q.str("id"),
+                summary,
+                body,
+                agent: crate::board::actor_agent(s, actor.to_string()),
+                ..Default::default()
+            },
+        ) {
+            crate::util::event_at(
+                conn,
+                now,
+                actor,
+                "plan.stuck.error",
+                &key,
+                serde_json::Value::String(e.to_string()),
+            );
+        }
+    }
+}
+
 static FILE_LIKE_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\b[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,8}\b").unwrap());
 static SYMBOL_LIKE_RE: LazyLock<regex::Regex> =
@@ -1364,13 +1456,17 @@ mod tests {
         post
     }
 
-    fn stuck_fixture(s: &hive_store::Store, n: usize) -> (Row, Row, Vec<String>) {
-        new_bare_repo(s);
-        join(s, "aurora");
-        suppress_planner_reflect(s);
+    /// `n` finished worker jobs from questions on thread `serve/<thread>`,
+    /// each failed with no commit: a thread stuck for `n` jobs.
+    fn stuck_jobs(s: &hive_store::Store, thread: &str, n: usize) -> Vec<String> {
+        stuck_jobs_after(s, thread, n, &crate::util::plus_hours(TEST_NOW, -8.0))
+    }
+
+    /// `stuck_jobs` with the first question asked at `start`, one an hour.
+    fn stuck_jobs_after(s: &hive_store::Store, thread: &str, n: usize, start: &str) -> Vec<String> {
         let mut job_ids = Vec::new();
         for i in 0..n {
-            let at = crate::util::plus_hours(TEST_NOW, -8.0 + i as f64);
+            let at = crate::util::plus_hours(start, i as f64);
             let q = plan_handoff(
                 s,
                 &at,
@@ -1378,9 +1474,9 @@ mod tests {
                     kind: "question".into(),
                     project: "proj".into(),
                     area: "serve".into(),
-                    thread: "tutor".into(),
+                    thread: thread.into(),
                     summary: "Which route next?".into(),
-                    body: "The tutor thread needs a decision.".into(),
+                    body: format!("The {thread} thread needs a decision."),
                     agent: crate::board::actor_agent(s, "aurora".into()),
                     ..Default::default()
                 },
@@ -1405,6 +1501,14 @@ mod tests {
             );
             job_ids.push(job.str("id"));
         }
+        job_ids
+    }
+
+    fn stuck_fixture(s: &hive_store::Store, n: usize) -> (Row, Row, Vec<String>) {
+        new_bare_repo(s);
+        join(s, "aurora");
+        suppress_planner_reflect(s);
+        let job_ids = stuck_jobs(s, "tutor", n);
         let tutor = plan_handoff(
             s,
             &crate::util::plus_hours(TEST_NOW, -2.0),
@@ -1434,6 +1538,34 @@ mod tests {
             },
         );
         (tutor, admin, job_ids)
+    }
+
+    /// Answers every question of a thread but the stuck-thread ones, each on its own post, at
+    /// `at`.
+    fn settle_worker_questions(s: &hive_store::Store, thread: &str, at: &str) {
+        let like = format!("{STUCK_THREAD_SUMMARY}%");
+        for q in crate::util::must_rows(
+            &s.conn().expect("conn"),
+            "SELECT id, area FROM posts WHERE project = 'proj' AND kind = 'question' AND thread = ? AND summary NOT LIKE ?",
+            &[&thread, &like],
+        ) {
+            crate::board::create_post(
+                s,
+                at.to_string(),
+                crate::board::PostOpts {
+                    kind: "answer".into(),
+                    project: "proj".into(),
+                    area: q.str("area"),
+                    thread: thread.into(),
+                    on: q.str("id"),
+                    summary: "Take the next route".into(),
+                    body: "The lead answers.\n".into(),
+                    agent: crate::board::actor_agent(s, "proj-lead".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("answer");
+        }
     }
 
     fn stuck_questions(s: &hive_store::Store) -> Vec<Row> {
@@ -3603,6 +3735,264 @@ mod tests {
         assert!(
             stuck_questions(&s).is_empty(),
             "stuck questions were posted"
+        );
+    }
+
+    /// Two threads stuck at once get a question each. The question's summary
+    /// reads the same for both, and the board's owner-question dedupe used to
+    /// hand the first thread's open question back to the second, so the
+    /// second never had one of its own and one old question stood for all.
+    #[test]
+    fn plan_jobs_stuck_threads_each_get_their_own_question() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        let (_, _, tutor_jobs) = stuck_fixture(&s, 3);
+        let admin_jobs = stuck_jobs(&s, "admin", 3);
+        plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        let mut qs = stuck_questions(&s);
+        qs.sort_by_key(|q| q.str("thread"));
+        let threads: Vec<String> = qs.iter().map(|q| q.str("thread")).collect();
+        assert_eq!(threads, ["admin", "tutor"], "stuck questions = {qs:?}");
+        for (q, jobs) in [(&qs[0], &admin_jobs), (&qs[1], &tutor_jobs)] {
+            assert!(
+                q.str("body")
+                    .contains(&format!("serve/{}", q.str("thread")))
+                    && jobs.iter().all(|j| q.str("body").contains(j.as_str())),
+                "question on {} names another thread's jobs:\n{}",
+                q.str("thread"),
+                q.str("body")
+            );
+        }
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM events WHERE action = 'question.deduped'",
+                &[]
+            ),
+            0,
+            "a stuck question was handed another thread's question"
+        );
+    }
+
+    /// A stuck-thread question closes when its own thread moves on: a job
+    /// from the thread committed after it was asked. The planner answers it
+    /// once, so it leaves the open questions and the owner's inbox, and a
+    /// thread that sticks again is asked anew.
+    #[test]
+    fn plan_jobs_stuck_question_closes_when_its_thread_moved_on() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        let (tutor, _, _) = stuck_fixture(&s, 3);
+        let planned = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        // The admin handoff's job ends, so the lane is free for later passes.
+        for j in &planned {
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+                &[&TEST_NOW, &j.str("id")],
+            );
+        }
+        let qs = stuck_questions(&s);
+        assert_eq!(qs.len(), 1, "stuck questions = {qs:?}");
+        let q = qs[0].clone();
+        // The stuck jobs' own questions were answered, each on its post, before the stuck
+        // question was asked: it is the thread's one open question, so closing it settles
+        // nothing else.
+        settle_worker_questions(&s, "tutor", &crate::util::plus_hours(TEST_NOW, -0.5));
+        // The owner queued the tutor handoff by hand and it committed.
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "improve".into(),
+            "Continue tutor".into(),
+            "brief".into(),
+            0,
+            5,
+            format!("handoff:{}", tutor.str("id")),
+            hive_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = 'hive/aurora/tutor' WHERE id = ?",
+            &[&crate::util::plus_hours(TEST_NOW, 1.0), &job.str("id")],
+        );
+        let open_ids = |at: &str| -> Vec<String> {
+            open_questions(&s, "proj".into(), at.into())
+                .iter()
+                .map(|r| r.str("id"))
+                .collect()
+        };
+        assert!(open_ids(TEST_NOW).contains(&q.str("id")));
+        let later = crate::util::plus_hours(TEST_NOW, 2.0);
+        plan_jobs(&s, "proj".into(), later.clone(), "daemon".into()).expect("second");
+        let answers = |id: &str| {
+            crate::util::must_rows(
+                &s.conn().expect("conn"),
+                "SELECT * FROM posts WHERE kind = 'answer' AND on_post = ?",
+                &[&id],
+            )
+        };
+        let a = answers(&q.str("id"));
+        assert_eq!(a.len(), 1, "answers on the stuck question: {a:?}");
+        assert!(
+            a[0].str("thread") == "tutor"
+                && a[0].str("summary").contains(&job.str("id"))
+                && a[0].str("agent") == "daemon",
+            "closing answer: {:?}",
+            a[0]
+        );
+        assert!(
+            !open_ids(&later).contains(&q.str("id")),
+            "the stuck question is still open"
+        );
+        plan_jobs(
+            &s,
+            "proj".into(),
+            crate::util::plus_hours(TEST_NOW, 3.0),
+            "daemon".into(),
+        )
+        .expect("third");
+        assert_eq!(answers(&q.str("id")).len(), 1, "closed twice");
+        // A thread that sticks again after its question was closed is asked anew.
+        stuck_jobs_after(&s, "tutor", 3, &crate::util::plus_hours(TEST_NOW, 4.0));
+        plan_jobs(
+            &s,
+            "proj".into(),
+            crate::util::plus_hours(TEST_NOW, 8.0),
+            "daemon".into(),
+        )
+        .expect("fourth");
+        let qs = stuck_questions(&s);
+        assert_eq!(qs.len(), 2, "stuck questions = {qs:?}");
+        assert_eq!(
+            answers(&qs[1].str("id")).len(),
+            0,
+            "the new question stays open"
+        );
+    }
+
+    /// The answer that closes a stuck question would settle every earlier
+    /// question of its thread, so it waits while another one is open there: an
+    /// owner's question in the stuck thread stays open, and the stuck question
+    /// goes with the answer to it.
+    #[test]
+    fn plan_jobs_stuck_question_closing_leaves_an_owner_question_open() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        let (tutor, _, _) = stuck_fixture(&s, 3);
+        let planned = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        for j in &planned {
+            crate::util::exec1(
+                &s.conn().expect("conn"),
+                "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+                &[&TEST_NOW, &j.str("id")],
+            );
+        }
+        let qs = stuck_questions(&s);
+        assert_eq!(qs.len(), 1, "stuck questions = {qs:?}");
+        let q = qs[0].clone();
+        settle_worker_questions(&s, "tutor", &crate::util::plus_hours(TEST_NOW, -0.5));
+        let owner_q = crate::board::create_post(
+            &s,
+            crate::util::plus_hours(TEST_NOW, 0.5),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "serve".into(),
+                thread: "tutor".into(),
+                summary: "Should the tutor keep its old port?".into(),
+                body: "The owner asks.\n".into(),
+                agent: crate::board::actor_agent(&s, hive_store::HUMAN_AGENT.into()),
+                ..Default::default()
+            },
+        )
+        .expect("owner question");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "improve".into(),
+            "Continue tutor".into(),
+            "brief".into(),
+            0,
+            5,
+            format!("handoff:{}", tutor.str("id")),
+            hive_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = 'hive/aurora/tutor' WHERE id = ?",
+            &[&crate::util::plus_hours(TEST_NOW, 1.0), &job.str("id")],
+        );
+        let later = crate::util::plus_hours(TEST_NOW, 2.0);
+        plan_jobs(&s, "proj".into(), later.clone(), "daemon".into()).expect("second");
+        let open: Vec<String> = open_questions(&s, "proj".into(), later.clone())
+            .iter()
+            .map(|r| r.str("id"))
+            .collect();
+        assert!(
+            open.contains(&owner_q.str("id")),
+            "the owner's question was settled by the stuck question's close: {open:?}"
+        );
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'answer' AND project = 'proj' AND thread = 'tutor'",
+                &[]
+            ),
+            3,
+            "an answer was posted in the thread while the owner's question was open"
+        );
+        let qid = q.str("id");
+        assert!(
+            open_questions(&s, "proj".into(), later.clone())
+                .iter()
+                .any(|r| r.str("id") == qid),
+            "the stuck question stays until it is the thread's only open one"
+        );
+    }
+
+    /// A stuck question stays open while its own thread has not moved on: a
+    /// commit on another thread closes nothing.
+    #[test]
+    fn plan_jobs_stuck_question_stays_while_its_thread_is_stuck() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        let (_, admin, _) = stuck_fixture(&s, 3);
+        let jobs = plan_jobs(&s, "proj".into(), TEST_NOW.into(), "daemon".into()).expect("plan");
+        assert!(
+            jobs.len() == 1 && jobs[0].str("source") == format!("handoff:{}", admin.str("id")),
+            "planned {jobs:?}"
+        );
+        crate::util::exec1(
+            &s.conn().expect("conn"),
+            "UPDATE jobs SET status = 'done', finished_at = ?, branch = 'hive/aurora/admin' WHERE id = ?",
+            &[&crate::util::plus_hours(TEST_NOW, 1.0), &jobs[0].str("id")],
+        );
+        plan_jobs(
+            &s,
+            "proj".into(),
+            crate::util::plus_hours(TEST_NOW, 2.0),
+            "daemon".into(),
+        )
+        .expect("second");
+        let qs = stuck_questions(&s);
+        assert_eq!(qs.len(), 1);
+        assert_eq!(
+            count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'answer' AND on_post = ?",
+                &[&qs[0].str("id")]
+            ),
+            0,
+            "a commit on another thread closed the tutor question"
         );
     }
 

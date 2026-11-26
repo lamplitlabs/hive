@@ -140,16 +140,110 @@ pub fn get_caps(s: &hive_store::Store) -> Result<Caps> {
         [],
         |r| r.get(0),
     )?;
-    // Machine-hours the day has spent or reserved: every request of the day
-    // but a denied one and one that failed before a machine was ready
-    // (its executor never set) - that one consumed nothing, as its own
-    // finding says, so it does not block the retry that fixes the cause.
-    c.hours_today = conn.query_row(
-        "SELECT COALESCE(SUM(hours), 0) FROM compute_requests WHERE substr(at, 1, 10) = ? AND status NOT IN ('denied') AND NOT (status = 'failed' AND executor = '')",
-        [&s.now()[..10]],
-        |r| r.get(0),
-    )?;
+    c.hours_today = hours_today(&conn, &s.now())?;
     Ok(c)
+}
+
+fn parse_iso(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// The machine-hours the UTC day of `now` has spent or holds, rounded up to whole hours:
+///
+/// - a machine counts the time it really ran that day, from when it was made to when it was
+///   released (or `now` while it runs), past the hours it was approved for too: a machine runs
+///   on until its last run ends, and two rentals replayed on one hub ran 5.2 and 8.0 hours on
+///   4-hour approvals while the day counted 4 each;
+/// - a request still open (approved, provisioning, ready) also holds the asked hours it has not
+///   run yet, whatever day it was made, so the day cannot approve them twice;
+/// - a pending request of the day holds its asked hours, as one with no machine row recorded
+///   does once it is released or failed after its machine was ready;
+/// - a request that failed before a machine was made, or was denied, consumed nothing, as its
+///   own finding says, so it does not block the retry that fixes the cause.
+pub fn hours_today(conn: &rusqlite::Connection, now: &str) -> Result<i32> {
+    let today = now.get(..10).unwrap_or(now);
+    let day_start = format!("{today}T00:00:00Z");
+    // A clock that does not read counts nothing it could vouch for: the caller gets an error
+    // and rents nothing, as every other failure here does.
+    let (Some(now_t), Some(start_t)) = (parse_iso(now), parse_iso(&day_start)) else {
+        return Err(input(
+            1,
+            format!("The store's clock {now:?} does not read as a time"),
+            "the day's machine-hours are counted from it, so no cap can be checked",
+            "check the store's clock (HIVE_NOW) and try again",
+        ));
+    };
+    let mut stmt = conn.prepare(
+        "SELECT r.hours, r.status, r.executor, r.at, COALESCE(m.created_at, ''), COALESCE(m.released_at, ''), r.updated_at FROM compute_requests r LEFT JOIN compute_machines m ON m.request_id = r.id WHERE r.status != 'denied' AND (substr(r.at, 1, 10) = ?1 OR r.status IN ('approved', 'provisioning', 'ready') OR (COALESCE(m.created_at, '') != '' AND COALESCE(NULLIF(m.released_at, ''), r.updated_at) >= ?2))",
+    )?;
+    let rows = stmt.query_map(params![today, day_start], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
+        ))
+    })?;
+    let mut seconds: i64 = 0;
+    for row in rows {
+        let (hours, status, executor, at, made, released, updated) = row?;
+        let asked = hours.max(0) * 3600;
+        let open = matches!(status.as_str(), "approved" | "provisioning" | "ready");
+        let of_today = at.get(..10) == Some(today);
+        let made_t = if made.is_empty() {
+            None
+        } else {
+            parse_iso(&made)
+        };
+        // Released at its machine's release, else - a closed request whose machine row was
+        // never stamped - when the request closed; an open one runs until now.
+        let end_t = if !released.is_empty() {
+            parse_iso(&released).map(|t| t.min(now_t))
+        } else if open {
+            Some(now_t)
+        } else {
+            parse_iso(&updated).map(|t| t.min(now_t))
+        };
+        match (made_t, end_t) {
+            (Some(made_t), Some(end_t)) => {
+                seconds =
+                    seconds.saturating_add((end_t - made_t.max(start_t)).num_seconds().max(0));
+                if open {
+                    seconds = seconds
+                        .saturating_add((asked - (end_t - made_t).num_seconds().max(0)).max(0));
+                }
+            }
+            // A machine row whose times do not read: the asked hours, as before rows had times.
+            (Some(_), None) | (None, _) if !made.is_empty() => {
+                seconds = seconds.saturating_add(asked)
+            }
+            _ => {
+                let ran_or_holds =
+                    open || (of_today && !(status == "failed" && executor.is_empty()));
+                if ran_or_holds {
+                    seconds = seconds.saturating_add(asked);
+                }
+            }
+        }
+    }
+    // Past what an i32 holds is past every cap: it must never wrap round to a small number.
+    Ok(i32::try_from(seconds.saturating_add(3599) / 3600).unwrap_or(i32::MAX))
+}
+
+/// The most hours one request may ask: `compute.max_hours_per_day` when it is set and no more
+/// than a day, else a day. A request past it could never be served inside the cap, and a sum
+/// with it could wrap round past `i32::MAX` into a small number the cap lets through.
+pub fn max_request_hours(max_hours_per_day: i32) -> i32 {
+    if max_hours_per_day > 0 {
+        max_hours_per_day.min(24)
+    } else {
+        24
+    }
 }
 
 pub fn request_compute(
@@ -191,6 +285,18 @@ pub fn request_compute(
             "hive compute request --hours 4 ...",
         ));
     }
+    let most = max_request_hours(s.setting_int("compute.max_hours_per_day") as i32);
+    if hours > most {
+        return Err(input(
+            2,
+            format!("{hours} hours is more than one request may ask ({most})"),
+            format!(
+                "a request asks for at most compute.max_hours_per_day ({}) and never more than 24",
+                s.setting_int("compute.max_hours_per_day")
+            ),
+            format!("hive compute request --hours {most} ..."),
+        ));
+    }
     let reason = clean(reason);
     if reason.is_empty() {
         return Err(input(
@@ -204,7 +310,8 @@ pub fn request_compute(
     let caps = get_caps(s)?;
     let auto = caps.auto_approve
         && caps.vms_now < caps.max_vms
-        && (caps.max_hours_per_day == 0 || caps.hours_today + hours <= caps.max_hours_per_day)
+        && caps.max_hours_per_day > 0
+        && caps.hours_today.saturating_add(hours) <= caps.max_hours_per_day
         && caps.login_source;
     let landing = machine_landing_line(s)?;
     let now = s.now();
