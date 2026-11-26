@@ -168,7 +168,9 @@ impl Handler {
 }
 
 /// Why the owner's Merge does nothing in this state, as (why, fix). Every
-/// state but `needs_owner` and `review_failed` has the reviewer or the
+/// state but `needs_owner`, `review_failed` and `merge_waiting` (the
+/// reviewer's approved merge waits for its checks or the forge; the
+/// owner's Merge is the same merge, tried at once) has the reviewer or the
 /// daemon still acting, and a second ask would race it.
 fn merge_refusal(state: &str, number: i64, note: &str, follow_up: &str) -> (String, String) {
     match state {
@@ -185,18 +187,6 @@ fn merge_refusal(state: &str, number: i64, note: &str, follow_up: &str) -> (Stri
         "merge_asked" => (
             format!("You already asked for PR #{number} to be merged."),
             "The daemon merges it on its next pass.".to_string(),
-        ),
-        "merge_waiting" => (
-            format!(
-                "The reviewer approved PR #{number} and its merge waits{}.",
-                if note.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {note}")
-                }
-            ),
-            "The daemon merges it once that clears, with no second review; a conflict or a red check brings it to you."
-                .to_string(),
         ),
         "changes_requested" => (
             format!(
@@ -370,6 +360,41 @@ mod tests {
             "",
         );
         assert_eq!(status, 405);
+    }
+
+    #[test]
+    fn the_owner_may_merge_a_pull_request_whose_approved_merge_waits() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let task =
+            hive_tasks::new(&s.store, "one", "Impressum page", "add it", 0, "human").unwrap();
+        let id = task.id.clone();
+        emit(
+            &s.store,
+            "land.pr",
+            &format!(
+                r#"{{"project":"one","kind":"task","task":"{id}","number":7,"url":"https://github.com/o/r/pull/7","head":"hive/task/{id}","base":"main","remote":"origin","to":"abc123","opened":true,"title":"Impressum page"}}"#
+            ),
+        );
+        emit(
+            &s.store,
+            "review.merge-wait",
+            r#"{"project":"one","number":7,"waiting":"forge","attempt":1,"due":"2026-10-31T13:10:00Z","note":"approved; GitHub refused the merge (HTTP 502); retried at 2026-10-31T13:10:00Z (attempt 2)"}"#,
+        );
+        let (status, result) =
+            http::additions_request(http::handler(&s), "GET", &format!("/api/v1/tasks/{id}"), "");
+        assert_eq!(status, 200);
+        assert_eq!(result["delivery"]["state"], "merge_waiting");
+        assert_eq!(result["delivery"]["can_merge"], true);
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            &format!("/api/v1/tasks/{id}/pr/merge"),
+            "{}",
+        );
+        assert_eq!(status, 202, "{result:?}");
+        assert_eq!(result["delivery"]["state"], "merge_asked");
     }
 
     #[test]

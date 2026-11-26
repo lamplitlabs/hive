@@ -323,7 +323,7 @@ merges the pull request on GitHub as you), *Changes requested on PR #n:
 <note>. Follow-up <job> is queued.*, *The review of PR #n failed: <why>* (the
 Merge button again), *Merging PR #n…*, *Approved: PR #n — <what the merge
 waits for>* (the reviewer said merge and its checks still run or GitHub
-answered 5xx; [When an approved merge waits](review.md#when-an-approved-merge-waits))
+answered 5xx; the Merge button lets you merge it now; [When an approved merge waits](review.md#when-an-approved-merge-waits))
 and *Merged*; a branch the pass could
 not deliver shows its `land.pr-held` note
 (`delivery` on `GET /api/v1/tasks/<id>`; [Delivery](landing.md), [The

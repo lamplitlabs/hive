@@ -4235,7 +4235,7 @@ fn an_approved_merge_that_waits_reads_merge_waiting_with_what_it_waits_for() {
     ]));
     assert_eq!(p.state, "merge_waiting");
     assert!(p.note.contains("retried at 2026-10-31T13:10:00Z"), "{p:?}");
-    assert!(!p.can_merge, "the daemon is merging it: no second ask");
+    assert!(p.can_merge, "the owner may merge it now rather than wait");
     let p = pr_state_of(&pr_trail(&[
         ("land.pr", opened),
         ("review.queued", queued),

@@ -123,6 +123,15 @@ fn known_pr(s: &hive_store::Store, slug: &str, number: i64, view: &PrView) -> Op
 }
 
 fn fetch_view(s: &hive_store::Store, project: &Row, number: i64) -> Result<PrView> {
+    read_view(s, project, number).map_err(|e| view_error(number, &e))
+}
+
+/// `gh pr view` of the pull request, its error as gh said it.
+fn read_view(
+    s: &hive_store::Store,
+    project: &Row,
+    number: i64,
+) -> std::result::Result<PrView, String> {
     let slug = project.str("slug");
     let url = s
         .conn()
@@ -131,15 +140,17 @@ fn fetch_view(s: &hive_store::Store, project: &Row, number: i64) -> Result<PrVie
         .map(|(pr, _)| pr.url)
         .unwrap_or_default();
     let repo = review::repo_of(project, &url);
-    review::pr_view(s, &slug, &repo, number).map_err(|e| {
-        hive_cli::errorf(
-            1,
-            &format!("Cannot read pull request #{number}"),
-            &e,
-            "gh auth status lists the accounts this machine is logged in as",
-        )
-        .into()
-    })
+    review::pr_view(s, &slug, &repo, number)
+}
+
+fn view_error(number: i64, e: &str) -> anyhow::Error {
+    hive_cli::errorf(
+        1,
+        &format!("Cannot read pull request #{number}"),
+        e,
+        "gh auth status lists the accounts this machine is logged in as",
+    )
+    .into()
 }
 
 /// A verdict needs an open pull request: one merged or closed on the forge
@@ -447,10 +458,27 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     }
     need_undecided(s, &slug, number, by == "owner")?;
     need_bottom(s, &project, number)?;
-    let view = fetch_view(s, &project, number)?;
-    need_open(&view)?;
     let actor = crate::commands::actor_of(c);
     let now = crate::commands::now_of(c);
+    // A reviewer's verdict whose read of the pull request failed for a
+    // passing reason (a 5xx, a rate limit, a dropped connection) stands
+    // like one whose merge did: it waits, and the daemon reads the pull
+    // request again - the owner's rule and the forge's gate included -
+    // before it merges. A failure that does not pass (401, 403, 404) is
+    // an error as before.
+    let view = match read_view(s, &project, number) {
+        Ok(v) => v,
+        Err(e) if by != "owner" && review::passing_forge_error(&e) => {
+            let words = review::wait_unread(s, &project, number, &e, &actor, &actor, &now);
+            writeln!(
+                c.out,
+                "Merge of #{number} waits: {words}. The verdict stands; the daemon reads the pull request again and merges it without another review - finish the job."
+            )?;
+            return Ok(());
+        }
+        Err(e) => return Err(view_error(number, &e)),
+    };
+    need_open(&view)?;
     if by != "owner" {
         let reasons = review::reasons_for(s, &view);
         if !reasons.is_empty() {
@@ -868,6 +896,59 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn a_reviewers_merge_whose_read_fails_for_a_passing_reason_waits() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        std::fs::write(bin.path().join("fail"), "view\n").unwrap();
+
+        // A credential refused is no passing failure: an error as before,
+        // nothing recorded.
+        std::fs::write(
+            bin.path().join("failmsg"),
+            "HTTP 403: Resource not accessible by integration",
+        )
+        .unwrap();
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("Cannot read pull request #7"), "{err}");
+        assert!(events(&s, "review.merge-wait").is_empty());
+
+        // A 502 on the read: the verdict stands as a forge wait, nothing
+        // merged, nothing failed.
+        std::fs::write(
+            bin.path().join("failmsg"),
+            "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+        )
+        .unwrap();
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(
+            out.contains("Merge of #7 waits: approved; GitHub refused the merge (HTTP 502"),
+            "{out}"
+        );
+        assert!(out.contains("finish the job"), "{out}");
+        assert!(events(&s, "review.failed").is_empty());
+        let wait = events(&s, "review.merge-wait");
+        assert_eq!(wait.len(), 1);
+        assert_eq!(wait[0]["waiting"], "forge");
+        assert_eq!(wait[0]["attempt"], 1);
+        assert!(
+            !calls(&log).iter().any(|c| c.starts_with("pr merge")),
+            "{:?}",
+            calls(&log)
+        );
+
+        // The owner's own Merge never waits: its failed read is an error.
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7", "--by", "owner"]);
+        assert_eq!(code, 1, "{err}");
+        assert!(err.contains("Cannot read pull request #7"), "{err}");
     }
 
     #[test]

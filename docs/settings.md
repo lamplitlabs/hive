@@ -385,6 +385,8 @@ Each section below is one family: the settings that share the part of their name
 | `review.max_files` | `20` | files a pull request may touch before the review agent reads it file by file; it still merges one whose every file is what the title and body say, and hands the owner what it cannot account for (size alone hands nothing to the owner) |
 | `review.max_lines` | `600` | lines (added plus deleted, not counting generated files such as lockfiles and build output) a pull request may change before the review agent reads it file by file, as for review.max_files |
 | `review.merge` | `auto` | auto: the review agent merges a Hive pull request itself when it stays off guarded paths, the check is green and the whole diff is what the title and body say; anything else goes to the owner with the review's findings (size alone hands nothing to the owner). ask: the agent still reviews every pull request and leaves its findings, but every merge waits for the owner |
+| `review.merge_wait_hours` | `6` | hours a reviewer's approved merge may wait for its checks or for the forge before it stops waiting: the pull request goes to the owner and the project's lead is told once, with the forge's last answer |
+| `review.merge_wait_tries` | `5` | times the forge may fail a reviewer's approved merge (a 5xx, a rate limit, a dropped connection) before the merge stops waiting: the pull request goes to the owner and the project's lead is told once, with the forge's last answer |
 
 ## schedule
 
