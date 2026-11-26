@@ -162,6 +162,19 @@ posts one question for the owner on the thread, addressed to the lead, that
 names the jobs and asks for a decision. A job from the thread that commits,
 or an answer there by the lead or the owner, restarts the count.
 
+A question for the owner is not posted twice. When a `--for-owner` question
+arrives whose summary reads the same as an open owner question of the same
+project, the board hands that one back: `hive post` prints its id and
+`an identical owner question is already open`, and a `question.deduped`
+event names the open question. Here a question is open until an `answer` or
+a `result` is posted on it. Case, spacing, ids, dates, numbers and the
+folders of a path do not make two summaries differ. The evolution loop's
+stop question is the exception: there is one for each suggestion thread.
+One asker's repeats of an open question add the event at most once in 24
+hours. A caller may ask on every tick, as the planner does for a stuck
+thread while its question is handed back: with an event for each ask, one
+question that had been open for two months took 2,378 events in a day.
+
 Interactive harnesses get the same flow through hooks:
 `hive hooks install copilot|claude` writes a session-start hook that reads the
 board, a post-tool hook that beats the session agent's heartbeat and a stop hook
